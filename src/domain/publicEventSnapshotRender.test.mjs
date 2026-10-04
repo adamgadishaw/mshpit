@@ -6,6 +6,9 @@ import vm from "node:vm";
 import { parse } from "@babel/parser";
 import { formatDate } from "./dates.mjs";
 import { normalizePublicEventSnapshot, publicEventArtistIdentityPending } from "./publicEventSnapshot.mjs";
+import { showLifecycleView, showPresentationModel } from "./showDocument.mjs";
+import { readShowDocument } from "../features/showSocial/showSocialApi.mjs";
+import { readPublicEventSnapshot } from "../features/showSocial/publicEventSnapshotApi.mjs";
 
 const require = createRequire(import.meta.url);
 const source = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
@@ -23,7 +26,7 @@ function fixture() {
     module, exports: module.exports,
     require: () => ({ jsx, jsxs: jsx }),
     View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", Icon: "Icon",
-    styles: {}, colors: {}, formatDate,
+    styles: {}, colors: {}, formatDate, showLifecycleView,
     openTicketLink: (url) => tickets.push(url),
   });
   return { render: module.exports, tickets };
@@ -39,6 +42,47 @@ function text(tree) {
   if (tree == null || typeof tree === "boolean") return "";
   return typeof tree === "object" ? text(tree.props?.children) : String(tree);
 }
+
+test("canonical 404 plus a fresh cancelled resolver snapshot keeps accessible details without tickets or availability notice", async () => {
+  const entity = { id: "tm_cancelled_fixture", kind: "event", path: "/event/tm_cancelled_fixture", publicEventSnapshot: true,
+    name: "Fixture Cancelled Artist", artist: "Fixture Cancelled Artist", venue: "Fixture Venue", date: "2026-10-05",
+    artistIdentityPending: true, eventStatus: "CANCELED", soldOut: true, ticketUrl: "https://www.ticketmaster.ca/event/fixture" };
+  const calls = [];
+  const apiCall = async (path) => {
+    calls.push(path);
+    if (path.startsWith("/api/shows/")) throw Object.assign(new Error("Not found"), { status: 404 });
+    assert.equal(path, "/api/resolve?path=%2Fevent%2Ftm_cancelled_fixture");
+    return { entity };
+  };
+  await assert.rejects(readShowDocument({ concertKey: "fixture cancelled artist|fixture venue|2026-10-05" }, { apiCall }), error => error.status === 404);
+  const event = await readPublicEventSnapshot({ eventId: entity.id }, { apiCall });
+  const f = fixture(), opened = [];
+  for (const status of ["ready", "refreshing", "error"]) {
+    const tree = f.render({ event, status, artistIdentityPending: true, onOpenVenue: value => opened.push(value) });
+    assert.match(text(tree), /THIS SHOW WAS CANCELLED/);
+    assert.match(text(tree), /Fixture Cancelled Artist.*Fixture Venue.*2026 · 10 · 05/);
+    assert.doesNotMatch(text(tree), /Get tickets|SOLD OUT|This show is available|available tickets|Artist profile not linked|Upcoming|until showtime/);
+    assert.equal(nodes(tree).some(node => node.props?.accessibilityRole === "link"), false);
+    nodes(tree).find(node => node.props?.accessibilityLabel === "Open Fixture Venue's venue page").props.onPress();
+  }
+  assert.equal(opened.length, 3);
+  assert.deepEqual(f.tickets, []);
+  assert.equal(calls.length, 2, "no retry loop or write follows either read");
+
+  const component = parse(source, { sourceType: "module", plugins: ["jsx"] }).program.body
+    .find(node => node.type === "ExportDefaultDeclaration").declaration;
+  const expression = component.body.body.filter(node => node.type === "VariableDeclaration").flatMap(node => node.declarations)
+    .find(node => node.id.name === "lifecycleView").init;
+  const view = new vm.Script(`(${source.slice(expression.start, expression.end)})`).runInNewContext({
+    showLifecycleView, trustedShow: null, norm: entity, overall: null,
+    showDateMs: () => Date.parse("2026-10-05T20:00:00Z"), eventIdentitySnapshot: event,
+  });
+  assert.equal(view.trusted, false);
+  assert.equal(view.lifecycle, "cancelled", "the real screen expression passes the validated snapshot into lifecycle resolution");
+  const presentation = showPresentationModel(view);
+  assert.equal(presentation.allowGoing, false);
+  assert.equal(presentation.showCountdown, false);
+});
 
 test("real fallback renders Club 1BD date/venue without inventing an artist link or unlocking social actions", () => {
   const f = fixture(); const opened = [];

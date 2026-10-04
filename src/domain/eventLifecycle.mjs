@@ -78,6 +78,7 @@ export function liveEventPhase(event, now = Date.now()) {
 }
 
 export function isCurrentOrUpcomingLiveEvent(event, now = Date.now()) {
+  if (["cancelled", "canceled"].includes(String(event?.eventStatus || "").trim().toLowerCase())) return false;
   const phase = liveEventPhase(event, now);
   return phase === LIVE_EVENT_PHASE.ACTIVE || phase === LIVE_EVENT_PHASE.UPCOMING;
 }

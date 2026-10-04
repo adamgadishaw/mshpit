@@ -27,6 +27,7 @@ const {
   youtubeCacheKey,
 } = await import("./musicProviders.js");
 const { renderPublicPage } = await import("./publicPages.js");
+const { seoHttpPlan } = await import("./seo.js");
 const { clearRecommendationSnapshotsForTests } = await import("./recommendationService.js");
 const { hashPassword, resetRateLimitsForTests } = await import("./auth.js");
 const { verifyPrivateMediaBucketIsolation } = await import("./media.js");
@@ -3820,32 +3821,37 @@ test("tour-date range browsing is bounded, cursor-paged, canonical-location scop
   }
 });
 
-test("tour-date range pagination fills pages after the timezone safety overlap", () => {
+test("tour-date range pagination fills pages after expired and cancelled listings while exact public history remains readable", () => {
   const DAY_MS = 24 * 60 * 60 * 1000;
   const dateAt = (days) => new Date(Date.now() + days * DAY_MS).toISOString().slice(0, 10);
   const insert = db.prepare(`INSERT INTO tour_dates (
     id,artist,venue,place,date,ticket_url,sold_out,source,updated_at,release_at,
     venue_city,venue_region,venue_country_code,venue_country,music_qualified,provider_active,
-    event_kind,event_timezone
-  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    event_kind,event_timezone,event_status
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   const expiredIds = Array.from({ length: 520 }, (_, index) => `range_scan_expired_${String(index).padStart(3, "0")}`);
+  const cancelledIds = Array.from({ length: 520 }, (_, index) => `range_scan_cancelled_${String(index).padStart(3, "0")}`);
   const futureIds = Array.from({ length: 45 }, (_, index) => `range_scan_future_${String(index).padStart(3, "0")}`);
-  const add = (id, date) => insert.run(
+  const add = (id, date, status = "scheduled") => insert.run(
     id, `Artist ${id}`, "Paging Hall", "Paging City, Testland", date, "", 0,
     "ticketmaster", Date.now(), 0, "Paging City", "Test Region", "ZZ", "Testland",
-    1, 1, "concert", "UTC",
+    1, 1, "concert", "UTC", status,
   );
 
   try {
     db.exec("BEGIN");
     for (const id of expiredIds) add(id, dateAt(-1));
+    cancelledIds.forEach((id, index) => add(id, dateAt(1), index % 2 ? " CANCELED " : "cancelled"));
     for (const id of futureIds) add(id, dateAt(1));
+    db.prepare("UPDATE tour_dates SET date=?,event_end_date=? WHERE id=?").run(dateAt(-2), dateAt(2), cancelledIds[0]);
+    db.prepare("UPDATE tour_dates SET event_status=NULL WHERE id=?").run(futureIds[0]);
+    db.prepare("UPDATE tour_dates SET venue_address_line1='1 Fixture Street' WHERE id=?").run(cancelledIds[2]);
     db.exec("COMMIT");
 
     const route = routes["GET /api/tourdates"];
     const first = route({ query: { days: "30", limit: "2", city: "Paging City", country: "ZZ" } });
     assert.deepEqual(first.tourDates.map((row) => row.id), futureIds.slice(0, 2),
-      "completed rows admitted by the one-day SQL overlap cannot consume the visible page limit");
+      "expired rows and more than one batch of cancelled rows cannot consume the visible page limit");
     assert.ok(first.nextCursor);
     const second = route({ query: {
       days: "30", limit: "2", city: "Paging City", country: "ZZ", after: first.nextCursor,
@@ -3858,10 +3864,26 @@ test("tour-date range pagination fills pages after the timezone safety overlap",
     });
     assert.equal(sidebar.upcomingEvents.length, 45,
       "the opt-in range sidebar is not truncated by the legacy eight-card default or old 40-row cap");
+    const legacy = route({ query: { artist: `Artist ${cancelledIds[1]}` } });
+    assert.equal(legacy.tourDates.some(row => cancelledIds.includes(row.id)), false);
+    const ranked = discoverySidebar(null, { eventLimit: 45, city: "Paging City", countryCode: "ZZ" });
+    assert.deepEqual(ranked.upcomingEvents.map(row => row.id), futureIds,
+      "the existing ranked discovery filter excludes both future and active multi-day cancellations");
+    const path = `/event/${cancelledIds[2]}`;
+    const exact = routes["GET /api/resolve"]({ query: { path }, ip: "cancelled-event-fixture" }).entity;
+    assert.equal(exact.id, cancelledIds[2]);
+    assert.equal(exact.eventStatus, "cancelled");
+    const plan = seoHttpPlan(path);
+    assert.equal(plan.status, 200);
+    assert.equal(plan.canonicalPath, path);
+    assert.match(plan.document.title, /^Cancelled:/);
+    assert.equal(plan.document.jsonLd[0].eventStatus, "https://schema.org/EventCancelled");
+    assert.equal(db.prepare("SELECT count(*) AS total FROM tour_dates WHERE id LIKE 'range_scan_%'").get().total, 1085,
+      "discovery does not delete cancelled or historical rows");
   } finally {
     try { db.exec("ROLLBACK"); }
     catch { /* test cleanup: the committed fixture has no active transaction */ }
-    db.prepare("DELETE FROM tour_dates WHERE id LIKE 'range_scan_expired_%' OR id LIKE 'range_scan_future_%'").run();
+    db.prepare("DELETE FROM tour_dates WHERE id LIKE 'range_scan_expired_%' OR id LIKE 'range_scan_future_%' OR id LIKE 'range_scan_cancelled_%'").run();
   }
 });
 

@@ -1,5 +1,6 @@
 import { normalizeStableShowId } from "./showAttendance.mjs";
 import { LIVE_EVENT_PHASE, liveEventPhase } from "./eventLifecycle.mjs";
+import { publicEventCandidateId } from "./publicEventSnapshot.mjs";
 
 const SHOW_LIFECYCLES = new Set([
   "unknown", "upcoming", "happening", "completed", "postponed", "cancelled",
@@ -68,8 +69,15 @@ export function normalizeShowDocument(payload) {
   };
 }
 
-export function showLifecycleView(document, legacyDate, hasScore, now = Date.now(), event = null) {
+export function showLifecycleView(document, legacyDate, hasScore, now = Date.now(), event = null, publicSnapshot = null) {
   const trusted = document?.provider?.backed === true;
+  const parsed = typeof legacyDate === "number" ? legacyDate : null;
+  // Only the validated, account-scoped resolver snapshot may override stale
+  // lifecycle reads. Its event ID must match; navigation status is not evidence.
+  if (publicSnapshot?.id && publicSnapshot.id === publicEventCandidateId(event)
+    && ["cancelled", "canceled"].includes(text(publicSnapshot.eventStatus)?.toLowerCase())) {
+    return { lifecycle: "cancelled", targetMs: trusted ? document.startsAt : parsed, upcoming: false, trusted };
+  }
   const activeMultiDay = liveEventPhase(event, now) === LIVE_EVENT_PHASE.ACTIVE;
   if (trusted && document.lifecycle !== "unknown") {
     const lifecycle = activeMultiDay && !["cancelled", "postponed"].includes(document.lifecycle)
@@ -82,7 +90,6 @@ export function showLifecycleView(document, legacyDate, hasScore, now = Date.now
       trusted: true,
     };
   }
-  const parsed = typeof legacyDate === "number" ? legacyDate : null;
   return {
     lifecycle: activeMultiDay ? "happening" : "unknown",
     targetMs: parsed,
@@ -93,6 +100,16 @@ export function showLifecycleView(document, legacyDate, hasScore, now = Date.now
 
 export function showPresentationModel(lifecycleView) {
   const view = lifecycleView || {};
+  if (view.lifecycle === "cancelled") {
+    return {
+      screenKicker: "Cancelled",
+      ticketKicker: "THIS SHOW WAS CANCELLED",
+      showCountdown: false,
+      showPostEvent: false,
+      allowTickets: false,
+      allowGoing: false,
+    };
+  }
   if (view.lifecycle === "happening") {
     return {
       screenKicker: "Happening now",
@@ -123,15 +140,6 @@ export function showPresentationModel(lifecycleView) {
         showPostEvent: false,
         allowTickets: false,
         allowGoing: true,
-      };
-    case "cancelled":
-      return {
-        screenKicker: "Cancelled",
-        ticketKicker: "THIS SHOW WAS CANCELLED",
-        showCountdown: false,
-        showPostEvent: false,
-        allowTickets: false,
-        allowGoing: false,
       };
     case "completed":
       return {

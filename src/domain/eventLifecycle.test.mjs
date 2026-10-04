@@ -12,6 +12,19 @@ import {
 
 const NOW = new Date(2026, 7, 27, 12).getTime();
 
+test("cancelled listings leave upcoming discovery without changing their calendar phase", () => {
+  for (const eventStatus of ["cancelled", "canceled", " CANCELLED ", "Canceled"]) {
+    for (const event of [{ date: "2026-08-28" }, { date: "2026-08-21", eventEndDate: "2026-09-07" }]) {
+      const cancelled = { ...event, eventStatus };
+      assert.equal(isCurrentOrUpcomingLiveEvent(cancelled, NOW), false);
+      assert.equal(liveEventPhase(cancelled, NOW), liveEventPhase(event, NOW), "calendar/history semantics remain unchanged");
+    }
+  }
+  for (const eventStatus of [undefined, null, "", "scheduled", "Scheduled", "rescheduled", "postponed"]) {
+    assert.equal(isCurrentOrUpcomingLiveEvent({ date: "2026-08-28", eventStatus }, NOW), true);
+  }
+});
+
 test("multi-day events remain active through their inclusive end date", () => {
   const cne = {
     id: "cne",

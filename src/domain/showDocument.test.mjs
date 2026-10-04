@@ -6,6 +6,40 @@ import {
   isNamedSpecialEvent, normalizeShowDocument, showDocumentIdentity, showLifecycleView, showPresentationModel,
 } from "./showDocument.mjs";
 import { canonicalShowReadEnabled } from "../config/runtime.mjs";
+import { normalizePublicEventSnapshot, publicEventSnapshotScope, readablePublicEventSnapshot } from "./publicEventSnapshot.mjs";
+
+test("an event-bound public cancellation survives an unavailable or stale upcoming canonical Show", () => {
+  const event = { id: "tm_cancelled_fixture", kind: "event", path: "/event/tm_cancelled_fixture", publicEventSnapshot: true,
+    name: "Fixture Artist", artist: "Fixture Artist", venue: "Fixture Venue", date: "2026-10-05" };
+  const upcoming = normalizeShowDocument({ id: `show_${"f".repeat(64)}`, canonicalKey: "ticketmaster:fixture",
+    lifecycle: "upcoming", startsAt: Date.parse("2026-10-05T20:00:00Z"),
+    provider: { name: "ticketmaster", eventId: "fixture", backed: true } });
+  const now = Date.parse("2026-10-04T12:00:00Z");
+  for (const eventStatus of ["cancelled", "canceled", " CANCELLED ", "Canceled"]) {
+    const data = normalizePublicEventSnapshot({ ...event, eventStatus }, event.id);
+    const resource = { scope: publicEventSnapshotScope(event.id, null), updatedAt: now, data };
+    const snapshot = readablePublicEventSnapshot(resource, { eventId: event.id, accountId: null });
+    for (const document of [null, upcoming]) {
+      const view = showLifecycleView(document, upcoming.startsAt, false, now, event, snapshot);
+      assert.equal(view.lifecycle, "cancelled");
+      assert.equal(view.upcoming, false);
+      assert.equal(view.trusted, document === upcoming, "public reads do not confer canonical attendance authority");
+      const presentation = showPresentationModel(view);
+      assert.equal(presentation.screenKicker, "Cancelled");
+      for (const flag of ["showCountdown", "showPostEvent", "allowTickets", "allowGoing"]) assert.equal(presentation[flag], false, flag);
+    }
+    const active = { ...event, date: "2026-10-01", eventEndDate: "2026-10-08" };
+    assert.equal(showLifecycleView(null, upcoming.startsAt, false, now, active, snapshot).lifecycle, "cancelled");
+    assert.equal(showLifecycleView(null, upcoming.startsAt, false, now, event, { ...snapshot, id: "tm_other" }).upcoming, true);
+    assert.equal(showLifecycleView(null, upcoming.startsAt, false, now, { ...event, kind: "status" }, snapshot).upcoming, true);
+    assert.equal(showLifecycleView(null, upcoming.startsAt, false, now, { ...event, eventStatus }).upcoming, true,
+      "navigation props alone cannot supply the fresh public cancellation");
+    assert.equal(readablePublicEventSnapshot(resource, { eventId: event.id, accountId: "other-account" }), null);
+  }
+  const scheduled = normalizePublicEventSnapshot({ ...event, eventStatus: "scheduled" }, event.id);
+  assert.deepEqual(showLifecycleView(null, upcoming.startsAt, false, now, event, scheduled),
+    showLifecycleView(null, upcoming.startsAt, false, now, event));
+});
 
 test("trusted provider lifecycle takes precedence over a contradictory legacy date", () => {
   const show = normalizeShowDocument({ show: {

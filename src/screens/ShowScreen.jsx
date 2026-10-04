@@ -73,10 +73,11 @@ function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue, artistI
     </ScrollView>
   );
   const venue = { name: event.venue, source: event.source, providerVenueId: event.providerVenueId };
+  const cancelled = showLifecycleView(null, null, false, Date.now(), event, event).lifecycle === "cancelled";
   return (
     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={styles.ticket}>
-        <Text style={styles.ticketKicker}>EVENT DETAILS</Text>
+        <Text style={styles.ticketKicker}>{cancelled ? "THIS SHOW WAS CANCELLED" : "EVENT DETAILS"}</Text>
         <Text style={styles.artist}>{event.name}</Text>
         <View style={styles.perfWrap}><View style={styles.dashed} /></View>
         <View style={styles.stubRow}>
@@ -89,14 +90,14 @@ function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue, artistI
           <View style={styles.stubDateColumn}>
             <Text style={styles.stubLabel}>THE DATE</Text>
             <Text style={styles.date}>{formatDate(event.date, event.date)}</Text>
-            {event.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
+            {!cancelled && event.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
           </View>
         </View>
       </View>
-      {event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${event.name} at ${event.venue}`}>
+      {!cancelled && event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${event.name} at ${event.venue}`}>
         <Text style={styles.ticketsTxt}>Get tickets</Text>
       </Pressable> : null}
-      <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
+      {!cancelled && <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
         <View style={styles.reviewUnavailableCopy}>
           <Text style={styles.reviewUnavailableTitle}>{artistIdentityPending ? "Artist profile not linked yet" : "The event is here. Artist features are separate."}</Text>
           <Text style={styles.reviewUnavailableText}>{artistIdentityPending
@@ -107,7 +108,7 @@ function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue, artistI
             <Text style={styles.reviewUnavailableRetryText}>{loading ? "Refreshing…" : "Refresh details"}</Text>
           </Pressable>
         </View>
-      </View>
+      </View>}
       <Pressable style={styles.seeBtn} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
         <Icon name="pin" size={16} color={colors.amber} />
         <Text style={styles.seeTxt}>See this venue</Text>
@@ -495,6 +496,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     overall != null,
     Date.now(),
     norm,
+    eventIdentitySnapshot,
   );
   const presentation = showPresentationModel(lifecycleView);
   const [, setCountdownRevision] = useState(0);
@@ -559,7 +561,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   return (
     <View style={styles.wrap}>
       <ScreenHeader
-        kicker={!showPageAllowed && publicEventId && !legacyMode ? "Event details" : presentation.screenKicker}
+        kicker={!showPageAllowed && publicEventId && !legacyMode && lifecycleView.lifecycle !== "cancelled" ? "Event details" : presentation.screenKicker}
         title={!showPageAllowed && publicEventSnapshot ? publicEventSnapshot.name : eventTitle}
         onBack={onClose}
         backLabel={`Leave ${eventTitle} ${socialObjectLabel} page`}
