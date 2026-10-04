@@ -185,6 +185,7 @@ export function discoverySidebar(viewer, {
       date: row.date,
       eventEndDate: row.event_end_date,
       eventTimezone: row.event_timezone,
+      eventStatus: row.event_status,
     }, timestamp));
   const home = viewer?.home_city
     ? { city: viewer.home_city, lat: finite(viewer.home_lat), lng: finite(viewer.home_lng) }

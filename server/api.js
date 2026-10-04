@@ -1067,6 +1067,7 @@ function tourDateRangePage(viewer, range, timestamp) {
         date: row.date,
         eventEndDate: row.event_end_date,
         eventTimezone: row.event_timezone,
+        eventStatus: row.event_status,
       }, timestamp)) visible.push(row);
       if (visible.length > range.limit) break;
     }

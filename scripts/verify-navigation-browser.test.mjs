@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fixtureApiResponse, injectCollectionFixture, navigationCases, serverCollectionPaths, clientCollectionPaths, postPath, eventPath, artistPath, navigationArtist, navigationArtistCard, discoverShowArtist, discoverArtistEvent, discoverArtistEventPath } from "./verify-navigation-browser.mjs";
+import { fixtureApiResponse, injectCollectionFixture, navigationCases, serverCollectionPaths, clientCollectionPaths, postPath, eventPath, artistPath, navigationArtist, navigationArtistCard, discoverShowArtist, discoverArtistEvent, discoverArtistEventPath, cancelledEventFixture } from "./verify-navigation-browser.mjs";
 
 test("navigation fixture import is inert and scenarios cover both mobile and desktop", () => {
   assert.equal(new Set(navigationCases.map(item => item.name)).size, navigationCases.length);
@@ -13,6 +13,25 @@ test("navigation fixture import is inert and scenarios cover both mobile and des
     assert.deepEqual(cases.filter(item => item.kind === "server-document").map(item => item.path), serverCollectionPaths);
     assert.deepEqual(cases.filter(item => item.kind === "client-document").map(item => item.path), clientCollectionPaths);
   }
+});
+
+test("cancelled browser fixtures cover unavailable, stale and fallback Show reads on both layouts", () => {
+  for (const width of [390, 1280]) {
+    assert.deepEqual(navigationCases.filter(item => item.width === width && item.kind === "cancelled-event").map(item => item.mode),
+      ["canonical-404", "stale-upcoming", "artist-fallback"]);
+  }
+  const options = { cancelledEvent: true, resolvedPath: eventPath };
+  const event = fixtureApiResponse("/api/resolve", options).entity;
+  assert.equal(event.eventStatus, "cancelled");
+  assert.equal(event.publicEventSnapshot, true);
+  assert.equal(event.path, eventPath);
+  assert.ok(event.ticketUrl, "the browser must suppress a stale ticket URL, not rely on it being absent");
+  assert.equal(fixtureApiResponse("/api/resolve", { ...options, artistIdentityPending: true }).entity.artistIdentityPending, true);
+  const path = `/api/shows/${encodeURIComponent(`fixture artist|fixture venue|${cancelledEventFixture.date}`)}`;
+  const show = fixtureApiResponse(path, options).show;
+  assert.equal(show.lifecycle, "upcoming");
+  assert.equal(show.provider.backed, true);
+  assert.throws(() => fixtureApiResponse(path, { ...options, method: "PATCH" }), /must not mutate/);
 });
 
 test("Discover show fixtures carry the real click path and distinguish provider previews from stored profiles", () => {

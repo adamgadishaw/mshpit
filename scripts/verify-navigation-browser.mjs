@@ -21,6 +21,14 @@ export const navigationUser = Object.freeze({
 });
 export const postPath = "/post/p_navigation_fixture";
 export const eventPath = "/event/tm_navigation_fixture";
+export const cancelledEventFixture = Object.freeze({
+  id: "tm_navigation_fixture", kind: "event", path: eventPath, publicEventSnapshot: true,
+  name: "Fixture Artist Live", artist: "Fixture Artist", artistKey: "fixture-artist", venue: "Fixture Venue", city: "Toronto",
+  date: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10),
+  startDateTime: new Date(Date.now() + 2 * 86400000).toISOString(),
+  eventStatus: "cancelled", ticketUrl: "https://www.ticketmaster.ca/event/cancelled-fixture",
+});
+const cancelledShowPath = `/api/shows/${encodeURIComponent(`fixture artist|fixture venue|${cancelledEventFixture.date}`)}`;
 export const artistPath = "/artist/fixture-artist";
 export const navigationArtist = Object.freeze({
   name: "Fixture Artist", key: "fixture-artist", publicSlug: "fixture-artist",
@@ -62,6 +70,9 @@ export const clientCollectionPaths = Object.freeze(["/artists", "/events", "/ven
 export const navigationCases = Object.freeze([
   ...[390, 1280].flatMap(width => [
     ...[postPath, eventPath].map(path => ({ name: `deep-link-${width < 620 ? "home" : "intro"}-${path.startsWith("/post") ? "post" : "event"}-${width}`, kind: "deep-link", path, width })),
+    ...["canonical-404", "stale-upcoming", "artist-fallback"].map(mode => ({
+      name: `cancelled-event-${mode}-${width}`, kind: "cancelled-event", mode, path: eventPath, width, member: mode === "stale-upcoming",
+    })),
     { name: `query-entry-tracking-${width}`, kind: "query-entry", path: `${eventPath}?utm_source=google&gclid=fixture-click`, queryIndexable: true, width },
     { name: `query-entry-functional-${width}`, kind: "query-entry", path: `${eventPath}?sort=recent`, queryIndexable: false, width },
     { name: `query-entry-directory-${width}`, kind: "query-entry", path: "/events?sort=recent", queryIndexable: false, width },
@@ -104,9 +115,17 @@ function injectQueryMetadataFixture(html, url) {
     .replace("</head>", head + "</head>");
 }
 
-export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, discoverArtwork = false, artistLookupTransient = false, artistIdentityPending = false } = {}) {
+export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, discoverArtwork = false, artistLookupTransient = false, artistIdentityPending = false, cancelledEvent = false } = {}) {
   if (pathname === "/api/client-errors" && method === "POST") return { ok: true };
   assert.equal(method, "GET", `Navigation must not mutate data: ${method} ${pathname}`);
+  if (cancelledEvent && pathname === "/api/resolve" && resolvedPath === eventPath) {
+    return { entity: { ...cancelledEventFixture, artistIdentityPending } };
+  }
+  if (cancelledEvent && pathname === cancelledShowPath) {
+    return { show: { id: `show_${"a".repeat(64)}`, canonicalKey: "ticketmaster:navigation-fixture", lifecycle: "upcoming",
+      artist: "Fixture Artist", artistKey: "fixture-artist", venue: "Fixture Venue", date: cancelledEventFixture.date,
+      startsAt: Date.parse(cancelledEventFixture.startDateTime), provider: { name: "ticketmaster", eventId: "navigation-fixture", backed: true } } };
+  }
   if (discoverShow) {
     const event = { ...discoverArtistEvent, artistKey: artistIdentityPending ? null : discoverArtistEvent.artistKey, artistIdentityPending,
       ...(discoverArtwork ? { eventImage: discoverEventArtwork } : {}) };
@@ -320,6 +339,9 @@ async function runCase(browser, origin, item) {
       if (item.kind === "artist-lookup-recovery"
         && message.location().url.startsWith(origin + "/api/artists/resolve?")
         && /Failed to load resource:.*502/.test(message.text())) state.expectedLookupErrors += 1;
+      else if (item.kind === "cancelled-event" && item.mode !== "stale-upcoming"
+        && message.location().url === origin + cancelledShowPath
+        && /Failed to load resource:.*404/.test(message.text())) state.expectedLookupErrors += 1;
       else state.consoleErrors.push(message.text());
     });
   });
@@ -336,6 +358,10 @@ async function runCase(browser, origin, item) {
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       state.calls.push({ path: url.pathname, method: request.method(), query: url.search });
       if (url.pathname === "/api/client-errors") state.reports.push(request.postDataJSON());
+      if (item.kind === "cancelled-event" && item.mode !== "stale-upcoming" && url.pathname === cancelledShowPath) {
+        assert.equal(request.method(), "GET");
+        return await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "Show unavailable", code: "NOT_FOUND" }) });
+      }
       if (item.kind === "artist-lookup-recovery" && url.pathname === "/api/analytics/guest-search") {
         assert.equal(request.method(), "POST");
         const payload = request.postDataJSON();
@@ -365,7 +391,8 @@ async function runCase(browser, origin, item) {
         state.lookupAttempts += 1;
       }
       const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist", discoverShow, discoverArtwork: item.kind === "discover-event-back",
-        artistIdentityPending: item.kind === "discover-show-artist-conflict" && !state.identityConfirmed,
+        cancelledEvent: item.kind === "cancelled-event",
+        artistIdentityPending: (item.kind === "discover-show-artist-conflict" && !state.identityConfirmed) || (item.kind === "cancelled-event" && item.mode === "artist-fallback"),
         artistLookupTransient: item.kind === "discover-show-artist-recovery" && !state.catalogRepaired });
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
     } catch (error) {
@@ -386,7 +413,25 @@ async function runCase(browser, origin, item) {
       await page.goto(origin + "/", { waitUntil: "networkidle" }); await landing(page);
     }
     await page.goto(origin + start, { waitUntil: item.kind === "delayed" ? "domcontentloaded" : "networkidle", timeout: timeoutMs });
-    if (item.kind === "deep-link") {
+    if (item.kind === "cancelled-event") {
+      const assertCancelled = async () => {
+        await page.getByText("THIS SHOW WAS CANCELLED", { exact: true }).waitFor();
+        if (item.mode !== "artist-fallback") {
+          await page.getByRole("button", { name: "Open this show's Lounge, 0 messages", exact: true }).waitFor();
+          assert.ok(state.calls.some(call => call.path === cancelledShowPath), "Exercise the real canonical read before checking presentation");
+        }
+        await assertPath(page, eventPath);
+        assert.equal(await page.getByRole("button", { name: "Open Fixture Venue's venue page", exact: true }).first().isEnabled(), true);
+        assert.equal(await page.getByRole("link", { name: /Get tickets for/ }).count(), 0);
+        assert.equal(await page.getByRole("button", { name: /Add this show to Going|Mark as going/i }).count(), 0);
+        assert.equal(await page.getByRole("radio", { name: "Going", exact: true }).count(), 0);
+        assert.doesNotMatch(await page.locator("body").innerText(), /Upcoming concert|until showtime|until verified doors|until event access|This show is available|available tickets|I'm going/);
+        assert.equal(state.calls.some(call => call.method !== "GET" && call.path !== "/api/client-errors"), false, "Cancellation display must not mutate attendance or event data");
+      };
+      await assertCancelled(); await snapshot("cancelled event entry");
+      await page.reload({ waitUntil: "networkidle" }); await assertCancelled();
+      await snapshot("cancelled event reload");
+    } else if (item.kind === "deep-link") {
       await visiblePage(page, start); await assertPath(page, start); await assertPageIdentity(page, start); await snapshot("entry");
       await intro(page, item.width); await landing(page); await assertPath(page, "/"); await assertPageIdentity(page, "/"); await snapshot("intro");
       await page.reload({ waitUntil: "networkidle" }); await landing(page); await assertPath(page, "/"); await snapshot("intro reload");
