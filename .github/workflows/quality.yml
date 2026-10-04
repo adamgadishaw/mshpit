@@ -77,6 +77,8 @@ jobs:
       - run: npm run verify:artist-identity-moderation-browser
       - run: npm run verify:navigation-browser
       - run: npm run verify:news-browser
+      - name: Verify news category corrections (isolated fixtures)
+        run: node scripts/verify-news-category-browser.mjs
       - run: npm run verify:discover-photos-browser
       - run: npm run verify:discover-venues-browser
       - name: Catalog upkeep and editor (mobile and desktop)

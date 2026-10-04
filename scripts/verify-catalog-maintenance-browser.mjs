@@ -92,6 +92,18 @@ export function staffFixture(url, method = "GET") {
   };
   return fixtures[url.pathname] || null;
 }
+const bootstrapStaffPaths = ["/api/admin/moderation", "/api/admin/artist-requests"];
+const unrelatedCatalogStaffRead = call => /^\/api\/(?:admin|moderation)(?:\/|$)/.test(call.path)
+  && !call.path.startsWith("/api/admin/catalog-editor/");
+export function assertCatalogEditorRequestIsolation(calls) {
+  const unrelated = calls.filter(unrelatedCatalogStaffRead);
+  // absorbServerUser already loads these two queues at sign-in. Retain the
+  // complete ledger and account for them explicitly; do not reset it at entry.
+  assert.deepEqual(unrelated.filter(call => call.phase === "bootstrap").map(call => `${call.method} ${call.path}`).sort(),
+    bootstrapStaffPaths.map(path => `GET ${path}`).sort(), "Only the two existing sign-in queue reads may precede editor entry.");
+  assert.deepEqual(unrelated.filter(call => call.phase !== "bootstrap"), [],
+    "Opening and using the standalone catalog editor must not load unrelated private staff data.");
+}
 async function localServer() {
   const directory = resolve(root, process.env.PIT_NAVIGATION_BROWSER_DIST || "dist");
   const htmlPath = join(directory, "index.html");
@@ -119,7 +131,7 @@ function catalogEditorFixture(type) {
 }
 async function scenario(browser, origin, width, kind) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
-  const state = { mode: "maintenance", calls: [], errors: [], reports: [], gets: 0, posts: 0, release: null, closing: false };
+  const state = { mode: "maintenance", phase: "bootstrap", calls: [], errors: [], reports: [], gets: 0, posts: 0, release: null, closing: false };
   await context.addInitScript(({ origin, user }) => {
     if (location.origin !== origin) return;
     localStorage.setItem("pit_theme", "stage");
@@ -132,7 +144,11 @@ async function scenario(browser, origin, width, kind) {
       if (url.origin !== origin) return await route.abort();
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       const method = request.method();
-      state.calls.push({ path: url.pathname, method });
+      const call = { path: url.pathname, method, phase: state.phase };
+      state.calls.push(call);
+      if (kind === "catalog-editor" && state.phase === "catalog-editor") {
+        assert.equal(unrelatedCatalogStaffRead(call), false, `Unexpected private staff request after editor entry: ${url.pathname}`);
+      }
       if (url.pathname === "/api/client-errors") state.reports.push(request.postDataJSON());
       if (url.pathname.startsWith("/api/admin/catalog-editor/")) {
         let body;
@@ -233,10 +249,15 @@ async function scenario(browser, origin, width, kind) {
     state.errors.push(`${message.text()} (${message.location().url})`);
   });
   try {
+    const bootstrapStaffResponses = kind === "catalog-editor" ? Promise.all(bootstrapStaffPaths.map(path =>
+      page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === "GET" && response.status() === 200))) : null;
     await page.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "Menu", exact: true }).click();
     if (kind === "catalog-editor") {
       await page.getByRole("button", { name: "Settings. Appearance, privacy, data, and account controls", exact: true }).click();
+      await bootstrapStaffResponses;
+      // Start before the click so lazy mounting and all editor requests count.
+      state.phase = "catalog-editor";
       await page.getByRole("button", { name: /Catalog editor/ }).click();
       await page.setViewportSize({ width, height: 900 });
       await page.getByText("Fill missing page text", { exact: true }).waitFor();
@@ -257,8 +278,7 @@ async function scenario(browser, origin, width, kind) {
         await page.getByText(`Saved revision 1 · receipt fixture-receipt-${type}`, { exact: true }).waitFor();
       }
       assert.equal(state.posts, 3);
-      assert.equal(state.calls.some(call => ["/api/admin/reports", "/api/admin/members", "/api/admin/moderation", "/api/admin/errors"].includes(call.path)), false,
-        "The standalone catalog editor must not load unrelated moderation data.");
+      assertCatalogEditorRequestIsolation(state.calls);
       assert.deepEqual(state.errors, []); assert.deepEqual(state.reports, []);
       console.log(JSON.stringify({ name: `catalog-editor-${width}`, passed: true, posts: state.posts }));
       return;

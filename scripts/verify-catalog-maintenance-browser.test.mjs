@@ -2,7 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createSearchGrowthService } from "../server/features/searchGrowth/searchGrowthService.js";
-import { upkeepAdmin, upkeepFixture, staffFixture } from "./verify-catalog-maintenance-browser.mjs";
+import { assertCatalogEditorRequestIsolation, upkeepAdmin, upkeepFixture, staffFixture } from "./verify-catalog-maintenance-browser.mjs";
+
+test("catalog editor isolation distinguishes existing sign-in reads and rejects every later private staff request", () => {
+  const bootstrap = ["/api/admin/moderation", "/api/admin/artist-requests"].map(path => ({ path, method: "GET", phase: "bootstrap" }));
+  const editor = ["/api/admin/catalog-editor/artist", "/api/admin/catalog-editor/prepare", "/api/admin/catalog-editor/save"]
+    .map(path => ({ path, method: path.endsWith("artist") ? "GET" : "POST", phase: "catalog-editor" }));
+  assert.doesNotThrow(() => assertCatalogEditorRequestIsolation([...bootstrap, ...editor]));
+  for (const path of ["/api/admin/moderation", "/api/admin/artist-requests", "/api/admin/members", "/api/admin/errors", "/api/moderation/news-desk/editor"]) {
+    assert.throws(() => assertCatalogEditorRequestIsolation([...bootstrap, ...editor, { path, method: "GET", phase: "catalog-editor" }]), /unrelated private staff data/);
+  }
+  assert.throws(() => assertCatalogEditorRequestIsolation([...bootstrap, bootstrap[0], ...editor]), /two existing sign-in queue reads/);
+  assert.throws(() => assertCatalogEditorRequestIsolation([...bootstrap, { path: "/api/admin/members", method: "GET", phase: "bootstrap" }, ...editor]), /two existing sign-in queue reads/);
+});
 
 test("catalog browser fixture uses only a synthetic administrator", () => {
   assert.equal(upkeepAdmin.role, "admin");
