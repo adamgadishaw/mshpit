@@ -23,6 +23,7 @@ function fixture() {
     module, exports: module.exports,
     require: () => ({ jsx, jsxs: jsx }),
     View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", Icon: "Icon",
+    CatalogText: "CatalogText",
     styles: {}, colors: {}, formatDate,
     openTicketLink: (url) => tickets.push(url),
   });
@@ -56,6 +57,8 @@ test("real fallback renders Club 1BD date/venue without inventing an artist link
   assert.equal(opened[0].name, "REBEL");
   assert.equal(opened[0].providerVenueId, "rebel-id");
   assert.equal(f.tickets.length, 0);
+  const context = nodes(tree).find(node => node.type === "CatalogText");
+  assert.equal(context.props.type, "event"); assert.equal(context.props.entityKey, "tm_club");
 });
 
 test("real fallback distinguishes loading, network failure, unavailable listing and retained content", () => {
@@ -85,6 +88,8 @@ test("pending artist identity keeps public show details and venue/ticket links u
   assert.equal(opened[0].providerVenueId, "room-id");
   assert.deepEqual(f.tickets, [event.ticketUrl]);
   assert.equal(retries, 1);
+  const context = nodes(tree).find(node => node.type === "CatalogText");
+  assert.equal(context.props.type, "event"); assert.equal(context.props.entityKey, "tm_pending");
   assert.equal(nodes(tree).some(node => /Open Namesake's profile/.test(node.props?.accessibilityLabel || "")), false);
   assert.match(source, /enabled: !artistIdentityPending/);
   assert.match(source, /const showPageAllowed = !artistIdentityPending && artistIdentityStatus === "ready"/);

@@ -668,6 +668,7 @@ function documentIsIndexable(document) {
   if (document.kind === "artist") {
     return substantiveText(document.memorial?.summary, 20)
       || substantiveText(document.artist?.bio, 80)
+      || substantiveText(document.catalogText?.summary, 80)
       || document.reviews?.some((review) => substantiveText(review.text, 40) || review.media?.length)
       || document.events?.length > 0
       || document.concerts?.length > 0;

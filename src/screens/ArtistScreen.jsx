@@ -1,3 +1,4 @@
+import CatalogText from "../features/catalogEditor/CatalogText";
 import { Suspense, useState, useEffect, useRef } from "react";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, Linking, Alert } from "react-native";
@@ -1568,7 +1569,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <ResearchedAbout kind="artist" entityKey={a.profileKey} label="THE ARTIST" />
         )}
         {sectionModel.showAbout && (!legacyMode || sectionModel.active === "about") && (
-          <ArtistOfficialLinks artistKey={a.profileKey} label="OFFICIAL LINKS" />
+          <><CatalogText type="artist" entityKey={a.profileKey} /><ArtistOfficialLinks artistKey={a.profileKey} label="OFFICIAL LINKS" /></>
         )}
 
         {sectionModel.showAbout && biographyRows.length > 0 && (

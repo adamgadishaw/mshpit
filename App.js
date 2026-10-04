@@ -39,6 +39,7 @@ const PhotoViewer = lazyWithRetry(() => import("./src/components/PhotoViewer"), 
 const LogScreen = lazyWithRetry(() => import("./src/screens/LogScreen"), "LogScreen");
 const TopRatedScreen = lazyWithRetry(() => import("./src/screens/TopRatedScreen"), "TopRatedScreen");
 const AuthScreen = lazyWithRetry(() => import("./src/screens/AuthScreen"), "AuthScreen");
+const CatalogEditorScreen = lazyWithRetry(() => import("./src/screens/CatalogEditorScreen"), "CatalogEditorScreen");
 const AdminScreen = lazyWithRetry(() => import("./src/screens/AdminScreen"), "AdminScreen");
 const BulkTourDatesScreen = lazyWithRetry(() => import("./src/screens/BulkTourDatesScreen"), "BulkTourDatesScreen");
 const RequestArtistScreen = lazyWithRetry(() => import("./src/screens/RequestArtistScreen"), "RequestArtistScreen");
@@ -1333,7 +1334,7 @@ function Root() {
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
   else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
-  else if (nav.settings) overlay = <SettingsScreen initialAccountAction={nav.accountAction === "switch" ? "switch" : null} onClose={back} onFinishSetup={needsSignupOnboarding(session) ? () => go({ signupSetup: true }) : undefined} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} onOpenModeration={() => go({ admin: true })} onRequestArtist={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} />;
+  else if (nav.settings) overlay = <SettingsScreen initialAccountAction={nav.accountAction === "switch" ? "switch" : null} onClose={back} onFinishSetup={needsSignupOnboarding(session) ? () => go({ signupSetup: true }) : undefined} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} onOpenCatalogEditor={() => go({ catalogEditor: true })} onOpenModeration={() => go({ admin: true })} onRequestArtist={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} />;
   else if (nav.deleteAccount) overlay = <DeleteAccountScreen onClose={back} onDeleted={onAccountDeleted} />;
   else if (nav.diagnostics && canViewDiagnostics) overlay = <DiagnosticsScreen onClose={back} />;
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
@@ -1350,6 +1351,7 @@ function Root() {
   else if (nav.news) overlay = <NewsScreen key={`${session?.id || "guest"}:${nav.liveSlug || ""}`} liveSlug={nav.liveSlug || null} session={session} onClose={back} onOpenArtist={openArtist} onOpenProfile={openProfile} onReport={openReport} onOpenStory={openNewsStory} onRequireAuth={openSignIn} />;
   else if (ENABLE_CREW && nav.crew) overlay = <CrewScreen key={session?.id || "guest"} initialTab={nav.crew?.tab === "plans" ? "plans" : "shows"} onClose={back} onOpenShow={openShow} onOpenLounge={(log) => go({ lounge: log })} onRequireAuth={openSignIn} />;
   else if (nav.topRated) overlay = <TopRatedScreen initialRegion={nav.discoverRegion} onClose={back} onOpen={openShow} />;
+  else if (nav.catalogEditor) overlay = <CatalogEditorScreen key={`catalog-editor:${session?.id}:${session?.role}`} onClose={back} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
   else if (nav.bulk) overlay = <BulkTourDatesScreen onClose={back} />;
   else if (nav.reqArtist) overlay = <RequestArtistScreen key={session?.id || "guest"} onClose={back} onCreated={() => commitReplace({ artistHub: true })} />;

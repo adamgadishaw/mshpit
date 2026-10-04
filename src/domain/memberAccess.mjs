@@ -6,7 +6,7 @@ const MEMBER_FRAMES = [
   "logging", "editProfile", "reporting", "inbox", "notifications", "calendar",
   "listeningHistory", "clips", "thread", "venueReview", "artistHub",
   "artistPreview", "artistGallery", "editArtist", "fanClub", "fanClubs",
-  "settings", "deleteAccount", "diagnostics", "lounge", "admin", "bulk",
+  "settings", "deleteAccount", "diagnostics", "lounge", "admin", "catalogEditor", "bulk",
   "reqArtist", "addToPlaylist",
 ];
 

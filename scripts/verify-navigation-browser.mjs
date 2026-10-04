@@ -126,6 +126,7 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
       schedule: { items: [discoverArtistEvent], total: 1, hasMore: false, nextCursor: null, legacy: false, coverage: { status: "fresh" } },
     };
   }
+  if (pathname.startsWith("/api/catalog-text/")) return { text: null };
   if (pathname === "/api/me") return { user: member ? navigationUser : null };
   if (pathname === "/api/page-head") {
     assert.match(resolvedPath, /^\/[a-zA-Z0-9_/-]*$/, "Fixture metadata paths must be inert local paths.");

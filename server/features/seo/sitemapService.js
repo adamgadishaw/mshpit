@@ -1,3 +1,4 @@
+import { publicCatalogEditorArtistTexts } from "../catalogEditor/catalogEditorRepository.js";
 import { activeAccountSql } from "../../accountVisibility.js";
 import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
 import { publicArtistCatalogSql } from "../../artistCatalogVisibility.js";
@@ -526,6 +527,7 @@ export function profileSitemapEntries(database, { candidates = null } = {}) {
 export function artistSitemapEntries(database, { now = Date.now(), candidates = null } = {}) {
   const requestedAt = Number(now);
   const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
+  const catalogTexts = publicCatalogEditorArtistTexts(database, at);
   const today = new Date(at).toISOString().slice(0, 10);
   const profileDetails = new Map(database.prepare(`SELECT ap.artist_key,ap.bio,ap.bio_staff_curated,ap.updated_at,
       CASE WHEN ap.owner_id IS NULL OR ${activeAccountSql("owner")} THEN 1 ELSE 0 END AS owner_public
@@ -555,7 +557,9 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
     try { imported = knowledge ? JSON.parse(knowledge) : null; }
     catch { imported = null; }
     const displayBio = artistKnowledgeDisplayBio({ artistKnowledge: imported }, { mbid: row.mbid, bio: selectedBio });
-    artistRows.push({ ...identity, substantiveBio: substantiveVisibleText(displayBio, 80, 2_000) });
+    const catalogText = catalogTexts.get(row.norm);
+    artistRows.push({ ...identity, catalogTextUpdatedAt: catalogText?.updatedAt || null,
+      substantiveBio: substantiveVisibleText(displayBio, 80, 2_000) || substantiveVisibleText(catalogText?.summary, 80, 2_400) });
   }
   const artistByNorm = new Map(artistRows.map((row) => [String(row.norm || "").trim().toLowerCase(), row]));
   const artistByName = new Map();
@@ -646,6 +650,7 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
       legacy: isLegacyArtistMemorial(memorialDetails.get(row.norm)?.memorial),
       lastmod: newest(
         row.updated_at,
+        row.catalogTextUpdatedAt,
         Number(profileDetails.get(row.norm)?.owner_public) === 1 ? profileDetails.get(row.norm).updated_at : null,
         officialUpdates.get(row.norm),
         postUpdates.get(row.norm),

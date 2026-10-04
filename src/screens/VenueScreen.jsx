@@ -1,3 +1,4 @@
+import CatalogText from "../features/catalogEditor/CatalogText";
 import { useEffect, useState } from "react";
 import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
@@ -149,7 +150,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         {!session ? <AccountSnapshotPrompt title="Venue reviews and concert photos" body="Sign in to read fan reviews, view concert photos, or review this venue. Shows, directions, and visitor information are open to browse." onRequireAuth={onRequireAuth} /> : null}
 
         {sectionModel.showGuide ? (
-          <ResearchedAbout kind="venue" entityKey={venue.name} city={String(venue.place || "").split(",")[0].trim() || null} label="ABOUT THIS VENUE" />
+          <><CatalogText type="venue" entityKey={photoIdentity?.source && photoIdentity?.providerVenueId ? `${photoIdentity.source}:${photoIdentity.providerVenueId}` : null} /><ResearchedAbout kind="venue" entityKey={venue.name} city={String(venue.place || "").split(",")[0].trim() || null} label="ABOUT THIS VENUE" /></>
         ) : null}
 
         {sectionModel.showGuide ? (

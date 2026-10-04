@@ -512,6 +512,13 @@ function directoryMain(document) {
   </main>`;
 }
 
+function withCatalogText(html, document) {
+  const content = document.catalogText;
+  if (!content?.summary) return html;
+  const sources = (content.sources || []).map(source => `<a href="${esc(publicHttpsUrl(source.url) || "#")}" rel="nofollow noopener noreferrer">${esc(source.label)}</a>`).join(" · ");
+  return html.replace("</main>", `<section class="section" data-catalog-text="true"><h2>Sourced page context</h2><p>${esc(content.summary)}</p><p>${sources}</p></section></main>`);
+}
+
 export function renderPublicDocumentMain(document) {
   if (document?.kind === "news") return renderNewsMain(document);
   if (document?.kind === "news-live") return renderLiveMain(document);
@@ -522,12 +529,12 @@ export function renderPublicDocumentMain(document) {
   if (document.kind === "home") return homeMain(document);
   if (document.kind === "discover") return discoverMain(document);
   if (document.kind === "search") return searchMain(document);
-  if (document.kind === "artist") return artistMain(document);
+  if (document.kind === "artist") return withCatalogText(artistMain(document), document);
   if (document.kind === "member") return memberMain(document);
   if (document.kind === "post") return postMain(document);
-  if (document.kind === "event") return eventMain(document);
+  if (document.kind === "event") return withCatalogText(eventMain(document), document);
   if (document.kind === "concert") return concertMain(document);
-  if (document.kind === "venue") return venueMain(document);
+  if (document.kind === "venue") return withCatalogText(venueMain(document), document);
   return directoryMain(document);
 }
 
