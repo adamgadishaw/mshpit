@@ -145,6 +145,13 @@ export async function waitForCatalogCompletionSelection(page, entity) {
   await page.getByLabel(`Accepted catalog photo of ${entity.identity.name}`, { exact: true }).waitFor();
   await page.getByText("Accepted photo displayed in this preview; verify the public page after publication.", { exact: true }).waitFor();
 }
+export async function openCatalogEditorFromMenu(page, beforeEntry = async () => {}) {
+  await page.getByRole("button", { name: "Settings. Appearance, privacy, data, and account controls", exact: true }).click();
+  // Finish the existing sign-in queue reads before measuring editor isolation.
+  await beforeEntry();
+  await page.getByRole("button", { name: /Catalog editor/ }).click();
+  await page.getByText("Fill missing page text", { exact: true }).waitFor();
+}
 export function catalogQueueFixture(type, cursor, query = "") {
   assert.ok(["artist", "venue", "event"].includes(type));
   assert.ok(["", "Fixture"].includes(query), "Unexpected queue query");
@@ -225,10 +232,7 @@ async function verifyExactCatalogSelection(page, state, width) {
   await page.getByText("Fill missing page text", { exact: true }).waitFor({ state: "hidden" });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.getByRole("button", { name: "Menu", exact: true }).click();
-  await page.getByRole("button", { name: "Settings. Appearance, privacy, data, and account controls", exact: true }).click();
-  await switchedStaffResponses;
-  state.phase = "catalog-editor";
-  await page.getByRole("button", { name: /Catalog editor/ }).click();
+  await openCatalogEditorFromMenu(page, async () => { await switchedStaffResponses; state.phase = "catalog-editor"; });
   await page.setViewportSize({ width, height: 900 });
   await input.waitFor();
   assert.equal(await input.inputValue(), "");
@@ -411,11 +415,11 @@ async function scenario(browser, origin, width, kind) {
     await page.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "Menu", exact: true }).click();
     if (catalogCase) {
-      await page.getByRole("button", { name: "Settings. Appearance, privacy, data, and account controls", exact: true }).click();
-      await bootstrapStaffResponses;
-      // Start before the click so lazy mounting and all editor requests count.
-      state.phase = "catalog-editor";
-      await page.getByRole("button", { name: /Catalog editor/ }).click();
+      await openCatalogEditorFromMenu(page, async () => {
+        await bootstrapStaffResponses;
+        // Start before the click so lazy mounting and all editor requests count.
+        state.phase = "catalog-editor";
+      });
       await page.setViewportSize({ width, height: 900 });
       await page.getByText("Fill missing page text", { exact: true }).waitFor();
       if (kind === "catalog-queue") {
@@ -461,9 +465,7 @@ async function scenario(browser, origin, width, kind) {
         const reloadBootstrap = Promise.all(bootstrapStaffPaths.map(path => page.waitForResponse(response => new URL(response.url()).pathname === path && response.status() === 200)));
         await page.reload({ waitUntil: "domcontentloaded" });
         await page.getByRole("button", { name: "Menu", exact: true }).click();
-        await reloadBootstrap;
-        state.phase = "catalog-editor";
-        await page.getByRole("button", { name: /Catalog editor/ }).click();
+        await openCatalogEditorFromMenu(page, async () => { await reloadBootstrap; state.phase = "catalog-editor"; });
         await page.getByText("Draft batch · 2", { exact: true }).waitFor();
         await page.getByRole("button", { name: "Edit saved draft", exact: true }).first().click();
         await waitForCatalogCompletionSelection(page, catalogCompletionFixture("artist"));

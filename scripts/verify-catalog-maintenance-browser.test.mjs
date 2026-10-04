@@ -2,7 +2,32 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createSearchGrowthService } from "../server/features/searchGrowth/searchGrowthService.js";
-import { assertCatalogEditorRequestIsolation, catalogBrowserCases, catalogCompletionFixture, catalogExactVenueKey, catalogQueueFixture, exactCatalogFixture, upkeepAdmin, upkeepFixture, staffFixture, waitForCatalogCompletionSelection } from "./verify-catalog-maintenance-browser.mjs";
+import { assertCatalogEditorRequestIsolation, catalogBrowserCases, catalogCompletionFixture, catalogExactVenueKey, catalogQueueFixture, exactCatalogFixture, upkeepAdmin, upkeepFixture, staffFixture, waitForCatalogCompletionSelection, openCatalogEditorFromMenu } from "./verify-catalog-maintenance-browser.mjs";
+
+test("every catalog entry follows Menu to Settings and establishes the request boundary before opening the editor", async () => {
+  let screen = "menu";
+  const visited = [];
+  const page = {
+    getByRole: (role, { name, exact }) => ({ click: async () => {
+      assert.equal(role, "button");
+      if (screen === "menu") {
+        assert.equal(name, "Settings. Appearance, privacy, data, and account controls"); assert.equal(exact, true);
+        screen = "settings"; visited.push("settings");
+      } else {
+        assert.equal(screen, "settings"); assert.match("Catalog editor", name);
+        assert.equal(visited.at(-1), "account-ready"); screen = "editor"; visited.push("editor");
+      }
+    } }),
+    getByText: (label, { exact }) => ({ waitFor: async () => {
+      assert.equal(label, "Fill missing page text"); assert.equal(exact, true); assert.equal(screen, "editor");
+    } }),
+  };
+  for (const entry of ["initial", "reload", "account switch"]) {
+    screen = "menu";
+    await openCatalogEditorFromMenu(page, async () => { assert.equal(screen, "settings", entry); visited.push("account-ready"); });
+  }
+  assert.deepEqual(visited, Array(3).fill(["settings", "account-ready", "editor"]).flat());
+});
 
 test("completion readiness cannot reuse the previous entity's acknowledged photo while a selection is pending", async () => {
   const entity = catalogCompletionFixture("venue");

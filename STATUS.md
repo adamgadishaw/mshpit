@@ -29,6 +29,12 @@ August 4/5 audit/session log are historical journals, not current status.
   run on that failed attempt. Native administrator
   UI/storage validation remains pending before a native rollout. See
   `docs/CATALOG_COMPLETION_REVIEW_2026-10-04.md` for scope and evidence.
+- Run 37218346003 passed the corrected artist/venue assertions and all 6,025
+  tests in both default and hosted configurations, but then found a fixture
+  navigation omission after reload: Catalog editor is under Settings, not the
+  Menu itself. Initial entry, account switch and reload now share that exact UI
+  path. A two-draft reload/edit/publish regression covers the remaining flow;
+  no runtime change, timeout increase or weakened assertion is included.
 
 ## 2026-10-04 Catalog empty-page queue (historical pre-release checkpoint)
 

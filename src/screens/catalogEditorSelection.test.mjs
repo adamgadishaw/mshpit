@@ -126,6 +126,44 @@ test("real editor restores saved drafts after remount, permits removal and clear
   restored.button("Remove saved draft").props.onPress(); assert.equal(restored.button("Edit saved draft"), undefined);
 });
 
+test("two completion drafts survive reload and an artist edit publishes the reordered batch with separate public checks", async () => {
+  const storage = new Map(), requests = [];
+  const entity = type => ({ ...row(type === "artist" ? "artist-fixture" : key), type, identity: { name: `Fixture ${type}` },
+    completion: { hash: (type === "artist" ? "c" : "d").repeat(64), canDraft: true, identityStatus: "confirmed", textStatus: "draft_ready", photoStatus: "accepted",
+      photo: { uri: "/fixture-catalog-photo.svg" }, suggested: { summary: `Fixture ${type} has documented music history.`, sources: [{ label: "Fixture", url: "https://mshpit.com/source" }] } } });
+  const actions = {
+    completion: async ({ type }) => entity(type),
+    prepare: async entries => ({ results: entries.map((draft, index) => ({ ok: true, index, draft, current: entity(draft.type) })) }),
+    save: async draft => { requests.push(`save:${draft.type}`); return { ok: true, revision: 1, auditId: `receipt-${draft.type}`, saved: { ...entity(draft.type), revision: 1 } }; },
+    publicText: async draft => { requests.push(`public:${draft.type}`); return { text: { summary: draft.summary, sources: draft.sources, revision: 1 } }; },
+  };
+  const loadedPhoto = editor => nodes(editor.render()).find(node => node.type === "Image").props.onLoad();
+  const first = fixture(undefined, false, storage, actions);
+  first.button("Plan text and photo completion").props.onPress();
+  for (const type of ["artist", "venue"]) {
+    await first.open(entity(type).key, type === "artist" ? "Artists" : "Venues"); loadedPhoto(first);
+    first.input("Reason for catalog change").props.onChangeText("Synthetic completion review"); first.button("Add to batch").props.onPress();
+  }
+  const before = JSON.parse([...storage.values()][0]); assert.equal(before.entries.length, 2); assert.deepEqual(requests, []);
+  first.unmount();
+  const reloaded = fixture(undefined, false, storage, actions);
+  assert.equal(reloaded.button("Confirm all sources and publish sequentially").props.disabled, true, "Reload requires a new review");
+  await reloaded.button("Edit saved draft").props.onPress(); loadedPhoto(reloaded);
+  assert.equal(reloaded.input("Sourced page text").props.value, "Fixture artist has documented music history.");
+  reloaded.input("Sourced page text").props.onChangeText("Fixture artist has reviewed music history."); reloaded.button("Add to batch").props.onPress();
+  const edited = JSON.parse([...storage.values()][0]);
+  assert.deepEqual(edited.entries.map(entry => entry.draft.type), ["venue", "artist"]);
+  assert.equal(edited.entries[0].id, before.entries[1].id); assert.notEqual(edited.entries[1].id, before.entries[0].id);
+  await reloaded.button("Review prepared batch").props.onPress(); assert.deepEqual(requests, []);
+  assert.equal(reloaded.button("Confirm all sources and publish sequentially").props.disabled, false);
+  await reloaded.button("Confirm all sources and publish sequentially").props.onPress();
+  assert.deepEqual(requests, ["save:venue", "public:venue", "save:artist", "public:artist"]);
+  const saved = JSON.parse([...storage.values()][0]); assert.equal(saved.entries.length, 0); assert.equal(saved.receipts.length, 2);
+  assert.ok(saved.receipts.every(record => record.verification === "verified"));
+  assert.equal(saved.receipts[1].draft.summary, "Fixture artist has reviewed music history.");
+  assert.equal(reloaded.alert(), undefined); assert.equal(reloaded.input("Sourced page text"), undefined);
+});
+
 test("editing a saved hide preserves its publication intent and explicitly labels the action", async () => {
   const storage = new Map(), controller = createCatalogBatch({ accountId: "admin-a", storage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) } });
   controller.stage(catalogDraftFromText(row(), { summary: "Text to hide.", sourceLines: "Source | https://mshpit.com/source", reason: "Hide obsolete text", hidden: true }));

@@ -122,6 +122,23 @@ no blocking issue and confirmed that assertions and timeouts were preserved.
 Updated-head browser CI remains required before merge; the failed head was not
 blindly rerun.
 
+Run `37218346003` on `7fd9bdd` passed the corrected artist/venue selection and
+staging assertions, plus 6,025 default tests and 6,025 hosted-settings tests.
+It then failed at reopening the editor after reload: the fixture attempted
+Menu -> Catalog editor, omitting the actual Menu -> Settings -> Catalog editor
+path. No client errors or public writes occurred. A shared navigation helper
+now follows that path for initial entry, account switch and reload while
+preserving the existing bootstrap-versus-editor request isolation boundary.
+
+All remaining completion steps were checked against the real editor/controller:
+two drafts persist across remount, editing the first artist moves it behind the
+venue with a fresh key, review precedes publication, each save is followed by
+its own public-text verification, and both receipts survive after the batch is
+empty. A real-JSX regression exercises that full sequence; the helper's stateful
+test rejects attempts to open the editor directly from Menu. The 20 targeted
+tests, syntax and architecture checks pass. Production code, assertions and
+timeouts are unchanged; updated-head browser CI remains the final proof.
+
 This phase plans and reviews completion. Existing image workers own acquisition;
 no new provider work is activated. Plans are not a traffic-ranked or scheduled
 job queue. The editor can only suggest from sufficiently bound stored evidence.
