@@ -24,6 +24,7 @@ const DURABLE_KEYS = new Set([
 const volatile = new Map();
 const isDurableKey = (key) => DURABLE_KEYS.has(key)
   || key.startsWith("pit.analytics.v2.")
+  || key.startsWith("pit.catalogBatch.v1.")
   || key.startsWith("pit.youtubeRejected.v1.");
 const persistence = createJsonPersistence({
   getItem: (key) => isDurableKey(key) ? Storage.getItemSync(key) : (volatile.get(key) ?? null),

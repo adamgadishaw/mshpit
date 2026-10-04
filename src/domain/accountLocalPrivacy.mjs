@@ -51,6 +51,7 @@ export const recentSearchStorageKey = (accountId) => accountId
   ? `pit.recentSearches.user.${encodeURIComponent(String(accountId))}`
   : "pit.recentSearches.guest";
 export const productAnalyticsStorageKey = (accountId) => accountId ? `pit.analytics.v2.${accountId}` : null;
+export const catalogBatchStorageKey = accountId => accountId ? `pit.catalogBatch.v1.${encodeURIComponent(String(accountId))}` : null;
 
 export function accountScopedPrivateStorageKeys(accountId) {
   const id = accountIdFor(accountId);
@@ -71,6 +72,7 @@ export function accountScopedPrivateStorageKeys(accountId) {
     productAnalyticsStorageKey(id),
     diagnosticsStorageKey(id),
     newsroomDraftStorageKey(id),
+    catalogBatchStorageKey(id),
   ].filter(Boolean);
 }
 

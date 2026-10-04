@@ -66,11 +66,11 @@ export function readCatalogEditorEntity(database, { type, key, at = Date.now() }
     updatedAt: stored?.updated_at || null };
 }
 
-export function listCatalogEditorEntities(database, { type, after = "", query = "", missingOnly = true, at = Date.now() }) {
+export function listCatalogEditorEntities(database, { type, after = "", query = "", missingOnly = true, at = Date.now(), limit = 30 }) {
   const like = `%${query.replace(/[\\%_]/g, value => `\\${value}`)}%`;
   // At most 150 candidate reads per request, plus one key to prove continuation.
   // The cursor follows the last inspected candidate, never the lookahead key.
-  const scanLimit = 150, pageLimit = 30;
+  const scanLimit = 150, pageLimit = Math.max(1, Math.min(30, limit));
   let rows;
   if (type === "artist") {
     rows = database.prepare(`SELECT norm k FROM artists WHERE norm>? AND COALESCE(source,'')<>'artist-created'

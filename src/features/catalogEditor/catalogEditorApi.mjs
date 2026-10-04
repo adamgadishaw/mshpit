@@ -23,6 +23,9 @@ export function createCatalogEditorApi({ accountId, apiCall }) {
   return {
     list: ({ type, query = "", cursor = "", missingOnly = true, signal }) => request(`${ROOT}/${type}?q=${encodeURIComponent(query)}&cursor=${encodeURIComponent(cursor)}&missing=${missingOnly}`, { signal }),
     read: ({ type, key, signal }) => request(`${ROOT}/${type}/${encodeURIComponent(key)}`, { signal }),
+    plan: ({ type, query = "", cursor = "", signal }) => request(`${ROOT}/${type}?completion=true&q=${encodeURIComponent(query)}&cursor=${encodeURIComponent(cursor)}`, { signal }),
+    completion: ({ type, key, signal }) => request(`${ROOT}/${type}/${encodeURIComponent(key)}?completion=true`, { signal }),
+    publicText: ({ type, key, signal }) => request(`/api/catalog-text/${type}/${encodeURIComponent(key)}`, { signal, cache: "no-store" }),
     prepare: (entries, signal) => request(`${ROOT}/prepare`, { method: "POST", body: { entries }, signal }),
     save: (draft, idempotencyKey, signal) => request(`${ROOT}/save`, { method: "POST", body: { draft, idempotencyKey }, signal }),
   };
@@ -33,7 +36,7 @@ export function catalogDraftFromText(entity, { summary, sourceLines, reason, hid
     summary, sources: sourceLines.split(/\r?\n/u).filter(line => line.trim()).map(line => {
       const separator = line.indexOf("|");
       return { label: separator < 0 ? "" : line.slice(0, separator).trim(), url: separator < 0 ? line.trim() : line.slice(separator + 1).trim() };
-    }), reason, hidden };
+    }), reason, hidden, ...(entity.completion ? { completionHash: entity.completion.hash } : {}) };
 }
 
 export function addCatalogBatchDraft(batch, draft) {

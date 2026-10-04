@@ -9,6 +9,12 @@ export function catalogEditorRoutes({ database, requireAdmin, rateLimit, decoded
     return ctx.params.type;
   };
   const key = ctx => decodedPathParam(ctx, "key", { max: 450, label: "catalog identity" });
+  const completion = ctx => {
+    if (![undefined, "true", "false"].includes(ctx.query?.completion) || (ctx.query?.completion === "true" && type(ctx) === "event")) {
+      throw new ApiError(400, "Completion plans support artists and venues only.", "VALIDATION_FAILED");
+    }
+    return ctx.query?.completion === "true";
+  };
   const staff = (ctx, write = false) => {
     const actor = requireAdmin(ctx);
     ctx.setHeader?.("Cache-Control", "private, no-store");
@@ -22,9 +28,9 @@ export function catalogEditorRoutes({ database, requireAdmin, rateLimit, decoded
       const after = ctx.query?.cursor || "", query = ctx.query?.q || "";
       if (typeof after !== "string" || after.length > 450 || typeof query !== "string" || query.length > 100
         || ![undefined, "true", "false"].includes(ctx.query?.missing)) throw new ApiError(400, "The catalog filter is invalid.", "VALIDATION_FAILED");
-      return service.list({ type: type(ctx), after, query: query.trim(), missingOnly: ctx.query?.missing !== "false" });
+      return service.list({ type: type(ctx), after, query: query.trim(), missingOnly: ctx.query?.missing !== "false", completion: completion(ctx) });
     },
-    "GET /api/admin/catalog-editor/:type/:key": ctx => { staff(ctx); return service.read({ type: type(ctx), key: key(ctx) }); },
+    "GET /api/admin/catalog-editor/:type/:key": ctx => { staff(ctx); return service.read({ type: type(ctx), key: key(ctx), completion: completion(ctx) }); },
     "POST /api/admin/catalog-editor/prepare": ctx => {
       staff(ctx, true);
       if (!ctx.body || Object.keys(ctx.body).some(field => field !== "entries")) throw new ApiError(400, "Prepare catalog entries only.", "VALIDATION_FAILED");

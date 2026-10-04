@@ -5,6 +5,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { parse } from "@babel/parser";
 import { addCatalogBatchDraft, catalogDraftFromText, catalogExactSelection } from "../features/catalogEditor/catalogEditorApi.mjs";
+import { createCatalogBatch } from "../features/catalogEditor/catalogBatchState.mjs";
 
 const require = createRequire(import.meta.url);
 const source = readFileSync(new URL("./CatalogEditorScreen.jsx", import.meta.url), "utf8");
@@ -21,7 +22,7 @@ function nodes(tree) {
   if (!tree || typeof tree !== "object") return [];
   return [tree, ...nodes(tree.props?.children)];
 }
-function fixture(session = { id: "admin-a", role: "admin", emailVerified: true }, allowQueue = false) {
+function fixture(session = { id: "admin-a", role: "admin", emailVerified: true }, allowQueue = false, storage = new Map(), actions = {}) {
   const states = [], refs = [], calls = [], module = { exports: {} };
   let stateIndex = 0, refIndex = 0, effect, cleanup;
   const jsx = (type, props) => ({ type, props });
@@ -40,9 +41,11 @@ function fixture(session = { id: "admin-a", role: "admin", emailVerified: true }
       },
       prepare: () => assert.fail("Opening a key must not prepare a write"),
       save: () => assert.fail("Opening a key must not publish"),
+      ...actions,
     }),
-    addCatalogBatchDraft, catalogDraftFromText, catalogExactSelection,
-    View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView", SheetHeader: "SheetHeader", Button: "Button", styles: {}, colors: {},
+    addCatalogBatchDraft, catalogDraftFromText, catalogExactSelection, createCatalogBatch,
+    catalogBatchStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
+    Image: "Image", View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView", SheetHeader: "SheetHeader", Button: "Button", styles: {}, colors: {},
   });
   const render = () => { stateIndex = 0; refIndex = 0; return module.exports({ onClose() {} }); };
   const find = (type, prop, value) => nodes(render()).find(node => node.type === type && node.props[prop] === value);
@@ -68,6 +71,107 @@ test("real editor opens a provider key directly, serializes repeat clicks, and p
   assert.equal(f.alert(), undefined);
   assert.ok(nodes(f.render()).some(node => node.type === "Text" && node.props.children === "Fixture Toronto Venue"));
   assert.equal(f.button("Open by catalog key").props.disabled, false);
+});
+
+test("completion selection preserves the old page while pending then adopts the exact venue and requires its photo", async () => {
+  const reads = [], storage = new Map();
+  const f = fixture(undefined, false, storage, {
+    completion: options => new Promise(resolve => reads.push({ ...options, resolve })),
+  });
+  const entity = type => ({ ...row(type === "artist" ? "artist-fixture" : key), type, identity: { name: `Fixture ${type}` },
+    completion: { hash: (type === "artist" ? "c" : "d").repeat(64), canDraft: true, identityStatus: "confirmed", textStatus: "draft_ready", photoStatus: "accepted", photo: { uri: "/fixture-catalog-photo.svg" },
+      suggested: { summary: `Fixture ${type} has documented music history.`, sources: [{ label: "Fixture", url: "https://mshpit.com/source" }] } } });
+  const ready = "Accepted photo displayed in this preview; verify the public page after publication.";
+  const photo = () => nodes(f.render()).find(node => node.type === "Image");
+  const acknowledged = () => nodes(f.render()).some(node => node.type === "Text" && node.props.children === ready);
+  f.button("Plan text and photo completion").props.onPress();
+  const artist = f.open("artist-fixture", "Artists"); reads[0].resolve(entity("artist")); await artist;
+  photo().props.onLoad(); f.input("Reason for catalog change").props.onChangeText("Fixture review");
+  f.button("Add to batch").props.onPress();
+  const venue = f.open(); assert.equal(reads[1].type, "venue"); assert.equal(reads[1].key, key);
+  assert.equal(acknowledged(), true, "This old artist marker explains why a generic browser wait raced");
+  assert.equal(f.input("Sourced page text").props.value, "Fixture artist has documented music history.");
+  assert.equal(f.button("Add to batch").props.disabled, true, "Pending selection cannot stage the old page");
+  reads[1].resolve(entity("venue")); await venue;
+  assert.equal(f.input("Sourced page text").props.value, "Fixture venue has documented music history.");
+  assert.equal(photo().props.accessibilityLabel, "Accepted catalog photo of Fixture venue");
+  assert.equal(acknowledged(), false); assert.equal(f.button("Add to batch").props.disabled, true);
+  photo().props.onLoad(); assert.equal(acknowledged(), true); assert.equal(f.button("Add to batch").props.disabled, false);
+  f.input("Reason for catalog change").props.onChangeText("Venue review"); f.button("Add to batch").props.onPress();
+  assert.deepEqual(JSON.parse([...storage.values()][0]).entries.map(entry => entry.draft.type), ["artist", "venue"]);
+});
+
+test("real editor restores saved drafts after remount, permits removal and clears a saved page's stale revision", async () => {
+  const storage = new Map(), actions = {
+    prepare: async entries => ({ results: entries.map((draft, index) => ({ ok: true, index, draft, current: row() })) }),
+    save: async draft => ({ ok: true, revision: 1, auditId: "fixture-audit", saved: { ...row(), revision: 1, content: { summary: draft.summary, sources: draft.sources } } }),
+    publicText: async draft => ({ text: { summary: draft.summary, sources: draft.sources, revision: 1 } }),
+  };
+  const f = fixture(undefined, false, storage, actions), opened = f.open(); f.calls[0].resolve(row()); await opened;
+  f.input("Sourced page text").props.onChangeText("A sourced fixture sentence.");
+  f.input("Named source URLs").props.onChangeText("Fixture | https://mshpit.com/source");
+  f.input("Reason for catalog change").props.onChangeText("Fixture fill");
+  f.button("Add to batch").props.onPress(); f.unmount();
+  const restored = fixture(undefined, false, storage, actions);
+  assert.ok(restored.button("Edit saved draft"));
+  const edit = restored.button("Edit saved draft").props.onPress(); restored.calls[0].resolve(row()); await edit;
+  assert.equal(restored.input("Sourced page text").props.value, "A sourced fixture sentence.");
+  restored.button("Add to batch").props.onPress();
+  await restored.button("Review prepared batch").props.onPress();
+  await restored.button("Confirm sources and publish").props.onPress();
+  assert.equal(restored.input("Sourced page text"), undefined, "Saved form must not retain its old revision");
+  assert.equal(restored.button("Remove saved draft"), undefined);
+  const next = restored.open(); restored.calls[1].resolve({ ...row(), revision: 1 }); await next;
+  restored.input("Sourced page text").props.onChangeText("A correction."); restored.button("Add to batch").props.onPress();
+  restored.button("Remove saved draft").props.onPress(); assert.equal(restored.button("Edit saved draft"), undefined);
+});
+
+test("two completion drafts survive reload and an artist edit publishes the reordered batch with separate public checks", async () => {
+  const storage = new Map(), requests = [];
+  const entity = type => ({ ...row(type === "artist" ? "artist-fixture" : key), type, identity: { name: `Fixture ${type}` },
+    completion: { hash: (type === "artist" ? "c" : "d").repeat(64), canDraft: true, identityStatus: "confirmed", textStatus: "draft_ready", photoStatus: "accepted",
+      photo: { uri: "/fixture-catalog-photo.svg" }, suggested: { summary: `Fixture ${type} has documented music history.`, sources: [{ label: "Fixture", url: "https://mshpit.com/source" }] } } });
+  const actions = {
+    completion: async ({ type }) => entity(type),
+    prepare: async entries => ({ results: entries.map((draft, index) => ({ ok: true, index, draft, current: entity(draft.type) })) }),
+    save: async draft => { requests.push(`save:${draft.type}`); return { ok: true, revision: 1, auditId: `receipt-${draft.type}`, saved: { ...entity(draft.type), revision: 1 } }; },
+    publicText: async draft => { requests.push(`public:${draft.type}`); return { text: { summary: draft.summary, sources: draft.sources, revision: 1 } }; },
+  };
+  const loadedPhoto = editor => nodes(editor.render()).find(node => node.type === "Image").props.onLoad();
+  const first = fixture(undefined, false, storage, actions);
+  first.button("Plan text and photo completion").props.onPress();
+  for (const type of ["artist", "venue"]) {
+    await first.open(entity(type).key, type === "artist" ? "Artists" : "Venues"); loadedPhoto(first);
+    first.input("Reason for catalog change").props.onChangeText("Synthetic completion review"); first.button("Add to batch").props.onPress();
+  }
+  const before = JSON.parse([...storage.values()][0]); assert.equal(before.entries.length, 2); assert.deepEqual(requests, []);
+  first.unmount();
+  const reloaded = fixture(undefined, false, storage, actions);
+  assert.equal(reloaded.button("Confirm all sources and publish sequentially").props.disabled, true, "Reload requires a new review");
+  await reloaded.button("Edit saved draft").props.onPress(); loadedPhoto(reloaded);
+  assert.equal(reloaded.input("Sourced page text").props.value, "Fixture artist has documented music history.");
+  reloaded.input("Sourced page text").props.onChangeText("Fixture artist has reviewed music history."); reloaded.button("Add to batch").props.onPress();
+  const edited = JSON.parse([...storage.values()][0]);
+  assert.deepEqual(edited.entries.map(entry => entry.draft.type), ["venue", "artist"]);
+  assert.equal(edited.entries[0].id, before.entries[1].id); assert.notEqual(edited.entries[1].id, before.entries[0].id);
+  await reloaded.button("Review prepared batch").props.onPress(); assert.deepEqual(requests, []);
+  assert.equal(reloaded.button("Confirm all sources and publish sequentially").props.disabled, false);
+  await reloaded.button("Confirm all sources and publish sequentially").props.onPress();
+  assert.deepEqual(requests, ["save:venue", "public:venue", "save:artist", "public:artist"]);
+  const saved = JSON.parse([...storage.values()][0]); assert.equal(saved.entries.length, 0); assert.equal(saved.receipts.length, 2);
+  assert.ok(saved.receipts.every(record => record.verification === "verified"));
+  assert.equal(saved.receipts[1].draft.summary, "Fixture artist has reviewed music history.");
+  assert.equal(reloaded.alert(), undefined); assert.equal(reloaded.input("Sourced page text"), undefined);
+});
+
+test("editing a saved hide preserves its publication intent and explicitly labels the action", async () => {
+  const storage = new Map(), controller = createCatalogBatch({ accountId: "admin-a", storage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) } });
+  controller.stage(catalogDraftFromText(row(), { summary: "Text to hide.", sourceLines: "Source | https://mshpit.com/source", reason: "Hide obsolete text", hidden: true }));
+  const f = fixture(undefined, false, storage), pending = f.button("Edit saved draft").props.onPress();
+  f.calls[0].resolve({ ...row(), content: { summary: "Text to hide.", sources: [] } }); await pending;
+  assert.equal(f.button("Add to batch"), undefined); assert.ok(f.button("Add hide to batch"));
+  f.input("Reason for catalog change").props.onChangeText("Reviewed hide reason"); f.button("Add hide to batch").props.onPress();
+  const saved = JSON.parse([...storage.values()][0]); assert.equal(saved.entries[0].draft.hidden, true);
 });
 
 test("invalid, wrong-type and unavailable exact keys report actionable errors without falling back to name search", async () => {

@@ -2,7 +2,70 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createSearchGrowthService } from "../server/features/searchGrowth/searchGrowthService.js";
-import { assertCatalogEditorRequestIsolation, catalogBrowserCases, catalogExactVenueKey, catalogQueueFixture, exactCatalogFixture, upkeepAdmin, upkeepFixture, staffFixture } from "./verify-catalog-maintenance-browser.mjs";
+import { assertCatalogEditorRequestIsolation, catalogBrowserCases, catalogCompletionFixture, catalogExactVenueKey, catalogQueueFixture, exactCatalogFixture, upkeepAdmin, upkeepFixture, staffFixture, waitForCatalogCompletionSelection, openCatalogEditorFromMenu } from "./verify-catalog-maintenance-browser.mjs";
+
+test("every catalog entry follows Menu to Settings and establishes the request boundary before opening the editor", async () => {
+  let screen = "menu";
+  const visited = [];
+  const page = {
+    getByRole: (role, { name, exact }) => ({ click: async () => {
+      assert.equal(role, "button");
+      if (screen === "menu") {
+        assert.equal(name, "Settings. Appearance, privacy, data, and account controls"); assert.equal(exact, true);
+        screen = "settings"; visited.push("settings");
+      } else {
+        assert.equal(screen, "settings"); assert.match("Catalog editor", name);
+        assert.equal(visited.at(-1), "account-ready"); screen = "editor"; visited.push("editor");
+      }
+    } }),
+    getByText: (label, { exact }) => ({ waitFor: async () => {
+      assert.equal(label, "Fill missing page text"); assert.equal(exact, true); assert.equal(screen, "editor");
+    } }),
+  };
+  for (const entry of ["initial", "reload", "account switch"]) {
+    screen = "menu";
+    await openCatalogEditorFromMenu(page, async () => { assert.equal(screen, "settings", entry); visited.push("account-ready"); });
+  }
+  assert.deepEqual(visited, Array(3).fill(["settings", "account-ready", "editor"]).flat());
+});
+
+test("completion readiness cannot reuse the previous entity's acknowledged photo while a selection is pending", async () => {
+  const entity = catalogCompletionFixture("venue");
+  const identity = `${entity.type} · ${entity.key} · revision ${entity.revision}`;
+  const photo = `Accepted catalog photo of ${entity.identity.name}`;
+  const ready = "Accepted photo displayed in this preview; verify the public page after publication.";
+  const visible = new Set(["artist · artist-fixture · revision 0", "Accepted catalog photo of Fixture artist", ready]);
+  const pending = [];
+  const locator = (value, options) => {
+    assert.equal(options.exact, true);
+    return { waitFor: () => visible.has(value) ? Promise.resolve() : new Promise(resolve => pending.push({ value, resolve })) };
+  };
+  const page = { getByText: locator, getByLabel: locator };
+  let finished = false;
+  const selection = waitForCatalogCompletionSelection(page, entity).then(() => { finished = true; });
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(finished, false, "The old acknowledgement must not release the venue assertion");
+  assert.deepEqual(pending.map(row => row.value), [identity]);
+  visible.delete(ready); visible.add(identity); visible.add(photo);
+  pending.shift().resolve();
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(finished, false, "New identity alone must not bypass the new photo load");
+  assert.deepEqual(pending.map(row => row.value), [ready]);
+  visible.add(ready); pending.shift().resolve(); await selection;
+  assert.equal(finished, true);
+});
+
+test("completion browser cases use local accepted-photo fixtures for both catalog types and viewport sizes", () => {
+  assert.deepEqual(catalogBrowserCases.filter(row => row.kind === "catalog-completion").map(row => row.width), [390, 1280]);
+  for (const type of ["artist", "venue"]) {
+    const row = catalogCompletionFixture(type);
+    assert.equal(row.type, type); assert.equal(row.completion.photo.uri, "/fixture-catalog-photo.svg");
+    assert.equal(row.completion.textStatus, "draft_ready"); assert.equal(row.completion.canDraft, true);
+  }
+  assert.throws(() => catalogCompletionFixture("event"));
+  assert.notEqual(catalogCompletionFixture("artist").completion.hash, catalogCompletionFixture("venue").completion.hash,
+    "Each exact identity must independently acknowledge its accepted photo, even when fixture image bytes are shared");
+});
 
 test("queue browser cases cover mobile and desktop continuation without reusing cursors across queries", () => {
   assert.deepEqual(catalogBrowserCases.filter(item => item.kind === "catalog-queue").map(item => item.width), [390, 1280]);
