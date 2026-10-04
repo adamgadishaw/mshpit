@@ -14,7 +14,7 @@ const path = "/api/moderation/catalog-maintenance";
 export const upkeepAdmin = Object.freeze({ ...navigationUser, role: "admin" });
 export const catalogExactVenueKey = "ticketmaster:rZ7HnEZaeot";
 export const catalogBrowserCases = [390, 1280].flatMap(width =>
-  ["actions", "load-retry", "action-retry", "access-loss", "catalog-editor", "catalog-exact-key"].map(kind => ({ width, kind })));
+  ["actions", "load-retry", "action-retry", "access-loss", "catalog-editor", "catalog-exact-key", "catalog-queue"].map(kind => ({ width, kind })));
 export function upkeepFixture(mode = "maintenance") {
   assert.ok(["maintenance", "catch_up", "paused"].includes(mode));
   const at = 1789488000000;
@@ -132,6 +132,17 @@ function catalogEditorFixture(type) {
     identityHash: "a".repeat(64), expectedHash: "b".repeat(64), content: null, identityCurrent: true,
     missingFields: ["sourced summary"] };
 }
+export function catalogQueueFixture(type, cursor, query = "") {
+  assert.ok(["artist", "venue", "event"].includes(type));
+  assert.ok(["", "Fixture"].includes(query), "Unexpected queue query");
+  if (query) {
+    assert.equal(cursor, "", "A changed name filter must start at the beginning");
+    return { items: [catalogEditorFixture(type)], nextCursor: null, scanLimitReached: false };
+  }
+  assert.ok(["", `${type}-boundary`].includes(cursor), "Unexpected queue cursor");
+  return cursor ? { items: [catalogEditorFixture(type)], nextCursor: null, scanLimitReached: false }
+    : { items: [], nextCursor: `${type}-boundary`, scanLimitReached: true };
+}
 export function exactCatalogFixture(type, key) {
   if ((type === "artist" && key === catalogExactVenueKey) || (type === "venue" && key === "ticketmaster:fixture-missing")) {
     return { status: 404, body: { error: "This public catalog identity is unavailable or ambiguous.", code: "NOT_FOUND" } };
@@ -157,7 +168,7 @@ async function verifyExactCatalogSelection(page, state, width) {
   const input = page.getByLabel("Exact catalog key", { exact: true });
   const open = page.getByRole("button", { name: "Open by catalog key", exact: true });
   await page.getByRole("button", { name: "Venues", exact: true }).click();
-  await page.getByText("Venue name search filters one queue page at a time. Continue with Next page, or open a known catalog key below.", { exact: true }).waitFor();
+  await page.getByText("Venue name search checks part of the catalog at a time. Continue searching when more pages are available, or open a known catalog key below.", { exact: true }).waitFor();
   await input.fill("rZ7HnEZaeot"); await open.click();
   await expectAlert("A venue key must include its source and exact provider ID, separated by a colon.");
   assert.equal(state.calls.filter(call => call.path.startsWith("/api/admin/catalog-editor/")).length, 0);
@@ -228,7 +239,7 @@ async function verifyExactCatalogSelection(page, state, width) {
 }
 
 async function scenario(browser, origin, width, kind) {
-  const catalogCase = kind === "catalog-editor" || kind === "catalog-exact-key";
+  const catalogCase = ["catalog-editor", "catalog-exact-key", "catalog-queue"].includes(kind);
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
   const state = { mode: "maintenance", phase: "bootstrap", account: upkeepAdmin, calls: [], errors: [], reports: [], expected404: [], gets: 0, posts: 0, release: null, closing: false };
   await context.addInitScript(({ origin, user }) => {
@@ -250,6 +261,15 @@ async function scenario(browser, origin, width, kind) {
       }
       if (url.pathname === "/api/client-errors") state.reports.push(request.postDataJSON());
       if (url.pathname.startsWith("/api/admin/catalog-editor/")) {
+        if (kind === "catalog-queue") {
+          assert.equal(method, "GET", "Queue browsing must not prepare or save text");
+          assert.equal(call.expectedAccount, state.account?.id);
+          const parts = url.pathname.split("/");
+          assert.equal(parts.length, 5, "Queue fixture must not make an unrelated record request");
+          assert.equal(url.searchParams.get("missing"), "true");
+          const body = catalogQueueFixture(parts[4], url.searchParams.get("cursor"), url.searchParams.get("q"));
+          return await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+        }
         if (kind === "catalog-exact-key") {
           assert.equal(method, "GET", "Exact selection must not write");
           assert.equal(call.expectedAccount, state.account?.id, "An exact read must be bound to the active account");
@@ -377,6 +397,27 @@ async function scenario(browser, origin, width, kind) {
       await page.getByRole("button", { name: /Catalog editor/ }).click();
       await page.setViewportSize({ width, height: 900 });
       await page.getByText("Fill missing page text", { exact: true }).waitFor();
+      if (kind === "catalog-queue") {
+        const search = page.getByLabel("Find catalog pages by name", { exact: true });
+        for (const type of ["artist", "venue", "event"]) {
+          await page.getByRole("button", { name: `${type[0].toUpperCase()}${type.slice(1)}s`, exact: true }).click();
+          await search.fill("");
+          await page.getByRole("button", { name: "Find pages", exact: true }).click();
+          await page.getByText("No matching pages found yet. Continue searching.", { exact: true }).waitFor();
+          await page.getByRole("button", { name: "Continue search", exact: true }).click();
+          await page.getByRole("button", { name: "Edit text", exact: true }).waitFor();
+          assert.equal(await page.getByRole("button", { name: "Next page", exact: true }).count(), 0);
+          await search.fill("Fixture");
+          await page.getByRole("button", { name: "Edit text", exact: true }).waitFor({ state: "hidden" });
+          await page.getByRole("button", { name: "Find pages", exact: true }).click();
+          await page.getByText(`Fixture ${type}`, { exact: true }).waitFor();
+        }
+        assert.equal(state.posts, 0);
+        assertCatalogEditorRequestIsolation(state.calls);
+        assert.deepEqual(state.errors, []); assert.deepEqual(state.reports, []);
+        console.log(JSON.stringify({ name: `catalog-queue-${width}`, passed: true, posts: 0 }));
+        return;
+      }
       if (kind === "catalog-exact-key") {
         await verifyExactCatalogSelection(page, state, width);
         console.log(JSON.stringify({ name: `catalog-exact-key-${width}`, passed: true, posts: state.posts }));

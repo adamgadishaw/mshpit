@@ -69,6 +69,13 @@ if (process.env.PIT_CATALOG_EDITOR_FIXTURE === "1") {
     VALUES('catalog fixture','Catalog Fixture','catalog-fixture',NULL,'12345678-1234-4234-8234-123456789abc','musicbrainz',?,?)`).run(at, at);
   db.prepare(`INSERT INTO artists(norm,name,public_slug,bio,mbid,source,created_at,updated_at)
     VALUES('catalog text only','Catalog Text Only','catalog-text-only',NULL,'22345678-1234-4234-8234-123456789abc','musicbrainz',?,?)`).run(at, at);
+  const queueArtist = db.prepare(`INSERT INTO artists(norm,name,public_slug,bio,mbid,source,created_at,updated_at)
+    VALUES(?,?,?,?,?,'musicbrainz',?,?)`);
+  for (let index = 0; index < 156; index++) {
+    const suffix = String(index).padStart(3, "0"), key = `queue-${suffix}`;
+    queueArtist.run(key, `Queue acceptance ${suffix}`, key, index < 155 ? "Existing provider biography." : null,
+      `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, at, at);
+  }
   db.prepare(`INSERT INTO tour_dates(id,artist,artist_key,venue,place,date,source,updated_at,provider_event_id,venue_provider_id,
     venue_city,venue_country_code,venue_address_line1,event_name,music_qualified,artist_identity_status,ticket_url,event_status)
     VALUES('tm_catalog_fixture','Catalog Fixture','catalog fixture','Fixture Hall','Toronto, Canada',?,
@@ -171,6 +178,14 @@ if (process.env.PIT_CATALOG_EDITOR_FIXTURE === "1") {
     await request(`${base}/artist`, { actor: null, expected: 401 });
     assert.equal((await request(`${base}/artist`, { actor: "revoked", expected: 409 })).code, "IDENTITY_CHANGED");
     for (const actor of ["fan", "moderator", "editor"]) await request(`${base}/artist`, { actor, expected: 403 });
+    await t.test("authenticated empty queue advances a bounded cursor to the remaining gap", async () => {
+      const first = await request(`${base}/artist?q=Queue%20acceptance&missing=true`);
+      assert.deepEqual(first.items, []);
+      assert.equal(first.nextCursor, "queue-149"); assert.equal(first.scanLimitReached, true);
+      const next = await request(`${base}/artist?q=Queue%20acceptance&missing=true&cursor=${first.nextCursor}`);
+      assert.deepEqual(next.items.map(row => row.key), ["queue-155"]);
+      assert.equal(next.nextCursor, null); assert.equal(next.scanLimitReached, false);
+    });
     const rows = [["artist", "catalog fixture"], ["venue", "ticketmaster:fixture-hall"], ["event", "tm_catalog_fixture"]];
     const drafts = [];
     for (const [type, key] of rows) {

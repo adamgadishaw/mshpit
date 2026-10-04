@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { ApiError } from "../../errors.js";
 import { createCatalogEditorService } from "./catalogEditorService.js";
-import { readPublicCatalogEditorText } from "./catalogEditorRepository.js";
+import { listCatalogEditorEntities, readPublicCatalogEditorText } from "./catalogEditorRepository.js";
 import { catalogEditorRoutes } from "./catalogEditorRoutes.js";
 
 const AT = 1800000000000;
@@ -149,4 +149,117 @@ test("public reads reveal only curated text, never audit or staff identifiers", 
   const publicValue = readPublicCatalogEditorText(db, { type: "artist", key: "sample artist", at: AT });
   assert.deepEqual(Object.keys(publicValue).sort(), ["revision", "sources", "summary", "updatedAt"]);
   assert.equal(readPublicCatalogEditorText(db, { type: "artist", key: "absent", at: AT }), null);
+});
+
+function queueFixture(t, type, count, populated = () => false) {
+  const { db, service } = fixture(t);
+  const event = db.prepare("SELECT * FROM tour_dates LIMIT 1").get();
+  db.exec(type === "artist" ? "DELETE FROM artists" : "DELETE FROM tour_dates");
+  const insertEvent = db.prepare(`INSERT INTO tour_dates(${Object.keys(event).join(",")}) VALUES(${Object.keys(event).map(() => "?").join(",")})`);
+  const keys = [];
+  for (let index = 0; index < count; index++) {
+    const id = String(index).padStart(3, "0");
+    let key;
+    if (type === "artist") {
+      key = `artist-${id}`;
+      db.prepare("INSERT INTO artists VALUES(?,?,NULL,NULL,NULL,?,'musicbrainz')").run(key, `Artist ${id}`, `mbid-${id}`);
+    } else {
+      const row = { ...event, id: `event-${id}`, source: index % 2 ? "ticketmaster" : "bandsintown",
+        venue_provider_id: `venue-${id}`, provider_event_id: `provider-${id}` };
+      insertEvent.run(...Object.values(row));
+      key = type === "event" ? row.id : `${row.source}:${row.venue_provider_id}`;
+    }
+    if (populated(index)) {
+      const current = service.read({ type, key });
+      db.prepare("INSERT INTO catalog_editor_entries VALUES(?,?,1,?,?,?,0,'admin',?)")
+        .run(type, key, current.identityHash, "Existing sourced text.", "[]", AT);
+    } else keys.push(key);
+  }
+  return { db, service, keys: keys.sort() };
+}
+
+test("empty queues seek past populated candidates for artists, venues and events without skipping or repeating gaps", t => {
+  for (const type of ["artist", "venue", "event"]) {
+    const { service, keys } = queueFixture(t, type, 211, index => index % 3 === 0);
+    const found = [], cursors = new Set();
+    let after = "";
+    do {
+      const page = service.list({ type, after });
+      assert.ok(page.items.length <= 30);
+      assert.equal(page.scanLimitReached, false);
+      found.push(...page.items.map(row => row.key));
+      after = page.nextCursor;
+      assert.ok(!after || !cursors.has(after), "Continuation must advance");
+      cursors.add(after);
+    } while (after);
+    assert.deepEqual(found, keys, `${type}: every gap appears exactly once across page boundaries`);
+  }
+  const { service } = queueFixture(t, "artist", 41, index => index < 40);
+  const page = service.list({ type: "artist" });
+  assert.deepEqual(page.items.map(row => row.key), ["artist-040"]);
+  assert.equal(page.nextCursor, null);
+});
+
+test("queue candidate budget keeps the lookahead for the next request and stops when the result page fills", t => {
+  const { db, service } = queueFixture(t, "artist", 151, index => index < 150);
+  let inspected = 0;
+  const database = { prepare(sql) {
+    if (sql === "SELECT * FROM artists WHERE norm=?") inspected++;
+    return db.prepare(sql);
+  } };
+  const first = listCatalogEditorEntities(database, { type: "artist", at: AT });
+  assert.equal(inspected, 150);
+  assert.deepEqual(first.items, []);
+  assert.equal(first.scanLimitReached, true);
+  assert.equal(first.nextCursor, "artist-149");
+  const last = service.list({ type: "artist", after: first.nextCursor });
+  assert.deepEqual(last.items.map(row => row.key), ["artist-150"]);
+  assert.equal(last.nextCursor, null);
+  assert.equal(last.scanLimitReached, false);
+  inspected = 0;
+  const all = listCatalogEditorEntities(database, { type: "artist", at: AT, missingOnly: false });
+  assert.equal(all.items.length, 30);
+  assert.equal(inspected, 30);
+  assert.equal(all.nextCursor, "artist-029");
+  assert.equal(service.list({ type: "artist", query: "absent" }).nextCursor, null);
+});
+
+test("fill queue preserves existing text, intentional clears, hidden research and changed staff identities", t => {
+  t.mock.method(globalThis, "fetch", () => assert.fail("Queue reads must never fetch research"));
+  const { db, service } = queueFixture(t, "artist", 8);
+  db.exec("CREATE TABLE catalog_research(entity_type TEXT,entity_key TEXT,status TEXT,findings TEXT,PRIMARY KEY(entity_type,entity_key))");
+  db.prepare("UPDATE artists SET bio='Provider biography' WHERE norm='artist-000'").run();
+  db.prepare("INSERT INTO artist_profiles VALUES(?,?,NULL,0,0,'approved')").run("artist-001", "Profile biography");
+  db.prepare("INSERT INTO artist_profiles VALUES(?,?,NULL,0,1,'approved')").run("artist-002", "");
+  const putResearch = db.prepare("INSERT INTO catalog_research VALUES('artist',?,?,?)");
+  putResearch.run("artist-003", "found", JSON.stringify({ version: 1, summary: "Existing public research" }));
+  putResearch.run("artist-004", "hidden", JSON.stringify({ version: 1, summary: "Intentionally hidden research" }));
+  for (const [key, hidden] of [["artist-005", true], ["artist-006", false]]) {
+    const value = { ...draft(service, "artist", key), hidden };
+    save(service, value, `operation_preserve_${key}`);
+  }
+  db.prepare("UPDATE artists SET mbid='changed-identity' WHERE norm='artist-006'").run();
+  const snapshot = () => JSON.stringify(["artists", "artist_profiles", "catalog_research", "catalog_editor_entries", "catalog_editor_receipts", "moderation_actions"]
+    .map(table => db.prepare(`SELECT * FROM ${table}`).all()));
+  const before = snapshot();
+  assert.deepEqual(service.list({ type: "artist" }).items.map(row => row.key), ["artist-007"]);
+  assert.equal(service.list({ type: "artist", missingOnly: false }).items.length, 8, "Existing records remain explicitly reviewable");
+  assert.equal(service.read({ type: "artist", key: "artist-002" }).protectedReason.includes("intentionally cleared"), true);
+  assert.equal(service.read({ type: "artist", key: "artist-006" }).identityCurrent, false);
+  assert.equal(snapshot(), before, "Listing must not write provider, research, staff text, audit or receipts");
+});
+
+test("venue research exclusions use canonical name and city without hiding another city's empty venue", t => {
+  const { db, service } = fixture(t);
+  db.exec("CREATE TABLE catalog_research(entity_type TEXT,entity_key TEXT,status TEXT,PRIMARY KEY(entity_type,entity_key))");
+  db.exec("INSERT INTO catalog_research VALUES('venue','example hall|toronto|ca','found'),('venue','history|toronto|ca','hidden')");
+  const template = db.prepare("SELECT * FROM tour_dates LIMIT 1").get();
+  const insert = db.prepare(`INSERT INTO tour_dates(${Object.keys(template).join(",")}) VALUES(${Object.keys(template).map(() => "?").join(",")})`);
+  insert.run(...Object.values({ ...template, id: "event-2", venue_provider_id: "other-city", venue_city: "Ottawa" }));
+  insert.run(...Object.values({ ...template, id: "event-3", venue_provider_id: "alias", venue: "History Toronto" }));
+  assert.deepEqual(service.list({ type: "venue" }).items.map(row => row.key), ["ticketmaster:other-city"]);
+  assert.equal(service.list({ type: "venue", missingOnly: false }).items.length, 3);
+  assert.deepEqual(service.list({ type: "venue", query: "Example", missingOnly: true }).items.map(row => row.key), ["ticketmaster:other-city"]);
+  assert.equal(service.list({ type: "venue", query: "absent" }).nextCursor, null);
+  assert.equal(service.list({ type: "event" }).items.length, 3, "Venue research does not silently classify event text");
 });

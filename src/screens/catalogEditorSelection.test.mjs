@@ -21,7 +21,7 @@ function nodes(tree) {
   if (!tree || typeof tree !== "object") return [];
   return [tree, ...nodes(tree.props?.children)];
 }
-function fixture(session = { id: "admin-a", role: "admin", emailVerified: true }) {
+function fixture(session = { id: "admin-a", role: "admin", emailVerified: true }, allowQueue = false) {
   const states = [], refs = [], calls = [], module = { exports: {} };
   let stateIndex = 0, refIndex = 0, effect, cleanup;
   const jsx = (type, props) => ({ type, props });
@@ -34,7 +34,10 @@ function fixture(session = { id: "admin-a", role: "admin", emailVerified: true }
     useEffect: setup => { effect = setup; },
     catalogEditorForAccount: accountId => ({
       read: options => new Promise((resolve, reject) => calls.push({ accountId, ...options, resolve, reject })),
-      list: () => assert.fail("Exact selection must not list or paginate"),
+      list: options => {
+        assert.ok(allowQueue, "Exact selection must not list or paginate");
+        return new Promise((resolve, reject) => calls.push({ accountId, ...options, resolve, reject }));
+      },
       prepare: () => assert.fail("Opening a key must not prepare a write"),
       save: () => assert.fail("Opening a key must not publish"),
     }),
@@ -118,4 +121,29 @@ test("account-keyed editor remounts isolate A to B to guest and ignore late read
   const guest = fixture(null); b.calls[0].reject(new Error("Old account failure")); await pendingB;
   assert.equal(guest.input("Exact catalog key"), undefined); assert.equal(guest.alert(), undefined);
   assert.equal(b.calls[0].signal.aborted, true);
+});
+
+test("queue continuation keeps the filter, clears obsolete cursors, retains failed-page data and cancels late reads", async () => {
+  const f = fixture(undefined, true);
+  f.input("Find catalog pages by name").props.onChangeText("first");
+  const initial = f.button("Find pages").props.onPress();
+  assert.equal(f.calls[0].cursor, ""); assert.equal(f.calls[0].query, "first");
+  assert.equal(f.calls[0].accountId, "admin-a"); assert.equal(f.calls[0].missingOnly, true);
+  f.calls[0].resolve({ items: [], nextCursor: "artist-149", scanLimitReached: true }); await initial;
+  assert.ok(f.button("Continue search"));
+  const failed = f.button("Continue search").props.onPress();
+  assert.equal(f.calls[1].cursor, "artist-149"); assert.equal(f.calls[1].query, "first");
+  f.calls[1].reject(new Error("Temporary fixture failure")); await failed;
+  assert.match(f.alert(), /Temporary fixture failure/); assert.ok(f.button("Continue search"));
+  f.input("Find catalog pages by name").props.onChangeText("second");
+  assert.equal(f.button("Continue search"), undefined);
+  const changed = f.button("Find pages").props.onPress();
+  assert.equal(f.calls[2].cursor, ""); assert.equal(f.calls[2].query, "second");
+  f.calls[2].resolve({ items: [], nextCursor: null, scanLimitReached: false }); await changed;
+  assert.equal(f.button("Next page"), undefined);
+  assert.ok(nodes(f.render()).some(node => node.props?.children === "No more matching pages for these filters."));
+  const pending = f.button("Find pages").props.onPress();
+  f.unmount(); assert.equal(f.calls[3].signal.aborted, true);
+  f.calls[3].resolve({ items: [], nextCursor: "stale", scanLimitReached: true }); await pending;
+  assert.equal(f.button("Continue search"), undefined);
 });

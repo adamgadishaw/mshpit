@@ -6,6 +6,27 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-04 Catalog empty-page queue (reviewed branch; not released)
+
+- The editor's default fill queue skips existing biographies and staff text,
+  found or intentionally hidden research, intentional biography clears, hidden
+  staff text and changed staff identities. Exact-key reads and explicit review
+  of all eligible pages retain their existing behavior and permissions.
+- A request returns up to 30 matches while inspecting at most 150 candidates.
+  Continuation starts after the last inspected key, preserving the lookahead
+  and avoiding omissions when a result page fills before the scan budget.
+  Venue name search remains bounded; it does not become a global fuzzy lookup.
+- Changing the name filter clears the previous queue and cursor. A limited
+  search explains that more matches may remain and offers Continue search.
+- No schema migration, provider call, public-content mutation, staff grant,
+  batch-publication change or console redesign is part of this patch.
+- Validation and pending browser evidence are recorded in
+  `docs/CATALOG_QUEUE_REVIEW_2026-10-04.md`.
+- Cloud validation confirmed the exact reviewed source, 34 focused checks and
+  the web export (508.4 KiB gzip, below 512 KiB). Chromium could not launch under
+  the runner's socket restriction; four queue/exact-key browser cases remain
+  unexecuted. Existing PR CI includes all four cases. No merge or deployment.
+
 ## 2026-09-30 Profiles: favorite shows, accent colour, pronouns
 
 - Edit profile has a "Make it yours" section: pronouns (24 characters,
