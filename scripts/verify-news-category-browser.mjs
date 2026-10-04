@@ -18,6 +18,92 @@ const originalStory = { postId, headline: "Synthetic artist announces new music"
   body: "The full reported article stays intact.", summary: "A retained summary", sources: [{ name: "Synthetic source", url: "https://example.test/article" }],
   media: [{ kind: "image", url: "https://media.example.test/retained.jpg" }], likes: 3, commentCount: 2 };
 
+export const newsroomSettingsCases = [390, 1280].flatMap(width =>
+  ["admin", "editor", "moderator", "fan"].map(role => ({ width, role })));
+const bootstrapPaths = role => role === "admin" ? ["/api/admin/moderation", "/api/admin/artist-requests"]
+  : role === "moderator" ? ["/api/admin/moderation"] : [];
+export function assertNewsroomEntryIsolation(calls, role, accountId) {
+  const staff = calls.filter(call => /^\/api\/(?:admin|moderation)(?:\/|$)/u.test(call.path));
+  assert.deepEqual(staff.filter(call => call.phase === "bootstrap").map(call => `${call.method} ${call.path}`).sort(),
+    bootstrapPaths(role).map(path => `GET ${path}`).sort(), "Only existing role-specific sign-in reads may precede Newsroom entry");
+  const allowed = role === "admin" || role === "editor";
+  assert.deepEqual(staff.filter(call => call.phase !== "bootstrap"
+    && !(allowed && call.path === "/api/moderation/news-desk/editor" && call.method === "GET")), [],
+  "Newsroom navigation must not read the private moderation overview or perform writes");
+  for (const call of staff.filter(call => call.path === "/api/moderation/news-desk/editor")) {
+    assert.equal(call.expectedAccount, accountId, "Newsroom reads must bind the active account");
+  }
+}
+
+export async function verifyNewsroomMenuAccess(page, user, accountReady) {
+  // Clicking Menu schedules a lazy screen; count() does not wait for that
+  // screen or the cookie handshake. A missing row is only meaningful once
+  // the exact authenticated account and its full Menu have rendered.
+  await accountReady;
+  await page.getByRole("heading", { name: "Menu", exact: true }).waitFor();
+  await page.getByRole("button", { name: `View ${user.name}'s public profile`, exact: true }).waitFor();
+  await page.getByRole("button", { name: "Settings. Appearance, privacy, data, and account controls", exact: true }).waitFor();
+  const allowed = user.role === "admin" || user.role === "editor";
+  const menuEntry = page.getByRole("button", { name: "Newsroom. Write stories and run live coverage", exact: true });
+  assert.equal(await menuEntry.count(), allowed ? 1 : 0, "Preserve the existing Menu role boundary");
+  if (allowed) {
+    await menuEntry.scrollIntoViewIfNeeded();
+    assert.equal(await menuEntry.isVisible(), true, "The existing Menu entry remains reachable at this viewport");
+  }
+}
+
+async function verifySettingsEntry(page, state, user, accountReady) {
+  const { role } = user;
+  const allowed = role === "admin" || role === "editor";
+  await verifyNewsroomMenuAccess(page, user, accountReady);
+  state.phase = "newsroom-entry";
+  await page.getByRole("button", { name: "Settings. Appearance, privacy, data, and account controls", exact: true }).click();
+  await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
+  const settingsEntry = page.getByRole("button", { name: /^Newsroom\s+Write stories and run live coverage$/u });
+  assert.equal(await settingsEntry.count(), allowed ? 1 : 0);
+  const composer = page.getByTestId("self-written-news-composer");
+  const openNewsroom = async () => {
+    // The lazy form can mount before its overview read finishes. Account for
+    // the exact response before Back or the final complete-ledger assertion.
+    const loaded = page.waitForResponse(response => new URL(response.url()).pathname === "/api/moderation/news-desk/editor"
+      && response.request().method() === "GET" && response.status() === 200);
+    await settingsEntry.click();
+    await (await loaded).finished();
+    await composer.waitFor();
+  };
+  if (allowed) {
+    await openNewsroom();
+    assert.equal(await page.getByText("Overview", { exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Reports", exact: true }).count(), 0);
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await settingsEntry.waitFor();
+    assert.equal(await composer.count(), 0, "Clean Back returns to Settings");
+    await openNewsroom();
+    const headline = composer.getByLabel("Self-written news headline", { exact: true });
+    await headline.fill("Retained Settings entry draft");
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await page.getByRole("button", { name: "Keep editing", exact: true }).click();
+    assert.equal(await headline.inputValue(), "Retained Settings entry draft");
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await page.getByRole("button", { name: "Leave", exact: true }).click();
+    await settingsEntry.waitFor();
+    await openNewsroom();
+    assert.equal(await headline.inputValue(), "Retained Settings entry draft", "Draft survives dismissal and re-entry");
+    await headline.fill("");
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await settingsEntry.waitFor();
+    assert.ok(state.calls.some(call => call.path === "/api/moderation/news-desk/editor"), "The standalone Newsroom actually loaded");
+  } else {
+    assert.equal(await composer.count(), 0);
+  }
+  await page.waitForLoadState("networkidle");
+  assertNewsroomEntryIsolation(state.calls, role, user.id);
+  assert.deepEqual(state.patches, []);
+  assert.deepEqual(state.reports, []);
+  assert.deepEqual(state.errors, []);
+  assert.deepEqual(state.external, []);
+}
+
 async function serve() {
   const directory = resolve(root, process.env.PIT_NEWSROOM_BROWSER_DIST || "dist");
   const html = join(directory, "index.html");
@@ -39,8 +125,9 @@ async function serve() {
 
 async function scenario(browser, origin, width, mode) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
-  const user = { ...upkeepAdmin, role: mode === "member" ? "fan" : width < 620 ? "editor" : "admin" };
-  const state = { story: structuredClone(originalStory), patches: [], reads: 0, errors: [], external: [], denied: Number(mode) || 0, loseResponse: false, holdResponse: false, release: null, readFailure: false, closing: false };
+  const settingsCase = mode.startsWith("settings-");
+  const user = { ...upkeepAdmin, role: settingsCase ? mode.slice("settings-".length) : mode === "member" ? "fan" : width < 620 ? "editor" : "admin" };
+  const state = { story: structuredClone(originalStory), patches: [], reads: 0, calls: [], phase: "bootstrap", reports: [], errors: [], external: [], denied: Number(mode) || 0, loseResponse: false, holdResponse: false, release: null, readFailure: false, closing: false };
   if (mode === "generated") state.story.origin = "generated";
   await context.addInitScript(({ origin, user }) => {
     if (location.origin !== origin) return;
@@ -56,7 +143,11 @@ async function scenario(browser, origin, width, mode) {
     try {
       if (url.origin !== origin) { state.external.push(url.origin); return await route.abort(); }
       if (!url.pathname.startsWith("/api/")) return await route.continue();
-      if (url.pathname === "/api/client-errors") return await json({ ok: true });
+      if (settingsCase) {
+        state.calls.push({ path: url.pathname, method: request.method(), phase: state.phase, expectedAccount: request.headers()["x-pit-expected-account"] });
+        if (url.pathname !== "/api/client-errors") assert.equal(request.method(), "GET", "Settings navigation cannot publish or mutate");
+      }
+      if (url.pathname === "/api/client-errors") { state.reports.push(request.postDataJSON()); return await json({ ok: true }); }
       if (url.pathname === "/api/me") return await json({ user });
       if (url.pathname === `/api/posts/${postId}`) {
         assert.equal(request.method(), "GET");
@@ -81,7 +172,10 @@ async function scenario(browser, origin, width, mode) {
         return await json({ postId, category: state.story.category, updatedAt: state.story.updatedAt, changed });
       }
       assert.equal(request.method(), "GET", `Unexpected mutation/provider path: ${url.pathname}`);
-      if (url.pathname === "/api/moderation/news-desk/editor") return await json(newsEditorFixture());
+      if (url.pathname === "/api/moderation/news-desk/editor") {
+        if (settingsCase) assert.equal(request.headers()["x-pit-expected-account"], user.id);
+        return await json(newsEditorFixture());
+      }
       if (url.pathname === "/api/admin/moderation") return await json({ reports: [], requests: [], recentActions: [], nextCursor: null, hasMore: false, summary: {} });
       if (url.pathname === "/api/admin/artist-requests") return await json({ requests: [] });
       return await json(fixtureApiResponse(url.pathname, { member: true, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined }));
@@ -94,8 +188,24 @@ async function scenario(browser, origin, width, mode) {
   page.setDefaultTimeout(15_000);
   page.on("pageerror", error => state.errors.push(error.message));
   try {
+    const accountReady = settingsCase ? Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === "/api/me" && response.status() === 200).then(async response => {
+        await response.finished();
+        const body = await response.json();
+        assert.equal(body.user?.id, user.id, "Confirm the exact fixture account");
+        assert.equal(body.user?.role, user.role, "Confirm the fixture role before checking allowed or hidden entries");
+      }),
+      ...bootstrapPaths(user.role).map(path => page.waitForResponse(response => new URL(response.url()).pathname === path
+        && response.status() === 200).then(response => response.finished())),
+    ]) : Promise.resolve();
     await page.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
+    if (settingsCase) await accountReady;
     await page.getByRole("button", { name: "Menu", exact: true }).click();
+    if (settingsCase) {
+      await verifySettingsEntry(page, state, user, accountReady);
+      console.log(`PASS newsroom-settings ${width} ${user.role}`);
+      return;
+    }
     const newsroom = page.getByRole("button", { name: "Newsroom. Write stories and run live coverage", exact: true });
     if (mode === "member") {
       assert.equal(await newsroom.count(), 0);
@@ -198,6 +308,8 @@ async function scenario(browser, origin, width, mode) {
     console.log(`PASS category ${width} ${mode}`);
   } catch (error) {
     await page.screenshot({ path: join(shots, `failed-${width}-${mode}.png`), fullPage: true }).catch(() => {});
+    if (settingsCase) console.error(JSON.stringify({ case: `${width} ${mode}`, phase: state.phase,
+      calls: state.calls, errors: state.errors, body: (await page.locator("body").innerText().catch(() => "")).slice(0, 4000) }));
     throw new Error(`${width} ${mode}: ${error.message}; fixture errors=${state.errors.join("; ")}`, { cause: error });
   } finally { state.closing = true; state.release?.(); await context.close(); }
 }
@@ -210,8 +322,9 @@ export async function main() {
   let browser;
   try {
     browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
+    for (const { width, role } of newsroomSettingsCases) await scenario(browser, origin, width, `settings-${role}`);
     for (const width of [390, 1280]) for (const mode of ["success", "401", "403", "409", "generated", "member"]) await scenario(browser, origin, width, mode);
-    console.log(JSON.stringify({ passed: 12, failed: 0, network: "isolated fixtures only", screenshots: shots }));
+    console.log(JSON.stringify({ passed: 12 + newsroomSettingsCases.length, failed: 0, network: "isolated fixtures only", screenshots: shots }));
   } finally { await browser?.close(); await new Promise(done => server.close(done)); }
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) main().catch(error => { console.error(error.message); process.exitCode = 1; });

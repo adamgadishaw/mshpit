@@ -6,6 +6,22 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-04 Newsroom entry from Settings (review branch)
+
+- Branch `codex/newsroom-settings-entry-20261004` starts at `15c4cb44`.
+  Settings now offers Newsroom to the existing admin/editor roles and opens the
+  existing standalone screen. Direct Menu entry and all server guards remain.
+- This navigation-only change retains Back/dismissal, account-scoped drafts and
+  the existing composition guard. It does not open the combined moderation
+  overview, change publishing policy or resolve any external browser gate.
+- Validation and the pending cloud cases are recorded in
+  `docs/NEWSROOM_SETTINGS_ENTRY_2026-10-04.md`. No merge or deployment yet.
+- PR30 run `37228104631` passed test/build, navigation and general news, then
+  exposed an immediate Menu-count race in the first new browser case. The
+  harness now confirms the account and waits for the lazy account Menu before
+  either allowed or denied-role assertions. All eight new cases still require
+  updated-head cloud execution; production code and timeouts are unchanged.
+
 ## 2026-10-04 Completion plan and saved catalog batches (draft PR 29)
 
 - Branch `codex/catalog-completion-review-20261004` starts at released master
