@@ -1,3 +1,4 @@
+import { catalogVenueEditorKey, readPublicCatalogEditorText } from "../catalogEditor/catalogEditorRepository.js";
 import {
   artistConcertsPath,
   artistPath,
@@ -1029,6 +1030,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
     artist(raw, { canonicalPath: requestedPath = null } = {}) {
       if (!raw?.artist) return null;
       const source = raw.artist;
+      const catalogText = readPublicCatalogEditorText(database, { type: "artist", key: source.norm });
       const artistCanonicalPath = canonicalArtistPath(publicPaths, source);
       const path = canonicalPath(requestedPath, artistCanonicalPath);
       // Legacy vanity routes redirect before rendering, and this second gate
@@ -1180,11 +1182,14 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ? `${name}${tourYears ? ` tour ${tourYears}` : ""}: ${upcomingSignal}${nextLine}. Dates, venues and tickets on Mshpit.`
         : bio
         ? `${name} artist profile on Mshpit. ${bio}`
+        : catalogText?.summary
+        ? `${name} artist profile on Mshpit. ${catalogText.summary}`
         : updates.length
         ? `${name} artist profile and public updates on Mshpit.`
         : `${name} music artist profile on Mshpit.`));
       const modifiedAt = Math.max(
         timestamp(source.updated_at) || 0,
+        timestamp(catalogText?.updatedAt) || 0,
         timestamp(raw.profile?.updated_at) || 0,
         timestamp(raw.stats?.latest_at) || 0,
         ...events.map((event) => event.updatedAt || 0),
@@ -1261,6 +1266,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       };
       return Object.freeze({
         kind: "artist",
+        catalogText,
         siteName: SITE_NAME,
         title: artistTitle,
         description,
@@ -1524,6 +1530,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       };
       return Object.freeze({
         kind: "event",
+        catalogText: readPublicCatalogEditorText(database, { type: "event", key: raw.event.id, at }),
         siteName: SITE_NAME,
         title: metadata.title,
         heading: metadata.heading,
@@ -1860,6 +1867,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       };
       return Object.freeze({
         kind: "venue",
+        catalogText: readPublicCatalogEditorText(database, { type: "venue", key: catalogVenueEditorKey(raw.venue.source, raw.venue.providerVenueId) }),
         siteName: SITE_NAME,
         title: venueTitle,
         heading: venueTitleName,

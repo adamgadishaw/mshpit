@@ -94,6 +94,7 @@ import { artistResolveRoutes } from "./features/artistSearch/artistResolveRoutes
 import { artistArchiveRoutes } from "./features/artistArchive/artistArchiveRoutes.js";
 import { createArtistLiveSummaryService } from "./features/artistArchive/artistLiveSummaryService.js";
 import { artistLiveSummaryRoutes } from "./features/artistArchive/artistLiveSummaryRoutes.js";
+import { catalogEditorRoutes } from "./features/catalogEditor/catalogEditorRoutes.js";
 import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearchRoutes.js";
 import { createNewsDeskEditor } from "./features/newsDesk/newsDeskEditor.js";
 import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
@@ -4704,6 +4705,7 @@ export const routes = {
   ...linkedAccounts.routes,
   ...cityGuideRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now }),
   ...artistBiographyRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now, publicArtist }),
+  ...catalogEditorRoutes({ database: db, requireAdmin, rateLimit: limit, decodedPathParam, now }),
   ...catalogMaintenanceRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now,
     ...catalogMaintenanceService }),
   ...searchGrowthRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now,

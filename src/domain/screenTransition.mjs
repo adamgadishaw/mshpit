@@ -9,7 +9,7 @@ const SCREEN_KEYS = Object.freeze([
   "artistGallery", "artistPreview", "editArtist", "artistArchive", "artistTour", "artistName",
   "venueName", "nearby", "cityGuide", "venues", "fanClubs", "suggestion", "settings",
   "deleteAccount", "diagnostics", "privacy", "terms", "lounge", "openLog", "post", "badges",
-  "topRated", "admin", "bulk", "reqArtist", "menu", "news", "crew", "directory",
+  "topRated", "admin", "catalogEditor", "bulk", "reqArtist", "menu", "news", "crew", "directory",
 ]);
 
 function identity(value) {
