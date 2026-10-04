@@ -427,7 +427,9 @@ async function runCase(browser, origin, item) {
         await page.getByText("Toronto, Ontario, Canada", { exact: true }).last().waitFor();
         await page.getByText("529 Bloor Street West · M5S 1Y5", { exact: true }).waitFor();
         await page.getByText(venueHydrationText, { exact: true }).waitFor();
-        await page.getByText("Hydration concert 1", { exact: true }).waitFor();
+        // Concert cards show the artist; the distinct event name stays in the snapshot.
+        await page.getByText("Fixture Band 1", { exact: true }).waitFor();
+        assert.equal(await page.getByRole("link", { name: "Open event details for Fixture Band 1", exact: true }).getAttribute("href"), "/event/venue-hydration-1");
         await page.getByText("UPCOMING PREVIEW", { exact: true }).waitFor();
         assert.equal(await page.getByText("No announced shows yet", { exact: true }).count(), 0);
       };
@@ -435,11 +437,12 @@ async function runCase(browser, origin, item) {
       await page.getByRole("tab", { name: "Shows venue page section", exact: true }).click();
       await page.getByRole("button", { name: "Show 2 more upcoming shows", exact: true }).click();
       await page.getByRole("button", { name: "Next upcoming shows", exact: true }).click();
-      await page.getByText("Hydration concert 9", { exact: true }).waitFor();
-      assert.equal(await page.getByText("Hydration concert 1", { exact: true }).count(), 0, "Paging replaces the bounded window");
+      await page.getByText("Fixture Band 9", { exact: true }).waitFor();
+      assert.equal(await page.getByRole("link", { name: "Open event details for Fixture Band 9", exact: true }).getAttribute("href"), "/event/venue-hydration-9");
+      assert.equal(await page.getByText("Fixture Band 1", { exact: true }).count(), 0, "Paging replaces the bounded window");
       await page.getByText("UPCOMING PREVIEW", { exact: true }).waitFor();
       await page.getByRole("button", { name: "First upcoming shows", exact: true }).click();
-      await page.getByText("Hydration concert 1", { exact: true }).waitFor();
+      await page.getByText("Fixture Band 1", { exact: true }).waitFor();
       await page.reload({ waitUntil: "networkidle" }); await assertVenue();
       assert.equal(state.calls.some(call => call.path.startsWith("/api/feed")), false);
       assert.ok(state.calls.some(call => call.path === "/api/venue-snapshot" && call.query.includes("after=fixture-next")));
@@ -788,6 +791,11 @@ async function runCase(browser, origin, item) {
   } catch (error) {
     failure = error.message;
     await snapshot("failure").catch(() => {});
+    if (item.kind === "venue-hydration" && !state.member) {
+      // Only this synthetic guest document's visible text; no storage, cookies or HTML.
+      state.venueFailureText = await page.evaluate(expectedOrigin => location.origin === expectedOrigin
+        ? (document.body?.innerText || "").slice(0, 6000) : "Outside fixture origin", origin).catch(() => "Page unavailable");
+    }
   } finally {
     state.releaseResolve?.();
     state.releaseLookup?.();
