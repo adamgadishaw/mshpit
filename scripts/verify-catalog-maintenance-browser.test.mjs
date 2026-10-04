@@ -2,7 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createSearchGrowthService } from "../server/features/searchGrowth/searchGrowthService.js";
-import { assertCatalogEditorRequestIsolation, upkeepAdmin, upkeepFixture, staffFixture } from "./verify-catalog-maintenance-browser.mjs";
+import { assertCatalogEditorRequestIsolation, catalogBrowserCases, catalogExactVenueKey, exactCatalogFixture, upkeepAdmin, upkeepFixture, staffFixture } from "./verify-catalog-maintenance-browser.mjs";
+
+test("exact-key browser cases cover mobile and desktop with strict synthetic identity/error fixtures", () => {
+  assert.deepEqual(catalogBrowserCases.filter(item => item.kind === "catalog-exact-key").map(item => item.width), [390, 1280]);
+  const venue = exactCatalogFixture("venue", catalogExactVenueKey);
+  assert.equal(venue.status, 200); assert.equal(venue.body.key, "ticketmaster:rZ7HnEZaeot");
+  assert.equal(venue.body.identity.name, "Lee's Palace"); assert.equal(venue.body.identity.city, "Toronto");
+  assert.equal(exactCatalogFixture("artist", catalogExactVenueKey).status, 404);
+  assert.equal(exactCatalogFixture("venue", "ticketmaster:fixture-missing").status, 404);
+  assert.throws(() => exactCatalogFixture("venue", "ticketmaster:rz7hnezaeot"), /Unknown exact/);
+  assert.throws(() => exactCatalogFixture("event", catalogExactVenueKey));
+});
 
 test("catalog editor isolation distinguishes existing sign-in reads and rejects every later private staff request", () => {
   const bootstrap = ["/api/admin/moderation", "/api/admin/artist-requests"].map(path => ({ path, method: "GET", phase: "bootstrap" }));
