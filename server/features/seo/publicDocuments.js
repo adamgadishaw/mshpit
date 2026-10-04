@@ -5,6 +5,7 @@ import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
 import { createPublicVenueReviewService } from "./publicVenueReviews.js";
 import { createPublicCollectionDocumentService } from "./publicCollectionDocuments.js";
 import { createPublicDocumentProjector } from "./publicDocumentProjection.js";
+import { projectPublicVenueSnapshot, publicVenueEventCursor } from "./publicVenueSnapshot.js";
 import { decodeArchiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
 import { tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
@@ -153,6 +154,12 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
     venueDocument(options = {}) {
       const raw = repository.readVenue(options);
       return raw ? projector.venue(raw, options) : null;
+    },
+
+    venueSnapshot(options = {}) {
+      const eventAfter = publicVenueEventCursor(options.after, options.canonicalPath);
+      const raw = repository.readVenue({ ...options, eventAfter, eventLimit: 8, includeCommunity: false });
+      return raw ? projectPublicVenueSnapshot(raw, projector.venue(raw, options), options) : null;
     },
 
     cityVenuesDocument(options = {}) {

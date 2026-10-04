@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { venueHydrationAlias, venueHydrationPath, venueHydrationIdentity, venueHydrationText } from "./venue-hydration-fixture.mjs";
 import { fixtureApiResponse, injectCollectionFixture, navigationCases, serverCollectionPaths, clientCollectionPaths, postPath, eventPath, artistPath, navigationArtist, navigationArtistCard, discoverShowArtist, discoverArtistEvent, discoverArtistEventPath, cancelledEventFixture } from "./verify-navigation-browser.mjs";
 
 test("navigation fixture import is inert and scenarios cover both mobile and desktop", () => {
@@ -124,4 +125,22 @@ test("fixture page metadata is path-specific and cannot turn a private tab into 
     assert.equal(privateHead.head.includes("canonical"), false);
   }
   assert.throws(() => fixtureApiResponse("/api/page-head", { resolvedPath: '/unsafe"><script>' }), /inert local paths/);
+});
+test("cold guest venue fixtures cover alias/canonical on mobile/desktop with an empty discovery cache and exact text key", () => {
+  const cases = navigationCases.filter(item => item.kind === "venue-hydration");
+  assert.equal(cases.length, 4);
+  for (const path of [venueHydrationAlias, venueHydrationPath]) for (const width of [390, 1280]) {
+    assert.ok(cases.some(item => item.path === path && item.width === width && !item.member));
+  }
+  const options = { venueHydration: true, resolvedPath: venueHydrationPath };
+  assert.deepEqual(fixtureApiResponse("/api/me", options), { user: null });
+  assert.deepEqual(fixtureApiResponse("/api/tourdates", options), { tourDates: [] });
+  const entity = fixtureApiResponse("/api/resolve", options).entity;
+  assert.equal(entity.providerVenueId, venueHydrationIdentity.providerVenueId);
+  const first = fixtureApiResponse("/api/venue-snapshot", options);
+  const second = fixtureApiResponse("/api/venue-snapshot", { ...options, after: first.nextCursor });
+  assert.equal(first.events.length, 8); assert.equal(first.hasMore, true);
+  assert.equal(second.events.length, 2); assert.equal(second.hasMore, false);
+  assert.equal(fixtureApiResponse(`/api/catalog-text/venue/ticketmaster%3A${venueHydrationIdentity.providerVenueId}`, options).text.summary, venueHydrationText);
+  assert.throws(() => fixtureApiResponse("/api/venue-snapshot", { ...options, resolvedPath: "/venue/other" }), /canonical provider/);
 });

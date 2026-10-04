@@ -1,4 +1,6 @@
 import CatalogText from "../features/catalogEditor/CatalogText";
+import usePublicVenueSnapshot from "../features/venuePublic/usePublicVenueSnapshot";
+import { publicVenueArtistTarget, publicVenueUpcomingLabel } from "../domain/publicVenueSnapshot.mjs";
 import { useEffect, useState } from "react";
 import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
@@ -33,15 +35,20 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const { width } = useWindowDimensions();
   const wide = width >= 760;
   const {
-    venueSummary, venueCoord, venueReviewsFor, loadVenueReviews, venueRating, venueTopPhotos,
+    venueSummary, venueReviewsFor, loadVenueReviews, venueRating, venueTopPhotos,
     session, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, userByHandle,
   } = useStore();
-  const venue = venueSummary(venueName);
-  const photoIdentity = normalizeVenuePhotoProviderIdentity({
-    source: venueIdentity?.source || venue.source,
-    providerVenueId: venueIdentity?.providerVenueId || venueIdentity?.venue_provider_id || venue.providerVenueId,
-  });
-  const coord = venueCoord(venue.name);
+  const publicVenue = usePublicVenueSnapshot({ name: venueName, identity: venueIdentity, accountId: session?.id });
+  const snapshot = publicVenue.resource.data;
+  // Community history remains local; public facts/events never inherit a
+  // same-name cache entry or the truncated global discovery calendar.
+  const venue = { ...venueSummary(venueName), name: snapshot?.venue.name || venueName,
+    place: snapshot?.venue.place || "", capacity: snapshot?.venue.capacity || null,
+    upcoming: snapshot?.events || [], address: snapshot?.venue.address || null };
+  const photoIdentity = normalizeVenuePhotoProviderIdentity(snapshot?.venue || venueIdentity);
+  const coord = snapshot?.venue.coord || null;
+  const upcomingMetric = publicVenueUpcomingLabel(snapshot);
+  const publicVenueBusy = ["loading", "refreshing"].includes(publicVenue.resource.status);
   const venueGuide = venueGuideModel({ name: venue.name, place: venue.place, capacity: venue.capacity, coord });
   const photos = venuePhotos(venue.name, photoIdentity);
   const photoState = venuePhotoState(venue.name, photoIdentity);
@@ -50,12 +57,12 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_BATCH);
   const [visibleUpcomingCount, setVisibleUpcomingCount] = useState(UPCOMING_BATCH);
   const [venueGuideError, setVenueGuideError] = useState("");
-  const [sectionSelection, setSectionSelection] = useState(() => ({ venueName: venue.name, section: "overview" }));
-  const activeSection = sectionSelection.venueName === venue.name ? sectionSelection.section : "overview";
+  const [sectionSelection, setSectionSelection] = useState(() => ({ scope: publicVenue.resource.scope, section: "overview" }));
+  const activeSection = sectionSelection.scope === publicVenue.resource.scope ? sectionSelection.section : "overview";
   const sectionModel = venuePageSectionModel(activeSection, { signedIn: !!session });
   const setActiveSection = (section) => {
     if (!session && section === "reviews") return onRequireAuth?.();
-    setSectionSelection({ venueName: venue.name, section });
+    setSectionSelection({ scope: publicVenue.resource.scope, section });
   };
 
   useEffect(() => {
@@ -84,7 +91,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const openPhotoWidget = photos.length
     ? (photo, fallbackIndex = 0) => { if (!session) return onRequireAuth?.(); onOpenPhotos?.(photos, venuePhotoViewerIndex(photos, photo, fallbackIndex)); }
     : undefined;
-  const venueRefreshScope = refreshScope(session?.id, "venue", venue.name);
+  const venueRefreshScope = refreshScope(session?.id, "venue", publicVenue.resource.scope);
   const openVenueGuideAction = (action) => {
     setVenueGuideError("");
     if (Platform.OS === "web") return;
@@ -96,6 +103,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
       const [reviewResult, refreshedPhotos] = await Promise.all([
         session ? loadVenueReviews(venue.name, { signal }) : Promise.resolve(null),
         loadVenuePhotos(venue.name, { ...photoIdentity, force: true, signal }),
+        publicVenue.load({ signal }),
       ]);
       if (reviewResult?.ok === false && reviewResult?.error) throw reviewResult.error;
       return { reviewResult, refreshedPhotos };
@@ -130,8 +138,9 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
           <View style={styles.heroMeta}>
             <View style={styles.placeRow}>
               <Icon name="pin" size={15} color={colors.amber} />
-              <Text style={styles.place} selectable>{venue.place || "Location unavailable"}</Text>
+              <Text style={styles.place} selectable>{venue.place || (publicVenueBusy ? "Loading location" : "Location unavailable")}</Text>
             </View>
+            {venue.address?.streetAddress ? <Text style={styles.capacity} selectable>{[venue.address.streetAddress, venue.address.postalCode].filter(Boolean).join(" · ")}</Text> : null}
             {venue.capacity ? <Text style={styles.capacity}>{Number(venue.capacity).toLocaleString()} CAPACITY</Text> : null}
           </View>
         </View>
@@ -142,10 +151,15 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
             <Metric value={fanRating > 0 ? fanRating.toFixed(1) : "—"} label="FAN SCORE" icon="star" />
             <Metric value={venue.totalShows} label="SHOWS LOGGED" icon="music" />
           </> : null}
-          <Metric value={venue.upcoming.length} label="UPCOMING" icon="calendar" accent={venue.upcoming.length > 0} />
+          <Metric value={upcomingMetric.value} label={upcomingMetric.label} icon="calendar" accent={venue.upcoming.length > 0} />
         </View>
 
         <VenuePageSectionNav active={sectionModel.active} onChange={setActiveSection} />
+
+        {publicVenue.resource.status === "error" ? <View accessibilityRole="alert">
+          <Text style={styles.noUpcomingBody}>Venue details could not be loaded. Please try again.</Text>
+          <SectionSwitchButton label="Retry venue details" onPress={() => { void publicVenue.load(); }} />
+        </View> : null}
 
         {!session ? <AccountSnapshotPrompt title="Venue reviews and concert photos" body="Sign in to read fan reviews, view concert photos, or review this venue. Shows, directions, and visitor information are open to browse." onRequireAuth={onRequireAuth} /> : null}
 
@@ -171,20 +185,20 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
 
         {sectionModel.showUpcoming ? (
           venue.upcoming.length > 0 ? (
-            <Section title="Upcoming shows" count={venue.upcoming.length}>
+            <Section title="Upcoming shows" count={snapshot?.hasMore || snapshot?.after ? null : venue.upcoming.length}>
               <View style={styles.stack}>
                 {visibleUpcoming.map((event) => (
                   <UpcomingEventCard
                     key={event.id}
                     event={event}
-                    onOpenArtist={() => onOpenArtist?.(event.artist)}
+                    onOpenArtist={publicVenueArtistTarget(event) ? () => onOpenArtist?.(publicVenueArtistTarget(event)) : undefined}
                     onOpenEvent={() => onOpenShow?.(event)}
                     onTickets={() => { void openTicketLink(event.ticketUrl); }}
                   />
                 ))}
                 {sectionModel.condensed && venue.upcoming.length > visibleUpcoming.length ? (
                   <SectionSwitchButton
-                    label={`See all ${venue.upcoming.length} upcoming shows`}
+                    label="See upcoming shows"
                     onPress={() => setActiveSection("shows")}
                   />
                 ) : !sectionModel.condensed && upcomingWindow.remaining > 0 ? (
@@ -194,14 +208,21 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
                     onPress={() => setVisibleUpcomingCount(upcomingWindow.nextCount)}
                   />
                 ) : null}
+                {!sectionModel.condensed && upcomingWindow.remaining === 0 && snapshot?.hasMore && !publicVenueBusy ? (
+                  <SectionSwitchButton label="Next upcoming shows" onPress={() => { setVisibleUpcomingCount(UPCOMING_BATCH); void publicVenue.load({ after: snapshot.nextCursor }); }} />
+                ) : null}
+                {!sectionModel.condensed && snapshot?.after && !publicVenueBusy ? (
+                  <SectionSwitchButton label="First upcoming shows" onPress={() => { setVisibleUpcomingCount(UPCOMING_BATCH); void publicVenue.load(); }} />
+                ) : null}
               </View>
             </Section>
           ) : (
             <View style={styles.noUpcoming}>
               <View style={styles.noUpcomingIcon}><Icon name="calendar" size={22} color={colors.textFaint} /></View>
               <View style={styles.flexCopy}>
-                <Text style={styles.noUpcomingTitle}>No announced shows yet</Text>
-                <Text style={styles.noUpcomingBody}>This venue has no released upcoming dates in the catalog.</Text>
+                <Text style={styles.noUpcomingTitle}>{publicVenueBusy ? "Loading upcoming shows" : snapshot?.after ? "No more upcoming shows" : snapshot ? "No announced shows yet" : "Upcoming shows unavailable"}</Text>
+                <Text style={styles.noUpcomingBody}>{snapshot && !publicVenueBusy ? "No released upcoming dates were found on this page." : publicVenueBusy ? "Checking this venue’s announced dates." : "Try refreshing the venue page."}</Text>
+                {snapshot?.after && !publicVenueBusy ? <SectionSwitchButton label="First upcoming shows" onPress={() => { void publicVenue.load(); }} /> : null}
               </View>
             </View>
           )

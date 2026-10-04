@@ -8,6 +8,7 @@
 
 import { DATABASE_DIRECTORY, DATABASE_PATH, db, artistStmts, normName } from "./db.js";
 import { activeAccountSql } from "./accountVisibility.js";
+import { artistAuthoredTourDateVisibleSql } from "./artistAuthoredTourDateVisibility.js";
 import { artistCatalogVisibleTo } from "./artistCatalogVisibility.js";
 import { htmlRobotsDirective, isProduction } from "./environment.js";
 import { profileAllowsSearchIndexing } from "./profileSearchIndexing.js";
@@ -149,6 +150,7 @@ const PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS = `td.venue,LOWER(td.venue) AS venue_k
 // venue page or make its canonical document disagree with sitemap eligibility.
 const PUBLIC_VENUE_EVENT_EVIDENCE_SQL = `td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
     AND date(td.date)=td.date
+    AND ${artistAuthoredTourDateVisibleSql("td")}
     AND ${publicMusicEventCandidateSql("td")}
     AND ${publicIndexableMusicEventSql("td")}`;
 const venueProviderByPublicSlug = db.prepare(`SELECT ${PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS}
@@ -378,8 +380,11 @@ function venueResolution(value) {
   if (!requestedSlug || requestedSlug.length > 240 || slugify(requestedSlug) !== requestedSlug) return null;
   const at = Date.now();
   const today = new Date(at).toISOString().slice(0, 10);
+  // Known provider namespaces are durable IDs, including when their last
+  // public record disappears. Never reinterpret one as a venue display name.
+  const providerNamespace = /^(?:ticketmaster|bandsintown|eventbrite|provider)-/.test(requestedSlug);
   const venue = venueProviderByPublicSlug.get(requestedSlug, at, today)
-    || unambiguousVenueByNameSlug(requestedSlug, at, today);
+    || (!providerNamespace && unambiguousVenueByNameSlug(requestedSlug, at, today));
   if (!venue) return null;
   const path = venuePath({
     name: venue.venue,
@@ -388,7 +393,8 @@ function venueResolution(value) {
   });
   if (!path) return null;
   return {
-    entity: { kind: "venue", name: venue.venue, city: venue.city || null, path },
+    entity: { kind: "venue", name: venue.venue, city: venue.city || null,
+      source: venue.source || null, providerVenueId: venue.venue_provider_id || null, path },
     canonicalPath: path,
     documentRequest: {
       kind: "venue",
@@ -445,6 +451,16 @@ function entityResolution(pathname) {
 export function resolveEntity(pathname) {
   const path = cleanPathname(pathname);
   return path ? entityResolution(path)?.entity || null : null;
+}
+
+// Resolve aliases before reading; an explicit provider URL never falls back to
+// a namesake. The snapshot uses the same anonymous publication rules as SSR.
+export function publicVenueSnapshotForPath(pathname, after = null) {
+  const path = cleanPathname(pathname);
+  const parsed = path ? parsePath(path) : null;
+  if (parsed?.type !== "venue") return null;
+  const resolution = venueResolution(parsed.value);
+  return resolution ? publicDocuments.venueSnapshot({ ...resolution.documentRequest, after }) : null;
 }
 
 const APP_SCREENS = new Set([
