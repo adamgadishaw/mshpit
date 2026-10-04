@@ -40,3 +40,34 @@ Actual browser execution and full `npm run check` remain cloud CI gates before
 merge. No local Chromium or heavy web build was run, and no live browser,
 production account, publishing action, provider request or deployment was used.
 No schema, dependency or configuration migration is required.
+
+## First cloud run and fixture correction
+
+PR30 run `37228104631` at `9e891144` passed test/build, all 67 navigation cases
+and all six general news cases. Its first new case (`390 settings-admin`)
+failed before reaching Settings: the immediate Menu Newsroom count was zero.
+The remaining seven Settings cases and all twelve category cases did not run.
+
+`MenuScreen` is loaded with `lazyWithRetry`; clicking Menu schedules navigation
+but does not prove its chunk has mounted. `count()` immediately inspected that
+loading state. The harness now registers account/bootstrap response waits before
+navigation, confirms the exact account and role, and finishes those responses
+before clicking Menu. Both allowed and denied-role checks wait for the Menu
+heading, exact account profile and Settings entry. Allowed entries must also
+scroll into view and remain visible at their actual test viewport.
+
+A deterministic deferred regression separately holds authentication, Menu mount
+and profile mount for all four roles, proving no presence/absence assertion can
+run before readiness. All 23 focused tests pass, along with browser-script syntax,
+architecture and whitespace checks. No runtime change, permission relaxation,
+removed assertion, increased timeout or local browser/build is included.
+
+The remaining steps were retraced against the actual UI: responsive Menu uses a
+non-virtualized ScrollView; Settings rows render with its heading; each Newsroom
+opening waits for its account-bound GET; Back returns to the pushed Settings
+frame; Keep editing/Leave preserve the account draft; remount restores the
+headline; and final network idle precedes complete request-ledger checks. All
+eight Settings cases and the twelve preserved category cases still need fresh
+cloud execution. Failure logs now retain bounded synthetic page/request context.
+Independent review found no blocking issue after retracing the entire flow;
+all four changed tests and browser-script syntax passed independently.

@@ -35,15 +35,30 @@ export function assertNewsroomEntryIsolation(calls, role, accountId) {
   }
 }
 
-async function verifySettingsEntry(page, state, user, bootstrapReady) {
-  const { role } = user;
-  const allowed = role === "admin" || role === "editor";
+export async function verifyNewsroomMenuAccess(page, user, accountReady) {
+  // Clicking Menu schedules a lazy screen; count() does not wait for that
+  // screen or the cookie handshake. A missing row is only meaningful once
+  // the exact authenticated account and its full Menu have rendered.
+  await accountReady;
+  await page.getByRole("heading", { name: "Menu", exact: true }).waitFor();
+  await page.getByRole("button", { name: `View ${user.name}'s public profile`, exact: true }).waitFor();
+  await page.getByRole("button", { name: "Settings. Appearance, privacy, data, and account controls", exact: true }).waitFor();
+  const allowed = user.role === "admin" || user.role === "editor";
   const menuEntry = page.getByRole("button", { name: "Newsroom. Write stories and run live coverage", exact: true });
   assert.equal(await menuEntry.count(), allowed ? 1 : 0, "Preserve the existing Menu role boundary");
+  if (allowed) {
+    await menuEntry.scrollIntoViewIfNeeded();
+    assert.equal(await menuEntry.isVisible(), true, "The existing Menu entry remains reachable at this viewport");
+  }
+}
+
+async function verifySettingsEntry(page, state, user, accountReady) {
+  const { role } = user;
+  const allowed = role === "admin" || role === "editor";
+  await verifyNewsroomMenuAccess(page, user, accountReady);
+  state.phase = "newsroom-entry";
   await page.getByRole("button", { name: "Settings. Appearance, privacy, data, and account controls", exact: true }).click();
   await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
-  await bootstrapReady;
-  state.phase = "newsroom-entry";
   const settingsEntry = page.getByRole("button", { name: /^Newsroom\s+Write stories and run live coverage$/u });
   assert.equal(await settingsEntry.count(), allowed ? 1 : 0);
   const composer = page.getByTestId("self-written-news-composer");
@@ -173,12 +188,21 @@ async function scenario(browser, origin, width, mode) {
   page.setDefaultTimeout(15_000);
   page.on("pageerror", error => state.errors.push(error.message));
   try {
-    const bootstrapReady = settingsCase ? Promise.all(bootstrapPaths(user.role).map(path =>
-      page.waitForResponse(response => new URL(response.url()).pathname === path && response.status() === 200))) : Promise.resolve();
+    const accountReady = settingsCase ? Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === "/api/me" && response.status() === 200).then(async response => {
+        await response.finished();
+        const body = await response.json();
+        assert.equal(body.user?.id, user.id, "Confirm the exact fixture account");
+        assert.equal(body.user?.role, user.role, "Confirm the fixture role before checking allowed or hidden entries");
+      }),
+      ...bootstrapPaths(user.role).map(path => page.waitForResponse(response => new URL(response.url()).pathname === path
+        && response.status() === 200).then(response => response.finished())),
+    ]) : Promise.resolve();
     await page.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
+    if (settingsCase) await accountReady;
     await page.getByRole("button", { name: "Menu", exact: true }).click();
     if (settingsCase) {
-      await verifySettingsEntry(page, state, user, bootstrapReady);
+      await verifySettingsEntry(page, state, user, accountReady);
       console.log(`PASS newsroom-settings ${width} ${user.role}`);
       return;
     }
@@ -284,6 +308,8 @@ async function scenario(browser, origin, width, mode) {
     console.log(`PASS category ${width} ${mode}`);
   } catch (error) {
     await page.screenshot({ path: join(shots, `failed-${width}-${mode}.png`), fullPage: true }).catch(() => {});
+    if (settingsCase) console.error(JSON.stringify({ case: `${width} ${mode}`, phase: state.phase,
+      calls: state.calls, errors: state.errors, body: (await page.locator("body").innerText().catch(() => "")).slice(0, 4000) }));
     throw new Error(`${width} ${mode}: ${error.message}; fixture errors=${state.errors.join("; ")}`, { cause: error });
   } finally { state.closing = true; state.release?.(); await context.close(); }
 }

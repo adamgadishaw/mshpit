@@ -5,7 +5,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { parse } from "@babel/parser";
 import { journeyMenuModel } from "../domain/menuJourney.mjs";
-import { assertNewsroomEntryIsolation, newsroomSettingsCases } from "../../scripts/verify-news-category-browser.mjs";
+import { assertNewsroomEntryIsolation, newsroomSettingsCases, verifyNewsroomMenuAccess } from "../../scripts/verify-news-category-browser.mjs";
 
 const require = createRequire(import.meta.url);
 const source = readFileSync(new URL("./SettingsScreen.jsx", import.meta.url), "utf8");
@@ -45,6 +45,37 @@ function fixture(role) {
   };
 }
 const newsroomRows = tree => walk(tree).filter(node => node.type === "Row" && node.props?.label === "Newsroom");
+
+test("Menu role assertions wait for both authentication and the lazy account Menu, including absent entries", async () => {
+  for (const role of ["admin", "editor", "moderator", "fan"]) {
+    let accountReady, menuReady, profileReady, menuMounted = false, profileMounted = false;
+    const account = new Promise(resolve => { accountReady = resolve; });
+    const menu = new Promise(resolve => { menuReady = () => { menuMounted = true; resolve(); }; });
+    const profile = new Promise(resolve => { profileReady = () => { profileMounted = true; resolve(); }; });
+    const events = [];
+    const allowed = role === "admin" || role === "editor";
+    const page = { getByRole: (kind, { name, exact }) => {
+      assert.equal(exact, true);
+      if (kind === "heading" && name === "Menu") return { waitFor: () => { events.push("wait-menu"); return menu; } };
+      if (kind === "button" && name === "View Fixture Member's public profile") return { waitFor: () => { events.push("wait-account"); return profile; } };
+      if (kind === "button" && name === "Settings. Appearance, privacy, data, and account controls") return { waitFor: async () => {
+        assert.ok(menuMounted && profileMounted); events.push("settings-ready");
+      } };
+      assert.equal(kind, "button"); assert.equal(name, "Newsroom. Write stories and run live coverage");
+      return {
+        count: async () => { assert.ok(menuMounted && profileMounted, "An unmounted Menu cannot prove a denied role"); events.push("count"); return allowed ? 1 : 0; },
+        scrollIntoViewIfNeeded: async () => { events.push("scroll"); },
+        isVisible: async () => { assert.equal(events.at(-1), "scroll"); return true; },
+      };
+    } };
+    const checked = verifyNewsroomMenuAccess(page, { role, name: "Fixture Member" }, account);
+    await Promise.resolve(); assert.deepEqual(events, [], "No role assertion before the authenticated response");
+    accountReady(); await Promise.resolve(); assert.deepEqual(events, ["wait-menu"]);
+    menuReady(); await Promise.resolve(); assert.deepEqual(events, ["wait-menu", "wait-account"]);
+    profileReady(); await checked;
+    assert.deepEqual(events, ["wait-menu", "wait-account", "settings-ready", "count", ...(allowed ? ["scroll"] : [])]);
+  }
+});
 
 test("real Settings opens the existing standalone Newsroom for admins and editors while preserving Menu access", () => {
   for (const role of ["admin", "editor"]) {

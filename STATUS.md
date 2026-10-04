@@ -16,6 +16,11 @@ August 4/5 audit/session log are historical journals, not current status.
   overview, change publishing policy or resolve any external browser gate.
 - Validation and the pending cloud cases are recorded in
   `docs/NEWSROOM_SETTINGS_ENTRY_2026-10-04.md`. No merge or deployment yet.
+- PR30 run `37228104631` passed test/build, navigation and general news, then
+  exposed an immediate Menu-count race in the first new browser case. The
+  harness now confirms the account and waits for the lazy account Menu before
+  either allowed or denied-role assertions. All eight new cases still require
+  updated-head cloud execution; production code and timeouts are unchanged.
 
 ## 2026-10-04 Completion plan and saved catalog batches (draft PR 29)
 
