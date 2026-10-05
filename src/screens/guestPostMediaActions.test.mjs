@@ -14,9 +14,10 @@ const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(n
 
 // Execute production components and callbacks. Only platform, rendering and
 // store seams are replaced; domain projections are their real implementations.
-function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
+function fixture(name, initialSession, overrides = {}, storeOverrides = {}, browser = null) {
   const calls = { auth: [], comments: [], likes: [], close: [], show: [], scroll: [], focus: [], remember: [], order: [] };
   const slots = [];
+  const effects = [];
   let cursor = 0;
   let session = initialSession;
   const componentUrl = new URL(paths[name], import.meta.url);
@@ -25,10 +26,10 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
     filename: `${name}.jsx`, babelrc: false, configFile: false,
     plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
   }).code);
-  const jsx = (type, props) => ({ type, props });
+  const jsx = (type, props, key) => ({ type, props, key });
   const componentRequire = (dependency) => {
     if (dependency === "react") return {
-      useEffect() {}, useMemo: (create) => create(), useCallback: (callback) => callback,
+      useEffect(callback) { effects.push(callback); }, useMemo: (create) => create(), useCallback: (callback) => callback,
       useRef(initial) {
         const index = cursor++;
         if (!(index in slots)) slots[index] = { current: initial };
@@ -69,7 +70,9 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
     return localRequire(dependency);
   };
   const module = { exports: {} };
-  new Function("require", "module", "exports", compiled.get(name))(componentRequire, module, module.exports);
+  new Function("require", "module", "exports", "window", "document", "requestAnimationFrame", "cancelAnimationFrame", compiled.get(name))(
+    componentRequire, module, module.exports, browser?.window, browser?.document, () => 0, () => {},
+  );
   const log = { id: "p_public", artist: "Public Artist", venue: "Public Venue", review: "A public review" };
   let props = {
     log, photos: ["https://example.test/first.jpg", "https://example.test/second.jpg"], index: 0, postId: log.id,
@@ -83,6 +86,7 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
   const render = (update = {}) => {
     props = { ...props, ...update };
     cursor = 0;
+    effects.length = 0;
     tree = module.exports.default({ ...props, session });
   };
   const find = (predicate) => {
@@ -91,8 +95,83 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
     return node;
   };
   render();
-  return { calls, log, render, find, all: () => nodes(tree), setSession(value) { session = value; render(); } };
+  return { calls, log, render, find, all: () => nodes(tree), tree: () => tree,
+    flushEffects: () => effects.splice(0).map((effect) => effect()).filter(Boolean),
+    setSession(value) { session = value; render(); } };
 }
+
+test("video rotation preserves the current clip and close/back controls inside safe areas", () => {
+  const descendants = (node) => !node || typeof node !== "object" ? []
+    : Array.isArray(node) ? node.flatMap(descendants) : [node, ...descendants(node.props?.children)];
+  const flattenStyle = (style) => Object.assign({}, ...[style].flat(Infinity).filter(Boolean));
+  for (const [width, height] of [[1080, 1920], [1920, 1080], [0, 0]]) {
+    const f = fixture("PhotoViewer", { id: "viewer" }, {
+      photos: [{ url: "https://media.example.test/clip.mp4", kind: "video", width, height, by: "Adam" }],
+    });
+    const root = () => descendants(f.tree()).find((node) => node.props.accessibilityViewIsModal);
+    const clip = () => descendants(f.tree()).find((node) => typeof node.type === "function");
+    const initialClip = clip();
+    for (const [viewportWidth, viewportHeight, direction] of [[390, 844, undefined], [844, 390, "row"], [390, 844, undefined]]) {
+      root().props.onLayout({ nativeEvent: { layout: { width: viewportWidth, height: viewportHeight } } });
+      f.render();
+      const style = flattenStyle(root().props.style);
+      assert.equal(style.flexDirection, direction);
+      assert.equal(style.height, "100dvh");
+      for (const side of ["Top", "Right", "Bottom", "Left"]) {
+        assert.equal(style[`padding${side}`], `env(safe-area-inset-${side.toLowerCase()}, 0px)`);
+      }
+      assert.equal(clip().type, initialClip.type);
+      assert.equal(clip().key, initialClip.key, "rotation cannot remount and restart the clip");
+      f.find((node) => node.props.accessibilityLabel === "Close");
+      f.find((node) => node.props.accessibilityLabel === "Like this video, 0 likes");
+    }
+    f.find((node) => node.props.accessibilityLabel === "Close").props.onPress();
+    f.find((node) => node.type === "Modal").props.onRequestClose();
+    assert.equal(f.calls.close.length, 2);
+  }
+});
+
+test("photo galleries keep their attribution rows in landscape", () => {
+  const f = fixture("PhotoViewer", null);
+  const root = () => f.find((node) => node.props.accessibilityViewIsModal);
+  root().props.onLayout({ nativeEvent: { layout: { width: 844, height: 390 } } });
+  f.render();
+  assert.equal(root().props.style.filter(Boolean).some((style) => style.flexDirection === "row"), false);
+});
+
+test("the fullscreen Escape gesture cannot bubble into RN Web's modal keyup dismissal", () => {
+  for (const safari of [false, true]) {
+    const handlers = new Map();
+    const video = { webkitDisplayingFullscreen: safari };
+    const document = { fullscreenElement: safari ? null : video };
+    const window = {
+      addEventListener(name, callback, capture) { assert.equal(capture, true); handlers.set(name, callback); },
+      removeEventListener(name) { handlers.delete(name); },
+    };
+    const f = fixture("PhotoViewer", null, {}, {}, { window, document });
+    f.find((node) => node.props.accessibilityViewIsModal).props.ref.current = {
+      contains: (element) => element === video,
+      querySelectorAll: () => [video],
+      addEventListener() {}, removeEventListener() {},
+    };
+    const cleanups = f.flushEffects();
+    let prevented = 0, stopped = 0;
+    const event = { key: "Escape", target: { tagName: "VIDEO" }, preventDefault() { prevented++; }, stopPropagation() { stopped++; } };
+    handlers.get("keydown")(event);
+    f.find((node) => node.type === "Modal").props.onRequestClose();
+    assert.equal(f.calls.close.length, 0);
+    assert.equal(prevented, 0, "the browser must still receive its fullscreen exit gesture");
+    document.fullscreenElement = null;
+    video.webkitDisplayingFullscreen = false;
+    handlers.get("keyup")(event);
+    assert.equal(stopped, 1, "even after fullscreen exits, its keyup cannot close the gallery");
+    assert.equal(f.calls.close.length, 0);
+    handlers.get("keydown")(event);
+    assert.equal(f.calls.close.length, 1, "a new inline Escape closes normally");
+    for (const cleanup of cleanups) cleanup();
+    assert.equal(handlers.size, 0);
+  }
+});
 
 for (const session of [null, undefined, {}]) {
   test(`PostScreen guest ${String(session)} reply and sign-in CTA do not mutate or navigate away`, () => {

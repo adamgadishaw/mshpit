@@ -6,6 +6,20 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-05 Mobile video controls and rotation (review branch)
+
+- Branch `codex/video-player-mobile-20261005` starts at released master
+  `a056e64d13ab6185f4b91965060fc492fb110326`, separately from PR33/PR34.
+- The media viewer hands its initial play gesture to native controls, removes
+  the overlapping brand/speed toolbar, and retains a full-width control surface
+  while fitting portrait/landscape footage without cropping. Short landscape
+  viewports use side controls; the modal owns dynamic height and safe-area insets.
+- Fullscreen Escape is isolated from RN Web's modal keyup dismissal. Existing
+  playback retry, pause-on-background, reactions and photo attribution remain.
+- Focused regression checks: 62 passing. Cloud export/browser checks and real
+  iOS Safari verification remain pending; no merge/deployment. Scope, evidence
+  and verification limits: `docs/VIDEO_PLAYER_MOBILE_2026-10-05.md`.
+
 ## 2026-10-04 Same-grant draft recovery (review branch)
 
 - The Owner approved one additional `news:write` operation: exact GET of an

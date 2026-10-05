@@ -17,13 +17,7 @@ export function videoViewerPosterVisible({ phase } = {}) {
   return phase === "loading";
 }
 
-export function videoViewerDecodedSize(value) {
-  const width = Math.round(Number(value?.videoWidth ?? value?.width) || 0);
-  const height = Math.round(Number(value?.videoHeight ?? value?.height) || 0);
-  return width > 0 && height > 0 ? { width, height } : null;
-}
-
-// Expo 56's web VideoView does not consistently emit onFirstFrameRender for a
+// Expo's web VideoView does not consistently emit onFirstFrameRender for a
 // paused source, even when its underlying HTMLVideoElement already has decoded
 // current-frame data. DOM readiness is therefore the web fallback authority
 // for removing a failed/generated poster overlay.
@@ -33,34 +27,21 @@ export function videoViewerWebFrameReady(value) {
     && Number(value?.videoHeight) > 0;
 }
 
-export function videoViewerViewportSize({
-  containerWidth = 0,
-  containerHeight = 0,
-  videoWidth = 0,
-  videoHeight = 0,
-  maxWidth = 1280,
-  fallbackAspectRatio = 9 / 16,
-} = {}) {
-  const boundsWidth = Number(containerWidth);
-  const boundsHeight = Number(containerHeight);
-  const widthLimit = Number(maxWidth);
-  if (![boundsWidth, boundsHeight, widthLimit].every((value) => Number.isFinite(value) && value > 0)) return null;
-  let mediaWidth = Number(videoWidth);
-  let mediaHeight = Number(videoHeight);
-  if (![mediaWidth, mediaHeight].every((value) => Number.isFinite(value) && value > 0)) {
-    const fallback = Number(fallbackAspectRatio);
-    if (!Number.isFinite(fallback) || fallback <= 0) return null;
-    // Legacy posts predate stored dimensions and are overwhelmingly phone
-    // clips. Keep their loading/error cover portrait-sized until loadeddata
-    // publishes the real dimensions; landscape metadata replaces this value.
-    mediaWidth = fallback;
-    mediaHeight = 1;
-  }
-  const scale = Math.min(boundsWidth / mediaWidth, boundsHeight / mediaHeight, widthLimit / mediaWidth);
-  return {
-    width: Math.max(1, Math.round(mediaWidth * scale)),
-    height: Math.max(1, Math.round(mediaHeight * scale)),
-  };
+// Short landscape windows benefit from side rails instead of header/footer
+// rows. Use the laid-out viewport, not stale screen dimensions or clip metadata.
+export function videoViewerUsesSideControls({ width = 0, height = 0 } = {}) {
+  return Number.isFinite(width) && Number.isFinite(height)
+    && width >= 600 && height > 0 && height <= 600 && width > height;
+}
+
+// Safari's native video fullscreen does not always set fullscreenElement.
+// While either fullscreen mode owns input, Escape/Tab belong to its controls.
+export function galleryVideoIsFullscreen(root, ownerDocument) {
+  const element = ownerDocument?.fullscreenElement || ownerDocument?.webkitFullscreenElement;
+  if (element && root?.contains?.(element)) return true;
+  return Array.from(root?.querySelectorAll?.("video") || []).some((video) => (
+    video.webkitDisplayingFullscreen || video.webkitPresentationMode === "fullscreen"
+  ));
 }
 
 export function galleryKeyAction({ key, tagName = "", isContentEditable = false } = {}) {

@@ -6,12 +6,12 @@ import {
   galleryGestureAxis,
   galleryItemPostId,
   galleryKeyAction,
+  galleryVideoIsFullscreen,
   normalizedGalleryIndex,
   trappedGalleryFocusIndex,
-  videoViewerDecodedSize,
   videoViewerPhase,
   videoViewerPosterVisible,
-  videoViewerViewportSize,
+  videoViewerUsesSideControls,
   videoViewerWebFrameReady,
 } from "./mediaViewer.mjs";
 
@@ -36,47 +36,29 @@ test("a painted paused video replaces the poster before playback starts", () => 
   assert.equal(videoViewerPosterVisible({ phase: "error" }), false);
 });
 
-test("the full-screen stage follows the decoded clip aspect ratio", () => {
-  assert.deepEqual(videoViewerViewportSize({
-    containerWidth: 1280,
-    containerHeight: 794,
-    videoWidth: 1080,
-    videoHeight: 1920,
-  }), { width: 447, height: 794 });
-  assert.deepEqual(videoViewerViewportSize({
-    containerWidth: 1280,
-    containerHeight: 794,
-    videoWidth: 1920,
-    videoHeight: 1080,
-  }), { width: 1280, height: 720 });
-  assert.deepEqual(videoViewerViewportSize({
-    containerWidth: 1280,
-    containerHeight: 794,
-  }), { width: 447, height: 794 });
-  assert.equal(videoViewerViewportSize({ containerWidth: 0, containerHeight: 794 }), null);
+test("side controls follow rotation and short browser viewports, not clip dimensions", () => {
+  for (const [width, height, expected] of [
+    [390, 844, false], [844, 390, true], [390, 844, false],
+    [1024, 338, true], [1280, 900, false], [600, 600, false],
+    [599, 320, false], [0, 0, false], [Infinity, 300, false],
+  ]) assert.equal(videoViewerUsesSideControls({ width, height }), expected, `${width}x${height}`);
 });
 
-test("an unknown legacy descriptor adopts the decoded web video dimensions", async () => {
-  assert.deepEqual(videoViewerViewportSize({
-    containerWidth: 1280,
-    containerHeight: 794,
-    videoWidth: 0,
-    videoHeight: 0,
-  }), { width: 447, height: 794 });
-  const decoded = videoViewerDecodedSize({ videoWidth: 1080, videoHeight: 1920 });
-  assert.deepEqual(decoded, { width: 1080, height: 1920 });
-  assert.deepEqual(videoViewerViewportSize({
-    containerWidth: 1280,
-    containerHeight: 794,
-    videoWidth: decoded.width,
-    videoHeight: decoded.height,
-  }), { width: 447, height: 794 });
-  assert.equal(videoViewerDecodedSize({ videoWidth: 0, videoHeight: 0 }), null);
-  const viewer = (await readFile(new URL("../components/PhotoViewer.jsx", import.meta.url), "utf8")) + (await readFile(new URL("../components/media-player/MshpitVideoPlayer.jsx", import.meta.url), "utf8"));
-  assert.match(viewer, /ref=\{videoViewRef\}/);
-  assert.match(viewer, /publishVideoSize\(videoViewRef\.current\?\.nativeRef\?\.current\)/);
-  assert.match(viewer, /flexGrow:\s*0,[\s\S]*flexShrink:\s*0,[\s\S]*flexBasis:\s*viewportSize\.height,[\s\S]*width:\s*viewportSize\.width,[\s\S]*height:\s*viewportSize\.height/);
-  assert.doesNotMatch(viewer, /viewportSize \? \{ flex:\s*0,/);
+test("fullscreen owns Escape and Tab in standard and Safari video modes", () => {
+  const video = { webkitDisplayingFullscreen: false, webkitPresentationMode: "inline" };
+  const root = { contains: (element) => element === video, querySelectorAll: () => [video] };
+  assert.equal(galleryVideoIsFullscreen(root, {}), false);
+  assert.equal(galleryVideoIsFullscreen(root, { fullscreenElement: video }), true);
+  assert.equal(galleryVideoIsFullscreen(root, { webkitFullscreenElement: video }), true);
+  assert.equal(galleryVideoIsFullscreen(root, { fullscreenElement: {} }), false);
+  video.webkitDisplayingFullscreen = true;
+  assert.equal(galleryVideoIsFullscreen(root, {}), true);
+  video.webkitDisplayingFullscreen = false;
+  video.webkitPresentationMode = "fullscreen";
+  assert.equal(galleryVideoIsFullscreen(root, {}), true);
+  video.webkitPresentationMode = "picture-in-picture";
+  assert.equal(galleryVideoIsFullscreen(root, {}), false);
+  assert.equal(galleryVideoIsFullscreen(null, null), false);
 });
 
 test("a paused web video with decoded current-frame data can retire its poster overlay", () => {

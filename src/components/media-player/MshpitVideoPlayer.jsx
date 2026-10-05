@@ -6,7 +6,7 @@ import { colors, radius } from "../../theme";
 import Icon from "../Icon";
 import ClipPoster from "../ClipPoster";
 import useAppActive from "../../lib/useAppActive";
-import { videoViewerDecodedSize, videoViewerPhase, videoViewerPosterVisible, videoViewerWebFrameReady } from "../../domain/mediaViewer.mjs";
+import { videoViewerPhase, videoViewerPosterVisible, videoViewerWebFrameReady } from "../../domain/mediaViewer.mjs";
 import { analyticsDurationBucket } from "../../domain/analyticsPolicy.mjs";
 import { createPlaybackMeasurement } from "../../domain/playbackMeasurement.mjs";
 import { startVideoPlayback } from "../../domain/startVideoPlayback.mjs";
@@ -14,7 +14,7 @@ const web = Platform.OS === "web";
 
 // First-party playback of finalized Mshpit media. No ad SDK or tracker.
 // YouTube remains a separate provider and cannot inherit monetization rights.
-export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onTrack, onVideoSize, altText }) {
+export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onTrack, altText }) {
   const appActive = useAppActive();
   const activeRef = useRef(appActive);
   activeRef.current = appActive;
@@ -24,7 +24,6 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
     instance.loop = false;
     instance.staysActiveInBackground = false;
   });
-  const [playbackRate, setPlaybackRate] = useState(1);
   const [controlError, setControlError] = useState("");
   useEffect(() => {
     if (!appActive) {
@@ -45,36 +44,6 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
   trackRef.current = onTrack;
   const phase = videoViewerPhase({ status, error, hasFirstFrame });
   const posterVisible = videoViewerPosterVisible({ phase });
-  const publishedVideoSizeRef = useRef("");
-  const publishVideoSize = useCallback((size) => {
-    const decoded = videoViewerDecodedSize(size);
-    if (!decoded) return;
-    const key = `${decoded.width}:${decoded.height}`;
-    if (key === publishedVideoSizeRef.current) return;
-    publishedVideoSizeRef.current = key;
-    onVideoSize?.(decoded);
-  }, [onVideoSize]);
-
-  useEffect(() => {
-    // Expo 56's web track metadata APIs are stubs. Web publishes dimensions
-    // from VideoView's HTMLVideoElement in recordFirstFrame below; native keeps
-    // using the supported track events.
-    if (web) return undefined;
-    const currentTrackSize = () => player.videoTrack?.size || null;
-    publishVideoSize(currentTrackSize());
-    const sourceSubscription = player.addListener?.("sourceLoad", ({ availableVideoTracks }) => {
-      publishVideoSize(currentTrackSize() || availableVideoTracks?.find((track) => track?.size)?.size);
-    });
-    const trackSubscription = player.addListener?.("videoTrackChange", ({ videoTrack }) => {
-      publishVideoSize(videoTrack?.size || currentTrackSize());
-    });
-    const statusSubscription = player.addListener?.("statusChange", () => publishVideoSize(currentTrackSize()));
-    return () => {
-      sourceSubscription?.remove?.();
-      trackSubscription?.remove?.();
-      statusSubscription?.remove?.();
-    };
-  }, [player, publishVideoSize]);
 
   useEffect(() => {
     const subscription = player.addListener?.("playingChange", ({ isPlaying }) => {
@@ -129,8 +98,6 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
   const recordFirstFrame = useCallback(() => {
     if (trackedFirstFrame.current) return;
     trackedFirstFrame.current = true;
-    if (web) publishVideoSize(videoViewRef.current?.nativeRef?.current);
-    else publishVideoSize(player.videoTrack?.size);
     setHasFirstFrame(true);
     trackRef.current?.("performance", {
       metric: "video_first_frame",
@@ -138,7 +105,7 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
       surface: "media_viewer",
       outcome: "ok",
     });
-  }, [player, publishVideoSize]);
+  }, []);
 
   useEffect(() => {
     if (!web || hasFirstFrame || phase === "error") return undefined;
@@ -160,21 +127,16 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
     });
   };
 
-  const changeSpeed = () => {
-    const speeds = [0.75, 1, 1.25, 1.5, 2];
-    const next = speeds[(speeds.indexOf(playbackRate) + 1) % speeds.length];
-    try { player.playbackRate = next; setPlaybackRate(next); setControlError(""); }
-    catch { setControlError("Playback speed is not available in this browser."); }
-  };
-
   return (
     <>
+      {/* Hand the explicit first gesture to native playback controls, without
+          retaining a second control layer over the playing video. */}
       <VideoView
         ref={videoViewRef}
         player={player}
         style={web ? styles.webVideo : styles.img}
         contentFit="contain"
-        nativeControls
+        nativeControls={hasStarted && phase !== "error"}
         fullscreenOptions={{ enable: true }}
         allowsPictureInPicture={web}
         startsPictureInPictureAutomatically={false}
@@ -200,15 +162,6 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
           <Text style={styles.videoStartText}>Play video</Text>
         </Pressable>
       ) : null}
-      {hasStarted && phase !== "error" && (
-        <View style={styles.playerToolbar} pointerEvents="box-none">
-          <Text style={styles.playerBrand}>MSHPIT PLAYER</Text>
-          <Pressable accessibilityRole="button" accessibilityLabel={"Playback speed " + playbackRate + " times. Change speed"}
-            onPress={changeSpeed} style={styles.videoAction}>
-            <Text style={styles.videoActionText}>{playbackRate}×</Text>
-          </Pressable>
-        </View>
-      )}
       {!!controlError && <Text selectable accessibilityLiveRegion="polite" style={styles.controlError}>{controlError}</Text>}
       {phase === "error" && (
         <View style={styles.videoError} accessibilityLiveRegion="assertive">
@@ -249,7 +202,5 @@ const styles = StyleSheet.create({
   videoErrorActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8, marginTop: 2 },
   videoAction: { minHeight: 44, justifyContent: "center", borderRadius: radius.pill, paddingHorizontal: 16, backgroundColor: "rgba(255,255,255,0.12)" },
   videoActionText: { color: "#fff", fontSize: 13, fontWeight: "800" },
-  playerToolbar: { position: "absolute", top: 10, left: 10, right: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  playerBrand: { color: "#fff", fontSize: 10, fontWeight: "800", letterSpacing: 1.5, backgroundColor: "rgba(6,7,11,0.7)", borderRadius: 8, padding: 8 },
   controlError: { position: "absolute", bottom: 60, left: 12, right: 12, color: "#fff", backgroundColor: "#401923", padding: 12, borderRadius: 8 },
 });
