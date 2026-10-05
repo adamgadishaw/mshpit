@@ -5,6 +5,9 @@ import { ApiError, ERROR_CATALOG } from "./errors.js";
 // URLs, verifier payloads, or exception causes are retained or projected.
 const TERMINAL_TTL_MS = 30 * 60 * 1000;
 const MAX_TERMINAL_OUTCOMES = 2_048;
+// Bound closures waiting behind the one converter, including cancelled work
+// that has not settled yet. The durable queue can retry after capacity returns.
+export const MAX_PENDING_VIDEO_FINALIZATIONS = 32;
 const FAILURE_MESSAGES = Object.freeze({
   400: "Clip verification details are invalid.",
   401: "Log in again before resuming this clip.",
@@ -21,6 +24,7 @@ const FAILURE_MESSAGES = Object.freeze({
 });
 
 const jobs = new Map();
+const pending = new Set();
 // The converter works on one clip at a time. Clips from an album, or from two
 // members at once, wait their turn here instead of reaching the converter
 // together and failing as "busy". The chain itself never rejects.
@@ -97,6 +101,12 @@ export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, at =
     return { finalize: { state: "processing" }, joined: true, completion: current.promise };
   }
 
+  if (pending.size >= MAX_PENDING_VIDEO_FINALIZATIONS) {
+    const error = new ApiError(503, "Clip processing is busy. Try again shortly.", "MEDIA_STORAGE_UNAVAILABLE");
+    error.retryAfterMs = 20_000;
+    throw error;
+  }
+
   const entry = {
     state: "processing",
     startedAt: at,
@@ -105,6 +115,7 @@ export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, at =
     fingerprint,
     controller: new AbortController(),
   };
+  pending.add(entry);
   jobs.set(key, entry);
 
   // Queue the work after the route has constructed its response. The job owns
@@ -121,7 +132,7 @@ export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, at =
       throw new ApiError(503, "Clip processing did not produce a ready asset.", "MEDIA_STORAGE_UNAVAILABLE");
     }
     return result;
-  });
+  }).finally(() => pending.delete(entry));
   entry.promise = promise;
   void promise.then(
     () => {
@@ -194,10 +205,7 @@ export function waitForVideoFinalizeCompletion(completion, {
 
 // True while any clip is converting or waiting its turn in this process.
 export function videoFinalizeJobActive() {
-  for (const entry of jobs.values()) {
-    if (entry.state === "processing") return true;
-  }
-  return false;
+  return pending.size > 0;
 }
 
 export function resetVideoFinalizeJobsForTests() {
@@ -207,5 +215,6 @@ export function resetVideoFinalizeJobsForTests() {
     }
   }
   jobs.clear();
+  pending.clear();
   runQueue = Promise.resolve();
 }

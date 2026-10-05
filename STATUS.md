@@ -6,6 +6,21 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-05 Infrastructure audit and video queue bound (review branch)
+
+- Separate branch `codex/infrastructure-bounds-20261005` starts at released
+  master `a056e64`. The eight requested infrastructure areas are assessed with
+  code/test/configuration evidence in `docs/INFRASTRUCTURE_REVIEW_2026-10-05.md`.
+- One confirmed gap is fixed: the serial video-finalization queue now caps
+  unsettled jobs at 32 while allowing exact retries to join existing work.
+  Cancellation retains capacity until settlement; excess work gets an existing
+  retryable 503 response. Durable retry and current authorization checks remain.
+- No new webhook/MCP server is justified by current requirements. Required
+  browser CI status/admin bypass and any future shared rate/quota service remain
+  owner decisions. Live Render settings are unverified without a confirmed
+  connector workspace. No security setting, credential, infrastructure or schema
+  change. This branch has not been merged or deployed.
+
 ## 2026-10-04 Same-grant draft recovery (review branch)
 
 - The Owner approved one additional `news:write` operation: exact GET of an
