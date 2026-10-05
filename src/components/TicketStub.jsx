@@ -184,7 +184,7 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
-export default function TicketStub({ log, mediaViewable = null, compactContent = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+export default function TicketStub({ log, mediaViewable = null, completionActive = true, compactContent = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const onOpenCity = useContext(CityNavigationContext);
   const cityIdentity = cityIdentityForLocation(log);
   const cityHref = cityIdentity ? cityPath(cityIdentity) : null;
@@ -199,7 +199,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
   const convertingClips = Array.isArray(log.convertingMedia) && session?.id && log.userId === session.id
     ? log.convertingMedia : [];
   const convertingNotice = convertingClips.length > 0
-    ? <ConvertingClipNotice clips={convertingClips} onReady={() => { void refreshFeed?.(); }} />
+    ? <ConvertingClipNotice key={`${session.id}:${log.id}`} clips={convertingClips} accountId={session.id} active={completionActive && mediaViewable !== false} onReady={({ signal }) => refreshFeed?.({ signal }) ?? false} />
     : null;
   const pressLike = (event) => {
     event?.stopPropagation?.();

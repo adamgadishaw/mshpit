@@ -36,7 +36,7 @@ const feedKeyExtractor = (item) => String(item.id);
 // header state. The ref-backed handlers always call the latest screen props,
 // while stable row callbacks let React skip cards whose post and visibility did
 // not change.
-const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewable, surface, actionsRef, capabilities, accountId = null }) {
+const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewable, completionActive, surface, actionsRef, capabilities, accountId = null }) {
   const open = useCallback((_unused) => actionsRef.current.onOpen?.(item, { surface, position: itemIndex }), [actionsRef, item, itemIndex, surface]);
   const openShow = useCallback((show) => actionsRef.current.onOpen?.(show, { surface, position: itemIndex }), [actionsRef, itemIndex, surface]);
   const comment = useCallback((...args) => actionsRef.current.onComment?.(...args), [actionsRef]);
@@ -63,6 +63,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
       log={item}
       compactContent
       mediaViewable={mediaViewable}
+      completionActive={completionActive}
       onOpen={open}
       onOpenShow={openShow}
       onOpenPost={capabilities.comment ? comment : undefined}
@@ -365,12 +366,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       item={item}
       itemIndex={itemIndex}
       mediaViewable={visibleMediaPostIds.has(String(item.id)) ? true : null}
+      completionActive={visible && appActive}
       surface={surface}
       actionsRef={rowActionsRef}
       capabilities={rowCapabilities}
       accountId={accountId}
     />
-  )), [accountId, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
+  )), [accountId, appActive, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visible, visibleMediaPostIds]);
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.

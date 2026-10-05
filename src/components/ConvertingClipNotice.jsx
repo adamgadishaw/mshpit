@@ -1,85 +1,107 @@
-import { useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
 import Icon from "./Icon";
-import { checkConvertingClip, retryConvertingClip } from "../lib/convertingClipsApi";
+import { CompletionVisibilityContext } from "./CompletionVisibilityContext";
+import { convertingClipPoller, retryConvertingClip } from "../lib/convertingClipsApi";
+import useAppActive from "../lib/useAppActive";
+import usePosterViewability from "../lib/usePosterViewability";
 import { colors, radius } from "../theme";
 import { convertingClipSummary } from "../domain/convertingClips.mjs";
-
-const CHECK_EVERY_MS = 15_000;
 
 // Only the author sees this: clips they posted while the server was still
 // converting them. It checks on them while it is on screen and refreshes the
 // feed as soon as one is ready, so the clip appears without any action. A clip
 // that could not be converted says so and can be tried again; it is never
 // quietly dropped from the post.
-export default function ConvertingClipNotice({ clips, onReady }) {
-  const [states, setStates] = useState(() => new Map(clips.map((clip) => [clip.id, clip.state])));
+export default function ConvertingClipNotice({ clips, accountId, active = true, onReady }) {
+  const appActive = useAppActive();
+  const surfaceVisible = useContext(CompletionVisibilityContext);
+  // A tall card can be visible while its notice is below the viewport. Measure
+  // the notice itself; screen visibility is an additional veto, never a grant.
+  const { targetRef, autoViewable, onLayout } = usePosterViewability(active && appActive && surfaceVisible ? null : false);
+  const scope = JSON.stringify([accountId, clips.map(({ id, state }) => [id, state])]);
+  const initialStates = () => new Map(clips.map((clip) => [clip.id, clip.state]));
+  const [record, setRecord] = useState(() => ({ scope, states: initialStates() }));
+  const states = record.scope === scope ? record.states : initialStates();
+  const enabled = !!accountId && active && appActive && surfaceVisible && autoViewable && states.size > 0;
   const [retrying, setRetrying] = useState(false);
   const readyRef = useRef(onReady);
+  const ownerRef = useRef(null);
+  const retryRef = useRef(null);
   readyRef.current = onReady;
-  const clipKey = clips.map((clip) => `${clip.id}:${clip.state}`).join(",");
+  // Fence callbacks at render time, including the gap before effect cleanup.
+  ownerRef.current = { scope, enabled };
 
   useEffect(() => {
-    setStates(new Map(clips.map((clip) => [clip.id, clip.state])));
-    // clipKey captures every id and state the server reported.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clipKey]);
+    setRetrying(false);
+    return () => {
+      retryRef.current?.abort();
+      retryRef.current = null;
+    };
+  }, [scope, enabled]);
 
   const waiting = [...states].filter(([, state]) => state === "processing").map(([id]) => id);
-  const waitingKey = waiting.join(",");
 
   useEffect(() => {
-    if (!waiting.length) return undefined;
+    if (!enabled) return undefined;
     let cancelled = false;
-    const controller = new AbortController();
-    const check = async () => {
-      const results = await Promise.all(waiting.map(async (id) => [id, await checkConvertingClip(id, { signal: controller.signal })]));
-      if (cancelled) return;
-      setStates((current) => {
-        const next = new Map(current);
-        for (const [id, state] of results) {
+    const isCurrent = () => !cancelled && ownerRef.current.scope === scope && ownerRef.current.enabled;
+    // Failed clips retain a passive subscription, so an explicit successful
+    // retry in another visible card updates every copy without another POST.
+    const subscriptions = clips.map(({ id, state }) => convertingClipPoller.subscribe({
+      accountId, assetId: id, state, isCurrent,
+      onState(state) {
+        if (!isCurrent()) return;
+        setRecord((current) => {
+          const next = new Map(current.scope === scope ? current.states : initialStates());
           if (state === "ready") next.delete(id);
-          else if (state === "failed") next.set(id, "failed");
-        }
-        return next;
-      });
-      if (results.some(([, state]) => state === "ready")) readyRef.current?.();
-    };
-    const timer = setInterval(() => { void check(); }, CHECK_EVERY_MS);
+          else next.set(id, state);
+          return { scope, states: next };
+        });
+      },
+      onReady: ({ signal }) => isCurrent() ? readyRef.current?.({ signal }) : false,
+    }));
     return () => {
       cancelled = true;
-      controller.abort();
-      clearInterval(timer);
+      subscriptions.forEach((unsubscribe) => unsubscribe());
     };
-    // waitingKey lists the clips being checked.
+    // scope captures the account and all server states. Local transitions do
+    // not restart subscriptions or mistake old props for a fresh projection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waitingKey]);
+  }, [accountId, enabled, scope]);
 
   const failed = [...states].filter(([, state]) => state === "failed").map(([id]) => id);
   const summary = convertingClipSummary({ converting: waiting.length, failed: failed.length });
   if (!summary) return null;
 
   const retry = async () => {
-    if (retrying) return;
+    if (!enabled || retryRef.current || ownerRef.current.scope !== scope || !ownerRef.current.enabled) return;
+    const controller = new AbortController();
+    retryRef.current = controller;
     setRetrying(true);
-    const outcomes = await Promise.allSettled(failed.map((id) => retryConvertingClip(id)));
-    setStates((current) => {
-      const next = new Map(current);
+    const outcomes = await Promise.allSettled(failed.map((id) => retryConvertingClip(id, { accountId, signal: controller.signal })));
+    if (controller.signal.aborted || retryRef.current !== controller || ownerRef.current.scope !== scope || !ownerRef.current.enabled) return;
+    for (let index = 0; index < outcomes.length; index++) {
+      if (outcomes[index].status === "fulfilled") convertingClipPoller.retryAccepted(accountId, failed[index]);
+    }
+    setRecord((current) => {
+      const next = new Map(current.scope === scope ? current.states : initialStates());
       outcomes.forEach((outcome, index) => {
         // A refused retry stays marked as not converted; the button remains.
         if (outcome.status !== "fulfilled") return;
-        if (outcome.value === "ready") next.delete(failed[index]);
-        else next.set(failed[index], "processing");
+        // Even an already-ready retry reconciles through the shared feed
+        // refresh before retiring the notice.
+        next.set(failed[index], "processing");
       });
-      return next;
+      return { scope, states: next };
     });
+    retryRef.current = null;
     setRetrying(false);
-    if (outcomes.some((outcome) => outcome.status === "fulfilled" && outcome.value === "ready")) readyRef.current?.();
   };
 
   return (
-    <View style={styles.box} accessibilityLiveRegion="polite">
+    <View ref={targetRef} onLayout={onLayout} style={styles.box} accessibilityLiveRegion="polite">
       {waiting.length > 0
         ? <ActivityIndicator size="small" color={colors.amber} />
         : <Icon name="flag" size={14} color={colors.danger} />}

@@ -9,6 +9,7 @@ import { colors, mono, radius, themeIsDark } from "./src/theme";
 import { StoreProvider, useStore, isMod, isStaff } from "./src/store";
 import { NewsInteractionContext } from "./src/components/news/NewsInteractionContext";
 import { PostNavigationContext } from "./src/components/PostNavigationContext";
+import { CompletionVisibilityContext } from "./src/components/CompletionVisibilityContext";
 import { newsFeedSurfaceVisible } from "./src/domain/newsReaderState.mjs";
 import Icon from "./src/components/Icon";
 import ErrorBoundary from "./src/components/ErrorBoundary";
@@ -1622,6 +1623,7 @@ function Root() {
   return (
     <CityNavigationContext.Provider value={openCity}>
     <PostNavigationContext.Provider value={openPostById}>
+    <CompletionVisibilityContext.Provider value={status === "ok" && !landing && !acctOpen && !welcome && !resetToken && !unsubToken && !verifyToken && !ownerApprovalToken && !publicNavigationNotice && !newsStoryNotice}>
     <NewsInteractionContext.Provider value={{ session, authReady, blockedIds, removedIds, mutedIds, followedArtists, likeInfo, toggleLike, deleteOwnPost, setPostRepost,
       openLiveCoverage: (slug) => go({ news: true, liveSlug: slug }) }}>
     <View style={styles.root}>
@@ -1814,6 +1816,7 @@ function Root() {
       </SafeAreaView>
     </View>
     </NewsInteractionContext.Provider>
+    </CompletionVisibilityContext.Provider>
     </PostNavigationContext.Provider>
     </CityNavigationContext.Provider>
   );

@@ -6,6 +6,20 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-05 Visible video completion checks (review branch)
+
+- Branch `codex/video-completion-polling-20261005` starts at released master
+  `a056e64d13ab6185f4b91965060fc492fb110326`, separately from the player layout work.
+- Author-visible conversion notices check immediately, then at 2/5/15-second
+  intervals with age-based backoff. Duplicate cards share requests; hidden,
+  backgrounded, unmounted and old-account work is cancelled or fenced.
+- Ready notices wait for an accepted feed refresh. Global menus/verification
+  overlays veto polling even on mounted profile/post surfaces. Server upload,
+  conversion, publication verification and permissions are unchanged.
+- Validation, timing evidence and existing profile/older-post reconciliation
+  limits are in `docs/VIDEO_COMPLETION_POLLING_2026-10-05.md`. Cloud build/browser
+  checks remain required; no merge, deployment or load benchmark in this task.
+
 ## 2026-10-04 Same-grant draft recovery (review branch)
 
 - The Owner approved one additional `news:write` operation: exact GET of an
