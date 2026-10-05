@@ -263,7 +263,11 @@ function canonicalEventPath(paths, row) {
 function canonicalVenuePath(paths, row, { allowNameOnly = false } = {}) {
   const providerVenueId = cleanLine(row?.providerVenueId || row?.venue_provider_id, 180);
   if (!providerVenueId && !allowNameOnly) return null;
-  return internalPath(paths.venue(row), venuePath({
+  const resolved = paths.venue(row);
+  // The resolver may reject a slug that belongs to another exact provider ID.
+  // Do not recreate that unsafe link from the same lossy slug as a fallback.
+  if (resolved === null) return null;
+  return internalPath(resolved, venuePath({
     name: row.venue || row.name,
     providerVenueId,
     source: row.source,

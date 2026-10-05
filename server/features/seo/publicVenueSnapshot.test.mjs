@@ -7,6 +7,7 @@ import { createServer } from "node:http";
 import { publicVenueSnapshotRoutes } from "./publicVenueSnapshot.js";
 import { publicBrowserDestination } from "../../../src/domain/publicBrowserDestination.mjs";
 import { normalizePublicVenueSnapshot } from "../../../src/domain/publicVenueSnapshot.mjs";
+import { renderPublicDocument } from "./publicDocumentRenderer.js";
 
 const directory = mkdtempSync(join(tmpdir(), "pit-venue-hydration-"));
 process.env.PIT_DATA_DIR = directory;
@@ -137,4 +138,53 @@ test("private or held artist-authored venues cannot supply resolver or snapshot 
     assert.equal(resolveEntity(path), null);
     assert.equal(publicVenueSnapshotForPath(path), null);
   }
+});
+
+test("event venue links and name aliases never adopt a case- or punctuation-colliding provider venue", () => {
+  for (const [key, originalId, otherId, slug] of [
+    ["case", "Z698xZb_Zakot", "Z698xZb_ZakOT", "z698xzb-zakot"],
+    ["punctuation", "collision_room", "collision-room", "collision-room"],
+  ]) {
+    const originalName = `Tynset ${key} Hall`, otherName = `Roros ${key} Hall`;
+    const path = `/venue/ticketmaster-${slug}`;
+    add(`${key}-original`, { venue: originalName, venue_provider_id: originalId,
+      venue_city: "Tynset", place: "Tynset, Norway", venue_country: "Norway", venue_country_code: "NO",
+      venue_address_line1: "Torvgata 1", venue_postal_code: "2500", updated_at: 10 });
+    add(`${key}-other`, { venue: otherName, venue_provider_id: otherId,
+      venue_city: "Roros", place: "Roros, Norway", venue_country: "Norway", venue_country_code: "NO",
+      venue_address_line1: "Osloveien 12", venue_postal_code: "7374", updated_at: 20 });
+    // A third provider may use the same raw ID without sharing its namespace.
+    add(`${key}-other-source`, { venue: `Independent ${key} Hall`, source: "eventbrite",
+      venue_provider_id: originalId, updated_at: 30 });
+    const before = db.prepare("SELECT total_changes() AS count").get().count;
+    const original = publicDocumentForPath(`/event/${key}-original`);
+    assert.equal(original.event.venue, originalName);
+    assert.equal(original.event.venuePath, null);
+    const schema = original.jsonLd.find(node => node["@type"] === "MusicEvent");
+    assert.equal(schema.location.name, originalName);
+    assert.equal(schema.location.address.streetAddress, "Torvgata 1");
+    assert.equal(schema.location.address.addressLocality, "Tynset");
+    assert.equal(Object.hasOwn(schema.location, "url"), false);
+    assert.ok(!renderPublicDocument(original).includes(`href="${path}"`));
+    assert.equal(resolveEntity(`/event/${key}-original`).providerVenueId, originalId);
+    const alias = `/venue/tynset-${key}-hall`;
+    assert.equal(resolveEntity(alias), null);
+    assert.equal(publicVenueSnapshotForPath(alias), null);
+    assert.equal(publicDocumentForPath(alias), null);
+    assert.equal(resolveEntity(`/venue/roros-${key}-hall`).providerVenueId, otherId);
+    assert.equal(publicDocumentForPath(`/event/${key}-other`).event.venuePath, path);
+    assert.equal(publicVenueSnapshotForPath(path).venue.address.streetAddress, "Osloveien 12");
+    assert.equal(publicDocumentForPath(`/event/${key}-other-source`).event.venuePath, `/venue/eventbrite-${slug}`);
+    assert.equal(db.prepare("SELECT total_changes() AS count").get().count, before);
+  }
+});
+
+test("multiple events with one exact provider identity retain venue links and the matching name alias", () => {
+  add("same-identity-1", { venue: "Stable Identity Hall", venue_provider_id: "Exact_Room", updated_at: 40 });
+  add("same-identity-2", { venue: "Stable Identity Hall", venue_provider_id: "Exact_Room", updated_at: 41 });
+  const path = "/venue/ticketmaster-exact-room";
+  assert.equal(resolveEntity("/venue/stable-identity-hall").path, path);
+  assert.equal(publicDocumentForPath("/event/same-identity-1").event.venuePath, path);
+  assert.equal(publicDocumentForPath("/event/same-identity-2").jsonLd[0].location.url, `https://www.mshpit.com${path}`);
+  assert.deepEqual(publicVenueSnapshotForPath(path).events.map(event => event.id), ["same-identity-1", "same-identity-2"]);
 });

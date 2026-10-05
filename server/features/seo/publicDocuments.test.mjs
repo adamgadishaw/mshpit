@@ -1532,6 +1532,45 @@ test("event pages link the artist's other dates, the venue's other nights and ne
   }
 });
 
+test("cancelled related concerts are excluded before limits without hiding their detail pages", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database);
+    const insert = database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,date,source,venue_provider_id,venue_city,venue_country_code,venue_address_line1,event_status)
+      VALUES (?,?,?,?,?,'ticketmaster',?,'Toronto','CA','100 Concert Road',?)`);
+    insert.run("reference", "Alpha", "alpha", "Main Hall", "2026-09-01", "main", "scheduled");
+    // More cancelled rows than either SQL preview limit, and earlier than the
+    // available shows: filtering after LIMIT would leave empty recommendations.
+    for (let i = 0; i < 26; i++) {
+      const status = i % 2 ? " CANCELED " : "cancelled";
+      insert.run(`cancelled-artist-${i}`, "Alpha", "alpha", "Tour Hall", "2026-08-26", "tour", status);
+      insert.run(`cancelled-venue-${i}`, "Beta", null, "Main Hall", "2026-08-26", "main", status);
+      insert.run(`cancelled-city-${i}`, "Gamma", null, "Other Hall", "2026-08-26", "other", status);
+    }
+    insert.run("available-artist", "Alpha", "alpha", "Tour Hall", "2026-09-02", "tour", "onsale");
+    insert.run("available-venue", "Beta", null, "Main Hall", "2026-09-02", "main", "scheduled");
+    insert.run("available-city", "Gamma", null, "Other Hall", "2026-09-02", "other", "rescheduled");
+    const documents = service(database);
+    const options = { today: "2026-08-25", at: NOW };
+    database.exec("PRAGMA query_only=ON");
+    const document = documents.eventDocument({ id: "reference", ...options });
+    for (const section of ["artist", "venue", "city"]) {
+      assert.deepEqual(document.related[section].map(row => row.id), [`available-${section}`]);
+    }
+    assert.doesNotMatch(documents.render(document), /\/event\/cancelled-/);
+    const related = document.jsonLd.find(node => node["@type"] === "WebPage").relatedLink;
+    assert.equal(related.length, 3);
+    assert.ok(related.every(path => path.includes("/event/available-")));
+    for (const id of ["cancelled-city-0", "cancelled-city-1"]) {
+      const detail = documents.eventDocument({ id, ...options });
+      assert.equal(detail.jsonLd[0].eventStatus, "https://schema.org/EventCancelled");
+      assert.match(detail.title, /^Cancelled:/);
+      assert.equal(detail.event.ticketUrl, null);
+    }
+  } finally { database.close(); }
+});
+
 test("artist pages list an identity-matched MusicBrainz discography, newest first", () => {
   const database = createDatabase();
   try {
