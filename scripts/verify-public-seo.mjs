@@ -11,6 +11,10 @@ const MAX_ROBOTS_BYTES = 256 * 1024;
 const MAX_CHILD_SITEMAPS = 100;
 const MAX_SITEMAP_CLASSES = 25;
 const MAX_TOTAL_SITEMAP_BYTES = 512 * 1024 * 1024;
+const GEO_AGENT = "OAI-SearchBot";
+// Deliberately labelled simulation, not a claim to originate from OpenAI's
+// verified bot IP ranges. This never changes access policy or sends credentials.
+const GEO_USER_AGENT = "Mshpit-SEO-Verification/1.0 (OAI-SearchBot policy probe; +https://www.mshpit.com/about)";
 
 function cleanText(value = "") {
   return String(value)
@@ -277,13 +281,28 @@ function canonicalUrl(value, origin, label) {
   return url.href;
 }
 
-function hasNoindex(response, html) {
-  const directives = [
-    response.headers.get("x-robots-tag") || "",
-    ...metadataValues(html, "robots"),
-    ...metadataValues(html, "googlebot"),
-  ].join(",").toLowerCase();
-  return directives.split(/[;,]/).some((value) => value.trim().split(/\s+/).includes("noindex"));
+function hasNoindex(response, html, agent = "googlebot") {
+  let scope = null;
+  const target = agent.toLowerCase(), applicable = [];
+  const parameters = new Set(["unavailable_after", "max-snippet", "max-image-preview", "max-video-preview"]);
+  const excludesIndex = (value) => value.toLowerCase().split(/[;,]/).some((part) => {
+    if (parameters.has(part.trim().split(":", 1)[0])) return false;
+    return part.trim().split(/\s+/).some((token) => token === "noindex" || token === "none");
+  });
+  for (const part of (response.headers.get("x-robots-tag") || "").split(/[;,]/)) {
+    const token = part.trim().toLowerCase();
+    const prefix = token.match(/^([\w*-]+)\s*:\s*(.*)$/);
+    if (prefix && parameters.has(prefix[1])) continue;
+    if (prefix) scope = prefix[1];
+    // Fetch combines repeated fields. An unscoped noindex after another bot's
+    // rule might be a separate generic field, whose boundary is now lost.
+    if (!prefix && scope && scope !== "*" && scope !== target && excludesIndex(token)) {
+      throw new Error("ambiguous combined X-Robots-Tag noindex scope");
+    }
+    if (!scope || scope === "*" || scope === target) applicable.push(prefix ? prefix[2] : token);
+  }
+  applicable.push(...metadataValues(html, "robots"), ...metadataValues(html, target));
+  return applicable.some(excludesIndex);
 }
 
 function httpCanonicalLinks(headerValue) {
@@ -327,10 +346,7 @@ function robotsGroups(text) {
 
   for (const rawLine of String(text).replace(/^\uFEFF/, "").split(/\r?\n/)) {
     const line = rawLine.replace(/#.*$/, "").trim();
-    if (!line) {
-      if (agents.length) finish();
-      continue;
-    }
+    if (!line) continue;
     const directive = line.match(/^([^:]+)\s*:\s*(.*)$/);
     if (!directive) continue;
     const name = directive[1].trim().toLowerCase();
@@ -340,9 +356,9 @@ function robotsGroups(text) {
       agents.push(value.toLowerCase());
       continue;
     }
-    if (agents.length) {
+    if (agents.length && (name === "allow" || name === "disallow")) {
       sawRule = true;
-      if (name === "allow" || name === "disallow") rules.push({ name, value });
+      rules.push({ name, value });
     }
   }
   finish();
@@ -388,6 +404,47 @@ function sitewideRobotsBlock(text) {
   return null;
 }
 
+// Match the search product token, not GPTBot (training) or ChatGPT-User
+// (user-triggered fetching). Specific groups override *, repeated groups merge.
+export function searchCrawlerAllows(text, path) {
+  const groups = robotsGroups(text);
+  const named = groups.filter((group) => group.agents.includes(GEO_AGENT.toLowerCase()));
+  const selected = named.length ? named : groups.filter((group) => group.agents.includes("*"));
+  const encoded = (value) => String(value).replace(/[^\x00-\x7f]/gu, (char) => encodeURIComponent(char))
+    .replace(/%[0-9a-f]{2}/gi, (escape) => {
+      const char = String.fromCharCode(parseInt(escape.slice(1), 16));
+      return /[A-Za-z0-9._~-]/.test(char) ? char : escape.toUpperCase();
+    });
+  const target = encoded(path);
+  if (target.length > 4096) throw new Error("search robots path exceeds the verifier limit");
+  // Greedy glob matching avoids constructing backtracking regexes from remote
+  // robots rules. A path and the robots response already have strict bounds.
+  const matches = (pattern, anchored) => {
+    let p = 0, t = 0, star = -1, retry = 0;
+    while (t < target.length) {
+      if (p === pattern.length && !anchored) return true;
+      if (pattern[p] === "*") { star = p++; retry = t; }
+      else if (pattern[p] === target[t]) { p++; t++; }
+      else if (star >= 0) { p = star + 1; t = ++retry; }
+      else return false;
+    }
+    while (pattern[p] === "*") p++;
+    return p === pattern.length;
+  };
+  let strongest = -1, allowed = true;
+  for (const { name, value } of selected.flatMap((group) => group.rules)) {
+    if (!value.startsWith("/")) continue;
+    const rule = encoded(value), anchored = rule.endsWith("$");
+    const body = anchored ? rule.slice(0, -1) : rule;
+    if (rule.length > 8192) throw new Error("search robots rule exceeds the verifier limit");
+    if (!matches(body, anchored)) continue;
+    const specificity = Buffer.byteLength((anchored ? rule : rule.replace(/\*+$/, "")).replace(/%[0-9A-F]{2}/g, "x"), "utf8");
+    if (specificity > strongest) { strongest = specificity; allowed = name === "allow"; }
+    else if (specificity === strongest && name === "allow") allowed = true;
+  }
+  return allowed;
+}
+
 function sitemapClass(url) {
   const filename = new URL(url).pathname.split("/").filter(Boolean).at(-1) || "sitemap";
   return filename.replace(/-\d+(?=\.xml$)/i, "").replace(/\.xml$/i, "") || "sitemap";
@@ -396,12 +453,14 @@ function sitemapClass(url) {
 export function parseArguments(argv) {
   let origin = DEFAULT_ORIGIN;
   let timeoutMs = DEFAULT_TIMEOUT_MS;
+  let geo = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--origin") origin = argv[++index];
     else if (argument.startsWith("--origin=")) origin = argument.slice("--origin=".length);
     else if (argument === "--timeout-ms") timeoutMs = Number(argv[++index]);
     else if (argument.startsWith("--timeout-ms=")) timeoutMs = Number(argument.slice("--timeout-ms=".length));
+    else if (argument === "--geo") geo = true;
     else if (argument === "--help" || argument === "-h") return { help: true };
     else throw new Error("unknown argument");
   }
@@ -409,7 +468,7 @@ export function parseArguments(argv) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 500 || timeoutMs > 60_000) {
     throw new Error("--timeout-ms must be an integer from 500 to 60000");
   }
-  return { origin: normalizedOrigin(origin), timeoutMs, help: false };
+  return { origin: normalizedOrigin(origin), timeoutMs, help: false, ...(geo ? { geo: true } : {}) };
 }
 
 async function readTextLimited(response, maxBytes) {
@@ -441,6 +500,7 @@ async function request(url, {
   method = "GET",
   redirect = "manual",
   maxBytes = MAX_HTML_BYTES,
+  userAgent = "Mshpit-SEO-Verification/1.0 (+https://www.mshpit.com/about)",
 }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`request exceeded ${timeoutMs}ms`)), timeoutMs);
@@ -452,9 +512,10 @@ async function request(url, {
         method,
         redirect,
         signal: controller.signal,
+        credentials: "omit",
         headers: {
           accept: method === "HEAD" ? "*/*" : "text/html,application/xml,text/xml,text/plain;q=0.9,*/*;q=0.1",
-          "user-agent": "Mshpit-SEO-Verification/1.0 (+https://www.mshpit.com/about)",
+          "user-agent": userAgent,
         },
       });
       return {
@@ -469,6 +530,8 @@ async function request(url, {
     }
   } finally {
     clearTimeout(timer);
+    // Also close a response rejected by its headers/size before it was read.
+    controller.abort();
   }
 }
 
@@ -630,6 +693,7 @@ async function verifySitemaps(origin, options) {
           throw new Error(`${label} HTTP canonical conflicts with HTML`);
         }
       }
+      rememberGeoSample(options.geoSamples, new URL(url).pathname, response.body);
     }
   }
 
@@ -646,14 +710,14 @@ function requireAbsoluteMediaUrl(value, label) {
   if (!/^https?:$/.test(url.protocol) || url.username || url.password) throw new Error(`${label} is unsafe`);
 }
 
-function verifyHtmlMetadata(response, html, origin, path, expectedTypes) {
+function verifyHtmlMetadata(response, html, origin, path, expectedTypes, agent = "googlebot") {
   const htmlTags = tags(html, "html");
   if (htmlTags.length !== 1 || !attribute(htmlTags[0], "lang")) throw new Error(`${path} must have one <html lang>`);
 
   exactlyOne([...html.matchAll(/<title\b[^>]*>([\s\S]*?)<\/title>/gi)].map((match) => cleanText(match[1])), `${path} title`);
   exactlyOne(metadataValues(html, "description"), `${path} meta description`);
   exactlyOne(metadataValues(html, "robots"), `${path} meta robots`);
-  if (hasNoindex(response, html)) throw new Error(`${path} is marked noindex`);
+  if (hasNoindex(response, html, agent)) throw new Error(`${path} is marked noindex`);
 
   const expectedUrl = `${origin}${path}`;
   const canonical = exactlyOne(linkHrefs(html, "canonical"), `${path} canonical link`);
@@ -703,6 +767,7 @@ async function verifyIndexablePage(origin, path, expectedTypes, options) {
   }
   if (!cleanText(html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1])) throw new Error(`${path} has no visible <h1>`);
   verifyHtmlMetadata(response, html, origin, path, expectedTypes);
+  rememberGeoSample(options.geoSamples, path, html);
   if (path === "/") {
     for (const requiredPath of ["/artists", "/events"]) {
       if (!hasCrawlableAnchor(html, origin, requiredPath)) {
@@ -742,14 +807,87 @@ async function verifyQueryVariants(origin, options) {
   return "tracking links keep the clean canonical; functional queries stay noindex/no-store";
 }
 
+function geoFingerprint(html) {
+  const canonical = linkHrefs(html, "canonical");
+  return JSON.stringify({
+    title: cleanText(html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]),
+    heading: cleanText(html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1]),
+    canonical,
+    // Compare primary entity identities, not volatile review counts or media.
+    entities: structuredNodes(parseJsonLd(html)).map(({ value }) => value)
+      .filter((value) => typeof value["@id"] === "string" && value["@id"].startsWith(`${canonical[0]}#`)
+        && /#(?:page|artist|event|venue|website|organization)$/.test(value["@id"]))
+      .map((value) => [value["@id"], structuredTypes(value).sort()]).sort(),
+  });
+}
+
+function rememberGeoSample(samples, path, html) {
+  if (!samples) return;
+  const kind = path === "/" ? "home" : path === "/about" ? "about" : path.match(/^\/(artist|event|venue)\/[^/]+$/)?.[1];
+  if (kind && !samples.has(kind)) samples.set(kind, { path, fingerprint: geoFingerprint(html) });
+}
+
+async function verifyGeoEligibility(origin, { geoSamples, ...options }) {
+  // At most nine additional GETs: robots + five existing public samples +
+  // attribution-only, functional-query and personal-page checks. No new crawl,
+  // authentication, automatic redirects, challenge retries or IP simulation.
+  let requests = 0;
+  const deadline = Date.now() + 30_000;
+  const probe = (path, maxBytes = MAX_HTML_BYTES) => {
+    if (++requests > 9 || Date.now() >= deadline) throw new Error("search probe exceeded its request/time budget");
+    return request(`${origin}${path}`, { ...options, userAgent: GEO_USER_AGENT, maxBytes,
+      timeoutMs: Math.min(options.timeoutMs, deadline - Date.now()) });
+  };
+  const robots = await probe("/robots.txt", MAX_ROBOTS_BYTES);
+  requireStatus(robots, 200, "search robots probe");
+  requireContentType(robots, ["text/plain"], "search robots probe");
+  if (!geoSamples.has("home") || !geoSamples.has("about")) throw new Error("search probe requires passing home/about baselines");
+  for (const [kind, { path }] of geoSamples) {
+    if (!searchCrawlerAllows(robots.body, path)) throw new Error(`robots.txt excludes the ${kind} sample from ${GEO_AGENT}`);
+  }
+  for (const [kind, { path, fingerprint }] of geoSamples) {
+    const response = await probe(path);
+    requireStatus(response, 200, `search ${kind} probe`);
+    requireContentType(response, ["text/html"], `search ${kind} probe`);
+    verifyHtmlMetadata(response, response.body, origin, path, [], GEO_AGENT);
+    if (visibleBodyText(response.body).length < 80 || /you need to enable javascript/i.test(visibleBodyText(response.body))) {
+      throw new Error(`search ${kind} probe is an empty or JavaScript-only shell`);
+    }
+    if (geoFingerprint(response.body) !== fingerprint) throw new Error(`search ${kind} probe differs from the ordinary public identity`);
+  }
+  const excluded = [];
+  if (searchCrawlerAllows(robots.body, "/?utm_source=chatgpt.com")) {
+    const tracking = await probe("/?utm_source=chatgpt.com");
+    requireStatus(tracking, 200, "search attribution probe");
+    requireContentType(tracking, ["text/html"], "search attribution probe");
+    verifyHtmlMetadata(tracking, tracking.body, origin, "/", ["WebSite", "Organization"], GEO_AGENT);
+  } else excluded.push("attribution query");
+  for (const path of ["/?utm_source=chatgpt.com&q=geo-verification-private-query", "/settings"]) {
+    if (!searchCrawlerAllows(robots.body, path)) { excluded.push(path === "/settings" ? "personal page" : "functional query"); continue; }
+    const response = await probe(path);
+    requireStatus(response, 200, "search private-page probe");
+    requireContentType(response, ["text/html"], "search private-page probe");
+    if (!hasNoindex(response, response.body, GEO_AGENT) || linkHrefs(response.body, "canonical").length
+      || httpCanonicalLinks(response.headers.get("link")).length) {
+      throw new Error("search private-page probe lost its noindex/no-canonical policy");
+    }
+    if (!/\bno-store\b/i.test(response.headers.get("cache-control") || "")) {
+      throw new Error("search private-page probe lost its no-store policy");
+    }
+  }
+  const missing = ["artist", "event", "venue"].filter((kind) => !geoSamples.has(kind));
+  return `${requests} bounded GETs; ${[...geoSamples.keys()].join(", ")} parity; ${excluded.length ? `robots-excluded (HTML not probed): ${excluded.join(", ")}` : "attribution/privacy preserved"}; ${missing.length ? `unsampled: ${missing.join(", ")}; ` : ""}simulated agent only, not verified bot-IP access or indexing`;
+}
+
 export async function verifyPublicSeo({
   origin = DEFAULT_ORIGIN,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   fetchImpl = globalThis.fetch,
+  geo = false,
 } = {}) {
   if (typeof fetchImpl !== "function") throw new Error("fetch is unavailable in this Node runtime");
   const target = normalizedOrigin(origin);
-  const options = { fetchImpl, timeoutMs };
+  const options = { fetchImpl, timeoutMs, ...(geo ? { geoSamples: new Map() } : {}) };
   const checks = [];
   async function check(name, task) {
     try {
@@ -774,6 +912,7 @@ export async function verifyPublicSeo({
   await check("About HTML", () => verifyIndexablePage(finalOrigin, "/about", ["AboutPage", "Organization"], options));
   await check("Tracking URL policy", () => verifyQueryVariants(finalOrigin, options));
   await check("404 policy", () => verifyNotFound(finalOrigin, options));
+  if (geo) await check("AI search eligibility", () => verifyGeoEligibility(finalOrigin, options));
   return { ok: checks.every((item) => item.ok), origin: finalOrigin, checks };
 }
 
@@ -793,7 +932,7 @@ export async function runCli(argv = process.argv.slice(2)) {
     return 2;
   }
   if (args.help) {
-    console.log("Usage: npm run verify:seo -- [--origin https://www.mshpit.com] [--timeout-ms 10000]");
+    console.log("Usage: npm run verify:seo -- [--origin https://www.mshpit.com] [--timeout-ms 10000] [--geo]");
     return 0;
   }
   const report = await verifyPublicSeo(args);

@@ -6,6 +6,19 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-05 GEO foundation verification (review branch)
+
+- Branch `codex/geo-foundation-20261005` starts at released master
+  `a056e64d13ab6185f4b91965060fc492fb110326`; video and event-identity work remain separate.
+- Existing public SSR, canonical identities, review/schema eligibility and
+  privacy policy already provide the foundation. The first batch adds opt-in
+  `npm run verify:seo -- --geo` checks for search-agent robots rules, bounded
+  public HTML/identity parity and ChatGPT-tagged query handling.
+- This changes verification tooling only: no crawler/training/WAF policy,
+  public content, URL migration, runtime analytics collection or third party.
+- Evidence, referral-measurement limits, check results and cloud/release gates
+  are in `docs/GEO_FOUNDATION_2026-10-05.md`. No merge or deployment.
+
 ## 2026-10-04 Same-grant draft recovery (review branch)
 
 - The Owner approved one additional `news:write` operation: exact GET of an

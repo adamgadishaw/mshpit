@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   formatReport,
   parseArguments,
+  searchCrawlerAllows,
   validateEventStructuredData,
   verifyPublicSeo,
 } from "./verify-public-seo.mjs";
@@ -84,6 +85,11 @@ Sitemap: ${origin}/sitemap.xml
         "content-type": "text/html; charset=utf-8",
         link: `<${origin}${request.url}>; rel="canonical"`,
       }).end(request.method === "HEAD" ? "" : page(origin, request.url, { shell, problem: pageProblem }));
+      return;
+    }
+    if (request.url === "/settings") {
+      response.writeHead(200, { "content-type": "text/html", "cache-control": "no-store", "x-robots-tag": "noindex,follow" })
+        .end('<html><head><meta name="robots" content="noindex,follow"></head><body>Settings</body></html>');
       return;
     }
     response.writeHead(404, {
@@ -174,6 +180,186 @@ test("argument parsing is strict, sanitized, and accepts a trailing slash", () =
   assert.throws(() => parseArguments(["--unknown=secret"]), /^Error: unknown argument$/);
 });
 
+test("GEO is an explicit opt-in without expanding the default verification requests", () => {
+  assert.equal(parseArguments(["--geo"]).geo, true);
+  assert.equal(parseArguments([]).geo, undefined);
+});
+
+test("search crawler rules distinguish search from training and apply group and path precedence", () => {
+  const rules = `User-agent: *
+Disallow: /private
+User-agent: GPTBot
+Disallow: /
+User-agent: OAI-SearchBot
+
+# Blank lines/comments and unknown fields do not end a group.
+Content-signal: search=yes, ai-train=no
+Disallow: /artist/
+Allow: /artist/allowed$
+User-agent: OAI-SearchBot
+Disallow: /event/*?*
+Disallow: /venue/Caf%C3%A9
+Disallow: /%61bout
+`;
+  assert.equal(searchCrawlerAllows(rules, "/"), true);
+  assert.equal(searchCrawlerAllows(rules, "/private"), true, "specific rules override the wildcard group");
+  assert.equal(searchCrawlerAllows(rules, "/artist/other"), false);
+  assert.equal(searchCrawlerAllows(rules, "/artist/allowed"), true);
+  assert.equal(searchCrawlerAllows(rules, "/artist/allowed-more"), false);
+  assert.equal(searchCrawlerAllows(rules, "/event/one"), true);
+  assert.equal(searchCrawlerAllows(rules, "/event/one?utm_source=chatgpt.com"), false);
+  assert.equal(searchCrawlerAllows(rules, "/venue/Café"), false);
+  assert.equal(searchCrawlerAllows(rules, "/venue/Caf%c3%a9"), false);
+  assert.equal(searchCrawlerAllows(rules, "/about"), false);
+  assert.equal(searchCrawlerAllows(rules, "/About"), true);
+  assert.equal(searchCrawlerAllows("User-agent: *\nDisallow: /\nAllow: /artist/", "/artist/one"), true);
+  assert.equal(searchCrawlerAllows("User-agent: *\nDisallow: /*\nAllow: /", "/"), true);
+  assert.equal(searchCrawlerAllows("User-agent: *\nDisallow: /\nAllow: /$", "/artist/one"), false);
+  assert.equal(searchCrawlerAllows("User-agent: GPTBot\nDisallow: /", "/artist/one"), true);
+  assert.equal(searchCrawlerAllows("User-agent: *\nDisallow: /artist/\nAllow: /artist/", "/artist/one"), true);
+  assert.equal(searchCrawlerAllows("User-agent: OAI-SearchBot\nSitemap: https://example.test/sitemap.xml\n\nUser-agent: Other\nDisallow: /", "/"), false);
+});
+
+function geoFetch(origin, { robots, problem = "", entities = true } = {}) {
+  const calls = [], baseFetch = globalThis.fetch;
+  const entityPaths = ["/artist/sample", "/event/sample", "/venue/sample"];
+  const response = (body, type = "text/html", status = 200, headers = {}) => new Response(body, { status, headers: { "content-type": type, ...headers } });
+  const fetchImpl = async (url, options) => {
+    const parsed = new URL(url), path = parsed.pathname, probe = options.headers["user-agent"].includes("OAI-SearchBot");
+    calls.push({ path: path + parsed.search, probe, options });
+    if (path === "/robots.txt") return response(robots || `User-agent: *\nAllow: /\nDisallow: /api/\nUser-agent: GPTBot\nDisallow: /\nSitemap: ${origin}/sitemap.xml`, "text/plain");
+    if (entities && path === "/sitemap.xml") return response(`<sitemapindex>${["pages", "artists", "events", "venues"].map((kind) => `<sitemap><loc>${origin}/sitemaps/${kind}.xml</loc></sitemap>`).join("")}</sitemapindex>`, "application/xml");
+    const entityIndex = ["/sitemaps/artists.xml", "/sitemaps/events.xml", "/sitemaps/venues.xml"].indexOf(path);
+    if (entities && entityIndex >= 0) return response(`<urlset><url><loc>${origin}${entityPaths[entityIndex]}</loc></url></urlset>`, "application/xml");
+    if (probe && path === "/artist/sample" && ["challenge", "redirect", "oversize"].includes(problem)) {
+      return response("sensitive challenge body", "text/html", problem === "challenge" ? 403 : problem === "redirect" ? 302 : 200,
+        problem === "redirect" ? { location: "https://untrusted.test/private?token=secret" } : problem === "oversize" ? { "content-length": "99999999" } : {});
+    }
+    let result = entities && entityPaths.includes(path) ? response(page(origin, path)
+      .replace('"@type":"AboutPage"', `"@type":"AboutPage","@id":"${origin}${path}#page"`)) : await baseFetch(url, options);
+    if (!probe) return result;
+    let html = await result.text(), headers = new Headers(result.headers);
+    if (path === "/artist/sample") {
+      if (problem === "noindex") headers.set("x-robots-tag", "noindex");
+      if (problem === "named-noindex") headers.set("x-robots-tag", "GPTBot: index, OAI-SearchBot: noindex, nofollow");
+      if (problem === "training-noindex") headers.set("x-robots-tag", "GPTBot: noindex, nofollow");
+      if (problem === "ambiguous-noindex") {
+        headers.append("x-robots-tag", "GPTBot: nofollow"); headers.append("x-robots-tag", "noindex");
+      }
+      if (problem === "preview-none") {
+        headers.set("x-robots-tag", "max-image-preview: none");
+        html = html.replace('content="index,follow"', 'content="index,follow,max-image-preview: none"');
+      }
+      if (problem === "named-meta") html = html.replace("</head>", '<meta name="OAI-SearchBot" content="noindex"></head>');
+      if (problem === "canonical") html = html.replace(`href="${origin}${path}"`, `href="${origin}/about"`);
+      if (problem === "identity") html = html.replace("<h1>About Mshpit</h1>", "<h1>Different artist</h1>");
+      if (problem === "schema-identity") html = html.replace(`${origin}${path}#page`, `${origin}/artist/wrong#page`);
+      if (problem === "jsonld") html = html.replace('"@context":', '"@context":sensitive-malformed-json,');
+      if (problem === "shell") html = page(origin, path, { shell: true });
+    }
+    if (parsed.search === "?utm_source=chatgpt.com" && problem === "tracking") html = html.replace('content="index,follow"', 'content="noindex,follow"');
+    if (path === "/settings" && problem === "personal") { html = page(origin, path); headers.delete("x-robots-tag"); }
+    if (path === "/settings" && problem === "private-header") headers.set("link", `<${origin}/settings>; rel="canonical"`);
+    if (parsed.search.includes("&q=") && problem === "private-cache") headers.set("cache-control", "public, max-age=600");
+    return new Response(html, { status: result.status, headers });
+  };
+  return { fetchImpl, calls };
+}
+
+test("GEO reuses three public entity samples and bounds extra probes without cookies or redirects", async (context) => {
+  const site = await fixture(); closeAfter(context, site.server);
+  const f = geoFetch(site.origin);
+  const report = await verifyPublicSeo({ origin: site.origin, timeoutMs: 2000, fetchImpl: f.fetchImpl, geo: true });
+  assert.equal(report.ok, true, formatReport(report));
+  const probes = f.calls.filter((call) => call.probe);
+  assert.equal(probes.length, 9);
+  assert.equal(probes.filter((call) => call.path === "/artist/sample").length, 1);
+  assert.ok(probes.every(({ options }) => options.method === "GET" && options.credentials === "omit" && options.redirect === "manual" && !options.headers.cookie && !options.headers.authorization));
+  assert.match(report.checks.at(-1).detail, /simulated agent only, not verified bot-IP access or indexing/);
+  assert.doesNotMatch(report.checks.at(-1).detail, /unsampled/);
+});
+
+test("GEO labels missing entity coverage and never invents pages to probe", async (context) => {
+  const site = await fixture(); closeAfter(context, site.server); const f = geoFetch(site.origin, { entities: false });
+  const report = await verifyPublicSeo({ origin: site.origin, fetchImpl: f.fetchImpl, geo: true });
+  assert.equal(report.ok, true, formatReport(report));
+  assert.equal(f.calls.filter((call) => call.probe).length, 6);
+  assert.match(report.checks.at(-1).detail, /unsampled: artist, event, venue/);
+});
+
+test("training-bot noindex headers do not opt the distinct search agent out", async (context) => {
+  const site = await fixture(); closeAfter(context, site.server); const f = geoFetch(site.origin, { problem: "training-noindex" });
+  const report = await verifyPublicSeo({ origin: site.origin, fetchImpl: f.fetchImpl, geo: true });
+  assert.equal(report.ok, true, formatReport(report));
+});
+
+test("image preview restrictions are not noindex directives", async (context) => {
+  const site = await fixture(); closeAfter(context, site.server); const f = geoFetch(site.origin, { problem: "preview-none" });
+  const report = await verifyPublicSeo({ origin: site.origin, fetchImpl: f.fetchImpl, geo: true });
+  assert.equal(report.ok, true, formatReport(report));
+});
+
+test("explicit personal/query crawler exclusions are preserved and reported without fetching them", async (context) => {
+  const site = await fixture(); closeAfter(context, site.server);
+  const f = geoFetch(site.origin, { robots: `User-agent: *\nAllow: /\nUser-agent: OAI-SearchBot\nDisallow: /settings\nDisallow: /*?*\nSitemap: ${site.origin}/sitemap.xml` });
+  const report = await verifyPublicSeo({ origin: site.origin, fetchImpl: f.fetchImpl, geo: true });
+  assert.equal(report.ok, true, formatReport(report));
+  assert.equal(f.calls.filter((call) => call.probe).length, 6);
+  assert.ok(f.calls.filter((call) => call.probe).every(({ path }) => !path.includes("?") && path !== "/settings"));
+  assert.match(report.checks.at(-1).detail, /robots-excluded \(HTML not probed\): attribution query, functional query, personal page/);
+});
+
+test("search probes stop when their cumulative thirty-second budget expires", async (context) => {
+  const site = await fixture(); closeAfter(context, site.server); const f = geoFetch(site.origin);
+  let clock = 0;
+  context.mock.method(Date, "now", () => clock);
+  const report = await verifyPublicSeo({ origin: site.origin, geo: true, fetchImpl: async (url, options) => {
+    const response = await f.fetchImpl(url, options);
+    if (options.headers["user-agent"].includes("OAI-SearchBot")) clock += 11_000;
+    return response;
+  } });
+  assert.equal(report.ok, false); assert.match(report.checks.at(-1).detail, /request\/time budget/);
+  assert.equal(f.calls.filter((call) => call.probe).length, 3);
+});
+
+test("a stalled search probe aborts at the request deadline without an alternate request", async (context) => {
+  const site = await fixture(); closeAfter(context, site.server); const f = geoFetch(site.origin);
+  let stalledSignal;
+  const report = await verifyPublicSeo({ origin: site.origin, geo: true, timeoutMs: 500, fetchImpl: (url, options) => {
+    if (options.headers["user-agent"].includes("OAI-SearchBot")) {
+      assert.equal(stalledSignal, undefined); stalledSignal = options.signal;
+      return new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+    }
+    return f.fetchImpl(url, options);
+  } });
+  assert.equal(report.ok, false); assert.equal(stalledSignal.aborted, true);
+  assert.match(report.checks.at(-1).detail, /request exceeded 500ms/);
+});
+
+test("GEO detects search-specific and path-specific robot exclusions without changing training policy", async (context) => {
+  const site = await fixture(); closeAfter(context, site.server);
+  for (const path of ["/", "/artist/"]) {
+    const f = geoFetch(site.origin, { robots: `User-agent: *\nAllow: /\nUser-agent: OAI-SearchBot\nDisallow: ${path}\nUser-agent: GPTBot\nDisallow: /\nSitemap: ${site.origin}/sitemap.xml` });
+    const report = await verifyPublicSeo({ origin: site.origin, fetchImpl: f.fetchImpl, geo: true });
+    assert.equal(report.ok, false); assert.match(report.checks.at(-1).detail, /robots.txt excludes .* OAI-SearchBot/);
+    assert.equal(f.calls.filter((call) => call.probe).length, 1, "no blocked page is fetched");
+  }
+});
+
+for (const [problem, expected] of [["challenge", /HTTP 403/], ["redirect", /HTTP 302/], ["oversize", /safe byte limit/],
+  ["noindex", /noindex/], ["named-noindex", /noindex/], ["ambiguous-noindex", /ambiguous combined X-Robots-Tag/], ["named-meta", /noindex/], ["canonical", /canonical link/], ["identity", /ordinary public identity/], ["schema-identity", /ordinary public identity/], ["jsonld", /invalid JSON-LD/], ["shell", /shell/],
+  ["tracking", /noindex/], ["personal", /noindex\/no-canonical/], ["private-header", /noindex\/no-canonical/], ["private-cache", /no-store/]]) {
+  test(`GEO fails safely on ${problem} without fallback, body or query disclosure`, async (context) => {
+    const site = await fixture(); closeAfter(context, site.server); const f = geoFetch(site.origin, { problem });
+    const report = await verifyPublicSeo({ origin: site.origin, fetchImpl: f.fetchImpl, geo: true });
+    assert.equal(report.ok, false); assert.match(report.checks.at(-1).detail, expected);
+    assert.doesNotMatch(formatReport(report), /sensitive|malformed-json|token=|secret|private-query/);
+    const firstProbe = f.calls.findIndex((call) => call.probe);
+    assert.ok(f.calls.slice(firstProbe).every((call) => call.probe), "no alternate-agent retries");
+    assert.ok(f.calls.filter((call) => call.probe).length <= 9);
+  });
+}
+
 test("Event verification rejects phantom and incomplete nodes but resolves a complete same-page event", () => {
   const eventId = "https://www.example.com/event/one#event";
   assert.throws(() => validateEventStructuredData([{
@@ -242,6 +428,7 @@ test("robots.txt rejects effective root blocks for wildcard and Google crawlers"
     origin: site.origin,
     timeoutMs: 2_000,
     fetchImpl: robotsFetch(`User-agent: *
+Allow: /
 Sitemap: ${site.origin}/sitemap.xml
 
 User-agent: PrivatePreviewBot
