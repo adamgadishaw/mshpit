@@ -106,11 +106,7 @@ const publicDocuments = createPublicDocumentService({
     post: (row) => postPath(row?.id),
     event: (row) => eventPath(row?.id),
     concert: (key) => concertPath(key),
-    venue: (row) => venuePath({
-      name: row?.venue || row?.name,
-      providerVenueId: row?.providerVenueId || row?.venue_provider_id,
-      source: row?.source,
-    }),
+    venue: publicVenuePathForRow,
   },
 });
 
@@ -346,6 +342,23 @@ function canonicalVenueSlug(candidate) {
   })?.slice("/venue/".length) || "";
 }
 
+function sameProviderVenue(left, right) {
+  return !!right && (left?.source ?? null) === (right.source ?? null)
+    && (left?.providerVenueId || left?.venue_provider_id) === right.venue_provider_id;
+}
+
+function publicVenuePathForRow(row) {
+  const providerVenueId = row?.providerVenueId || row?.venue_provider_id;
+  const path = venuePath({ name: row?.venue || row?.name, providerVenueId, source: row?.source });
+  if (!path || !providerVenueId) return path;
+  const at = Date.now();
+  const today = new Date(at).toISOString().slice(0, 10);
+  const resolved = venueProviderByPublicSlug.get(path.slice("/venue/".length), at, today);
+  // Opaque provider IDs are case-sensitive. A shared pretty URL is not proof
+  // that the event and the public venue page describe the same building.
+  return sameProviderVenue(row, resolved) ? path : null;
+}
+
 function venueIdentityKey(row) {
   const name = String(row?.venue_identity || "").trim();
   const location = String(row?.location_identity || "").trim();
@@ -368,7 +381,8 @@ function unambiguousVenueByNameSlug(requestedSlug, at, today) {
 
   if (providers.length) {
     const providerSlug = canonicalVenueSlug(providers[0]);
-    return providerSlug ? venueProviderByPublicSlug.get(providerSlug, at, today) || null : null;
+    const resolved = providerSlug ? venueProviderByPublicSlug.get(providerSlug, at, today) : null;
+    return sameProviderVenue(providers[0], resolved) ? resolved : null;
   }
   return venueEventByNameSlug.get(requestedSlug, at, today)
     || venuePostByNameSlug.get(requestedSlug)

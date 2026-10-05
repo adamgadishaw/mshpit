@@ -223,6 +223,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         AND (SELECT COUNT(*) FROM artists event_artist_identity
           WHERE event_artist_identity.name=td.artist COLLATE NOCASE)=1))
       AND ${tourDateArtistBindingAllowedSql("td")}
+      AND LOWER(TRIM(COALESCE(td.event_status,''))) NOT IN ('cancelled','canceled')
       AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?4")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
       AND ${publicMusicEventCandidateSql("td")}
@@ -431,6 +432,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
     LEFT JOIN users owner ON owner.id=td.owner_id
     LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
     WHERE upper(trim(td.venue_country_code))=?1 AND lower(trim(td.venue_city))=?2
+      AND LOWER(TRIM(COALESCE(td.event_status,''))) NOT IN ('cancelled','canceled')
       AND trim(COALESCE(td.venue_city,''))<>''
       AND lower(trim(td.venue))<>?3 AND LOWER(TRIM(td.artist))<>?4 AND td.id<>?5
       AND td.release_at<=?6 AND ${currentOrUpcomingPublicMusicEventSql("td", "?7")} AND td.date<=?8

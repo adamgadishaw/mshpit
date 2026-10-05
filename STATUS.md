@@ -6,6 +6,20 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-05 Event recommendations and venue-link identity (review branch)
+
+- Branch `codex/event-identity-20261005` starts at released master `a056e64`.
+  Related artist/city concerts exclude cancelled records before preview limits;
+  cancellation detail pages and the existing venue filter remain available.
+- Provider venue links now require the destination's exact source and opaque
+  provider ID to match. A case/punctuation collision leaves the event's venue
+  name and address visible without linking to another building. Name aliases
+  also reject a destination belonging to a different exact provider identity.
+- No provider records, URL format, SQLite functions/indexes, permissions or
+  infrastructure change. The existing canonical venue page is preserved.
+  See `docs/EVENT_IDENTITY_REVIEW_2026-10-05.md` for evidence and release gates.
+  This branch has not been merged or deployed.
+
 ## 2026-10-04 Same-grant draft recovery (review branch)
 
 - The Owner approved one additional `news:write` operation: exact GET of an
