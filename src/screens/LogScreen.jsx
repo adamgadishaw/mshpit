@@ -351,6 +351,7 @@ export default function LogScreen({
   const [artistDirectoryRetryAt, setArtistDirectoryRetryAt] = useState(0);
   const [artistSearchNotice, setArtistSearchNotice] = useState("");
   const [artistPicked, setArtistPicked] = useState(!!editing?.artistKey || !!prefill?.artistKey);
+  const [artistNameConfirmed, setArtistNameConfirmed] = useState(!!editing?.artist && !editing?.artistKey);
   // Opener suggestions use the same catalog search. The store rebuilds its
   // functions every render, so the field gets one stable wrapper instead.
   const searchArtistsApiRef = useRef(searchArtistsApi);
@@ -390,7 +391,7 @@ export default function LogScreen({
     setArtistDirectoryLoading(false);
     setArtistSearchNotice("");
     // A festival's name is not an artist, so it is never searched or linked.
-    if (artistPicked || artistAttaching || q.length < 2 || isFestival) {
+    if (artistPicked || artistNameConfirmed || artistAttaching || q.length < 2 || isFestival) {
       setArtistHits([]);
       setArtistLoading(false);
       setArtistError("");
@@ -423,12 +424,12 @@ export default function LogScreen({
       task.finish();
     }), 320);
     return () => { clearTimeout(id); controller.abort(); task.finish(); };
-  }, [artist, artistAttaching, artistPicked, session?.id, isFestival]);
+  }, [artist, artistAttaching, artistPicked, artistNameConfirmed, session?.id, isFestival]);
   useEffect(() => () => artistAttachRef.current.controller?.abort(), []);
 
   const searchBeyondCatalogue = async () => {
     const q = artist.trim();
-    if (artistPicked || artistAttaching || artistLoading || q.length < 3) return;
+    if (artistPicked || artistNameConfirmed || artistAttaching || artistLoading || q.length < 3) return;
     const lookup = artistDirectoryRef.current;
     const request = lookup.begin(session?.id, q);
     if (!request) return;
@@ -474,8 +475,19 @@ export default function LogScreen({
     setArtistAttaching(false);
     setArtist(value);
     setArtistPicked(false);
+    setArtistNameConfirmed(false);
     setArtistKey(null);
     setArtistError("");
+  };
+
+  const keepArtistName = () => {
+    const name = artist.trim();
+    if (!name || isFestival) return;
+    // Reuse free-text posting. Invalidate every pending search/attachment so a
+    // late provider result cannot replace this name or bind a namesake's page.
+    changeArtistText(name);
+    setArtistLoading(false);
+    setArtistNameConfirmed(true);
   };
 
   const chooseArtist = async (candidate) => {
@@ -488,6 +500,7 @@ export default function LogScreen({
     const sequence = artistAttachRef.current.sequence + 1;
     const name = String(candidate?.name || "").trim();
     setArtist(name);
+    setArtistNameConfirmed(false);
     setArtistHits([]);
     setArtistError("");
     if (!candidate?.transient) {
@@ -1274,6 +1287,7 @@ export default function LogScreen({
     experienceType,
     canPost: !!canPostBase,
     artistLinked: artistPicked,
+    artistNameConfirmed,
     city,
     tour,
     title: onlineTitle,
@@ -1281,7 +1295,7 @@ export default function LogScreen({
     media: photos,
     song,
     taggedPeople: isStatus || isOnlineReview ? [] : taggedPeople,
-  }), [protectedLegacyMemory, isStatus, isOnlineReview, experienceType, canPostBase, artistPicked, city, tour, onlineTitle, review, photos, song, taggedPeople]);
+  }), [protectedLegacyMemory, isStatus, isOnlineReview, experienceType, canPostBase, artistPicked, artistNameConfirmed, city, tour, onlineTitle, review, photos, song, taggedPeople]);
 
   const draftMediaProject = useMemo(() => normalizeMediaProject({
     assets: [
@@ -1485,7 +1499,9 @@ export default function LogScreen({
     setPostType(restored.postType);
     setCampaign(restored.campaign);
     setExperienceType(restored.experienceType);
-    setArtist(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey); setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
+    changeArtistText(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey);
+    setArtistNameConfirmed(!!restored.artist.trim() && !restored.artistKey);
+    setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
     setEventAddress(restored.eventAddress || "");
     const restoredPhotos = restored.photos.filter(isDurableMediaUrl);
     const restoredProject = normalizeMediaProject(restored.mediaProject);
@@ -1993,7 +2009,18 @@ export default function LogScreen({
             </View>
           )}
           {artistLoading && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Searching artists...</Text>}
-          {!artistPicked && !artistAttaching && !isFestival && artist.trim().length >= 3 && (
+          {!artistPicked && !artistNameConfirmed && !isFestival && !!artist.trim() && (
+            <Button title={`Use “${artist.trim()}” for this review`} variant="secondary" small disabled={posting}
+              accessibilityHint="Keep the name you entered without linking a catalog artist page."
+              onPress={keepArtistName} style={{ marginBottom: 10 }} />
+          )}
+          {artistNameConfirmed && !isFestival && !!artist.trim() && (
+            <View style={{ marginBottom: 10 }}>
+              <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Using “{artist.trim()}” for this review. No catalog artist page is linked.</Text>
+              <Button title="Change artist" variant="secondary" small disabled={posting} onPress={() => changeArtistText(artist)} />
+            </View>
+          )}
+          {!artistPicked && !artistNameConfirmed && !artistAttaching && !isFestival && artist.trim().length >= 3 && (
             <Button title={artistDirectoryRetryAt > Date.now() ? "Try directory again shortly" : "Search beyond catalogue"}
               variant="secondary" small loading={artistDirectoryLoading}
               disabled={artistLoading || artistDirectoryRetryAt > Date.now()}

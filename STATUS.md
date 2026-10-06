@@ -6,6 +6,20 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-06 Reviews for artists outside the catalog (review branch)
+
+- Branch `codex/review-unlisted-artist-20261006` starts at released master
+  `a056e64d13ab6185f4b91965060fc492fb110326` and keeps the five outstanding
+  event, infrastructure, video and GEO branches separate.
+- The review picker now offers an explicit way to keep the entered artist name
+  without selecting a catalog match. Pending lookups are cancelled; changing
+  the name restores search. Existing drafts and post retries retain the text
+  and explicit null catalog binding.
+- Existing API validation, moderation, idempotency and artist ownership rules
+  are unchanged. No catalog record, claim, verification or permission is added.
+- See `docs/UNLISTED_ARTIST_REVIEWS_2026-10-06.md` for validation and cloud gates.
+  No merge or deployment is part of this task.
+
 ## 2026-10-04 Same-grant draft recovery (review branch)
 
 - The Owner approved one additional `news:write` operation: exact GET of an

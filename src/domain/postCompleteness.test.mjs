@@ -6,6 +6,13 @@ test("composer guidance never blocks or nags before a post is valid", () => {
   assert.equal(composerEngagementPrompt({ canPost: false }), null);
 });
 
+test("confirming an unlisted artist does not ask the reviewer to select an unrelated search result", () => {
+  for (const experienceType of ["in_person", "online"]) {
+    const prompt = composerEngagementPrompt({ canPost: true, experienceType, artistNameConfirmed: true });
+    assert.doesNotMatch(prompt.body, /choose the artist from search/);
+  }
+});
+
 test("a sparse in-person review receives concrete missing-field guidance", () => {
   const prompt = composerEngagementPrompt({
     canPost: true,

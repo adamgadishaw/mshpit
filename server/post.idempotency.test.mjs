@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test, { after } from "node:test";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-post-idempotency-"));
 process.env.PIT_DATA_DIR = dataDir;
 
-const { db, q } = await import("./db.js");
+const { db, q, DATABASE_PATH } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
 const { apiRetryAfterHeaders } = await import("./responseHeaders.js");
 
@@ -33,6 +34,32 @@ function addUser(id) {
   );
   return q.userById.get(id);
 }
+
+test("a fan can persist an unlisted band review and retry it without creating or claiming an artist", () => {
+  const user = addUser("unlistedreviewer"), create = routes["POST /api/posts"];
+  const count = table => db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n;
+  const artistsBefore = count("artists"), profilesBefore = count("artist_profiles");
+  const body = { clientMutationId: "unlisted_band_review_001", artist: "Écho & The Basement Comets!",
+    artistKey: null, venue: "Community Hall", city: "Toronto", overall: 4.5,
+    review: "Our local band's first show. The encore was excellent." };
+  const first = create({ user, ip: "unlisted-first", body });
+  const retry = create({ user, ip: "unlisted-retry", body: JSON.parse(JSON.stringify(body)) });
+  assert.equal(retry.id, first.id); assert.equal(retry.duplicate, true);
+  assert.equal(first.post.artist, body.artist); assert.equal(first.post.review, body.review);
+  assert.equal(first.post.artistKey, null); assert.equal(first.post.artistMbid, null);
+  assert.equal(count("artists"), artistsBefore); assert.equal(count("artist_profiles"), profilesBefore);
+  assert.equal(q.userById.get(user.id).role, "fan");
+  const reopened = new DatabaseSync(DATABASE_PATH, { readOnly: true });
+  try {
+    const persisted = reopened.prepare("SELECT artist,artist_key,artist_mbid,review,overall FROM posts WHERE id=?").get(first.id);
+    assert.deepEqual({ ...persisted }, { artist: body.artist, artist_key: null, artist_mbid: null, review: body.review, overall: 4.5 });
+    assert.equal(reopened.prepare("SELECT COUNT(*) n FROM posts WHERE user_id=? AND client_mutation_id=?").get(user.id, body.clientMutationId).n, 1);
+  } finally { reopened.close(); }
+  assert.throws(() => create({ user, ip: "unlisted-conflict", body: { ...body, artist: "A different band" } }),
+    error => error.code === "POST_MUTATION_CONFLICT");
+  db.prepare("UPDATE posts SET removed=1 WHERE id=?").run(first.id);
+  assert.throws(() => create({ user, ip: "unlisted-removed", body }), error => error.code === "POST_REMOVED");
+});
 
 test("create retries compare the validated canonical post, not raw JSON representation", () => {
   const user = addUser("canonicalretry");

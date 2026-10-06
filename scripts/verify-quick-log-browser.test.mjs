@@ -4,7 +4,7 @@ import { assertQuickLogPayload } from "./verify-quick-log-browser.mjs";
 
 function quickLog() {
   return {
-    artist: "Fixture Artist", venue: "", city: "Toronto, Ontario, Canada", date: "",
+    artist: "Fixture Artist", artistKey: null, venue: "", city: "Toronto, Ontario, Canada", date: "",
     overall: 5, band: null, room: null,
     dims: { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 5 },
     review: "I remember the music, not the exact date. Fixture only.", tour: "A remembered tour",
@@ -27,4 +27,8 @@ test("quick-log browser contract catches loss of the remembered review during re
   assert.throws(() => assertQuickLogPayload({ ...quickLog(), review: "" }));
   assert.throws(() => assertQuickLogPayload({ ...quickLog(), tour: "" }));
   assert.throws(() => assertQuickLogPayload({ ...quickLog(), supportingActs: [] }), /opener suggestion/);
+});
+
+test("quick-log browser contract rejects silently binding an entered name to a search result", () => {
+  assert.throws(() => assertQuickLogPayload({ ...quickLog(), artistKey: "unrelated-fixture-artists" }), /similar catalog artist/);
 });

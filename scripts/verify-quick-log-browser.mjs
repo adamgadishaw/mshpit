@@ -28,6 +28,7 @@ const featuredArtistUser = Object.freeze({
 
 export function assertQuickLogPayload(body) {
   assert.equal(body.artist, "Fixture Artist");
+  assert.equal(body.artistKey, null, "Keeping the typed name must not inherit a similar catalog artist.");
   assert.equal(body.venue, "");
   assert.equal(body.city, "Toronto, Ontario, Canada");
   assert.ok(body.date == null || body.date === "", "An explicitly unknown date cannot become today.");
@@ -89,6 +90,8 @@ async function scenario(browser, origin, width) {
         { key: "a_fixture_muna", name: "MUNA", genre: "Pop", country: "US" },
         { key: "fixture-artist", name: "Fixture Artist" },
       ] });
+      if (url.pathname === "/api/artists" && url.searchParams.get("q") === "Fixture Artist") return await json({ artists: width < 620
+        ? [{ key: "unrelated-fixture-artists", name: "Fixture Artists", country: "GB", genre: "Jazz" }] : [] });
       if (url.pathname === "/api/posts" && request.method() === "POST") {
         assert.equal(request.headers()["x-pit-expected-account"], navigationUser.id);
         const body = request.postDataJSON(); assertQuickLogPayload(body); state.writes.push(body);
@@ -134,12 +137,24 @@ async function scenario(browser, origin, width) {
       for (const rating of await ratings.all()) assert.equal(await rating.isVisible(), true);
     };
     assert.equal(await progress(), "Step 1 of 4: The show");
+    const artistSearch = page.waitForResponse(response => {
+      const url = new URL(response.url());
+      return url.pathname === "/api/artists" && url.searchParams.get("q") === "Fixture Artist";
+    });
     await artist.fill("Fixture Artist");
+    await artistSearch;
+    await page.getByRole("button", { name: "Use “Fixture Artist” for this review", exact: true }).click();
+    await page.getByText("Using “Fixture Artist” for this review. No catalog artist page is linked.", { exact: true }).waitFor();
     await page.getByRole("tab", { name: "Online concert review", exact: true }).click();
     assert.equal(await progress(), "Step 1 of 3: The show", "an online review has three steps");
     await page.getByRole("tab", { name: "In person concert review", exact: true }).click();
     await next("Where and when");
     assert.equal(await progress(), "Step 2 of 4: Where and when");
+    await page.getByRole("button", { name: "Back to The show", exact: true }).click();
+    assert.equal(await artist.inputValue(), "Fixture Artist");
+    await page.getByRole("button", { name: "Change artist", exact: true }).click();
+    await page.getByRole("button", { name: "Use “Fixture Artist” for this review", exact: true }).click();
+    await next("Where and when");
     await assertPlaceDetails();
     await city.fill("Toronto, Ontario, Canada");
     await page.getByRole("button", { name: "I don't remember the concert date", exact: true }).click();
@@ -169,6 +184,13 @@ async function scenario(browser, origin, width) {
     assert.equal(await progress(), "Step 4 of 4: Your story");
     const reviewInput = page.getByPlaceholder("What made the night? Be honest - this is what people read.", { exact: true });
     await reviewInput.fill(review);
+    const closePrompt = page.waitForEvent("dialog");
+    const closing = page.getByRole("button", { name: "Close", exact: true }).last().click();
+    const dialog = await closePrompt;
+    assert.match(dialog.message(), /Your draft is saved/);
+    await dialog.dismiss(); await closing;
+    assert.equal(await artist.inputValue(), "Fixture Artist");
+    assert.equal(await reviewInput.inputValue(), review, "Cancelling Close retains the unlisted artist review.");
     await page.screenshot({ path: join(shots, `quick-log-${width}-details.png`) });
     await post.click();
     await page.getByText(/Posting is paused for \d+ second.*Your post is still here\./).waitFor();

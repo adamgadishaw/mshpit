@@ -37,6 +37,8 @@ test("real draft restoration preserves unknown date, city-only location, sparse 
     composerId: "composer", onDraftIdentity: () => {}, isDurableMediaUrl: () => true,
     hasLandingCompatibleImage: () => false, recoverRestoredMedia: (assets) => { values.recovered = assets; },
     ...Object.fromEntries(setters.map((name) => [`set${name}`, (value) => { values[name] = value; }])),
+    changeArtistText: value => { values.Artist = value; },
+    setArtistNameConfirmed: value => { values.ArtistNameConfirmed = value; },
   };
   callback("resume", bindings)({
     id: "draft", submissionId: "same-request", postType: "show", artist: "Artist", artistKey: "saved-artist",
@@ -58,6 +60,7 @@ test("real draft restoration preserves unknown date, city-only location, sparse 
   assert.deepEqual(values.TaggedPeople.map((person) => person.id), ["friend"]);
   assert.equal(values.ShowPeople, true);
   assert.equal(values.ArtistKey, "saved-artist");
+  assert.equal(values.ArtistNameConfirmed, false, "a linked draft retains its catalog identity rather than becoming free text");
   assert.deepEqual(values.Photos, ["https://media.example.test/photo.webp"]);
   assert.equal(values.PhotosPublic, false);
   assert.equal(bindings.submissionIdRef.current, "same-request");

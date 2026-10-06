@@ -15,6 +15,7 @@ export function composerEngagementPrompt({
   experienceType = "in_person",
   canPost = false,
   artistLinked = false,
+  artistNameConfirmed = false,
   city = "",
   tour = "",
   title = "",
@@ -42,12 +43,12 @@ export function composerEngagementPrompt({
   const online = experienceType === "online";
   const details = online
     ? [
-        [artistLinked, "choose the artist from search"],
+        [artistLinked || artistNameConfirmed, "choose the artist from search"],
         [text(title), "the concert or video title"],
         [body.length >= 24, "a short review"],
       ]
     : [
-        [artistLinked, "choose the artist from search"],
+        [artistLinked || artistNameConfirmed, "choose the artist from search"],
         [text(city), "the city"],
         [text(tour), "the tour name"],
         [body.length >= 24, "a short review"],
