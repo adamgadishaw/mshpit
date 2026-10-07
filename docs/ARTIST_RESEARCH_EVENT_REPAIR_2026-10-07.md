@@ -123,6 +123,15 @@ production audit passed with **zero vulnerabilities**. No local application buil
 or browser run was repeated. Full cloud tests and media regressions must pass with
 the actually installed patched package on the new final commit before release.
 
+Run `37632863732` on dependency follow-up `61d7d12` installed patched Sharp and
+passed 6,043 of 6,044 tests. The sole failure was the packaging fixture still
+requiring the old `0.35.4` pin. Its expected version is now `0.35.5`; the existing
+assertions requiring all server dependencies in production and absent from
+devDependencies remain intact. No application code or dependency graph changes
+accompany that test correction. All 10 packaging tests, the changed-file syntax
+check and `git diff --check` passed locally. Fresh final-commit cloud validation
+is required.
+
 After final-commit cloud checks pass: merge the reviewed scope, verify the deployed
 master SHA, confirm the startup line shows artist / 0.30 / 10 / 10, confirm automatic
 news remains off, and check the repaired public event plus intentional exclusions.

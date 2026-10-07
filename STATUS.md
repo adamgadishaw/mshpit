@@ -21,7 +21,9 @@ August 4/5 audit/session log are historical journals, not current status.
 - Owner-created draft PR 35 passed all 6,044 cloud tests on `c5473b8`, then the
   dependency gate identified the existing Sharp/librsvg advisory. A focused
   follow-up pins Sharp to patched `0.35.5`; the production lockfile audit passes.
-  Fresh final-commit cloud checks remain required before merge or deployment.
+  The packaging regression now requires that patched pin while retaining its
+  production-dependency protections. Fresh final-commit cloud checks remain
+  required before merge or deployment.
 
 ## 2026-10-04 Same-grant draft recovery (review branch)
 

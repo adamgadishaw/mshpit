@@ -24,7 +24,7 @@ const publicLogoSource = readFileSync(join(ROOT, "public", "logo.svg"), "utf8");
 const productionDependencies = Object.freeze({
   "@anthropic-ai/sdk": "^0.128.0",
   "heic-decode": "2.1.0",
-  sharp: "0.35.4",
+  sharp: "0.35.5",
 });
 
 const expoBuildDependencyConstraints = Object.freeze({
