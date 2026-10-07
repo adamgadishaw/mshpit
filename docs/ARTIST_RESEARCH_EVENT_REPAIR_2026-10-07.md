@@ -92,13 +92,36 @@ inside the full Node suite. This was missed when selecting the suite despite the
 owner's no-local-heavy-build constraint. It passed in 49 seconds, including the
 unchanged bundle budget, and removed its temporary output. No local Chromium ran.
 Do not repeat that embedded build locally. Final-commit cloud build/browser,
-dependency audit and hosted-environment tests remain required; no dependency files
-changed here. The full `npm run check` release gate is not yet complete.
+dependency audit and hosted-environment tests remain required. The initial
+`c5473b8` commit changed no dependency files. The full `npm run check` release gate
+is not yet complete.
 
 The connected GitHub account currently reports repository `push=false` and
 `pull=true`. No PR write or merge has been attempted through that connection.
-Publishing a Git branch does not by itself trigger the repository's PR workflow.
-An authorized owner PR session is required if connector access remains unchanged.
+The owner created draft PR 35 at exact head `c5473b8d4cd86d896a11be4c7e272acd08cc98d4`.
+An authorized owner session is still required for the draft-ready transition and
+GitHub merge if connector access remains unchanged.
+
+### Cloud dependency-gate follow-up
+
+[Quality run 37631133851](https://github.com/adamgadishaw/mshpit/actions/runs/37631133851)
+passed all **6,044 tests with zero skips** on the initial head, then failed the
+production dependency audit for pinned `sharp@0.35.4`. Syntax/architecture/export
+in that job and the hosted test step were not reached. The separate browser job
+completed its web build and was still running when this follow-up was prepared.
+
+The maintainer's [GHSA-wq5f-xc86-pv6w advisory](https://github.com/advisories/GHSA-wq5f-xc86-pv6w)
+identifies `sharp@0.35.5` as the patched release for its librsvg vulnerability.
+The follow-up pins only Sharp to `0.35.5` and refreshes its platform packages and
+bundled libvips packages (`1.3.3` to `1.3.4`). Manifest comparison confirms no other
+direct dependency change; all unrelated lockfile package records are unchanged.
+All platform variants remain in the lockfile, including Linux production builds.
+
+Lock generation ran in a separate directory using `--package-lock-only` and
+`--ignore-scripts`; shared `node_modules` was not changed. The patched lockfile's
+production audit passed with **zero vulnerabilities**. No local application build
+or browser run was repeated. Full cloud tests and media regressions must pass with
+the actually installed patched package on the new final commit before release.
 
 After final-commit cloud checks pass: merge the reviewed scope, verify the deployed
 master SHA, confirm the startup line shows artist / 0.30 / 10 / 10, confirm automatic

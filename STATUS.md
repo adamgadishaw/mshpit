@@ -18,6 +18,10 @@ August 4/5 audit/session log are historical journals, not current status.
 - PR 33 and other unfinished branches remain separate. Validation, access
   blockers and required final-commit cloud/deployment verification are recorded
   in `docs/ARTIST_RESEARCH_EVENT_REPAIR_2026-10-07.md`. No deployment is claimed.
+- Owner-created draft PR 35 passed all 6,044 cloud tests on `c5473b8`, then the
+  dependency gate identified the existing Sharp/librsvg advisory. A focused
+  follow-up pins Sharp to patched `0.35.5`; the production lockfile audit passes.
+  Fresh final-commit cloud checks remain required before merge or deployment.
 
 ## 2026-10-04 Same-grant draft recovery (review branch)
 
