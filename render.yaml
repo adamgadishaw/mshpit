@@ -140,7 +140,7 @@ services:
         value: "true"
       - key: TICKETMASTER_PROFILE_DAILY_REQUESTS
         value: "1500"
-      # Claude web research for artist and venue pages the other sources leave
+      # Claude web research for artist pages only where other sources leave
       # empty: a short summary and facts, each linked to its source. Idle until
       # the owner adds ANTHROPIC_API_KEY (console.anthropic.com -> API keys).
       # About 5 to 12 cents a page with claude-sonnet-5. Spending stops at
@@ -155,9 +155,9 @@ services:
       - key: CATALOG_RESEARCH_DAILY_USD
         value: "0.30"
       - key: CATALOG_RESEARCH_MONTHLY_USD
-        value: "4"
+        value: "10"
       - key: ANTHROPIC_MONTHLY_USD
-        value: "20"
+        value: "10"
       - key: CATALOG_RESEARCH_MODEL
         value: "claude-sonnet-5"
       # Mshpit News: every 20 minutes, reads 17 music outlets' RSS feeds and

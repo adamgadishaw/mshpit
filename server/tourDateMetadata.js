@@ -1,3 +1,4 @@
+import { publicProviderEventText } from "./providerEventText.js";
 import { storedBillingAllowsArtistBinding } from "./artistBillingIdentity.js";
 import { tourDateArtistIdentityPending } from "./providerArtistBinding.js";
 
@@ -77,7 +78,7 @@ export function publicTourDateProviderFields(row) {
     // marker; absent client-local metadata is not proof that identity is ready.
     artistIdentityPending: tourDateArtistIdentityPending(row),
     providerEventId: cleanLine(row?.provider_event_id),
-    eventName: cleanLine(row?.event_name),
+    eventName: cleanLine(publicProviderEventText(row?.event_name, row?.owner_id)),
     tourName: cleanLine(row?.tour_name),
     startDateTime: cleanLine(row?.start_date_time, 80),
     startLocalTime: cleanLine(row?.start_local_time, 80),

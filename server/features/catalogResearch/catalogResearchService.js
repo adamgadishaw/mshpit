@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalVenueKey } from "../../../src/domain/venueIdentity.mjs";
 import { backgroundJobEnabled } from "../../backgroundJobs.js";
 import { readCatalogKnowledgeControl } from "../../catalogKnowledgeControl.js";
-import { admitClaudeSpend, claudeCeilingLeftMicroUsd, claudeRequestDefinitelyRejected, utcMonthStartDay } from "../../claudeSpendCeiling.js";
+import { anthropicMonthlyCeilingMicroUsd, admitClaudeSpend, claudeCeilingLeftMicroUsd, claudeRequestDefinitelyRejected, utcMonthStartDay } from "../../claudeSpendCeiling.js";
 import { anthropicErrorSummary } from "../../anthropicErrors.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
@@ -11,21 +11,14 @@ import { publicCatalogResearch, validateCatalogResearchFindings } from "./catalo
 import { catalogResearchModel, researchCatalogSubject } from "./catalogResearchProvider.js";
 import { searchGrowthArtistPriorityKeys, searchGrowthVenuePriorityRows } from "../searchGrowth/searchGrowthPriorities.js";
 
-// The research agent fills the artist and venue pages the catalogue sources
+// The research agent fills only artist pages the catalogue sources
 // leave empty. It works through the pages fans are most likely to open first
-// (acts and rooms with shows on file), one at a time, inside daily and
+// (acts with shows on file), one at a time, inside daily and
 // monthly dollar caps and the shared Claude ceiling, and only ever adds a sourced summary and facts next to what a page
 // already has. It never edits a biography, a claimed artist page or staff
 // facts, and a staff member can hide any result.
 
 const BUDGET_KEY = "catalog-research:v1:budget";
-// Whose turn is next, kept across passes and days: with a small daily budget
-// a pass may only afford one page, and restarting with artists every time
-// would starve venues forever.
-const NEXT_TYPE_KEY = "catalog-research:v1:next-type";
-const readNextType = (database) => (database.prepare("SELECT value FROM app_meta WHERE key=?").get(NEXT_TYPE_KEY)?.value === "venue" ? "venue" : "artist");
-const saveNextType = (database, type) => database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-  .run(NEXT_TYPE_KEY, type === "venue" ? "venue" : "artist");
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
 const SPEND_RECEIPT_RETENTION_MS = 35 * DAY;
@@ -334,6 +327,7 @@ export async function runCatalogResearchPass({
 } = {}) {
   const outcome = { researched: 0, published: 0, stopped: null };
   if (!catalogResearchConfigured(env)) return { ...outcome, stopped: "not_configured" };
+  if (!backgroundJobEnabled(env, "CATALOG_RESEARCH_ENABLED")) return { ...outcome, stopped: "disabled" };
   const control = readCatalogKnowledgeControl(database, { env, at: now() });
   if (control?.mode === "paused") return { ...outcome, stopped: "paused" };
   pruneSpendReceipts(database, now());
@@ -351,24 +345,17 @@ export async function runCatalogResearchPass({
     if (monthLeft < RUN_RESERVE_MICRO_USD) return { ...outcome, stopped: "monthly_budget" };
     const ceilingLeft = claudeCeilingLeftMicroUsd(database, { env, at });
     if (ceilingLeft < RUN_RESERVE_MICRO_USD) return { ...outcome, stopped: "claude_monthly_ceiling" };
-    // Alternate artists and venues so neither backlog starves the other.
-    const order = readNextType(database) === "venue" ? ["venue", "artist"] : ["artist", "venue"];
-    // Keep independent turns per entity type: one global alternating flag
-    // would align with artist/venue alternation and starve one priority queue.
-    const searchTurnFor = type => database.prepare("SELECT value FROM app_meta WHERE key=?")
-      .get(`catalog-research:v1:search-turn:${type}`)?.value !== "regular";
-    let subject = null;
-    for (const type of order) {
-      const selection = { at, env, prioritizeSearch: searchTurnFor(type) };
-      subject = type === "artist" ? nextArtistResearchSubject(database, selection) : nextVenueResearchSubject(database, selection);
-      if (subject) break;
-    }
+    // Artist-only by owner policy. Legacy venue turns and empty artist queues
+    // must never spend this allowance researching a venue or an event.
+    const priorityKey = "catalog-research:v1:search-turn:artist";
+    const prioritizeSearch = database.prepare("SELECT value FROM app_meta WHERE key=?")
+      .get(priorityKey)?.value !== "regular";
+    const subject = nextArtistResearchSubject(database, { at, env, prioritizeSearch });
     if (!subject) return { ...outcome, stopped: "nothing_due" };
     const token = claimSubject(database, subject, at);
     if (!token) continue;
     database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
-      .run(`catalog-research:v1:search-turn:${subject.type}`, searchTurnFor(subject.type) ? "regular" : "priority");
-    saveNextType(database, subject.type === "artist" ? "venue" : "artist");
+      .run(priorityKey, prioritizeSearch ? "regular" : "priority");
     const reserveRequest = (receiptToken, reserveMicroUsd, countRun) => {
       const requestAt = now();
       return admitClaudeSpend(database, { env, at: requestAt, reserveMicroUsd,
@@ -493,6 +480,7 @@ export function collectCatalogResearchStatus(database, { env = process.env, at =
   return {
     configured: catalogResearchConfigured(env),
     enabled: catalogResearchConfigured(env) && backgroundJobEnabled(env, "CATALOG_RESEARCH_ENABLED"),
+    entityTypes: ["artist"],
     model: catalogResearchModel(env),
     dailyBudgetUsd: catalogResearchDailyBudgetMicroUsd(env) / 1_000_000,
     monthlyBudgetUsd: catalogResearchMonthlyBudgetMicroUsd(env) / 1_000_000,
@@ -513,6 +501,8 @@ export function collectCatalogResearchStatus(database, { env = process.env, at =
 export function startCatalogResearchScheduler({ database, env = process.env, now = Date.now, fetchImpl = globalThis.fetch } = {}) {
   ensureCatalogResearchSchema(database);
   if (!catalogResearchConfigured(env) || !backgroundJobEnabled(env, "CATALOG_RESEARCH_ENABLED")) return null;
+  // Non-secret startup evidence verifies the effective scope and runtime caps.
+  console.log(`[catalog-research] on: scope=artist dailyUsd=${catalogResearchDailyBudgetMicroUsd(env) / 1_000_000} monthlyUsd=${catalogResearchMonthlyBudgetMicroUsd(env) / 1_000_000} sharedMonthlyUsd=${anthropicMonthlyCeilingMicroUsd(env) / 1_000_000}`);
   // A lease left by a stopped process expires by itself after LEASE_MS.
   return startPeriodicJob({
     initialDelayMs: 3 * MINUTE,

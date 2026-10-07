@@ -122,7 +122,7 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
         {webProfiles?.lastError ? <Text selectable style={styles.error}>Last problem: {String(webProfiles.lastError.code || "").replaceAll("_", " ")} at {catalogTime(webProfiles.lastError.at)}. The agent retries on its own.</Text> : null}
         <Text selectable style={styles.hint}>Reads the Ticketmaster records behind imported shows: official links, genre, and venue box office, parking, accessibility and entry rules. It never changes an existing ID, biography or staff genre. Pausing catalog upkeep above pauses it too.</Text>
       </Section>
-      <Section title="Web research">
+      <Section title="Artist web research">
         <View style={styles.grid}>
           <Datum label="Research agent" value={!research ? "Unverified" : !research.configured ? "Waiting for API key" : research.enabled ? "On" : "Off"}
             detail={research?.configured ? `Model: ${research.model}` : "Add ANTHROPIC_API_KEY in Render to start it."} />
@@ -130,11 +130,11 @@ export default function CatalogMaintenancePanel({ accountId, role, active = true
             detail={research ? `${catalogCount(research.today?.runs)} pages researched, ${catalogCount(research.today?.published)} published today. This month: $${Number(research.monthSpentUsd || 0).toFixed(2)} of $${Number(research.monthlyBudgetUsd || 0).toFixed(2)}.` : ""} />
           <Datum label="Artist pages filled" value={catalogCount(research?.artists?.found)}
             detail={research ? `${catalogCount(research.artists?.unsure)} unsure and ${catalogCount(research.artists?.notFound)} with nothing reliable found. ${catalogCount(research.artists?.hidden)} hidden by staff.` : ""} />
-          <Datum label="Venue pages filled" value={catalogCount(research?.venues?.found)}
+          <Datum label="Previously researched venue pages" value={catalogCount(research?.venues?.found)}
             detail={research ? `${catalogCount(research.venues?.unsure)} unsure and ${catalogCount(research.venues?.notFound)} with nothing reliable found. ${catalogCount(research.venues?.hidden)} hidden by staff.` : ""} />
         </View>
         {research?.lastError ? <Text selectable style={styles.error}>Last problem: {String(research.lastError.code || "").replaceAll("_", " ")} at {catalogTime(research.lastError.at)}. The agent retries on its own.</Text> : null}
-        <Text selectable style={styles.hint}>Only pages with no biography are researched, busiest shows first. Every fact links to the page it came from, and results the agent was not sure about are never shown. Pausing catalog upkeep above pauses research too.</Text>
+        <Text selectable style={styles.hint}>Only artist pages with no biography are researched, busiest shows first. Venues and events are excluded. Every fact links to the page it came from, and results the agent was not sure about are never shown. Pausing catalog upkeep above pauses research too.</Text>
       </Section>
       <Section title="News desk">
         <View style={styles.grid}>

@@ -1,3 +1,4 @@
+import { publicProviderEventText } from "./providerEventText.js";
 // Public discovery documents, canonical URL resolution, and crawler controls.
 //
 // The interactive app remains an Expo web bundle. Public entity routes receive
@@ -50,6 +51,7 @@ import {
   isStrictCalendarDate,
   publicIndexableMusicEventSql,
   publicMusicEventCandidateSql,
+  isIndexableMusicEventRecord,
 } from "./features/seo/publicEntityPolicy.js";
 import { effectiveTourDateEndSql } from "./tourDateLifecycle.js";
 import { artistHasLegacyMemorial, tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
@@ -264,7 +266,7 @@ function eventResolution(id, at = Date.now()) {
   const instant = Number.isFinite(Number(at)) ? Number(at) : Date.now();
   const today = new Date(instant).toISOString().slice(0, 10);
   const event = publicEventIdentity.get(String(id || ""), instant, today);
-  if (!event || !isStrictCalendarDate(event.date)) return null;
+  if (!event || !isStrictCalendarDate(event.date) || !isIndexableMusicEventRecord(event)) return null;
   // A public event snapshot is permission to read this one eligible event, not
   // to unlock its artist page or member actions. Apply the same protected legacy
   // identity boundary as the event service before adding the server-only marker.
@@ -273,18 +275,19 @@ function eventResolution(id, at = Date.now()) {
   const artistProjection = publicTourDateArtistProjection(event);
   const artistKey = artistProjection.bindingAllowed ? event.canonical_artist_key || null : null;
   const path = eventPath(event.id);
+  const display = (value) => publicProviderEventText(value, event.owner_id);
   return {
     entity: {
       kind: "event",
       id: event.id,
       publicEventSnapshot: true,
-      name: event.event_name || `${artistProjection.artist} at ${event.venue}`,
-      eventName: event.event_name || null,
+      name: display(event.event_name) || `${display(artistProjection.artist)} at ${display(event.venue)}`,
+      eventName: display(event.event_name) || null,
       eventKind: event.event_kind || "concert",
-      artist: artistProjection.artist,
+      artist: display(artistProjection.artist),
       artistKey,
       artistIdentityPending,
-      venue: event.venue,
+      venue: display(event.venue),
       place: event.place || "",
       city: event.place || "",
       date: event.date,

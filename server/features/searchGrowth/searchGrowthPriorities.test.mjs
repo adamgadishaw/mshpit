@@ -114,7 +114,7 @@ test("search priority keeps existing claimed/staff/due-date eligibility checks",
   assert.equal(nextArtistResearchSubject(f.database, { ...f.options, prioritizeSearch: true }).key, "regular");
 });
 
-test("artist and venue priority turns are independent, persist between passes and preserve paid budget admission", async t => {
+test("artist priority turns persist between passes and preserve paid budget admission", async t => {
   const f = fixture(t); f.artist("priority"); f.artist("regular", { rank: 100 });
   f.event("one", "regular", "Regular Room"); f.event("two", "regular", "Regular Room"); f.event("three", "priority", "Priority Room");
   f.remember(["/artist/priority", "/venue/ticketmaster-id-three"]);
@@ -123,8 +123,8 @@ test("artist and venue priority turns are independent, persist between passes an
   const research = async subject => { calls.push(`${subject.type}:${subject.name}`); return { findings: { match: "not_found" }, searchedUrls: [], model: "claude-sonnet-5", costMicroUsd: 10_000 }; };
   const pass = () => runCatalogResearchPass({ database: f.database, env, now: () => AT, research, maxItems: 2 });
   await pass(); await pass();
-  assert.deepEqual(calls, ["artist:priority", "venue:Priority Room", "artist:regular", "venue:Regular Room"]);
+  assert.deepEqual(calls, ["artist:priority", "artist:regular"]);
   f.artist("another");
   const limited = await runCatalogResearchPass({ database: f.database, env: { ...env, CATALOG_RESEARCH_DAILY_USD: "0.01" }, now: () => AT, research });
-  assert.equal(limited.stopped, "daily_budget"); assert.equal(calls.length, 4);
+  assert.equal(limited.stopped, "daily_budget"); assert.equal(calls.length, 2);
 });

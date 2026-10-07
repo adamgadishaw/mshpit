@@ -46,14 +46,16 @@ function runNodeChain(commands, marker) {
     encoding: "utf8",
   });
 }
-test("news expansion keeps the owner-approved caps and catalogue allocation", () => {
+test("artist research keeps approved caps and automatic news disabled", () => {
   const web = parseDocument(source).toJS().services.find((service) => service.name === "mshpit");
   const env = Object.fromEntries(web.envVars.map((entry) => [entry.key, entry.value]));
   assert.equal(env.NEWS_DESK_DAILY_USD, "0.75");
   assert.equal(env.NEWS_DESK_MONTHLY_USD, "15");
-  assert.equal(env.ANTHROPIC_MONTHLY_USD, "20");
+  assert.equal(env.ANTHROPIC_MONTHLY_USD, "10");
+  assert.equal(env.NEWS_DESK_ENABLED, "false");
+  assert.equal(env.CATALOG_RESEARCH_ENABLED, "true");
   assert.equal(env.CATALOG_RESEARCH_DAILY_USD, "0.30");
-  assert.equal(env.CATALOG_RESEARCH_MONTHLY_USD, "4");
+  assert.equal(env.CATALOG_RESEARCH_MONTHLY_USD, "10");
   assert.equal(web.envVars.find((entry) => entry.key === "ANTHROPIC_API_KEY").sync, false);
 });
 

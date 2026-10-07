@@ -1,3 +1,4 @@
+import { publicProviderEventText } from "../../providerEventText.js";
 import { catalogVenueEditorKey, readPublicCatalogEditorText } from "../catalogEditor/catalogEditorRepository.js";
 import {
   artistConcertsPath,
@@ -690,8 +691,9 @@ const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "S
 function eventCard(row, paths) {
   if (!row?.id || !isIndexableMusicEventRecord(row)) return null;
   const projectedArtist = publicTourDateArtistProjection(row);
-  const artist = cleanLine(projectedArtist.artist, 160);
-  const venue = cleanLine(row.venue, 180);
+  const display = (value, length) => cleanLine(publicProviderEventText(value, row.owner_id ?? row.ownerId), length);
+  const artist = display(projectedArtist.artist, 160);
+  const venue = display(row.venue, 180);
   const date = validDate(row.date);
   if (!artist || !venue || !date) return null;
   const ticketUrl = projectedTourDateTicketUrl(row) || null;
@@ -714,11 +716,11 @@ function eventCard(row, paths) {
   return Object.freeze({
     id: String(row.id),
     providerEventId: cleanLine(row.provider_event_id, 180) || null,
-    name: (providerEvidence ? cleanLine(row.event_name, 220) : null) || `${artist} at ${venue}`,
+    name: (providerEvidence ? display(row.event_name, 220) : null) || `${artist} at ${venue}`,
     // Google's Event guidance keeps the venue in location.name rather than
     // repeating it in the event name. Preserve the fuller visible heading,
     // while giving structured data the provider title or artist identity.
-    schemaName: (providerEvidence ? cleanLine(row.event_name, 220) : null) || artist,
+    schemaName: (providerEvidence ? display(row.event_name, 220) : null) || artist,
     path: canonicalEventPath(paths, row),
     artist,
     artistPath: projectedArtist.bindingAllowed ? relatedArtistPath(paths, row) : null,

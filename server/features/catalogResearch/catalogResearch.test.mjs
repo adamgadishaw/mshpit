@@ -164,49 +164,53 @@ test("the agent works through empty pages with shows first and never touches fil
   assert.equal(venue.key, venueResearchKey("The Fillmore", "San Francisco", "US"));
 });
 
-test("a pass stays inside the daily budget, stores sourced results and serves them per page", async (t) => {
+test("artist-only passes preserve daily admission, historical venue research and retries", async (t) => {
   const db = database(t);
-  db.exec(`INSERT INTO artists(norm,name,bio,rank_score) VALUES ('wet leg','Wet Leg',NULL,10);
-    INSERT INTO tour_dates(id,artist,artist_key,venue,date,venue_city,venue_country_code) VALUES
-      ('1','Wet Leg','wet leg','The Fillmore','2026-10-03','San Francisco','US'),
-      ('2','Other','other','The Fillmore','2026-10-04','Philadelphia','US');`);
+  db.exec("INSERT INTO artists(norm,name,rank_score) VALUES ('wet leg','Wet Leg',30),('second act','Second Act',20),('third act','Third Act',10)");
+  db.exec("INSERT INTO tour_dates(id,artist,venue,date,venue_city,venue_country_code) VALUES ('show','Wet Leg','The Fillmore','2026-10-03','San Francisco','US')");
+  db.exec("INSERT INTO app_meta VALUES ('catalog-research:v1:next-type','venue')");
+  const historical = validateCatalogResearchFindings({ match: "confident",
+    summary: "The Fillmore is a historic concert hall in San Francisco that has hosted rock shows since the 1960s.",
+    summarySources: [WIKI], facts: [{ field: "capacity", value: "1315", source: WIKI }] },
+  { type: "venue", name: "The Fillmore", searchedUrls: [WIKI] }).record;
+  const venueKey = venueResearchKey("The Fillmore", "San Francisco", "US");
+  db.prepare("INSERT INTO catalog_research(entity_type,entity_key,identity,status,next_attempt_at,findings) VALUES ('venue',?,'{}','found',0,?)")
+    .run(venueKey, JSON.stringify(historical));
+  const venueBefore = { ...db.prepare("SELECT * FROM catalog_research WHERE entity_type='venue'").get() };
   const researched = [];
   const research = async (subject) => {
-    researched.push(`${subject.type}:${subject.name}:${subject.city || ""}`);
-    if (subject.type === "artist") return { findings: goodFindings(), searchedUrls: [WIKI, SITE], costMicroUsd: 90_000, model: "claude-sonnet-5" };
-    return { findings: { match: subject.city === "San Francisco" ? "confident" : "unsure",
-      summary: "The Fillmore is a historic concert hall in San Francisco that has hosted rock shows since the 1960s.",
-      summarySources: [WIKI], facts: [{ field: "capacity", value: "1315", source: WIKI }] },
-    searchedUrls: [WIKI], costMicroUsd: 90_000, model: "claude-sonnet-5" };
+    assert.equal(subject.type, "artist"); researched.push(subject.name);
+    return { findings: goodFindings({ summary: goodFindings().summary.replace("Wet Leg", subject.name) }),
+      searchedUrls: [WIKI, SITE], costMicroUsd: 90_000, model: "claude-sonnet-5" };
   };
-  const tight = { ANTHROPIC_API_KEY: "key", CATALOG_RESEARCH_DAILY_USD: "0.35", CATALOG_RESEARCH_MONTHLY_USD: "10" };
-  const env = { ANTHROPIC_API_KEY: "key", CATALOG_RESEARCH_DAILY_USD: "0.5", CATALOG_RESEARCH_MONTHLY_USD: "10" };
-  let clock = Date.parse("2026-09-24T12:00:00Z");
-  const now = () => clock;
-  assert.deepEqual(await runCatalogResearchPass({ database: db, env: {}, now, research }), { researched: 0, published: 0, stopped: "not_configured" });
-  const capped = await runCatalogResearchPass({ database: db, env: tight, now, research, maxItems: 10 });
-  assert.deepEqual(capped, { researched: 2, published: 1, stopped: "daily_budget" },
-    "$0.35 a day stops before a third $0.09 run would eat into the per-run reserve");
-  const pass = await runCatalogResearchPass({ database: db, env, now, research, maxItems: 10 });
-  assert.deepEqual(pass, { researched: 1, published: 1, stopped: "nothing_due" }, "a higher cap the same day picks up where it left off");
-  assert.deepEqual(researched, ["artist:Wet Leg:", "venue:The Fillmore:Philadelphia", "venue:The Fillmore:San Francisco"]);
-
-  const status = collectCatalogResearchStatus(db, { env, at: now() });
-  assert.deepEqual(status.today, { spentUsd: 0.27, runs: 3, published: 2 });
-  assert.deepEqual(status.venues, { found: 1, notFound: 0, unsure: 1, failed: 0, hidden: 0 });
-
-  assert.equal(readCatalogResearch(db, { type: "artist", key: "wet leg" }).facts[0].value, "Isle of Wight, England");
+  const env = { ANTHROPIC_API_KEY: "fixture", CATALOG_RESEARCH_ENABLED: "true", CATALOG_RESEARCH_DAILY_USD: "0.35", CATALOG_RESEARCH_MONTHLY_USD: "10", ANTHROPIC_MONTHLY_USD: "10" };
+  let at = Date.parse("2026-10-07T12:00:00Z");
+  const pass = (overrides = {}) => runCatalogResearchPass({ database: db, env, now: () => at, research, maxItems: 10, ...overrides });
+  assert.deepEqual(await pass(), { researched: 2, published: 2, stopped: "daily_budget" });
+  assert.deepEqual(await pass({ env: { ...env, CATALOG_RESEARCH_DAILY_USD: "0.5" } }), { researched: 1, published: 1, stopped: "nothing_due" });
+  assert.deepEqual(researched, ["Wet Leg", "Second Act", "Third Act"]);
+  assert.deepEqual(collectCatalogResearchStatus(db, { env, at }).today, { spentUsd: 0.27, runs: 3, published: 3 });
+  assert.deepEqual(collectCatalogResearchStatus(db, { env, at }).entityTypes, ["artist"]);
+  assert.deepEqual({ ...db.prepare("SELECT * FROM catalog_research WHERE entity_type='venue'").get() }, venueBefore);
+  assert.equal(db.prepare("SELECT value FROM app_meta WHERE key='catalog-research:v1:next-type'").get().value, "venue", "legacy cursor is neither used nor reset");
   assert.equal(readCatalogResearch(db, { type: "venue", key: "The Fillmore", city: "San Francisco" }).facts[0].value, "1,315");
-  assert.equal(readCatalogResearch(db, { type: "venue", key: "The Fillmore", city: "Philadelphia" }), null,
-    "the Philadelphia room never shows San Francisco's research");
+  assert.equal(readCatalogResearch(db, { type: "venue", key: "The Fillmore", city: "Philadelphia" }), null);
+  at += 200 * 86_400_000;
+  const stopped = await pass({ research: async () => { throw Object.assign(new Error("overloaded"), { code: "research_overloaded" }); } });
+  assert.equal(stopped.stopped, "research_overloaded");
+  assert.equal(readCatalogResearch(db, { type: "artist", key: "wet leg" }).summary.startsWith("Wet Leg"), true);
+});
 
-  clock += 200 * 24 * 60 * 60 * 1000;
-  const failing = async () => { throw Object.assign(new Error("overloaded"), { code: "research_overloaded" }); };
-  const stopped = await runCatalogResearchPass({ database: db, env, now, research: failing, maxItems: 5 });
-  assert.equal(stopped.stopped, "research_overloaded", "an overloaded API ends the pass instead of burning through pages");
-  assert.equal(collectCatalogResearchStatus(db, { env, at: now() }).lastError.code, "research_overloaded");
-  assert.equal(readCatalogResearch(db, { type: "artist", key: "wet leg" }).summary.startsWith("Wet Leg"), true,
-    "a failed refresh keeps the last good result on the page");
+test("disabled and empty artist passes never fall back to venues or spend", async (t) => {
+  const db = database(t), at = Date.parse("2026-10-07T12:00:00Z");
+  db.exec("INSERT INTO tour_dates(id,artist,venue,date,venue_city,venue_country_code) VALUES ('show','Unknown','Room','2026-11-01','Toronto','CA')");
+  const env = { ANTHROPIC_API_KEY: "fixture", CATALOG_RESEARCH_ENABLED: "true" };
+  const run = (settings) => runCatalogResearchPass({ database: db, env: settings, now: () => at,
+    research: async () => assert.fail("no artist is eligible for paid research") });
+  assert.equal((await run(env)).stopped, "nothing_due");
+  assert.equal((await run({ ...env, CATALOG_RESEARCH_ENABLED: "false" })).stopped, "disabled");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM catalog_research_spend").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM catalog_research").get().n, 0);
 });
 
 test("research is modest by default and stops at its monthly cap and the shared Claude ceiling", async (t) => {
@@ -420,7 +424,7 @@ test("a rejected research request stops the pass and logs Anthropic's reason", a
     "a rejected request costs nothing");
 });
 
-test("artists and venues take turns across passes, and rooms past the first 2,000 are reached", async (t) => {
+test("artist-only passes stop at an empty queue and legacy venue selection remains read-compatible", async (t) => {
   const db = database(t);
   db.exec(`INSERT INTO artists(norm,name,rank_score) VALUES ('first act','First Act',10),('second act','Second Act',9);
     INSERT INTO tour_dates(id,artist,artist_key,venue,date,venue_city,venue_country_code) VALUES
@@ -433,7 +437,7 @@ test("artists and venues take turns across passes, and rooms past the first 2,00
   const env = { ANTHROPIC_API_KEY: "key", CATALOG_RESEARCH_DAILY_USD: "1", CATALOG_RESEARCH_MONTHLY_USD: "10" };
   const at = Date.parse("2026-09-24T12:00:00Z");
   for (let pass = 0; pass < 3; pass += 1) await runCatalogResearchPass({ database: db, env, now: () => at, research, maxItems: 1 });
-  assert.deepEqual(seen, ["artist", "venue", "artist"], "a one-page pass does not restart with artists every time");
+  assert.deepEqual(seen, ["artist", "artist"], "a venue backlog is never a fallback after both artists");
 
   const busy = new DatabaseSync(":memory:");
   t.after(() => busy.close());
@@ -528,4 +532,19 @@ test("malformed billing usage never settles a paid request as free", async (t) =
     assert.deepEqual({ ...db.prepare("SELECT status,charged_micro_usd FROM catalog_research_spend").get() },
       { status: "uncertain", charged_micro_usd: 200_000 });
   }
+});
+
+
+test("approved ten-dollar shared allowance counts prior news and research without resetting receipts", async (t) => {
+  const db=database(t), at=Date.parse('2026-10-07T12:00:00Z');
+  db.exec("INSERT INTO artists(norm,name) VALUES ('wet leg','Wet Leg'); CREATE TABLE news_desk_spend(day TEXT PRIMARY KEY,usd REAL)");
+  db.exec("INSERT INTO news_desk_spend VALUES ('2026-10-01',0.10)");
+  db.exec("INSERT INTO catalog_research_spend VALUES ('prior','2026-10-01',9750000,9750000,'settled',0,1)");
+  const env={ANTHROPIC_API_KEY:'fixture',CATALOG_RESEARCH_ENABLED:'true',CATALOG_RESEARCH_DAILY_USD:'0.30',CATALOG_RESEARCH_MONTHLY_USD:'10',ANTHROPIC_MONTHLY_USD:'10'};
+  const run=(settings)=>runCatalogResearchPass({database:db,env:settings,now:()=>at,research:async()=>assert.fail('insufficient reservation headroom')});
+  assert.equal((await run(env)).stopped,'claude_monthly_ceiling');
+  assert.equal((await run({...env,ANTHROPIC_MONTHLY_USD:'0'})).stopped,'claude_monthly_ceiling');
+  assert.equal((await run({...env,CATALOG_RESEARCH_MONTHLY_USD:'4'})).stopped,'monthly_budget');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM catalog_research_spend').get().n,1);
+  assert.equal(db.prepare('SELECT charged_micro_usd FROM catalog_research_spend').get().charged_micro_usd,9750000);
 });

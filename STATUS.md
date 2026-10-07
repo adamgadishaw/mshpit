@@ -6,6 +6,19 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-07 Artist-only research and provider event text (review branch)
+
+- Branch `codex/artist-research-event-repair-20261007` starts at deployed master
+  `a056e64d`. Research selects artists only and preserves old venue findings,
+  pause/claim protections and spend ledgers. The Blueprint sets the approved
+  shared/catalog monthly caps to $10, retaining $0.30/day and automatic news off.
+- A narrow display-only apostrophe repair resolves the confirmed provider-title
+  corruption. Opaque event IDs, stored names, artist bindings and intentional
+  public exclusions remain protected. No data migration is required.
+- PR 33 and other unfinished branches remain separate. Validation, access
+  blockers and required final-commit cloud/deployment verification are recorded
+  in `docs/ARTIST_RESEARCH_EVENT_REPAIR_2026-10-07.md`. No deployment is claimed.
+
 ## 2026-10-04 Same-grant draft recovery (review branch)
 
 - The Owner approved one additional `news:write` operation: exact GET of an
