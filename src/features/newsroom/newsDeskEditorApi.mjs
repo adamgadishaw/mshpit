@@ -92,10 +92,10 @@ export async function writeNewsDraft({ accountId, reportUrls = [], links = [], s
   return payload.draft;
 }
 
-export async function writeSelfWrittenNewsDraft({ accountId, headline, summary, body, category = "other", sources = [], photo, idempotencyKey, signal } = {}, { apiCall } = {}) {
+export async function writeSelfWrittenNewsDraft({ accountId, headline, summary, body, category = "other", sources = [], photo, video, idempotencyKey, signal } = {}, { apiCall } = {}) {
   const expectedAccountId = actor(accountId);
   const payload = await transport(apiCall)(NEWS_SELF_WRITTEN_PATH, {
-    method: "POST", body: { headline, summary, body, category, sources, photo, idempotencyKey }, expectedAccountId, signal, silent: true,
+    method: "POST", body: { headline, summary, body, category, sources, photo, ...(video ? { video } : {}), idempotencyKey }, expectedAccountId, signal, silent: true,
     context: "Saving a self-written news draft",
   });
   if (!payload?.draft?.id || payload.draft.origin !== "self_written") throw new TypeError("The self-written draft could not be confirmed. Refresh before trying again.");

@@ -13,7 +13,7 @@ const joinNames = (names) => names.length <= 1 ? names.join("")
 // "Confirmed by Billboard, Pitchfork and NME"
 export function newsSourceLine(story) {
   const names = [...new Set((Array.isArray(story?.sources) ? story.sources : [])
-    .filter((source) => source?.kind !== "photo")
+    .filter((source) => !["photo", "video"].includes(source?.kind))
     .map((source) => String(source?.name || "").trim()).filter(Boolean))];
   if (!names.length) return "";
   const prefix = story?.origin === "self_written" ? "Sources:" : "Confirmed by";
@@ -25,10 +25,13 @@ export const newsStoryParagraphs = (body) => String(body || "").split(/\n\s*\n/u
   .map((paragraph) => paragraph.replace(/\s+/gu, " ").trim()).filter(Boolean);
 
 export const newsStorySources = (story, { includePhoto = false } = {}) => (Array.isArray(story?.sources) ? story.sources : [])
-  .filter((source) => includePhoto || source?.kind !== "photo")
+  .filter((source) => includePhoto || !["photo", "video"].includes(source?.kind))
   .filter((source) => /^https:\/\//u.test(String(source?.url || "")) && String(source?.name || "").trim());
 
 // A selected verified newsroom image takes precedence over the artist image
 // fallback used by generated stories.
 export const newsStoryPhoto = (story) => (Array.isArray(story?.media) ? story.media : []).find((asset) => asset?.kind === "image" && asset?.url)?.url
   || (Array.isArray(story?.artists) ? story.artists : []).find((artist) => artist?.photo)?.photo || null;
+
+export const newsStoryVideo = (story) => (Array.isArray(story?.media) ? story.media : []).find((asset) => asset?.kind === "video"
+  && /^https:\/\//u.test(asset.url || "") && /^https:\/\//u.test(asset.posterUrl || "")) || null;

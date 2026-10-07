@@ -212,7 +212,7 @@ const HEADERS = {
 const DEV_ORIGINS = new Set(["http://localhost:8081", "http://127.0.0.1:8081"]);
 
 const MIME = {
-  ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css",
+  ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css",
   ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg", ".ico": "image/x-icon",
   ".svg": "image/svg+xml", ".woff2": "font/woff2", ".map": "application/json", ".txt": "text/plain",
 };

@@ -6,6 +6,29 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-07 Newsroom file import and optional video (review branch)
+
+- `codex/newsroom-file-import-20261007` starts at `b0e6021b`. Desktop/mobile
+  web can preview a versioned article ZIP, plain DOCX, text PDF or TXT, with a
+  cover and one optional MOV/MP4. Import requires explicit application to the
+  editor; saving and publishing remain separate manual actions.
+- Parser work is isolated in a bounded, cancellable worker. Existing account,
+  draft, media verification, ownership and atomic publication protections apply.
+  Photo/video credits remain distinct from reporting citations, including the
+  canonical server-rendered story page. Queued media survives pause/reload as
+  an explicit pending selection requiring the original file when necessary.
+- The final broader local run passed 347 tests. Independent re-review passed
+  12 affected tests and confirmed browser-like PDF worker extraction after
+  corrections for PDF handshake, queued-video retention and canonical citation
+  defects. Syntax (830 Node files plus changed JSX), architecture and whitespace
+  checks passed. Cloud desktop/mobile browser/build gates remain required.
+- Production dependency audit reports zero vulnerabilities. The full dev audit
+  remains nonzero; the new moderate Mammoth CLI dependency is absent from its
+  shipped browser bundle. No dependency-wide remediation was mixed in.
+- See `docs/NEWSROOM_FILE_IMPORT_2026-10-07.md` for the format, boundaries,
+  validation and separate read-only Media API access assessment. No production
+  stories, credentials, access settings, merge or deployment are changed here.
+
 ## 2026-10-07 Artist-only research and provider event text (review branch)
 
 - Branch `codex/artist-research-event-repair-20261007` starts at deployed master

@@ -79,6 +79,10 @@ jobs:
       - run: npm run verify:news-browser
       - name: Verify news category corrections (isolated fixtures)
         run: node scripts/verify-news-category-browser.mjs
+      - name: Verify Newsroom import, media recovery and manual publication controls
+        run: node scripts/verify-newsroom-import-browser.mjs
+      - name: Verify existing Newsroom draft and publish flow
+        run: node scripts/verify-newsroom-composer-browser.mjs
       - run: npm run verify:discover-photos-browser
       - run: npm run verify:discover-venues-browser
       - name: Catalog upkeep and editor (mobile and desktop)

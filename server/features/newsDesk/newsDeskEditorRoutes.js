@@ -103,10 +103,10 @@ export function newsDeskEditorRoutes({ editor, database, ApiError, requireAdmin,
     "POST /api/moderation/news-desk/editor/drafts/self-written": (ctx) => run(() => {
       const actor = writer(ctx);
       rateLimit(ctx, "news-editor-self-written", 20, 3_600_000);
-      const { headline, summary, body: articleBody, category, sources, photo, idempotencyKey } = body(ctx,
-        ["headline", "summary", "body", "category", "sources", "photo", "idempotencyKey"]);
+      const { headline, summary, body: articleBody, category, sources, photo, video, idempotencyKey } = body(ctx,
+        ["headline", "summary", "body", "category", "sources", "photo", "video", "idempotencyKey"]);
       const headerKey = ctx.request?.headers?.["idempotency-key"] || ctx.request?.headers?.get?.("idempotency-key") || null;
-      const draft = editor.writeSelfWritten({ headline, summary, body: articleBody, category, sources, photo,
+      const draft = editor.writeSelfWritten({ headline, summary, body: articleBody, category, sources, photo, video,
         idempotencyKey: idempotencyKey || headerKey, actorId: actor.id,
         onSaved: (saved) => record(ctx, actor, "news_draft_written", saved) });
       return { draft };

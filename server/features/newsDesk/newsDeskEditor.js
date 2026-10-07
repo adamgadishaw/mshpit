@@ -116,7 +116,7 @@ export function articleTitle(html) {
   return plainText(title, 300).replace(/\s+/gu, " ").trim();
 }
 
-function draftPhoto(database, row, photo) {
+function draftPhoto(database, row, photo, kind = "image") {
   if (!photo) return null;
   // Preview only the saved writer's image. Do not sign or expose its private
   // original, or accept a URL supplied by the article/rights source.
@@ -124,10 +124,17 @@ function draftPhoto(database, row, photo) {
   const candidate = ownerId && ownerId === row.created_by
     ? database.prepare("SELECT v.public_url FROM media_assets a JOIN media_variants v "
       + "ON v.id=a.render_variant_id AND v.asset_id=a.id AND v.role='render' "
-      + "WHERE a.id=? AND a.owner_id=? AND a.kind='image' AND a.purpose='post'").get(photo.assetId, ownerId)?.public_url : null;
-  const verified = candidate ? verifiedOwnedReadyMedia(database, { ownerId, url: candidate, kind: "image" }) : null;
+      + "WHERE a.id=? AND a.owner_id=? AND a.kind=? AND a.purpose='post'").get(photo.assetId, ownerId, kind)?.public_url : null;
+  const verified = candidate ? verifiedOwnedReadyMedia(database, { ownerId, url: candidate, kind }) : null;
   const url = verified?.id === photo.assetId ? candidate : null;
-  return { assetId: photo.assetId, source: photo.source || null, url, status: url ? "ready" : "unavailable" };
+  const poster = kind === "video" && url ? database.prepare(`SELECT v.public_url FROM media_assets a
+    JOIN media_variants v ON v.id=a.poster_variant_id AND v.asset_id=a.id AND v.role='poster' AND v.status='verified'
+      AND v.verification_origin='private_derivative_v1' AND v.time_ms=json_extract(a.edit_recipe,'$.coverMs')
+    JOIN media_objects o ON o.owner_id=a.owner_id AND o.object_key=v.object_key AND o.storage_scope='public' AND o.status IN ('issued','associated')
+    WHERE a.id=? AND a.owner_id=?`).get(photo.assetId, ownerId)?.public_url : null;
+  const ready = url && (kind !== "video" || poster);
+  return { assetId: photo.assetId, source: photo.source || null, url: ready ? url : null, status: ready ? "ready" : "unavailable",
+    ...(kind === "video" ? { posterUrl: ready ? poster : null } : {}) };
 }
 
 function draftJson(database, row, at) {
@@ -152,6 +159,7 @@ function draftJson(database, row, at) {
     revision: Number.isSafeInteger(Number(row.revision)) ? Number(row.revision) : 0,
     sources,
     photo: origin === "self_written" ? draftPhoto(database, row, result.photo) : null,
+    ...(origin === "self_written" && result.video ? { video: draftPhoto(database, row, result.video, "video") } : {}),
     wordCount: origin === "self_written" ? Number(result.wordCount) || 0 : null,
     postId: row.story_post_id || null,
     writer: row.created_actor_type && row.created_actor_label ? {
@@ -174,7 +182,7 @@ export function readGrantedNewsDraft(database, { draftId, ownerId, grantId, at =
   return {
     id: draft.id, status: draft.status, origin: draft.origin,
     headline: draft.headline, summary: draft.summary, body: draft.body,
-    category: draft.category, sources: draft.sources, photo: draft.photo,
+    category: draft.category, sources: draft.sources, photo: draft.photo, ...(draft.video ? { video: draft.video } : {}),
     revision: draft.revision, expired: draft.expired, createdAt: draft.createdAt,
   };
 }
@@ -328,11 +336,11 @@ export function createNewsDeskEditor({ database, env = process.env, now = Date.n
     }
   }
 
-  function writeSelfWritten({ headline, summary, body, category, sources, photo, actorId = null,
+  function writeSelfWritten({ headline, summary, body, category, sources, photo, video, actorId = null,
     actorType = null, actorLabel = null, grantId = null, idempotencyKey = null, onSaved } = {}) {
     if (typeof actorId !== "string" || !actorId.trim()) fail("VALIDATION_FAILED", "A verified editor account is required.");
     let story;
-    try { story = normalizeSelfWrittenStory({ headline, summary, body, category, sources, photo }, { assetOwnerId: actorId }); }
+    try { story = normalizeSelfWrittenStory({ headline, summary, body, category, sources, photo, video }, { assetOwnerId: actorId }); }
     catch (error) { fail("VALIDATION_FAILED", error.message || "The self-written story is not valid."); }
     const key = typeof idempotencyKey === "string" && idempotencyKey.trim() ? idempotencyKey.trim() : null;
     if (key && !MANUAL_SAVE_KEY.test(key)) fail("VALIDATION_FAILED", "The save key is invalid.");

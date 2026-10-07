@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { Image as ExpoImage } from "expo-image";
+import NewsArticleVideo from "../../components/news/NewsArticleVideo";
 import Button from "../../components/Button";
 import { commandFailure, commandSuccess } from "../../domain/commandResult.mjs";
 import { toAppError } from "../../lib/diagnostics";
@@ -324,7 +325,7 @@ function SourceLink({ source, prefix = "" }) {
 function Draft({ draft, pending, disabled, onPublish, onDiscard }) {
   const open = draft.status === "draft" && !draft.expired;
   const sources = Array.isArray(draft.sources) ? draft.sources : [];
-  const articleSources = sources.filter((source) => source.kind !== "photo");
+  const articleSources = sources.filter((source) => !["photo", "video"].includes(source.kind));
   const photoSource = sources.find((source) => source.kind === "photo") || draft.photo?.source;
   return <View style={styles.draft} testID={`news-draft-${draft.id}`}>
     <Text selectable style={draft.status === "declined" ? styles.error : styles.step}>{newsDraftStatus(draft).toUpperCase()}</Text>
@@ -336,12 +337,17 @@ function Draft({ draft, pending, disabled, onPublish, onDiscard }) {
         ? <ExpoImage source={{ uri: draft.photo.url }} style={styles.draftPhoto} contentFit="contain" accessibilityLabel="Verified article photo" />
         : <Text selectable style={styles.error}>The article photo is unavailable. Choose a verified photo before publishing.</Text>}
       {photoSource ? <SourceLink source={photoSource} prefix="Photo rights: " /> : null}
+      {draft.video ? <>
+        {draft.video.status === "ready" ? <NewsArticleVideo uri={draft.video.url} posterUri={draft.video.posterUrl} />
+          : <Text selectable style={styles.error}>The article video is unavailable. Finish its upload before publishing.</Text>}
+        <SourceLink source={draft.video.source} prefix="Video rights: " />
+      </> : null}
       <Text style={styles.help}>Article sources</Text>
       {articleSources.map((source) => <SourceLink key={source.url} source={source} />)}
     </View> : <Text selectable style={styles.help}>Sources: {sources.map((source) => source.name).join(", ")} · cost ${draft.costUsd.toFixed(3)}</Text>}
     {open || draft.status === "declined" ? <View style={styles.actions}>
       {open ? <Button small title="Publish now" accessibilityLabel={`Publish ${draft.headline}`}
-        disabled={disabled} loading={pending === `publish:${draft.id}`} onPress={() => onPublish(draft)} /> : null}
+        disabled={disabled || (draft.origin === "self_written" && (draft.photo?.status !== "ready" || (draft.video && draft.video.status !== "ready")))} loading={pending === `publish:${draft.id}`} onPress={() => onPublish(draft)} /> : null}
       <Button small title="Discard" variant="secondary" accessibilityLabel={`Discard the draft ${draft.headline || ""}`.trim()}
         disabled={disabled} loading={pending === `discard:${draft.id}`} onPress={() => onDiscard(draft)} />
     </View> : null}

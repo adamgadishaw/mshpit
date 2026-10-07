@@ -9,6 +9,7 @@
     "sharp": "0.35.5"
   },
   "scripts": {
+    "prestart": "node scripts/prepare-newsroom-import.mjs",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
@@ -35,7 +36,8 @@
     "audit:userbase": "node scripts/audit-userbase.mjs",
     "recover:legacy-images": "node scripts/recover-legacy-images.mjs",
     "migrate:legacy-videos": "node scripts/migrate-legacy-videos.mjs",
-    "build:web": "npm run split:catalog && expo export -p web --source-maps external && npm run check:web-bundle",
+    "prepare:newsroom-import": "node scripts/prepare-newsroom-import.mjs",
+    "build:web": "npm run split:catalog && npm run prepare:newsroom-import && expo export -p web --source-maps external && npm run check:web-bundle",
     "test": "node scripts/run-tests.mjs",
     "check:dependencies": "npm audit --omit=dev --audit-level=high",
     "check:syntax": "node scripts/check-syntax.mjs",
@@ -90,6 +92,9 @@
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.3",
     "expo-video": "~57.0.3",
+    "fflate": "0.8.3",
+    "mammoth": "1.13.0",
+    "pdfjs-dist": "6.4.299",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
