@@ -138,6 +138,16 @@ No production write, provider use, credential creation, grant, API activation,
 merge or deployment is part of this review branch. Final exact-commit cloud
 gates and owner review are required before release.
 
+## October 8 cloud follow-up
+
+Owner opened draft PR 36 at `5acdb0e`. Run `37708734047` exported the web app,
+then failed the unchanged startup budget: 518.5 KiB versus 512 KiB, with player
+UI found in startup code. The new direct async entry for the gallery's internal
+video player caused Metro to promote shared playback dependencies. Article
+video now loads the existing `PhotoViewer` chunk's named player export instead.
+Playback behavior and the budget/label gates are unchanged; browser and complete
+cloud checks must pass on the follow-up head before readiness is claimed.
+
 ## Separate read-only Media API access assessment
 
 Inspection only: `server/features/mediaApi/{mediaApiPolicy,mediaApiService,

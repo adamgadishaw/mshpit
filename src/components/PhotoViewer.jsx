@@ -3,6 +3,7 @@ import { Animated, Linking, View, Text, StyleSheet, Pressable, PanResponder, Pla
 import { colors, focusRing, mono, radius } from "../theme";
 import Icon from "./Icon";
 import MshpitVideoPlayer from "./media-player/MshpitVideoPlayer";
+export { MshpitVideoPlayer };
 import SmartImage from "./SmartImage";
 import { mediaDisplayKind, mediaDisplayUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import {

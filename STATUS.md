@@ -22,6 +22,10 @@ August 4/5 audit/session log are historical journals, not current status.
   corrections for PDF handshake, queued-video retention and canonical citation
   defects. Syntax (830 Node files plus changed JSX), architecture and whitespace
   checks passed. Cloud desktop/mobile browser/build gates remain required.
+- Draft PR 36's first cloud run exported the app but failed the unchanged
+  startup gate at 518.5/512 KiB. Article video now loads its player through the
+  existing gallery chunk, avoiding a second async entry that promoted shared
+  playback code into startup. Fresh cloud validation is pending.
 - Production dependency audit reports zero vulnerabilities. The full dev audit
   remains nonzero; the new moderate Mammoth CLI dependency is absent from its
   shipped browser bundle. No dependency-wide remediation was mixed in.
