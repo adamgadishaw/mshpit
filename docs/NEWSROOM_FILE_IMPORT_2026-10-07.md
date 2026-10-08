@@ -162,6 +162,14 @@ availability service both use bounded request recovery. A small
 Metro does not lift their shared retry implementation into the common startup
 chunk. Their implementations, options, cancellation and cache rules are intact.
 
+Run 515 reached 512.5 KiB. A lightweight dependency-graph comparison identified
+the full `mediaEdit` module as newly shared between LogScreen and the uploader.
+Its original recipe, kind, adjustments and size helpers are moved unchanged to
+`mediaOriginal` and re-exported by `mediaEdit`, preserving all existing imports
+and behavior. The uploader imports the small module directly, so it no longer
+promotes unrelated crop, filter and transform implementations into startup.
+No cross-feature or screen dependency was introduced.
+
 ## Separate read-only Media API access assessment
 
 Inspection only: `server/features/mediaApi/{mediaApiPolicy,mediaApiService,
