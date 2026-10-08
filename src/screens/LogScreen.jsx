@@ -64,7 +64,6 @@ import {
   postRetryRemainingSeconds,
 } from "../domain/postRetryCooldown.mjs";
 import { remove, save } from "../lib/persist";
-import { uploadOriginalMediaAsset } from "../lib/mediaAssetUpload";
 import { retireMediaAssetDrafts } from "../lib/mediaAssetDraftCleanup.mjs";
 import { loadMediaPublishingCapabilities } from "../lib/mediaPublishingHealth";
 import {
@@ -884,6 +883,9 @@ export default function LogScreen({
         progressPublisher.publish({ current: index + 1, total: selected.length, completed: completedAssets.length, stage: "preparing" }, { immediate: true });
         let ready;
         try {
+          // Share the Newsroom's on-demand uploader entry instead of promoting
+          // a static/dynamic duplicate into Metro's initial common bundle.
+          const { uploadOriginalMediaAsset } = await import("../lib/mediaAssetUpload.js");
           ready = await uploadOriginalMediaAsset({
             asset,
             expectedAccountId: task.accountId,

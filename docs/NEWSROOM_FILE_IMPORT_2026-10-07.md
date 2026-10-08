@@ -148,6 +148,14 @@ video now loads the existing `PhotoViewer` chunk's named player export instead.
 Playback behavior and the budget/label gates are unchanged; browser and complete
 cloud checks must pass on the follow-up head before readiness is claimed.
 
+Run `37709039148` on `f624858` removed the startup player labels and reduced
+initial JavaScript to 516.3 KiB. The remaining duplication was the original
+media uploader: Newsroom imported it dynamically while LogScreen imported it
+statically. LogScreen now loads that identical uploader at the upload action,
+preserving its account, abort, original-source and recovery options. Metro's
+shared-chunk extraction can retain the uploader behind one async entry. No
+budget increase or assertion removal is used.
+
 ## Separate read-only Media API access assessment
 
 Inspection only: `server/features/mediaApi/{mediaApiPolicy,mediaApiService,

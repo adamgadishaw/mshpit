@@ -25,7 +25,10 @@ August 4/5 audit/session log are historical journals, not current status.
 - Draft PR 36's first cloud run exported the app but failed the unchanged
   startup gate at 518.5/512 KiB. Article video now loads its player through the
   existing gallery chunk, avoiding a second async entry that promoted shared
-  playback code into startup. Fresh cloud validation is pending.
+  playback code into startup. Follow-up `f624858` removed those player labels
+  but remained at 516.3 KiB. The existing composer now also loads the shared
+  original-media uploader on demand, eliminating its static/dynamic duplicate
+  with Newsroom. Fresh cloud validation is pending.
 - Production dependency audit reports zero vulnerabilities. The full dev audit
   remains nonzero; the new moderate Mammoth CLI dependency is absent from its
   shipped browser bundle. No dependency-wide remediation was mixed in.
