@@ -156,6 +156,12 @@ preserving its account, abort, original-source and recovery options. Metro's
 shared-chunk extraction can retain the uploader behind one async entry. No
 budget increase or assertion removal is used.
 
+Run `37709285187` on `c755d26` reached 512.7 KiB. The uploader and existing
+availability service both use bounded request recovery. A small
+`mediaPublishingEntry` now exports both behind the same dynamic import, so
+Metro does not lift their shared retry implementation into the common startup
+chunk. Their implementations, options, cancellation and cache rules are intact.
+
 ## Separate read-only Media API access assessment
 
 Inspection only: `server/features/mediaApi/{mediaApiPolicy,mediaApiService,

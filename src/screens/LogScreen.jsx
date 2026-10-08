@@ -65,7 +65,6 @@ import {
 } from "../domain/postRetryCooldown.mjs";
 import { remove, save } from "../lib/persist";
 import { retireMediaAssetDrafts } from "../lib/mediaAssetDraftCleanup.mjs";
-import { loadMediaPublishingCapabilities } from "../lib/mediaPublishingHealth";
 import {
   recoverMediaDraftAssets,
   releaseMediaDraftAsset,
@@ -720,6 +719,7 @@ export default function LogScreen({
     if (request.showRefreshing) setMediaPublishingCapabilitiesRefreshing(true);
     const promise = (async () => {
       try {
+        const { loadMediaPublishingCapabilities } = await import("../lib/mediaPublishingEntry.js");
         const capabilities = await loadMediaPublishingCapabilities({
           apiCall: api,
           signal: controller.signal,
@@ -885,7 +885,7 @@ export default function LogScreen({
         try {
           // Share the Newsroom's on-demand uploader entry instead of promoting
           // a static/dynamic duplicate into Metro's initial common bundle.
-          const { uploadOriginalMediaAsset } = await import("../lib/mediaAssetUpload.js");
+          const { uploadOriginalMediaAsset } = await import("../lib/mediaPublishingEntry.js");
           ready = await uploadOriginalMediaAsset({
             asset,
             expectedAccountId: task.accountId,

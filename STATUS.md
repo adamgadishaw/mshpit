@@ -28,7 +28,9 @@ August 4/5 audit/session log are historical journals, not current status.
   playback code into startup. Follow-up `f624858` removed those player labels
   but remained at 516.3 KiB. The existing composer now also loads the shared
   original-media uploader on demand, eliminating its static/dynamic duplicate
-  with Newsroom. Fresh cloud validation is pending.
+  with Newsroom. Run 514 reached 512.7 KiB; availability checks and uploads now
+  share one async publishing entry so their recovery machinery also stays out
+  of startup. Fresh cloud validation is pending.
 - Production dependency audit reports zero vulnerabilities. The full dev audit
   remains nonzero; the new moderate Mammoth CLI dependency is absent from its
   shipped browser bundle. No dependency-wide remediation was mixed in.
