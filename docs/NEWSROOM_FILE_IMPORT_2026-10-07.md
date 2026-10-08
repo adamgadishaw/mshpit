@@ -178,6 +178,14 @@ artist-request queue reads. Both are now explicit GET-only fixtures, matching
 the existing composer harness; production behavior and browser assertions are
 unchanged. Final exact-head cloud validation remains required.
 
+The same run's full test job timed out. A bounded local reproduction and
+independent review isolated the existing `mediaAccountLifecycle` harness: its
+lexical uploader fake was bypassed by the new lazy module import, leaving a
+deferred startup wait unresolved. The harness now intercepts exactly that
+known import, preserves its asynchronous boundary and injected uploader, and
+rejects the startup wait if the real callback exits first. No application
+guard, bundle test, assertion or cloud timeout is relaxed.
+
 ## Separate read-only Media API access assessment
 
 Inspection only: `server/features/mediaApi/{mediaApiPolicy,mediaApiService,

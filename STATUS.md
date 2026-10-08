@@ -37,6 +37,10 @@ August 4/5 audit/session log are historical journals, not current status.
   artist-account, identity, navigation, news and category browser suites. The
   importer fixture lacked the two existing admin sign-in queue reads; those
   explicit GET fixtures are now included. Fresh cloud validation is pending.
+- The full-suite timeout was isolated to the existing account-lifecycle harness:
+  its uploader fake needed the new lazy module boundary. That exact import is
+  now intercepted explicitly, and an early callback exit rejects its startup
+  wait instead of leaving the test unresolved. Application guards are unchanged.
 - Production dependency audit reports zero vulnerabilities. The full dev audit
   remains nonzero; the new moderate Mammoth CLI dependency is absent from its
   shipped browser bundle. No dependency-wide remediation was mixed in.
