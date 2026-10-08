@@ -170,6 +170,14 @@ and behavior. The uploader imports the small module directly, so it no longer
 promotes unrelated crop, filter and transform implementations into startup.
 No cross-feature or screen dependency was introduced.
 
+Run `37710407784` on `93befa02` passed the unchanged startup gate at
+510.2/512 KiB. Existing auth, artist-account, identity moderation, navigation,
+news and category browser suites passed. The importer harness then failed at
+admin sign-in because its mock server omitted the existing moderation and
+artist-request queue reads. Both are now explicit GET-only fixtures, matching
+the existing composer harness; production behavior and browser assertions are
+unchanged. Final exact-head cloud validation remains required.
+
 ## Separate read-only Media API access assessment
 
 Inspection only: `server/features/mediaApi/{mediaApiPolicy,mediaApiService,

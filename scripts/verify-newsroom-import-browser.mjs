@@ -68,6 +68,15 @@ async function scenario(browser, origin, width, clip) {
     if (url.pathname.startsWith("/fixture-put/")) { state.puts.push(url.pathname); return route.fulfill({ status: 200, body: "" }); }
     if (!url.pathname.startsWith("/api/")) return route.continue();
     if (url.pathname === "/api/me") return json({ user: state.user });
+    // The existing admin sign-in bootstrap reads these queues before Newsroom opens.
+    if (url.pathname === "/api/admin/moderation") {
+      assert.equal(request.method(), "GET");
+      return json({ reports: [], requests: [], recentActions: [], nextCursor: null, hasMore: false, summary: {} });
+    }
+    if (url.pathname === "/api/admin/artist-requests") {
+      assert.equal(request.method(), "GET");
+      return json({ requests: [] });
+    }
     if (url.pathname === "/api/moderation/news-desk/editor") return json(newsEditorFixture(state.drafts));
     if (url.pathname === "/api/media/assets") {
       assert.equal(request.headers()["x-pit-expected-account"], state.user.id);

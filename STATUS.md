@@ -33,7 +33,10 @@ August 4/5 audit/session log are historical journals, not current status.
   of startup. The remaining dependency is the full media-edit module; original
   recipe/size helpers are now extracted unchanged and re-exported by the editor,
   keeping crop/filter/transform code out of uploader startup dependencies.
-  Fresh cloud validation is pending.
+  Run 516 passed the startup gate at 510.2/512 KiB and the existing auth,
+  artist-account, identity, navigation, news and category browser suites. The
+  importer fixture lacked the two existing admin sign-in queue reads; those
+  explicit GET fixtures are now included. Fresh cloud validation is pending.
 - Production dependency audit reports zero vulnerabilities. The full dev audit
   remains nonzero; the new moderate Mammoth CLI dependency is absent from its
   shipped browser bundle. No dependency-wide remediation was mixed in.
