@@ -1,5 +1,7 @@
+import { withFestivalAnnouncements } from "./festivalAnnouncements.js";
+import { BOOTS_SLUGS, savedFestivalIdentity } from "./festivalIdentityReconciliation.js";
 import { FESTIVAL_CATALOG } from "./festivalCatalog.js";
-import { editionDays, expectedEdition, festivalEditionName, groupFestivalEditions } from "./festivalEditions.js";
+import { editionDays, festivalEditionName, groupFestivalEditions, matchFestival } from "./festivalEditions.js";
 
 // Festivals, their editions (one dated run in one place), the ticket
 // listings each edition was built from, and members' plans for an edition:
@@ -123,7 +125,7 @@ export function createFestivalStore(database, { now = Date.now } = {}) {
       const since = today(now() - 60 * DAY_MS);
       const out = [];
       for (const row of tourDateFestivalRows.all(since)) {
-        const entry = match(row.event_name);
+        const entry = match(row.event_name, { city: row.venue_city, region: row.venue_region, venue: row.venue, countryCode: row.venue_country_code });
         if (!entry) continue;
         out.push({ festivalSlug: entry.slug, providerEventId: `tm:${row.provider_event_id}`, name: row.event_name, startDate: row.date,
           endDate: row.event_end_date || row.date, venue: row.venue, venueId: row.venue_provider_id, city: row.venue_city, region: row.venue_region,
@@ -143,11 +145,18 @@ export function createFestivalStore(database, { now = Date.now } = {}) {
         lat: row.lat, lng: row.lng, imageUrl: row.image_url, imageAttribution: row.image_attribution, ticketUrl: row.ticket_url,
         acts: parse(row.acts, []),
       }));
-      const existing = editionsFor.all(festivalSlug);
+      const existingRows = editionsFor.all(festivalSlug);
+      const existing = existingRows.filter((row) => !BOOTS_SLUGS.includes(festivalSlug) || savedFestivalIdentity(row) === festivalSlug);
+      const familyRows = BOOTS_SLUGS.includes(festivalSlug) ? database.prepare("SELECT * FROM festival_editions WHERE festival_slug IN (?,?)").all(...BOOTS_SLUGS) : existing;
       const claimed = new Set();
       const gap = (row, edition) => Math.abs(Date.parse(`${row.start_date}T00:00:00Z`) - Date.parse(`${edition.startDate}T00:00:00Z`));
       let changed = 0;
-      for (const edition of groupFestivalEditions(listings)) {
+      for (const edition of groupFestivalEditions(listings.filter((item) => !BOOTS_SLUGS.includes(festivalSlug)
+        || matchFestival(FESTIVAL_CATALOG, item.name, item)?.slug === festivalSlug))) {
+        if (familyRows.some((row) => row.id === edition.id && (row.festival_slug !== festivalSlug || !existing.includes(row)))) continue;
+        // Pending reconciliation: do not duplicate an existing edition under a new slug.
+        if (familyRows.some((row) => row.festival_slug !== festivalSlug && savedFestivalIdentity(row) === festivalSlug
+          && (row.city || "") === (edition.city || "") && gap(row, edition) <= 10 * DAY_MS)) continue;
         // The same id when the dates are unchanged; otherwise the closest
         // unclaimed edition in the same city within ten days (a date change),
         // so a festival's two weekends never swap ids.
@@ -169,13 +178,16 @@ export function createFestivalStore(database, { now = Date.now } = {}) {
 
 // Reading festivals for the app and the public pages.
 export function createFestivalReader(database, { now = Date.now } = {}) {
+  database.function("festival_identity", { deterministic: true }, (name, city, venue) =>
+    matchFestival(FESTIVAL_CATALOG, name, { city, venue })?.slug || "");
   const festivalBySlug = database.prepare("SELECT * FROM festivals WHERE slug=?");
   const allFestivals = database.prepare("SELECT * FROM festivals ORDER BY name");
   const editionsFor = database.prepare("SELECT * FROM festival_editions WHERE festival_slug=? ORDER BY start_date DESC, id LIMIT 30");
+  const familyEditions = database.prepare("SELECT * FROM festival_editions WHERE festival_slug IN (?,?) ORDER BY start_date DESC, id");
   const upcomingEditions = database.prepare(`SELECT e.*, f.name AS festival_name,
       (SELECT COUNT(*) FROM festival_plans p JOIN users u ON u.id=p.user_id WHERE p.edition_id=e.id AND u.is_banned=0) AS going
     FROM festival_editions e JOIN festivals f ON f.slug=e.festival_slug
-    WHERE e.end_date >= ? AND (? = '' OR e.country_code = ?)
+    WHERE (e.end_date >= ? OR (e.festival_slug IN ('boots-and-hearts','boots-and-hearts-west') AND substr(e.start_date,1,4)='2027')) AND (? = '' OR e.country_code = ?)
     ORDER BY e.start_date, e.id LIMIT ?`);
   const editionById = database.prepare("SELECT * FROM festival_editions WHERE id=?");
   const goingByDay = database.prepare(`SELECT day.value AS day, COUNT(*) AS going FROM festival_plans p JOIN users u ON u.id=p.user_id,
@@ -192,16 +204,18 @@ export function createFestivalReader(database, { now = Date.now } = {}) {
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND p.show_format='festival' AND COALESCE(p.kind,'review')='review' AND u.is_banned=0 AND u.dormant_at IS NULL
       AND EXISTS (SELECT 1 FROM json_each(?) phrase WHERE instr(lower(p.artist), phrase.value) > 0)
+      AND (? = '' OR festival_identity(p.artist, p.city, p.venue) = ?)
     ORDER BY CASE WHEN p.date<>'' THEN p.date ELSE '' END DESC, p.created_at DESC LIMIT 12`);
   const reviewStats = database.prepare(`SELECT COUNT(*) AS reviews, AVG(p.overall) AS average FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND p.show_format='festival' AND COALESCE(p.kind,'review')='review' AND u.is_banned=0
-      AND EXISTS (SELECT 1 FROM json_each(?) phrase WHERE instr(lower(p.artist), phrase.value) > 0)`);
+      AND EXISTS (SELECT 1 FROM json_each(?) phrase WHERE instr(lower(p.artist), phrase.value) > 0)
+      AND (? = '' OR festival_identity(p.artist, p.city, p.venue) = ?)`);
 
   const editionJson = (row, { full = false } = {}) => {
     const lineup = parse(row.lineup, []);
     return {
       id: row.id,
-      festivalSlug: row.festival_slug,
+      festivalSlug: savedFestivalIdentity(row) || row.festival_slug,
       // Cleaned on read too, so editions saved before the rule read the same.
       name: festivalEditionName(row.name, { year: String(row.start_date || "").slice(0, 4), fallback: row.festival_slug }),
       startDate: row.start_date,
@@ -229,9 +243,12 @@ export function createFestivalReader(database, { now = Date.now } = {}) {
 
   return Object.freeze({
     upcoming({ country = "", limit = 60 } = {}) {
-      return upcomingEditions.all(today(now()), country, country, Math.min(100, Math.max(1, limit))).map((row) => ({
-        ...editionJson(row), festivalName: row.festival_name,
-      }));
+      return withFestivalAnnouncements(upcomingEditions.all(today(now()), country, country, 100)
+        .filter((row) => !BOOTS_SLUGS.includes(row.festival_slug) || savedFestivalIdentity(row))
+        .map((row) => ({ ...editionJson(row), festivalName: FESTIVAL_CATALOG_BY_SLUG.get(savedFestivalIdentity(row))?.name || row.festival_name })),
+        { today: today(now()), phase: "all" }).filter((item) => item.endDate >= today(now()) && (!country || item.countryCode === country))
+        .map((item) => ({ ...item, festivalName: item.festivalName || FESTIVAL_CATALOG_BY_SLUG.get(item.festivalSlug)?.name }))
+        .slice(0, Math.min(100, Math.max(1, limit)));
     },
 
     festivals() {
@@ -241,12 +258,15 @@ export function createFestivalReader(database, { now = Date.now } = {}) {
     festival(slug, { viewerId = null } = {}) {
       const row = festivalBySlug.get(slug);
       if (!row) return null;
-      const editions = editionsFor.all(slug);
+      const editions = BOOTS_SLUGS.includes(slug) ? familyEditions.all(...BOOTS_SLUGS).filter((item) => savedFestivalIdentity(item) === slug) : editionsFor.all(slug);
       const current = today(now());
-      const upcoming = editions.filter((edition) => edition.end_date >= current).sort((a, b) => a.start_date.localeCompare(b.start_date));
-      const past = editions.filter((edition) => edition.end_date < current);
+      const projected = withFestivalAnnouncements(editions.map((edition) => editionJson(edition, { full: true })), { today: current, slug, phase: "all" });
+      const upcoming = projected.filter((edition) => edition.endDate >= current);
+      const past = projected.filter((edition) => edition.endDate < current).reverse();
       const phrases = catalogPhrases(slug);
-      const stats = reviewStats.get(phrases);
+      const identity = BOOTS_SLUGS.includes(slug) ? slug : "";
+      const visibleReviews = festivalReviews.all(phrases, identity, identity);
+      const stats = reviewStats.get(phrases, identity, identity);
       return {
         festival: {
           slug: row.slug, name: row.name, city: row.city, country: row.country,
@@ -256,16 +276,16 @@ export function createFestivalReader(database, { now = Date.now } = {}) {
           const byDay = Object.fromEntries(goingByDay.all(edition.id).map((day) => [day.day, Number(day.going) || 0]));
           const plan = viewerId ? planFor.get(viewerId, edition.id) : null;
           return {
-            ...editionJson(edition, { full: true }),
+            ...edition,
             going: Number(goingTotal.get(edition.id)?.n) || 0,
             goingByDay: byDay,
             mustSee: mustSeeTop.all(edition.id).map((act) => ({ name: act.name, fans: Number(act.fans) || 0 })),
             ...(viewerId ? { plan: plan ? { days: parse(plan.days, []), mustSee: parse(plan.must_see, []), updatedAt: plan.updated_at } : null } : {}),
           };
         }),
-        past: past.map((edition) => editionJson(edition)),
-        expected: upcoming.length ? null : expectedEdition(past.map((edition) => ({ startDate: edition.start_date, endDate: edition.end_date, city: edition.city })), { today: current }),
-        reviews: festivalReviews.all(phrases).map((review) => ({
+        past: past.map(({ lineup, ...edition }) => edition),
+        expected: null,
+        reviews: visibleReviews.slice(0, 12).map((review) => ({
           postId: review.id, name: review.artist, date: review.date || "", endDate: review.end_date || "", overall: review.overall,
           review: String(review.review || "").slice(0, 280), city: review.city || "", venue: review.venue || "",
           // Only photos the author chose to share publicly.
@@ -278,7 +298,9 @@ export function createFestivalReader(database, { now = Date.now } = {}) {
 
     edition(id) {
       const row = editionById.get(id);
-      return row ? editionJson(row, { full: true }) : null;
+      if (!row || (BOOTS_SLUGS.includes(row.festival_slug) && !savedFestivalIdentity(row))) return null;
+      const item = editionJson(row, { full: true });
+      return withFestivalAnnouncements([item], { today: "0000-01-01", slug: item.festivalSlug }).find((edition) => edition.id === id) || item;
     },
   });
 }

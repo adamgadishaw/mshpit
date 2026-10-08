@@ -95,15 +95,15 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
           <Rise index={3} style={styles.stats}>
             {festivalLength(edition) ? <Stat label="Length" value={festivalLength(edition)} /> : null}
             {edition.lineupCount ? <Stat label="Lineup" value={`${edition.lineupCount} acts`} /> : null}
-            <Stat label="Going" value={edition.going ? Number(edition.going).toLocaleString("en-US") : "Be the first"} />
+            {!edition.dateOnly ? <Stat label="Going" value={edition.going ? Number(edition.going).toLocaleString("en-US") : "Be the first"} /> : null}
           </Rise>
-          <Rise index={4} style={styles.actions}>
+          {!edition.dateOnly ? <Rise index={4} style={styles.actions}>
             <Button title={plan ? `Going · ${plan.days.map((item) => festivalDayLabel(item)).join(", ")}` : "I'm going"} small
               onPress={() => (signedIn ? setEditing((open) => !open) : onRequireAuth?.())} accessibilityLabel={plan ? "Edit your festival plan" : "Say you're going"} />
             {edition.ticketUrl ? <Button title="Tickets" variant="secondary" small onPress={() => openLink(edition.ticketUrl)} accessibilityLabel="Open tickets" /> : null}
             <Button title="Share lineup" variant="secondary" small onPress={() => setShareModel(buildFestivalShareModel({ festival, edition, intent: "lineup" }))} accessibilityLabel="Share this festival's lineup" />
             {plan ? <Button title="Share my plan" variant="secondary" small onPress={() => setShareModel(buildFestivalShareModel({ festival, edition, plan, intent: "going", author }))} accessibilityLabel="Share the days you're going" /> : null}
-          </Rise>
+          </Rise> : null}
           {edition.imageAttribution ? <Text style={styles.attribution}>{`Image: ${edition.imageAttribution}`}</Text> : null}
         </View>
       </View> : <View style={[styles.hero, wide && styles.heroWide]}>
@@ -111,10 +111,7 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
         <View style={styles.heroBody}>
           <Rise index={0}><Text style={styles.kicker}>Festival</Text></Rise>
           <Rise index={1}><Text style={[styles.heroTitle, wide && styles.heroTitleWide]} accessibilityRole="header">{festival.name}</Text></Rise>
-          {page.expected ? <>
-            <Text style={styles.heroWhen}>{page.expected.label}</Text>
-            <Text style={styles.heroWhere}>{`Not announced yet. Estimated from the last edition: ${festivalDateRange(page.expected.basis.startDate, page.expected.basis.endDate)}${page.expected.basis.city ? `, ${page.expected.basis.city}` : ""}.`}</Text>
-          </> : <Text style={styles.heroWhere}>No dates listed yet. New dates show up here as soon as tickets are listed.</Text>}
+          <Text style={styles.heroWhen}>Dates have not been announced yet.</Text>
         </View>
       </View>}
 

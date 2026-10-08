@@ -36,10 +36,10 @@ function heading(page) {
   if (edition) {
     const year = edition.startDate.slice(0, 4);
     const named = name.toLowerCase().includes(year) ? name : `${name} ${year}`;
+    if (edition.dateOnly) return `${named}: Dates & Lineup`;
     return edition.lineup?.length ? `${named} Lineup, Dates & Tickets` : `${named}: Dates & Tickets`;
   }
-  if (page.expected) return `${name} ${page.expected.year}: Expected Dates, Lineup & History`;
-  return `${name}: Lineups, History & Fan Reviews`;
+  return `${name}: Dates Not Announced Yet, History & Fan Reviews`;
 }
 
 function description(page) {
@@ -50,12 +50,9 @@ function description(page) {
     const days = edition.days?.length > 1 ? `${edition.days.length} days` : "one day";
     return [`${name} runs ${festivalDateRange(edition.startDate, edition.endDate)}${place(edition) ? ` at ${place(edition)}` : ""}, ${days}.`,
       lead ? `Lineup includes ${lead}${edition.lineupCount > 4 ? ` and ${edition.lineupCount - 4} more` : ""}.` : "Lineup to be announced.",
-      "See the lineup by day, tickets and who's going."].join(" ").slice(0, 300);
+      edition.dateOnly ? "Follow the official site for further announcements." : "See the lineup by day, tickets and who's going."].join(" ").slice(0, 300);
   }
-  if (page.expected) {
-    return `${name} is expected in ${page.expected.label.replace(/^Expected /u, "")}, based on the last edition (${festivalDateRange(page.expected.basis.startDate, page.expected.basis.endDate)}). Past lineups, history and fan reviews.`.slice(0, 300);
-  }
-  return `${name}: history, past editions and fan reviews on Mshpit.`.slice(0, 300);
+  return `${name}: next edition dates have not been announced yet. History, past editions and fan reviews on Mshpit.`.slice(0, 300);
 }
 
 export function projectFestivalDocument({ origin = "https://www.mshpit.com", page } = {}) {
@@ -69,7 +66,7 @@ export function projectFestivalDocument({ origin = "https://www.mshpit.com", pag
     jsonLd.push({
       "@context": "https://schema.org",
       "@type": "Festival",
-      "@id": `${canonicalUrl}#${encodeURIComponent(item.id)}`,
+      "@id": `${canonicalUrl}#${encodeURIComponent(item.id || item.startDate)}`,
       name: item.name,
       url: canonicalUrl,
       startDate: item.startDate,
@@ -87,7 +84,7 @@ export function projectFestivalDocument({ origin = "https://www.mshpit.com", pag
       ...(item.lineup?.length ? { performer: item.lineup.slice(0, 30).map((act) => ({ "@type": "PerformingGroup", name: act.name })) } : {}),
       // Only the ticket link: we do not know whether tickets are still on sale.
       ...(safeHttps(item.ticketUrl) ? { offers: { "@type": "Offer", url: item.ticketUrl } } : {}),
-      ...(safeHttps(page.festival.website) ? { sameAs: [page.festival.website] } : {}),
+      ...(safeHttps(item.dateSource?.url || page.festival.website) ? { sameAs: [item.dateSource?.url || page.festival.website] } : {}),
     });
   }
   jsonLd.push({
@@ -209,7 +206,7 @@ export function renderFestivalMain(document) {
       ${safeHttps(item.ticketUrl) ? `<p><a href="${esc(item.ticketUrl)}" rel="nofollow noopener noreferrer">Tickets</a></p>` : ""}
       ${lineupHtml(item)}
     </section>`).join("");
-  const expectedHtml = !edition && page.expected ? `<section class="section"><h2>Next edition</h2><p>${esc(page.expected.label)}. Not announced yet; estimated from the last edition (${esc(festivalDateRange(page.expected.basis.startDate, page.expected.basis.endDate))}).</p></section>` : "";
+  const expectedHtml = !edition ? `<section class="section"><h2>Next edition</h2><p>Dates have not been announced yet.</p></section>` : "";
   const aboutHtml = festival.about ? `<section class="section"><h2>About ${esc(festival.name)}</h2><p>${esc(festival.about)}</p>
       ${festival.foundedYear ? `<p>First held in ${esc(festival.foundedYear)}.</p>` : ""}
       ${festival.aboutSource?.url && safeHttps(festival.aboutSource.url) ? `<p class="muted">Source: <a href="${esc(festival.aboutSource.url)}" rel="noopener">Wikipedia</a>, ${esc(festival.aboutSource.license || "CC BY-SA 4.0")}.</p>` : ""}

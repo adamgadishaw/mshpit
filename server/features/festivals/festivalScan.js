@@ -46,11 +46,11 @@ export function festivalListingsFromTicketmaster(entry, data) {
   const out = [];
   for (const event of Array.isArray(data?._embedded?.events) ? data._embedded.events.slice(0, 200) : []) {
     const name = text(event?.name);
-    if (!name || matchFestival([entry], name)?.slug !== entry.slug) continue;
+    const venue = event?._embedded?.venues?.[0] || {};
+    if (!name || matchFestival([entry], name, { city: venue.city?.name, region: venue.state?.stateCode || venue.state?.name, venue: venue.name, countryCode: venue.country?.countryCode })?.slug !== entry.slug) continue;
     const startDate = text(event.dates?.start?.localDate, 10);
     if (!startDate || !/^\d{4}-\d{2}-\d{2}$/u.test(startDate)) continue;
     const endDate = text(event.dates?.end?.localDate, 10);
-    const venue = event._embedded?.venues?.[0] || {};
     const image = selectTicketmasterEventImage(event);
     out.push({
       festivalSlug: entry.slug,
@@ -111,7 +111,7 @@ export async function runFestivalScan({ database, store, env = process.env, sign
   const summary = { scanned: 0, listings: 0, editionsChanged: 0, knowledge: 0, failures: 0 };
   const touched = new Set();
   // 1. Festival rows the tour-date ingest already has: free.
-  const known = store.tourDateListings((name) => matchFestival(catalog, name));
+  const known = store.tourDateListings((name, location) => matchFestival(catalog, name, location));
   store.saveListings(known.map(({ entry, billed, ...listing }) => ({ ...listing, acts: festivalActs(entry, billed) })));
   for (const listing of known) touched.add(listing.festivalSlug);
   // 2. A rotating batch straight from Ticketmaster.

@@ -41,13 +41,35 @@ export function festivalEditionName(raw, { year = "", fallback = "" } = {}) {
 }
 
 // The catalog festival an event name belongs to, or null.
-export function matchFestival(catalog, eventName) {
+export function matchFestival(catalog, eventName, location = {}) {
   const name = fold(eventName);
   if (!name) return null;
   for (const entry of catalog) {
     if (entry.exclude.some((phrase) => name.includes(fold(phrase)))) continue;
-    if (entry.match.some((phrase) => name.includes(fold(phrase)))) return entry;
+    if (entry.match.some((phrase) => name.includes(fold(phrase)))) {
+      if (entry.identityFamily && bootsAndHeartsIdentity(eventName, location) !== entry.slug) continue;
+      return entry;
+    }
   }
+  return null;
+}
+
+// Only this shared-name family opts into geography; touring brands keep their rules.
+export function bootsAndHeartsIdentity(eventName, location = {}) {
+  const name = fold(eventName).replace(/&/gu, "and");
+  if (!/\bboots and hearts\b/u.test(name)) return null;
+  const city = fold(location.city);
+  const region = fold(location.region);
+  const venue = fold(location.venue);
+  const country = fold(location.countryCode);
+  const westName = /\bboots and hearts west\b/u.test(name);
+  const westPlace = /\bedmonton\b/u.test(city) || /^(ab|alberta)$/u.test(region) || /\b(ice district|fan park)\b/u.test(venue);
+  const ontarioPlace = /\b(oro[ -]medonte|orillia|barrie)\b/u.test(city) || /^(on|ontario)$/u.test(region) || /\bburl'?s creek\b/u.test(venue);
+  if ((country && country !== "ca") || (westPlace && ontarioPlace) || (westName && ontarioPlace)) return null;
+  if (city && !westPlace && !ontarioPlace) return null;
+  if (region && !/^(ab|alberta|on|ontario)$/u.test(region)) return null;
+  if (westName || westPlace) return "boots-and-hearts-west";
+  if (ontarioPlace) return "boots-and-hearts";
   return null;
 }
 
