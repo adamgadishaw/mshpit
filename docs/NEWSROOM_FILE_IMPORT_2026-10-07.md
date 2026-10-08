@@ -186,6 +186,13 @@ known import, preserves its asynchronous boundary and injected uploader, and
 rejects the startup wait if the real callback exits first. No application
 guard, bundle test, assertion or cloud timeout is relaxed.
 
+Run 517 passed the parsing/replacement stages but its synthetic private upload
+locator lacked the required extension, so the existing client ticket validator
+rejected it before transfer. The harness now uses typed filenames and asserts
+the real ticket contract before responding. Synthetic-only failure context is
+logged, and the two new import/composer steps run before other browser suites
+to shorten feedback. All existing cloud gates remain required.
+
 ## Separate read-only Media API access assessment
 
 Inspection only: `server/features/mediaApi/{mediaApiPolicy,mediaApiService,

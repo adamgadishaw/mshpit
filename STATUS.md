@@ -41,6 +41,10 @@ August 4/5 audit/session log are historical journals, not current status.
   its uploader fake needed the new lazy module boundary. That exact import is
   now intercepted explicitly, and an early callback exit rejects its startup
   wait instead of leaving the test unresolved. Application guards are unchanged.
+- Run 517 reached import upload after real parsing; its mock private locator
+  omitted the required extension. Fixtures now satisfy the actual ticket
+  validator. Import/composer browser checks run first for earlier feedback,
+  with every existing browser gate still required.
 - Production dependency audit reports zero vulnerabilities. The full dev audit
   remains nonzero; the new moderate Mammoth CLI dependency is absent from its
   shipped browser bundle. No dependency-wide remediation was mixed in.

@@ -9,6 +9,7 @@ import { zipSync, strToU8 } from "fflate";
 import { fixtureApiResponse } from "./verify-navigation-browser.mjs";
 import { newsEditorFixture, upkeepAdmin } from "./verify-catalog-maintenance-browser.mjs";
 import { textPdf } from "./newsroomImportFixtures.mjs";
+import { validMediaUploadTicket } from "../src/domain/mediaUploadTicket.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const shots = join(root, ".tmp", "newsroom-import-browser");
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=", "base64");
@@ -82,8 +83,11 @@ async function scenario(browser, origin, width, clip) {
       assert.equal(request.headers()["x-pit-expected-account"], state.user.id);
       const body = request.postDataJSON(), kind = body.contentType.startsWith("video/") ? "video" : "image";
       state.creates.push(kind);
-      return json({ asset: { id: `ma_import_${kind}`, kind, status: "upload_pending" }, upload: { method: "PUT", storageScope: "private",
-        storageLocator: `pit-private:users/${state.user.id}/post/${kind}`, uploadUrl: `${origin}/fixture-put/${kind}`, requiredHeaders: { "Content-Type": body.contentType, "If-None-Match": "*" } } });
+      const upload = { method: "PUT", storageScope: "private",
+        storageLocator: `pit-private:users/${state.user.id}/post/${kind}.${kind === "video" ? "mov" : "png"}`,
+        uploadUrl: `${origin}/fixture-put/${kind}`, requiredHeaders: { "Content-Type": body.contentType, "If-None-Match": "*" } };
+      assert.ok(validMediaUploadTicket(upload), "Synthetic uploads must satisfy the real private-ticket contract.");
+      return json({ asset: { id: `ma_import_${kind}`, kind, status: "upload_pending" }, upload });
     }
     if (url.pathname.startsWith("/api/media/assets/ma_import_")) {
       assert.equal(request.headers()["x-pit-expected-account"], state.user.id);
@@ -174,6 +178,12 @@ async function scenario(browser, origin, width, clip) {
     await open(); assert.equal(await field.inputValue(), "");
     assert.equal(state.publishes, 0); assert.deepEqual(state.errors, []);
     console.log(JSON.stringify({ width, passed: true, noAutomaticPublish: true, mediaCreates: state.creates.length, saves: state.saves }));
+  } catch (error) {
+    // This context contains only the synthetic article and isolated account.
+    console.error(JSON.stringify({ width, creates: state.creates, puts: state.puts, finalizes: state.finalizes,
+      saves: state.saves, publishes: state.publishes, errors: state.errors,
+      composer: (await page.getByTestId("self-written-news-composer").innerText().catch(() => "unavailable")).slice(0, 8000) }));
+    throw error;
   } finally { await context.close(); }
 }
 export async function main() {
