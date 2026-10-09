@@ -11,6 +11,7 @@ import { ensureCitySchema } from "../cities/citySchema.js";
 import { musicBrainzBiographyFacts, validateStaffArtistBiography } from "../../../src/domain/artistBiography.mjs";
 import { createArtistLiveSummaryService } from "../artistArchive/artistLiveSummaryService.js";
 import { ensureArtistScheduleRevisionSchema } from "../artistArchive/artistScheduleCandidateIndex.js";
+import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
 
 const ARTIST_MBID = "12345678-1234-4234-8234-123456789abc";
 const OTHER_MBID = "22345678-1234-4234-8234-123456789abc";
@@ -1937,6 +1938,78 @@ test("verified post images are ImageObjects and the public artist directory is s
     }
   } finally {
     database.close();
+  }
+});
+
+test("Discover event previews stop evaluating after their bounded page while directories retain exact totals", () => {
+  const database = createDatabase();
+  try {
+    database.exec("CREATE INDEX idx_tourdates_sitemap_cursor ON tour_dates(date,id,release_at,provider_active)");
+    addArtist(database, { bio: "An established public biography. ".repeat(4) });
+    const insert = database.prepare(`INSERT INTO tour_dates(id,artist,artist_key,venue,date,release_at)
+      VALUES (?,'Alpha','alpha','Public Hall','2026-09-01',0)`);
+    for (let i = 0; i < 1000; i++) insert.run(`bounded-${String(i).padStart(4, '0')}`);
+    let evaluations = 0;
+    const instrumented = new Proxy(database, { get(target, property) {
+      if (property === "function") return (name, options, callback) => target.function(name, options,
+        name === "pit_indexable_music_event" ? function(a, b, c, d, e, f, g, h, i, j) {
+          evaluations++; return callback(a, b, c, d, e, f, g, h, i, j);
+        } : callback);
+      return typeof target[property] === "function" ? target[property].bind(target) : target[property];
+    } });
+    const repository = createPublicDocumentRepository(instrumented);
+    const preview = repository.readDiscover({ at: NOW, artistLimit: 1, eventLimit: 12 });
+    assert.equal(preview.events.length, 12);
+    assert.ok(evaluations < 50, `a twelve-row preview evaluated ${evaluations} events`);
+    const directory = repository.readDirectory({ kind: "events", at: NOW });
+    assert.equal(directory.total, 1000);
+    assert.equal(directory.hasNext, true);
+  } finally { database.close(); }
+});
+
+test("Discover previews retain directory eligibility, order and fresh reads with and without the existing cursor index", () => {
+  for (const indexed of [false, true]) {
+    const database = createDatabase();
+    try {
+      if (indexed) database.exec("CREATE INDEX idx_tourdates_sitemap_cursor ON tour_dates(date,id,release_at,provider_active)");
+      addUser(database, "active");
+      addUser(database, "banned", { banned: true });
+      for (let i = 0; i < 20; i++) {
+        addArtist(database, { key: `preview-${i}`, name: `Preview Artist ${i}`, bio: "" });
+        database.prepare(`INSERT INTO tour_dates
+          (id,artist,artist_key,venue,date,release_at,owner_id,event_status)
+          VALUES (?,?,?,?,?,?,?,?)`).run(`preview-${i}`, `Preview Artist ${i}`, `preview-${i}`,
+          "Preview Hall", "2026-09-01", i === 0 ? NOW + 1000 : 0,
+          i === 1 ? "banned" : i === 2 ? "active" : null, "scheduled");
+      }
+      const repository = createPublicDocumentRepository(database);
+      const parity = () => {
+        const preview = repository.readDiscover({ at: NOW, artistLimit: 12, eventLimit: 12 });
+        for (const kind of ["artists", "events"]) {
+          const directory = repository.readDirectory({ kind, limit: 12, at: NOW });
+          assert.deepEqual(preview[kind].map(row => ({ ...row })),
+            directory[kind].map(({ directory_total: _count, ...row }) => row));
+          assert.equal(directory.total, 18);
+          assert.equal(directory.hasNext, true);
+        }
+        return preview;
+      };
+      const before = parity();
+      assert.equal(before.events.some(row => row.id === "preview-0" || row.id === "preview-1"), false);
+      // A changed row remains observable on the next read; no projected rows or
+      // privacy decisions are retained between requests.
+      database.prepare("UPDATE tour_dates SET event_status='cancelled' WHERE id='preview-10'").run();
+      const cancelled = parity();
+      assert.equal(cancelled.events.find(row => row.id === "preview-10")?.event_status, "cancelled");
+      database.prepare("UPDATE tour_dates SET provider_active=0 WHERE id='preview-10'").run();
+      database.prepare("UPDATE tour_dates SET release_at=? WHERE id='preview-3'").run(NOW + 1000);
+      database.prepare("UPDATE users SET is_banned=1 WHERE id='active'").run();
+      const changed = repository.readDiscover({ at: NOW, eventLimit: 12 });
+      assert.equal(changed.events.some(row => ["preview-2", "preview-3", "preview-10"].includes(row.id)), false);
+      assert.equal(repository.readDirectory({ kind: "events", at: NOW }).total, 15);
+      const released = repository.readDiscover({ at: NOW + 1001, eventLimit: 12 });
+      assert.equal(released.events.some(row => row.id === "preview-0"), true);
+    } finally { database.close(); }
   }
 });
 

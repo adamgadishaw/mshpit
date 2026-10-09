@@ -478,8 +478,8 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
     ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
 
-  const directoryArtists = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.genre,a.data,a.bio,a.updated_at,
-      COUNT(*) OVER () AS directory_total
+  const directoryArtistsSql = (includeTotal) => `SELECT a.norm,a.name,a.public_slug,a.genre,a.data,a.bio,a.updated_at
+      ${includeTotal ? ',COUNT(*) OVER () AS directory_total' : ''}
     FROM artists a
     WHERE a.public_slug IS NOT NULL AND TRIM(a.public_slug)<>'' AND ${publicArtistCatalogSql("a")} AND (
       LENGTH(TRIM(COALESCE(a.bio,'')))>=80 OR (a.source='artist-created' AND EXISTS (
@@ -515,10 +515,18 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
           ))
       )
     )
-    ORDER BY a.rank_score DESC,a.popularity DESC,a.name COLLATE NOCASE,a.norm LIMIT ? OFFSET ?`);
+    ORDER BY a.rank_score DESC,a.popularity DESC,a.name COLLATE NOCASE,a.norm LIMIT ? OFFSET ?`;
+  const directoryArtists = database.prepare(directoryArtistsSql(true));
+  const discoverArtists = database.prepare(directoryArtistsSql(false));
 
-  const directoryEvents = database.prepare(`SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug,
-      COUNT(*) OVER () AS directory_total FROM tour_dates td
+  // Production already has this cursor index. Smaller/older read-only fixtures
+  // may not; retain their ordinary planner path without creating an index.
+  const discoverEventIndex = database.prepare(`SELECT 1 FROM sqlite_master
+    WHERE type='index' AND name='idx_tourdates_sitemap_cursor'`).get()
+    ? 'INDEXED BY idx_tourdates_sitemap_cursor' : '';
+  const directoryEventsSql = (includeTotal) => `SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug
+      ${includeTotal ? ',COUNT(*) OVER () AS directory_total' : ''} FROM tour_dates td
+      ${includeTotal ? '' : discoverEventIndex}
     LEFT JOIN users owner ON owner.id=td.owner_id
     LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
     WHERE td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?2")}
@@ -531,7 +539,9 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
-    ORDER BY td.date ASC,td.id ASC LIMIT ? OFFSET ?`);
+    ORDER BY td.date ASC,td.id ASC LIMIT ? OFFSET ?`;
+  const directoryEvents = database.prepare(directoryEventsSql(true));
+  const discoverEvents = database.prepare(directoryEventsSql(false));
 
   const directoryVenues = database.prepare(`WITH canonical_event_rows AS (
     SELECT LOWER(TRIM(td.venue)) AS venue_name,
@@ -765,8 +775,11 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       const day = typeof today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(today)
         ? today : new Date(instant).toISOString().slice(0, 10);
       return {
-        artists: directoryArtists.all(instant, day, bounded(artistLimit, 12, 24), 0),
-        events: directoryEvents.all(instant, day, bounded(eventLimit, 24, 48), 0),
+        // The hub needs a bounded preview, not directory pagination totals.
+        // Omitting the window count lets SQLite stop at the requested rows.
+        // Predicates and ordering remain shared with the counted directories.
+        artists: discoverArtists.all(instant, day, bounded(artistLimit, 12, 24), 0),
+        events: discoverEvents.all(instant, day, bounded(eventLimit, 24, 48), 0),
         posts: discoverPosts.all(bounded(postLimit, 8, 16)),
       };
     },
