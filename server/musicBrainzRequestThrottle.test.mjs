@@ -3,6 +3,7 @@ import test from "node:test";
 import { spawnSync } from "node:child_process";
 
 import { createMusicBrainzRequestThrottle } from "./musicBrainzRequestThrottle.js";
+import { PROVIDER_RETRY_AFTER_MAX_MS } from "./providerResponsePolicy.js";
 
 test("provider Retry-After immediately pauses all callers for the requested bounded interval", async () => {
   let now = 1_000, calls = 0;
@@ -24,6 +25,150 @@ test("absolute Retry-After from a background feature protects every MusicBrainz 
   assert.equal(run.status().retryAt, 130_000);
   await assert.rejects(run(async () => { calls++; }, { priority: "interactive" }), { code: "circuit_open" });
   assert.equal(calls, 1);
+});
+
+test("an absolute deadline takes precedence over its stale relative hint", async () => {
+  let now = 10_000;
+  const retryAt = now + 7_200_000;
+  const run = createMusicBrainzRequestThrottle({ clock: () => now });
+  await assert.rejects(run(async () => {
+    now += 60_000;
+    throw Object.assign(new Error("response received earlier"), { status: 503, retryAt, retryAfterMs: 7_200_000 });
+  }), { status: 503 });
+  assert.equal(run.status().retryAt, retryAt);
+  await assert.rejects(run(async () => assert.fail("still paused")), (error) => error.retryAt === retryAt && error.retryAfterMs === 7_140_000);
+});
+
+test("unbounded provider hints become one finite 24-hour wait", async () => {
+  const now = 10_000;
+  const run = createMusicBrainzRequestThrottle({ clock: () => now });
+  await assert.rejects(run(async () => { throw Object.assign(new Error("huge wait"), { status: 429, retryAt: Number.MAX_SAFE_INTEGER }); }), { status: 429 });
+  assert.equal(run.status().retryAt, now + PROVIDER_RETRY_AFTER_MAX_MS);
+});
+
+test("a durable deadline added during pacing is checked again before dispatch", async () => {
+  let now = 10_000, deadline = 0, outbound = 0;
+  const retryAt = now + 7_200_000;
+  const run = createMusicBrainzRequestThrottle({
+    clock: () => now,
+    wait: async (ms) => { deadline = retryAt; now += ms; },
+    cooldownStore: { readDeadline: () => deadline, extendDeadline: (value) => { deadline = Math.max(deadline, value); return deadline; } },
+  });
+  await run(async () => { outbound += 1; });
+  await assert.rejects(run(async () => { outbound += 1; }), { code: "circuit_open" });
+  assert.equal(outbound, 1);
+  assert.equal(run.status().retryAt, retryAt);
+  assert.equal(run.status().consecutiveFailures, 0, "a local rejection is not another provider failure");
+});
+
+test("a late successful half-open probe cannot erase another process's newer wait", async () => {
+  let now = 10_000, deadline = 0;
+  const run = createMusicBrainzRequestThrottle({
+    clock: () => now,
+    cooldownStore: { readDeadline: () => deadline, extendDeadline: (value) => { deadline = Math.max(deadline, value); return deadline; } },
+  });
+  await assert.rejects(run(async () => { throw Object.assign(new Error("first refusal"), { status: 429 }); }), { status: 429 });
+  now = deadline;
+  let release, started;
+  const held = new Promise((resolve) => { release = resolve; });
+  const entered = new Promise((resolve) => { started = resolve; });
+  const probe = run(async () => { started(); await held; return "probe finished"; });
+  await entered;
+  deadline = now + 7_200_000;
+  release();
+  assert.equal(await probe, "probe finished");
+  await assert.rejects(run(async () => assert.fail("newer wait must hold")), (error) => error.code === "circuit_open" && error.retryAt === deadline);
+});
+
+test("caller cancellation with a custom reason cannot open or persist a provider outage", async () => {
+  let writes = 0;
+  const controller = new AbortController();
+  const reason = new Error("caller deadline");
+  const run = createMusicBrainzRequestThrottle({
+    cooldownStore: { readDeadline: () => 0, extendDeadline: () => { writes += 1; } },
+    breakerFailureThreshold: 1,
+  });
+  await assert.rejects(run(async () => {
+    controller.abort(reason);
+    throw Object.assign(new Error("transport rejected after cancel"), { status: 502, code: "network" });
+  }, { signal: controller.signal }), (error) => error === reason);
+  assert.equal(writes, 0);
+  assert.equal(run.status().consecutiveFailures, 0);
+});
+
+test("a received provider cooldown survives cancellation before the response error settles", async () => {
+  const now = 10_000;
+  let deadline = 0;
+  const controller = new AbortController();
+  const reason = new DOMException("caller left", "AbortError");
+  const run = createMusicBrainzRequestThrottle({
+    clock: () => now,
+    cooldownStore: { readDeadline: () => deadline, extendDeadline: (value) => { deadline = value; return deadline; } },
+  });
+  const retryAt = now + 7_200_000;
+  await assert.rejects(run(async () => {
+    controller.abort(reason);
+    throw Object.assign(new Error("actual response"), { status: 503, retryAt, providerResponse: true });
+  }, { signal: controller.signal }), (error) => error === reason);
+  assert.equal(deadline, retryAt);
+  await assert.rejects(run(async () => assert.fail("other callers must respect the response")), { code: "circuit_open" });
+});
+
+test("a failed half-open probe exposes the effective longer circuit wait on the original failure", async () => {
+  let now = 10_000;
+  const run = createMusicBrainzRequestThrottle({ clock: () => now });
+  await assert.rejects(run(async () => { throw Object.assign(new Error("initial refusal"), { status: 429 }); }), { status: 429 });
+  now = run.status().retryAt;
+  const cause = new Error("provider cause");
+  const original = Object.assign(new Error("failed recovery probe", { cause }), { provider: "MusicBrainz", status: 503, code: "upstream_5xx" });
+  await assert.rejects(run(async () => { throw original; }), (error) => error === original);
+  const retryAt = now + 60_000;
+  assert.equal(original.retryAt, retryAt);
+  assert.equal(original.retryAfterMs, 60_000);
+  assert.equal(original.cause, cause);
+  assert.equal(original.status, 503);
+  assert.equal(original.code, "upstream_5xx");
+  assert.equal(original.provider, "MusicBrainz");
+  now += 5_000;
+  await assert.rejects(run(async () => assert.fail("probe cooldown is active")), (error) => error.retryAt === retryAt && error.retryAfterMs === 55_000);
+  assert.equal(run.status().retryAt, retryAt);
+});
+
+test("the triggering rejection carries a newer durable deadline instead of its shorter provider hint", async () => {
+  let now = 10_000, durable = 0;
+  const retryAt = now + 120_000;
+  const run = createMusicBrainzRequestThrottle({
+    clock: () => now,
+    cooldownStore: {
+      readDeadline: () => durable,
+      extendDeadline: () => { now += 5_000; durable = retryAt; return durable; },
+    },
+  });
+  const original = Object.assign(new Error("short provider hint"), { status: 503, retryAt: now + 15_000, retryAfterMs: 15_000 });
+  await assert.rejects(run(async () => { throw original; }), (error) => error === original);
+  assert.equal(original.retryAt, retryAt);
+  assert.equal(original.retryAfterMs, 115_000, "remaining delay uses error delivery time, not the earlier receipt");
+  assert.equal(run.status().retryAt, retryAt);
+});
+
+test("immutable half-open failures preserve provider semantics while exposing the effective deadline", async () => {
+  let now = 10_000;
+  const run = createMusicBrainzRequestThrottle({ clock: () => now });
+  await assert.rejects(run(async () => { throw Object.assign(new Error("initial refusal"), { status: 429 }); }), { status: 429 });
+  now = run.status().retryAt;
+  const cause = new Error("original cause");
+  const original = Object.freeze(Object.assign(new Error("frozen recovery failure", { cause }), { name: "ProviderError", provider: "MusicBrainz", status: 503, code: "upstream_5xx" }));
+  await assert.rejects(run(async () => { throw original; }), (error) => {
+    assert.notEqual(error, original);
+    assert.equal(error.name, original.name);
+    assert.equal(error.message, original.message);
+    assert.equal(error.status, original.status);
+    assert.equal(error.code, original.code);
+    assert.equal(error.cause, original.cause);
+    assert.equal(error.retryAt, now + 60_000);
+    assert.equal(error.retryAfterMs, 60_000);
+    return true;
+  });
 });
 
 test("a CLI process stays alive until its awaited queued MusicBrainz request completes", () => {

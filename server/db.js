@@ -43,6 +43,8 @@ import { ensureCommentMutationSchema } from "./commentMutationSchema.js";
 import { ensureSocialReactionSchema } from "./features/socialReactions/socialReactions.js";
 import { ensureArtistAccountSchema, pendingArtistSignupIntent } from "./features/artistAccounts/artistAccountPolicy.js";
 import { ensureMediaApiSchema } from "./features/mediaApi/mediaApiPolicy.js";
+import { createMusicBrainzCooldownStore } from "./musicBrainzCooldownStore.js";
+import { configureMusicBrainzCooldownStore } from "./musicBrainzRequestThrottle.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -1612,6 +1614,10 @@ CREATE TABLE IF NOT EXISTS email_log (
 // can distinguish an intentional Pit database from an unrelated SQLite file;
 // the pre-marker live database is admitted once by the stricter legacy checks.
 db.exec(`PRAGMA application_id = ${PIT_SQLITE_APPLICATION_ID}`);
+
+// Every MusicBrainz client shares this gate. Bind durable recovery state only
+// after app_meta exists, without importing the database from the pure gate.
+configureMusicBrainzCooldownStore(createMusicBrainzCooldownStore(db));
 
 // Additive migrations for DBs created before a column existed. Inspect the
 // actual table before altering it: a real migration failure must stop startup,

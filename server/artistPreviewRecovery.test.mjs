@@ -31,6 +31,12 @@ test("a genuine primary miss plus empty fallback remains a genuine miss", async 
   assert.deepEqual(await resolve({ primary: async () => null, fallback: async () => null }), { artist: null, provider: null });
 });
 
+test("an unavailable fallback cannot turn a genuine primary miss into a definitive no-match", async () => {
+  const error = unavailable();
+  await assert.rejects(resolve({ primary: async () => null, fallback: async () => { throw error; } }),
+    (value) => value === error);
+});
+
 test("failed early fallback keeps waiting for a valid primary result", async () => {
   let release;
   const result = resolve({ hedgeAfterMs: 10,

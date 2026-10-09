@@ -16,11 +16,15 @@ export function createApiResponseHeaders(initial = {}) {
 
 // Retry timing is typed server state, never a raw provider header or message.
 // It belongs on errors too; route-local headers are otherwise lost on throw.
-export function apiRetryAfterHeaders(error) {
-  const delay = error?.retryAfterMs;
+export function apiRetryAfterHeaders(error, { now = Date.now() } = {}) {
+  // A replayed failure keeps its original deadline. Never start its relative
+  // cooldown again while serializing a later response.
+  const deadline = error?.retryAt;
+  if (deadline != null && (typeof deadline !== "number" || !Number.isFinite(deadline))) return {};
+  const delay = deadline == null ? error?.retryAfterMs : deadline - now;
   if (!(error?.status === 429 || (error?.status >= 500 && error?.status <= 599))
     || typeof delay !== "number" || !Number.isFinite(delay) || delay <= 0) return {};
-  const maxSeconds = error?.code === "ARTIST_CAMPAIGN_LIMIT" ? 86_400 : 3_600;
+  const maxSeconds = error?.code === "ARTIST_CAMPAIGN_LIMIT" || error?.code === "PROVIDER_UNAVAILABLE" ? 86_400 : 3_600;
   return { "Retry-After": String(Math.max(1, Math.min(maxSeconds, Math.ceil(delay / 1000)))) };
 }
 

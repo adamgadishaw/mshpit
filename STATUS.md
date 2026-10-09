@@ -6,6 +6,24 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-09 MusicBrainz reliability (release pending)
+
+- Branch `fix/musicbrainz-reliability` contains the reviewed correction. Remote
+  `master` was reconfirmed at `faa1b0cacb7e99810b50954c89524e0e57f132b8`; its
+  source tree equals the reviewed local base. The owner authorized checks and
+  release within existing permissions. GitHub rejected branch creation with
+  HTTP 403 through the connected account; no remote branch, PR or release is
+  claimed. Remote writes stopped at that denial.
+- The patch persists shared cooldown deadlines in existing `app_meta`, carries
+  accurate Retry-After timing, distinguishes unavailable providers from genuine
+  empty results, and preserves exact stored artist identities and client input
+  through manual recovery. No schema migration, identity-matching relaxation,
+  dependency, credential, budget or production-setting change is required.
+- Local validation, exact source-tree qualifications and remaining release gates
+  are recorded in `docs/MUSICBRAINZ_RELIABILITY_2026-10-09.md`. Exact final-commit
+  GitHub checks and deployed-commit verification remain required. The separate
+  overload candidate, festival patch and Newsroom importer are excluded.
+
 ## 2026-10-07 Artist-only research and provider event text (review branch)
 
 - Branch `codex/artist-research-event-repair-20261007` starts at deployed master

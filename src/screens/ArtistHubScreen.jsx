@@ -238,7 +238,12 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
         retainData: true,
       }));
     });
-    if (!bundledCatalog && !remoteArtistMeta(artistName)) resolveArtist(artistName);
+    if (!bundledCatalog && !remoteArtistMeta(artistName)) {
+      void resolveArtist(artistName, { signal: controller.signal }).catch(() => {
+        // architecture: allow-empty-catch -- optional metadata keeps its current snapshot; cancellation must not
+        // produce an unhandled rejection when the workspace changes.
+      });
+    }
     return () => {
       active = false;
       controller.abort();

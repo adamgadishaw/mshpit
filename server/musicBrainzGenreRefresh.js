@@ -14,6 +14,7 @@ import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { privateErrorLabel } from "./errors.js";
 import { runMusicBrainzRequest } from "./musicBrainzRequestThrottle.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
+import { discardProviderResponse, providerRetryAfterMs } from "./providerResponsePolicy.js";
 import {
   musicBrainzGenreFields,
   projectArtistGenre,
@@ -112,11 +113,13 @@ export async function fetchExactMusicBrainzArtistGenres(mbid, {
   if (!exactMbid) throw new TypeError("A valid MusicBrainz artist ID is required.");
   if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
   return requestGate(async () => {
+    signal?.throwIfAborted();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new DOMException("Timed out", "TimeoutError")), timeoutMs);
     timeout.unref?.();
     const abort = () => controller.abort(signal?.reason || new DOMException("Aborted", "AbortError"));
     signal?.addEventListener("abort", abort, { once: true });
+    let responseError;
     try {
       const response = await fetchImpl(
         `https://musicbrainz.org/ws/2/artist/${exactMbid}?inc=genres&fmt=json`,
@@ -126,14 +129,23 @@ export async function fetchExactMusicBrainzArtistGenres(mbid, {
         },
       );
       if (!response?.ok) {
+        const responseAt = Date.now();
         const error = new Error("MusicBrainz genre lookup failed.");
         error.status = Number(response?.status) || 502;
+        error.providerResponse = true;
+        error.retryAfterMs = providerRetryAfterMs(response, responseAt);
+        if (error.retryAfterMs != null) error.retryAt = responseAt + error.retryAfterMs;
+        responseError = error;
+        discardProviderResponse(response);
         throw error;
       }
       return await readBoundedJsonResponse(response, {
         maxBytes: PROVIDER_JSON_LIMITS.musicBrainz,
         signal: controller.signal,
       });
+    } catch (error) {
+      if (signal?.aborted && error !== responseError) throw signal.reason || error;
+      throw error;
     } finally {
       clearTimeout(timeout);
       signal?.removeEventListener("abort", abort);

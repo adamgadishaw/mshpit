@@ -15,6 +15,14 @@ import { CREW_ENABLED } from "./crewAvailability.mjs";
 
 const text = (value) => String(value ?? "").trim();
 
+export function needsPublicFrameIdentity(frame, options = {}) {
+  const artistName = text(frame?.artistName || frame?.artistArchive?.name);
+  if (!frame || (!artistName && !frame.profileId)) return false;
+  const cached = artistName ? options.resolveArtistMeta?.(artistName) : null;
+  if (cached?.transient === true && !frame.artistPublicSlug && !frame.artistArchive?.publicSlug) return true;
+  return !publicFramePath(frame, options);
+}
+
 // Convert an in-memory navigation frame into the public URL it owns. Frames
 // without a public identity deliberately return null so temporary app state is
 // never written into browser history.

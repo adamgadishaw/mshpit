@@ -1,4 +1,5 @@
-import { publicFramePath } from "./publicFrameNavigation.mjs";
+import { publicFramePath, needsPublicFrameIdentity } from "./publicFrameNavigation.mjs";
+export { needsPublicFrameIdentity } from "./publicFrameNavigation.mjs";
 import { slugify } from "./urls.mjs";
 
 const text = (value) => String(value ?? "").trim();
@@ -22,13 +23,6 @@ function abortable(read, signal) {
     signal.addEventListener("abort", abort, { once: true });
     Promise.resolve(read).then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
-}
-
-export function needsPublicFrameIdentity(frame, options = {}) {
-  if (!frame || (!artistNameOf(frame) && !frame.profileId)) return false;
-  const cached = artistNameOf(frame) ? options.resolveArtistMeta?.(artistNameOf(frame)) : null;
-  if (cached?.transient === true && !frame.artistPublicSlug && !frame.artistArchive?.publicSlug) return true;
-  return !publicFramePath(frame, options);
 }
 
 /**

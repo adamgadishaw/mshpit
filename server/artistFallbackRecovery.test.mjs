@@ -85,8 +85,11 @@ test("invalid fallback identifiers cannot create a preview or a durable recovery
   try {
     globalThis.fetch = async (url) => new Response(JSON.stringify(String(url).includes("musicbrainz.org")
       ? { artists: [] } : { data: [{ id: "../other-artist", name }] }));
-    assert.deepEqual(await lookup(name), { artist: null, created: false });
+    await assert.rejects(lookup(name), (error) => error.status === 502 && error.code === "PROVIDER_UNAVAILABLE"
+      && error.cause?.provider === "Deezer" && error.cause?.code === "invalid_payload");
     assert.equal(providerCacheStmts.get.get("dzresolve:v1:invalid fallback id"), undefined);
+    assert.equal(providerCacheStmts.get.get("mbresolve:v1:invalid fallback id"), undefined);
+    assert.equal(artistStmts.byNorm.get(name.toLowerCase()), undefined);
   } finally { globalThis.fetch = originalFetch; }
 });
 

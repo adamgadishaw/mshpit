@@ -548,7 +548,7 @@ async function handleRequest(req, res) {
     ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
         "Access-Control-Allow-Headers": `Content-Type, X-Request-Id, X-Pit-Expected-Account, ${CAPACITY_CHALLENGE_HEADER}`,
-        "Access-Control-Expose-Headers": "X-Request-Id, Link, Content-Disposition, X-Pit-Results-Truncated" }
+        "Access-Control-Expose-Headers": "X-Request-Id, Link, Content-Disposition, X-Pit-Results-Truncated, Retry-After" }
     : {};
   if (req.method === "OPTIONS") return send(res, 204, "", createApiResponseHeaders(cors));
 

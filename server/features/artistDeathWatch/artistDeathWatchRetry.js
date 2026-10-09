@@ -5,13 +5,18 @@ export const isDeathWatchProviderFailure = (code) => /^(?:wikidata|musicbrainz)_
 
 // The existing durable scan timestamps carry the previous cooldown through a
 // restart. No in-memory failure counter can accidentally restart hourly hammering.
-export function deathWatchRetryAt(settings,error,at) {
+export function deathWatchRetryAt(settings,error,at,{now=Date.now}={}) {
   const previousFailure=isDeathWatchProviderFailure(settings?.lastErrorCode);
   const previousDelay=Number(settings?.nextScanAt)-Number(settings?.lastScanAt);
   const backoff=previousFailure && Number.isFinite(previousDelay) && previousDelay>0
     ? Math.min(ARTIST_DEATH_WATCH_MAX_COOLDOWN_MS,Math.max(ARTIST_DEATH_WATCH_INTERVAL_MS,previousDelay)*2)
     : ARTIST_DEATH_WATCH_INTERVAL_MS;
   const requested=Number(error?.retryAt);
-  return Math.min(at+ARTIST_DEATH_WATCH_MAX_COOLDOWN_MS,
-    Math.max(at+backoff,Number.isSafeInteger(requested) && requested>at ? requested : 0));
+  // Provider deadlines are bounded from response receipt. Apply a defensive
+  // bound at error processing time, not the earlier scan evidence timestamp.
+  const processedAt=Number(now());
+  const deadlineBase=Number.isSafeInteger(processedAt) && processedAt>=at ? processedAt : at;
+  const providerDeadline=Number.isSafeInteger(requested) && requested>at
+    ? Math.min(deadlineBase+ARTIST_DEATH_WATCH_MAX_COOLDOWN_MS,requested) : 0;
+  return Math.max(at+backoff,providerDeadline);
 }
