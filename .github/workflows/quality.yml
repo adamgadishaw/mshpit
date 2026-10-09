@@ -72,6 +72,10 @@ jobs:
         run: node node_modules/playwright/cli.js install --with-deps chromium
       # These suites serve the exported bundle on loopback and intercept every
       # API. They need no secrets, database, production URL, or real accounts.
+      - name: Verify Newsroom import, media recovery and manual publication controls
+        run: node scripts/verify-newsroom-import-browser.mjs
+      - name: Verify existing Newsroom draft and publish flow
+        run: node scripts/verify-newsroom-composer-browser.mjs
       - run: npm run verify:auth-browser
       - run: npm run verify:artist-account-browser
       - run: npm run verify:artist-identity-moderation-browser

@@ -312,7 +312,7 @@ function newsStoryMain(document) {
   const story = document.news;
   const date = dateTimeLabel(story.publishedAt);
   const artists = story.artists.map((artist) => link(artist.path, artist.name)).join(", ");
-  const sources = story.sources.map((source) => `<li><strong>${esc(source.kind === "photo" ? "Photo" : "Article")}:</strong> <a href="${esc(source.url)}" rel="nofollow noopener noreferrer">${esc(source.name)}</a>${source.title ? ` <span>${esc(source.title)}</span>` : ""}${source.credit ? ` <span>(${esc(source.credit)})</span>` : ""}</li>`).join("");
+  const sources = story.sources.map((source) => `<li><strong>${esc(source.kind === "photo" ? "Photo" : source.kind === "video" ? "Video" : "Article")}:</strong> <a href="${esc(source.url)}" rel="nofollow noopener noreferrer">${esc(source.name)}</a>${source.title ? ` <span>${esc(source.title)}</span>` : ""}${source.credit ? ` <span>(${esc(source.credit)})</span>` : ""}</li>`).join("");
   const sourceControl = sources ? `<details class="news-sources"><summary>Sources</summary><ul>${sources}</ul></details>` : "";
   const image = publicMediaUrl(document.image);
   return `<article class="news-story">
@@ -321,6 +321,7 @@ function newsStoryMain(document) {
       ${story.summary ? `<p class="hero-copy"><strong>${esc(story.summary)}</strong></p>` : ""}
       ${image ? `<figure class="news-photo"><img src="${esc(image)}" alt="${esc(document.imageAlt || story.headline)}" loading="eager" decoding="async"${document.imageWidth ? ` width="${esc(document.imageWidth)}"` : ""}${document.imageHeight ? ` height="${esc(document.imageHeight)}"` : ""} /><figcaption>${esc(document.imageProvenance === "self-written-article-photo" ? "Article photo" : "News image")}</figcaption></figure>` : ""}
       ${paragraphs(story.body)}
+      ${document.video ? mediaGallery([document.video], "Article video") : ""}
       ${artists ? `<p>About ${artists}</p>` : ""}
       ${sourceControl}
       <p class="news-more"><a class="button secondary" href="/news">Read more music news</a></p>

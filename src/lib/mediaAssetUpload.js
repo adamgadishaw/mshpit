@@ -1,7 +1,7 @@
 import { api } from "./api";
 import { isDurableMediaUrl, prepareMediaUploadAsset, uploadPreparedMediaAsset } from "./mediaUpload";
 import { finalizeMediaSourceV1, resumeExistingMediaSourceV1 } from "./mediaAssetFinalize.mjs";
-import { defaultMediaEdit, mediaSourceMaxBytes, mediaSourceSizeAllowed } from "../domain/mediaEdit.mjs";
+import { defaultMediaEdit, mediaSourceMaxBytes, mediaSourceSizeAllowed } from "../domain/mediaOriginal.mjs";
 import { mediaUploadLimitLabel } from "../domain/mediaUploadPolicy.mjs";
 import { mediaSourceClientAssetId } from "../domain/mediaUploadIdentity.mjs";
 import { boundedMediaRequest, recoverMediaRequest } from "../domain/mediaRequestRecovery.mjs";

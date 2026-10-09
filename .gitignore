@@ -57,3 +57,6 @@ backups/
 *.db
 *.db-wal
 *.db-shm
+
+# Same-origin parser assets are copied from pinned dependencies at export time.
+/public/newsroom-import/

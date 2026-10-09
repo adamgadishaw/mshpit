@@ -426,7 +426,7 @@ export function newsShareCardModel(story, { variant = "news", fallbackArtwork = 
     .map((artist) => cleanText(artist?.name, 80)).filter(Boolean).slice(0, 3);
   const manual = story.origin === "self_written";
   const outlets = [...new Set((Array.isArray(story.sources) ? story.sources : [])
-    .filter((source) => !manual || source?.kind !== "photo")
+    .filter((source) => !["photo", "video"].includes(source?.kind))
     .map((source) => cleanText(source?.name, 60)).filter(Boolean))];
   // The link preview has one short line for its sources.
   const sources = variant === "news-link" && outlets.length > 3

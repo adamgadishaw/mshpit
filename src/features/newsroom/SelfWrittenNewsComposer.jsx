@@ -5,7 +5,9 @@ import Button from "../../components/Button";
 import { colors, radius } from "../../theme";
 import { load, save as saveLocal } from "../../lib/persist";
 import { emptyNewsroomForm, MAX_NEWSROOM_ARTICLE_SOURCES, newsroomArticlePayload, newsroomDraftEnvelope, newsroomDraftStorageKey, newsroomSaveAttempt, restoreNewsroomDraft } from "../../domain/newsroomComposition.mjs";
-import { loadSelfWrittenPhoto, uploadSelfWrittenPhoto } from "./newsDeskEditorMediaService";
+import { loadSelfWrittenMedia, uploadSelfWrittenMedia } from "./newsDeskEditorMediaService";
+import NewsroomImportPanel from "./NewsroomImportPanel";
+import NewsArticleVideo from "../../components/news/NewsArticleVideo";
 
 function Field({ label, help, children }) {
   return <View style={styles.field}>
@@ -31,10 +33,16 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
   const [form, setForm] = useState(() => retained.current?.form || emptyNewsroomForm());
   const { headline, summary, body, category, sources, photoName, photoUrl, photoCredit } = form;
   const [photo, setPhoto] = useState(null);
+  const [video, setVideo] = useState(null);
+  const [videoError, setVideoError] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [mediaStage, setMediaStage] = useState("");
   const [uploading, setUploading] = useState(false);
   const [photoError, setPhotoError] = useState("");
   const [savedPayload, setSavedPayload] = useState(retained.current?.savedPayload || null);
   const uploadController = useRef(null);
+  const importWork = useRef(null);
+  const originals = useRef({});
   const mounted = useRef(false);
   const attempt = useRef(retained.current?.attempt || null);
   const callback = useRef(onCompositionStateChange);
@@ -44,32 +52,53 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
   const snapshot = JSON.stringify(payload);
   const words = body.trim() ? body.trim().split(/\s+/u).length : 0;
   const hasContent = !!(headline.trim() || summary.trim() || body.trim() || form.photo || photoName.trim() || photoUrl.trim()
-    || photoCredit.trim() || sources.some((source) => source.name.trim() || source.url.trim()) || category !== "tour");
+    || photoCredit.trim() || form.video || form.videoName || form.videoUrl || form.videoCredit
+    || sources.some((source) => source.name.trim() || source.url.trim()) || category !== "tour");
   const dirty = hasContent && snapshot !== savedPayload;
 
   useEffect(() => { callback.current = onCompositionStateChange; }, [onCompositionStateChange]);
   useEffect(() => {
-    callback.current?.({ dirty, busy: uploading || saving, uploading, cancelUpload: () => uploadController.current?.abort() });
-  }, [dirty, uploading, saving]);
+    callback.current?.({ dirty, busy: uploading || saving || importing, uploading: uploading || importing,
+      cancelUpload: () => { uploadController.current?.abort(); importWork.current?.cancel?.(); } });
+  }, [dirty, uploading, saving, importing]);
   useEffect(() => {
     const key = newsroomDraftStorageKey(accountId);
     if (key) saveLocal(key, newsroomDraftEnvelope(accountId, form, attempt.current, savedPayload));
   }, [accountId, form, savedPayload]);
   useEffect(() => {
     mounted.current = true;
-    const descriptor = retained.current?.form.photo;
-    if (descriptor?.assetId) {
+    for (const slot of ["photo", "video"]) {
+      if (retained.current?.form[slot]?.pending) (slot === "photo" ? setPhotoError : setVideoError)("Choose the original file again to finish this upload. Your article text is kept.");
+    }
+    const descriptors = ["photo", "video"].filter((slot) => retained.current?.form[slot]?.assetId);
+    if (descriptors.length) {
       const controller = new AbortController();
       uploadController.current = controller;
       setUploading(true);
-      loadSelfWrittenPhoto({ accountId, assetId: descriptor.assetId, signal: controller.signal })
-        .then((verified) => { if (mounted.current && !controller.signal.aborted) setPhoto(verified); })
-        .catch((error) => { if (mounted.current && !controller.signal.aborted) setPhotoError(error?.message || "Choose another article photo."); })
-        .finally(() => { if (uploadController.current === controller) uploadController.current = null; if (mounted.current) setUploading(false); });
+      void (async () => {
+        for (const slot of descriptors) {
+          if (controller.signal.aborted) break;
+          try {
+            const verified = await loadSelfWrittenMedia({ accountId, assetId: retained.current.form[slot].assetId,
+              kind: slot === "video" ? "video" : "image", signal: controller.signal,
+              onStage: (stage) => { if (mounted.current && !controller.signal.aborted) setMediaStage(stage); } });
+            if (mounted.current && !controller.signal.aborted) (slot === "video" ? setVideo : setPhoto)(verified);
+          } catch (error) {
+            if (mounted.current && !controller.signal.aborted) (slot === "video" ? setVideoError : setPhotoError)(error?.message || "Choose the original file again.");
+          }
+        }
+        if (mounted.current && controller.signal.aborted) {
+          for (const slot of descriptors) (slot === "video" ? setVideoError : setPhotoError)("Verification paused. Retry verification to finish restoring this media.");
+        }
+        if (uploadController.current === controller) uploadController.current = null;
+        if (mounted.current) setUploading(false);
+      })();
     }
     return () => {
       mounted.current = false;
       uploadController.current?.abort();
+      importWork.current?.cancel?.();
+      originals.current = {};
       callback.current?.({ dirty: false, busy: false, uploading: false, cancelUpload: null });
     };
   }, [accountId]);
@@ -81,34 +110,102 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
   const addSource = () => setForm((current) => current.sources.length >= MAX_NEWSROOM_ARTICLE_SOURCES ? current : {
     ...current, sources: [...current.sources, { name: "", url: "" }],
   });
-  const choosePhoto = async () => {
-    if (uploading || busy || disabled) return;
-    let result;
-    try {
-      const { launchComposerMediaLibrary } = await import("../../lib/composerMediaPicker.js");
-      result = await launchComposerMediaLibrary({ mediaTypes: ["images"], allowsEditing: false, quality: 1 });
-    } catch (error) { if (mounted.current) setPhotoError(error?.message || "The photo library could not be opened."); return; }
-    if (!mounted.current || !result || result.canceled || !result.assets?.[0]) return;
+  const beginMedia = () => {
+    if (uploadController.current || importing || busy || disabled || submission.current) return null;
     const controller = new AbortController();
     uploadController.current = controller;
-    setUploading(true);
-    setPhotoError("");
+    setUploading(true); setMediaStage("preparing-source");
+    return controller;
+  };
+  const finishMedia = (controller) => {
+    if (uploadController.current === controller) uploadController.current = null;
+    if (mounted.current) setUploading(false);
+  };
+  const uploadOne = async (slot, picked, controller) => {
+    const setError = slot === "photo" ? setPhotoError : setVideoError;
+    const setMedia = slot === "photo" ? setPhoto : setVideo;
+    setError(""); setMedia(null);
+    originals.current[slot] = picked;
+    setForm((current) => ({ ...current, [slot]: picked.assetId ? { assetId: picked.assetId } : { pending: true } }));
+    const kind = slot === "photo" ? "image" : "video";
+    let localUrl;
     try {
-      const picked = { ...result.assets[0], id: result.assets[0].id || `news-photo:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`, kind: "image", altText: headline || "News article photo" };
-      const uploaded = await uploadSelfWrittenPhoto({ accountId, asset: picked, signal: controller.signal });
+      if (picked.file) localUrl = URL.createObjectURL(picked.file);
+      const uploaded = await uploadSelfWrittenMedia({ accountId, asset: { ...picked, uri: localUrl || picked.uri }, kind,
+        signal: controller.signal, onStage: (stage) => { if (mounted.current && !controller.signal.aborted) setMediaStage(stage); },
+        onRemoteDraft: (remote) => {
+          if (!mounted.current || controller.signal.aborted) return;
+          if (remote.assetId) {
+            originals.current[slot] = { ...originals.current[slot], assetId: remote.assetId };
+            setForm((current) => ({ ...current, [slot]: { assetId: remote.assetId } }));
+          }
+        } });
       if (mounted.current && !controller.signal.aborted) {
-        setPhoto(uploaded);
-        setForm((current) => ({ ...current, photo: { assetId: uploaded.assetId } }));
+        setMedia(uploaded); delete originals.current[slot];
+        setForm((current) => ({ ...current, [slot]: { assetId: uploaded.assetId } }));
       }
     } catch (error) {
-      if (mounted.current && error?.name !== "AbortError") setPhotoError(error?.message || "The photo could not be verified.");
-    } finally {
-      if (uploadController.current === controller) uploadController.current = null;
-      if (mounted.current) setUploading(false);
+      if (mounted.current) setError(error?.name === "AbortError" ? "Upload paused. Retry verification or choose the original file again."
+        : error?.message || "The media could not be verified. Your article is kept.");
+    } finally { if (localUrl) URL.revokeObjectURL(localUrl); }
+  };
+  const chooseMedia = async (slot) => {
+    const controller = beginMedia();
+    if (!controller) return;
+    try {
+      const { launchComposerMediaLibrary } = await import("../../lib/composerMediaPicker.js");
+      if (controller.signal.aborted) return;
+      const result = await launchComposerMediaLibrary({ mediaTypes: [slot === "photo" ? "images" : "videos"], allowsEditing: false, quality: 1 });
+      if (!mounted.current || controller.signal.aborted || result?.canceled || !result?.assets?.[0]) return;
+      await uploadOne(slot, { ...result.assets[0], id: newSaveKey(), altText: headline || `Article ${slot}` }, controller);
+    } catch (error) { if (mounted.current && !controller.signal.aborted) (slot === "photo" ? setPhotoError : setVideoError)(error?.message || "The media library could not be opened."); }
+    finally { finishMedia(controller); }
+  };
+  const retryMedia = async (slot) => {
+    const controller = beginMedia();
+    if (!controller) return;
+    try {
+      const picked = originals.current[slot] || (form[slot]?.assetId ? { assetId: form[slot].assetId, id: `news-media:${form[slot].assetId}` } : null);
+      if (picked) await uploadOne(slot, picked, controller);
+    } finally { finishMedia(controller); }
+  };
+  const applyImport = ({ form: imported, media }) => {
+    const controller = beginMedia();
+    if (!controller) return;
+    const queued = {};
+    try {
+      for (const slot of ["photo", "video"]) {
+        const item = media[slot];
+        if (item) queued[slot] = { file: item.file || new File([item.bytes], item.name, { type: item.type }),
+          fileName: item.name, id: newSaveKey(), altText: imported?.headline || headline };
+      }
+    } catch {
+      setPhotoError("The selected files could not be opened. Choose them again."); finishMedia(controller); return;
     }
+    if (imported) {
+      setForm({ ...emptyNewsroomForm(), ...imported }); setPhoto(null); setVideo(null);
+      setSavedPayload(null); attempt.current = null; originals.current = {};
+      setPhotoError(""); setVideoError("");
+    }
+    // Retain the entire selection before the first upload, including media
+    // queued behind the photo. Refresh can then request any missing originals.
+    Object.assign(originals.current, queued);
+    setForm((current) => ({ ...current, ...Object.fromEntries(Object.keys(queued).map((slot) => [slot, { pending: true }])) }));
+    for (const slot of Object.keys(queued)) {
+      (slot === "video" ? setVideo : setPhoto)(null);
+      (slot === "video" ? setVideoError : setPhotoError)("Upload queued. Retry verification if you pause before it starts.");
+    }
+    void (async () => {
+      for (const slot of ["photo", "video"]) {
+        if (!queued[slot] || controller.signal.aborted) continue;
+        await uploadOne(slot, queued[slot], controller);
+      }
+    })().catch(() => { if (mounted.current) setPhotoError("The upload stopped. Your article and selected media are kept; retry verification."); })
+      .finally(() => finishMedia(controller));
   };
   const save = async () => {
-    if (submission.current || disabled || busy || uploading) return;
+    if (submission.current || disabled || busy || uploadController.current || importing
+        || !photo?.assetId || photo.assetId !== form.photo?.assetId || (form.video && (!video?.assetId || video.assetId !== form.video.assetId))) return;
     const submitted = newsroomArticlePayload(form);
     const next = newsroomSaveAttempt(attempt.current, submitted, newSaveKey);
     attempt.current = next;
@@ -123,7 +220,13 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
   };
   return <View style={styles.card} testID="self-written-news-composer">
     <Text style={styles.step}>SELF-WRITTEN ARTICLE</Text>
-    <Text selectable style={styles.help}>Write the article yourself. This route does not call Anthropic, is kept separate from generated-story limits, and requires a verified photo and provenance.</Text>
+    <Text selectable style={styles.help}>Import your files or write below. Review the draft, then publish when you are ready.</Text>
+    <NewsroomImportPanel dirty={dirty} disabled={disabled || busy || uploading || saving} onApply={applyImport}
+      onWork={(work) => { importWork.current = work; if (mounted.current) setImporting(work.busy); }} />
+    {uploading ? <View style={styles.field}>
+      <Text accessibilityLiveRegion="polite" style={styles.help}>{mediaStage === "uploading-source" ? "Uploading article media…" : "Preparing and verifying article media…"}</Text>
+      <Button small title="Pause upload" variant="secondary" onPress={() => uploadController.current?.abort()} />
+    </View> : null}
     <Field label="Headline"><TextInput accessibilityLabel="Self-written news headline" style={styles.input} maxLength={300} value={headline} onChangeText={update("headline")} placeholder="A clear, specific headline" placeholderTextColor={colors.textFaint} /></Field>
     <Field label="Summary" help="The short hook shown on cards and in search previews."><TextInput accessibilityLabel="Self-written news summary" style={styles.input} maxLength={1200} value={summary} onChangeText={update("summary")} placeholder="Why this matters now" placeholderTextColor={colors.textFaint} /></Field>
     <Field label="Article" help={`${words} words. Report the facts without padding. Attribute quotes and reporting to their sources.`}><TextInput accessibilityLabel="Self-written news article" style={[styles.input, styles.articleInput]} multiline maxLength={60000} value={body} onChangeText={update("body")} placeholder="Write the reported story here..." placeholderTextColor={colors.textFaint} /></Field>
@@ -147,13 +250,27 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
     <View style={styles.categoryBlock}>
       <Text style={styles.fieldLabel}>Selected article photo</Text>
       {photo?.uri ? <ExpoImage source={{ uri: photo.uri }} style={styles.editorPhoto} contentFit="cover" accessible={false} /> : null}
-      <Button small title={uploading ? "Verifying photo" : "Choose photo"} variant="secondary" disabled={uploading || busy || disabled} onPress={choosePhoto} accessibilityLabel="Choose and upload an article photo" />
+      <Button small title="Choose photo" variant="secondary" disabled={uploading || importing || busy || disabled} onPress={() => chooseMedia("photo")} accessibilityLabel="Choose and upload an article photo" />
       <TextInput accessibilityLabel="Photo source name" style={styles.input} maxLength={160} value={photoName} onChangeText={update("photoName")} placeholder="Photo source or creator" placeholderTextColor={colors.textFaint} />
       <TextInput accessibilityLabel="Photo source URL" style={styles.input} maxLength={2048} value={photoUrl} onChangeText={update("photoUrl")} placeholder="https://example.com/photo-rights" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
       <TextInput accessibilityLabel="Photo credit" style={styles.input} maxLength={240} value={photoCredit} onChangeText={update("photoCredit")} placeholder="Optional credit or license" placeholderTextColor={colors.textFaint} />
       {photoError ? <Text selectable style={styles.error}>{photoError}</Text> : null}
+      {photoError && (form.photo?.assetId || originals.current.photo) ? <Button small title="Retry photo verification" variant="secondary" disabled={uploading || importing || busy || disabled} onPress={() => retryMedia("photo")} /> : null}
     </View>
-    <Button small title="Save self-written draft" disabled={disabled || uploading || !body.trim() || !photo?.assetId || !headline.trim() || !summary.trim() || !sourcesReady || !photoName.trim() || !photoUrl.trim()} onPress={save} accessibilityLabel="Save self-written news draft" />
+    <View style={styles.categoryBlock}>
+      <Text style={styles.fieldLabel}>Article video (optional)</Text>
+      {video ? <NewsArticleVideo uri={video.uri} posterUri={video.posterUri} /> : null}
+      <Button small title="Choose video" variant="secondary" disabled={uploading || importing || busy || disabled} onPress={() => chooseMedia("video")} />
+      <TextInput accessibilityLabel="Video source name" style={styles.input} maxLength={160} value={form.videoName || ""} onChangeText={update("videoName")} placeholder="Video source or creator" placeholderTextColor={colors.textFaint} />
+      <TextInput accessibilityLabel="Video source URL" style={styles.input} maxLength={2048} value={form.videoUrl || ""} onChangeText={update("videoUrl")} placeholder="https://example.com/video-rights" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />
+      <TextInput accessibilityLabel="Video credit" style={styles.input} maxLength={240} value={form.videoCredit || ""} onChangeText={update("videoCredit")} placeholder="Optional credit or license" placeholderTextColor={colors.textFaint} />
+      {videoError ? <Text selectable style={styles.error}>{videoError}</Text> : null}
+      {videoError && (form.video?.assetId || originals.current.video) ? <Button small title="Retry video verification" variant="secondary" disabled={uploading || importing || busy || disabled} onPress={() => retryMedia("video")} /> : null}
+      {form.video || originals.current.video ? <Button small title="Remove article video" variant="secondary" disabled={uploading || importing || busy || disabled}
+        onPress={() => { setVideo(null); setVideoError(""); delete originals.current.video; setForm((current) => ({ ...current, video: null })); }} /> : null}
+    </View>
+    <Button small title="Save self-written draft" disabled={disabled || uploading || importing || !body.trim() || !photo?.assetId || photo.assetId !== form.photo?.assetId || !headline.trim() || !summary.trim() || !sourcesReady || !photoName.trim() || !photoUrl.trim()
+      || !!originals.current.video || (form.video && (!video?.assetId || video.assetId !== form.video.assetId || !form.videoName.trim() || !form.videoUrl.trim()))} onPress={save} accessibilityLabel="Save self-written news draft" />
   </View>;
 }
 

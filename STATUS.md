@@ -6,6 +6,52 @@ production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
+## 2026-10-07 Newsroom file import and optional video (review branch)
+
+- `codex/newsroom-file-import-20261007` starts at `b0e6021b`. Desktop/mobile
+  web can preview a versioned article ZIP, plain DOCX, text PDF or TXT, with a
+  cover and one optional MOV/MP4. Import requires explicit application to the
+  editor; saving and publishing remain separate manual actions.
+- Parser work is isolated in a bounded, cancellable worker. Existing account,
+  draft, media verification, ownership and atomic publication protections apply.
+  Photo/video credits remain distinct from reporting citations, including the
+  canonical server-rendered story page. Queued media survives pause/reload as
+  an explicit pending selection requiring the original file when necessary.
+- The final broader local run passed 347 tests. Independent re-review passed
+  12 affected tests and confirmed browser-like PDF worker extraction after
+  corrections for PDF handshake, queued-video retention and canonical citation
+  defects. Syntax (830 Node files plus changed JSX), architecture and whitespace
+  checks passed. Cloud desktop/mobile browser/build gates remain required.
+- Draft PR 36's first cloud run exported the app but failed the unchanged
+  startup gate at 518.5/512 KiB. Article video now loads its player through the
+  existing gallery chunk, avoiding a second async entry that promoted shared
+  playback code into startup. Follow-up `f624858` removed those player labels
+  but remained at 516.3 KiB. The existing composer now also loads the shared
+  original-media uploader on demand, eliminating its static/dynamic duplicate
+  with Newsroom. Run 514 reached 512.7 KiB; availability checks and uploads now
+  share one async publishing entry so their recovery machinery also stays out
+  of startup. The remaining dependency is the full media-edit module; original
+  recipe/size helpers are now extracted unchanged and re-exported by the editor,
+  keeping crop/filter/transform code out of uploader startup dependencies.
+  Run 516 passed the startup gate at 510.2/512 KiB and the existing auth,
+  artist-account, identity, navigation, news and category browser suites. The
+  importer fixture lacked the two existing admin sign-in queue reads; those
+  explicit GET fixtures are now included. Fresh cloud validation is pending.
+- The full-suite timeout was isolated to the existing account-lifecycle harness:
+  its uploader fake needed the new lazy module boundary. That exact import is
+  now intercepted explicitly, and an early callback exit rejects its startup
+  wait instead of leaving the test unresolved. Application guards are unchanged.
+- Run 517 reached import upload after real parsing; its mock private locator
+  omitted the required extension. Fixtures now satisfy the actual ticket
+  validator. Import/composer browser checks run first for earlier feedback,
+  with every existing browser gate still required.
+- Production dependency audit reports zero vulnerabilities. The full dev audit
+  remains nonzero; the new moderate Mammoth CLI dependency is absent from its
+  shipped browser bundle. No dependency-wide remediation was mixed in.
+- See `docs/NEWSROOM_FILE_IMPORT_2026-10-07.md` for the format, boundaries,
+  validation and separate read-only Media API access assessment. No production
+  stories, credentials, access settings, merge or deployment are changed here.
+
 ## 2026-10-07 Artist-only research and provider event text (review branch)
 
 - Branch `codex/artist-research-event-repair-20261007` starts at deployed master

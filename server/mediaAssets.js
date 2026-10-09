@@ -3161,33 +3161,39 @@ export function attachPostMedia(database, { postId, ownerId, selection, at = Dat
 
 // Newsroom uploads belong to the verified editor who supplied them, while the
 // published post belongs to the bound news publisher. Keep that identity split
-// narrow: only a news post, one editor-owned ready image, and the exact
+// narrow: only a news post, one editor-owned ready image, one optional ready video, and the exact
 // publisher account may cross this boundary.
-export function attachNewsPostMedia(database, { postId, assetOwnerId, publisherId, assetId, at = Date.now() } = {}) {
+export function attachNewsPostMedia(database, { postId, assetOwnerId, publisherId, assetId, videoAssetId, at = Date.now() } = {}) {
   if (typeof postId !== "string" || !/^news_[A-Za-z0-9-]{8,80}$/u.test(postId)
       || typeof assetOwnerId !== "string" || !assetOwnerId
       || typeof publisherId !== "string" || !publisherId
-      || typeof assetId !== "string") {
+      || typeof assetId !== "string" || (videoAssetId !== undefined && (typeof videoAssetId !== "string" || !videoAssetId || videoAssetId === assetId))) {
     throw new ApiError(400, "That news photo selection is invalid.", "VALIDATION_FAILED");
   }
   const post = database.prepare("SELECT user_id FROM posts WHERE id=? AND kind='status'").get(postId);
   if (!post || post.user_id !== publisherId) {
     throw new ApiError(403, "That news photo cannot be attached to this publisher.", "FORBIDDEN");
   }
-  const selected = mediaSelection(database, { ownerId: assetOwnerId, assetIds: [assetId], currentPostId: postId });
+  const selected = mediaSelection(database, { ownerId: assetOwnerId, assetIds: [assetId, ...(videoAssetId ? [videoAssetId] : [])], currentPostId: postId });
   const entry = selected.rows[0];
   if (!entry || entry.converting || entry.row.kind !== "image" || !entry.url) {
     throw new ApiError(409, "Finish the photo upload before publishing this story.", "CONFLICT");
   }
-  database.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,?)")
-    .run(postId, entry.row.id, at);
-  if (!markObjectAssociated(database, assetOwnerId, entry.row.source_key, at)) {
-    throw new ApiError(409, "That photo upload is no longer available. Start it again.", "CONFLICT");
+  const video = selected.rows[1];
+  if (videoAssetId && (!video || video.converting || video.row.kind !== "video" || !video.url || !video.row.durable_poster_url)) {
+    throw new ApiError(409, "Finish the video upload before publishing this story.", "CONFLICT");
   }
-  const variants = database.prepare("SELECT object_key FROM media_variants WHERE asset_id=? AND status='verified'").all(entry.row.id);
-  for (const variant of variants) {
-    if (!markObjectAssociated(database, assetOwnerId, variant.object_key, at)) {
-      throw new ApiError(409, "That photo rendition is no longer available. Finish the upload again.", "CONFLICT");
+  for (const [position, media] of selected.rows.entries()) {
+    database.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,?,?)")
+      .run(postId, media.row.id, position, at);
+    if (!markObjectAssociated(database, assetOwnerId, media.row.source_key, at)) {
+      throw new ApiError(409, "That media upload is no longer available. Start it again.", "CONFLICT");
+    }
+    const variants = database.prepare("SELECT object_key FROM media_variants WHERE asset_id=? AND status='verified'").all(media.row.id);
+    for (const variant of variants) {
+      if (!markObjectAssociated(database, assetOwnerId, variant.object_key, at)) {
+        throw new ApiError(409, "That media rendition is no longer available. Finish the upload again.", "CONFLICT");
+      }
     }
   }
   return { assetId: entry.row.id, url: entry.url };

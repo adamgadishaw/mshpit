@@ -17,8 +17,10 @@ test("self-written news projection preserves the validated body and attached pho
       sources: [
         { kind: "article", name: "NME", url: "https://www.nme.com/news/synthetic" },
         { kind: "photo", name: "Synthetic photographer", url: "https://example.com/photo-rights", credit: "CC0" },
+        { kind: "video", name: "Synthetic filmmaker", url: "https://example.com/video-rights", credit: "CC0" },
       ],
-      media: [{ kind: "image", url: "https://media.example.com/news/self-written.jpg", width: 1200, height: 800, mimeType: "image/jpeg", altText: "Synthetic article photo" }],
+      media: [{ kind: "image", url: "https://media.example.com/news/self-written.jpg", width: 1200, height: 800, mimeType: "image/jpeg", altText: "Synthetic article photo" },
+        { kind: "video", url: "https://media.example.com/news/clip.mp4", posterUrl: "https://media.example.com/news/poster.jpg", mimeType: "video/mp4" }],
       publishedAt: 1_700_000_000_000,
       updatedAt: 1_700_000_000_000,
     },
@@ -31,12 +33,16 @@ test("self-written news projection preserves the validated body and attached pho
   assert.equal(document.news.body, body);
   assert.equal(document.image, "https://media.example.com/news/self-written.jpg");
   assert.equal(document.imageProvenance, "self-written-article-photo");
-  assert.deepEqual(document.news.sources.map((source) => source.kind), ["article", "photo"]);
+  assert.deepEqual(document.news.sources.map((source) => source.kind), ["article", "photo", "video"]);
   assert.deepEqual(document.jsonLd[0].citation, ["https://www.nme.com/news/synthetic"]);
   const html = renderPublicDocumentMain(document);
   assert.match(html, /class="news-sources"/u);
   assert.match(html, /Read more music news/u);
   assert.match(html, /word 1701/u);
+  assert.match(html, /<strong>Video:<\/strong>/u);
+  assert.match(html, /<video controls preload="none" playsinline poster="https:\/\/media.example.com\/news\/poster.jpg"/u);
+  assert.match(html, /<source src="https:\/\/media.example.com\/news\/clip.mp4" type="video\/mp4"/u);
+  assert.doesNotMatch(html, /autoplay/u);
 });
 
 test("generated news projection keeps its paragraph sanitizer and card fallback", () => {

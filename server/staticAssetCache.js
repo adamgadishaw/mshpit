@@ -9,6 +9,8 @@ const IMMUTABLE_EXPO_PUBLIC_ASSET = /^\/assets\/.*\.[a-f0-9]{16,}\.[a-z0-9]+$/i;
  */
 export function staticAssetCacheControl(pathname) {
   const path = String(pathname || "");
+  // Worker and parser versions must stay together across a Newsroom release.
+  if (path.startsWith("/newsroom-import/")) return "no-cache";
   if (IMMUTABLE_EXPO_ASSET.test(path) || IMMUTABLE_EXPO_PUBLIC_ASSET.test(path)) {
     return "public, max-age=31536000, immutable";
   }

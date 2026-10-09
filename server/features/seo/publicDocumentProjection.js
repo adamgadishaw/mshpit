@@ -489,7 +489,7 @@ export function newsStoryPostDocument({ story, card, comments, path, origin, pat
   }).filter(Boolean);
   const sources = (story.sources || []).filter((source) => /^https:\/\//u.test(String(source?.url || "")))
     .map((source) => Object.freeze({
-      kind: source.kind === "photo" ? "photo" : "article",
+      kind: source.kind === "photo" ? "photo" : source.kind === "video" ? "video" : "article",
       name: cleanLine(source.name, 80), url: source.url, title: cleanLine(source.title, 200),
       ...(source.credit ? { credit: cleanLine(source.credit, 240) } : {}),
     }));
@@ -502,6 +502,9 @@ export function newsStoryPostDocument({ story, card, comments, path, origin, pat
     ? (story.media || []).find((asset) => asset?.kind === "image" && publicHttpsUrl(asset.url))
     : null;
   const selectedPhotoUrl = publicHttpsUrl(selectedPhoto?.url);
+  const selectedVideo = story.origin === "self_written"
+    ? (story.media || []).find((asset) => asset?.kind === "video" && publicHttpsUrl(asset.url) && publicHttpsUrl(asset.posterUrl))
+    : null;
   const image = selectedPhotoUrl || absolute(origin, `/api/news-desk/stories/${encodeURIComponent(story.id)}/image.png`);
   const organization = { "@type": "Organization", name: "Mshpit News", url: absolute(origin, "/news") };
   const breadcrumbs = Object.freeze([
@@ -543,7 +546,7 @@ export function newsStoryPostDocument({ story, card, comments, path, origin, pat
     imageHeight: Number(selectedPhoto?.height) || 630,
     imageMimeType: selectedPhoto?.mimeType || "image/png",
     imageAlt: headline,
-    video: null,
+    video: selectedVideo ? Object.freeze({ ...selectedVideo }) : null,
     publishedAt: story.publishedAt,
     modifiedAt: card.modifiedAt,
     post: card,

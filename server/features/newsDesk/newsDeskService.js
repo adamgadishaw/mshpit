@@ -158,7 +158,15 @@ export function normalizeSelfWrittenPhoto(value, assetOwnerId) {
   } };
 }
 
-export function normalizeSelfWrittenStory({ headline, summary, body, category, sources, photo } = {}, { assetOwnerId } = {}) {
+export function normalizeSelfWrittenVideo(value, assetOwnerId) {
+  // Identical provenance rules; a video credit is never reporting evidence.
+  let media;
+  try { media = normalizeSelfWrittenPhoto(value, assetOwnerId); }
+  catch (error) { throw new TypeError(error.message.replaceAll("photo", "video")); }
+  return { ...media, source: { ...media.source, kind: "video" } };
+}
+
+export function normalizeSelfWrittenStory({ headline, summary, body, category, sources, photo, video } = {}, { assetOwnerId } = {}) {
   const cleanHeadline = String(headline || "").replace(/\s+/gu, " ").trim().slice(0, MANUAL_HEADLINE_MAX);
   const cleanSummary = String(summary || "").replace(/\s+/gu, " ").trim().slice(0, MANUAL_SUMMARY_MAX);
   const cleanBody = String(body || "").replace(/\r\n?/gu, "\n").trim().slice(0, MANUAL_BODY_MAX);
@@ -178,8 +186,10 @@ export function normalizeSelfWrittenStory({ headline, summary, body, category, s
   const cleanCategory = category === undefined ? derivedCategory : category;
   const articleSources = normalizeSelfWrittenSources(sources);
   const cleanPhoto = normalizeSelfWrittenPhoto(photo, assetOwnerId);
+  const cleanVideo = video === undefined || video === null ? null : normalizeSelfWrittenVideo(video, assetOwnerId);
   return { headline: cleanHeadline, summary: cleanSummary, body: cleanBody, category: cleanCategory,
-    artists: [], sources: [...articleSources, cleanPhoto.source], photo: cleanPhoto, wordCount: wordCount(cleanBody) };
+    artists: [], sources: [...articleSources, cleanPhoto.source, ...(cleanVideo ? [cleanVideo.source] : [])],
+    photo: cleanPhoto, ...(cleanVideo ? { video: cleanVideo } : {}), wordCount: wordCount(cleanBody) };
 }
 
 // Correct a published self-written label without replacing the post or touching
@@ -586,7 +596,7 @@ export function createNewsDesk({ database, fetchText, fetchArticle = null, summa
         VALUES (?,'published',?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, story.headline, story.summary, story.body, story.category, "[]",
         JSON.stringify(sources), postId, 0, 0, JSON.stringify({ manual: true, origin: "self_written", wordCount: story.wordCount }), at, at);
       attachNewsPostMedia(database, { postId, publisherId: account.id, assetOwnerId: story.photo.assetOwnerId,
-        assetId: story.photo.assetId, at });
+        assetId: story.photo.assetId, videoAssetId: story.video?.assetId, at });
       onPublished?.({ id, postId });
       database.exec("COMMIT");
     } catch (error) {
@@ -893,13 +903,13 @@ function newsStoryJson(row, artistLookup, database, viewerId = null) {
   const storedSources = parseJson(row.sources, []).filter((source) => /^https:\/\//u.test(String(source?.url || "")));
   const sources = storedSources
     .map((source) => ({
-      kind: source.kind === "photo" ? "photo" : "article",
+      kind: ["photo", "video"].includes(source.kind) ? source.kind : "article",
       name: String(source.name || ""), url: source.url,
       ...(source.title ? { title: String(source.title) } : {}),
       ...(source.credit ? { credit: String(source.credit) } : {}),
     }));
   let media = [];
-  try { media = postMediaProjection(database, row.post_id).filter((asset) => asset.kind === "image"); }
+  try { media = postMediaProjection(database, row.post_id).filter((asset) => asset.kind === "image" || asset.kind === "video"); }
   catch (error) { if (!/no such (table|column)/iu.test(String(error?.message))) throw error; }
   const count = (sql, ...args) => ignoreMissingTable(() => Number(database.prepare(sql).get(...args)?.n) || 0);
   const origin = parseJson(row.signals, {})?.origin === "self_written" ? "self_written" : "generated";
@@ -919,7 +929,7 @@ function newsStoryJson(row, artistLookup, database, viewerId = null) {
     artists,
     sources,
     media,
-    confirmedBy: new Set(storedSources.filter((source) => source.kind !== "photo").map((source) => source.group || source.sourceId || source.name)).size,
+    confirmedBy: new Set(storedSources.filter((source) => !["photo", "video"].includes(source.kind)).map((source) => source.group || source.sourceId || source.name)).size,
     publishedAt: row.created_at,
     updatedAt: row.updated_at,
   };

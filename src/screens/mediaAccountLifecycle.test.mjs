@@ -32,7 +32,18 @@ function callback(file, component, name) {
   const node = find(owner.body, (candidate) => (candidate.type === "VariableDeclarator" || candidate.type === "FunctionDeclaration") && candidate.id?.name === name);
   assert.ok(node, name);
   const body = node.type === "VariableDeclarator" ? node.init : node;
-  return (bindings) => new Function(...Object.keys(bindings), `return (${source.slice(body.start, body.end)});`)(...Object.values(bindings));
+  let expression = source.slice(body.start, body.end);
+  if (name === "uploadOriginalMedia") {
+    const boundary = 'import("../lib/mediaPublishingEntry.js")';
+    assert.equal(expression.split(boundary).length, 2, "Intercept exactly the known lazy publishing module.");
+    expression = expression.replace(boundary, "loadPublishingEntry()");
+  }
+  return (bindings) => new Function(...Object.keys(bindings), "loadPublishingEntry", `return (${expression});`)(
+    ...Object.values(bindings), async () => {
+      assert.equal(typeof bindings.uploadOriginalMediaAsset, "function", "The lazy module needs an explicit uploader fake.");
+      return { uploadOriginalMediaAsset: bindings.uploadOriginalMediaAsset };
+    },
+  );
 }
 
 function deferred() {
@@ -206,11 +217,14 @@ function composerUploadFixture() {
     setPhotos: compilePhotosSetter({ photosRef, renderPhotos: (value) => events.push({ name: "setPhotos", value }) }),
   };
   const run = compileComposerUpload(bindings);
-  return { accountTasks, upload, started, events, uploadControllerRef, bindings, run: () => run(pickerResult.assets) };
+  const waitForStart = (running) => Promise.race([started.promise, running.then(() => {
+    throw new Error("Composer callback ended before reaching the uploader fake.");
+  })]);
+  return { accountTasks, upload, waitForStart, events, uploadControllerRef, bindings, run: () => run(pickerResult.assets) };
 }
 
 test("composer rejects an old-account upload completion and its late progress", async () => {
-  const f = composerUploadFixture(), run = f.run(), options = await f.started.promise;
+  const f = composerUploadFixture(), run = f.run(), options = await f.waitForStart(run);
   assert.equal(options.expectedAccountId, "a"); f.accountTasks.setAccount("b");
   assert.equal(options.signal.aborted, true);
   const before = f.events.length;
@@ -221,7 +235,7 @@ test("composer rejects an old-account upload completion and its late progress", 
 });
 
 test("expired-session upload stops without attaching media or promising durable draft recovery", async () => {
-  const f = composerUploadFixture(), run = f.run(); await f.started.promise;
+  const f = composerUploadFixture(), run = f.run(); await f.waitForStart(run);
   f.upload.reject(Object.assign(new Error("Sign in again"), { status: 401 }));
   assert.equal((await run).ok, false);
   assert.equal(f.events.some(({ name }) => name === "setPhotos" || name === "setMediaProject"), false);
@@ -231,7 +245,7 @@ test("expired-session upload stops without attaching media or promising durable 
 });
 
 test("manual upload cancellation still clears the current composer's busy state", async () => {
-  const f = composerUploadFixture(), run = f.run(); await f.started.promise;
+  const f = composerUploadFixture(), run = f.run(); await f.waitForStart(run);
   f.uploadControllerRef.current.abort(); f.upload.reject(Object.assign(new Error("Cancelled"), { name: "AbortError" }));
   assert.equal((await run).ok, false);
   assert.equal(f.events.some(({ name, value }) => name === "setUploadingPhotos" && value === false), true);

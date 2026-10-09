@@ -5,7 +5,8 @@ import { colors, displayFont, focusRing, font, mono, radius } from "../../theme"
 import Icon from "../Icon";
 import { SocialShareButton } from "../SocialShareStudio";
 import { relativeTime } from "../../domain/dates.mjs";
-import { newsCategoryLabel, newsSourceLine, newsStoryParagraphs, newsStoryPhoto, newsStorySources } from "../../domain/newsDesk.mjs";
+import { newsCategoryLabel, newsSourceLine, newsStoryParagraphs, newsStoryPhoto, newsStorySources, newsStoryVideo } from "../../domain/newsDesk.mjs";
+import NewsArticleVideo from "./NewsArticleVideo";
 import { buildNewsShareModel } from "../../domain/socialShareCard.mjs";
 import NewsPostActions from "./NewsPostActions";
 
@@ -22,6 +23,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
   const shareModel = useMemo(() => (compact ? null : buildNewsShareModel(story)), [compact, story]);
   if (!story?.headline) return null;
   const photo = newsStoryPhoto(story);
+  const video = full ? newsStoryVideo(story) : null;
   const sourceLine = newsSourceLine(story);
   const articleSources = newsStorySources(story);
   const allSources = newsStorySources(story, { includePhoto: true });
@@ -77,6 +79,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
           {copy}
         </Pressable>
       )}
+      {video ? <NewsArticleVideo uri={video.url} posterUri={video.posterUrl} postId={story.postId} /> : null}
       {paragraphs.length ? (
         <View style={styles.article}>
           {paragraphs.map((paragraph, index) => <Text key={index} style={styles.paragraph}>{paragraph}</Text>)}
@@ -103,7 +106,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
             {allSources.map((source) => <Text key={`${source.kind || "article"}:${source.url}`} style={styles.sourceRow}>
               <Text style={styles.sourceLink} onPress={Platform.OS === "web" ? undefined : () => openSource(source.url)} accessibilityRole="link"
                 {...(Platform.OS === "web" ? { href: source.url, hrefAttrs: { target: "_blank", rel: "noopener noreferrer" } } : {})}>{source.name}</Text>
-              {source.kind === "photo" ? " (photo)" : ""}{source.credit ? ` — ${source.credit}` : ""}
+              {source.kind === "photo" ? " (photo)" : source.kind === "video" ? " (video)" : ""}{source.credit ? ` - ${source.credit}` : ""}
             </Text>)}
           </View>
         </View>
