@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   LIVE_EVENT_PHASE,
+  createLiveEventEvaluator,
   compareCurrentAndUpcomingLiveEvents,
   isCurrentOrUpcomingLiveEvent,
   liveEventPhase,
@@ -23,6 +24,46 @@ test("cancelled listings leave upcoming discovery without changing their calenda
   for (const eventStatus of [undefined, null, "", "scheduled", "Scheduled", "rescheduled", "postponed"]) {
     assert.equal(isCurrentOrUpcomingLiveEvent({ date: "2026-08-28", eventStatus }, NOW), true);
   }
+});
+
+test("request lifecycle matches individual reads across local midnight, DST, invalid zones and cancellation", () => {
+  for (const at of ["2026-09-08T03:30:00Z", "2026-09-08T04:30:00Z", "2026-11-01T05:30:00Z", "2026-11-01T06:30:00Z"]) {
+    const timestamp = Date.parse(at);
+    const evaluator = createLiveEventEvaluator(timestamp);
+    for (const eventTimezone of ["America/Toronto", "America/Los_Angeles", "Asia/Tokyo", "UTC", "Bad/Zone", null]) {
+      for (const date of ["2026-09-07", "2026-09-08", "2026-11-01", "invalid"]) {
+        for (const eventEndDate of [null, "2026-09-08", "2026-11-03", "invalid"]) {
+          for (const eventStatus of [null, "cancelled", " Canceled ", "scheduled"]) {
+            const event = { date, eventEndDate, eventTimezone, eventStatus };
+            assert.deepEqual(evaluator.classify(event), {
+              phase: liveEventPhase(event, timestamp),
+              currentOrUpcoming: isCurrentOrUpcomingLiveEvent(event, timestamp),
+            });
+          }
+        }
+      }
+    }
+  }
+});
+
+test("request lifecycle computes a shared timezone date once and never retains an event decision", () => {
+  const original = Intl.DateTimeFormat.prototype.formatToParts;
+  let calls = 0;
+  Intl.DateTimeFormat.prototype.formatToParts = function (...args) { calls++; return original.apply(this, args); };
+  try {
+    const at = Date.parse("2026-09-08T03:30:00Z");
+    const evaluator = createLiveEventEvaluator(at);
+    const event = { date: "2026-09-07", eventTimezone: "America/Toronto" };
+    for (let i = 0; i < 5000; i++) assert.equal(evaluator.isCurrentOrUpcoming(event), true);
+    assert.equal(calls, 1);
+    event.eventStatus = "cancelled";
+    assert.equal(evaluator.isCurrentOrUpcoming(event), false);
+    event.date = "2026-09-06";
+    assert.equal(evaluator.phase(event), LIVE_EVENT_PHASE.PAST);
+    const later = createLiveEventEvaluator(Date.parse("2026-09-08T04:30:00Z"));
+    assert.equal(later.phase({ date: "2026-09-07", eventTimezone: "America/Toronto" }), LIVE_EVENT_PHASE.PAST);
+    assert.equal(calls, 2, "a subsequent read recomputes local day");
+  } finally { Intl.DateTimeFormat.prototype.formatToParts = original; }
 });
 
 test("multi-day events remain active through their inclusive end date", () => {

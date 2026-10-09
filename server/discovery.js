@@ -5,9 +5,8 @@ import { visibleTourDateRows } from "./tourDateVisibility.js";
 import { projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
 import { projectPopularLounges } from "../src/domain/liveDiscovery.mjs";
 import {
-  isCurrentOrUpcomingLiveEvent,
+  createLiveEventEvaluator,
   LIVE_EVENT_PHASE,
-  liveEventPhase,
   liveEventQueryFloorDate,
   liveEventTimeZone,
 } from "../src/domain/eventLifecycle.mjs";
@@ -170,6 +169,7 @@ export function discoverySidebar(viewer, {
 } = {}) {
   const timestamp = Number.isFinite(Number(at)) ? Number(at) : Date.now();
   const today = liveEventQueryFloorDate(timestamp);
+  const lifecycle = createLiveEventEvaluator(timestamp);
   // Visibility is enforced inside the service before ranking or aggregation.
   // Callers cannot inject a preselected row set and accidentally disclose an
   // unreleased, blocked, or restricted owner's date through venue metadata.
@@ -180,24 +180,23 @@ export function discoverySidebar(viewer, {
     countryCode,
     country,
     at: timestamp,
-  }).filter((row) =>
-    isCurrentOrUpcomingLiveEvent({
+  }).map((row) => ({ row, lifecycle: lifecycle.classify({
       date: row.date,
       eventEndDate: row.event_end_date,
       eventTimezone: row.event_timezone,
       eventStatus: row.event_status,
-    }, timestamp));
+    }) })).filter((entry) => entry.lifecycle.currentOrUpcoming);
   const home = viewer?.home_city
     ? { city: viewer.home_city, lat: finite(viewer.home_lat), lng: finite(viewer.home_lng) }
     : null;
   const homeCity = norm(home?.city);
 
-  const exactCityRow = homeCity ? rows.find((row) => norm(placeParts(row).city) === homeCity) : null;
+  const exactCityRow = homeCity ? rows.find(({ row }) => norm(placeParts(row).city) === homeCity)?.row : null;
   const inferred = placeParts(exactCityRow);
   const homeRegion = norm(inferred.region);
   const homeCountry = norm(inferred.country);
 
-  const ranked = rows.map((row) => {
+  const ranked = rows.map(({ row, lifecycle: eventLifecycle }) => {
     const place = placeParts(row);
     const distance = distanceKm(home, { lat: finite(row.lat), lng: finite(row.lng) });
     let locality = 0;
@@ -207,12 +206,7 @@ export function discoverySidebar(viewer, {
     else if (distance != null && distance <= 250) locality = 3;
     else if (homeCountry && norm(place.country) === homeCountry) locality = 2;
     else if (!home) locality = 1;
-    const phase = liveEventPhase({
-      date: row.date,
-      eventEndDate: row.event_end_date,
-      eventTimezone: row.event_timezone,
-    }, timestamp);
-    return { row, place, distance, locality, active: phase === LIVE_EVENT_PHASE.ACTIVE };
+    return { row, place, distance, locality, active: eventLifecycle.phase === LIVE_EVENT_PHASE.ACTIVE };
   }).sort((a, b) =>
     b.locality - a.locality
     || Number(b.active) - Number(a.active)
