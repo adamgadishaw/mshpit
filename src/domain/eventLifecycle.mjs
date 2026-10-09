@@ -65,10 +65,8 @@ export function liveEventQueryFloorDate(now = Date.now()) {
   return new Date(at - DAY_MS).toISOString().slice(0, 10);
 }
 
-export function liveEventPhase(event, now = Date.now()) {
-  const startKey = calendarDateKey(event?.date);
+function phaseForToday(event, currentKey, startKey = calendarDateKey(event?.date)) {
   if (startKey == null) return LIVE_EVENT_PHASE.UNKNOWN;
-  const currentKey = todayKey(now, event);
   const endKey = calendarDateKey(event?.eventEndDate);
   if (endKey != null && endKey > startKey && startKey <= currentKey && endKey >= currentKey) {
     return LIVE_EVENT_PHASE.ACTIVE;
@@ -77,10 +75,47 @@ export function liveEventPhase(event, now = Date.now()) {
   return LIVE_EVENT_PHASE.PAST;
 }
 
+export function liveEventPhase(event, now = Date.now()) {
+  const startKey = calendarDateKey(event?.date);
+  if (startKey == null) return LIVE_EVENT_PHASE.UNKNOWN;
+  return phaseForToday(event, todayKey(now, event), startKey);
+}
+
+function eligiblePhase(event, phase) {
+  if (["cancelled", "canceled"].includes(String(event?.eventStatus || "").trim().toLowerCase())) return false;
+  return phase === LIVE_EVENT_PHASE.ACTIVE || phase === LIVE_EVENT_PHASE.UPCOMING;
+}
+
+// Owned by one read at one timestamp. Thousands of events usually share just a
+// few venue timezones; calculate their local calendar day once, without caching
+// event rows, visibility decisions, or results across requests/accounts.
+export function createLiveEventEvaluator(now = Date.now()) {
+  const at = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const days = new Map();
+  const phase = (event) => {
+    const startKey = calendarDateKey(event?.date);
+    if (startKey == null) return LIVE_EVENT_PHASE.UNKNOWN;
+    const zone = liveEventTimeZone(event);
+    if (!days.has(zone)) {
+      if (days.size >= EVENT_TIME_ZONE_CACHE_LIMIT) days.delete(days.keys().next().value);
+      days.set(zone, todayKey(at, { eventTimezone: zone }));
+    }
+    return phaseForToday(event, days.get(zone), startKey);
+  };
+  return Object.freeze({
+    phase,
+    isCurrentOrUpcoming(event) { return eligiblePhase(event, phase(event)); },
+    classify(event) {
+      const value = phase(event);
+      return { phase: value, currentOrUpcoming: eligiblePhase(event, value) };
+    },
+  });
+}
+
 export function isCurrentOrUpcomingLiveEvent(event, now = Date.now()) {
   if (["cancelled", "canceled"].includes(String(event?.eventStatus || "").trim().toLowerCase())) return false;
   const phase = liveEventPhase(event, now);
-  return phase === LIVE_EVENT_PHASE.ACTIVE || phase === LIVE_EVENT_PHASE.UPCOMING;
+  return eligiblePhase(event, phase);
 }
 
 // Active multi-day events remain pinned ahead of future dates. Within that

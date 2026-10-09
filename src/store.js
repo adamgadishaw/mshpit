@@ -128,6 +128,7 @@ import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.
 import { saveMemoryPostEdit } from "./features/postEditing/services/memoryPostEditApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
 import { attachArtistSuggestion, fetchArtistSuggestions, fetchResolvedArtist, mergeArtistSearchCacheEntry, refreshArtistCatalogEntry } from "./features/artistSearch/artistSearchApi.mjs";
+import { createSessionValidationRetry } from "./domain/sessionValidationRetry.mjs";
 import { useAccountCommentCache } from "./features/comments/useAccountCommentCache";
 import { writeCommentLike, writePostRepost, notifySocialReactionChange } from "./features/socialReactions/socialReactionsApi";
 import { useAccountArtistPageCache } from "./features/artistPage/useAccountArtistPageCache";
@@ -2687,6 +2688,7 @@ export function StoreProvider({ children }) {
     let retryTimer = null;
     let identityHasBeenConfirmed = authReadyRef.current;
     let coordinator;
+    const validationRetry = createSessionValidationRetry();
 
     const lockIdentity = () => {
       const accountId = sessionRef.current?.id || null;
@@ -2708,13 +2710,13 @@ export function StoreProvider({ children }) {
       identityHasBeenConfirmed = true;
     };
 
-    const scheduleRetry = (strict) => {
+    const scheduleRetry = (strict, error) => {
       if (stopped) return;
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = setTimeout(() => {
         retryTimer = null;
         void coordinator.validate({ force: true, strict, reason: "retry" });
-      }, 5_000);
+      }, validationRetry.next(error));
     };
 
     const runValidation = async (context) => {
@@ -2818,13 +2820,17 @@ export function StoreProvider({ children }) {
         // Cold starts and explicit cross-tab changes remain locked while retrying.
         const mustStayLocked = !confirmedBeforeValidation || context.isStrict();
         if (mustStayLocked) lockIdentity();
-        scheduleRetry(mustStayLocked);
+        scheduleRetry(mustStayLocked, error);
         return { authoritative: false, outcome: outcome.kind };
       }
     };
 
     coordinator = createSessionValidationCoordinator({
-      run: runValidation,
+      run: async (context) => {
+        const result = await runValidation(context);
+        if (result.authoritative) validationRetry.reset();
+        return result;
+      },
       onStrictRequest: lockIdentity,
     });
     const stopAuthRetry = authTransitions.onPendingRevocation(() => scheduleRetry(false));

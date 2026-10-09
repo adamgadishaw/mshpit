@@ -286,6 +286,7 @@ import {
 } from "./artistMemorialTourDateVisibility.js";
 import {
   isCurrentOrUpcomingLiveEvent,
+  createLiveEventEvaluator,
   liveEventQueryFloorDate,
   liveEventTimeZone,
 } from "../src/domain/eventLifecycle.mjs";
@@ -1034,6 +1035,7 @@ function tourDateRangeRequest(ctx, at) {
 
 function tourDateRangePage(viewer, range, timestamp) {
   const visible = [];
+  const lifecycle = createLiveEventEvaluator(timestamp);
   let cursor = range.after;
   let lastScanned = null;
   let scanned = 0;
@@ -1064,12 +1066,12 @@ function tourDateRangePage(viewer, range, timestamp) {
     const tail = candidates.at(-1);
     lastScanned = { date: tail.date, id: tail.id };
     for (const row of candidates) {
-      if (isCurrentOrUpcomingLiveEvent({
+      if (lifecycle.isCurrentOrUpcoming({
         date: row.date,
         eventEndDate: row.event_end_date,
         eventTimezone: row.event_timezone,
         eventStatus: row.event_status,
-      }, timestamp)) visible.push(row);
+      })) visible.push(row);
       if (visible.length > range.limit) break;
     }
 
