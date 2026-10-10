@@ -620,13 +620,15 @@ async function runCase(browser, origin, item) {
       await snapshot("show detail artist link");
       await openArtist.click();
       if (item.kind === "discover-show-artist-recovery") {
-        const unavailable = page.getByText("This artist or profile could not be opened.", { exact: true });
+        const unavailable = page.getByText("This artist or profile does not have an available page yet.", { exact: true });
         await unavailable.waitFor();
         await assertPath(page, discoverArtistEventPath);
         assert.equal(state.lookupAttempts, 1, "A transient provider preview must not trigger automatic retries or a fabricated page.");
         assert.equal(state.calls.some(call => call.path === "/api/artists/imran%20khan/profile"), false);
         await snapshot("preview-only artist stays on show");
         state.catalogRepaired = true;
+        assert.equal(await page.getByRole("button", { name: "Try again", exact: true }).last().isEnabled(), true,
+          "A valid preview without a stored page must allow manual retry without a provider cooldown.");
         await page.getByRole("button", { name: "Try again", exact: true }).last().click();
         await unavailable.waitFor({ state: "hidden" });
       }
@@ -635,7 +637,7 @@ async function runCase(browser, origin, item) {
       await assertPageIdentity(page, discoverShowArtistPath);
       await waitFor(() => state.calls.some(call => call.path === "/api/artists/imran%20khan/profile"), "The show artist must hydrate its local profile.");
       assert.equal(state.lookupAttempts, item.kind === "discover-show-artist-recovery" ? 2 : 1);
-      assert.equal(await page.getByText("This artist or profile could not be opened.", { exact: true }).count(), 0);
+      assert.equal(await page.getByText("This artist or profile does not have an available page yet.", { exact: true }).count(), 0);
       assert.equal(await page.getByTestId("public-route-error").count(), 0);
       await snapshot("stored artist opened from show without reloading");
       await page.goBack({ waitUntil: "networkidle" });

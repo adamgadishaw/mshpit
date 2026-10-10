@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createMusicBrainzRequestThrottle } from "../../musicBrainzRequestThrottle.js";
 
 import {
   buildRecentWikidataDeathsQuery,
@@ -8,6 +9,8 @@ import {
   parseMusicBrainzDeathSignal,
   parseRecentWikidataDeaths,
   parseWikidataDeathSignalRows,
+  readRecentWikidataDeaths,
+  readWikidataDeathSignals,
 } from "./artistDeathWatchProviders.js";
 
 const AT = Date.parse("2026-08-30T12:00:00.000Z");
@@ -22,10 +25,129 @@ const binding = (mbid, qid, date, precision = 11) => ({
 
 test("MusicBrainz service-unavailable replies carry Retry-After and dispose the failed body",async()=>{
   let cancelled=0;
-  await assert.rejects(confirmMusicBrainzDeathSignal({artistMbid:MBID,deathDate:"2026-08-29"},{at:AT,requestGate:(work)=>work(),
+  await assert.rejects(confirmMusicBrainzDeathSignal({artistMbid:MBID,deathDate:"2026-08-29"},{at:AT,now:()=>AT,requestGate:(work)=>work(),
     fetchImpl:async()=>({ok:false,status:503,headers:new Headers({"Retry-After":"7200"}),body:{cancel:async()=>{cancelled++;}}})}),
     error=>error.code==="musicbrainz_unavailable" && error.status===503 && error.retryAt===AT+7_200_000);
   assert.equal(cancelled,1);
+});
+
+test("MusicBrainz cooldowns use response receipt and retain bounded provider deadlines", async (t) => {
+  const receivedAt = AT + 75_000;
+  const cases = [
+    { label: "relative two hours", header: "7200", delay: 7_200_000 },
+    { label: "HTTP date", header: new Date(receivedAt + 7_200_000).toUTCString(), delay: 7_200_000 },
+    { label: "relative 24 hours", header: "86400", delay: 86_400_000 },
+    { label: "huge seconds", header: "999999999999999999999999", delay: 86_400_000 },
+    { label: "huge date", header: new Date(receivedAt + 7 * 86_400_000).toUTCString(), delay: 86_400_000 },
+    { label: "past date", header: new Date(receivedAt - 60_000).toUTCString(), delay: 0 },
+    { label: "explicit zero", header: "0", delay: 0 },
+    { label: "invalid", header: "invalid", delay: 60_000 },
+    { label: "missing", header: null, delay: 60_000 },
+  ];
+  for (const status of [429, 503]) {
+    for (const { label, header, delay } of cases) {
+      await t.test(`${status}: ${label}`, async () => {
+        let clock = AT;
+        let disposed = 0;
+        await assert.rejects(confirmMusicBrainzDeathSignal({ artistMbid: MBID, deathDate: "2026-08-29" }, {
+          at: AT,
+          now: () => clock,
+          requestGate: (work) => work(),
+          fetchImpl: async () => {
+            clock = receivedAt;
+            return {
+              ok: false, status,
+              headers: new Headers(header == null ? {} : { "Retry-After": header }),
+              body: { cancel: async () => { disposed += 1; clock += 5_000; } },
+            };
+          },
+        }), (error) => error.status === status && error.retryAt === receivedAt + delay);
+        assert.equal(disposed, 1);
+      });
+    }
+  }
+});
+
+test("Wikidata readers also separate Retry-After receipt from scan evidence time", async () => {
+  const now = () => AT + 75_000;
+  const fetchImpl = async () => ({ ok: false, status: 429, headers: new Headers({ "Retry-After": "7200" }) });
+  const expected = (error) => error.code === "wikidata_rate_limited" && error.retryAt === now() + 7_200_000;
+  await assert.rejects(readWikidataDeathSignals([{ artistMbid: MBID }], { at: AT, now, fetchImpl }), expected);
+  await assert.rejects(readRecentWikidataDeaths({ since: "2026-08-01", at: AT, now, fetchImpl }), expected);
+});
+
+test("caller cancellation during fetch or body decoding does not poison the MusicBrainz circuit", async (t) => {
+  for (const stage of ["fetch", "body"]) {
+    for (const reason of [new DOMException("Stopped", "AbortError"), new Error("Caller stopped")]) {
+      await t.test(`${stage}: ${reason.name}`, async () => {
+        let clock = AT;
+        const requestGate = createMusicBrainzRequestThrottle({
+          clock: () => clock,
+          wait: async (delay) => { clock += delay; },
+          breakerFailureThreshold: 1,
+        });
+        const controller = new AbortController();
+        const cancel = () => { controller.abort(reason); throw reason; };
+        await assert.rejects(confirmMusicBrainzDeathSignal({ artistMbid: MBID, deathDate: "2026-08-29" }, {
+          at: AT, now: () => clock, signal: controller.signal, requestGate,
+          fetchImpl: async () => stage === "fetch" ? cancel() : { ok: true, status: 200, json: async () => cancel() },
+        }), (error) => error === reason);
+        assert.equal(requestGate.status().consecutiveFailures, 0);
+        assert.equal(requestGate.status().circuitOpen, false);
+        assert.equal(await requestGate(async () => "another caller succeeded"), "another caller succeeded");
+      });
+    }
+  }
+});
+
+test("cancellation before dispatch never reaches MusicBrainz or changes its circuit", async () => {
+  const requestGate = createMusicBrainzRequestThrottle({ breakerFailureThreshold: 1 });
+  const controller = new AbortController();
+  controller.abort();
+  let requests = 0;
+  await assert.rejects(confirmMusicBrainzDeathSignal({ artistMbid: MBID, deathDate: "2026-08-29" }, {
+    at: AT, signal: controller.signal, requestGate,
+    fetchImpl: async () => { requests += 1; throw new Error("must not dispatch"); },
+  }), (error) => error === controller.signal.reason);
+  assert.equal(requests, 0);
+  assert.equal(requestGate.status().consecutiveFailures, 0);
+  assert.equal(requestGate.status().circuitOpen, false);
+});
+
+test("a received refusal retains its cooldown when caller cancellation races response or disposal", async (t) => {
+  for (const status of [429, 503, 401, 403]) {
+    for (const stage of ["response", "disposal"]) {
+      await t.test(`${status}: ${stage}`, async () => {
+        let clock = AT;
+        let disposed = 0;
+        const requestGate = createMusicBrainzRequestThrottle({
+          clock: () => clock, wait: async (delay) => { clock += delay; },
+        });
+        const controller = new AbortController();
+        const reason = new DOMException("Caller stopped", "AbortError");
+        await assert.rejects(confirmMusicBrainzDeathSignal({ artistMbid: MBID, deathDate: "2026-08-29" }, {
+          at: AT, now: () => clock, signal: controller.signal, requestGate,
+          fetchImpl: async () => {
+            if (stage === "response") controller.abort(reason);
+            return {
+              ok: false, status, headers: new Headers({ "Retry-After": "7200" }),
+              body: { cancel: async () => {
+                disposed += 1;
+                clock += 5_000;
+                if (stage === "disposal") controller.abort(reason);
+              } },
+            };
+          },
+        }), (error) => error === reason);
+        assert.equal(disposed, 1);
+        assert.equal(requestGate.status().retryAt, AT + 7_200_000);
+        assert.equal(requestGate.status().consecutiveFailures, 1);
+        let otherCallerRequests = 0;
+        await assert.rejects(requestGate(async () => { otherCallerRequests += 1; }), { code: "circuit_open" });
+        assert.equal(otherCallerRequests, 0);
+      });
+    }
+  }
 });
 
 test("a deleted MusicBrainz identity supplies no death evidence and does not halt later artists",async()=>{

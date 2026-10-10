@@ -35,6 +35,8 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
     artistKey: canonicalArtistKey,
     status: artistIdentityStatus,
     retry: retryArtistIdentity,
+    retryDisabled: artistIdentityRetryDisabled,
+    missing: artistIdentityMissing,
   } = useCanonicalArtistIdentity({ artistName: routeArtistName });
   const {
     resource: memorialResource,
@@ -147,6 +149,8 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
           state={profileGateState}
           onBack={onClose}
           onRetry={retryProfileStatus}
+          retryDisabled={artistIdentityStatus === "unavailable" && artistIdentityRetryDisabled}
+          identityMissing={artistIdentityMissing}
         />
       </View>
     );

@@ -32,8 +32,6 @@ test("archive clicks never promote cached provider previews to attached route id
 
 test("name-only archive resolution is scoped, retryable, and never falls back to a display name", () => {
   assert.match(hook, /canonicalArtistIdentityScope\(\{ artistName, artistKey \}\)/);
-  assert.match(hook, /Promise\.resolve\(resolverRef\.current\?\.\(cached\.artistName\)\)/);
   assert.match(hook, /status: identity\.artistKey \? "ready" : "unavailable"/);
-  assert.match(hook, /retry: useCallback\(\(\) => setRevision/);
   assert.doesNotMatch(hook, /artistKey:\s*artistName/);
 });

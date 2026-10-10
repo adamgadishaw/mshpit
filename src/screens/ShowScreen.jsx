@@ -232,6 +232,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     artistKey: memorialArtistKey,
     status: artistIdentityStatus,
     retry: retryArtistIdentity,
+    retryDisabled: artistIdentityRetryDisabled,
+    missing: artistIdentityMissing,
   } = useCanonicalArtistIdentity({
     artistName: artist,
     artistKey: norm.artistKey || null,
@@ -582,6 +584,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           state={profileGateState}
           onBack={onClose}
           onRetry={retryProfileStatus}
+          retryDisabled={artistIdentityStatus === "unavailable" && artistIdentityRetryDisabled}
+          identityMissing={artistIdentityMissing}
         />
       ) : <VinylRefreshBoundary
         refreshing={showRefreshing}

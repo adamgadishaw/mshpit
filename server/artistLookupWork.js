@@ -1,3 +1,5 @@
+import { PROVIDER_RETRY_AFTER_MAX_MS, withProviderRetryDeadline } from "./providerResponsePolicy.js";
+
 // Bounded remote directory work, separate from durable catalogue identities.
 // Provider failures never become cached "artist does not exist" answers.
 export function createArtistLookupWork({
@@ -92,8 +94,17 @@ export function createArtistLookupWork({
         });
       }).catch((error) => {
         if (error?.name !== "AbortError" && (!controller.signal.aborted || controller.signal.reason?.name === "ArtistLookupTimeoutError")) {
-          const retry = Number(error?.retryAfterMs);
-          remember(key, { error }, Math.max(failureTtlMs, Math.min(60 * 60_000, Number.isFinite(retry) ? retry : 0)));
+          const at = clock();
+          const deadline = Number(error?.retryAt);
+          const relative = Number(error?.retryAfterMs);
+          const remaining = Number.isFinite(deadline) && deadline > 0
+            ? deadline - at : Number.isFinite(relative) ? relative : 0;
+          const ttl = Math.max(failureTtlMs, Math.min(PROVIDER_RETRY_AFTER_MAX_MS, Math.max(0, remaining)));
+          // Anchor once when the job fails, including our short local cooldown.
+          // Cached reads never renew a provider's original relative delay.
+          const failure = withProviderRetryDeadline(error, at + ttl, at);
+          remember(key, { error: failure }, ttl);
+          throw failure;
         }
         throw error;
       });

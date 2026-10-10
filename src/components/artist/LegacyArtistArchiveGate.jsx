@@ -8,6 +8,8 @@ export default function LegacyArtistArchiveGate({
   state,
   onBack,
   onRetry,
+  retryDisabled = false,
+  identityMissing = false,
 }) {
   const name = String(artistName || "This artist").trim();
   const checking = state === "checking";
@@ -25,14 +27,16 @@ export default function LegacyArtistArchiveGate({
           {checking
             ? `Checking ${name}`
             : unavailable
-              ? "The archive is temporarily unavailable"
+              ? identityMissing ? "Artist profile not linked yet" : "The archive is temporarily unavailable"
               : "This archive is preserved differently"}
         </Text>
         <Text style={styles.copy}>
           {checking
             ? "Mshpit is confirming which parts of this artist page are available."
             : unavailable
-              ? "We could not safely verify this artist's status. Tour and date pages stay closed until the check succeeds."
+              ? identityMissing
+                ? "This name does not have a confirmed artist profile yet. You can return to the artist page and try again later."
+                : "We could not safely verify this artist's status. Tour and date pages stay closed until the check succeeds."
               : `${name} has an educational, read-only legacy profile. Individual tour and concert-date archives are intentionally not offered; biography and existing community memories remain on the main artist page.`}
         </Text>
         <View style={styles.actions}>
@@ -40,10 +44,12 @@ export default function LegacyArtistArchiveGate({
             <Pressable
               style={({ pressed, focused }) => [styles.secondary, pressed && styles.pressed, focused && focusRing]}
               onPress={onRetry}
+              disabled={retryDisabled}
               accessibilityRole="button"
+              accessibilityState={{ disabled: retryDisabled }}
               accessibilityLabel={`Retry checking ${name}'s profile status`}
             >
-              <Text style={styles.secondaryText}>Try again</Text>
+              <Text style={styles.secondaryText}>{retryDisabled ? "Try again later" : "Try again"}</Text>
             </Pressable>
           ) : null}
           {!checking && typeof onBack === "function" ? (

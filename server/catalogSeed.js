@@ -18,6 +18,7 @@ import { privateErrorLabel } from "./errors.js";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { runMusicBrainzRequest } from "./musicBrainzRequestThrottle.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
+import { discardProviderResponse, providerRetryAfterMs } from "./providerResponsePolicy.js";
 import { discoverArtistPriorityKeys, interleaveDiscoverPriority } from "./discoverArtistPriority.js";
 import {
   findSpotifyArtistPhoto,
@@ -84,12 +85,25 @@ export async function mbTag(tag, offset, {
   const url = `https://musicbrainz.org/ws/2/artist?query=${encodeURIComponent(`tag:"${tag}"`)}&fmt=json&limit=${PAGE}&offset=${offset}`;
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
+    signal?.throwIfAborted();
     try {
       const d = await requestGate(async () => {
+        signal?.throwIfAborted();
         const timeoutSignal = AbortSignal.timeout(15_000);
         const requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
         const response = await fetchImpl(url, { headers: { "User-Agent": UA, Accept: "application/json" }, signal: requestSignal });
-        if (!response.ok) throw new ProviderError("MusicBrainz", response.status, `MusicBrainz returned ${response.status}.`, { code: response.status === 429 ? "rate_limited" : "http_error" });
+        if (!response.ok) {
+          const responseAt = Date.now();
+          const retryAfterMs = providerRetryAfterMs(response, responseAt);
+          const error = new ProviderError("MusicBrainz", response.status, `MusicBrainz returned ${response.status}.`, {
+            code: response.status === 429 ? "rate_limited" : "http_error",
+            retryAfterMs,
+          });
+          error.providerResponse = true;
+          if (retryAfterMs != null) error.retryAt = responseAt + retryAfterMs;
+          discardProviderResponse(response);
+          throw error;
+        }
         return readBoundedJsonResponse(response, { maxBytes: PROVIDER_JSON_LIMITS.musicBrainz, signal: requestSignal });
       }, { signal });
       const raw = Array.isArray(d.artists) ? d.artists : [];
@@ -102,6 +116,8 @@ export async function mbTag(tag, offset, {
       };
     } catch (error) {
       if (signal?.aborted) throw signal.reason || error;
+      if (error?.code === "circuit_open" && lastError) throw lastError;
+      if (Number(error?.retryAfterMs) > 0) throw error;
       lastError = error;
       if (attempt < 2) await pause(1000 * (attempt + 1));
     }

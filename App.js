@@ -1,5 +1,5 @@
 import { publicDiscoveryRailAllowed } from "./src/domain/publicPlacementPolicy.mjs";
-import { useState, useRef, useEffect, useLayoutEffect, Suspense } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, Suspense } from "react";
 import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -94,7 +94,9 @@ import { CityNavigationContext } from "./src/components/cities/CityNavigationCon
 import { shouldRestorePersistedStack, MAIN_TAB_PATHS, mainTabForPath, serverDocumentNavigationPath } from "./src/domain/browserNavigation.mjs";
 import { createBrowserHistory, publicPresentationHintFromHistory } from "./src/domain/browserHistory.mjs";
 import { publicBrowserDestination } from "./src/domain/publicBrowserDestination.mjs";
-import { needsPublicFrameIdentity, resolvePublicFrameIdentity } from "./src/domain/publicFrameIdentity.mjs";
+import { needsPublicFrameIdentity } from "./src/domain/publicFrameNavigation.mjs";
+import { createArtistLookupController } from "./src/features/artistSearch/artistLookupController.mjs";
+import { artistLookupFailureMessage } from "./src/features/artistSearch/artistSearchApi.mjs";
 import { initialLandingState, landingRenderSurface } from "./src/domain/landingStartup.mjs";
 import { publicNavigationLinks, shouldShowMobilePublicTrail } from "./src/domain/publicNavigationLinks.mjs";
 import {
@@ -206,6 +208,10 @@ export default function App() {
     </SafeAreaProvider>
   );
 }
+
+let publicRecoveryModule;
+const loadPublicRecovery = () => publicRecoveryModule ||= import("./src/features/publicNavigation/publicNavigationEntry")
+  .catch((error) => { publicRecoveryModule = null; throw error; });
 
 function Root() {
   const {
@@ -549,6 +555,14 @@ function Root() {
   const publicRouteRequestRef = useRef(null);
   const restoreBrowserPathRef = useRef(null);
   const [publicNavigationNotice, setPublicNavigationNotice] = useState(null);
+  const publicLookupScope = session?.id || "guest";
+  const publicLookup = useMemo(() => ({ lookup: null }), [publicLookupScope]);
+  const PublicNavigationNotice = publicLookup.Notice;
+  const publicLookupOwnerRef = useRef(publicLookup);
+  publicLookupOwnerRef.current = publicLookup;
+  const publicNavigationPendingRef = useRef(null);
+  const publicLookupRetryAt = publicLookup.lookup?.retryAt(publicLookupScope) || 0;
+  useEffect(() => () => publicLookup.lookup?.reset(), [publicLookup]);
   // A news story opens only for the latest tap, and any navigation cancels a
   // pending one; a story that cannot load says so with a retry.
   const newsOpenRef = useRef(0);
@@ -558,6 +572,8 @@ function Root() {
     setNewsStoryNotice(null);
   };
   const cancelPublicRoute = () => {
+    publicLookup.lookup?.cancel();
+    publicNavigationPendingRef.current = null;
     publicRouteRequestRef.current?.abort();
     publicRouteRequestRef.current = null;
     setPublicNavigationNotice(null);
@@ -640,22 +656,34 @@ function Root() {
     const options = { resolveArtistMeta: remoteArtistMeta, resolveUser: userById };
     const commit = transition === "replace" ? commitReplace : commitGo;
     if (!web || !needsPublicFrameIdentity(candidate, options)) { commit(candidate); return; }
+    const navigationKey = JSON.stringify([candidate, transition]);
+    if (publicNavigationPendingRef.current === navigationKey && publicRouteRequestRef.current
+      && !publicRouteRequestRef.current.signal.aborted) return;
     cancelPublicRoute();
     const controller = new AbortController();
     const accountId = session?.id || null;
+    publicNavigationPendingRef.current = navigationKey;
     publicRouteRequestRef.current = controller;
     const current = () => publicRouteRequestRef.current === controller && !controller.signal.aborted
+      && publicLookupOwnerRef.current === publicLookup
       && accountId === (sessionRef.current?.id || null);
     setPublicNavigationNotice({ loading: true, candidate, transition });
     try {
-      const result = await resolvePublicFrameIdentity(candidate, {
-        ...options, signal: controller.signal, resolveArtist: resolveNavigationArtist, loadUser, profileFrame: publicIdentityFrame,
+      const { recoverPublicNavigation, PublicNavigationNotice: Notice } = await loadPublicRecovery();
+      if (!current()) return;
+      publicLookup.Notice = Notice;
+      const result = await recoverPublicNavigation(candidate, {
+        ...options, owner: publicLookup, scope: publicLookupScope, controller, current,
+        createArtistLookupController, artistLookupFailureMessage,
+        resolveArtist: resolveNavigationArtist, loadUser, profileFrame: publicIdentityFrame,
       });
       if (!current()) return;
-      if (result) commit(result.frame);
-      else setPublicNavigationNotice({ loading: false, candidate, transition });
-    } catch {
-      if (current()) setPublicNavigationNotice({ loading: false, candidate, transition });
+      if (result.frame) commit(result.frame);
+      else setPublicNavigationNotice({ loading: false, candidate, transition, ...result.notice });
+    } catch (error) {
+      if (current()) setPublicNavigationNotice({ loading: false, candidate, transition, error });
+    } finally {
+      if (publicRouteRequestRef.current === controller) publicNavigationPendingRef.current = null;
     }
   };
   const go = (candidate) => {
@@ -1628,11 +1656,15 @@ function Root() {
       <SafeAreaView style={styles.safe}>
         <StatusBar style={themeIsDark ? "light" : "dark"} />
         {publicNavigationNotice && (
-          <View accessibilityLiveRegion="polite" style={{ padding: 12, backgroundColor: colors.bgElev, flexDirection: "row", alignItems: "center", gap: 12 }}>
-            <Text style={{ flex: 1, color: colors.text }}>{publicNavigationNotice.loading ? "Opening page…" : "This artist or profile could not be opened."}</Text>
-            {!publicNavigationNotice.loading && <Pressable accessibilityRole="button" onPress={() => runAfterComposerClose(() => navigateCandidate(publicNavigationNotice.candidate, publicNavigationNotice.transition))} style={{ padding: 10 }}><Text style={{ color: colors.amber }}>Try again</Text></Pressable>}
-            <Pressable accessibilityRole="button" onPress={cancelPublicRoute} style={{ padding: 10 }}><Text style={{ color: colors.text }}>Cancel</Text></Pressable>
-          </View>
+          PublicNavigationNotice ?
+              <PublicNavigationNotice key={publicLookupScope} notice={publicNavigationNotice} retryAt={publicLookupRetryAt}
+                onRetry={() => runAfterComposerClose(() => navigateCandidate(publicNavigationNotice.candidate, publicNavigationNotice.transition))}
+                onCancel={cancelPublicRoute} />
+            : <View>
+              {!publicNavigationNotice.loading && <Text style={{ color: colors.text }}>Could not open this page.</Text>}
+              {!publicNavigationNotice.loading && <Pressable accessibilityRole="button" onPress={() => runAfterComposerClose(() => navigateCandidate(publicNavigationNotice.candidate, publicNavigationNotice.transition))}><Text style={{ color: colors.amber }}>Try again</Text></Pressable>}
+              <Pressable onPress={cancelPublicRoute} accessibilityRole="button"><Text style={{ color: colors.text }}>Cancel opening page</Text></Pressable>
+            </View>
         )}
         {newsStoryNotice && (
           <View accessibilityLiveRegion="polite" style={{ padding: 12, backgroundColor: colors.bgElev, flexDirection: "row", alignItems: "center", gap: 12 }}>

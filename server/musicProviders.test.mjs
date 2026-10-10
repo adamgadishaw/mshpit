@@ -62,11 +62,40 @@ function deferred() {
 
 test("generic provider failures dispose their body and preserve Retry-After", async () => {
   let disposed = 0;
+  const before = Date.now();
   await assert.rejects(providerJson("Fixture", "https://example.invalid", {
     fetchImpl: async () => ({ ok: false, status: 503, headers: new Headers({ "Retry-After": "120" }),
       body: { cancel: async () => { disposed += 1; } } }),
-  }), (error) => error.status === 503 && error.retryAfterMs === 120_000);
+  }), (error) => error.status === 503 && error.retryAfterMs === 120_000 && error.providerResponse === true
+    && error.retryAt >= before + 120_000 && error.retryAt <= Date.now() + 120_000);
   assert.equal(disposed, 1);
+});
+
+test("artist candidates distinguish a genuine empty page from unusable provider identities", async () => {
+  const fetchPayload = (data) => async () => new Response(JSON.stringify({ data }));
+  assert.deepEqual(await findDeezerArtistCandidates("Empty Fixture", { fetchImpl: fetchPayload([]) }), []);
+  for (const entry of [{ id: null, name: "Artist" }, { id: 0, name: "Artist" },
+    { id: "9007199254740992", name: "Artist" }, { id: 5, name: {} }, { id: 5, name: "  " }]) {
+    await assert.rejects(findDeezerArtistCandidates("Invalid Fixture", { fetchImpl: fetchPayload([entry]) }),
+      (error) => error.name === "ProviderError" && error.code === "invalid_payload");
+  }
+  const result = await findDeezerArtistCandidates("Valid Fixture", {
+    fetchImpl: fetchPayload([{ id: "12345", name: "Valid Fixture" }]),
+  });
+  assert.equal(result[0].id, "12345");
+});
+
+test("provider cancellation preserves the caller's abort reason through fetch and body reads", async () => {
+  for (const phase of ["fetch", "body"]) {
+    const controller = new AbortController();
+    const reason = new DOMException("Caller left", "AbortError");
+    const fetchImpl = async () => {
+      if (phase === "fetch") { controller.abort(reason); throw reason; }
+      return { ok: true, json: async () => { controller.abort(reason); throw reason; } };
+    };
+    await assert.rejects(providerJson("Fixture", "https://example.invalid", { fetchImpl, signal: controller.signal }),
+      (error) => error === reason);
+  }
 });
 
 test("distinct non-Latin artist searches cannot share a stripped-empty cache identity", async () => {
@@ -399,7 +428,7 @@ test("Deezer preview cancellation reaches the active provider request", async ()
 
   await started.promise;
   callerAbort.abort(new DOMException("listener skipped", "AbortError"));
-  await assert.rejects(() => pending, (error) => error?.code === "network" && error?.cause?.name === "AbortError");
+  await assert.rejects(() => pending, (error) => error === callerAbort.signal.reason);
   assert.equal(providerSignal.aborted, true);
 });
 

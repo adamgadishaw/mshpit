@@ -29,7 +29,7 @@ import { assessArtistIdentityRisk, assertMemberIdentityAllowed } from "./feature
 import { createArtistLookupWork } from "./artistLookupWork.js";
 import { resolveArtistPreviewWithFallback } from "./artistPreviewRecovery.js";
 import { createArtistFallbackCache, isOptionalArtistCacheStorageFailure } from "./artistFallbackCache.js";
-import { discardProviderResponse, providerRetryAfterMs } from "./providerResponsePolicy.js";
+import { discardProviderResponse, providerRetryAfterMs, PROVIDER_RETRY_AFTER_MAX_MS } from "./providerResponsePolicy.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
 import { boundedAlertDetail, errorDetailsByFingerprint } from "./errorDetails.js";
@@ -3259,9 +3259,13 @@ async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority 
       });
     }
     if (!response.ok) {
+      const responseAt = Date.now();
+      const retryAfterMs = providerRetryAfterMs(response, responseAt);
       discardProviderResponse(response);
       throw new ProviderError("MusicBrainz", response.status, "MusicBrainz did not return a usable response.", {
-        retryAfterMs: providerRetryAfterMs(response),
+        retryAfterMs,
+        retryAt: retryAfterMs == null ? null : responseAt + retryAfterMs,
+        providerResponse: true,
         code: response.status === 429
           ? "rate_limited"
           : response.status >= 500
@@ -3305,6 +3309,22 @@ async function readMusicBrainzArtistCandidates(name, { signal, priority = "norma
   }), { signal });
 }
 
+function artistLookupUnavailable(provider, error) {
+  const failure = new ApiError(502,
+    `${provider} is unavailable right now. Retry the artist lookup before continuing.`,
+    "PROVIDER_UNAVAILABLE", error);
+  const at = Date.now();
+  const deadline = Number(error?.retryAt);
+  const relative = Number(error?.retryAfterMs);
+  // Shared work can replay a failure. Its original absolute deadline wins so
+  // every reader sees the remaining wait, not a newly restarted Retry-After.
+  const remaining = Number.isFinite(deadline) && deadline > 0
+    ? deadline - at : Number.isFinite(relative) && relative > 0 ? relative : 30_000;
+  failure.retryAfterMs = Math.max(0, Math.min(PROVIDER_RETRY_AFTER_MAX_MS, Math.ceil(remaining)));
+  failure.retryAt = at + failure.retryAfterMs;
+  return failure;
+}
+
 async function resolveFromMusicBrainz(name, { requireExactIdentity = false, signal, priority = "normal" } = {}) {
   const requestedIdentity = normalizedMusicBrainzArtistName(name);
   if (!requestedIdentity) {
@@ -3319,16 +3339,7 @@ async function resolveFromMusicBrainz(name, { requireExactIdentity = false, sign
     candidates = await readMusicBrainzArtistCandidates(name, { signal, priority });
   } catch (error) {
     if (signal?.aborted) throw signal.reason || error;
-    const failure = new ApiError(
-      502,
-      "MusicBrainz is unavailable right now. Retry the artist lookup before continuing.",
-      "PROVIDER_UNAVAILABLE",
-      error,
-    );
-    const retryAfter = Number(error?.retryAfterMs);
-    failure.retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0
-      ? Math.max(1_000, Math.min(3_600_000, retryAfter)) : 30_000;
-    throw failure;
+    throw artistLookupUnavailable("MusicBrainz", error);
   }
 
   const exact = candidates.filter(
@@ -3418,7 +3429,7 @@ async function resolveFromDeezerExactName(name, { signal } = {}) {
       findDeezerArtistCandidates(name, { limit: 10, signal: jobSignal }), { signal });
   } catch (error) {
     if (signal?.aborted) throw signal.reason || error;
-    if (error?.retryable || error instanceof ProviderError) return null;
+    if (error?.retryable || error instanceof ProviderError) throw artistLookupUnavailable("Deezer", error);
     throw error;
   }
   const exact = new Map(
@@ -5496,7 +5507,7 @@ export const routes = {
     try { return { candidates: await findDeezerArtistCandidates(name, { signal: ctx.signal }) }; }
     catch (error) {
       if (ctx.signal?.aborted) throw ctx.signal.reason || error;
-      if (error instanceof ProviderError) return { candidates: [] };
+      if (error instanceof ProviderError) throw artistLookupUnavailable("Deezer", error);
       throw error;
     }
   },

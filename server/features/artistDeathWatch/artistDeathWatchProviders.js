@@ -5,6 +5,7 @@ import {
 } from "../../../src/domain/artistDeathWatch.mjs";
 import { runMusicBrainzRequest } from "../../musicBrainzRequestThrottle.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "../../boundedJsonResponse.js";
+import { discardProviderResponse, providerRetryAfterMs } from "../../providerResponsePolicy.js";
 
 const WIKIDATA_SPARQL = "https://query.wikidata.org/sparql";
 const MUSICBRAINZ_API = "https://musicbrainz.org/ws/2/artist";
@@ -16,12 +17,13 @@ const USER_AGENT = process.env.ARTIST_DEATH_WATCH_USER_AGENT
   || "mshpit-memorial-watch/1.0 (https://www.mshpit.com; support@mshpit.com)";
 
 export class ArtistDeathWatchProviderError extends Error {
-  constructor(message, { code = "provider_error", status = 0, retryAt = null } = {}) {
+  constructor(message, { code = "provider_error", status = 0, retryAt = null, providerResponse = false } = {}) {
     super(message);
     this.name = "ArtistDeathWatchProviderError";
     this.code = code;
     this.status = status;
     this.retryAt = retryAt;
+    this.providerResponse = providerResponse;
   }
 }
 
@@ -84,14 +86,7 @@ export function parseWikidataDeathSignals(payload, artists, { at = Date.now() } 
   return signals;
 }
 
-function providerRetryAt(response, at) {
-  const raw = response?.headers?.get?.("retry-after");
-  if (raw && /^\d+$/u.test(raw.trim())) return at + Math.min(86_400_000,Math.max(60_000,Number(raw)*1000));
-  const absolute = raw ? Date.parse(raw) : NaN;
-  return Number.isFinite(absolute) && absolute > at ? Math.min(at+86_400_000,absolute) : at + 60_000;
-}
-
-async function providerJson(url, { fetchImpl, timeoutMs, provider, at, signal = null }) {
+async function providerJson(url, { fetchImpl, timeoutMs, provider, now, signal = null }) {
   let response;
   const timeoutSignal=AbortSignal.timeout(timeoutMs);
   const requestSignal=signal ? AbortSignal.any([signal,timeoutSignal]) : timeoutSignal;
@@ -101,26 +96,42 @@ async function providerJson(url, { fetchImpl, timeoutMs, provider, at, signal = 
       signal: requestSignal,
     });
   } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     throw new ArtistDeathWatchProviderError(`${provider} could not be reached.`, {
       code: error?.name === "TimeoutError" || error?.name === "AbortError"
         ? `${provider.toLowerCase()}_timeout` : `${provider.toLowerCase()}_network`,
     });
   }
+  // The scan's evidence timestamp can be much earlier than this response.
+  // Capture receipt before body disposal so relative Retry-After is not shortened.
+  const receivedAt = now();
   if (response.status === 429) {
-    try { await response.body?.cancel?.(); } catch { /* Failed body disposal must not hide the provider status. */ }
+    const retryAt = receivedAt + (providerRetryAfterMs(response, receivedAt) ?? 60_000);
+    discardProviderResponse(response);
     throw new ArtistDeathWatchProviderError(`${provider} asked Mshpit to slow down.`, {
       code: `${provider.toLowerCase()}_rate_limited`,
       status: 429,
-      retryAt: providerRetryAt(response, at),
+      retryAt,
+      providerResponse: true,
     });
   }
   if (!response.ok) {
-    try { await response.body?.cancel?.(); } catch { /* Failed body disposal must not hide the provider status. */ }
+    const retryAfterMs = providerRetryAfterMs(response, receivedAt);
+    const retryAt = retryAfterMs != null ? receivedAt + retryAfterMs
+      : response.status >= 500 ? receivedAt + 60_000 : null;
+    discardProviderResponse(response);
     throw new ArtistDeathWatchProviderError(`${provider} returned ${response.status}.`, {
       code: response.status >= 500 ? `${provider.toLowerCase()}_unavailable` : `${provider.toLowerCase()}_rejected`,
       status: response.status,
-      retryAt: response.status>=500 ? providerRetryAt(response,at) : null,
+      retryAt,
+      providerResponse: true,
     });
+  }
+  // A concrete refusal still informs the shared gate if cancellation raced the
+  // response. Successful replies can be discarded without provider accounting.
+  if (signal?.aborted) {
+    discardProviderResponse(response);
+    throw signal.reason || new DOMException("Aborted", "AbortError");
   }
   try {
     return await readBoundedJsonResponse(response, {
@@ -128,6 +139,7 @@ async function providerJson(url, { fetchImpl, timeoutMs, provider, at, signal = 
       signal: requestSignal,
     });
   } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     throw new ArtistDeathWatchProviderError(`${provider} returned unreadable data.`, {
       code: [error?.name,error?.cause?.name].some((name)=>name==="TimeoutError" || name==="AbortError")
         ? `${provider.toLowerCase()}_timeout` : `${provider.toLowerCase()}_response`,
@@ -139,6 +151,7 @@ export async function readWikidataDeathSignals(artists, {
   fetchImpl = fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   at = Date.now(),
+  now = Date.now,
 } = {}) {
   const exact = (Array.isArray(artists) ? artists : [])
     .filter((artist) => canonicalArtistMbid(artist?.artistMbid))
@@ -151,7 +164,7 @@ export async function readWikidataDeathSignals(artists, {
     fetchImpl,
     timeoutMs: Math.max(1_000, Math.min(15_000, Math.trunc(Number(timeoutMs) || DEFAULT_TIMEOUT_MS))),
     provider: "Wikidata",
-    at,
+    now,
   });
   return parseWikidataDeathSignalRows(payload, exact, { at });
 }
@@ -236,6 +249,7 @@ export async function readRecentWikidataDeaths({
   fetchImpl = fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   at = Date.now(),
+  now = Date.now,
 } = {}) {
   const url = new URL(WIKIDATA_SPARQL);
   url.searchParams.set("query", buildRecentWikidataDeathsQuery({ since, limit, at }));
@@ -244,7 +258,7 @@ export async function readRecentWikidataDeaths({
     fetchImpl,
     timeoutMs: Math.max(1_000, Math.min(15_000, Math.trunc(Number(timeoutMs) || DEFAULT_TIMEOUT_MS))),
     provider: "Wikidata",
-    at,
+    now,
   });
   return parseRecentWikidataDeaths(payload, { at });
 }
@@ -264,6 +278,7 @@ export async function confirmMusicBrainzDeathSignal(expected, {
   fetchImpl = fetch,
   timeoutMs = MUSICBRAINZ_TIMEOUT_MS,
   at = Date.now(),
+  now = Date.now,
   signal = null,
   requestGate = runMusicBrainzRequest,
 } = {}) {
@@ -276,7 +291,7 @@ export async function confirmMusicBrainzDeathSignal(expected, {
     payload = await requestGate(() => providerJson(url, {
       fetchImpl,
       timeoutMs: Math.max(1_000, Math.min(15_000, Math.trunc(Number(timeoutMs) || MUSICBRAINZ_TIMEOUT_MS))),
-      provider: "MusicBrainz", at, signal,
+      provider: "MusicBrainz", now, signal,
     }), { signal });
   } catch (error) {
     // An exact identity deleted or merged upstream is not a death confirmation.
