@@ -4,6 +4,49 @@ import { resolveArtistPreviewWithFallback as resolve } from "./artistPreviewReco
 
 const unavailable = () => Object.assign(new Error("Artist provider is temporarily unavailable."), { code: "PROVIDER_UNAVAILABLE" });
 
+test("observation preserves both settled failures and the original primary error", async () => {
+  const events = [], primaryError = unavailable(), fallbackError = unavailable();
+  primaryError.cause = { code: "network", message: "private primary detail" };
+  fallbackError.cause = { code: "provider_timeout", message: "private fallback detail" };
+  await assert.rejects(resolve({ primary: async () => { throw primaryError; }, fallback: async () => { throw fallbackError; },
+    observe: (event) => events.push(event) }), (error) => error === primaryError);
+  assert.deepEqual(events.filter((event) => event.type === "settled"), [
+    { type: "settled", provider: "musicbrainz", outcome: "unavailable", failure: "network" },
+    { type: "settled", provider: "deezer", outcome: "unavailable", failure: "provider_timeout" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(events), /private/);
+});
+
+test("winning fallback records pending primary cancellation once and ignores late failure", async () => {
+  const events = [];
+  let rejectPrimary;
+  const artist = { deezerId: "42" };
+  const result = await resolve({ hedgeAfterMs: 1,
+    primary: () => new Promise((_resolve, reject) => { rejectPrimary = reject; }),
+    fallback: async () => artist, observe: (event) => events.push(event),
+  });
+  assert.equal(result.artist, artist);
+  assert.deepEqual(events.filter((event) => event.type === "settled"), [
+    { type: "settled", provider: "deezer", outcome: "matched", failure: "none" },
+    { type: "settled", provider: "musicbrainz", outcome: "cancelled_after_winner", failure: "none" },
+  ]);
+  const count = events.length;
+  rejectPrimary(unavailable());
+  await new Promise((done) => setImmediate(done));
+  assert.equal(events.length, count);
+});
+
+test("caller cancellation and observer exceptions preserve abort and stop both subscriptions", async () => {
+  const controller = new AbortController(), events = [];
+  const pending = (signal) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  const result = resolve({ signal: controller.signal, hedgeAfterMs: 1, primary: pending,
+    fallback: (signal) => { const promise = pending(signal); controller.abort(); return promise; },
+    observe: (event) => { events.push(event); throw new Error("diagnostics only"); },
+  });
+  await assert.rejects(result, (error) => error === controller.signal.reason);
+  assert.deepEqual(events.filter((event) => event.type === "settled").map((event) => event.outcome), ["caller_cancelled", "caller_cancelled"]);
+});
+
 test("fast primary does not double provider volume", async () => {
   assert.deepEqual(await resolve({ primary: async () => ({ mbid: "exact" }), fallback: () => assert.fail("no fallback required") }),
     { artist: { mbid: "exact" }, provider: "musicbrainz" });

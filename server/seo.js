@@ -127,6 +127,7 @@ const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   LEFT JOIN artists canonical_artist ON canonical_artist.norm=td.artist_key
   WHERE td.id=?1 AND td.release_at<=?2
+    AND ${artistAuthoredTourDateVisibleSql("td")}
     AND ${publicMusicEventCandidateSql("td")}
     AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
     AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?3)

@@ -17,7 +17,7 @@ const deadline = ast.program.body.find(node => node.type === "VariableDeclaratio
 // Execute the production shutdown function without starting the app, opening
 // SQLite, or contacting providers. HTTP drain and worker settlement are
 // independently controlled; the clock runs the actual registered fallback.
-function shutdownFixture({ workerStop = () => Promise.resolve() } = {}) {
+function shutdownFixture({ workerStop = () => Promise.resolve(), alertStop = () => Promise.resolve() } = {}) {
   const events = [], errors = [], stops = [], exits = [], timers = [];
   let closeCallback, elapsed = 0;
   const schedulerNames = [
@@ -34,6 +34,7 @@ function shutdownFixture({ workerStop = () => Promise.resolve() } = {}) {
     dependencies[name] = options => { stops.push({ name, options }); return Promise.resolve(); };
   }
   Object.assign(dependencies, {
+    stopErrorAlertScheduler: () => { stops.push({ name: "stopErrorAlertScheduler" }); return alertStop(); },
     additionalSchedulers: new Map([["fixture-worker", {
       stop: options => { stops.push({ name: "fixture-worker", options }); return workerStop(); },
     }]]),
@@ -140,10 +141,50 @@ test("stalled HTTP is bounded and repeated shutdown signals do not restart cance
   fixture.run(0);
   await flushShutdownPromises();
   assert.equal(fixture.stops.length, stopCount);
+  assert.equal(fixture.stops.filter(entry => entry.name === "stopErrorAlertScheduler").length, 1);
   assert.equal(fixture.timers.length, 1);
   fixture.advance(14_999);
   assert.deepEqual(fixture.exits, []);
   fixture.advance(1);
   assert.deepEqual(fixture.exits, [1], "the original shutdown reason is retained");
   assert.deepEqual(fixture.events, ["http:draining", "process:exit"]);
+});
+
+test("shutdown waits for an active alert drain before closing SQLite and stops it only once", async () => {
+  let finishAlert;
+  const alert = new Promise(resolve => { finishAlert = resolve; });
+  const fixture = shutdownFixture({ alertStop: () => alert });
+  fixture.run();
+  const draining = fixture.finishHttp();
+  await flushShutdownPromises();
+  assert.deepEqual(fixture.events, ["http:draining", "http:drained"]);
+  assert.deepEqual(fixture.exits, []);
+  fixture.run(1);
+  assert.equal(fixture.stops.filter(entry => entry.name === "stopErrorAlertScheduler").length, 1);
+  assert.equal(fixture.timers.length, 1);
+  finishAlert();
+  await draining;
+  assert.deepEqual(fixture.events, ["http:draining", "http:drained", "db:closed", "process:exit"]);
+  assert.deepEqual(fixture.exits, [0], "repeated shutdown retains the original exit reason");
+  assert.equal(fixture.timers[0].fired, false);
+  assert.deepEqual(fixture.errors, []);
+});
+
+test("a stalled alert drain retains the bounded forced exit without closing its database", async () => {
+  const fixture = shutdownFixture({ alertStop: () => new Promise(() => {}) });
+  fixture.run(1);
+  void fixture.finishHttp();
+  await flushShutdownPromises();
+  fixture.advance(10_000);
+  fixture.run(0);
+  assert.equal(fixture.stops.filter(entry => entry.name === "stopErrorAlertScheduler").length, 1);
+  assert.equal(fixture.timers.length, 1);
+  assert.equal(fixture.timers[0].unreferenced, true);
+  fixture.advance(14_999);
+  assert.deepEqual(fixture.exits, []);
+  assert.equal(fixture.events.includes("db:closed"), false);
+  fixture.advance(1);
+  assert.deepEqual(fixture.exits, [1]);
+  assert.equal(fixture.events.includes("db:closed"), false);
+  assert.deepEqual(fixture.errors, ["[pit] shutdown exceeded 25s; forcing process exit."]);
 });
