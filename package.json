@@ -72,7 +72,7 @@
   "devDependencies": {
     "@expo/metro-runtime": "~57.0.15",
     "@react-native-community/slider": "5.2.0",
-    "@shopify/react-native-skia": "2.6.2",
+    "@shopify/react-native-skia": "2.13.1",
     "ajv": "8.20.0",
     "expo": "~57.0.20",
     "expo-asset": "~57.0.16",
