@@ -74,7 +74,13 @@ captureAppError(error, {
 ## Privacy rule
 
 Diagnostics may contain only operation labels, route templates, HTTP method and
-status, stable error codes, source, timestamp, and request ID. Never record:
+status, stable error codes, source, timestamp, and request ID. Bounded server
+resolver observations may also contain fixed categories for saved-result source,
+provider outcome/work origin, cache-write outcome and optional same-origin page
+category, plus capped elapsed durations. Rolling staff-only summaries retain
+fixed-category counts and duration buckets, never individual request history.
+The page category is untrusted optional context, not proof of visitor identity
+or automation. Never record:
 
 - passwords, session/reset tokens, authorization headers, or cookies;
 - request/response bodies or query-string values;

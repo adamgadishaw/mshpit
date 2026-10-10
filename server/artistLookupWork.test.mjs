@@ -3,6 +3,36 @@ import test from "node:test";
 import { createArtistLookupWork } from "./artistLookupWork.js";
 import { PROVIDER_RETRY_AFTER_MAX_MS } from "./providerResponsePolicy.js";
 
+test("observers distinguish new, shared, memoized result and memoized failure without keys or errors", async () => {
+  const run = createArtistLookupWork();
+  const events = [], observe = (event) => events.push(event);
+  let release;
+  const first = run("private-artist", () => new Promise((resolve) => { release = resolve; }), { observe });
+  const shared = run("private-artist", () => assert.fail("must coalesce"), { observe });
+  await Promise.resolve();
+  release([]);
+  assert.deepEqual(await first, []); assert.deepEqual(await shared, []);
+  await run("private-artist", () => assert.fail("must replay result"), { observe });
+  const error = Object.assign(new Error("private provider body"), { code: "network" });
+  await assert.rejects(run("private-other", async () => { throw error; }, { observe }), (value) => value === error);
+  await assert.rejects(run("private-other", () => assert.fail("must replay error"), { observe }), (value) => value === error);
+  assert.deepEqual(events, [{ origin: "new_work" }, { origin: "shared_work" }, { origin: "memoized_result" },
+    { origin: "new_work" }, { origin: "memoized_error" }]);
+  assert.doesNotMatch(JSON.stringify(events), /private|network/);
+});
+
+test("observer failures leave shared work and memoized outcomes unchanged", async () => {
+  const run = createArtistLookupWork();
+  const observe = () => { throw new Error("observer only"); };
+  let release;
+  const result = { exact: true };
+  const first = run("shared", () => new Promise((done) => { release = done; }), { observe });
+  const shared = run("shared", () => assert.fail("must share"), { observe });
+  await Promise.resolve(); release(result);
+  assert.equal(await first, result); assert.equal(await shared, result);
+  assert.equal(await run("shared", () => assert.fail("must replay"), { observe }), result);
+});
+
 test("memoized provider failures retain an absolute deadline beyond an hour without renewing it", async () => {
   let now = 1_000, calls = 0;
   const run = createArtistLookupWork({ clock: () => now });

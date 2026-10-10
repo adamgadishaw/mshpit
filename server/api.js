@@ -27,11 +27,12 @@ import { createTourDateArtistPhotoReader } from "./tourDateArtistPhotos.js";
 import { resolveReviewedArtistAlias } from "./reviewedArtistIdentities.js";
 import { assessArtistIdentityRisk, assertMemberIdentityAllowed } from "./features/artistAccounts/artistIdentityRisk.js";
 import { createArtistLookupWork } from "./artistLookupWork.js";
+import { artistResolverMetrics, createArtistResolverDiagnostics } from "./artistResolverDiagnostics.js";
 import { resolveArtistPreviewWithFallback } from "./artistPreviewRecovery.js";
 import { createArtistFallbackCache, isOptionalArtistCacheStorageFailure } from "./artistFallbackCache.js";
 import { discardProviderResponse, providerRetryAfterMs, PROVIDER_RETRY_AFTER_MAX_MS } from "./providerResponsePolicy.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
-import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
+import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError, scheduleErrorAlert } from "./errorLog.js";
 import { boundedAlertDetail, errorDetailsByFingerprint } from "./errorDetails.js";
 import { collectSeriousErrorPatterns } from "./siteHealthErrorPatterns.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
@@ -314,7 +315,6 @@ import {
 import { ownerApprovalRoutes } from "./features/ownerApprovals/ownerApprovalRoutes.js";
 import { clientErrorRoutes } from "./features/clientErrors/clientErrorRoutes.js";
 import { capacityHandshakeRoutes } from "./features/capacity/capacityHandshakeRoutes.js";
-import { createAlertDrainScheduler } from "./alertDrainScheduler.js";
 
 export { ApiError } from "./errors.js";
 
@@ -3301,12 +3301,12 @@ async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority 
   }, { signal, priority });
 }
 
-async function readMusicBrainzArtistCandidates(name, { signal, priority = "normal" } = {}) {
+async function readMusicBrainzArtistCandidates(name, { signal, priority = "normal", observe } = {}) {
   const key = normalizedMusicBrainzArtistName(name);
   if (!key) return [];
   return musicBrainzArtistCandidateWork(key, (jobSignal) => readMusicBrainzArtistCandidatesUnshared(name, {
     signal: jobSignal, priority,
-  }), { signal });
+  }), { signal, observe });
 }
 
 function artistLookupUnavailable(provider, error) {
@@ -3325,7 +3325,7 @@ function artistLookupUnavailable(provider, error) {
   return failure;
 }
 
-async function resolveFromMusicBrainz(name, { requireExactIdentity = false, signal, priority = "normal" } = {}) {
+async function resolveFromMusicBrainz(name, { requireExactIdentity = false, signal, priority = "normal", observe } = {}) {
   const requestedIdentity = normalizedMusicBrainzArtistName(name);
   if (!requestedIdentity) {
     if (requireExactIdentity) {
@@ -3336,7 +3336,7 @@ async function resolveFromMusicBrainz(name, { requireExactIdentity = false, sign
 
   let candidates;
   try {
-    candidates = await readMusicBrainzArtistCandidates(name, { signal, priority });
+    candidates = await readMusicBrainzArtistCandidates(name, { signal, priority, observe });
   } catch (error) {
     if (signal?.aborted) throw signal.reason || error;
     throw artistLookupUnavailable("MusicBrainz", error);
@@ -3404,15 +3404,17 @@ function cachedMusicBrainzResolution(name) {
 function rememberMusicBrainzResolution(name, artist) {
   const key = musicBrainzResolveCacheKey(name);
   if (!key || !artist?.mbid || !cacheableMusicBrainzResolutions.has(artist)
-    || normalizedMusicBrainzArtistName(artist.name) !== normalizedMusicBrainzArtistName(name)) return;
+    || normalizedMusicBrainzArtistName(artist.name) !== normalizedMusicBrainzArtistName(name)) return "not_eligible";
   const at = Date.now();
   try {
     providerCacheStmts.set.run(key, JSON.stringify(artist), at, at + MUSICBRAINZ_RESOLVE_CACHE_MS);
+    return "stored";
   } catch (error) {
     // Recoverable cache storage pressure must not discard a successful lookup.
     // Database corruption/schema failures still surface; the storage health
     // checks remain responsible for reporting disk capacity independently.
     if (!isOptionalArtistCacheStorageFailure(error)) throw error;
+    return "optional_storage_failure";
   }
 }
 
@@ -3420,13 +3422,13 @@ function rememberMusicBrainzResolution(name, artist) {
 // It is used only when exactly one provider ID has the requested normalized
 // name. Ambiguous same-name acts deliberately remain unresolved for the
 // listener to choose through the existing candidates flow.
-async function resolveFromDeezerExactName(name, { signal } = {}) {
+async function resolveFromDeezerExactName(name, { signal, observe } = {}) {
   const requested = normalizedMusicBrainzArtistName(name);
   if (!requested) return null;
   let candidates;
   try {
     candidates = await deezerArtistFallbackWork(name.normalize("NFKC").toLowerCase(), (jobSignal) =>
-      findDeezerArtistCandidates(name, { limit: 10, signal: jobSignal }), { signal });
+      findDeezerArtistCandidates(name, { limit: 10, signal: jobSignal }), { signal, observe });
   } catch (error) {
     if (signal?.aborted) throw signal.reason || error;
     if (error?.retryable || error instanceof ProviderError) throw artistLookupUnavailable("Deezer", error);
@@ -3777,11 +3779,7 @@ function observeBackgroundVideoFinalizeFailure(error, requestId) {
     error,
     requestId,
   });
-  setTimeout(() => {
-    maybeAlert().catch((alertError) => {
-      console.error(`[media] background clip alert failed safely: cause=${privateErrorLabel(alertError)}`);
-    });
-  }, 0).unref?.();
+  scheduleErrorAlert();
 }
 
 function requireVideoPublishingActor(user) {
@@ -4240,10 +4238,9 @@ function resolvePostCreateRetry(userId, mutationId, mutationHash) {
   };
 }
 
-// A crash storm owns one deferred digest drain, not one timer per browser.
-const clientCrashAlertDrain = createAlertDrainScheduler({ drain: () => maybeAlert() });
+// Client crashes share the same bounded digest wake-up as server errors.
 function scheduleClientCrashAlert() {
-  clientCrashAlertDrain.schedule();
+  scheduleErrorAlert();
 }
 
 const peopleSuggestionService = createPeopleSuggestionService(db, { projectUser: publicUser });
@@ -4306,6 +4303,7 @@ function staffHealthProjection(actor) {
         capacity: collectStorageHealth(db, { databasePath: DATABASE_PATH }),
       },
       traffic: requestMetrics.snapshot(),
+      artistResolver: artistResolverMetrics.snapshot(),
       artistKnowledge: collectArtistKnowledgeStatus(db),
       mediaObjectStorageConfigured: mediaConfigured(process.env),
       privateVideoSourceStorageConfigured: privateVideoMediaConfigured(process.env),
@@ -5422,78 +5420,113 @@ export const routes = {
   // returned as request-scoped MusicBrainz projections; ingestion remains an
   // explicit staff/background operation.
   "GET /api/artists/resolve": async (ctx) => {
-    const name = clean(ctx.query.name, { max: 120 });
-    if (!name) throw new ApiError(400, "Missing name.");
-    const existing = resolveCatalogArtistReference(name);
-    if (existing && !artistCatalogVisibleTo(db, existing, ctx.user)) return { artist: null, created: false };
-    if (existing) return {
-      artist: {
-        ...publicArtist(existing),
-        fanClubAvailable: !artistHasLegacyMemorial(db, {
-          artistKey: existing.norm,
-          artist: existing.name,
-        }),
-      },
-      created: false,
-    };
-    const remembered = cachedMusicBrainzResolution(name);
-    // A stale exact identity is still a safer immediate answer than waiting on
-    // an upstream service. Explicit attachment revalidates the provider ID.
-    if (remembered) {
-      return {
-        artist: {
-          ...publicArtist(artistRow(remembered.artist.name, remembered.artist, "musicbrainz")),
-          fanClubAvailable: true,
-        },
-        created: false,
-        transient: true,
-        cached: true,
-        ...(!remembered.fresh ? { stale: true } : {}),
-      };
-    }
-    // A previously successful, unique-exact fallback remains a request-scoped
-    // preview, not a catalogue identity or permission to attach an artist.
-    // The small durable cache survives restarts and expires after 24 hours.
-    const fallbackRemembered = artistFallbackCache.get(name);
-    if (fallbackRemembered) {
-      return {
-        artist: {
-          ...publicArtist(artistRow(fallbackRemembered.name, fallbackRemembered, "deezer")),
-          fanClubAvailable: true,
-        },
-        created: false,
-        transient: true,
-        cached: true,
-        providerFallback: "deezer",
-      };
-    }
-    limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
-    const preview = await resolveArtistPreviewWithFallback({
-      signal: ctx.signal,
-      primary: (signal) => resolveFromMusicBrainz(name, { signal, priority: "interactive" }),
-      fallback: (signal) => resolveFromDeezerExactName(name, { signal }),
+    const diagnostics = createArtistResolverDiagnostics({
+      entryPoint: ctx.artistResolverEntryPoint,
+      capture: (detail) => ctx.captureArtistResolverDiagnostics?.(detail),
     });
-    if (preview.provider === "deezer") {
-      const fallback = preview.artist;
-      artistFallbackCache.remember(name, fallback);
+    try {
+      const name = clean(ctx.query.name, { max: 120 });
+      if (!name) throw new ApiError(400, "Missing name.");
+      const existing = resolveCatalogArtistReference(name);
+      if (existing && !artistCatalogVisibleTo(db, existing, ctx.user)) {
+        diagnostics.source("catalog_hidden");
+        diagnostics.result("no_match");
+        return { artist: null, created: false };
+      }
+      if (existing) {
+        diagnostics.source("catalog");
+        diagnostics.result("matched");
+        return {
+          artist: {
+            ...publicArtist(existing),
+            fanClubAvailable: !artistHasLegacyMemorial(db, {
+              artistKey: existing.norm,
+              artist: existing.name,
+            }),
+          },
+          created: false,
+        };
+      }
+      const remembered = cachedMusicBrainzResolution(name);
+      // A stale exact identity is still a safer immediate answer than waiting on
+      // an upstream service. Explicit attachment revalidates the provider ID.
+      if (remembered) {
+        diagnostics.source(remembered.fresh ? "musicbrainz_cache_fresh" : "musicbrainz_cache_stale");
+        diagnostics.result("matched");
+        return {
+          artist: {
+            ...publicArtist(artistRow(remembered.artist.name, remembered.artist, "musicbrainz")),
+            fanClubAvailable: true,
+          },
+          created: false,
+          transient: true,
+          cached: true,
+          ...(!remembered.fresh ? { stale: true } : {}),
+        };
+      }
+      // A previously successful, unique-exact fallback remains a request-scoped
+      // preview, not a catalogue identity or permission to attach an artist.
+      // The small durable cache survives restarts and expires after 24 hours.
+      const fallbackRemembered = artistFallbackCache.get(name);
+      if (fallbackRemembered) {
+        diagnostics.source("deezer_cache");
+        diagnostics.result("matched");
+        return {
+          artist: {
+            ...publicArtist(artistRow(fallbackRemembered.name, fallbackRemembered, "deezer")),
+            fanClubAvailable: true,
+          },
+          created: false,
+          transient: true,
+          cached: true,
+          providerFallback: "deezer",
+        };
+      }
+      limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
+      const preview = await resolveArtistPreviewWithFallback({
+        signal: ctx.signal,
+        observe: diagnostics.provider,
+        primary: (signal) => resolveFromMusicBrainz(name, { signal, priority: "interactive",
+          observe: (event) => diagnostics.work("musicbrainz", event) }),
+        fallback: (signal) => resolveFromDeezerExactName(name, { signal,
+          observe: (event) => diagnostics.work("deezer", event) }),
+      });
+      if (preview.provider === "deezer") {
+        const fallback = preview.artist;
+        diagnostics.source("deezer");
+        diagnostics.cacheWrite("error");
+        diagnostics.cacheWrite(artistFallbackCache.remember(name, fallback) ? "stored" : "not_written");
+        diagnostics.result("matched");
+        return {
+          artist: {
+            ...publicArtist(artistRow(fallback.name, fallback, "deezer")),
+            fanClubAvailable: true,
+          },
+          created: false,
+          transient: true,
+          providerFallback: "deezer",
+        };
+      }
+      const mb = preview.artist;
+      if (!mb) {
+        diagnostics.result("no_match");
+        return { artist: null, created: false };
+      }
+      diagnostics.source("musicbrainz");
+      diagnostics.cacheWrite("error");
+      diagnostics.cacheWrite(rememberMusicBrainzResolution(name, mb));
+      diagnostics.result("matched");
       return {
-        artist: {
-          ...publicArtist(artistRow(fallback.name, fallback, "deezer")),
-          fanClubAvailable: true,
-        },
+        artist: { ...publicArtist(artistRow(mb.name, mb, "musicbrainz")), fanClubAvailable: true },
         created: false,
         transient: true,
-        providerFallback: "deezer",
       };
+    } catch (error) {
+      diagnostics.failed(error, ctx.signal?.aborted === true);
+      throw error;
+    } finally {
+      diagnostics.finish();
     }
-    const mb = preview.artist;
-    if (!mb) return { artist: null, created: false };
-    rememberMusicBrainzResolution(name, mb);
-    return {
-      artist: { ...publicArtist(artistRow(mb.name, mb, "musicbrainz")), fanClubAvailable: true },
-      created: false,
-      transient: true,
-    };
   },
 
   // Same-named artists disambiguation: a short list of Deezer candidates (fans,

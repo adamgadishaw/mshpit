@@ -15,10 +15,10 @@ import { db, q, publicUser, pruneMissingArtists, DATABASE_DIRECTORY, DATABASE_PA
 import { artistDeathWatchService, eraseAccountForInactivity, replayPrivacyJournalOnRestore, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startFestivals, startNewsDesk, startPrivacyJournal, startVideoProcessingRetries, startWebProfiles, startSearchGrowth } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
-import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
-import { createAlertDrainScheduler } from "./alertDrainScheduler.js";
+import { pruneErrors, recordError, scheduleErrorAlert, stopErrorAlertScheduler } from "./errorLog.js";
 import { startMemoryMonitor } from "./memoryAdmission.js";
 import { observeRequestResponse } from "./requestMetrics.js";
+import { artistResolverEntryPoint, formatArtistResolverFailure, sanitizeArtistResolverDiagnostic } from "./artistResolverDiagnostics.js";
 import { startStorageMaintenance } from "./storageMaintenanceScheduler.js";
 import { pruneExpiredProviderData } from "./musicProviders.js";
 import { sitemapStartupRefreshDecision } from "./features/seo/sitemapSnapshotManager.js";
@@ -521,6 +521,7 @@ async function handleRequest(req, res) {
   });
   res.setHeader("X-Request-Id", requestId);
   let pathname = "/", query = {}, routePattern = "", search = "";
+  let artistResolverDiagnostic = null;
   try {
     const u = new URL(req.url, "http://x");
     pathname = u.pathname;
@@ -671,6 +672,9 @@ async function handleRequest(req, res) {
         mediaApiAuthorization,
         mediaApiIdempotencyKey,
         signal: requestAbort.signal,
+        artistResolverEntryPoint: pathname === "/api/artists/resolve"
+          ? artistResolverEntryPoint(req.headers.referer, process.env.PUBLIC_ORIGIN) : "unknown",
+        captureArtistResolverDiagnostics: (detail) => { artistResolverDiagnostic = sanitizeArtistResolverDiagnostic(detail); },
         setCookie: (c) => setCookies.push(c),
         setSession: (s) => setCookies.push(...sessionCookieHeaders(s.token, s.expiresAt, PROD)),
         clearSession: () => setCookies.push(...clearSessionCookies(PROD)),
@@ -733,14 +737,14 @@ async function handleRequest(req, res) {
           code: e.code,
         });
         if (observable) {
-          console.error(`[pit] ${e.status} ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): code=${e.code} cause=${failure.cause}`);
+          console.error(`[pit] ${e.status} ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): code=${e.code} cause=${failure.cause}${formatArtistResolverFailure(artistResolverDiagnostic)}`);
           recordError({ level: "error", code: e.code, status: e.status, method: failure.method, route: routePattern, cause: failure.cause, requestId, error: e });
           scheduleAlert();
         }
       }
       return sendApiError(res, e, requestId, cors);
     }
-    console.error(`[pit] 500 ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): cause=${failure.cause}`);
+    console.error(`[pit] 500 ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): cause=${failure.cause}${formatArtistResolverFailure(artistResolverDiagnostic)}`);
     recordError({ level: "error", code: "UNHANDLED", status: 500, method: failure.method, route: routePattern, cause: failure.cause, requestId, error: e });
     scheduleAlert();
     return sendApiError(res, e, requestId, cors);
@@ -799,9 +803,8 @@ setInterval(() => {
 // add latency to the response that triggered it. One pending drain covers every
 // error already recorded before its timer runs; a storm no longer creates one
 // zero-delay timer per request. maybeAlert still owns the delivery cooldown.
-const alertDrains = createAlertDrainScheduler({ drain: () => maybeAlert() });
 function scheduleAlert() {
-  alertDrains.schedule();
+  scheduleErrorAlert();
 }
 
 function reportBackgroundStartupFailure(routePattern, error) {
@@ -858,6 +861,7 @@ let storageMaintenance = null;
 function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
+  const alertStop = stopErrorAlertScheduler();
   memoryMonitor?.stop();
   storageMaintenance?.stop();
   console.log("\n[pit] shutting down…");
@@ -922,6 +926,7 @@ function shutdown(exitCode = 0) {
     try { await privateMediaIsolationStop; }
     catch (error) { console.error(`[media] privacy recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     await additionalStops;
+    await alertStop;
     try { db.close(); }
     catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     process.exit(exitCode);

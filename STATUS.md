@@ -1,28 +1,66 @@
 # Pit current status
 
-Last production reconciliation: **2026-08-13**. Local working-tree review:
-**2026-09-02**. This is the source of truth for current code, release, and
+Last production reconciliation: **2026-10-10**. Local working-tree review:
+**2026-10-10**. This is the source of truth for current code, release, and
 production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
 
-## 2026-10-09 MusicBrainz reliability (release pending)
+## 2026-10-10 Accepted corrections only (release review)
 
-- Branch `fix/musicbrainz-reliability` contains the reviewed correction. Remote
-  `master` was reconfirmed at `faa1b0cacb7e99810b50954c89524e0e57f132b8`; its
-  source tree equals the reviewed local base. The owner authorized checks and
-  release within existing permissions. GitHub rejected branch creation with
-  HTTP 403 through the connected account; no remote branch, PR or release is
-  claimed. Remote writes stopped at that denial.
+- Branch `review/privacy-diagnostics-alerts` starts at verified release base
+  `ceab0d50b82c6a9fa88e13e8f79c7e2462948114`. It contains the independently
+  reviewed public event visibility fix, bounded resolver diagnostics and alert
+  cooldown wake-up correction. No abuse-hardening or page-admission experiment
+  is included. That experiment and its failed load acceptance remain separate.
+- Fresh default and hosted suites on this exact smaller composition each
+  pass 6214 tests with zero failures and one existing Windows symlink
+  skip. Independent focused review passes 142 cases; Blueprint, syntax,
+  architecture and web export pass. The aggregate wrapper stops at its guarded
+  registry audit; its native result and the audit disposition are preserved in
+  `docs/ACCEPTED_CORRECTIONS_REVIEW_2026-10-10.md`. Earlier larger-tree passes
+  are not substituted. No commit, push or deployment occurred.
+
+## 2026-10-10 Public event visibility (release review)
+
+- Exact-ID public resolution now reuses the existing artist-authored visibility
+  predicate. Public snapshot scope remains anonymous for unrelated members,
+  owners and staff. Authorized calendar reads, provider identities and saved
+  records are preserved. Eight restricted synthetic cases failed before the
+  one-line correction; prior focused and independent reviews passed.
+
+## 2026-10-10 Resolver diagnostics and alert delivery (local review)
+
+- Branch `fix/resolver-diagnostics-alert-drain` starts from verified remote
+  `master` and deployed PR 39 commit
+  `ceab0d50b82c6a9fa88e13e8f79c7e2462948114`. This separate checkout preserves
+  the prior release and pending overload candidate. Nothing in this follow-up
+  is pushed, merged or deployed.
+- The owner authorized bounded operational diagnostics for artist resolution
+  and a correction to the existing alert scheduler's cooldown wake-up. Provider
+  deadlines, identity matching, cancellation, cache protection, alert eligibility
+  and delivery idempotency remain requirements, not tuning targets.
+- Diagnosis, implementation details, validation and remaining limitations are
+  recorded in `docs/RESOLVER_DIAGNOSTICS_ALERT_DELIVERY_2026-10-10.md`.
+
+## 2026-10-09 MusicBrainz reliability (released via PR 39)
+
+- PR 39 passed both Quality jobs and was merged as
+  `ceab0d50b82c6a9fa88e13e8f79c7e2462948114`. Render evidence supplied for this
+  investigation identifies that full commit live on October 10 at 02:44:10 UTC.
+  Public GitHub metadata confirms its tree equals the reviewed release tree.
+  The October 9 audit preserves the earlier preparation and access limitations;
+  this later reconciliation supersedes its pending-release status.
 - The patch persists shared cooldown deadlines in existing `app_meta`, carries
   accurate Retry-After timing, distinguishes unavailable providers from genuine
   empty results, and preserves exact stored artist identities and client input
   through manual recovery. No schema migration, identity-matching relaxation,
   dependency, credential, budget or production-setting change is required.
-- Local validation, exact source-tree qualifications and remaining release gates
-  are recorded in `docs/MUSICBRAINZ_RELIABILITY_2026-10-09.md`. Exact final-commit
-  GitHub checks and deployed-commit verification remain required. The separate
-  overload candidate, festival patch and Newsroom importer are excluded.
+- Historical local validation and source-tree qualifications are recorded in
+  `docs/MUSICBRAINZ_RELIABILITY_2026-10-09.md`. Exact-head cloud normal and hosted
+  suites each passed 6,159 tests; production audit and all 16 browser suites
+  passed. The separate overload candidate, festival patch and Newsroom importer
+  remain excluded. Provider recovery is not established by a catalog response.
 
 ## 2026-10-07 Artist-only research and provider event text (review branch)
 

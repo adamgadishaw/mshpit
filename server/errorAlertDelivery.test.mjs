@@ -201,3 +201,33 @@ test("the provider blip threshold is tunable and refuses nonsense", () => {
   assert.equal(providerBlipThreshold({ ERROR_ALERT_PROVIDER_MIN: "0" }), 10);
   assert.equal(providerBlipThreshold({ ERROR_ALERT_PROVIDER_MIN: "abc" }), 10);
 });
+
+test("cooldown wake-ups require eligible pending counts and never freeze a batch early", (t) => {
+  const database = fixture(t);
+  const now = 320 * HOUR;
+  ensureErrorAlertSchema(database, { now });
+  database.prepare("UPDATE error_alert_delivery SET last_sent_at=?").run(now);
+  const delivery = createErrorAlertDelivery(database);
+  assert.deepEqual(delivery.nextBatch({ now: now + 1000 }), { reason: "nothing-serious" });
+  providerEvent(database, { fingerprint: "blip", count: 1, at: now });
+  assert.deepEqual(delivery.nextBatch({ now: now + 1000 }), { reason: "nothing-serious" });
+  providerEvent(database, { fingerprint: "timeout", count: 1, at: now, cause: "ArtistLookupTimeoutError/provider_timeout" });
+  assert.deepEqual(delivery.nextBatch({ now: now + 1000 }), { reason: "cooling-down", retryAt: now + 30 * 60_000 });
+  assert.equal(database.prepare("SELECT pending_key FROM error_alert_delivery").get().pending_key, null);
+  const batch = delivery.nextBatch({ now: now + 30 * 60_000 }).batch;
+  assert.deepEqual(batch.rows.map((row) => row.fingerprint), ["timeout"]);
+});
+
+test("a failed local attempt extends the deadline without changing its frozen batch", (t) => {
+  const database = fixture(t);
+  const now = 330 * HOUR;
+  ensureErrorAlertSchema(database, { now });
+  event(database, { at: now });
+  const delivery = createErrorAlertDelivery(database);
+  const batch = delivery.nextBatch({ now }).batch;
+  const lastAttemptAt = now + 5 * 60_000;
+  assert.deepEqual(delivery.nextBatch({ now: now + 10 * 60_000, lastAttemptAt }), {
+    reason: "cooling-down", retryAt: lastAttemptAt + 30 * 60_000,
+  });
+  assert.deepEqual(delivery.nextBatch({ now: lastAttemptAt + 30 * 60_000, lastAttemptAt }).batch, batch);
+});
