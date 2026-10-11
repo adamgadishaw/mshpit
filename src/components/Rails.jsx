@@ -19,6 +19,7 @@ import { artistPath, eventPath, profilePath } from "../domain/urls.mjs";
 import { visibleSuggestedPitters } from "../domain/suggestedPitters.mjs";
 const HomeShowCountdown = lazyWithRetry(() => import("./HomeShowCountdown"), "HomeShowCountdown");
 const NewsRailPanel = lazyWithRetry(() => import("./news/NewsRailPanel"), "NewsRailPanel");
+const SponsorPlaceholder = lazyWithRetry(() => import("./SponsorPlaceholder"), "SponsorPlaceholder");
 
 const NAV = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -241,6 +242,7 @@ export function RightRail({
   onOpenNewsStory,
   onOpenNews,
   showNewsStories = false,
+  showSponsorPlaceholder = false,
 }) {
   const [artistMode, setArtistMode] = useState("top"); // 'top' | 'az'
   const eventScopeIdentity = rightRailScopeIdentity({ accountId, homeCity });
@@ -294,6 +296,7 @@ export function RightRail({
       contentContainerStyle={styles.rightContent}
       showsVerticalScrollIndicator={false}
     >
+      {showSponsorPlaceholder ? <Suspense fallback={null}><SponsorPlaceholder /></Suspense> : null}
       {showNewsStories ? <Suspense fallback={<Text style={styles.empty}>Loading music news…</Text>}><NewsRailPanel onOpenStory={onOpenNewsStory} onOpenAll={onOpenNews} /></Suspense> : null}
 
       {accountId && countdownPlan ? (

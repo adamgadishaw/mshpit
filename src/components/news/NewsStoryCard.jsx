@@ -8,6 +8,7 @@ import { relativeTime } from "../../domain/dates.mjs";
 import { newsCategoryLabel, newsSourceLine, newsStoryParagraphs, newsStoryPhoto, newsStorySources } from "../../domain/newsDesk.mjs";
 import { buildNewsShareModel } from "../../domain/socialShareCard.mjs";
 import NewsPostActions from "./NewsPostActions";
+import { CONTACT_URL } from "../../domain/contact.mjs";
 
 const openSource = (url) => {
   if (!/^https:\/\//u.test(String(url || ""))) return;
@@ -125,6 +126,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
       ) : null}
       {full ? <Text style={styles.musicNewsLink} onPress={Platform.OS === "web" ? undefined : openNews} accessibilityRole="link"
         {...(Platform.OS === "web" ? { href: "/news" } : {})}>Read more music news</Text> : null}
+      {full ? <Text style={styles.musicNewsLink} accessibilityRole="link" onPress={Platform.OS === "web" ? undefined : () => openSource(CONTACT_URL)} {...(Platform.OS === "web" ? { href: "/contact" } : {})}>Contact us</Text> : null}
     </View>
   );
 }

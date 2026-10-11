@@ -17,7 +17,7 @@ import useAppActive from "./src/lib/useAppActive";
 import { configureClientCrashSurface } from "./src/lib/clientCrashReporter";
 import FeedbackHost from "./src/components/FeedbackHost";
 import VerifyEmailBanner from "./src/components/VerifyEmailBanner";
-import { DesktopTopNav, RightRail } from "./src/components/Rails";
+import { sponsorRailWidth } from "./src/domain/desktopRailLayout.mjs";
 import { PublicDirectoryPanel, PublicWebTrail } from "./src/components/PublicWebLinks";
 import FeedScreen from "./src/screens/FeedScreen";
 const SearchScreen = lazyWithRetry(() => import("./src/screens/SearchScreen"), "SearchScreen");
@@ -58,6 +58,10 @@ const CityScreen = lazyWithRetry(() => import("./src/screens/CityScreen"), "City
 const PickArtistsScreen = lazyWithRetry(() => import("./src/screens/PickArtistsScreen"), "PickArtistsScreen");
 const FanClubsScreen = lazyWithRetry(() => import("./src/screens/FanClubsScreen"), "FanClubsScreen");
 const NearbyScreen = lazyWithRetry(() => import("./src/screens/NearbyScreen"), "NearbyScreen");
+const AdministrationScreen = lazyWithRetry(() => import("./src/screens/AdministrationScreen"), "AdministrationScreen");
+const SponsorPlaceholder = lazyWithRetry(() => import("./src/components/SponsorPlaceholder"), "SponsorPlaceholder");
+const DesktopTopNav = lazyWithRetry(() => import("./src/components/Rails").then(module => ({ default: module.DesktopTopNav })), "DesktopTopNav");
+const RightRail = lazyWithRetry(() => import("./src/components/Rails").then(module => ({ default: module.RightRail })), "RightRail");
 const SettingsScreen = lazyWithRetry(() => import("./src/screens/SettingsScreen"), "SettingsScreen");
 const SuggestionBoxScreen = lazyWithRetry(() => import("./src/screens/SuggestionBoxScreen"), "SuggestionBoxScreen");
 const DeleteAccountScreen = lazyWithRetry(() => import("./src/screens/DeleteAccountScreen"), "DeleteAccountScreen");
@@ -171,7 +175,7 @@ const ANALYTICS_OVERLAY_KEYS = [
   ["profileId", "profile"], ["fanClub", "fan_club"], ["artistHub", "artist_hq"], ["artistPreview", "artist_preview"], ["artistGallery", "artist_gallery"],
   ["editArtist", "artist_edit"], ["artistArchive", "artist_archive"], ["artistTour", "artist_tour"], ["artistName", "artist"],
   ["venueName", "venue"], ["nearby", "nearby"], ["venues", "venues"], ["fanClubs", "fan_clubs"],
-  ["settings", "settings"], ["suggestion", "suggestion"], ["deleteAccount", "account_delete"], ["diagnostics", "diagnostics"], ["privacy", "privacy"],
+  ["administration", "administration"], ["settings", "settings"], ["suggestion", "suggestion"], ["deleteAccount", "account_delete"], ["diagnostics", "diagnostics"], ["privacy", "privacy"],
   ["terms", "terms"], ["lounge", "lounge"], ["openLog", "show"], ["post", "post"], ["badges", "badges"],
   ["topRated", "top_rated"], ["admin", "admin"], ["bulk", "tour_dates"], ["reqArtist", "request_artist"], ["menu", "menu"],
 ];
@@ -430,12 +434,14 @@ function Root() {
   // opens itself the moment something plays; collapsing pauses (YouTube terms).
   const [playerMinimized, setPlayerMinimized] = useState(true);
   const playerColumnWidth = playerMinimized ? 82 : Math.max(356, Math.min(460, Math.round(width * 0.25)));
+  const sponsorWidth = sponsorRailWidth(width - (MUSIC_PLAYER_ENABLED ? playerColumnWidth : 0), wide);
   const rightRailLayout = desktopRightRailLayout({
     viewportWidth: width,
     desktop: wide,
-    playerColumnWidth: MUSIC_PLAYER_ENABLED && wide ? playerColumnWidth : 0,
+    playerColumnWidth: (MUSIC_PLAYER_ENABLED && wide ? playerColumnWidth : 0) + sponsorWidth,
   });
   const showRightRail = rightRailLayout.visible && publicDiscoveryRailAllowed(nav, activeTab);
+  const showSponsorPlaceholders = sponsorWidth > 0 && showRightRail;
   const homeCountdown = session ? homeShowCountdownPlan({
     attendance: myAttendance,
     going: goingFor(session.id),
@@ -1362,7 +1368,8 @@ function Root() {
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
   else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
-  else if (nav.settings) overlay = <SettingsScreen initialAccountAction={nav.accountAction === "switch" ? "switch" : null} onClose={back} onFinishSetup={needsSignupOnboarding(session) ? () => go({ signupSetup: true }) : undefined} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} onOpenCatalogEditor={() => go({ catalogEditor: true })} onOpenNewsroom={() => go({ newsroom: true })} onOpenModeration={() => go({ admin: true })} onRequestArtist={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} />;
+  else if (nav.administration) overlay = <AdministrationScreen session={session} onClose={back} />;
+    else if (nav.settings) overlay = <SettingsScreen initialAccountAction={nav.accountAction === "switch" ? "switch" : null} onClose={back} onFinishSetup={needsSignupOnboarding(session) ? () => go({ signupSetup: true }) : undefined} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} onOpenCatalogEditor={() => go({ catalogEditor: true })} onOpenNewsroom={() => go({ newsroom: true })} onOpenAdministration={() => go({ administration: true })} onOpenModeration={() => go({ admin: true })} onRequestArtist={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} />;
   else if (nav.deleteAccount) overlay = <DeleteAccountScreen onClose={back} onDeleted={onAccountDeleted} />;
   else if (nav.diagnostics && canViewDiagnostics) overlay = <DiagnosticsScreen onClose={back} />;
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
@@ -1595,6 +1602,7 @@ function Root() {
       />
       <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} />
       <View style={styles.deskWrap}>
+        {showSponsorPlaceholders ? <View style={{ width: sponsorWidth, flexShrink: 0 }}><Suspense fallback={null}><SponsorPlaceholder /></Suspense></View> : null}
         <View style={styles.deskCenter}>
           <PublicDirectoryPanel
             directory={nav.directory}
@@ -1608,7 +1616,7 @@ function Root() {
             <ScreenTransition key={screenKey} direction={screenDirection}>{overlay || tabScreens}</ScreenTransition>
           </Suspense>
         </View>
-        {showRightRail && <RightRail showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} />}
+        {showRightRail && <RightRail showSponsorPlaceholder={showSponsorPlaceholders} showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} />}
       </View>
     </View>
   );
@@ -1739,7 +1747,7 @@ function Root() {
               </View>
             )}
             <View style={styles.appContent}>
-              {wide ? desktop : (
+              {wide ? <Suspense fallback={<ScreenLoading />}>{desktop}</Suspense> : (
                 <>
                   {showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
                   <PublicDirectoryPanel

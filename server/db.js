@@ -6,6 +6,7 @@
 // pit.db-wal until a checkpoint, so a bare copy can be torn or stale. Use
 // `npm run backup` (VACUUM INTO), which asks SQLite for a consistent snapshot.
 import { DatabaseSync } from "node:sqlite";
+import { ensureJobSchema } from "./features/jobs/jobRepository.js";
 import { assertDatabaseRecoveryReady } from "./databaseRecovery.js";
 import { createHash } from "node:crypto";
 import { toIsoDate } from "../src/domain/dates.mjs";
@@ -2176,6 +2177,7 @@ db.exec(`INSERT OR IGNORE INTO post_create_receipts
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 ensureCommentMutationSchema(db);
 ensureSocialReactionSchema(db);
+ensureJobSchema(db);
 ensureLineupSchema(db);
 ensureMediaApiSchema(db);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");

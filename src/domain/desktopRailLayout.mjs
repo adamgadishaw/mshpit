@@ -1,5 +1,8 @@
 export const DESKTOP_RIGHT_RAIL_WIDE_WIDTH = 340;
 export const DESKTOP_RIGHT_RAIL_COMPACT_WIDTH = 300;
+export function sponsorRailWidth(availableWidth, desktop) {
+  return desktop && availableWidth >= 1320 ? 160 : 0;
+}
 
 export function desktopRightRailLayout({
   viewportWidth,

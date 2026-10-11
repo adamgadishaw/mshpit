@@ -324,6 +324,7 @@ function newsStoryMain(document) {
       ${artists ? `<p>About ${artists}</p>` : ""}
       ${sourceControl}
       <p class="news-more"><a class="button secondary" href="/news">Read more music news</a></p>
+      <footer><a href="/contact">Contact us</a></footer>
     </article>`;
 }
 
