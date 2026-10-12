@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Button from "../../components/Button";
 import SheetHeader from "../../components/SheetHeader";
-import { colors, focusRing, radius, space } from "../../theme";
+import { colors, focusRing, radius, space, CONTENT_COLUMN_MAX_WIDTH } from "../../theme";
 import { createLoadState, beginLoadState, resolveLoadState, rejectLoadState, isLoadCancellation } from "../../domain/loadState.mjs";
 import { searchArtistAccess, revokeArtistAccess, reviewRetainedArtistContent, previewArtistAccess, changeRetainedArtistPublication } from "./artistAccessApi.mjs";
 
@@ -82,19 +82,21 @@ export default function ArtistAccessPanel({ accountId, onClose, onOpenJobs }) {
     } catch (failure) { if (!isLoadCancellation(failure, controller.signal) && mounted.current) setError(failure.message); }
     finally { if (request.current === controller) request.current = null; if (mounted.current) setBusy(false); }
   };
-  return <View style={styles.root}>
+  return <View style={styles.root} testID="administration-shell">
     <SheetHeader title="Administration" onClose={onClose} leadDisabled={busy} />
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic">
-      <Button title="Back to jobs" variant="secondary" disabled={busy} onPress={onOpenJobs} />
+      <View style={styles.actions}>
+      <Button small style={styles.button} title="Back to jobs" variant="secondary" disabled={busy} onPress={onOpenJobs} />
       <Text style={styles.heading} accessibilityRole="header">Artist access</Text>
+      </View>
       <Text style={styles.hint}>Review the stored page assignment before revoking access. Assignment and identity verification are separate; a managed label alone is not evidence of authority.</Text>
       <TextInput accessibilityLabel="Artist access search" value={query} maxLength={80} editable={!busy} onChangeText={setQuery} onSubmitEditing={() => void search()} placeholder="Artist name or page key" placeholderTextColor={colors.textFaint} onFocus={() => setFocused("query")} onBlur={() => setFocused(null)} style={[styles.input, focused === "query" && focusRing]} />
-      <Button title="Find artist access" loading={busy} disabled={query.trim().length < 2} onPress={() => void search()} />
+      <Button small style={styles.button} title="Find artist access" loading={busy} disabled={query.trim().length < 2} onPress={() => void search()} />
       {resource.status === "loading" ? <ActivityIndicator color={colors.amber} accessibilityLabel="Loading artist access" /> : null}
-      {resource.error ? <View><Text style={styles.error} accessibilityRole="alert">{resource.error.message}</Text><Button title="Retry artist search" disabled={busy} onPress={() => void search()} /></View> : null}
+      {resource.error ? <View><Text style={styles.error} accessibilityRole="alert">{resource.error.message}</Text><Button small style={styles.button} title="Retry artist search" disabled={busy} onPress={() => void search()} /></View> : null}
       {resource.data?.artists.length === 0 ? <Text style={styles.hint}>No matching pages found. Check the name or page key.</Text> : null}
       {resource.data?.hasMore ? <Text style={styles.hint}>More matches exist. Refine the search to find the exact page.</Text> : null}
-      {(resource.data?.artists || []).map(row => <Button key={row.key} title={`${row.name} · ${row.ownerId ? "assigned" : "unassigned"}`} accessibilityLabel={`Review access for ${row.name}`} variant="secondary" disabled={busy} onPress={() => { setSelected(row); setReason(""); setConfirming(false); setError(""); setNotice(""); setRetained(null);setPreview(null);setDisposition("hide");setVisibleItems([]);setPublicationChanges({});setPublicationConfirm(false); }} />)}
+      {(resource.data?.artists || []).map(row => <Button small style={styles.button} key={row.key} title={`${row.name} · ${row.ownerId ? "assigned" : "unassigned"}`} accessibilityLabel={`Review access for ${row.name}`} variant="secondary" disabled={busy} onPress={() => { setSelected(row); setReason(""); setConfirming(false); setError(""); setNotice(""); setRetained(null);setPreview(null);setDisposition("hide");setVisibleItems([]);setPublicationChanges({});setPublicationConfirm(false); }} />)}
       {selected ? <View style={styles.box}>
         <Text style={styles.heading}>{selected.name}</Text><Text selectable style={styles.hint}>Page key: {selected.key}</Text>
         {selected.ownerId ? <>
@@ -108,25 +110,25 @@ export default function ArtistAccessPanel({ accountId, onClose, onOpenJobs }) {
           {confirming ? <View style={styles.confirmation}>
             <Text style={styles.text}>Revoke {selected.owner?.handle ? `@${selected.owner.handle}` : selected.ownerId}'s access to {selected.name}?</Text>
             <Text style={styles.hint}>Management ends regardless of publication. Everything is preserved with original attribution. These choices affect only former-manager contributions; private/moderated items, catalogue content and other people's contributions are not made public or removed. Ordinary sessions and unrelated roles remain active.</Text>
-            {[['hide','Hide former-manager content'],['keep','Keep previously public content'],['selected','Choose content item by item']].map(([value,title]) => <Button key={value} title={title} accessibilityLabel={title} variant={disposition === value ? "primary" : "secondary"} disabled={busy} onPress={() => setDisposition(value)} />)}
+            {[['hide','Hide former-manager content'],['keep','Keep previously public content'],['selected','Choose content item by item']].map(([value,title]) => <Button small style={styles.button} key={value} title={title} accessibilityLabel={title} variant={disposition === value ? "primary" : "secondary"} disabled={busy} onPress={() => setDisposition(value)} />)}
             <Text style={styles.hint}>{preview?.contentCount || 0} updates/dates and {preview?.profileItems.length || 0} profile items in the snapshot. Published contributions show their original author, without implying verified artist identity.</Text>
             {[...(preview?.profileItems || []),...(preview?.items || [])].map(item => <View key={item.itemKey} style={styles.box}>
               <Text selectable style={styles.text}>{item.type}: {item.id}. Original contributor: {item.authorId || item.userId}</Text>
               <Text selectable style={styles.text}>{item.value || item.text || [item.artist,item.venue,item.date].filter(Boolean).join(" · ")}</Text>
               {!item.eligible ? <Text style={styles.hint}>Previously private, moderated or restricted: stays hidden.</Text> : null}
-              {disposition === "selected" ? <Button title={`${visibleItems.includes(item.itemKey) ? 'Keep public' : 'Keep hidden'}: ${item.itemKey}`} accessibilityLabel={`Toggle publication for ${item.itemKey}`} variant="secondary" disabled={busy || !item.eligible} onPress={() => setVisibleItems(current => current.includes(item.itemKey) ? current.filter(key => key !== item.itemKey) : [...current,item.itemKey])} /> : null}
+              {disposition === "selected" ? <Button small style={styles.button} title={`${visibleItems.includes(item.itemKey) ? 'Keep public' : 'Keep hidden'}: ${item.itemKey}`} accessibilityLabel={`Toggle publication for ${item.itemKey}`} variant="secondary" disabled={busy || !item.eligible} onPress={() => setVisibleItems(current => current.includes(item.itemKey) ? current.filter(key => key !== item.itemKey) : [...current,item.itemKey])} /> : null}
             </View>)}
-            {preview?.cursor != null ? <Button title="Load more preview items" variant="secondary" disabled={busy} onPress={() => void prepareRevocation(preview.cursor)} /> : null}
-            <Button title="Cancel revocation" variant="secondary" disabled={busy} onPress={() => setConfirming(false)} />
-            <Button title="Confirm revoke access" variant="danger" loading={busy} disabled={reason.trim().length < 8} onPress={() => void revoke()} />
-          </View> : <Button title="Review revocation" variant="secondary" disabled={busy || reason.trim().length < 8} onPress={() => void prepareRevocation()} />}
+            {preview?.cursor != null ? <Button small style={styles.button} title="Load more preview items" variant="secondary" disabled={busy} onPress={() => void prepareRevocation(preview.cursor)} /> : null}
+            <Button small style={styles.button} title="Cancel revocation" variant="secondary" disabled={busy} onPress={() => setConfirming(false)} />
+            <Button small style={styles.button} title="Confirm revoke access" variant="danger" loading={busy} disabled={reason.trim().length < 8} onPress={() => void revoke()} />
+          </View> : <Button small style={styles.button} title="Review revocation" variant="secondary" disabled={busy || reason.trim().length < 8} onPress={() => void prepareRevocation()} />}
         </> : <Text style={styles.text}>No account is assigned to this page. There is no assignment to revoke.</Text>}
       </View> : null}
-      {selected?.retainedReviews > 0 ? <Button title="Review retained content" variant="secondary" disabled={busy} onPress={() => void review()} /> : null}
+      {selected?.retainedReviews > 0 ? <Button small style={styles.button} title="Review retained content" variant="secondary" disabled={busy} onPress={() => void review()} /> : null}
       {retained ? <View style={styles.box}>
         <Text style={styles.heading} accessibilityRole="header">Retained content review</Text>
         <Text style={styles.hint}>Preview retained contributions, then explicitly confirm publication changes. Viewing or assigning a manager does not publish them. Prior private/moderated content remains hidden.</Text>
-        {retained.revocations.map(row => <Button key={row.id} title={`Review snapshot ${new Date(row.created_at).toLocaleDateString()}`} accessibilityLabel={`Review retained snapshot ${row.id}`} variant="secondary" disabled={busy} onPress={() => void review(row.id)} />)}
+        {retained.revocations.map(row => <Button small style={styles.button} key={row.id} title={`Review snapshot ${new Date(row.created_at).toLocaleDateString()}`} accessibilityLabel={`Review retained snapshot ${row.id}`} variant="secondary" disabled={busy} onPress={() => void review(row.id)} />)}
         {retained.snapshot ? <>
           <Text selectable style={styles.text}>Former manager: {retained.snapshot.ownerId}</Text>
           <Text selectable style={styles.text}>Reason: {retained.snapshot.reason}</Text>
@@ -134,24 +136,24 @@ export default function ArtistAccessPanel({ accountId, onClose, onOpenJobs }) {
           {[retained.snapshot.profile.avatarUri, retained.snapshot.profile.banner].filter(Boolean).map((url, index) => <Text key={index} selectable style={styles.hint}>Retained page artwork: {url}</Text>)}
           {retained.profileItems.map(item => <View key={`profile:${item.id}`} style={styles.box}>
             <Text selectable style={styles.text}>Profile {item.id}: {item.value}. Original contributor: {item.authorId}</Text>
-            <Button title={`${publicationChanges[`profile:${item.id}`]?.publication || item.publication}: profile ${item.id}`} accessibilityLabel={`Change retained publication for profile:${item.id}`} variant="secondary" disabled={busy || (!item.eligible && (publicationChanges[`profile:${item.id}`]?.publication || item.publication) === "hidden")} onPress={() => togglePublication(item)} />
+            <Button small style={styles.button} title={`${publicationChanges[`profile:${item.id}`]?.publication || item.publication}: profile ${item.id}`} accessibilityLabel={`Change retained publication for profile:${item.id}`} variant="secondary" disabled={busy || (!item.eligible && (publicationChanges[`profile:${item.id}`]?.publication || item.publication) === "hidden")} onPress={() => togglePublication(item)} />
           </View>)}
           {retained.content.map(row => <View key={`${row.type}:${row.id}`} style={styles.box}>
             <Text selectable style={styles.text}>{row.type}: {row.id}. Original author: {row.userId}</Text>
             {row.text ? <Text selectable style={styles.text}>{row.text}</Text> : null}
             {row.date ? <Text selectable style={styles.text}>{row.artist} · {row.venue} · {row.date} ({row.source})</Text> : null}
             {row.photos.map((url, index) => <Text key={index} selectable style={styles.hint}>Retained media: {url}</Text>)}
-            <Button title={`${publicationChanges[`${row.type}:${row.id}`]?.publication || row.publication}: ${row.id}`} accessibilityLabel={`Change retained publication for ${row.type}:${row.id}`} variant="secondary" disabled={busy || row.superseded || (!row.eligible && (publicationChanges[`${row.type}:${row.id}`]?.publication || row.publication) === "hidden")} onPress={() => togglePublication(row)} />
+            <Button small style={styles.button} title={`${publicationChanges[`${row.type}:${row.id}`]?.publication || row.publication}: ${row.id}`} accessibilityLabel={`Change retained publication for ${row.type}:${row.id}`} variant="secondary" disabled={busy || row.superseded || (!row.eligible && (publicationChanges[`${row.type}:${row.id}`]?.publication || row.publication) === "hidden")} onPress={() => togglePublication(row)} />
           </View>)}
-          {retained.cursor != null ? <Button title="Load more retained content" disabled={busy} onPress={() => void review(retained.snapshot.id, retained.cursor)} /> : null}
+          {retained.cursor != null ? <Button small style={styles.button} title="Load more retained content" disabled={busy} onPress={() => void review(retained.snapshot.id, retained.cursor)} /> : null}
           <Text style={styles.text}>Reason for publication changes</Text>
           <TextInput accessibilityLabel="Retained publication reason" value={publicationReason} onChangeText={value => { setPublicationReason(value);setPublicationConfirm(false); }} maxLength={300} multiline editable={!busy} style={[styles.input,styles.reason]} />
           {publicationConfirm ? <View style={styles.confirmation}>
             <Text style={styles.text}>Confirm {Object.keys(publicationChanges).length} publication changes? Management access is not granted.</Text>
             {Object.values(publicationChanges).map(item => <Text key={`${item.type}:${item.id}`} selectable style={styles.text}>{item.type}:{item.id} → {item.publication}</Text>)}
-            <Button title="Cancel publication changes" variant="secondary" disabled={busy} onPress={() => setPublicationConfirm(false)} />
-            <Button title="Confirm publication changes" loading={busy} onPress={() => void publish()} />
-          </View> : <Button title="Preview publication changes" variant="secondary" disabled={busy || !Object.keys(publicationChanges).length || publicationReason.trim().length < 8} onPress={() => setPublicationConfirm(true)} />}
+            <Button small style={styles.button} title="Cancel publication changes" variant="secondary" disabled={busy} onPress={() => setPublicationConfirm(false)} />
+            <Button small style={styles.button} title="Confirm publication changes" loading={busy} onPress={() => void publish()} />
+          </View> : <Button small style={styles.button} title="Preview publication changes" variant="secondary" disabled={busy || !Object.keys(publicationChanges).length || publicationReason.trim().length < 8} onPress={() => setPublicationConfirm(true)} />}
         </> : <Text style={styles.hint}>No retained snapshot for this page.</Text>}
       </View> : null}
       {error ? <Text style={styles.error} accessibilityRole="alert">{error} Your reason is retained. If the assignment changed, search again before retrying.</Text> : null}
@@ -160,7 +162,9 @@ export default function ArtistAccessPanel({ accountId, onClose, onOpenJobs }) {
   </View>;
 }
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg }, content: { padding: space(5), gap: space(3), paddingBottom: space(12) },
+  root: { flex: 1, minWidth: 0, width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.bg }, content: { padding: space(4), gap: space(3), paddingBottom: space(12) },
+  button: { alignSelf: "flex-start", maxWidth: "100%" },
+  actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(3) },
   heading: { color: colors.text, fontSize: 22, fontWeight: "700" }, text: { color: colors.text, fontSize: 14, lineHeight: 22 }, hint: { color: colors.textDim, lineHeight: 21 },
   input: { color: colors.text, backgroundColor: colors.surface, borderColor: colors.lineSoft, borderWidth: 1, borderRadius: radius.md, padding: 12, fontSize: 16 },
   reason: { minHeight: 100, textAlignVertical: "top" }, error: { color: colors.danger, lineHeight: 22 }, box: { gap: 12, paddingTop: 16, borderTopWidth: 1, borderTopColor: colors.lineSoft }, confirmation: { gap: 12 },

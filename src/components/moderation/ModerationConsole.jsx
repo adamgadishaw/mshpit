@@ -861,7 +861,7 @@ export default function ModerationConsole({
 const styles = StyleSheet.create({
   console: { gap: space(4) },
   sectionStack: { gap: space(4) },
-  sectionHeadingRow: { flexDirection: "row", alignItems: "flex-start", gap: space(3) },
+  sectionHeadingRow: { flexDirection: "row", alignItems: "flex-start", gap: space(3), paddingBottom: space(3), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
   sectionHeadingCopy: { flex: 1, gap: space(1) },
   eyebrow: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.3 },
   sectionTitle: { color: colors.text, fontSize: 23, lineHeight: 29, fontWeight: "900", letterSpacing: -0.5 },

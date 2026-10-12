@@ -1,6 +1,8 @@
 import { Platform } from "react-native";
 import { writeThemePair } from "./domain/themeStorage.mjs";
 
+export const CONTENT_COLUMN_MAX_WIDTH = 900;
+
 // Pit - "stage-light" design system. On-brand presets the user can switch
 // between in Settings. Every screen imports `colors` (resolved once at module
 // load), so switching a theme saves the choice and reloads - the least invasive
