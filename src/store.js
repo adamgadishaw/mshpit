@@ -5486,6 +5486,7 @@ export function StoreProvider({ children }) {
         userId: post.userId,
         text: post.text,
         ts: ago(post.createdAt),
+        ...(post.contributor ? { contributor: post.contributor } : {}),
       }));
       // This is an authoritative moderation-aware snapshot. Replacing it also
       // removes a post that staff hid since this device last opened the page.

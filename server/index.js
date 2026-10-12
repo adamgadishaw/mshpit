@@ -84,6 +84,8 @@ import { pruneExpiredFeedImpressionHistory } from "./feedImpressions.js";
 import { startArtistDeathWatchScheduler } from "./features/artistDeathWatch/artistDeathWatchScheduler.js";
 import { missingStaticAssetResponse, privateStaticAssetResponse } from "./staticPolicy.js";
 import { publicPageFor, renderPublicPage } from "./publicPages.js";
+import { createJobRepository } from "./features/jobs/jobRepository.js";
+import { jobPublicPage } from "./features/jobs/jobPublicPage.js";
 import { SECURITY_TXT_PATH, securityTxtResponse } from "./securityTxt.js";
 import { staticAssetCacheControl } from "./staticAssetCache.js";
 import { randomUUID } from "node:crypto";
@@ -316,8 +318,10 @@ function serveSecurityFile(req, res) {
 // App stores, search engines, and signed-out people need legal/support pages
 // that do not depend on the client bundle or an API session. Keep this before
 // the SPA fallback, while leaving every non-document route on the existing app.
+const publicJobRepository = createJobRepository(db);
 function servePublicPage(req, res, pathname) {
-  const page = publicPageFor(pathname);
+  const jobsPage = jobPublicPage(publicJobRepository, pathname, { cursor: new URL(req.url, "http://localhost").searchParams.get("cursor") || "" });
+  const page = jobsPage || publicPageFor(pathname);
   if (!page) return false;
   const indexable = page.indexable !== false;
   if (pathname !== page.path) {
@@ -330,13 +334,13 @@ function servePublicPage(req, res, pathname) {
     res.end();
     return true;
   }
-  const body = renderPublicPage(page.path);
+  const body = renderPublicPage(page.path, process.env, jobsPage);
   if (!body) return false;
-  res.writeHead(200, {
+  res.writeHead(page.status || 200, {
     ...HEADERS,
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
-    "Cache-Control": "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
+    "Cache-Control": jobsPage ? "no-store" : "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
     "X-Robots-Tag": htmlRobotsDirective({ indexable }),
     Link: `<${origin()}${page.path}>; rel="canonical"`,
   });

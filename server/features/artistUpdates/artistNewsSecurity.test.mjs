@@ -4,6 +4,7 @@ import test from "node:test";
 import { createArtistNewsReader } from "./artistNewsReader.js";
 import { ensureArtistUpdatesSchema, listArtistUpdates } from "./artistUpdatesService.js";
 import { artistUpdatesRoutes } from "./artistUpdatesRoutes.js";
+import { ensureArtistAccessRetentionTables } from "../artistAccounts/artistAccessRetention.js";
 
 function fixture(t) {
   const db = new DatabaseSync(":memory:");
@@ -18,6 +19,7 @@ function fixture(t) {
     INSERT INTO users(id) VALUES ('owner'),('viewer');
     INSERT INTO artists VALUES ('indie fixture','Indie Fixture','indie-fixture',NULL,'artist-created');
     INSERT INTO artist_profiles(artist_key,owner_id) VALUES ('indie fixture','owner');`);
+  ensureArtistAccessRetentionTables(db);
   ensureArtistUpdatesSchema(db);
   const add = (id, kind = "release", payload = { release: { title: "Fixture Album", type: "album", releaseDate: "2026-09-20" } }) => {
     db.prepare(`INSERT INTO artist_updates(id,artist_key,artist_name,kind,dedupe_key,title,payload,source,occurred_at,created_at,updated_at)

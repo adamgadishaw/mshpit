@@ -481,6 +481,9 @@ test("admin photo-only artist save confirms the public photo when the existing b
     banner: null,
     avatarUri: avatar.url,
     feedEnabled: false,
+    bioContributor: null,
+    avatarContributor: null,
+    bannerContributor: null,
   });
   const stored = db.prepare(`SELECT owner_id,bio,avatar_uri,avatar_owner_id
     FROM artist_profiles WHERE artist_key='steve lacy'`).get();

@@ -23,7 +23,7 @@ export function artistLegacyPresentation({
       bannerUri: text(cached.banner) || text(catalog.photo),
       profileUri: text(cached.photo) || text(catalog.photo),
       profileAvatarUri: text(cached.profileAvatarUri),
-      profileOwnerId: cached.ownerId || null,
+      profileOwnerId: confirmedPage ? confirmedPage.profile?.ownerId || null : cached.ownerId || null,
       posts: rows(cachedPosts),
       heroGallery: rows(gallery),
     });

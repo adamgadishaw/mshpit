@@ -2,6 +2,7 @@ import { artistPageName, pendingArtistSignupIntent } from "./artistAccountPolicy
 import { assessArtistIdentityRisk } from "./artistIdentityRisk.js";
 import { artistIdentityHeld, artistIdentityReview, createArtistVerification, manualIdentityReviewEvidence, verificationReviewReason } from "./artistVerification.js";
 import { enqueueOwnedMediaUrls, unreferencedOwnedMediaUrls } from "../../mediaDeletion.js";
+import { artistAccessReviewRoutes } from "./artistAccessReviewRoutes.js";
 
 export function artistAccountRoutes({
   db, q, ApiError, clean, LIMITS, normName, artistSearchKey, artistStmts, artistRow,
@@ -78,7 +79,7 @@ export function artistAccountRoutes({
     }
   };
 
-  return {
+  const routes = {
     "GET /api/artist-account": (ctx) => {
       ctx.setHeader?.("Cache-Control", "private, no-store");
       return snapshot(currentMember(ctx));
@@ -349,4 +350,6 @@ export function artistAccountRoutes({
       return { ok: true };
     },
   };
+  return { ...routes, ...artistAccessReviewRoutes({ db, q, requireAdmin, ApiError, clean, normName, accountIsPublic, now, limit, atomicWrite, uid, moderationRecord, assertSafeAuthoredText,
+    publicProfile: profile => isLegacyArtistProfile(profile.artist_key) ? null : publicProfile(profile) }) };
 }

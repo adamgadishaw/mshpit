@@ -15,6 +15,7 @@ import {
 import { assertSafeAuthoredText } from "./contentSafety.js";
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
+import { retainedArtistMedia } from "./features/artistAccounts/artistAccessRetention.js";
 import {
   IMAGE_FINALIZATION_GENERATION_TOKEN,
   IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
@@ -3321,7 +3322,10 @@ export function replacePostMedia(database, { postId, ownerId, selection, at = Da
 export function deleteMediaAssets(database, assetIds) {
   const remove = database.prepare("DELETE FROM media_assets WHERE id=?");
   let changed = 0;
-  for (const id of assetIds || []) changed += Number(remove.run(id).changes || 0);
+  for (const id of assetIds || []) {
+    if (assetObjectRecords(database, [id]).some(item => retainedArtistMedia(database, { ownerId: item.ownerId, key: item.objectKey }))) continue;
+    changed += Number(remove.run(id).changes || 0);
+  }
   return changed;
 }
 
@@ -3355,6 +3359,9 @@ export function cancelMediaAsset(database, {
         .all(asset.id).map((row) => row.object_key),
     ].filter(Boolean);
     const uniqueKeys = [...new Set(keys)];
+    if (uniqueKeys.some(key => retainedArtistMedia(database, { ownerId: owner, key }))) {
+      throw new ApiError(409, "This media is retained for staff review.", "CONFLICT");
+    }
     const queued = enqueueOwnedMediaKeys(database, { ownerId: owner, keys: uniqueKeys, at });
     if (queued.accepted !== uniqueKeys.length) {
       // Never discard the only stable descriptor for bytes that could not be

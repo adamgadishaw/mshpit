@@ -162,6 +162,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
     FROM artists WHERE name=? COLLATE NOCASE AND ${publicArtistCatalogSql("artists")} ORDER BY norm LIMIT 2`);
   const artistProfile = database.prepare(`SELECT ap.bio,ap.bio_staff_curated,ap.banner,ap.banner_owner_id,
       ap.avatar_uri,ap.avatar_owner_id,ap.feed_enabled,ap.owner_id,ap.updated_at,
+      ap.bio_author_id,ap.bio_retention_id,ap.avatar_retention_id,ap.banner_retention_id,
       CASE WHEN ap.owner_id IS NULL OR (${activeAccountSql("owner")})
         THEN 1 ELSE 0 END AS owner_public,
       CASE WHEN ap.avatar_owner_id IS NOT NULL AND EXISTS (

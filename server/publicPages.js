@@ -94,6 +94,22 @@ const PAGES = Object.freeze({
         paragraphs: ["Partnership, press, and other business enquiries can begin at the same monitored address and will be routed to the appropriate owner."],
         links: [link(SUPPORT_EMAIL, `mailto:${SUPPORT_EMAIL}`)],
       },
+      {
+        heading: "Appeals",
+        paragraphs: ["To appeal a moderation or account decision, email support with your handle, the decision reference if available, and a short explanation. Send only the information needed to review the decision; do not include private messages or other people's records."],
+        links: [link("Email an appeal", `mailto:${SUPPORT_EMAIL}?subject=Moderation%20appeal`)],
+      },
+      {
+        heading: "General enquiries",
+        paragraphs: ["For questions that do not fit the topics above, use the same support address."],
+        links: [link("Email an enquiry", `mailto:${SUPPORT_EMAIL}?subject=General%20enquiry`)],
+      },
+      {
+        heading: "Advertising enquiries",
+        paragraphs: ["Contact us about family-friendly advertising. Any advertising is subject to manual review and approval before it appears. An enquiry does not reserve a placement or guarantee acceptance."],
+        links: [link("Ask about advertising", `mailto:${SUPPORT_EMAIL}?subject=Advertising%20enquiry`)],
+      },
+      { heading: "Work at mshpit", paragraphs: ["Find published openings on our jobs page."], links: [link("View current openings", "/jobs")] },
     ],
   },
   "/community-guidelines": {
@@ -630,8 +646,8 @@ function exactDateModified(value) {
   return Number.isNaN(timestamp.valueOf()) ? null : timestamp.toISOString();
 }
 
-export function renderPublicPage(pathname, env = process.env) {
-  const page = publicPageFor(pathname);
+export function renderPublicPage(pathname, env = process.env, pageOverride = null) {
+  const page = pageOverride || publicPageFor(pathname);
   if (!page) return null;
   const canonical = `${publicOrigin(env)}${page.path}`;
   const fullTitle = /\bmshpit\b/i.test(page.title) ? page.title : `${page.title} | ${SITE_NAME}`;
@@ -761,6 +777,7 @@ export function renderPublicPage(pathname, env = process.env) {
     <div class="bar">
       <a class="brand" href="/" aria-label="Mshpit home">Mshpit</a>
       <nav aria-label="Public information">
+        <a href="/jobs">Work at mshpit</a>
         ${PUBLIC_PAGE_PATHS.map((path) => `<a href="${path}"${path === page.path ? ' aria-current="page"' : ""}>${path === "/account-deletion" ? "Delete account" : esc(PAGES[path].title)}</a>`).join("\n        ")}
       </nav>
     </div>

@@ -1,4 +1,5 @@
 import { activeAccountSql } from "./accountVisibility.js";
+import { withheldArtistTourDateSql } from "./features/artistAccounts/artistAccessRetention.js";
 
 // Provider events remain public facts. Dates authored for a member-created
 // identity are UGC and inherit that page's current ownership/publication scope.
@@ -8,13 +9,23 @@ export function artistAuthoredTourDateVisibleSql(alias = "td", viewerSql = "NULL
     throw new TypeError("Invalid artist-authored tour-date SQL scope");
   }
   const identity = `COALESCE(${alias}.artist_key,LOWER(TRIM(${alias}.artist)))`;
-  return `(${alias}.owner_id IS NULL OR (NOT EXISTS (
+  return `(${withheldArtistTourDateSql(alias)} AND (${alias}.owner_id IS NULL OR (NOT EXISTS (
     SELECT 1 FROM artist_profiles held_profile
     WHERE held_profile.artist_key=${identity} AND held_profile.owner_id=${alias}.owner_id
       AND held_profile.identity_review_status IN ('pending','rejected')
   ) AND (NOT EXISTS (
     SELECT 1 FROM artists authored_identity
     WHERE authored_identity.norm=${identity} AND authored_identity.source='artist-created'
+  ) OR EXISTS (
+    SELECT 1 FROM artist_access_retained_content published_date
+    JOIN artist_access_revocations published_access ON published_access.id=published_date.revocation_id
+    JOIN users published_author ON published_author.id=published_access.owner_id
+    WHERE published_date.target_type='tour_date' AND published_date.target_id=${alias}.id
+      AND published_date.publication='public' AND published_date.superseded=0 AND published_date.original_public=1
+      AND published_access.owner_id=${alias}.owner_id AND ${activeAccountSql("published_author")}
+      AND COALESCE(published_author.profile_audience,'everyone')='everyone'
+      AND NOT EXISTS(SELECT 1 FROM artist_profiles publication_hold WHERE publication_hold.artist_key=${identity}
+        AND (publication_hold.removed=1 OR publication_hold.identity_review_status IN ('pending','rejected')))
   ) OR EXISTS (
     SELECT 1 FROM artist_profiles authored_profile
     JOIN users authored_owner ON authored_owner.id=authored_profile.owner_id
@@ -24,5 +35,5 @@ export function artistAuthoredTourDateVisibleSql(alias = "td", viewerSql = "NULL
       AND (COALESCE(authored_owner.profile_audience,'everyone')='everyone'
         OR (${viewerSql} IS NOT NULL AND authored_owner.profile_audience='members')
         OR authored_owner.id=${viewerSql})
-  ))))`;
+  )))))`;
 }

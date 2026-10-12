@@ -3,6 +3,7 @@ import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
 import { mediaStorageUnavailable } from "./mediaStorageFailure.js";
 import { MEDIA_OBJECT_EXTENSION_PATTERN } from "../src/domain/mediaMime.mjs";
+import { retainedArtistMedia } from "./features/artistAccounts/artistAccessRetention.js";
 
 const OWNER = /^[A-Za-z0-9_-]{1,128}$/;
 const OBJECT_KEY = new RegExp(
@@ -161,7 +162,7 @@ function storedOwnedMediaKey(database, value, owner) {
   return trustedMediaQueueKey(row?.object_key, owner);
 }
 
-function resolvedOwnedMediaKey(database, value, { ownerId, env = process.env } = {}) {
+export function resolvedOwnedMediaKey(database, value, { ownerId, env = process.env } = {}) {
   const owner = safeOwnerId(ownerId);
   if (!owner) return { key: null, stable: false };
   const stored = storedOwnedMediaKey(database, value, owner);
@@ -375,6 +376,7 @@ export function unreferencedOwnedMediaUrls(database, {
     ) WHERE value=? LIMIT 1`);
   const result = [];
   for (const value of candidates.values()) {
+    if (retainedArtistMedia(database, { ownerId: owner, url: value })) continue;
     if (!stillUsed.get(owner, owner, owner, owner, owner, owner, owner, value)) result.push(value);
   }
   return result;
@@ -497,6 +499,7 @@ export function enqueueExpiredMediaTickets(database, {
     let enqueued = 0;
     for (const row of rows) {
       if (!trustedMediaQueueKey(row.object_key, row.owner_id)) continue;
+      if (retainedArtistMedia(database, { ownerId: row.owner_id, key: row.object_key })) continue;
       // A stable descriptor may own several objects. Treat its most recent
       // object activity/ticket as the draft's activity, so a stale poster can
       // never delete a freshly retried source (or vice versa).
@@ -670,6 +673,11 @@ function claimNext(database, at) {
       ORDER BY q.next_attempt_at ASC,q.id ASC LIMIT 1`)
       .get(at, MEDIA_DELETION_MAX_ATTEMPTS);
     if (!row) return null;
+    if (retainedArtistMedia(database, { ownerId: row.owner_id, key: row.object_key })) {
+      database.prepare("UPDATE media_deletion_queue SET status='pending',next_attempt_at=?,last_error_code='artist_review_retained',updated_at=? WHERE id=?")
+        .run(at + DAY_MS, at, row.id);
+      return null;
+    }
     const attempts = Number(row.attempts || 0) + 1;
     database.prepare(`UPDATE media_deletion_queue
       SET status='processing',attempts=?,next_attempt_at=?,last_error_code=NULL,updated_at=?,dead_at=NULL

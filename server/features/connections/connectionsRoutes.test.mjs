@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createConnections } from "./connectionsRoutes.js";
 import { profileAudienceAllows } from "../../accountVisibility.js";
 import { MAX_FOLLOWED_ARTISTS } from "../../../src/domain/artistFollowFanClub.mjs";
+import { ensureArtistAccessRetentionTables } from "../artistAccounts/artistAccessRetention.js";
 
 class ApiError extends Error { constructor(status, message, code) { super(message); this.status = status; this.code = code; } }
 function fixture() {
@@ -14,6 +15,7 @@ function fixture() {
     CREATE TABLE blocks(blocker_id TEXT,blocked_id TEXT);
     CREATE TABLE artists(norm TEXT PRIMARY KEY,name TEXT,source TEXT,photo TEXT,genre TEXT);
     CREATE TABLE artist_profiles(artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0,identity_review_status TEXT DEFAULT 'clear');`);
+  ensureArtistAccessRetentionTables(db);
   const addUser = (id, name = id, audience = "everyone") => { db.prepare("INSERT INTO users(id,name,handle,profile_audience) VALUES(?,?,?,?)").run(id,name,id,audience); return user(id); };
   const user = (id) => db.prepare("SELECT * FROM users WHERE id=?").get(id);
   const blocked = (a,b) => !!(a && b && db.prepare("SELECT 1 FROM blocks WHERE (blocker_id=? AND blocked_id=?) OR (blocker_id=? AND blocked_id=?)").get(a,b,b,a));
