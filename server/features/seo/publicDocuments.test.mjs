@@ -1,3 +1,4 @@
+import { ensureArtistAccessRetentionTables } from "../artistAccounts/artistAccessRetention.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -110,6 +111,7 @@ function createDatabase() {
     CREATE TABLE artist_tourdate_refresh_queue(artist_key TEXT PRIMARY KEY,status TEXT,attempted_at INTEGER,
       succeeded_at INTEGER,ticketmaster_coverage_limited INTEGER DEFAULT 0,last_error_code TEXT);`);
   ensureArtistScheduleRevisionSchema(database);
+  ensureArtistAccessRetentionTables(database);
   return database;
 }
 

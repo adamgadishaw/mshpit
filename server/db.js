@@ -7,6 +7,7 @@
 // `npm run backup` (VACUUM INTO), which asks SQLite for a consistent snapshot.
 import { DatabaseSync } from "node:sqlite";
 import { ensureJobSchema } from "./features/jobs/jobRepository.js";
+import { ensureArtistAccessRetentionSchema } from "./features/artistAccounts/artistAccessRetention.js";
 import { assertDatabaseRecoveryReady } from "./databaseRecovery.js";
 import { createHash } from "node:crypto";
 import { toIsoDate } from "../src/domain/dates.mjs";
@@ -2178,6 +2179,7 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_i
 ensureCommentMutationSchema(db);
 ensureSocialReactionSchema(db);
 ensureJobSchema(db);
+ensureArtistAccessRetentionSchema(db);
 ensureLineupSchema(db);
 ensureMediaApiSchema(db);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");

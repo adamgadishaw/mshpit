@@ -472,6 +472,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     heroGallery,
   } = artistPresentation;
   const bioSource = publicArtistKnowledgeSource(meta, { bio });
+  const bioContributor = currentConfirmedArtistPage?.profile?.bioContributor || a.bioContributor;
+  const artworkContributors = [currentConfirmedArtistPage?.profile?.avatarContributor, currentConfirmedArtistPage?.profile?.bannerContributor].filter(Boolean);
   const hasRegularHeroImage = artistCinematicMedia({
     bannerUri,
     profileUri,
@@ -1045,9 +1047,10 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             {!legacyMode && !!bio && (
               <View style={styles.heroIntro}>
                 <Text style={styles.bio}>{artistPageSynopsis(bio, { condensed: true, limit: artistWide ? 220 : 160 }).text}</Text>
-                <ArtistBiographyAttribution source={bioSource} />
+                {bioContributor ? <Text style={styles.postTs}>Biography contributed by {bioContributor.handle ? `@${bioContributor.handle}` : bioContributor.name}</Text> : <ArtistBiographyAttribution source={bioSource} />}
               </View>
             )}
+        {!legacyMode && artworkContributors.length ? <Text style={styles.postTs}>Page artwork contributed by {[...new Set(artworkContributors.map(author => author.handle ? `@${author.handle}` : author.name))].join(", ")}</Text> : null}
         {!legacyMode ? <View style={styles.repCard}>
           <Text style={styles.repLabel}>{deceased ? "CREATIVE LEGACY" : liveAvailable ? "CONCERT RATINGS" : "ARTIST STATUS"}</Text>
           {deceased ? (
@@ -1227,7 +1230,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               moreAccessibilityLabel={`Read the full ${a.name} biography`}
               lessAccessibilityLabel={`Show a shorter ${a.name} biography`}
             />
-            <ArtistBiographyAttribution source={bioSource} />
+            {bioContributor ? <Text style={styles.postTs}>Biography contributed by {bioContributor.handle ? `@${bioContributor.handle}` : bioContributor.name}</Text> : <ArtistBiographyAttribution source={bioSource} />}
           </View>
         ) : null}
 
@@ -1510,7 +1513,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 <View style={styles.postTop}>
                   {legacyMode ? <View style={styles.editorialMark}><BrandMark size={19} color={colors.gold} /></View> : <Avatar user={avatarUser} size={28} />}
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.postName}>{legacyMode ? "Mshpit editorial" : a.name}</Text>
+                    <Text style={styles.postName}>{legacyMode ? "Mshpit editorial" : p.contributor ? `Contributed by ${p.contributor.handle ? `@${p.contributor.handle}` : p.contributor.name}` : a.name}</Text>
                     <Text style={styles.postTs}>{legacyMode ? `HISTORY NOTE · ${p.ts}` : p.ts}</Text>
                   </View>
                   {!ownsArtistPage && onReport ? (
@@ -1560,7 +1563,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               moreAccessibilityLabel={`Read the full ${a.name} biography`}
               lessAccessibilityLabel={`Show a shorter ${a.name} biography`}
             />
-            <ArtistBiographyAttribution source={bioSource} />
+            {bioContributor ? <Text style={styles.postTs}>Biography contributed by {bioContributor.handle ? `@${bioContributor.handle}` : bioContributor.name}</Text> : <ArtistBiographyAttribution source={bioSource} />}
           </>
         )}
 

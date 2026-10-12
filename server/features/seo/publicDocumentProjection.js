@@ -1041,6 +1041,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const legacyMode = memorial?.legacy === true;
       const mediaByPost = publicMediaForRows(database, raw.reviews || [], { galleryOnly: true, maxPerPost: 3 });
       const reviews = (raw.reviews || []).map((row) => postCard(row, mediaByPost.get(row.id), publicPaths));
+      raw = { ...raw, profile: retainedProfileProjection(database, raw.profile) };
       const profilePublic = Number(raw.profile?.owner_public) === 1;
       const profileOwner = legacyMode || profilePublic ? raw.profile?.owner_id || null : null;
       const avatarOwner = raw.profile?.avatar_owner_id || profileOwner;
@@ -1120,6 +1121,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         text: cleanBody(update.text, 2_000),
         publishedAt: timestamp(update.created_at),
         editorial: legacyMode,
+        contributor: retainedContributor(database, "artist_post", update.id),
       })).filter((update) => update.text);
       const hasReviews = reviewCount > 0;
       const hasUpcomingShows = events.length > 0;
@@ -1282,7 +1284,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageWidth: socialProfileImage?.width || null,
         imageHeight: socialProfileImage?.height || null,
         imageMimeType: socialProfileImage?.mimeType || null,
-        artist: Object.freeze({ name, bio, bioSource, genres: publicArtistGenres(source), country: cleanLine(artistKnowledgeDisplayCountry(knowledgeData, { mbid: source.mbid, country: source.country }), 100) || null, biographyFacts }),
+        artist: Object.freeze({ name, bio, bioSource, bioContributor: profileBio ? raw.profile?.bioContributor || null : null,
+          artworkContributors: [avatarMedia ? raw.profile?.avatarContributor : null, bannerMedia ? raw.profile?.bannerContributor : null].filter(Boolean),
+          genres: publicArtistGenres(source), country: cleanLine(artistKnowledgeDisplayCountry(knowledgeData, { mbid: source.mbid, country: source.country }), 100) || null, biographyFacts }),
         memorial,
         stats: Object.freeze({ reviewCount, ratingCount, averageRating, upcomingTotal }),
         reviews,
@@ -2103,3 +2107,4 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
     },
   });
 }
+import { retainedProfileProjection, retainedContributor } from "../artistAccounts/artistAccessPublication.js";

@@ -2,6 +2,7 @@ import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs"
 import { LEGACY_ARTIST_DEATH_DATE_CUTOFF, isLegacyArtistMemorial } from "../src/domain/artistLegacy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
+import { retainedProfileProjection, retainedContributor } from "./features/artistAccounts/artistAccessPublication.js";
 // API routes. Conventions that keep this hard to crash and easy to fix:
 // - every route: authenticate -> rate-limit -> validate (shape) -> act -> respond
 // - all handlers are wrapped by the server's try/catch; throwing ApiError(status,
@@ -867,7 +868,7 @@ function assertArtistManagementCandidate(user, key) {
   // Explicit revocation is not an unclaimed legacy identity. This audit check
   // also protects pages returned before account-side revocation was fixed.
   if (!ownerId && db.prepare(`SELECT 1 FROM moderation_actions
-      WHERE action='artist_return_to_catalogue' AND target_type='artist' AND target_id=? LIMIT 1`).get(key)) {
+      WHERE action IN ('artist_return_to_catalogue','artist_access_revoked') AND target_type='artist' AND target_id=? LIMIT 1`).get(key)) {
     throw new ApiError(403, "An administrator must approve ownership of this artist page before you can edit it.", "FORBIDDEN");
   }
 }
@@ -4067,8 +4068,9 @@ function safePublicArtistProfileImage(profile, slot) {
   return publicArtistProfileMedia(profile, slot)?.url || null;
 }
 
-function publicArtistProfileProjection(profile) {
+function publicArtistProfileProjection(profile, viewer = null) {
   if (!profile || profile.removed) return null;
+  profile = retainedProfileProjection(db, profile, viewer?.id || null, now());
   const owner = profile.owner_id ? q.userById.get(profile.owner_id) : null;
   return {
     ownerId: profile.owner_id || null,
@@ -4076,6 +4078,9 @@ function publicArtistProfileProjection(profile) {
       && normName(owner.artist_name) === profile.artist_key,
     bio: profile.bio ?? null,
     bioStaffCurated: Number(profile.bio_staff_curated) === 1,
+    bioContributor: profile.bioContributor || null,
+    avatarContributor: profile.avatarContributor || null,
+    bannerContributor: profile.bannerContributor || null,
     // A successful mutation must return the same verified media projection that
     // public reads use. This keeps the editor from treating a database write as
     // complete while the next artist-page render still has different artwork.
@@ -4110,6 +4115,7 @@ const ARTIST_PROFILE_SNAPSHOT_FIELDS = Object.freeze([
   "artist_key",
   "owner_id", "bio", "bio_staff_curated", "banner", "banner_owner_id", "avatar_uri", "avatar_owner_id",
   "feed_enabled", "removed", "updated_at", "identity_review_status",
+  "bio_author_id", "bio_retention_id", "avatar_retention_id", "banner_retention_id",
 ]);
 const artistProfileSnapshotByKey = db.prepare(`SELECT ${ARTIST_PROFILE_SNAPSHOT_FIELDS.join(",")}
   FROM artist_profiles WHERE artist_key=?`);
@@ -10039,8 +10045,8 @@ export const routes = {
       // Slot owners are storage provenance, not public authors. The claim owner
       // controls page visibility; uploader block/account state must not make
       // staff-seeded catalog artwork disappear.
-      profile: legacyProfile ? publicLegacyArtistProfileProjection(p) : publicArtistProfileProjection(p),
-      posts: posts.map((x) => ({ id: x.id, userId: x.user_id, text: x.text, createdAt: x.created_at })),
+      profile: legacyProfile ? publicLegacyArtistProfileProjection(p) : publicArtistProfileProjection(p, ctx.user),
+      posts: posts.map((x) => ({ id: x.id, userId: x.user_id, text: x.text, createdAt: x.created_at, contributor: retainedContributor(db, "artist_post", x.id) })),
     };
   },
   "PATCH /api/artists/:key/profile": (ctx) => {
@@ -10083,17 +10089,17 @@ export const routes = {
     const avatarChanged = v.avatarUri !== undefined && v.avatarUri !== existing?.avatar_uri;
     const sets = [], args = [];
     if (v.bio !== undefined) {
-      sets.push("bio=?", "bio_staff_curated=?");
+      sets.push("bio=?", "bio_staff_curated=?", "bio_author_id=?", "bio_retention_id=NULL");
       // An intentional staff clear is still an editorial decision. Retain its
       // authority so provider enrichment cannot refill it as a missing bio.
-      args.push(v.bio, u.role === "admin" ? 1 : 0);
+      args.push(v.bio, u.role === "admin" ? 1 : 0, v.bio ? u.id : null);
     }
     if (bannerChanged) {
-      sets.push("banner=?", "banner_owner_id=?");
+      sets.push("banner=?", "banner_owner_id=?", "banner_retention_id=NULL");
       args.push(v.banner, v.banner ? u.id : null);
     }
     if (avatarChanged) {
-      sets.push("avatar_uri=?", "avatar_owner_id=?");
+      sets.push("avatar_uri=?", "avatar_owner_id=?", "avatar_retention_id=NULL");
       args.push(v.avatarUri, v.avatarUri ? u.id : null);
     }
     if (v.feedEnabled !== undefined) { sets.push("feed_enabled=?"); args.push(v.feedEnabled); }

@@ -33,6 +33,9 @@ export function confirmedArtistProfileMutation(response, expectedPatch = {}) {
     banner: nullableHttpsUrl(profile.banner),
     avatarUri: nullableHttpsUrl(profile.avatarUri),
     feedEnabled: profile.feedEnabled === true,
+    ...(hasOwn(profile, "bioContributor") ? { bioContributor: profile.bioContributor || null } : {}),
+    ...(hasOwn(profile, "avatarContributor") ? { avatarContributor: profile.avatarContributor || null } : {}),
+    ...(hasOwn(profile, "bannerContributor") ? { bannerContributor: profile.bannerContributor || null } : {}),
   };
   if (normalized.bio === undefined || normalized.banner === undefined || normalized.avatarUri === undefined) return null;
 

@@ -6,7 +6,10 @@ export function publicArtistCatalogSql(alias = "a") {
   if (!/^[a-z_][a-z0-9_]*$/i.test(alias)) throw new TypeError("Invalid SQL alias");
   return `(COALESCE(${alias}.source,'')!='artist-created' OR EXISTS (
     SELECT 1 FROM artist_profiles catalog_profile
-    JOIN users catalog_owner ON catalog_owner.id=catalog_profile.owner_id
+    JOIN users catalog_owner ON catalog_owner.id=COALESCE(catalog_profile.owner_id,catalog_profile.publication_author_id,
+      CASE WHEN catalog_profile.bio_retention_id IS NOT NULL THEN catalog_profile.bio_author_id
+        WHEN catalog_profile.avatar_retention_id IS NOT NULL THEN catalog_profile.avatar_owner_id
+        WHEN catalog_profile.banner_retention_id IS NOT NULL THEN catalog_profile.banner_owner_id END)
     WHERE catalog_profile.artist_key=${alias}.norm AND catalog_profile.removed=0
       AND COALESCE(catalog_profile.identity_review_status,'clear') IN ('clear','approved')
       AND ${activeAccountSql("catalog_owner")}
@@ -18,7 +21,9 @@ export function artistCatalogVisibleTo(database, artist, viewer = null) {
   if (!artist) return false;
   if (artist.source !== "artist-created") return true;
   const owner = database.prepare(`SELECT u.*,ap.identity_review_status FROM artist_profiles ap
-    JOIN users u ON u.id=ap.owner_id WHERE ap.artist_key=? AND ap.removed=0 LIMIT 1`)
+    JOIN users u ON u.id=COALESCE(ap.owner_id,ap.publication_author_id,CASE WHEN ap.bio_retention_id IS NOT NULL THEN ap.bio_author_id
+      WHEN ap.avatar_retention_id IS NOT NULL THEN ap.avatar_owner_id WHEN ap.banner_retention_id IS NOT NULL THEN ap.banner_owner_id END)
+    WHERE ap.artist_key=? AND ap.removed=0 LIMIT 1`)
     .get(artist.norm);
   if (!owner || !accountIsPublic(owner) || !profileAudienceAllows(owner, viewer)) return false;
   if (["pending", "rejected"].includes(owner.identity_review_status) && viewer?.id !== owner.id) return false;

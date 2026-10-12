@@ -1,3 +1,4 @@
+import { ensureArtistAccessRetentionTables } from "../artistAccounts/artistAccessRetention.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -52,6 +53,7 @@ function database() {
       id TEXT,asset_id TEXT,role TEXT,status TEXT,verification_origin TEXT,object_key TEXT,public_url TEXT
     );
   `);
+  ensureArtistAccessRetentionTables(db);
   return db;
 }
 

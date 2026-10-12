@@ -241,9 +241,10 @@ function artistMain(document) {
   const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong>${publicEventTimeLabel(event.localTime) ? `<small>${esc(publicEventTimeLabel(event.localTime))}</small>` : ""}</time><div><h3>${link(event.path, event.name)}</h3><p>${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : event.statusLabel !== "scheduled" ? `<span class="pill">${esc(event.statusLabel)}</span>` : ""}</li>`).join("");
   const concerts = legacyMode ? "" : (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h3>${link(concert.path, concert.venue)}</h3>${concert.city ? `<p>${esc(concert.city)}</p>` : ""}</div><span class="archive-score">${memorialMode ? `${esc(concert.reviewCount)} ${concert.reviewCount === 1 ? "fan memory" : "fan memories"}` : `${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : ""}${esc(concert.ratingCount)} ${concert.ratingCount === 1 ? "rating" : "ratings"}`}</span></li>`).join("");
   const archiveLink = !legacyMode && document.archivePath && Number(document.archiveTotal) > 3 ? link(document.archivePath, "View full concert archive") : "";
+  const hasContributorUpdates = document.updates.some(update => update.contributor);
   const updates = document.updates.map((update) => {
     const date = dateTimeLabel(update.publishedAt);
-    return `<article class="update"><p>${esc(update.text)}</p>${date ? `<time datetime="${esc(date.iso)}">${esc(date.label)}</time>` : ""}</article>`;
+    return `<article class="update">${update.contributor ? `<p>Contributed by ${esc(update.contributor.handle ? `@${update.contributor.handle}` : update.contributor.name)}</p>` : ""}<p>${esc(update.text)}</p>${date ? `<time datetime="${esc(date.iso)}">${esc(date.label)}</time>` : ""}</article>`;
   }).join("");
   const reviews = document.reviews.map((review) => compactPost(review, { hideRating: memorialMode })).join("");
   const musicBrainz = publicHttpsUrl(document.musicBrainzUrl);
@@ -271,7 +272,8 @@ function artistMain(document) {
       <p class="eyebrow">${legacyMode ? "Educational legacy profile" : memorialMode ? "In memory" : "Artist on Mshpit"}</p>
       <h1>${esc(artist.name)}</h1>
       ${artist.genres.length ? `<p class="genres">${esc(artist.genres.join(" · "))}</p>` : ""}
-      ${artist.bio ? `<div class="bio">${paragraphs(artist.bio)}</div>${bioAttribution}` : ""}
+      ${artist.bio ? `<div class="bio">${paragraphs(artist.bio)}</div>${artist.bioContributor ? `<p>Biography contributed by ${esc(artist.bioContributor.handle ? `@${artist.bioContributor.handle}` : artist.bioContributor.name)}</p>` : bioAttribution}` : ""}
+      ${(artist.artworkContributors || []).length ? `<p>Page artwork contributed by ${[...new Set(artist.artworkContributors.map(author => author.handle ? `@${author.handle}` : author.name))].map(esc).join(", ")}</p>` : ""}
       ${legacyMode ? `<p class="artist-guide-copy">A protected educational page for biography, music history and written community memories. Live dates, tour archives, new media uploads and fan clubs are closed.</p>` : !memorialMode ? `<p class="artist-guide-copy">Fan reviews, concert photos and upcoming dates in one place.</p>` : ""}
       <dl class="stats artist-facts">${artistFacts}</dl>
       ${nextShow}
@@ -283,7 +285,7 @@ function artistMain(document) {
     ${!memorialMode && events ? `<section class="section" id="shows"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2>${upcomingTotal > document.events.length ? `<p class="micro">Next ${document.events.length} of ${esc(upcomingTotal)} listed shows. The Shows tab on this artist page has the full schedule.</p>` : ""}</div></div><ol class="event-list">${events}</ol></section>` : ""}
     ${concerts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the archive</p><h2>${memorialMode ? "Concert history" : "Top-rated concert nights"}</h2></div>${archiveLink}</div><ol class="event-list archive-list">${concerts}</ol></section>` : ""}
     ${discography ? `<section class="section" id="discography"><div class="section-heading"><div><p class="eyebrow">On record</p><h2>${esc(artist.name)} albums and EPs</h2></div></div><ol class="discography">${discography}</ol>${musicBrainz ? `<p class="micro">Release list from <a href="${esc(musicBrainz)}" rel="noopener noreferrer">MusicBrainz</a>.</p>` : ""}</section>` : ""}
-    ${updates ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">${legacyMode ? "Mshpit editorial" : "Official notes"}</p><h2>${legacyMode ? "History and context" : `From ${esc(artist.name)}`}</h2></div></div><div class="updates">${updates}</div></section>` : ""}
+    ${updates ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">${legacyMode ? "Mshpit editorial" : hasContributorUpdates ? "Contributor updates" : "Official notes"}</p><h2>${legacyMode ? "History and context" : hasContributorUpdates ? `Updates about ${esc(artist.name)}` : `From ${esc(artist.name)}`}</h2></div></div><div class="updates">${updates}</div></section>` : ""}
     ${reviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">${legacyMode ? "Community archive" : "People who were there"}</p><h2>${legacyMode ? "Community memories" : memorialMode ? "Fan memories" : "Top live reviews"}</h2></div></div><div class="post-list">${reviews}</div></section>` : ""}
   </main>`;
 }

@@ -38,6 +38,9 @@ export function buildArtistSummary({
     banner: prof.banner || null,
     ownerBio: prof.bio || null,
     bioStaffCurated: prof.bioStaffCurated === true,
+    ...(prof.bioContributor ? { bioContributor: prof.bioContributor } : {}),
+    ...(prof.avatarContributor ? { avatarContributor: prof.avatarContributor } : {}),
+    ...(prof.bannerContributor ? { bannerContributor: prof.bannerContributor } : {}),
     ownerId: prof.ownerId || null,
     // Catalog keys can differ from display-name spelling. Only a matching,
     // persisted identity may replace the legacy name-key while metadata loads.

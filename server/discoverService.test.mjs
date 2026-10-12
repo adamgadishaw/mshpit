@@ -1,3 +1,4 @@
+import { ensureArtistAccessRetentionTables } from "./features/artistAccounts/artistAccessRetention.js";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -110,6 +111,7 @@ function fixture() {
   addPlay.run("Charlie", "member-1", 4);
   addPlay.run("Charlie", "member-2", 5);
   addPlay.run("Charlie", "member-3", 6);
+  ensureArtistAccessRetentionTables(database);
   return database;
 }
 

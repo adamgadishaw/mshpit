@@ -11,7 +11,7 @@ const emptyDraft = () => Object.fromEntries(JOB_FIELDS.map(field => [field, ""])
 const labels = { title: "Job title", location: "Location", arrangement: "Work arrangement (for example, remote or on-site)", description: "Description, responsibilities and requirements", application: "Application URL (HTTPS) or email" };
 const newId = () => `job_${Date.now().toString(36)}_${Math.random().toString(36).slice(2,14)}`;
 
-export default function JobsPanel({ accountId, onClose }) {
+export default function JobsPanel({ accountId, onClose, onOpenArtistAccess }) {
   const [resource, setResource] = useState(() => createLoadState({ scope: accountId }));
   const [selected, setSelected] = useState(null), [draft, setDraft] = useState(emptyDraft);
   const [creationId, setCreationId] = useState(newId), [busy, setBusy] = useState(false);
@@ -65,11 +65,12 @@ export default function JobsPanel({ accountId, onClose }) {
     }
   };
   return <View style={styles.root}>
-    <SheetHeader title="Administration" onClose={() => dirty ? setConfirmLeave(true) : onClose()} leadDisabled={busy} />
+    <SheetHeader title="Administration" onClose={() => dirty ? setConfirmLeave("close") : onClose()} leadDisabled={busy} />
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic">
       <Text style={styles.heading} accessibilityRole="header">Jobs</Text>
       <Text style={styles.hint}>Create openings for Work at mshpit. Save drafts privately; Publish makes the current details public.</Text>
-      {confirmLeave ? <View style={styles.box}><Text style={styles.text}>Leave and discard unsaved changes?</Text><Button title="Keep editing" onPress={() => setConfirmLeave(false)} /><Button title="Discard and leave" variant="danger" onPress={onClose} /></View> : null}
+      {onOpenArtistAccess ? <Button title="Artist access" variant="secondary" disabled={busy} onPress={() => dirty ? setConfirmLeave("artistAccess") : onOpenArtistAccess()} /> : null}
+      {confirmLeave ? <View style={styles.box}><Text style={styles.text}>Leave and discard unsaved changes?</Text><Button title="Keep editing" onPress={() => setConfirmLeave(false)} /><Button title="Discard and leave" variant="danger" onPress={confirmLeave === "artistAccess" ? onOpenArtistAccess : onClose} /></View> : null}
       {pendingSelection ? <View style={styles.box}><Text style={styles.text}>Discard unsaved changes before switching jobs?</Text><Button title="Keep editing" onPress={() => setPendingSelection(null)} /><Button title="Discard changes" variant="danger" onPress={() => choose(pendingSelection.job, true)} /></View> : null}
       {!resource.data && ["idle", "loading"].includes(resource.status) ? <ActivityIndicator color={colors.amber} accessibilityLabel="Loading jobs" /> : null}
       {resource.error ? <View><Text style={styles.error} accessibilityRole="alert">{resource.error.message}</Text><Button title="Retry jobs list" variant="secondary" disabled={busy} onPress={() => void load()} /></View> : null}

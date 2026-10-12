@@ -34,7 +34,8 @@ test("memorial and pre-1970 legacy profiles use distinct permanent presentation 
   assert.match(source, /const artistPostsVisible = legacyMode[\s\S]*?posts\.length > 0[\s\S]*?: profileServicesAvailable/);
   assert.match(source, /MSHPIT HISTORY NOTES/);
   assert.match(source, /These notes are not posts from the artist/);
-  assert.match(source, /legacyMode \? "Mshpit editorial" : a\.name/);
+  assert.match(source, /legacyMode \? "Mshpit editorial" : p\.contributor \? `Contributed by/);
+  assert.match(source, /p\.contributor\.name}` : a\.name/);
 });
 
 test("direct artist and tour archive screens fail closed for protected legacy profiles", () => {

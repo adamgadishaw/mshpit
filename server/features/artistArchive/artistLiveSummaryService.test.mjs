@@ -1,3 +1,4 @@
+import { ensureArtistAccessRetentionTables } from "../artistAccounts/artistAccessRetention.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -36,6 +37,7 @@ function fixture() {
     database.prepare(`INSERT INTO ${table}(${entries.map(([key]) => key).join(",")}) VALUES(${entries.map(() => "?").join(",")})`)
       .run(...entries.map(([, value]) => value));
   }
+  ensureArtistAccessRetentionTables(database);
   const service = createArtistLiveSummaryService({ database, projectDate: (row) => ({ id: row.id, date: row.date, artist: row.artist }),
     clock: () => NOW, providersConfigured: () => true });
   const read = (query = {}, viewer = null, key = "alpha") => service.read({

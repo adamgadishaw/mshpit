@@ -452,6 +452,11 @@ function setContentRemoved(ctx, targetType, targetId, removed, reason) {
     || legacyPosterObjects.length > 0 || mediaPolicy.hasNonUrlAssociation(current));
   const stateChanged = Number(current.removed) !== desired;
   if (!stateChanged && !needsMediaScrub) {
+    // A second, independent removal must remain a moderation hold even when
+    // an access review already hid the row. Publication controls cannot erase it.
+    if (removed && db.prepare("SELECT 1 FROM artist_access_retained_content WHERE target_type=? AND target_id=? LIMIT 1").get(targetType, targetId)) {
+      recordModerationAction(ctx, "remove", targetType, targetId, reason, { removed: true }, { removed: true, independentHold: true });
+    }
     if (targetType === "message" && removed) deleteDirectMessageNotifications(current, targetId);
     return { changed: false, removed: !!desired };
   }

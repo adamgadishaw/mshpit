@@ -1,3 +1,4 @@
+import { ensureArtistAccessRetentionTables } from "../artistAccounts/artistAccessRetention.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -28,6 +29,7 @@ function fixture() {
     database.prepare(`INSERT INTO tour_dates (${entries.map(([key]) => key).join(",")}) VALUES (${entries.map(() => "?").join(",")})`)
       .run(...entries.map(([, value]) => value));
   };
+  ensureArtistAccessRetentionTables(database);
   return { database, add };
 }
 
