@@ -28,6 +28,7 @@ const latest = story("browser-latest", latestTitle, 60_000);
 latest.origin = "self_written";
 latest.sources = [{ kind: "article", name: "Fixture Artist", url: "https://artist.example.com/tour" }];
 latest.confirmedBy = 1;
+latest.media = [{ id: "ma_news_photo_fixture", kind: "image", status: "ready", url: "https://media.example.test/news-photo.png" }];
 const earlier = story("browser-earlier", earlierTitle, 3_600_000);
 const toPost = (news) => ({ id: news.postId, userId: author.id, user: author, kind: "status", artist: "Fixture Artist", artistKey: "fixture-artist",
   venue: "", city: "Toronto", date: "", at: news.publishedAt, createdAt: news.publishedAt, review: news.summary, text: news.summary,
@@ -97,7 +98,7 @@ async function scenario(browser, origin, item) {
   const context = await browser.newContext({ viewport: { width: item.width, height: 1100 }, screen: { width: item.width, height: 1100 },
     isMobile: item.width < 620, hasTouch: item.width < 620, reducedMotion: "reduce", serviceWorkers: "block" });
   const state = { calls: [], errors: [], diagnostics: [], external: [], introductions: 0, receipts: new Map(), liked: false, closing: false,
-    regionChoice: "auto", regionWrites: [] };
+    regionChoice: "auto", regionWrites: [], imageLoads: 0, failedImageLoads: 0, failAllPhotos: false };
   await context.addInitScript(({ user, origin }) => {
     if (location.origin !== origin) return;
     localStorage.setItem("pit_theme", "stage");
@@ -111,6 +112,14 @@ async function scenario(browser, origin, item) {
   await context.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url());
     try {
+      if (url.href === latest.media[0].url) {
+        state.imageLoads += 1;
+        if (state.imageLoads === 1 || state.failAllPhotos) {
+          state.failedImageLoads += 1;
+          return await route.fulfill({ status: 503, body: "Synthetic photo failure", headers: { "Cache-Control": "no-store" } });
+        }
+        return await route.fulfill({ contentType: "image/png", body: readFileSync(join(root, "scripts", "fixtures", "newsroom-photo.png")), headers: { "Cache-Control": "no-store" } });
+      }
       if (url.origin !== origin) { state.external.push(url.origin); return await route.abort(); }
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       const method = request.method(), path = url.pathname;
@@ -206,6 +215,21 @@ async function scenario(browser, origin, item) {
       assert.equal(await page.getByText("Confirmed by Fixture Artist", { exact: true }).count(), 0);
       assert.equal(state.calls.filter(call => call.path === "/api/feed/news-introduction").length, 0,
         "A For You screen mounted underneath a deep-link overlay must not consume an introduction.");
+      const loaded = () => page.locator('img').evaluateAll(images => images.some(image => image.currentSrc.includes('/news-photo.png') && image.complete && image.naturalWidth === 320));
+      await until(loaded, "The hydrated article must recover the original photo after a transient delivery failure.");
+      state.failAllPhotos = true;
+      await page.reload({ waitUntil: "networkidle" });
+      const retry = page.getByRole("button", { name: "Retry article photo", exact: true });
+      await retry.waitFor();
+      assert.equal(state.failedImageLoads, 3, "persistent failure is bounded to two new requests");
+      mkdirSync(join(root, ".tmp", "news-browser"), { recursive: true });
+      await page.screenshot({ path: join(root, ".tmp", "news-browser", `article-photo-retry-${item.width}.png`) });
+      state.failAllPhotos = false;
+      await retry.click();
+      await until(loaded, "Manual retry must restore the same verified photo.");
+      await page.screenshot({ path: join(root, ".tmp", "news-browser", `article-photo-${item.width}.png`) });
+      await page.reload({ waitUntil: "networkidle" });
+      await until(loaded, "Reload hydration retains the verified photo.");
     } else {
       await until(() => state.introductions === 1, "Visible For You did not introduce its eligible headline.");
       await order(page, latestTitle, earlierTitle);
@@ -261,6 +285,10 @@ async function scenario(browser, origin, item) {
       await fullCard.getByRole("button", { name: `${latestTitle}. Read the full story and comments.`, exact: true }).click();
       await page.waitForURL(url => url.pathname === deepLink);
       await page.getByText("This complete synthetic news article is used only in the isolated browser test.", { exact: true }).waitFor();
+      await until(() => page.getByRole("article").filter({ hasText: latestTitle }).locator("img").evaluateAll(images => images.some(image => image.complete && image.naturalWidth === 320)), "Navigation must keep the article's verified photo visible.");
+      await page.getByRole("button", { name: "Leave the story", exact: true }).click();
+      await page.waitForURL(url => url.pathname === "/feed");
+      await until(() => fullCard.locator("img").evaluateAll(images => images.some(image => image.complete && image.naturalWidth === 320)), "Returning to the feed keeps the photo in its card.");
       // The event page: category, winner and nominees for every award.
       await page.goto(origin + "/news/live/2026-mtv-vmas", { waitUntil: "networkidle" });
       const winners = page.getByLabel("Winners", { exact: true });
@@ -269,7 +297,9 @@ async function scenario(browser, origin, item) {
       assert.ok(await winners.getByText("Sabrina Carpenter - Manchild", { exact: true }).count() >= 2, "the winner shows as winner and among the nominees");
       assert.equal(new URL(page.url()).pathname, "/news/live/2026-mtv-vmas", "the page keeps its own address");
     }
-    assert.deepEqual(state.errors, [], "Browser/API fixture errors must not be ignored.");
+    const expectedPhotoErrors = state.errors.filter(error => error.includes(latest.media[0].url) && error.startsWith("Failed to load resource: the server responded with a status of 503"));
+    assert.equal(expectedPhotoErrors.length, state.failedImageLoads);
+    assert.deepEqual(state.errors.filter(error => !expectedPhotoErrors.includes(error)), [], "Only injected photo failures are expected.");
     assert.deepEqual(state.diagnostics, [], "No client-error report may be emitted.");
     assert.deepEqual(state.external, [], "News browsing must not try contacting a real external service.");
   } catch (error) {

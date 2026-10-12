@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { emptyNewsroomForm, MAX_NEWSROOM_ARTICLE_SOURCES, newsroomArticlePayload, newsroomDraftEnvelope, newsroomSaveAttempt, restoreNewsroomDraft, NEWSROOM_DRAFT_TTL_MS } from "./newsroomComposition.mjs";
+import { emptyNewsroomForm, MAX_NEWSROOM_ARTICLE_SOURCES, newsroomArticlePayload, newsroomDraftEnvelope, newsroomSaveAttempt, newsroomSaveCompletion, restoreNewsroomDraft, NEWSROOM_DRAFT_TTL_MS } from "./newsroomComposition.mjs";
 
 test("lost save retries preserve a key across retention; edited intent rotates once", () => {
   const form = { ...emptyNewsroomForm(), body: "reported tour detail ".repeat(1000), photo: { assetId: "ma_owned_photo", uri: "private-file", file: "secret" } };
@@ -15,6 +15,19 @@ test("lost save retries preserve a key across retention; edited intent rotates o
   assert.notEqual(edited.key, first.key);
   assert.equal(newsroomSaveAttempt(edited, JSON.parse(edited.payload), newKey).key, edited.key);
   assert.equal(sequence, 2);
+});
+
+test("confirmed saves clear all citations and photo state; newer edits remain intact", () => {
+  const form = { ...emptyNewsroomForm(), headline: "First article", body: "First body", photo: { assetId: "ma_first" }, photoName: "First photographer",
+    sources: Array.from({ length: 4 }, (_, index) => ({ name: `First ${index}`, url: `https://first.example/${index}` })) };
+  const payload = JSON.stringify(newsroomArticlePayload(form));
+  const completed = newsroomSaveCompletion(form, payload);
+  assert.deepEqual(completed, { form: emptyNewsroomForm(), savedPayload: null, reset: true });
+  const restored = restoreNewsroomDraft("editor", newsroomDraftEnvelope("editor", completed.form, null, completed.savedPayload, 100), 101);
+  assert.deepEqual(restored.form, emptyNewsroomForm());
+  assert.equal(restored.attempt, null);
+  const newer = { ...form, headline: "Edited during the save" };
+  assert.deepEqual(newsroomSaveCompletion(newer, payload), { form: newer, savedPayload: payload, reset: false });
 });
 test("retained drafts reject foreign accounts and expire with server draft lifetime", () => {
   const stored = newsroomDraftEnvelope("owner-a", emptyNewsroomForm(), null, null, 100);

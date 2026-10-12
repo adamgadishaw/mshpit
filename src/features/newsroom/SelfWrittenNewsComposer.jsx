@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import { Image as ExpoImage } from "expo-image";
 import Button from "../../components/Button";
 import { colors, radius } from "../../theme";
 import { load, save as saveLocal } from "../../lib/persist";
-import { emptyNewsroomForm, MAX_NEWSROOM_ARTICLE_SOURCES, newsroomArticlePayload, newsroomDraftEnvelope, newsroomDraftStorageKey, newsroomSaveAttempt, restoreNewsroomDraft } from "../../domain/newsroomComposition.mjs";
+import { emptyNewsroomForm, MAX_NEWSROOM_ARTICLE_SOURCES, newsroomArticlePayload, newsroomDraftEnvelope, newsroomDraftStorageKey, newsroomSaveAttempt, newsroomSaveCompletion, restoreNewsroomDraft } from "../../domain/newsroomComposition.mjs";
+import NewsPhoto from "../../components/news/NewsPhoto";
 import { loadSelfWrittenPhoto, uploadSelfWrittenPhoto } from "./newsDeskEditorMediaService";
 
 function Field({ label, help, children }) {
@@ -29,6 +29,8 @@ const newSaveKey = () => `self-written-${Date.now().toString(36)}-${Math.random(
 export default function SelfWrittenNewsComposer({ accountId, busy, saving = false, disabled, onSubmit, onCompositionStateChange }) {
   const retained = useRef(restoreNewsroomDraft(accountId, load(newsroomDraftStorageKey(accountId), null)));
   const [form, setForm] = useState(() => retained.current?.form || emptyNewsroomForm());
+  const formRef = useRef(form);
+  formRef.current = form;
   const { headline, summary, body, category, sources, photoName, photoUrl, photoCredit } = form;
   const [photo, setPhoto] = useState(null);
   const [uploading, setUploading] = useState(false);
@@ -118,7 +120,17 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
     submission.current = true;
     try {
       const result = await onSubmit({ ...submitted, idempotencyKey: next.key });
-      if (mounted.current && result?.ok) setSavedPayload(next.payload);
+      if (mounted.current && result?.ok) {
+        const completion = newsroomSaveCompletion(formRef.current, next.payload);
+        setSavedPayload(completion.savedPayload);
+        if (completion.reset) {
+          attempt.current = null;
+          setForm(completion.form);
+          setPhoto(null);
+          setPhotoError("");
+          saveLocal(newsroomDraftStorageKey(accountId), newsroomDraftEnvelope(accountId, completion.form, null, null));
+        }
+      }
     } finally { submission.current = false; }
   };
   return <View style={styles.card} testID="self-written-news-composer">
@@ -146,7 +158,7 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
     </View>
     <View style={styles.categoryBlock}>
       <Text style={styles.fieldLabel}>Selected article photo</Text>
-      {photo?.uri ? <ExpoImage source={{ uri: photo.uri }} style={styles.editorPhoto} contentFit="cover" accessible={false} /> : null}
+      {photo?.uri ? <NewsPhoto uri={photo.uri} style={styles.editorPhoto} accessible={false} /> : null}
       <Button small title={uploading ? "Verifying photo" : "Choose photo"} variant="secondary" disabled={uploading || busy || disabled} onPress={choosePhoto} accessibilityLabel="Choose and upload an article photo" />
       <TextInput accessibilityLabel="Photo source name" style={styles.input} maxLength={160} value={photoName} onChangeText={update("photoName")} placeholder="Photo source or creator" placeholderTextColor={colors.textFaint} />
       <TextInput accessibilityLabel="Photo source URL" style={styles.input} maxLength={2048} value={photoUrl} onChangeText={update("photoUrl")} placeholder="https://example.com/photo-rights" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} />

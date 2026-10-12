@@ -1,5 +1,18 @@
 # Pit current status
 
+## 2026-10-12 Newsroom photo delivery and composition reset (local review)
+
+- Isolated branch `fix/newsroom-photo-state-20261012` starts at current remote
+  master/live PR42 merge `81e63f7753b92d338f5707f33a40316d49638294`.
+- Newsroom previews and public news cards retry their original photo URL once
+  after delivery failure, then show an explicit retry control instead of silently
+  disappearing. Confirmed self-written saves clear the next composition's fields,
+  citations, photo and retry identity; failed saves and newer edits remain intact.
+- The reproduced cause, validation and qualifications are recorded in
+  `docs/NEWSROOM_PHOTO_STATE_REVIEW_2026-10-12.md`. This is a local candidate,
+  not a committed, pushed, merged or deployed release. Other worktrees and the
+  frozen Terms/shutdown release were preserved.
+
 Last production reconciliation: **2026-10-10**. Local working-tree review:
 **2026-10-10**. This is the source of truth for current code, release, and
 production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed

@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { Linking, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import Button from "../../components/Button";
+import NewsPhoto from "../../components/news/NewsPhoto";
 import { commandFailure, commandSuccess } from "../../domain/commandResult.mjs";
 import { toAppError } from "../../lib/diagnostics";
 import { colors, radius } from "../../theme";
@@ -333,7 +334,7 @@ function Draft({ draft, pending, disabled, onPublish, onDiscard }) {
     {draft.body ? <Text selectable style={styles.help}>{draft.body}</Text> : null}
     {draft.origin === "self_written" ? <View style={styles.sourceReview}>
       {draft.photo?.status === "ready" && draft.photo?.url
-        ? <ExpoImage source={{ uri: draft.photo.url }} style={styles.draftPhoto} contentFit="contain" accessibilityLabel="Verified article photo" />
+        ? <NewsPhoto uri={draft.photo.url} style={styles.draftPhoto} contentFit="contain" accessibilityLabel="Verified article photo" />
         : <Text selectable style={styles.error}>The article photo is unavailable. Choose a verified photo before publishing.</Text>}
       {photoSource ? <SourceLink source={photoSource} prefix="Photo rights: " /> : null}
       <Text style={styles.help}>Article sources</Text>

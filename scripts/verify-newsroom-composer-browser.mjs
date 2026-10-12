@@ -13,7 +13,7 @@ import { newsEditorFixture, upkeepAdmin } from "./verify-catalog-maintenance-bro
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const shots = resolve(root, process.env.PIT_NEWSROOM_BROWSER_ARTIFACTS || join(".tmp", "newsroom-composer-browser"));
-const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=", "base64");
+const png = readFileSync(join(root, "scripts", "fixtures", "newsroom-photo.png"));
 
 async function localServer() {
   const directory = resolve(root, process.env.PIT_NEWSROOM_BROWSER_DIST || "dist");
@@ -39,7 +39,7 @@ function selfWrittenDraft(body, status = "draft") {
     id: "self-written-fixture", status, expired: false, origin: "self_written", headline: body.headline,
     summary: body.summary, body: body.body, category: body.category, wordCount: body.body.trim().split(/\s+/u).length,
     costUsd: 0, revision: status === "published" ? 1 : 0, postId: status === "published" ? "news-self-fixture" : null,
-    sources: [...body.sources, { kind: "photo", name: body.photo.name, url: body.photo.url, credit: body.photo.credit }],
+    sources: [...body.sources.filter(source => source.kind !== "photo"), { kind: "photo", name: body.photo.name, url: body.photo.url, credit: body.photo.credit }],
     photo: { assetId: "ma_fixture_photo", url: "https://media.example.test/fixture-photo.jpg", status: "ready",
       source: { kind: "photo", name: body.photo.name, url: body.photo.url, credit: body.photo.credit } },
     writer: { actorType: "human", actorLabel: "Synthetic editor", grantId: null }, createdAt: 1789488000000,
@@ -48,7 +48,7 @@ function selfWrittenDraft(body, status = "draft") {
 
 async function scenario(browser, origin, width, mode = "same") {
   const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
-  const state = { draft: null, saveAttempts: 0, saveKeys: [], creates: [], puts: [], finalizes: [], reports: [], errors: [], closing: false };
+  const state = { draft: null, saveAttempts: 0, saveKeys: [], creates: [], puts: [], finalizes: [], reports: [], errors: [], imageLoads: 0, closing: false };
   const receipts = new Map();
   await context.addInitScript(({ origin, user }) => {
     if (location.origin !== origin) return;
@@ -67,7 +67,11 @@ async function scenario(browser, origin, width, mode = "same") {
     const url = new URL(request.url());
     const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
     try {
-      if (url.origin === "https://media.example.test") return await route.fulfill({ status: 200, contentType: "image/png", body: png });
+      if (url.origin === "https://media.example.test") {
+        state.imageLoads += 1;
+        if (state.imageLoads === 1) return await route.fulfill({ status: 503, body: "Synthetic transient photo failure", headers: { "Cache-Control": "no-store" } });
+        return await route.fulfill({ status: 200, contentType: "image/png", body: png, headers: { "Cache-Control": "no-store" } });
+      }
       if (url.origin !== origin) return await route.abort();
       if (url.pathname === "/fixture-put/fixture-photo") {
         assert.equal(request.method(), "PUT");
@@ -120,7 +124,7 @@ async function scenario(browser, origin, width, mode = "same") {
       }
       if (url.pathname === "/api/media/assets/ma_fixture_photo/finalize" && request.method() === "POST") {
         state.finalizes.push(request.postDataJSON());
-        return await json({ asset: { id: "ma_fixture_photo", kind: "image", status: "ready", url: "https://media.example.test/fixture-photo.jpg", width: 1, height: 1, mimeType: "image/png" }, finalize: { state: "ready" } });
+        return await json({ asset: { id: "ma_fixture_photo", kind: "image", status: "ready", url: "https://media.example.test/fixture-photo.jpg", width: 320, height: 180, mimeType: "image/png" }, finalize: { state: "ready" } });
       }
       return await json(fixtureApiResponse(url.pathname, { member: true, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined }));
     } catch (error) {
@@ -145,11 +149,13 @@ async function scenario(browser, origin, width, mode = "same") {
     await composer.getByLabel("Self-written article source 1 URL", { exact: true }).fill("https://artist.example.com/tour");
     await composer.getByRole("button", { name: "Add another article source", exact: true }).click();
     if (mode === "edited") {
-      await composer.getByLabel("Self-written article source 2 name", { exact: true }).fill("NME");
-      await composer.getByLabel("Self-written article source 2 URL", { exact: true }).fill("https://www.nme.com/news/synthetic");
-      await composer.getByRole("button", { name: "Add another article source", exact: true }).click();
+      for (const [offset, name] of ["NME", "Stereogum", "Pitchfork"].entries()) {
+        await composer.getByLabel(`Self-written article source ${offset + 2} name`, { exact: true }).fill(name);
+        await composer.getByLabel(`Self-written article source ${offset + 2} URL`, { exact: true }).fill(`https://source.example.com/${offset}`);
+        await composer.getByRole("button", { name: "Add another article source", exact: true }).click();
+      }
     }
-    const sourceCount = mode === "edited" ? 2 : 1;
+    const sourceCount = mode === "edited" ? 4 : 1;
     const optionalSourceName = composer.getByLabel(`Self-written article source ${sourceCount + 1} name`, { exact: true });
     assert.equal(await optionalSourceName.inputValue(), "", "an empty optional source row is retained without blocking save");
     const choosing = page.waitForEvent("filechooser");
@@ -199,6 +205,12 @@ async function scenario(browser, origin, width, mode = "same") {
     await page.getByText("SELF-WRITTEN DRAFT", { exact: true }).waitFor();
     const draft = page.getByTestId("news-draft-self-written-fixture");
     await draft.locator("img").waitFor({ state: "attached" });
+    await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="news-draft-self-written-fixture"] img')].some((image) => image.complete && image.naturalWidth === 320));
+    assert.equal(await composer.getByLabel("Self-written news headline", { exact: true }).inputValue(), "");
+    assert.equal(await composer.getByLabel(/Self-written article source \d+ name/u).count(), 1, "a confirmed save must clear all optional source rows");
+    assert.equal(await composer.getByLabel("Self-written article source 1 name", { exact: true }).inputValue(), "");
+    assert.equal(await composer.getByLabel("Photo source name", { exact: true }).inputValue(), "");
+    assert.equal(await save.isDisabled(), true, "a new article needs its own photo and evidence");
     assert.equal(await draft.locator("a").count(), sourceCount + 1);
     assert.equal(await draft.getByRole("link", { name: "Fixture Artist", exact: true }).getAttribute("href"), "https://artist.example.com/tour");
     assert.equal(await draft.getByRole("link", { name: "Synthetic photographer", exact: true }).getAttribute("href"), "https://example.com/synthetic-photo-rights");
@@ -215,9 +227,35 @@ async function scenario(browser, origin, width, mode = "same") {
     await page.getByRole("button", { name: `Publish ${state.draft.headline}`, exact: true }).click();
     await page.getByText("PUBLISHED", { exact: true }).waitFor();
     assert.equal(state.draft.body, conciseBody, "the UI preserves and publishes a concise synthetic article without padding");
+    const firstSources = [...state.draft.sources];
+    // Replace every field for a second article and save it with only one source.
+    await composer.getByLabel("Self-written news headline", { exact: true }).fill("Second synthetic article");
+    await composer.getByLabel("Self-written news summary", { exact: true }).fill("A different announcement.");
+    await composer.getByLabel("Self-written news article", { exact: true }).fill("A second, separately sourced fictional announcement.");
+    await composer.getByLabel("Self-written article source 1 name", { exact: true }).fill("Second source");
+    await composer.getByLabel("Self-written article source 1 URL", { exact: true }).fill("https://second.example.com/report");
+    const secondChoosing = page.waitForEvent("filechooser");
+    await composer.getByRole("button", { name: "Choose and upload an article photo", exact: true }).click();
+    await (await secondChoosing).setFiles([{ name: "second.png", mimeType: "image/png", buffer: png }]);
+    await composer.getByLabel("Photo source name", { exact: true }).fill("Second photographer");
+    await composer.getByLabel("Photo source URL", { exact: true }).fill("https://second.example.com/photo");
+    await composer.getByLabel("Photo credit", { exact: true }).fill("Second attribution");
+    await save.click();
+    await draft.getByText("Second synthetic article", { exact: true }).waitFor();
+    assert.deepEqual(state.draft.sources.map(source => source.name), ["Second source", "Second photographer"], "the next article must not inherit previous citations or photo attribution");
+    assert.deepEqual([...receipts.values()][mode === "edited" ? 1 : 0].draft.sources, firstSources, "saving a second article cannot modify the first draft's evidence");
+    assert.equal(new Set(state.saveKeys).size, mode === "edited" ? 3 : 2, "a confirmed save ends the previous idempotent intent");
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await page.getByRole("button", { name: "Menu", exact: true }).click();
+    await page.getByRole("button", { name: "Newsroom. Write stories and run live coverage", exact: true }).click();
+    await draft.locator("img").waitFor({ state: "attached" });
+    await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="news-draft-self-written-fixture"] img')].some(image => image.complete && image.naturalWidth === 320));
+    assert.equal(await composer.getByLabel("Self-written news headline", { exact: true }).inputValue(), "");
+    assert.equal(await composer.getByLabel(/Self-written article source \d+ name/u).count(), 1);
+    await draft.screenshot({ path: join(shots, `reopened-photo-${width}-${mode}.png`), animations: "disabled" });
     assert.deepEqual(state.reports, []);
     const expectedLostResponseError = "Failed to load resource: the server responded with a status of 503 (Service Unavailable)";
-    assert.equal(state.errors.filter((message) => message === expectedLostResponseError).length, 1);
+    assert.equal(state.errors.filter((message) => message === expectedLostResponseError).length, 2, "one lost save response and one transient image failure are injected");
     assert.deepEqual(state.errors.filter((message) => message !== expectedLostResponseError), []);
     console.log(JSON.stringify({ name: `newsroom-composer-${width}-${mode}`, passed: true, saveRetries: state.saveAttempts, distinctKeys: new Set(state.saveKeys).size, retainedAfterNavigation: true, draftPhoto: true, articleSources: sourceCount, provenanceLinks: sourceCount + 1, wordCount: state.draft.wordCount }));
   } catch (error) {

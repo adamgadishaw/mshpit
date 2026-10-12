@@ -41,3 +41,10 @@ export function newsroomSaveAttempt(previous, payload, newKey) {
   const snapshot = JSON.stringify(payload);
   return previous?.payload === snapshot ? previous : { key: newKey(), payload: snapshot };
 }
+
+// A confirmed save belongs to the saved draft card, not the next composition.
+// Preserve edits made while its request was in flight.
+export function newsroomSaveCompletion(form, savedPayload) {
+  const reset = JSON.stringify(newsroomArticlePayload(form)) === savedPayload;
+  return { form: reset ? emptyNewsroomForm() : form, savedPayload: reset ? null : savedPayload, reset };
+}

@@ -8,6 +8,7 @@ import { relativeTime } from "../../domain/dates.mjs";
 import { newsCategoryLabel, newsSourceLine, newsStoryParagraphs, newsStoryPhoto, newsStorySources } from "../../domain/newsDesk.mjs";
 import { buildNewsShareModel } from "../../domain/socialShareCard.mjs";
 import NewsPostActions from "./NewsPostActions";
+import NewsPhoto from "./NewsPhoto";
 import { CONTACT_URL } from "../../domain/contact.mjs";
 
 const openSource = (url) => {
@@ -40,7 +41,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
       <Pressable style={({ pressed, hovered, focused }) => [styles.compact, hovered && styles.hover, pressed && styles.pressed, focused && focusRing]}
         onPress={() => onOpen?.(story)} disabled={!onOpen} accessibilityRole="button"
         accessibilityLabel={`${story.headline}. ${sourceLine}`}>
-        {photo ? <Image source={{ uri: photo }} style={styles.compactPhoto} contentFit="cover" contentPosition="top center" cachePolicy="memory-disk" accessible={false} /> : null}
+        {photo ? <NewsPhoto uri={photo} style={styles.compactPhoto} contentPosition="top center" accessible={false} /> : null}
         <View style={styles.compactCopy}>
           <Text style={styles.kicker} numberOfLines={1}>{local ? `${local.toUpperCase()} · ${meta}` : meta}</Text>
           <Text style={styles.compactHeadline} numberOfLines={3}>{story.headline}</Text>
@@ -58,7 +59,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
         {story.summary ? <Text style={full ? styles.lede : styles.summary}>{story.summary}</Text> : null}
         {!full && story.body && onOpen ? <Text style={styles.readMore}>Read the full story</Text> : null}
       </View>
-      {photo ? <Image source={{ uri: photo }} style={full ? styles.photoFull : styles.photo} contentFit="cover" contentPosition="top center" cachePolicy="memory-disk" accessible={false} /> : null}
+      {photo ? <NewsPhoto uri={photo} style={full ? styles.photoFull : styles.photo} contentPosition="top center" accessible={false} /> : null}
     </>
   );
 
