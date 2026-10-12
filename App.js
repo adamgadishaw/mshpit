@@ -1602,8 +1602,8 @@ function Root() {
       />
       <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} />
       <View style={styles.deskWrap}>
-        {showSponsorPlaceholders ? <View style={{ width: sponsorWidth, flexShrink: 0 }}><Suspense fallback={null}><SponsorPlaceholder /></Suspense></View> : null}
-        <View style={styles.deskCenter}>
+        {showSponsorPlaceholders ? <View testID="desktop-sponsor-rail" style={[styles.sponsorRail, { width: sponsorWidth }]}><Suspense fallback={null}><SponsorPlaceholder /></Suspense></View> : null}
+        <View testID="desktop-content-column" style={styles.deskCenter}>
           <PublicDirectoryPanel
             directory={nav.directory}
             region={nav.discoverRegion}
@@ -1897,6 +1897,7 @@ const styles = StyleSheet.create({
   deskOuter: { flex: 1, minWidth: 0, width: "100%", borderRightWidth: 1, borderRightColor: colors.lineSoft },
   deskWrap: { flex: 1, minHeight: 0, flexDirection: "row", width: "100%" },
   deskCenter: { flex: 1, minWidth: 0, borderRightWidth: 1, borderRightColor: colors.lineSoft },
+  sponsorRail: { flexShrink: 0, borderRightWidth: 1, borderRightColor: colors.lineSoft },
   screenLoading: { flex: 1, minHeight: 180, alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: colors.bg },
   screenLoadingTxt: { color: colors.textDim, fontFamily: mono, fontSize: 12 },
   tabbar: {

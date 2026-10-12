@@ -8,7 +8,7 @@ import SmartImage from "../SmartImage";
 import { fetchArtistNews, fetchNews } from "../../lib/newsApi";
 import { newsDateLabel, releaseAvailability, releaseTypeLabel } from "../../domain/artistNews.mjs";
 import { localCalendarIso } from "../../domain/dates.mjs";
-import { colors, displayFont, radius, space } from "../../theme";
+import { colors, displayFont, radius, space, CONTENT_COLUMN_MAX_WIDTH } from "../../theme";
 import NewsStoryCard from "./NewsStoryCard";
 import useNewsDeskStories from "./useNewsDeskStories";
 import LiveEventPanel from "./LiveEventPanel";
@@ -97,7 +97,7 @@ export function NewsScreen({ session = null, liveSlug = null, onClose, onOpenArt
   useEffect(() => { void load(); }, [scope, session?.id]);
 
   return (
-    <View style={styles.screen}>
+    <View style={styles.screen} testID="news-content-shell">
       <ScreenHeader kicker="Mshpit News" title="Music news" onBack={onClose} />
       <View style={styles.tabs} accessibilityRole="tablist">
         {[["news", "Music news"], ["following", "Your artists"]].map(([id, label]) => (
@@ -193,9 +193,9 @@ export function ArtistNewsSection({ artistName, artistKey = null, following = fa
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: space(4), paddingBottom: space(16), gap: space(3), width: "100%", maxWidth: 680, alignSelf: "center" },
-  tabs: { flexDirection: "row", gap: space(2), paddingHorizontal: space(4), paddingTop: space(3), width: "100%", maxWidth: 680, alignSelf: "center" },
+  screen: { flex: 1, minWidth: 0, width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.bg },
+  content: { padding: space(4), paddingBottom: space(16), gap: space(3) },
+  tabs: { flexDirection: "row", gap: space(2), paddingHorizontal: space(4), paddingTop: space(3) },
   tab: { flex: 1, minHeight: 42, alignItems: "center", justifyContent: "center", borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
   tabOn: { backgroundColor: colors.surfaceAlt, borderColor: colors.line },
   tabText: { color: colors.textDim, fontWeight: "700", fontSize: 13.5 },

@@ -1,6 +1,6 @@
 import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, FlatList, Platform, Pressable, ScrollView, useWindowDimensions } from "react-native";
-import { colors, mono, radius, shadow } from "../theme";
+import { colors, mono, radius, shadow, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { load, save } from "../lib/persist";
 import TicketStub from "../components/TicketStub";
 import Icon from "../components/Icon";
@@ -632,7 +632,7 @@ function HomeAction({ icon, label, onPress, primary = false }) {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: 16, paddingBottom: 40, ...(Platform.OS === "web" ? { width: "100%", maxWidth: 900, alignSelf: "center" } : null) },
+  content: { padding: 16, paddingBottom: 40, ...(Platform.OS === "web" ? { width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center" } : null) },
   gs: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.amber, padding: 13, marginBottom: 14, gap: 8 },
   gsHead: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
   gsTitle: { color: colors.text, fontSize: 16, fontWeight: "800" },

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Button from "../../components/Button";
 import SheetHeader from "../../components/SheetHeader";
-import { colors, focusRing, radius, space } from "../../theme";
+import { colors, focusRing, radius, space, CONTENT_COLUMN_MAX_WIDTH } from "../../theme";
 import { createLoadState, beginLoadState, resolveLoadState, rejectLoadState, isLoadCancellation } from "../../domain/loadState.mjs";
 import { JOB_FIELDS } from "../../domain/jobs.mjs";
 import { createAdminJob, listAdminJobs, updateAdminJob } from "./jobsApi.mjs";
@@ -64,21 +64,29 @@ export default function JobsPanel({ accountId, onClose, onOpenArtistAccess }) {
       if (mounted.current) setBusy(false);
     }
   };
-  return <View style={styles.root}>
+  return <View style={styles.root} testID="administration-shell">
     <SheetHeader title="Administration" onClose={() => dirty ? setConfirmLeave("close") : onClose()} leadDisabled={busy} />
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic">
+      <View style={styles.sectionHeading}>
       <Text style={styles.heading} accessibilityRole="header">Jobs</Text>
+      {onOpenArtistAccess ? <Button small style={styles.button} title="Artist access" variant="secondary" disabled={busy} onPress={() => dirty ? setConfirmLeave("artistAccess") : onOpenArtistAccess()} /> : null}
+      </View>
       <Text style={styles.hint}>Create openings for Work at mshpit. Save drafts privately; Publish makes the current details public.</Text>
-      {onOpenArtistAccess ? <Button title="Artist access" variant="secondary" disabled={busy} onPress={() => dirty ? setConfirmLeave("artistAccess") : onOpenArtistAccess()} /> : null}
-      {confirmLeave ? <View style={styles.box}><Text style={styles.text}>Leave and discard unsaved changes?</Text><Button title="Keep editing" onPress={() => setConfirmLeave(false)} /><Button title="Discard and leave" variant="danger" onPress={confirmLeave === "artistAccess" ? onOpenArtistAccess : onClose} /></View> : null}
-      {pendingSelection ? <View style={styles.box}><Text style={styles.text}>Discard unsaved changes before switching jobs?</Text><Button title="Keep editing" onPress={() => setPendingSelection(null)} /><Button title="Discard changes" variant="danger" onPress={() => choose(pendingSelection.job, true)} /></View> : null}
+      {confirmLeave ? <View style={styles.box}><Text style={styles.text}>Leave and discard unsaved changes?</Text><Button small style={styles.button} title="Keep editing" onPress={() => setConfirmLeave(false)} /><Button small style={styles.button} title="Discard and leave" variant="danger" onPress={confirmLeave === "artistAccess" ? onOpenArtistAccess : onClose} /></View> : null}
+      {pendingSelection ? <View style={styles.box}><Text style={styles.text}>Discard unsaved changes before switching jobs?</Text><Button small style={styles.button} title="Keep editing" onPress={() => setPendingSelection(null)} /><Button small style={styles.button} title="Discard changes" variant="danger" onPress={() => choose(pendingSelection.job, true)} /></View> : null}
+      <View style={styles.section} testID="job-openings">
+      <View style={styles.sectionHeading}>
+      <Text style={styles.subheading} accessibilityRole="header">Openings</Text>
+      <Button small style={styles.button} title="New job draft" variant="secondary" disabled={busy} onPress={() => choose(null)} />
+      </View>
       {!resource.data && ["idle", "loading"].includes(resource.status) ? <ActivityIndicator color={colors.amber} accessibilityLabel="Loading jobs" /> : null}
-      {resource.error ? <View><Text style={styles.error} accessibilityRole="alert">{resource.error.message}</Text><Button title="Retry jobs list" variant="secondary" disabled={busy} onPress={() => void load()} /></View> : null}
+      {resource.error ? <View><Text style={styles.error} accessibilityRole="alert">{resource.error.message}</Text><Button small style={styles.button} title="Retry jobs list" variant="secondary" disabled={busy} onPress={() => void load()} /></View> : null}
       {resource.data?.jobs.length === 0 ? <Text style={styles.hint}>No job openings have been created.</Text> : null}
-      <Button title="New job draft" variant="secondary" disabled={busy} onPress={() => choose(null)} />
-      {(resource.data?.jobs || []).map(job => <Button key={job.id} title={`${job.draft.title || "Untitled draft"} · ${job.state}`} variant="secondary" disabled={busy} onPress={() => choose(job)} />)}
-      {resource.data?.cursor ? <Button title="Load more jobs" disabled={busy || resource.status === "refreshing"} onPress={() => void load(resource.data.cursor)} /> : null}
-      <Text style={styles.heading}>{selected ? `Edit ${selected.state} opening` : "New draft"}</Text>
+      {(resource.data?.jobs || []).map(job => <Button small style={styles.button} key={job.id} title={`${job.draft.title || "Untitled draft"} · ${job.state}`} variant="secondary" disabled={busy} onPress={() => choose(job)} />)}
+      {resource.data?.cursor ? <Button small style={styles.button} title="Load more jobs" disabled={busy || resource.status === "refreshing"} onPress={() => void load(resource.data.cursor)} /> : null}
+      </View>
+      <View style={styles.section} testID="job-editor">
+      <Text style={styles.subheading} accessibilityRole="header">{selected ? `Edit ${selected.state} opening` : "New draft"}</Text>
       {selected?.published ? <Text style={styles.hint}>Last published title: {selected.published.title}. Draft edits remain private until Publish.</Text> : null}
       {JOB_FIELDS.map(field => <View key={field} style={styles.field}>
         <Text style={styles.text}>{labels[field]}</Text>
@@ -87,18 +95,23 @@ export default function JobsPanel({ accountId, onClose, onOpenArtistAccess }) {
       {error ? <Text style={styles.error} accessibilityRole="alert">{error} Your draft is still here.</Text> : null}
       {notice ? <Text style={styles.text} accessibilityRole="status" accessibilityLiveRegion="polite">{notice}</Text> : null}
       {!archived ? <View style={styles.actions}>
-        <Button title="Save draft" loading={busy} onPress={() => void save("save")} />
-        <Button title={selected?.state === "closed" ? "Publish and reopen" : "Publish"} disabled={busy || !selected} onPress={() => void save("publish")} />
-        {selected?.state === "published" ? <Button title="Close opening" variant="secondary" disabled={busy || dirty} onPress={() => void save("close")} /> : null}
-        {selected && selected.state !== "published" ? <Button title="Archive" variant="secondary" disabled={busy || dirty} onPress={() => void save("archive")} /> : null}
+        <Button small style={styles.button} title="Save draft" loading={busy} onPress={() => void save("save")} />
+        <Button small style={styles.button} title={selected?.state === "closed" ? "Publish and reopen" : "Publish"} disabled={busy || !selected} onPress={() => void save("publish")} />
+        {selected?.state === "published" ? <Button small style={styles.button} title="Close opening" variant="secondary" disabled={busy || dirty} onPress={() => void save("close")} /> : null}
+        {selected && selected.state !== "published" ? <Button small style={styles.button} title="Archive" variant="secondary" disabled={busy || dirty} onPress={() => void save("archive")} /> : null}
       </View> : <Text style={styles.hint}>Archived records are read-only.</Text>}
-      {dirty && selected ? <Button title="Discard unsaved edits" variant="secondary" disabled={busy} onPress={() => choose(selected, true)} /> : null}
+      {dirty && selected ? <Button small style={styles.button} title="Discard unsaved edits" variant="secondary" disabled={busy} onPress={() => choose(selected, true)} /> : null}
+      </View>
     </ScrollView>
   </View>;
 }
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg }, content: { padding: space(5), gap: space(3), paddingBottom: space(12) },
+  root: { flex: 1, minWidth: 0, width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.bg }, content: { padding: space(4), gap: space(3), paddingBottom: space(12) },
+  button: { alignSelf: "flex-start", maxWidth: "100%" },
+  sectionHeading: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: space(3) },
+  section: { gap: space(3), borderTopWidth: 1, borderTopColor: colors.lineSoft, paddingTop: space(4), marginTop: space(2) },
+  subheading: { color: colors.text, fontSize: 18, fontWeight: "700" },
   heading: { color: colors.text, fontSize: 22, fontWeight: "700" }, text: { color: colors.text, fontSize: 14 }, hint: { color: colors.textDim, lineHeight: 21 },
   field: { gap: 8 }, input: { color: colors.text, backgroundColor: colors.surface, borderColor: colors.lineSoft, borderWidth: 1, borderRadius: radius.md, padding: 12, fontSize: 16 },
-  description: { minHeight: 160, textAlignVertical: "top" }, error: { color: colors.danger, lineHeight: 22 }, actions: { gap: 10 }, box: { padding: 12, gap: 10, borderWidth: 1, borderColor: colors.lineSoft },
+  description: { minHeight: 160, textAlignVertical: "top" }, error: { color: colors.danger, lineHeight: 22 }, actions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(2) }, box: { padding: 12, gap: 10, borderWidth: 1, borderColor: colors.lineSoft },
 });

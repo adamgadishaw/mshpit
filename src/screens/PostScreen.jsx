@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Platform, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
-import { colors, mono, radius, roleColor } from "../theme";
+import { colors, mono, radius, roleColor, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
@@ -277,7 +277,7 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
   const removePost = async (postId) => { const result = await deleteOwnPost(postId); if (result?.ok) onClose?.(); return result; };
 
   return (
-    <View style={styles.wrap}>
+    <View style={styles.wrap} testID="post-content-shell">
       <ScreenHeader
         kicker={activeLog.news ? "Mshpit News" : isOnlineReview ? "Online concert review" : activeLog.review ? "Review" : "Post"}
         title={activeLog.news ? "Story" : "Original post"}
@@ -371,8 +371,8 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: 16, paddingBottom: 24, ...(Platform.OS === "web" ? { width: "100%", maxWidth: 900, alignSelf: "center" } : null) },
+  wrap: { flex: 1, minWidth: 0, width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.bg },
+  content: { padding: 16, paddingBottom: 24 },
   sectionLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 4, marginBottom: 12 },
   empty: { color: colors.textDim, fontSize: 14, fontStyle: "italic", marginBottom: 12 },
   threadState: { flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 14 },
@@ -395,7 +395,7 @@ const styles = StyleSheet.create({
   replyBtn: { color: colors.amber, fontSize: 12.5, fontWeight: "700", marginTop: 6 },
   deleteBtn: { color: colors.danger, fontSize: 12.5, fontWeight: "700", marginTop: 6 },
   reportBtn: { color: colors.textDim, fontSize: 12.5, fontWeight: "700", marginTop: 6 },
-  composerWrap: { borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: 12, paddingTop: 8, paddingBottom: 12 },
+  composerWrap: { borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 },
   replyingTo: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingHorizontal: 6, paddingBottom: 8 },
   replyingTxt: { color: colors.amber, fontSize: 12.5, fontWeight: "700", flex: 1 },
   composer: { flexDirection: "row", alignItems: "flex-end", gap: 8 },
