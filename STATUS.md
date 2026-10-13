@@ -1,5 +1,23 @@
 # Pit current status
 
+## 2026-10-13 Video converter review (local only)
+
+- Isolated branch `fix/video-converter-20261013` starts at `81e63f7`.
+  The separate newsroom photo fix is not included. No production records,
+  live jobs, credentials, permissions, deployment or publication changed.
+- Generated-output rejection stays distinct from unsupported source input.
+  Deterministic conversion failures stop automatic retries; process/resource failures get one bounded retry. Generated failures use
+  `PIT-UPLOAD-007`. Named private checks retain bounded scalar diagnostics
+  without raw metadata, decoder text or capabilities.
+- Conversion keeps rational frame rates, selects default supported audio,
+  checks duration/A/V preservation and adds explicit PQ/HLG-to-SDR processing.
+  CRF 21/veryfast, one slot, upload/duration/work limits and create-only storage
+  remain; encoder threads are explicitly bounded.
+- Evidence and pending release gates are in
+  `docs/VIDEO_CONVERTER_REVIEW_2026-10-13.md`. The original production failed
+  predicate remains unknown; local fixtures do not prove its root cause.
+
+
 Last production reconciliation: **2026-10-10**. Local working-tree review:
 **2026-10-10**. This is the source of truth for current code, release, and
 production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed

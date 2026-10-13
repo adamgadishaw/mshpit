@@ -245,6 +245,15 @@ export const ERROR_CATALOG = Object.freeze({
     guidance: "Use the persistent confirmation reminder to send a fresh link, then repeat the upload.",
     retryable: false,
   }),
+  "PIT-UPLOAD-007": Object.freeze({
+    category: "upload",
+    severity: "error",
+    title: "Clip processing failed",
+    message: "We couldn't finish processing this clip.",
+    failurePoint: "Video conversion",
+    guidance: "Keep the original and contact support.",
+    retryable: false,
+  }),
   "PIT-STORE-001": Object.freeze({
     category: "storage",
     severity: "warning",
@@ -364,6 +373,7 @@ export const SERVER_CODE_MAP = Object.freeze({
   DATABASE_UNAVAILABLE: "PIT-SVC-001",
   STORAGE_UNAVAILABLE: "PIT-SVC-001",
   MEDIA_STORAGE_UNAVAILABLE: "PIT-UPLOAD-001",
+  MEDIA_CONVERSION_FAILED: "PIT-UPLOAD-007",
   SHARE_ARTWORK_REQUIRED: "PIT-SHARE-001",
   SHARE_RENDER_UNAVAILABLE: "PIT-SVC-001",
   PAGE_HEAD_UNAVAILABLE: "PIT-SVC-001",

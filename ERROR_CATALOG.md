@@ -26,6 +26,7 @@ reuse a published `PIT-*` code for a different meaning.
 | `PIT-UPLOAD-002` | Upload | Unsupported media type | Choose another file |
 | `PIT-UPLOAD-003` | Upload | Media exceeds the size limit | Resize first |
 | `PIT-UPLOAD-004` | Upload | Media upload failed | Yes |
+| `PIT-UPLOAD-007` | Upload | Deterministic video conversion/output validation failed | Contact support; no automatic retry |
 | `PIT-MEDIA-001` | Playback | Audio/video could not start | Yes |
 | `PIT-STORE-001` | Storage | Device-local persistence failed | Yes |
 | `PIT-APP-001` | Application | React render failure caught by the app boundary | Yes |

@@ -21,8 +21,12 @@ import {
   VIDEO_VERIFIER_UNIVERSAL_ADMISSION,
   VIDEO_VERIFIER_UNIVERSAL_SOURCE_TYPES,
 } from "./videoVerifierProtocol.js";
-import { verifyPrivateMediaBucketIsolation } from "./media.js";
+import { createMediaProcessorUploadCapability, verifyPrivateMediaBucketIsolation } from "./media.js";
 import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
+import { createVideoVerifierService, runVerifierProcess } from "./videoVerifierService.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const SECRET = "video-verifier-test-secret-that-is-at-least-thirty-two-bytes";
 const ENV = Object.freeze({
@@ -53,6 +57,32 @@ await verifyPrivateMediaBucketIsolation({
 });
 
 afterEach(() => resetVideoVerifierStateForTests());
+
+test("real worker signal and output-cap failures use their actual signed HTTP 503 contract", async (context) => {
+  for (const [label, code, outputLimit, expectedStatus, expectedCode] of [
+    ["signal", "process.kill(process.pid,'SIGKILL')", 65536, 503, "MEDIA_STORAGE_UNAVAILABLE"],
+    ["output cap", "process.stdout.write('x'.repeat(100))", 8, 500, "MEDIA_CONVERSION_FAILED"],
+  ]) await context.test(label, async () => {
+    const root = await mkdtemp(join(tmpdir(), "pit-signed-process-"));
+    const service = createVideoVerifierService({ env: { ...ENV, PORT: "10001",
+      PIT_VIDEO_SOURCE_ORIGIN: ENV.MEDIA_ENDPOINT, PIT_VIDEO_SOURCE_BUCKET: ENV.MEDIA_SOURCE_BUCKET,
+      PIT_VIDEO_OUTPUT_ORIGIN: ENV.MEDIA_ENDPOINT, PIT_VIDEO_OUTPUT_BUCKET: ENV.MEDIA_BUCKET },
+    prerequisiteCheck: async () => ({ ffmpegVersion: "test" }),
+    verifyJob: () => runVerifierProcess(process.execPath, ["-e", code], { cwd: root, outputLimit }) });
+    try {
+      const address = await service.listen(0, "127.0.0.1");
+      let actualStatus;
+      await assert.rejects(verifyVideoObject(verificationInput({
+        output: createMediaProcessorUploadCapability({ objectKey: "users/u_video/post/delivery.mp4", env: ENV }),
+        fetchImpl: async (url, request) => {
+        const response = await fetch(`http://127.0.0.1:${address.port}${new URL(url).pathname}`, request);
+        actualStatus = response.status; return response;
+      } })), (error) => error.status === expectedStatus && error.code === expectedCode
+        && (label !== "signal" || error.videoProcessFailed === true));
+      assert.equal(actualStatus, 503);
+    } finally { await service.close(); await rm(root, { recursive: true, force: true }); }
+  });
+});
 
 function signedResponse({ path, request, payload, status = 200 }) {
   const authenticated = verifyVideoVerifierRequest({
@@ -752,8 +782,10 @@ test("signed worker 422 codes distinguish source rejection from retryable pipeli
     { code: "decode_failed", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
     { code: "invalid_request", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
     { code: "incompatible_protocol", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
-    { code: "delivery_invalid", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
-    { code: "poster_invalid", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
+    { code: "delivery_invalid", status: 500, apiCode: "MEDIA_CONVERSION_FAILED" },
+    { code: "conversion_failed", status: 500, apiCode: "MEDIA_CONVERSION_FAILED" },
+    { code: "poster_invalid", status: 500, apiCode: "MEDIA_CONVERSION_FAILED" },
+      { code: "decoder_output_invalid", workerStatus: 503, status: 500, apiCode: "MEDIA_CONVERSION_FAILED" },
     { code: "verification_failed", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
     { code: "unknown_worker_failure", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
   ];
@@ -764,7 +796,7 @@ test("signed worker 422 codes distinguish source rejection from retryable pipeli
         fetchImpl: (url, request) => signedResponse({
           path: new URL(url).pathname,
           request,
-          status: 422,
+          status: fixture.workerStatus || 422,
           payload: { ok: false, code: fixture.code, message: privateWorkerMessage },
         }),
       })), (error) => {

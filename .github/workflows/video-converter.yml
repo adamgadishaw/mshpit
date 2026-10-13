@@ -1,0 +1,86 @@
+name: Video converter image
+
+# Review proposal only until this branch is published. No deployment, secrets,
+# paid-service provisioning or image registry publication is part of this job.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - Dockerfile.video-verifier
+      - server/videoVerifier*
+      - server/mediaDeliveryPolicy.js
+      - server/fixtures/**
+      - src/domain/mediaUploadPolicy.mjs
+      - src/domain/mediaMime.mjs
+      - scripts/verify-video-converter.mjs
+      - .github/workflows/video-converter.yml
+      - .github/video-verifier-buildkit.toml
+
+permissions:
+  contents: read
+
+jobs:
+  exact-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Build exact production Dockerfile in a bounded builder
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set -euo pipefail
+          builder="pit-video-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          owned_builder=0
+          trap 'if [ "$owned_builder" = 1 ]; then docker buildx rm "$builder" >/dev/null 2>&1 || true; fi' EXIT
+          docker buildx create --name "$builder" --driver docker-container \
+            --driver-opt memory=2g,memory-swap=2g,cpu-period=100000,cpu-quota=100000,cpuset-cpus=0 \
+            --buildkitd-config .github/video-verifier-buildkit.toml --use
+          owned_builder=1
+          docker buildx inspect "$builder" --bootstrap
+          # cpuset makes nproc report one CPU in make's build stage. Cache GC
+          # targets 8 GB (not a hard filesystem quota); runner disk is finite.
+          docker buildx build --builder "$builder" --platform linux/amd64 --load \
+            --file Dockerfile.video-verifier --tag pit-video-review:local .
+      - name: Validate image as non-root with production CPU and memory limits
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --cpus=1 --memory=2g --memory-swap=2g --pids-limit=128 \
+            --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=768m \
+            pit-video-review:local node server/videoVerifierService.js --self-test
+          # Includes a real owned self-SIGKILL regression on Linux.
+          docker run --rm --cpus=1 --memory=2g --memory-swap=2g --pids-limit=128 \
+            --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=768m \
+            --mount "type=bind,src=$PWD/server/videoVerifierService.test.mjs,dst=/app/server/videoVerifierService.test.mjs,readonly" \
+            pit-video-review:local node --test server/videoVerifierService.test.mjs
+      - name: Exercise offline media and observe container resources
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="pit-video-acceptance-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          owned_container=0
+          trap 'if [ "$owned_container" = 1 ]; then docker rm -f "$container" >/dev/null 2>&1 || true; fi' EXIT
+          docker create --name "$container" --cpus=1 --memory=2g --memory-swap=2g --pids-limit=128 \
+            --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=768m \
+            --mount "type=bind,src=$PWD/scripts/verify-video-converter.mjs,dst=/app/scripts/verify-video-converter.mjs,readonly" \
+            pit-video-review:local node scripts/verify-video-converter.mjs
+          owned_container=1
+          docker start -a "$container" > converter-acceptance.log 2>&1 &
+          owned_pid=$!
+          while kill -0 "$owned_pid" 2>/dev/null; do
+            docker stats --no-stream --format '{{json .}}' "$container" || true
+            sleep 2
+          done
+          result=0
+          wait "$owned_pid" || result=$?
+          docker inspect --format '{{json .State}}' "$container"
+          cat converter-acceptance.log
+          exit "$result"
