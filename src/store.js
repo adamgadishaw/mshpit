@@ -71,7 +71,7 @@ import {
 } from "./domain/draftPolicy.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./domain/mediaUploadPolicy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "./domain/privacyDisclosures.mjs";
-import { buildMemoryCreateBody, buildMemoryEditBody, buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
+import { buildMemoryCreateBody, buildMemoryEditBody, buildReviewCreateBody, buildReviewEditBody, buildStatusCreateBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { isInPersonConcertReview } from "./domain/onlineReview.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
@@ -3600,7 +3600,7 @@ export function StoreProvider({ children }) {
               } : {}),
             },
           }
-          : { clientMutationId: localId, kind: "status", review: safe.review, taggedUserIds: taggedUserIdsFromPeople(safe.taggedPeople), song: safe.song || null, photos: safe.photos || [], ...(Array.isArray(safe.mediaAssetIds) ? { mediaAssetIds: safe.mediaAssetIds } : {}), photosPublic: safe.photosPublic === false ? 0 : 1, ...(log.playlistId ? { playlistId: log.playlistId } : {}), campaign: safe.campaign }
+          : buildStatusCreateBody(safe)
         : buildReviewCreateBody(safe);
       return deliverPostCreate({
         apiCall: api,

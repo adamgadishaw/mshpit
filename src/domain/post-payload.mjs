@@ -28,6 +28,23 @@ export function cleanMediaAssetIds(value) {
   return ids;
 }
 
+export function postCreateMediaFields(post) {
+  const photos = Array.isArray(post?.photos) ? post.photos : [];
+  if (!Array.isArray(post?.mediaAssetIds)) return { photos };
+  const mediaAssetIds = cleanMediaAssetIds(post.mediaAssetIds);
+  // Converting clips have stable IDs but no ready URLs in the composer. They
+  // may finish before Post or an idempotent retry; let the server resolve the
+  // entire exact ID selection rather than comparing that stale URL snapshot.
+  return { ...(mediaAssetIds.length > photos.length ? {} : { photos }), mediaAssetIds };
+}
+
+export function buildStatusCreateBody(post) {
+  return { clientMutationId: post.id, kind: "status", review: post.review,
+    taggedUserIds: taggedUserIdsFromPeople(post.taggedPeople), song: post.song || null,
+    ...postCreateMediaFields(post), photosPublic: post.photosPublic === false ? 0 : 1,
+    ...(post.playlistId ? { playlistId: post.playlistId } : {}), campaign: post.campaign };
+}
+
 export function buildReviewCreateBody(post) {
   const online = isOnlineReview(post);
   return {
@@ -47,8 +64,7 @@ export function buildReviewCreateBody(post) {
     youtubeUrl: online ? canonicalYouTubeReviewUrl(post.youtubeUrl, post.youtubeVideoId) : null,
     review: post.review,
     taggedUserIds: taggedUserIdsFromPeople(post.taggedPeople),
-    photos: post.photos,
-    ...(Array.isArray(post.mediaAssetIds) ? { mediaAssetIds: cleanMediaAssetIds(post.mediaAssetIds) } : {}),
+    ...postCreateMediaFields(post),
     photosPublic: post.photosPublic ? 1 : 0,
     landingShowcase: !online && post.photosPublic && post.landingShowcase ? 1 : 0,
     setlist: online ? [] : post.setlist,
@@ -114,8 +130,7 @@ export function buildMemoryCreateBody(post, { textOnly = false } = {}) {
     ...body,
     taggedUserIds: taggedUserIdsFromPeople(post?.taggedPeople),
     song: post?.song || null,
-    photos: Array.isArray(post?.photos) ? post.photos : [],
-    ...(Array.isArray(post?.mediaAssetIds) ? { mediaAssetIds: cleanMediaAssetIds(post.mediaAssetIds) } : {}),
+    ...postCreateMediaFields(post),
     photosPublic: post?.photosPublic === false ? 0 : 1,
   };
 }

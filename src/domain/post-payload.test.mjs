@@ -1,7 +1,35 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildMemoryCreateBody, buildMemoryEditBody, buildReviewCreateBody, buildReviewEditBody } from "./post-payload.mjs";
+import { buildMemoryCreateBody, buildMemoryEditBody, buildReviewCreateBody, buildReviewEditBody, buildStatusCreateBody } from "./post-payload.mjs";
+
+test("a composer with converting asset IDs leaves current URL selection to the server", () => {
+  const photo = "https://media.example/ready.jpg";
+  const draft = { id: "post_conversion_caption_1", photos: [photo],
+    mediaAssetIds: ["ma_ready_photo_0001", "ma_converting_clip_0001"], review: "Caption", photosPublic: true };
+  for (const build of [buildReviewCreateBody, buildMemoryCreateBody, buildStatusCreateBody]) {
+    const body = build(draft);
+    assert.equal(Object.hasOwn(body, "photos"), false, "a server-ready clip must not conflict with stale composer URLs");
+    assert.deepEqual(body.mediaAssetIds, draft.mediaAssetIds);
+  }
+  assert.deepEqual(draft.photos, [photo], "optimistic media is preserved locally");
+});
+
+test("ready-only and URL-only selections retain exact URLs and edits remain explicit", () => {
+  const photos = ["https://media.example/ready.jpg"];
+  for (const build of [buildReviewCreateBody, buildMemoryCreateBody, buildStatusCreateBody]) {
+    assert.deepEqual(build({ photos }).photos, photos);
+    assert.deepEqual(build({ photos, mediaAssetIds: ["ma_ready_photo_0001"] }).photos, photos);
+    assert.deepEqual(build({ photos: [], mediaAssetIds: [] }).photos, []);
+    assert.deepEqual(build({ photos, mediaAssetIds: ["ma_ready_photo_0001", "invalid"] }).photos, photos);
+  }
+});
+
+test("status payload keeps the playlist identity copied from the original log", () => {
+  const log = { id: "status_playlist_0001", review: "Shared playlist", photos: [], playlistId: "playlist_0001" };
+  const safe = { ...log, review: log.review.trim() };
+  assert.equal(buildStatusCreateBody(safe).playlistId, log.playlistId);
+});
 
 test("protected legacy memories cross the client boundary as words and identity only", () => {
   const body = buildMemoryCreateBody({
