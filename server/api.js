@@ -1362,8 +1362,12 @@ function stableMutationValue(value) {
   return value;
 }
 
-function postMutationHash(canonicalPost) {
-  return createHash("sha256").update(JSON.stringify(stableMutationValue(canonicalPost))).digest("hex");
+function postMutationHash(canonicalPost, { legacyMediaUrls = false } = {}) {
+  // Derived URLs can appear while a clip converts. The ordered, owner-checked
+  // IDs are the authored selection; URL-only posts retain their existing hash.
+  const identity = !legacyMediaUrls && canonicalPost?.mediaAssetIds?.length
+    ? { ...canonicalPost, photos: [] } : canonicalPost;
+  return createHash("sha256").update(JSON.stringify(stableMutationValue(identity))).digest("hex");
 }
 
 // A review binds to a catalog entity, not to whatever the user typed. The client
@@ -4201,14 +4205,22 @@ function postJsonWithImpressions(p, viewerId) {
   return postJson(attached || p, viewerId);
 }
 
-function resolvePostCreateRetry(userId, mutationId, mutationHash) {
+function resolvePostCreateRetry(userId, mutationId, mutationHash, { canonical } = {}) {
   if (!mutationId) return null;
   const receipt = postReceiptByClientMutation.get(userId, mutationId);
   if (receipt?.state === "removed") {
     throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
   }
   if (receipt) {
-    if (receipt.client_mutation_hash !== mutationHash) {
+    let matches = receipt.client_mutation_hash === mutationHash;
+    if (!matches && canonical?.mediaAssetIds?.length) {
+      // Compatibility is an exact legacy digest check, never a comparison
+      // waiver. Keep all authored fields, ordered IDs and current ready URLs.
+      // An old receipt whose pending URL subset has since changed cannot be
+      // reconstructed from attempt-start timestamps: retain a safe conflict.
+      matches = receipt.client_mutation_hash === postMutationHash(canonical, { legacyMediaUrls: true });
+    }
+    if (!matches) {
       throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
     }
     const stored = feedPostById.get(receipt.id);
@@ -7096,7 +7108,8 @@ export const routes = {
     const stored = existing ? feedPostById.get(existing.id) : null;
     const request = canonicalCreateRequest(u, ctx.body, stored);
     const mutationHash = mutationId ? postMutationHash(request.canonical) : null;
-    const duplicate = resolvePostCreateRetry(u.id, mutationId, mutationHash);
+    const retryMedia = { canonical: request.canonical };
+    const duplicate = resolvePostCreateRetry(u.id, mutationId, mutationHash, retryMedia);
     if (duplicate) return duplicate;
     postWriteLimits(ctx, {
       campaign: request.kind === "status" && !!request.values.campaign,
@@ -7112,7 +7125,7 @@ export const routes = {
         // BEGIN IMMEDIATE waits out another writer. Rechecking the key while
         // holding that lock turns simultaneous retries into the same response
         // instead of leaking a SQLite uniqueness failure as a 500.
-        const raced = resolvePostCreateRetry(u.id, mutationId, mutationHash);
+        const raced = resolvePostCreateRetry(u.id, mutationId, mutationHash, retryMedia);
         if (raced) return raced;
         // Re-read consent/account/block state while holding SQLite's write lock.
         // The earlier validation shapes a friendly response quickly; this one
@@ -7165,7 +7178,7 @@ export const routes = {
     const id = uid("p");
     const racedDuplicate = atomicWrite(() => {
       ctx.assertCurrentSession?.();
-      const raced = resolvePostCreateRetry(u.id, mutationId, mutationHash);
+      const raced = resolvePostCreateRetry(u.id, mutationId, mutationHash, retryMedia);
       if (raced) return raced;
       const transactionTaggedUserIds = validatedPostTaggedUserIds(u, v.taggedUserIds);
       assertPostTagRecipientBudget(u.id, transactionTaggedUserIds);

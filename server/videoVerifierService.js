@@ -1012,7 +1012,12 @@ function jobFailureSummary(error) {
 }
 
 export function videoColorFilter(video) {
-  if (!isHdrVideo(video)) return "";
+  if (!isHdrVideo(video)) {
+    // -pix_fmt alone changes the encoder format, not full-range sample values.
+    // Normalize SDR range before encoding; preserve its matrix/transfer/primaries.
+    return video?.colorRange === "pc"
+      ? "scale=in_range=pc:out_range=tv,format=yuv420p," : "";
+  }
   // Only a declared BT.2020 PQ/HLG signal has a defined conversion here.
   // Do not guess missing primaries/matrix or silently relabel HDR as SDR.
   requireVideoCheck(video.colorPrimaries === "bt2020" && video.colorSpace === "bt2020nc",
@@ -1052,6 +1057,43 @@ async function verifyHdrHighlightBands(sourcePath, deliveryPath, config, { runPr
     throw new Error(`Synthetic HDR range/highlight separation failed: source=${source.join(",")} delivery=${delivery.join(",")}`);
   }
   return { sourceLinear100NitReference: source, deliveryLinearSdr: delivery };
+}
+
+async function verifySdrRangeFixture(sourcePath, deliveryPath, source, delivery, sample, config, { runProcess, directory }) {
+  const pictures = [];
+  const bands = [];
+  for (const [name, path, video] of [["source", sourcePath, source], ["delivery", deliveryPath, delivery]]) {
+    const range = video.colorRange === "pc" ? "pc" : "tv";
+    const rgbPath = join(directory, `${sample.name}-${name}.rgb`);
+    await runProcess(config.ffmpeg, ["-nostdin", "-v", "error", "-i", path, "-map", "0:v:0", "-frames:v", "1",
+      "-vf", `scale=in_range=${range}:out_range=pc,format=rgb24`, "-pix_fmt", "rgb24", "-f", "rawvideo", "-y", rgbPath], { cwd: directory });
+    pictures.push(await readFile(rgbPath));
+    if (sample.grayBands) {
+      const yuvPath = join(directory, `${sample.name}-${name}.yuv`);
+      await runProcess(config.ffmpeg, ["-nostdin", "-v", "error", "-i", path, "-map", "0:v:0", "-frames:v", "1",
+        "-pix_fmt", range === "pc" ? "yuvj420p" : "yuv420p", "-f", "rawvideo", "-y", yuvPath], { cwd: directory });
+      const pixels = await readFile(yuvPath);
+      bands.push([0, 1, 2, 3, 4, 5].map((band) => pixels[Math.floor(video.height / 2) * video.width
+        + Math.floor((band + 0.5) * video.width / 6)]));
+    }
+  }
+  if (pictures[0].length !== pictures[1].length) throw new Error("SDR fixture geometry changed.");
+  const rgbMae = pictures[0].reduce((sum, value, index) => sum + Math.abs(value - pictures[1][index]), 0) / pictures[0].length;
+  if (rgbMae > 5) throw new Error(`SDR fixture decoded RGB changed: ${rgbMae}`);
+  if (sample.grayBands) {
+    const limited = [16, 30, 71, 126, 218, 235];
+    const sourceExpected = source.colorRange === "pc" ? [0, 16, 64, 128, 235, 255] : limited;
+    if (bands[0].some((value, index) => Math.abs(value - sourceExpected[index]) > 2)
+        || bands[1].some((value, index) => Math.abs(value - limited[index]) > 2)) {
+      throw new Error(`SDR sample range conversion failed: ${JSON.stringify(bands)}`);
+    }
+  }
+  if (delivery.colorRange === "pc" || delivery.colorSpace !== source.colorSpace
+      || delivery.colorPrimaries !== source.colorPrimaries || delivery.colorTransfer !== source.colorTransfer) {
+    throw new Error("SDR range normalization relabeled color metadata.");
+  }
+  return { rgbMae, ...(sample.grayBands ? { sourceY: bands[0], deliveryY: bands[1] } : {}),
+    colorRange: delivery.colorRange, colorSpace: delivery.colorSpace, colorTransfer: delivery.colorTransfer };
 }
 
 function checkDeliveryContinuity(source, delivery) {
@@ -1182,7 +1224,9 @@ export async function createSanitizedDelivery(
         "-maxrate", String(bitrate.maxRate), "-bufsize", String(bitrate.bufferSize),
         "-profile:v", "high", "-level:v", "4.2", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-profile:a", "aac_low", "-ac", "2", "-ar", "48000", "-b:a", String(bitrate.audioRate),
-        ...(colorFilter ? ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"] : []),
+        ...(isHdrVideo(sourceVideo)
+          ? ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"]
+          : sourceVideo.colorRange === "pc" ? ["-color_range", "tv"] : []),
       ];
   try {
     await runProcess(config.ffmpeg, [
@@ -1805,6 +1849,19 @@ export async function runVideoVerifierSelfTest({
 } = {}) {
   const directory = await mkdtemp(join(temporaryRoot, "pit-video-selftest-"));
   const samples = [
+    ...[
+      { name: "full-range-gray.mp4", fullRange: true, grayBands: true, fallback: true },
+      { name: "full-range-color.mp4", fullRange: true, rate: 120 },
+      { name: "limited-range-gray.mp4", grayBands: true, rate: 120 },
+    ].map((sample) => ({ ...sample, contentType: "video/mp4", size: "384x64", duration: 2, sdrRange: true, strategy: "transcode",
+      encode: ["-vf", sample.grayBands
+        ? `geq=lum='${sample.fullRange
+          ? "if(lt(X,W/6),0,if(lt(X,2*W/6),16,if(lt(X,3*W/6),64,if(lt(X,4*W/6),128,if(lt(X,5*W/6),235,255)))))"
+          : "if(lt(X,W/6),16,if(lt(X,2*W/6),30,if(lt(X,3*W/6),71,if(lt(X,4*W/6),126,if(lt(X,5*W/6),218,235)))))"}':cb=128:cr=128,`
+          + `setparams=range=${sample.fullRange ? "full" : "limited"}`
+        : `scale=in_range=tv:out_range=${sample.fullRange ? "pc" : "tv"}`,
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-color_range", sample.fullRange ? "pc" : "tv",
+      "-color_primaries", "smpte170m", "-color_trc", "smpte170m", "-colorspace", "smpte170m", "-c:a", "aac"] })),
     { name: "pq-highlights.mp4", contentType: "video/mp4", size: "384x64", rate: 24, duration: 1,
       encode: ["-vf", hdrHighlightFixtureFilter(), "-c:v", "libx264", "-preset", "ultrafast", "-profile:v", "high10",
         "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc", "-c:a", "aac"],
@@ -1882,12 +1939,21 @@ export async function runVideoVerifierSelfTest({
           || delivery.video.colorSpace !== "bt709")) throw new Error(`${sample.name} did not produce declared BT.709 SDR.`);
       const highlightBands = sample.highlights
         ? await verifyHdrHighlightBands(sourcePath, deliveryPath, config, { runProcess, directory }) : undefined;
+      if (sample.fallback && !skipped.some((line) => line.includes('"predicate":"pixel_format"'))) {
+        throw new Error("Full-range fixture did not exercise rejected remux fallback.");
+      }
+      if (sample.sdrRange && (Math.abs(video.durationMs - delivery.video.durationMs) > 250
+          || Math.abs((video.audioStart - video.videoStart) - (delivery.video.audioStart - delivery.video.videoStart)) > 0.1)) {
+        throw new Error("SDR range fixture changed its A/V timeline.");
+      }
+      const sdrRange = sample.sdrRange
+        ? await verifySdrRangeFixture(sourcePath, deliveryPath, video, delivery.video, sample, config, { runProcess, directory }) : undefined;
       await generateAndVerifyPoster(deliveryPath, join(directory, `${sample.name}.jpg`), {
         poster: { timeMs: videoVerifierUniversalPosterTimeMs(500, delivery.video.durationMs), maxBytes: POSTER_MAX_BYTES, maxEdge: POSTER_MAX_EDGE },
       }, delivery.video, config, { runProcess, directory });
       results.push({ name: sample.name, width: delivery.video.width, height: delivery.video.height, strategy: delivery.strategy,
         durationMs: delivery.video.durationMs, frameRate: delivery.video.frameRate, colorTransfer: delivery.video.colorTransfer,
-        ...(highlightBands ? { highlightBands } : {}) });
+        ...(highlightBands ? { highlightBands } : {}), ...(sdrRange ? { sdrRange } : {}) });
     }
     return results;
   } finally {

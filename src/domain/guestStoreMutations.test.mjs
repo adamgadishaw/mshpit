@@ -6,7 +6,7 @@ import { accountMutationIsCurrent, captureAccountMutation } from "./accountMutat
 import { normalizeArtistCampaign } from "./artistCampaignPost.mjs";
 import { normalizeTaggedPeople, taggedUserIdsFromPeople } from "./postFriendTags.mjs";
 import { deliverPostCreate } from "./postDelivery.mjs";
-import { buildMemoryCreateBody, buildReviewCreateBody, cleanArtistKey } from "./post-payload.mjs";
+import { buildMemoryCreateBody, buildReviewCreateBody, buildStatusCreateBody, cleanArtistKey } from "./post-payload.mjs";
 import { clean, clampRating, LIMITS } from "./validation.mjs";
 
 // Execute the actual Store callbacks and their rendered-account guard. Only
@@ -38,7 +38,7 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
     session: actor, sessionRef, authReadyRef, accountMutationEpochRef, feedMutationRevisionRef,
     captureAccountMutation, accountMutationIsCurrent,
     clean, clampRating, LIMITS, cleanArtistKey, normalizeArtistCampaign,
-    normalizeTaggedPeople, taggedUserIdsFromPeople, buildMemoryCreateBody, buildReviewCreateBody,
+    normalizeTaggedPeople, taggedUserIdsFromPeople, buildMemoryCreateBody, buildReviewCreateBody, buildStatusCreateBody,
     deliverPostCreate: (options) => deliverPostCreate({ ...options, retryDelaysMs: [] }),
     normalizeServerPost: (post) => post,
     AppError: class extends Error { constructor(message, options) { super(message); Object.assign(this, options); } },

@@ -87,6 +87,13 @@ test("HDR has an explicit tone mapping path and cannot take a copy shortcut", ()
   }
 });
 
+test("full-range SDR converts sample range without relabeling its color matrix or using HDR tone mapping", () => {
+  assert.equal(videoColorFilter({ colorRange: "pc", colorTransfer: "bt709", colorSpace: "smpte170m" }),
+    "scale=in_range=pc:out_range=tv,format=yuv420p,");
+  assert.equal(videoColorFilter({ colorRange: "tv", colorTransfer: "bt709" }), "");
+  assert.equal(videoColorFilter({}), "");
+});
+
 test("generated poster failures carry poster checks while process interruption remains transient", async (context) => {
   const stages = [
     ["encode", "poster_encode", "encode_complete"],
