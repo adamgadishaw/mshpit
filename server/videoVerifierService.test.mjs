@@ -18,11 +18,13 @@ import {
   createVideoVerifierService,
   getVideoVerifierServiceConfig,
   runVideoVerifierJob,
+  runVerifierProcess,
   universalRemuxEligible,
   universalDeliveryDimensions,
   validateVideoVerifierJob,
   videoDeliveryStrategy,
   videoTranscodeBitrateBudget,
+  videoColorFilter,
 } from "./videoVerifierService.js";
 import {
   signVideoVerifierRequest,
@@ -42,9 +44,151 @@ const ENV = Object.freeze({
   PIT_VIDEO_OUTPUT_BUCKET: "pit-media-public",
   PORT: "10001",
 });
+
+test("generated validation names each failed predicate, blocks upload, and cleans temporary files", async (context) => {
+  for (const [predicate, changes] of [
+    ["square_pixels", { sampleAspectRatio: "4:3" }],
+    ["progressive", { fieldOrder: "unknown" }],
+    ["real_frame_rate", { realFrameRate: "120/1" }],
+    ["video_codec", { codec: "hevc" }],
+    ["duration_preserved", { duration: "5.000" }],
+    ["audio_preserved", { metadataStreams: [{ codec_type: "audio", codec_name: "aac", codec_tag_string: "mp4a",
+      profile: "LC", channels: 2, channel_layout: "stereo", sample_rate: "48000" }] }],
+  ]) await context.test(predicate, async () => {
+    const root = await mkdtemp(join(tmpdir(), "pit-converter-check-"));
+    const lines = [];
+    try {
+      await assert.rejects(runVideoVerifierJob(validJob(), {
+        config: getVideoVerifierServiceConfig(ENV), temporaryRoot: root,
+        runProcess: fakeRunner({ deliveryProbe: videoProbe({ rotation: 0, ...changes }) }),
+        fetchImpl: async (url, request) => {
+          assert.notEqual(request.method, "PUT");
+          return new Response(SOURCE, { status: 200, headers: {
+            "content-type": "video/mp4", "content-length": String(SOURCE.byteLength), etag: ETAG } });
+        },
+        log: (line) => lines.push(line),
+      }), (error) => error.code === "delivery_invalid" && error.videoCheck.stage === "delivery_probe"
+        && error.videoCheck.predicate === predicate && error.verifierStep === "convert");
+      assert.deepEqual(await readdir(root), []);
+      assert.match(lines.join(" "), new RegExp(predicate));
+      assert.doesNotMatch(lines.join(" "), /users\/|source\.mp4|https?:|yuv420|High|4:3/);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+test("HDR has an explicit tone mapping path and cannot take a copy shortcut", () => {
+  for (const colorTransfer of ["smpte2084", "arib-std-b67"]) {
+    const video = { codec: "h264", audioCodec: "aac", rotation: 0, width: 1920, height: 1080,
+      colorTransfer, colorPrimaries: "bt2020", colorSpace: "bt2020nc" };
+    assert.equal(videoDeliveryStrategy(video), "transcode");
+    assert.match(videoColorFilter(video), /zscale=t=linear.*tonemap=tonemap=hable.*zscale=t=bt709/);
+    assert.throws(() => videoColorFilter({ ...video, colorPrimaries: "" }),
+      (error) => error.code === "unsupported_media" && error.videoCheck.predicate === "hdr_color_metadata");
+  }
+});
+
+test("generated poster failures carry poster checks while process interruption remains transient", async (context) => {
+  const stages = [
+    ["encode", "poster_encode", "encode_complete"],
+    ["probe", "poster_probe", "readable_metadata"],
+    ["parse", "poster_probe", "readable_metadata"],
+    ["dimensions", "poster_probe", "dimensions"],
+    ["decode", "poster_decode", "full_decode"],
+  ];
+  for (const [failureAt, stage, predicate] of stages) await context.test(failureAt, async () => {
+    const base = fakeRunner({ posterProbe: failureAt === "parse" ? "not json"
+      : failureAt === "dimensions" ? JSON.stringify({ streams: [{ codec_type: "video", codec_name: "mjpeg", width: 0, height: 720 }] }) : undefined });
+    const runner = async (executable, args, options) => {
+      const poster = args.some((value) => String(value).endsWith("poster.jpg"));
+      const matches = poster && ((failureAt === "encode" && executable === "ffmpeg" && args.at(-1)?.endsWith("poster.jpg"))
+        || (failureAt === "probe" && executable === "ffprobe") || (failureAt === "decode" && args.at(-1) === "-"));
+      if (matches) throw Object.assign(new Error("private decoder text"), { code: "decode_failed", status: 422 });
+      return base(executable, args, options);
+    };
+    const root = await mkdtemp(join(tmpdir(), "pit-poster-stage-"));
+    try {
+      await assert.rejects(runVideoVerifierJob(validJob(), { config: getVideoVerifierServiceConfig(ENV),
+        temporaryRoot: root, runProcess: runner, fetchImpl: universalFetch("video/mp4") }),
+      (error) => error.code === "poster_invalid" && error.videoCheck.stage === stage && error.videoCheck.predicate === predicate);
+      assert.deepEqual(await readdir(root), []);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  for (const failureAt of ["encode", "probe", "decode"]) await context.test(`transient ${failureAt}`, async () => {
+    const base = fakeRunner();
+    const runner = async (executable, args, options) => {
+      const poster = args.some((value) => String(value).endsWith("poster.jpg"));
+      if (poster && ((failureAt === "encode" && args.at(-1)?.endsWith("poster.jpg"))
+          || (failureAt === "probe" && executable === "ffprobe") || (failureAt === "decode" && args.at(-1) === "-"))) {
+        throw Object.assign(new Error("process interrupted"), { code: "decoder_process_failed", status: 503 });
+      }
+      return base(executable, args, options);
+    };
+    const root = await mkdtemp(join(tmpdir(), "pit-poster-process-"));
+    try {
+      await assert.rejects(runVideoVerifierJob(validJob(), { config: getVideoVerifierServiceConfig(ENV),
+        temporaryRoot: root, runProcess: runner, fetchImpl: universalFetch("video/mp4") }),
+      (error) => error.code === "decoder_process_failed" && error.status === 503);
+      assert.deepEqual(await readdir(root), []);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
+
+test("conversion and generated full decode preserve transient process classification", async (context) => {
+  for (const point of ["conversion", "full decode"]) await context.test(point, async () => {
+    const base = fakeRunner();
+    const runner = async (executable, args, options) => {
+      if (executable === "ffmpeg" && ((point === "conversion" && args.at(-1)?.endsWith("delivery.mp4"))
+          || (point === "full decode" && args.at(-1) === "-" && args.some((value) => String(value).endsWith("delivery.mp4"))))) {
+        throw Object.assign(new Error("resource failure"), { code: "decoder_process_failed", status: 503 });
+      }
+      return base(executable, args, options);
+    };
+    const root = await mkdtemp(join(tmpdir(), "pit-delivery-process-"));
+    try {
+      await assert.rejects(runVideoVerifierJob(validJob(), { config: getVideoVerifierServiceConfig(ENV),
+        temporaryRoot: root, runProcess: runner, fetchImpl: universalFetch("video/mp4") }),
+      (error) => error.code === "decoder_process_failed" && error.status === 503);
+      assert.deepEqual(await readdir(root), []);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+});
 const ETAG = '"source-generation"';
 const SOURCE = Buffer.from("bounded-mp4-source-fixture");
 const POSTER = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0xff, 0xd9]);
+
+test("real owned signal/resource termination stays transient while explicit decode exits stay distinct", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pit-process-classification-"));
+  try {
+    for (const code of ["process.kill(process.pid, 'SIGKILL')",
+      "process.stderr.write('Cannot allocate memory');process.exit(69)"]) {
+      await assert.rejects(runVerifierProcess(process.execPath, ["-e", code], { cwd: root }),
+        (error) => error.code === "decoder_process_failed" && error.status === 503);
+    }
+    await assert.rejects(runVerifierProcess(process.execPath,
+      ["-e", "process.stderr.write('Invalid media data');process.exit(69)"], { cwd: root }),
+    (error) => error.code === "decode_failed" && error.status === 422);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("selected-media continuity excludes a longer nondefault audio track but source work remains bounded", async () => {
+  const probe = universalProbe({ duration: "10", streams: [
+    { index: 0, codec_type: "video", codec_name: "vp9", width: 1080, height: 1920,
+      duration: "5", start_time: "0", avg_frame_rate: "30/1", r_frame_rate: "30/1" },
+    { index: 1, codec_type: "audio", codec_name: "aac", channels: 2,
+      duration: "5", start_time: "0", disposition: { default: 1 } },
+    { index: 2, codec_type: "audio", codec_name: "aac", channels: 2,
+      duration: "10", start_time: "0", disposition: { default: 0 } },
+  ] });
+  const runner = universalRunner({ probe, deliveryDuration: "5.013" });
+  const result = await runUniversal(universalJob(), runner, "video/webm");
+  assert.equal(result.video.durationMs, 5000);
+  assert.equal(result.delivery.durationMs, 5013);
+  await assert.rejects(runUniversal(universalJob(), universalRunner({ probe, deliveryDuration: "2" }), "video/webm"),
+    (error) => error.code === "delivery_invalid" && error.videoCheck.predicate === "duration_preserved");
+  const overDuration = JSON.parse(probe); overDuration.format.duration = "601";
+  await assert.rejects(runUniversal(universalJob(), universalRunner({ probe: JSON.stringify(overDuration) }), "video/webm"),
+    (error) => error.code === "unsupported_media" && error.videoCheck.predicate === "duration_limit");
+});
 
 function capabilityUrl(objectKey = "source.mp4") {
   const credential = encodeURIComponent("access/20260823/auto/s3/aws4_request");
@@ -481,7 +625,7 @@ test("authoritative bounded H.264 job strips metadata by remux, fully decodes ou
   const root = await mkdtemp(join(tmpdir(), "pit-verifier-test-"));
   const runProcess = fakeRunner({
     probe: videoProbe({ rotation: 0, omitSampleAspectRatio: true }),
-    deliveryProbe: videoProbe({ rotation: 0, omitSampleAspectRatio: true }),
+    deliveryProbe: videoProbe({ rotation: 0, sampleAspectRatio: "1:1" }),
   });
   const fetchImpl = async (url, request) => {
     assert.equal(new URL(url).origin, "https://objects.example.com");
@@ -633,7 +777,7 @@ test("source FPS, aggregate work, and delivery FPS guards remain independent", a
           }),
           signal: AbortSignal.timeout(5_000),
           temporaryRoot: root,
-        }), { code: "unsupported_media" });
+        }), { code: fixture.label === "delivery-over-fps" ? "delivery_invalid" : "unsupported_media" });
         assert.deepEqual(await readdir(root), []);
       } finally {
         await rm(root, { recursive: true, force: true });
@@ -656,7 +800,7 @@ test("exact source frame-count agreement prevents VFR and longer-audio work over
       const { width, height, codedWidth, codedHeight } = { ...validJob().structural, ...fixture };
       const runProcess = fakeRunner({
         probe: videoProbe({ ...fixture, rotation: 0, frameCount: String(sampleCount) }),
-        deliveryProbe: videoProbe({ rotation: 0, duration, frameRate: "60/1" }),
+        deliveryProbe: videoProbe({ rotation: 0, duration, frameRate: "60/1", metadataStreams: fixture.metadataStreams }),
       });
       let uploads = 0;
       const result = await runVideoVerifierJob(validJob({
@@ -718,7 +862,7 @@ test("source count agreement never relaxes unknown counts, disagreement, or deli
         },
         runProcess,
         signal: AbortSignal.timeout(5_000),
-      }), { code: "unsupported_media" });
+      }), { code: fixture.deliveryProbe ? "delivery_invalid" : "unsupported_media" });
       if (!fixture.deliveryProbe) {
         assert.equal(runProcess.calls.some((call) => call.executable === "ffmpeg"), false,
           "source disagreement or an unbounded estimate stops before decoding");
@@ -818,7 +962,7 @@ test("authoritative worker accepts the reviewed iPhone AVC probe shape", async (
     deliveryProbe: videoProbe({
       rotation: 0,
       codedHeight: 1_080,
-      omitSampleAspectRatio: true,
+      sampleAspectRatio: "1:1",
       metadataStreams: [metadataStreams[0]],
     }),
   });
@@ -1179,11 +1323,11 @@ function universalJob({ extension = "webm", contentType = "video/webm", posterTi
   };
 }
 
-function universalProbe({ streams, duration = "12.000" }) {
+function universalProbe({ streams, duration = "10.000" }) {
   return JSON.stringify({ streams, format: { format_name: "matroska,webm", duration } });
 }
 
-function universalRunner({ probe, failTranscode = false, failProbe = false }) {
+function universalRunner({ probe, failTranscode = false, failProbe = false, deliveryDuration = "10.000" }) {
   const calls = [];
   const runProcess = async (executable, args, options) => {
     calls.push({ executable, args: [...args], options });
@@ -1193,7 +1337,12 @@ function universalRunner({ probe, failTranscode = false, failProbe = false }) {
       return { stdout: probe, stderr: "" };
     }
     if (executable === "ffprobe" && args.some((value) => String(value).endsWith("delivery.mp4"))) {
-      return { stdout: videoProbe({ rotation: 0, width: 1_080, height: 1_920, codedWidth: 1_088, codedHeight: 1_920 }), stderr: "" };
+      const input = JSON.parse(probe);
+      const hasAudio = input.streams.some((stream) => stream.codec_type === "audio");
+      return { stdout: videoProbe({ rotation: 0, width: 1_080, height: 1_920, codedWidth: 1_088, codedHeight: 1_920,
+        duration: deliveryDuration,
+        metadataStreams: hasAudio ? [{ codec_type: "audio", codec_name: "aac", codec_tag_string: "mp4a", profile: "LC",
+          channels: 2, channel_layout: "stereo", sample_rate: "48000" }] : [] }), stderr: "" };
     }
     if (executable === "ffprobe") {
       return { stdout: JSON.stringify({ streams: [{ codec_type: "video", codec_name: "mjpeg", width: 720, height: 1_280 }] }), stderr: "" };
@@ -1289,6 +1438,20 @@ test("a WebM with VP9, Opus, cover art and subtitles converts to H.264/AAC from 
   assert.ok(outputDecode.args.includes("-xerror"), "the published copy is still decoded strictly");
 });
 
+test("conversion selects the supported default audio track rather than an unrelated first track", async () => {
+  const probe = universalProbe({ streams: [
+    { index: 0, codec_type: "video", codec_name: "vp9", width: 1080, height: 1920,
+      field_order: "progressive", avg_frame_rate: "30/1", r_frame_rate: "30/1" },
+    { index: 1, codec_type: "audio", codec_name: "aac", channels: 2, disposition: { default: 0 } },
+    { index: 2, codec_type: "audio", codec_name: "aac", channels: 6, disposition: { default: 1 } },
+  ] });
+  const runner = universalRunner({ probe });
+  await runUniversal(universalJob(), runner, "video/webm");
+  const encode = runner.calls.find((call) => call.args.includes("libx264")).args;
+  assert.ok(encode.includes("0:2")); assert.equal(encode.includes("0:1"), false);
+  assert.equal(encode[encode.indexOf("-ac") + 1], "2");
+});
+
 test("interlaced, non-square MPEG is deinterlaced and squared before bounding", async () => {
   const probe = universalProbe({ streams: [
     { index: 0, codec_type: "video", codec_name: "mpeg2video", width: 720, height: 480, field_order: "tt", sample_aspect_ratio: "32:27", avg_frame_rate: "30000/1001", r_frame_rate: "30000/1001" },
@@ -1298,7 +1461,7 @@ test("interlaced, non-square MPEG is deinterlaced and squared before bounding", 
   await runUniversal(universalJob({ extension: "mpg", contentType: "video/mpeg" }), runProcess, "video/mpeg");
   const transcode = runProcess.calls.find((call) => call.executable === "ffmpeg" && call.args.some((value) => String(value).endsWith("source.mpg"))).args;
   assert.deepEqual(transcode.slice(transcode.indexOf("-f"), transcode.indexOf("-f") + 2), ["-f", "mpeg"]);
-  assert.match(transcode[transcode.indexOf("-vf") + 1], /^yadif=deint=interlaced,fps=30,scale=w=852:h=480,setsar=1$/);
+  assert.match(transcode[transcode.indexOf("-vf") + 1], /^yadif=deint=interlaced,fps=30000\/1001,scale=w=852:h=480,setsar=1$/);
 });
 
 test("delivery geometry keeps portrait, rotated and anamorphic frames inside the allocation budget", () => {
@@ -1347,7 +1510,7 @@ test("universal sources the worker cannot read are signed source rejections, not
   ];
   for (const [label, options] of cases) {
     await assert.rejects(() => runUniversal(universalJob(), universalRunner(options), "video/webm"),
-      (error) => error.code === "unsupported_media" && error.status === 422, label);
+      (error) => error.code === (options.failTranscode ? "conversion_failed" : "unsupported_media") && error.status === 422, label);
   }
 });
 
@@ -1476,7 +1639,7 @@ test("a copy the strict checks reject is converted in full rather than refused",
     probe: tiktokStyleProbe(),
     deliveryProbes: [
       videoProbe({ rotation: 0, width: 1_080, height: 1_920, codedWidth: 1_080, codedHeight: 1_920, fieldOrder: "unknown" }),
-      videoProbe({ rotation: 0, width: 1_080, height: 1_920, codedWidth: 1_080, codedHeight: 1_920 }),
+      videoProbe({ rotation: 0, width: 1_080, height: 1_920, codedWidth: 1_080, codedHeight: 1_920, metadataStreams: [STEREO_AAC] }),
     ],
   });
   const { result, lines } = await runLoggedMp4(runProcess);
@@ -1485,11 +1648,11 @@ test("a copy the strict checks reject is converted in full rather than refused",
     && call.args.some((value) => String(value).endsWith("source.mp4")));
   assert.equal(conversions.length, 2, "one fast copy, then one full conversion");
   assert.ok(conversions[1].args.includes("libx264"));
-  assert.match(lines.join("\n"), /fast repackage skipped, converting in full: unsupported_media/);
+  assert.match(lines.join("\n"), /fast repackage skipped, converting in full: delivery_invalid.*progressive/);
   assert.match(lines.at(-1), / by transcode in /);
 });
 
-test("a failed job logs the step it stopped at and the decoder's reason", async () => {
+test("a failed job logs its step and code without raw decoder text", async () => {
   const runProcess = mp4Runner({ probe: tiktokStyleProbe(), deliveryProbes: ["not json"] });
   const failing = async (executable, args, options) => {
     if (executable === "ffmpeg" && args.includes("libx264")) {
@@ -1508,12 +1671,12 @@ test("a failed job logs the step it stopped at and the decoder's reason", async 
       signal: AbortSignal.timeout(5_000),
       temporaryRoot: root,
       log: (line) => lines.push(line),
-    }), (error) => error.code === "unsupported_media" && error.verifierStep === "convert");
+    }), (error) => error.code === "conversion_failed" && error.verifierStep === "convert");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
   const failure = lines.at(-1);
-  assert.match(failure, /^failed video\/mp4 at convert after [0-9.]+s \(download [0-9.]+s, probe [0-9.]+s\): unsupported_media/);
-  assert.match(failure, /no frame!/, "the decoder's own words reach the private log");
+  assert.match(failure, /^failed video\/mp4 at convert after [0-9.]+s \(download [0-9.]+s, probe [0-9.]+s\): conversion_failed.*encode_complete/);
+  assert.doesNotMatch(failure, /no frame!|source\.mp4/, "raw decoder text and local paths do not reach the log");
   assert.equal(/https?:/u.test(lines.join(" ")), false, "signed storage URLs never reach the log");
 });

@@ -15,6 +15,9 @@ export const VIDEO_PROCESSING_MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1;
 // A conflict usually means the file itself disagrees with its metadata, which
 // another full conversion will not change. Allow one retry, then stop.
 const CONFLICT_MAX_ATTEMPTS = 2;
+// A killed/resource-failed decoder may recover, but repeated resource failure
+// should not spend nine full conversions on the same admitted object.
+const PROCESS_FAILURE_MAX_ATTEMPTS = 2;
 // The converter was busy with another clip. Not the clip's fault, not counted.
 const BUSY_RETRY_MS = 20_000;
 // Final answers about the file or the request. Another attempt cannot help.
@@ -86,7 +89,8 @@ export function noteVideoProcessingOutcome(database, { assetId, error = null, at
     state = "retry";
     nextAttemptAt = at + BUSY_RETRY_MS;
     countedAttempts = Math.max(0, attempts - 1);
-  } else if (FINAL_STATUSES.has(status)
+  } else if (code === "MEDIA_CONVERSION_FAILED" || FINAL_STATUSES.has(status)
+      || (error?.videoProcessFailed === true && attempts >= PROCESS_FAILURE_MAX_ATTEMPTS)
       || (status === 409 && attempts >= CONFLICT_MAX_ATTEMPTS)
       || attempts >= VIDEO_PROCESSING_MAX_ATTEMPTS) {
     state = "failed";
@@ -126,8 +130,10 @@ function publicProcessingState(row) {
       error: {
         code: row.last_error_code || "MEDIA_STORAGE_UNAVAILABLE",
         status,
-        message: FAILURE_MESSAGES[status] || "That clip couldn't be converted after several tries.",
-        retryable: !FINAL_STATUSES.has(status),
+        message: row.last_error_code === "MEDIA_CONVERSION_FAILED"
+          ? "We couldn't finish processing this clip. Keep the original and contact support."
+          : FAILURE_MESSAGES[status] || "That clip couldn't be converted after several tries.",
+        retryable: row.last_error_code !== "MEDIA_CONVERSION_FAILED" && !FINAL_STATUSES.has(status),
       },
     };
   }

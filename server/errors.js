@@ -37,6 +37,7 @@ export const ERROR_CATALOG = Object.freeze({
   DATABASE_UNAVAILABLE: { status: 503, retryable: true },
   STORAGE_UNAVAILABLE: { status: 503, retryable: true },
   MEDIA_STORAGE_UNAVAILABLE: { status: 503, retryable: true },
+  MEDIA_CONVERSION_FAILED: { status: 500, retryable: false },
   SHARE_ARTWORK_REQUIRED: { status: 409, retryable: false },
   SHARE_RENDER_UNAVAILABLE: { status: 503, retryable: true },
   PAGE_HEAD_UNAVAILABLE: { status: 503, retryable: true },

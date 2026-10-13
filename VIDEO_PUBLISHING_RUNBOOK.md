@@ -2,7 +2,7 @@
 
 Status: **the production verifier is Blueprint-provisioned and production video publishing is enabled after the gated infrastructure rollout.** `render.yaml` keeps `PIT_VIDEO_PUBLISHING_ENABLED=true`; revert it to `false` immediately if negotiated health, the production canary, or ongoing verifier health fails. The first infrastructure deployment remained disabled until private storage and signed verifier health passed.
 
-Budget: the current topology adds **one production-only Render Starter private service in Oregon, about US$7/month** at the expected Starter floor. There is no standing staging web service or staging verifier. Confirm the live [Render pricing](https://render.com/pricing) before changing plans or adding another service.
+Budget: the currently observed verifier is **one production-only private service in Oregon, 1 CPU/2 GiB, one processing slot**. There is no standing staging web service or staging verifier. This converter upgrade does not change the plan or add infrastructure.
 
 ## What is being deployed
 
@@ -115,9 +115,10 @@ Run `A`, `B`, `C`, and `H` on all three client paths: current Chromium web produ
 | F | Choose a cover time and finalize, then attempt to reopen or mutate that verified clip cover | Re-edit fails closed before PATCH or client-poster upload; the user must add the source again to choose a different cover |
 | G | Send two same-object finalizations concurrently, then two different valid finalizations concurrently | Same object coalesces to one decode and returns one canonical asset; different object gets a bounded `429`, then succeeds on retry without corrupting either asset |
 | H | Cancel during a large upload, then retry; separately disconnect during finalize and retry | Cancel reacts visibly, no cancelled asset publishes, and retry finishes without duplicate ready assets |
-| I | 60.1+ s MP4 and a >100 MiB MP4 | Rejected before publication; no ready media descriptor or post is created |
-| J | QuickTime/MOV renamed `.mp4`, fragmented MP4, and WebM/MOV picker inputs | Picker or server rejects each; renaming never bypasses the ISO MP4 contract |
-| K | Interlaced H.264, HEVC/AV1/VP9, non-AAC audio, >60 fps, extra/unknown track, and pathological cropped/high-coded-resolution sample workload | Every source fails closed with a bounded 4xx response; no authoritative poster/ready asset remains |
+| I | Valid 60.1–600 s clips and 100–500 MiB sources; separately sources above 600 s or 500 MiB | Valid sources accept within the negotiated capability and fixed decode-work budget. Over-limit sources reject; no silent truncation or ready descriptor |
+| J | MOV, fragmented MP4 and WebM declared with their real MIME/container, plus deliberately mismatched MIME/key extensions | Formats advertised by fresh signed health accept through universal admission; mismatched object identity rejects. Legacy bounded admission retains its narrower contract |
+| K | Interlaced H.264, HEVC, VP9, non-AAC/multichannel audio, 120/240 fps and extra tracks, plus AV1 and pathological workloads | Advertised decodable formats normalize selected A/V to progressive H.264 8-bit yuv420p, AAC-LC stereo or intentionally silent, square pixels and at most 60 fps. Unsupported AV1 and over-budget work reject. Discarded ancillary tracks never publish |
+| N | Rational/VFR phone footage, rotated HEVC MOV, PQ/HLG BT.2020 video, missing HDR color metadata | Duration and selected A/V offsets survive; rotation is applied once and cleared. Tested HDR converts to BT.709 SDR through zscale/tonemap; incomplete HDR metadata fails closed. Verify picture and sound on real devices before claiming device acceptance |
 | L | Truncated/corrupt MP4, a source changed after ticket generation, and deliberately mismatched duration/dimensions/rotation through the isolated canary API harness | Rejects with conflict/unsupported semantics; exact object generation and declared identity cannot be swapped |
 | M | Stop the isolated canary verifier while publishing remains enabled; then restart it | Within one health-poll interval, negotiated capability becomes `videos:false` and new creates/finalizes fail closed; after healthy restart it returns only after a fresh signed health success |
 

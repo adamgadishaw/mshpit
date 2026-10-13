@@ -280,6 +280,15 @@ async function verifierRequest({ path, payload, env, fetchImpl, signal, timeoutM
     if (busy) {
       throw new ApiError(429, "Clip verification is busy. Try again shortly.", "RATE_LIMITED");
     }
+    if ([422, 503].includes(response?.status)
+        && new Set(["conversion_failed", "delivery_invalid", "poster_invalid", "decoder_output_invalid"]).has(decoded?.code)) {
+      throw new ApiError(500, "We couldn't finish processing this clip. Keep the original and contact support.", "MEDIA_CONVERSION_FAILED");
+    }
+    if (response?.status === 503 && decoded?.code === "decoder_process_failed") {
+      const error = new ApiError(503, "Clip processing was interrupted. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
+      Object.defineProperty(error, "videoProcessFailed", { value: true });
+      throw error;
+    }
     if (response?.status === 422) {
       const sourceRevisionMatches = payload?.structural?.sourceAdmissionRevision === undefined
         || decoded?.sourceAdmissionRevision === payload.structural.sourceAdmissionRevision;
