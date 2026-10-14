@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
 import { countryForCity } from "../geo";
@@ -17,6 +17,7 @@ import DiscoverEventList from "../components/discover/DiscoverEventList";
 import { isFestivalListing } from "../domain/discoverEventWeeks.mjs";
 import CrewBanner from "../components/discover/CrewBanner";
 import DiscoverProgrammeNav from "../components/discover/DiscoverProgrammeNav";
+import { tabPanelAccessibilityProps } from "../domain/tabPanelAccessibility.mjs";
 import { discoverEventRecovery } from "../components/discover/discovery-recovery.mjs";
 import { MetricTile, OverviewState, QuickAction, SectionHeading } from "../components/discover/DiscoverPrimitives";
 import { UpcomingEventCard } from "../components/VenueDiscoveryCards";
@@ -562,14 +563,14 @@ export default function DiscoverScreen({
   const overviewState = discoverSectionState({ status: overviewStatus, rows: overview.chart.rows });
   const showOverviewContent = hasDiscoverOverviewContent(overview)
     && (overviewStatus === "ready" || overviewStatus === "refreshing" || overviewStatus === "error");
-  const countries = discoverNationOptions(overview.eventCoverage.countries, {
+  const countries = useMemo(() => discoverNationOptions(overview.eventCoverage.countries, {
     homeCountry,
     selectedRegion: region,
     supportedCountries: DISCOVER_SUPPORTED_EVENT_COUNTRIES,
     limit: DISCOVER_SUPPORTED_EVENT_COUNTRIES.length + 2,
     complete: overview.eventCoverage.status === "ready",
     total: overview.eventCoverage.total,
-  });
+  }), [overview.eventCoverage, homeCountry, region]);
   const sceneChoiceLimit = compact ? 3 : 12;
   const sceneCountries = visibleDiscoverCountries(countries, region, { compact: true, expanded: sceneExpanded, limit: sceneChoiceLimit });
   const hiddenSceneCount = Math.max(0, countries.length - sceneCountries.length);
@@ -672,7 +673,7 @@ export default function DiscoverScreen({
         </View>
       </View>}
 
-      {programme === "shows" && <View nativeID="discover-panel-shows" accessibilityRole="tabpanel" aria-labelledby="discover-tab-shows" style={styles.upcomingSection}>
+      {programme === "shows" && <View nativeID="discover-panel-shows" {...tabPanelAccessibilityProps(Platform.OS, "discover-tab-shows")} style={styles.upcomingSection}>
         {onOpenCrew ? <CrewBanner onPress={onOpenCrew} compact={compact} /> : null}
         <View style={styles.livePanel}>
           <View style={[styles.livePanelHead, compact && styles.livePanelHeadCompact]}>
@@ -786,6 +787,9 @@ export default function DiscoverScreen({
                 {eventRecovery.kind === "error" && <Pressable style={({ focused, pressed }) => [styles.recoveryAction, pressed && styles.cardPressed, focused && focusRing]} onPress={() => selectEventRange(selectedRangeDays)} accessibilityRole="button" accessibilityLabel="Try loading this event range again">
                   <Icon name="search" size={15} color={colors.amber} /><Text style={styles.recoveryActionText}>Try again</Text>
                 </Pressable>}
+                {Platform.OS !== "web" && eventRecovery.kind === "empty" && overview.chart.rows.length > 0 && <Pressable style={({ focused, pressed }) => [styles.recoveryAction, pressed && styles.cardPressed, focused && focusRing]} onPress={() => setProgramme("artists")} accessibilityRole="button" accessibilityLabel="Browse catalog artists">
+                  <Icon name="music" size={15} color={colors.amber} /><Text style={styles.recoveryActionText}>Browse artists</Text>
+                </Pressable>}
                 {eventRecovery.nextDays && <Pressable style={({ focused, pressed }) => [styles.recoveryAction, pressed && styles.cardPressed, focused && focusRing]} onPress={() => selectEventRange(eventRecovery.nextDays)} accessibilityRole="button" accessibilityLabel={`Look for events over the next ${eventRecovery.nextDays} days`}>
                   <Icon name="calendar" size={15} color={colors.amber} /><Text style={styles.recoveryActionText}>Look ahead {eventRecovery.nextDays} days</Text>
                 </Pressable>}
@@ -837,8 +841,8 @@ export default function DiscoverScreen({
         </View>
       </View>}
 
-      {programme === "cities" && <View nativeID="discover-panel-cities" accessibilityRole="tabpanel" aria-labelledby="discover-tab-cities"><CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} registerRefresh={registerCityRefresh} /></View>}
-      {programme === "venues" && <View nativeID="discover-panel-venues" accessibilityRole="tabpanel" aria-labelledby="discover-tab-venues" style={styles.programmePanel}>
+      {programme === "cities" && <View nativeID="discover-panel-cities" {...tabPanelAccessibilityProps(Platform.OS, "discover-tab-cities")}><CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} registerRefresh={registerCityRefresh} /></View>}
+      {programme === "venues" && <View nativeID="discover-panel-venues" {...tabPanelAccessibilityProps(Platform.OS, "discover-tab-venues")} style={styles.programmePanel}>
         <DiscoverVenues region={region} homeCity={homeCity} session={session} venueDirectoryIndex={venueDirectoryIndex} tourDates={tourDates} onOpenVenue={onOpenVenue} onOpenEvent={onOpen} onOpenVenues={onOpenVenues} />
       </View>}
 
@@ -876,7 +880,7 @@ export default function DiscoverScreen({
         </View>
       )}
 
-      {programme === "artists" && <View nativeID="discover-panel-artists" accessibilityRole="tabpanel" aria-labelledby="discover-tab-artists" style={styles.programmePanel}>{session && (
+      {programme === "artists" && <View nativeID="discover-panel-artists" {...tabPanelAccessibilityProps(Platform.OS, "discover-tab-artists")} style={styles.programmePanel}>{session && (
         <ArtistRecommendationsRail
           resource={artistRecommendations.resource}
           onOpenArtist={onOpenArtist}
@@ -910,12 +914,12 @@ export default function DiscoverScreen({
       ) : null}</View>}
       {/* Festivals are their own section: multi-day events are never mixed
           into the regular show lists. */}
-      {programme === "festivals" && <View nativeID="discover-panel-festivals" accessibilityRole="tabpanel" aria-labelledby="discover-tab-festivals" style={styles.programmePanel}>
+      {programme === "festivals" && <View nativeID="discover-panel-festivals" {...tabPanelAccessibilityProps(Platform.OS, "discover-tab-festivals")} style={styles.programmePanel}>
         <Suspense fallback={<ActivityIndicator color={colors.amber} style={{ marginVertical: 40 }} />}>
           <FestivalsPanel region={region} onOpenFestival={onOpenFestival} registerRefresh={registerFestivalRefresh} />
         </Suspense>
       </View>}
-      {programme === "photos" && <View nativeID="discover-panel-photos" accessibilityRole="tabpanel" aria-labelledby="discover-tab-photos">
+      {programme === "photos" && <View nativeID="discover-panel-photos" {...tabPanelAccessibilityProps(Platform.OS, "discover-tab-photos")}>
         <DiscoverPhotoPanel region={region} accountId={session?.id || "guest"} compact={compact} width={width} onOpenPhotos={openPhotos} removedIds={removedIds} blockedIds={blockedIds} />
       </View>}
     </ScrollView>

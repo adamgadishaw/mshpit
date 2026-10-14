@@ -2,7 +2,7 @@ import { publicDiscoveryRailAllowed } from "./src/domain/publicPlacementPolicy.m
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, Suspense } from "react";
 import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
 import { colors, mono, radius, themeIsDark } from "./src/theme";
@@ -218,6 +218,7 @@ const loadPublicRecovery = () => publicRecoveryModule ||= import("./src/features
   .catch((error) => { publicRecoveryModule = null; throw error; });
 
 function Root() {
+  const safeAreaInsets = useSafeAreaInsets();
   const {
     session, authReady, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
     feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
@@ -255,9 +256,12 @@ function Root() {
   };
   const screenMotionRef = useRef({ key: null, depth: NaN, direction: "fade" });
 
+  // Native development imports require Metro work and JS evaluation. Keep the
+  // web warmup, but native screens load on navigation intent.
   // The pages people open most are fetched quietly once the first screen has
   // settled, so moving to them shows the page, not a loading spinner.
   useEffect(() => {
+    if (Platform.OS !== "web") return;
     const timer = setTimeout(() => {
       for (const screen of [ArtistScreen, ShowScreen, VenueScreen, ProfileScreen, PostScreen]) {
         screen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Warming is optional; Suspense owns visible loading and retry. */ });
@@ -1613,7 +1617,7 @@ function Root() {
             onOpenEvent={openShow}
           />
           <Suspense fallback={<ScreenLoading />}>
-            <ScreenTransition key={screenKey} direction={screenDirection}>{overlay || tabScreens}</ScreenTransition>
+            <ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay || tabScreens}</ScreenTransition>
           </Suspense>
         </View>
         {showRightRail && <RightRail showSponsorPlaceholder={showSponsorPlaceholders} showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} />}
@@ -1661,7 +1665,7 @@ function Root() {
     <NewsInteractionContext.Provider value={{ session, authReady, blockedIds, removedIds, mutedIds, followedArtists, likeInfo, toggleLike, deleteOwnPost, setPostRepost,
       openLiveCoverage: (slug) => go({ news: true, liveSlug: slug }) }}>
     <View style={styles.root}>
-      <SafeAreaView style={styles.safe}>
+      <SafeAreaView style={[styles.safe, Platform.OS === "android" && { paddingBottom: safeAreaInsets.bottom }]}>
         <StatusBar style={themeIsDark ? "light" : "dark"} />
         {publicNavigationNotice && (
           PublicNavigationNotice ?
@@ -1758,9 +1762,9 @@ function Root() {
                     onOpenArtist={openArtist}
                     onOpenEvent={openShow}
                   />
-                  {overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense> : (
+                  {overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense> : (
                     <>
-                      <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} direction={screenDirection}>{tabScreens}</ScreenTransition></Suspense>
+                      <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{tabScreens}</ScreenTransition></Suspense>
                       <View style={styles.tabbar}>
                         {LEFT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
                         <View style={styles.fabCol}>

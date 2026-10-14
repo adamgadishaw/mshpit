@@ -86,5 +86,5 @@ test("city discovery has an awaited pull refresh, visible errors, retry and an e
   assert.match(screen, /\[accountId, programme, rangeScopeKey\]/, "changing destination cancels the owned refresh");
   assert.match(screen, /areaDisclosureRef.current\?\.focus\?\.\(\)/);
   assert.match(screen, /dateDisclosureRef.current\?\.focus\?\.\(\)/);
-  for (const { key } of DISCOVER_PROGRAMME_SECTIONS) assert.ok(screen.includes(`aria-labelledby="discover-tab-${key}"`));
+  for (const { key } of DISCOVER_PROGRAMME_SECTIONS) assert.ok(screen.includes(`tabPanelAccessibilityProps(Platform.OS, "discover-tab-${key}")`));
 });

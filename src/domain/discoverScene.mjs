@@ -123,7 +123,8 @@ for (const [alias, identity] of COUNTRY_ALIASES) {
 export function discoverCountryIdentity(value) {
   const normalized = normalizedCountryText(value);
   if (!normalized) return "";
-  const codeLabel = COUNTRY_CODE_NAMES[text(value, 8).toLocaleUpperCase("en")];
+  // ISO country codes are locale-independent; avoid Hermes ICU setup per row.
+  const codeLabel = COUNTRY_CODE_NAMES[text(value, 8).toUpperCase()];
   if (codeLabel) return normalizedCountryText(codeLabel);
   return COUNTRY_ALIASES.get(normalized) || normalized;
 }
@@ -134,7 +135,7 @@ export function discoverCountryIdentity(value) {
 export function discoverCountryCode(value) {
   const source = text(value, 80);
   if (!source || discoverCountryIdentity(source) === "worldwide") return null;
-  const direct = source.toLocaleUpperCase("en");
+  const direct = source.toUpperCase();
   if (/^[A-Z]{2}$/.test(direct)) return direct;
   return COUNTRY_CODES.get(discoverCountryIdentity(source)) || null;
 }

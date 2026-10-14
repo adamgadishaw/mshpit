@@ -146,3 +146,14 @@ test("scene projection keeps active multi-day events pinned and bounds rendered 
   assert.equal(result.eventCount, 3);
   assert.equal(result.venueCount, 3);
 });
+
+test('country code case mapping is locale-independent for every supported destination', () => {
+  for (const country of DISCOVER_SUPPORTED_EVENT_COUNTRIES) {
+    const code = discoverCountryCode(country);
+    assert.match(code, /^[A-Z]{2}$/);
+    assert.equal(discoverCountryCode(code.toLowerCase()), code);
+    assert.equal(discoverCountryIdentity(code.toLowerCase()), discoverCountryIdentity(country));
+  }
+  assert.equal(discoverCountryIdentity('Türkiye'), 'turkey');
+  assert.equal(discoverCountryIdentity('Czech Republic'), 'czechia');
+});
