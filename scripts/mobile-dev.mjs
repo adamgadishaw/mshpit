@@ -23,7 +23,8 @@ console.log(`Local mobile ${mode}: API ${url.origin}; app com.mshpit.app.dev`);
 const cli = fileURLToPath(new URL("../node_modules/expo/bin/cli", import.meta.url));
 const manifestPath = fileURLToPath(new URL("../package.json", import.meta.url));
 const manifest = readFileSync(manifestPath, "utf8");
-const result = spawnSync(process.execPath, [cli, ...commands[mode], ...args], {
+// Prefer IPv4 loopback on Windows so adb reverse can reach localhost Metro.
+const result = spawnSync(process.execPath, ["--dns-result-order=ipv4first", cli, ...commands[mode], ...args], {
   stdio: "inherit",
   env: {
     ...process.env,
