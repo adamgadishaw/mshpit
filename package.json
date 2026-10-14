@@ -71,7 +71,8 @@
     "mobile:android": "node scripts/mobile-dev.mjs android",
     "mobile:prebuild": "node scripts/mobile-dev.mjs prebuild",
     "mobile:start": "node scripts/mobile-dev.mjs start",
-    "mobile:go": "node scripts/mobile-dev.mjs go"
+    "mobile:go": "node scripts/mobile-dev.mjs go",
+    "mobile:backend": "node --import ./scripts/mobile-smoke-preload.mjs server/index.js"
   },
   "devDependencies": {
     "@expo/metro-runtime": "~57.0.16",

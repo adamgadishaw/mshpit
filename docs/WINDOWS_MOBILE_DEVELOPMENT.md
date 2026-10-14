@@ -1,111 +1,113 @@
-# MSHPIT: free local mobile development on Windows
+# MSHPIT: free Windows Android development
 
-Assessment date: 2026-10-14. Isolated checkout: `mshpit-android` in this Codex task workspace. Branch: `codex/windows-android-dev-20261014`, based on GitHub master `92aa96d`.
+Updated 2026-10-14. The isolated app checkout is now `D:\Development\Apps\mshpit`, branch `codex/windows-android-dev-20261014`, based on GitHub master `92aa96d`. The earlier Codex task checkout and the original `D:\Websites\Concert Website\pit` working tree/worktrees were preserved. No production app screen, server behavior, deployment or production data was changed.
 
-## Current verified state
+## Verified outcome and remaining blocker
 
-The existing checkout at `D:\Websites\Concert Website\pit` and all its worktrees were preserved. Its unrelated untracked audit file remains present. No application screen, server behavior, production config in app.json, or deployment was changed. No existing Node process was stopped.
+The native Android development APK compiled successfully in 13 minutes 19 seconds (696 Gradle tasks). This includes React Native New Architecture codegen/C++ and react-native-share 12.3.1. The APK verifies with Android debug signing, identifies itself as **Mshpit Dev / com.mshpit.app.dev**, targets SDK 36, and contains only **x86_64** native libraries.
 
-- Node 24.16.0 and npm 11.13.0 are installed. Java, Android SDK, adb and emulator were not found on PATH or in the checked standard installation locations.
-- C: had approximately 132 GiB free. Plan for roughly 10–20 GB for an Android SDK, NDK, Gradle caches, emulator and one system image; actual use depends on selected packages. No Android tooling download was started.
-- Locked dependencies installed successfully. SDK 57 patch packages were aligned, retaining React Native 0.86.3 and React 19.2.3. Expo is now 57.0.28; expo-dev-client is 57.0.20. This is an isolated patch update, not a production release.
-- `expo install --check`: passes. Expo Doctor: 21/21 checks pass.
-- Existing sharing/API-origin tests: 47/47 pass. Application config tests: 10/10 pass, including the production/server dependency boundary.
-- Android prebuild succeeds with the existing react-native-share plugin. Generated native project uses `com.mshpit.app.dev`; manifest contains the Instagram/Facebook/X package queries.
-- Android export: 2,084 modules, successful Hermes bytecode bundle, approximately 9.2 MB.
-- iOS export: 2,087 modules, successful Hermes bytecode bundle, approximately 9.2 MB. This is not an iOS native compilation.
-- Metro on localhost:8082 returned HTTP 200 for status and Android manifest; manifest identified Mshpit Dev, com.mshpit.app.dev and SDK 57. The temporary server was stopped after checking.
-- New JavaScript setup files pass Node syntax checks. No TypeScript source/config or type-check command is established in this JavaScript repository; no full TypeScript check is claimed.
-- A separate narrow security remediation pins transitive shell-quote to 1.11.0. Clean `npm ci` reproduces that version; only this package changed in the lockfile. Its quoting regression check, all 57 targeted tests, Expo compatibility/Doctor and the Android Hermes export pass after remediation.
-- Gradle preflight stops with `JAVA_HOME is not set and no 'java' command could be found in your PATH`.
+- APK: `D:\Development\Apps\mshpit\android\app\build\outputs\apk\debug\app-debug.apk`
+- Size: 112,176,224 bytes (about 107 MiB).
+- SHA-256: `66eedc89d2eb35329f08e2115cfa4f2323adee81cbbb4be9baa66ad1f955befc`.
+- This is an emulator development APK, not an ARM phone APK or a store release.
 
-No APK has been compiled or installed. No emulator or iPhone app runtime was verified, so there are no actual running-app screenshots.
+The AVD `mshpit-api36` exists on D:, but no running app was verified. Hardware inspection reports firmware virtualization disabled on the AMD Ryzen 7 3700X, no running hypervisor, and Windows Hypervisor Platform disabled. One software-mode attempt exited with Windows error 0xC0000005; a second supported software renderer remained offline in adb and was stopped. No settings or drivers were changed. There are **no actual running-app screenshots**.
 
-Validation logs and bundle outputs are under `.tmp/validation`, `.tmp/export-android` and `.tmp/export-ios` (ignored by Git).
+The next emulator step requires owner approval and manual firmware work: enable AMD SVM/virtualization in BIOS, enable Windows Hypervisor Platform, and reboot. Google's current [emulator acceleration documentation](https://developer.android.com/studio/run/emulator-acceleration) recommends WHPX on Windows; installing an alternative driver is not required for this route. These settings were not authorized or changed by this setup.
 
-## Dependency assessment
+## Reusable D: layout
 
-`react-native-share` 12.3.1 provides a native module and has New Architecture source paths. Its config plugin generated successfully. This does not establish compilation compatibility with RN 0.86.3: codegen, Java/Kotlin/C++ compilation and device behavior remain unverified until the toolchain is installed.
-
-The real app loads this module dynamically inside `src/lib/socialShare.native.js`, when a social share is requested. It catches unavailable-module errors. It is not part of Expo Go's bundled native modules. Instagram Story, X/Facebook image handoff, target-app detection, and the image-capable native share sheet therefore require the development build. Instagram Story additionally needs the existing Meta app ID configuration and target app; no new Meta account or configuration was created.
-
-The app's other native packages have SDK 57-compatible versions: Expo audio/video, image/image picker/manipulator, file system, clipboard, sharing, SQLite, asset/status/splash/system UI; community slider; Skia; Reanimated/Worklets; gesture handler; safe-area context; SVG. Doctor and bundling verify dependency resolution, not native feature execution.
-
-`npm audit --omit=dev` reports 0 vulnerabilities. All-dependency audit now reports 19 high and 0 critical, versus 22 high and 1 critical on untouched master. No new vulnerable package names were introduced. The existing critical [shell-quote advisory GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv) was removed by an explicit 1.11.0 transitive override; its React DevTools parent permits this version through `^1.6.1`. This is development tooling, including interactive editor integration, not exclusively build-time code. The inspected editor integration uses `parse()` rather than the advisory's vulnerable `quote()` path, so exposure of Metro alone was not established as a trigger. Remaining high findings are in development/native tooling. Audit suggests incompatible major downgrades for several packages; none were applied. Keep Metro local, and resolve the remaining toolchain advisories before exposing a development server or treating this as release-ready.
-
-## Android toolchain approval and setup
-
-Google's exact Android SDK License Agreement is at https://developer.android.com/studio/terms . Owner approval is pending; no licence was accepted. Do not pipe automatic yes responses to sdkmanager. Review and approve any additional package-specific agreement before acceptance. Avoid Google Play/Google APIs emulator images unless their additional terms are approved; an AOSP image can reduce that scope.
-
-After approval, install official Android tooling with Android SDK Platform 36, platform-tools, command-line tools, emulator and one x86_64 image. SDK 57's compile/target SDK is 36. Let the generated project's Gradle configuration identify its exact build-tools/NDK/CMake dependencies rather than guessing older SDK defaults. Use a supported JDK (RN setup recommends JDK 17); an Android Studio bundled JDK must also satisfy this Gradle project's requirements. Use official downloads. No accounts or cloud builds are needed.
-
-Create one phone AVD in Android Studio Device Manager and launch it. Check acceleration availability; stop for approval if Windows features, BIOS virtualization, security settings or drivers need modification. A physical Android phone is an alternative when already available, with owner-enabled USB debugging and the device's connection consent.
-
-In PowerShell, set paths for this terminal only (substitute actual installations):
-
-```powershell
-cd 'C:\Users\Adam Gadishaw\Documents\Codex\2026-10-14\task\mshpit-android'
-$env:JAVA_HOME = '<actual JDK directory>'
-$env:ANDROID_HOME = '<actual Android SDK directory>'
-$env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
-$env:GRADLE_USER_HOME = Join-Path (Get-Location) '.tmp\gradle-cache'
-$env:PATH = "$env:JAVA_HOME\bin;$env:ANDROID_HOME\platform-tools;$env:ANDROID_HOME\emulator;$env:PATH"
-java -version
-adb version
-emulator -list-avds
-adb devices
-# Start the AVD from Android Studio, or: emulator -avd '<AVD name>'
-adb reverse tcp:3000 tcp:3000
-adb reverse tcp:8081 tcp:8081
-npm run mobile:android
-```
-
-`mobile:android` runs the Windows-supported local `expo run:android` path. Do not use EAS local build as the Windows build route. Only debug builds are in scope. Expected APK after successful compilation: `android\app\build\outputs\apk\debug\app-debug.apk`. The generated template uses Android's debug keystore; this is not release signing or store submission.
-
-For later sessions with the development APK already installed:
-
-```powershell
-adb reverse tcp:3000 tcp:3000
-adb reverse tcp:8081 tcp:8081
-npm run mobile:start
-# Open Mshpit Dev on the emulator/device and select this local server.
-```
-
-These commands default to `EXPO_PUBLIC_API_URL=http://localhost:3000` and reject any non-localhost API, including production. `adb reverse` maps the device localhost ports to this PC. They select the separate development app identifier/name/scheme through `MSHPIT_LOCAL_DEV=1`. Default Expo configuration still retains the production identifiers. The runner restores package.json after prebuild, which otherwise moves build dependencies into the server dependency section and changes existing npm scripts.
-
-No API server, test account or fixture data is provisioned by these commands. Use a separately verified disposable localhost backend before testing data-backed or mutating flows. Do not copy production `.env`, credentials or databases. Without a local backend, API-backed screens can show loading/offline/error states, not real functional coverage. Authenticated upload/post/share-card preparation must wait for a safe fixture backend.
-
-## iPhone / Expo Go scope
-
-On an iPhone with an Expo Go version supporting SDK 57 and iOS 16.4+, this source-level assessment identifies likely UI preview candidates:
-
-| Screens / behavior | Preview scope |
+| Location | Purpose |
 | --- | --- |
-| Welcome, authentication form layout, menu, settings, privacy, terms, badge legend | Ordinary React Native UI and navigation candidates; device preview still unverified |
-| Feed, search/discover, artists/venues/cities, show details, calendars, top rated, clubs | UI candidates; meaningful loaded data requires a reachable approved non-production API |
-| You/profile, log/review forms, edit profile, inbox/lounge/threads/crew | UI candidates; accounts, writes and uploads require disposable test data/backend |
-| Photo/video/audio previews and local persistence | Bundled SDK libraries exist; actual playback, permissions, picker and storage behavior must be tested on the phone |
-| Social image sharing and Instagram Stories | Not supported by Expo Go; defer to custom native builds |
-| Native splash, configured permissions, app identifiers/scheme, package queries/deep links | Expo Go uses its own binary; custom-app configuration is not verified |
+| `D:\Development\Tools\Java\jdk-17` | Checksum-verified Temurin 17.0.20.1 |
+| `D:\Development\Tools\AndroidSdk` | Official SDK, emulator, NDK and CMake |
+| `D:\Development\Emulators\avd` | AVD definitions and device disks |
+| `D:\Development\Emulators\User` | Android/emulator user state |
+| `D:\Development\Caches\npm` | npm cache |
+| `D:\Development\Caches\Gradle` | Gradle cache/distributions |
+| `D:\Development\Caches\Downloads` | Verified archives and provenance |
+| `D:\Development\Apps\mshpit` | MSHPIT; future apps use sibling folders |
 
-Run `npm run mobile:go` to display the Expo Go LAN QR code. This intentionally preserves the local API default, so the iPhone's localhost does not reach the Windows backend. Treat it as a limited offline/UI preview until a separately approved HTTPS staging endpoint or secure local connectivity is prepared. The current API-origin policy rejects plain HTTP LAN IP addresses, so do not simply set `http://192.168...` and expect it to work. No production code was rewritten to accommodate Expo Go, and no tunnel service was created.
+Reusable session configuration is `D:\Development\Tools\Use-Android.ps1`; shared instructions are `D:\Development\README.md`. Dot-sourcing changes the current terminal only, not global PATH or startup settings. The setup used approximately 19 GiB on D:, including build outputs and caches; about 837 GiB remained free.
 
-Android testing does not certify iOS. Windows cannot run Apple's local simulator or Xcode native compile. An unsigned simulator compile on a suitable Mac could later check compilation; it would still not validate a physical iPhone. EAS Simulator is limited-access and was not assumed available or invoked. Real signed iPhone/TestFlight checks remain for later Apple Developer enrollment.
+Installed tools: Node 24.16.0/npm 11.13.0; JDK 17.0.20.1; platform-tools 37.0.1; Android Platform 36 revision 2; Build-Tools 36.0.0; Emulator 37.2.12; AOSP Android 36 x86_64 image revision 2; NDK 27.1.12297006; CMake 3.22.1; Gradle 9.3.1. The owner approved Google's Android SDK License Agreement, and these SDK package receipts reference `android-sdk-license`. No different installer agreement was accepted, paid service used, or external account created.
 
-## Reproduce checks
+## Run after a compatible device is available
+
+In each PowerShell terminal:
+
+```powershell
+. 'D:\Development\Tools\Use-Android.ps1'
+cd 'D:\Development\Apps\mshpit'
+```
+
+Start the disposable backend in one terminal and Metro in another:
+
+```powershell
+npm run mobile:backend
+```
+
+```powershell
+npm run mobile:start
+```
+
+The backend command creates a fresh `.tmp\mobile-data-*` database, drops inherited service credentials, binds localhost:3000, and blocks outbound requests. It uses the real backend with disposable seed data; it does not copy production data or provide complete production integrations. Startup and `/api/me` guest HTTP 200 were verified. Metro localhost status/Android development manifest returned HTTP 200. Temporary servers were stopped after checking.
+
+After approved virtualization setup and reboot:
+
+```powershell
+emulator -accel-check             # must report an installed usable hypervisor
+emulator -avd mshpit-api36 -no-metrics
+adb devices                      # must report device, not offline
+adb shell getprop sys.boot_completed  # wait for 1
+adb reverse tcp:3000 tcp:3000
+adb reverse tcp:8081 tcp:8081
+adb install -r android\app\build\outputs\apk\debug\app-debug.apk
+```
+
+Open Mshpit Dev and connect to the local Metro server. The local commands use `EXPO_PUBLIC_API_URL=http://localhost:3000`, reject production/non-local APIs, and select the separate development identity/scheme. They restore package.json after Expo prebuild so frontend tools remain pruned from the production server dependency section.
+
+To rebuild the emulator APK:
+
+```powershell
+npm run mobile:prebuild
+cd android
+.\gradlew.bat assembleDebug --no-daemon --max-workers=2 -PreactNativeArchitectures=x86_64
+```
+
+For an owner-authorized physical ARM64 Android phone, build for that device using `npm run mobile:android`; this x86_64 APK is not compatible with typical ARM phones. Ordinary JavaScript screen edits can reload through Metro; native dependency/config changes require rebuilding.
+
+## Dependencies and checks
+
+SDK 57 patch packages were aligned on this isolated branch: Expo 57.0.28, expo-dev-client 57.0.20, React Native 0.86.3, React 19.2.3. There was no SDK major upgrade. The transitive shell-quote critical advisory was fixed with an explicit compatible 1.11.0 override, committed separately; only that package changed in its remediation lockfile diff. Clean npm ci reproduced it.
+
+- Expo install compatibility passes; Expo Doctor 21/21 passes in the D: checkout.
+- Targeted app config/sharing/API-origin tests pass 57/57 in the D: checkout.
+- The patched quoting regression check rejects the advisory's unsafe input pattern without executing a shell command.
+- Android native build and debug signature verification pass.
+- Android JavaScript/Hermes export: 2,084 modules, about 9.2 MB. iOS JavaScript/Hermes export: 2,087 modules, about 9.2 MB; this is not an iOS native compile.
+- Production dependency audit reports 0 vulnerabilities. All-dependency audit reports 19 high and 0 critical (untouched master had 22 high and 1 critical). No force upgrades or major downgrades were applied.
+- This is a JavaScript repository without an established TypeScript source/config/type-check command. Setup scripts passed syntax checks; no full TypeScript check is claimed.
+
+Reproduce:
 
 ```powershell
 npm ci
 npx expo install --check
 npx --yes expo-doctor
-npm run mobile:prebuild
 node --test scripts/app-store-config.test.mjs src/domain/socialShareCard.test.mjs src/domain/socialSharePopup.test.mjs src/domain/socialSharePreparationUi.test.mjs src/domain/socialShareUi.test.mjs src/domain/shareCardPreparation.test.mjs src/lib/socialShareNativeCache.test.mjs src/domain/apiOrigin.test.mjs
-$env:MSHPIT_LOCAL_DEV='1'
-$env:EXPO_PUBLIC_API_URL='http://localhost:3000'
-npx expo export --platform android --max-workers 2 --output-dir .tmp/export-android
-npx expo export --platform ios --max-workers 2 --output-dir .tmp/export-ios
 npm audit --omit=dev
 git diff --check
 ```
 
-Sources: [Expo SDK 57 reference](https://docs.expo.dev/versions/v57.0.0/), [SDK 57 development client](https://docs.expo.dev/versions/v57.0.0/sdk/dev-client/), [Expo local debug builds](https://docs.expo.dev/guides/local-app-development/), [React Native Share installation](https://react-native-share.github.io/react-native-share/docs/install), [React Native environment setup](https://reactnative.dev/docs/set-up-your-environment).
+Native compilation now supports react-native-share's Android compatibility assessment, but actual social sharing, package detection, picker permissions, playback and persistence remain runtime tests. Instagram Story sharing also requires the existing Meta app ID and installed target app; neither was newly provisioned.
+
+## iPhone / Expo Go limits
+
+With an Expo Go version supporting SDK 57 and iOS 16.4+, ordinary React Native UI is a source-assessed preview candidate: welcome/auth forms, menu/settings/privacy/terms, feed/search/discover, artists/venues/cities/shows/calendar, profiles/log/review forms, clubs/inbox/lounge/crew. Meaningful loaded data and writes require a reachable approved non-production API. Actual iPhone previews were not performed.
+
+Run `npm run mobile:go` for the LAN QR code. Its safe localhost API default does not reach the Windows backend from an iPhone, so consider this limited offline/UI preview until approved secure connectivity is provided. The current API policy rejects plain HTTP LAN IP origins; no production source was rewritten to accommodate Expo Go and no tunnel was created.
+
+react-native-share is loaded dynamically only when needed and is not bundled in Expo Go. Instagram Stories, X/Facebook image handoff, target-app detection and native social image sharing require custom native builds. Expo Go also does not verify this app's configured native splash, identifiers, permissions, package queries or deep links. Other SDK libraries' presence is not proof of device feature execution.
+
+Android testing does not certify iOS. Windows cannot run Xcode or Apple's local simulator. An unsigned simulator compile on a suitable Mac could later check native compilation. EAS Simulator access was not assumed and no paid/cloud build was used. Real signed iPhone/TestFlight tests remain for later Apple Developer enrollment.
