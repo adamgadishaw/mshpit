@@ -235,15 +235,17 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
 // portrait video's intrinsic height otherwise expands React Native Web's flex
 // child beyond the modal viewport and pushes its picture/controls off-screen.
 // Remounting on retry also releases the failed player cleanly.
+// RN 0.86 removed the deprecated alias; preserve the existing web style.
+const absoluteFill = StyleSheet.absoluteFillObject || StyleSheet.absoluteFill;
 const styles = StyleSheet.create({
   img: { flex: 1, backgroundColor: "transparent" },
-  webVideo: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", backgroundColor: "transparent" },
-  videoStatus: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10 },
+  webVideo: { ...absoluteFill, width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", backgroundColor: "transparent" },
+  videoStatus: { ...absoluteFill, alignItems: "center", justifyContent: "center", gap: 10 },
   videoStart: { position: "absolute", left: "50%", top: "50%", zIndex: 4, minHeight: 46, transform: [{ translateX: -62 }, { translateY: -23 }], flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 17, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.amberStrong },
   videoStartPressed: { opacity: 0.82, transform: [{ translateX: -62 }, { translateY: -21 }] },
   videoStartFocused: { boxShadow: "0 0 0 3px rgba(242,166,90,0.42)" },
   videoStartText: { color: "#1A1206", fontSize: 13, fontWeight: "900" },
-  videoError: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10, paddingHorizontal: 24, backgroundColor: "rgba(6,7,11,0.9)" },
+  videoError: { ...absoluteFill, alignItems: "center", justifyContent: "center", gap: 10, paddingHorizontal: 24, backgroundColor: "rgba(6,7,11,0.9)" },
   videoErrorTitle: { color: "#fff", fontSize: 17, fontWeight: "800", textAlign: "center" },
   videoErrorText: { color: "rgba(255,255,255,0.72)", fontSize: 13, lineHeight: 19, textAlign: "center", maxWidth: 380 },
   videoErrorActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8, marginTop: 2 },

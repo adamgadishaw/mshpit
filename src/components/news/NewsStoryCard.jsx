@@ -63,7 +63,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
   );
 
   return (
-    <View style={styles.card} accessibilityRole="article">
+    <View style={styles.card} accessibilityRole={Platform.OS === "web" ? "article" : undefined} accessible={Platform.OS === "web" ? undefined : false}>
       <View style={styles.head}>
         <View style={styles.badge}><Icon name="music" size={13} color="#1A1206" /></View>
         <Text style={styles.brand}>MSHPIT NEWS</Text>

@@ -30,6 +30,9 @@ const result = spawnSync(process.execPath, ["--dns-result-order=ipv4first", cli,
   env: {
     ...process.env,
     MSHPIT_LOCAL_DEV: "1",
+    // Compile once before Windows review starts; avoid cold lazy-screen delays
+    // and stale module IDs after Fast Refresh. No release/web build changes.
+    ...(process.platform === "win32" && mode === "start" ? { EXPO_NO_METRO_LAZY: "1" } : {}),
     EXPO_PUBLIC_API_URL: url.origin,
     EXPO_NO_TELEMETRY: "1",
     EXPO_PUBLIC_NATIVE_READ_ONLY_REVIEW: approvedLive ? "1" : "0",

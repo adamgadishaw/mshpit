@@ -1,6 +1,7 @@
+import { nativeNewsLinkFrame } from "./src/domain/nativeNewsLink.mjs";
 import { publicDiscoveryRailAllowed } from "./src/domain/publicPlacementPolicy.mjs";
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, Suspense } from "react";
-import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler } from "react-native";
+import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler, Linking } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
@@ -642,7 +643,7 @@ function Root() {
     proceed();
   };
   const commitGo = (candidate) => {
-    let frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id);
+    let frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id, Platform.OS);
     if (!frame) return;
     if (frame.auth && stackRef.current[stackRef.current.length - 1]?.auth) return;
     if (frame.auth && navigationRef.current.landing) frame = { ...frame, authFromLanding: true };
@@ -655,7 +656,7 @@ function Root() {
   // Swap the top screen without growing the stack — for lateral moves where the
   // previous screen shouldn't come back (menu → target, signup → pick-artists).
   const commitReplace = (candidate) => {
-    const frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id);
+    const frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id, Platform.OS);
     if (!frame) return;
     const previous = stackRef.current;
     const next = replaceNavigationFrame(previous, frame);
@@ -948,6 +949,19 @@ function Root() {
     }
   };
   restoreBrowserPathRef.current = restoreBrowserPath;
+  const nativeNewsNavigateRef = useRef(null);
+  nativeNewsNavigateRef.current = go;
+  useEffect(() => {
+    if (web || !authReady) return undefined;
+    let active = true;
+    const open = (url) => {
+      const frame = nativeNewsLinkFrame(url);
+      if (active && frame) nativeNewsNavigateRef.current?.(frame);
+    };
+    const subscription = Linking.addEventListener("url", ({ url }) => open(url));
+    Linking.getInitialURL().then(open).catch(() => { /* architecture: allow-empty-catch -- Missing native entry URLs leave the current navigation intact. */ });
+    return () => { active = false; subscription.remove(); };
+  }, [web, authReady]);
 
   useEffect(() => {
     if (!web) return undefined;
@@ -1126,6 +1140,7 @@ function Root() {
   };
   const openPost = (log, analytics = {}) => {
     if (!log) return;
+    if (Platform.OS !== "web" && !session && (log.news || String(log.id || "").startsWith("news_"))) { openSignIn(); return; }
     track("content_open", {
       postId: log.id,
       surface: analytics.surface || "direct",
@@ -1135,11 +1150,13 @@ function Root() {
   };
   // An opener's review linked from the main review: load it, then open it.
   const openPostById = async (postId) => {
+    if (Platform.OS !== "web" && !session && String(postId || "").startsWith("news_")) { openSignIn(); return; }
     const post = postId ? await loadPostForView(postId) : null;
     if (post) openPost(post, { surface: "linked-review" });
   };
   // A story from the news panel, strip or News tab opens its post and comments.
   const openNewsStory = async (story) => {
+    if (Platform.OS !== "web" && !session) { openSignIn(); return; }
     if (!story?.postId) return;
     const ticket = ++newsOpenRef.current;
     setNewsStoryNotice({ loading: true, story });
@@ -1423,7 +1440,7 @@ function Root() {
 
   // Stored overlays are only navigation hints, never proof of authentication.
   // Replacing the element before reconciliation also prevents its load effects.
-  if (!session && memberFrameRequiresAccount(nav)) {
+  if (!session && memberFrameRequiresAccount(nav, Platform.OS)) {
     overlay = <AuthScreen navigationAbortRef={authNavigationAbortRef} onModeChange={(mode) => commitReplace({ auth: true, authMode: mode })} onDone={back} onCancel={back} />;
   }
 

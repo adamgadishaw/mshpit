@@ -18,10 +18,11 @@ export function visibleMainTab(tab, accountId) {
   return !accountId && memberTabRequiresAccount(tab) ? "discover" : tab;
 }
 
-export function memberFrameRequiresAccount(frame) {
-  return !!frame && MEMBER_FRAMES.some((key) => !!frame[key]);
+export function memberFrameRequiresAccount(frame, platform = "web") {
+  const nativeNews = platform !== "web" && !!frame && (frame.news || frame.newsroom || frame.post?.news || String(frame.post?.id || "").startsWith("news_"));
+  return !!nativeNews || (!!frame && MEMBER_FRAMES.some((key) => !!frame[key]));
 }
 
-export function navigationFrameForAccount(frame, accountId) {
-  return !accountId && memberFrameRequiresAccount(frame) ? { auth: true } : frame;
+export function navigationFrameForAccount(frame, accountId, platform = "web") {
+  return !accountId && memberFrameRequiresAccount(frame, platform) ? { auth: true } : frame;
 }

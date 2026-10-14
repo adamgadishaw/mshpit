@@ -1191,7 +1191,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
 
         {/* New releases and tour dates, and the reason to follow. Loaded on
             demand so artist pages add nothing to the first page load. */}
-        {profileServicesAvailable && sectionModel.active === "overview" && !legacyMode ? (
+        {profileServicesAvailable && sectionModel.active === "overview" && !legacyMode && (Platform.OS === "web" || !!session) ? (
           <Suspense fallback={null}>
             <ArtistNewsSection artistName={a.name} artistKey={a.profileKey || null} onOpenStory={onOpenNewsStory} following={!!session && followed}
               onFollow={followHidden ? undefined : session ? followUi.toggleFollow : onRequireAuth} />

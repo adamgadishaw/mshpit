@@ -259,13 +259,15 @@ export default function ClipPoster({
   );
 }
 
+// RN 0.86 removed the deprecated alias; preserve the existing web style.
+const absoluteFill = StyleSheet.absoluteFillObject || StyleSheet.absoluteFill;
 const styles = StyleSheet.create({
   base: { overflow: "hidden", backgroundColor: "#11131a" },
-  cover: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 7, backgroundColor: "#11131a" },
+  cover: { ...absoluteFill, alignItems: "center", justifyContent: "center", gap: 7, backgroundColor: "#11131a" },
   playBadge: { width: 48, height: 48, borderRadius: 24, borderCurve: "continuous", backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center", paddingLeft: 3 },
   playBadgeCompact: { width: 36, height: 36, borderRadius: 18, paddingLeft: 2 },
   label: { color: "rgba(255,255,255,0.62)", fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 1.5 },
-  readabilityScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(4,5,10,0.08)" },
+  readabilityScrim: { ...absoluteFill, backgroundColor: "rgba(4,5,10,0.08)" },
   readyBadge: { position: "absolute", left: "50%", top: "50%", marginLeft: -24, marginTop: -24 },
   readyBadgeCompact: { marginLeft: -18, marginTop: -18 },
 });
