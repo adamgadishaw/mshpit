@@ -16,6 +16,7 @@ The existing checkout at `D:\Websites\Concert Website\pit` and all its worktrees
 - iOS export: 2,087 modules, successful Hermes bytecode bundle, approximately 9.2 MB. This is not an iOS native compilation.
 - Metro on localhost:8082 returned HTTP 200 for status and Android manifest; manifest identified Mshpit Dev, com.mshpit.app.dev and SDK 57. The temporary server was stopped after checking.
 - New JavaScript setup files pass Node syntax checks. No TypeScript source/config or type-check command is established in this JavaScript repository; no full TypeScript check is claimed.
+- A separate narrow security remediation pins transitive shell-quote to 1.11.0. Clean `npm ci` reproduces that version; only this package changed in the lockfile. Its quoting regression check, all 57 targeted tests, Expo compatibility/Doctor and the Android Hermes export pass after remediation.
 - Gradle preflight stops with `JAVA_HOME is not set and no 'java' command could be found in your PATH`.
 
 No APK has been compiled or installed. No emulator or iPhone app runtime was verified, so there are no actual running-app screenshots.
@@ -30,7 +31,7 @@ The real app loads this module dynamically inside `src/lib/socialShare.native.js
 
 The app's other native packages have SDK 57-compatible versions: Expo audio/video, image/image picker/manipulator, file system, clipboard, sharing, SQLite, asset/status/splash/system UI; community slider; Skia; Reanimated/Worklets; gesture handler; safe-area context; SVG. Doctor and bundling verify dependency resolution, not native feature execution.
 
-`npm audit --omit=dev` reports 0 vulnerabilities. All-dependency audit reports 19 high and 1 critical after patch alignment, versus 22 high and 1 critical on untouched master. No new vulnerable package names were introduced. The critical item is shell-quote (GHSA-pqg4-j6r4-53mv); remaining findings are in development/native tooling. Audit suggests incompatible major downgrades for several packages; none were applied. Keep Metro local, and resolve these toolchain advisories before exposing a development server or treating this as release-ready.
+`npm audit --omit=dev` reports 0 vulnerabilities. All-dependency audit now reports 19 high and 0 critical, versus 22 high and 1 critical on untouched master. No new vulnerable package names were introduced. The existing critical [shell-quote advisory GHSA-pqg4-j6r4-53mv](https://github.com/advisories/GHSA-pqg4-j6r4-53mv) was removed by an explicit 1.11.0 transitive override; its React DevTools parent permits this version through `^1.6.1`. This is development tooling, including interactive editor integration, not exclusively build-time code. The inspected editor integration uses `parse()` rather than the advisory's vulnerable `quote()` path, so exposure of Metro alone was not established as a trigger. Remaining high findings are in development/native tooling. Audit suggests incompatible major downgrades for several packages; none were applied. Keep Metro local, and resolve the remaining toolchain advisories before exposing a development server or treating this as release-ready.
 
 ## Android toolchain approval and setup
 
