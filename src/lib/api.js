@@ -3,6 +3,7 @@
 // Every call sends the httpOnly session cookie. Failures become typed AppErrors,
 // enter the safe diagnostics history, and show feedback for mutating requests.
 import { Platform } from "react-native";
+import { reviewAllowsRequest } from "./nativeReviewMode";
 import { AppError, captureAppError } from "./diagnostics";
 import { createRequestControl } from "./requestControl.mjs";
 import { apiIdentityBarrierDecision } from "../domain/apiIdentityState.mjs";
@@ -120,6 +121,11 @@ function apiFailure(error, { path, method, context, silent, kind, status, reques
 // fully backward compatible.
 export async function api(path, { method = "GET", body, context, silent = false, signal, headers, timeoutMs, expectedAccountId, skipIdentityCheck = false, cache } = {}) {
   const verb = String(method || "GET").toUpperCase();
+  if (!reviewAllowsRequest(path, verb)) {
+    throw new AppError("Content changes are disabled in this live-data review build.", {
+      status: 403, serverCode: "LOCAL_REVIEW_READ_ONLY", context: "Reviewing live data", source: "api",
+    });
+  }
   const operation = context || operationContext(verb);
   const identityAtInvocation = apiIdentity;
   // Calls mounted during cold boot wait behind the authoritative `/api/me`
@@ -276,6 +282,11 @@ export async function apiBinary(path, {
   maxBytes = 8 * 1024 * 1024,
 } = {}) {
   const verb = String(method || "GET").toUpperCase();
+  if (!reviewAllowsRequest(path, verb)) {
+    throw new AppError("Content changes are disabled in this live-data review build.", {
+      status: 403, serverCode: "LOCAL_REVIEW_READ_ONLY", context: "Reviewing live data", source: "api",
+    });
+  }
   const operation = context || operationContext(verb);
   const identityAtInvocation = apiIdentity;
   const barrierDecision = apiIdentityBarrierDecision(identityAtInvocation, { skipIdentityCheck, expectedAccountId });
