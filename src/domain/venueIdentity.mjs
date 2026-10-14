@@ -187,13 +187,19 @@ const VENUE_ALIAS_GROUPS = Object.freeze([
   }),
 ]);
 
+// English casing has the default Unicode lowercase semantics. Hermes locale
+// negotiation is disproportionately expensive during large native catalog scans.
+// Keep the existing web/Node locale path; native uses the equivalent operation.
+export function venueIdentityLowerCase(value, nativeRuntime = Boolean(globalThis.HermesInternal)) {
+  return nativeRuntime ? value.toLowerCase() : value.toLocaleLowerCase("en");
+}
+
 export function normalizeVenueKey(value) {
-  return String(value ?? "")
+  return venueIdentityLowerCase(String(value ?? "")
     .normalize("NFKC")
     .replace(/[\u2018\u2019\u02bc]/gu, "'")
     .replace(/[\u2010-\u2015]/gu, "-")
-    .trim()
-    .toLocaleLowerCase("en")
+    .trim())
     .replace(/\s+/gu, " ");
 }
 
