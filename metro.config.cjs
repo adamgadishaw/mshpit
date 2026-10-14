@@ -1,6 +1,10 @@
 const path = require('node:path');
 const { getDefaultConfig } = require('expo/metro-config');
 const config = getDefaultConfig(__dirname);
+// Windows can exhaust file handles reading thousands of persistent transform-cache entries
+// during lazy screen compilation. The running graph still reuses warm modules.
+// Limit this workaround to the explicitly local Windows development session.
+if (process.platform === "win32" && process.env.MSHPIT_LOCAL_DEV === "1") config.cacheStores = [];
 const previousResolve = config.resolver.resolveRequest;
 const sharedCityModule = path.join(__dirname, 'src', 'cityIdentity.js');
 

@@ -1,4 +1,4 @@
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, font, mono, radius, shadow } from "../../theme";
 import Icon from "../Icon";
 import { compactDiscoverNumber } from "../../domain/discoverView.mjs";
@@ -24,7 +24,7 @@ export function QuickAction({ icon, title, detail, tint, onPress, basis }) {
       accessibilityLabel={title}
       accessibilityHint={detail}
     >
-      <View style={[styles.quickIcon, { backgroundColor: `${tint}18`, borderColor: `${tint}55` }]}>
+      <View style={[styles.quickIcon, Platform.OS === "web" && { backgroundColor: `${tint}18`, borderColor: `${tint}55` }]}>
         <Icon name={icon} size={20} color={tint} />
       </View>
       <View style={styles.quickCopy}>
@@ -115,4 +115,13 @@ const styles = StyleSheet.create({
   primaryButtonText: { color: "#1A1206", fontFamily: font, fontSize: 13, fontWeight: "900" },
   secondaryButton: { minHeight: 44, marginTop: 7, paddingHorizontal: 20, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, alignItems: "center", justifyContent: "center" },
   secondaryButtonText: { color: colors.amber, fontFamily: font, fontSize: 13, fontWeight: "900" },
+  ...(Platform.OS !== 'web' ? {
+    sectionTitle: { color: colors.text, fontFamily: font, fontSize: 18, fontWeight: '700' },
+    sectionDetail: { color: colors.textDim, fontFamily: font, fontSize: 13, lineHeight: 19, paddingTop: 4 },
+    quickAction: { width: '100%', flexBasis: '100%', minHeight: 72, flexDirection: 'row', alignItems: 'center', gap: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.lineSoft, paddingVertical: 12 },
+    quickIcon: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
+    quickTitle: { color: colors.text, fontFamily: font, fontSize: 15, fontWeight: '600' },
+    quickDetail: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 18, paddingTop: 3 },
+    statePanel: { minHeight: 160, paddingVertical: 24, alignItems: 'center', justifyContent: 'center', gap: 12 },
+  } : {}),
 });

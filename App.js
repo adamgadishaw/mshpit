@@ -5,7 +5,7 @@ import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
-import { colors, mono, radius, themeIsDark } from "./src/theme";
+import { colors, font, mono, radius, themeIsDark } from "./src/theme";
 import { StoreProvider, useStore, isMod, isStaff } from "./src/store";
 import { NewsInteractionContext } from "./src/components/news/NewsInteractionContext";
 import { PostNavigationContext } from "./src/components/PostNavigationContext";
@@ -153,6 +153,7 @@ import { countryForCity } from "./src/geo";
 import { accountThemeNavigationReady } from "./src/domain/accountThemeNavigation.mjs";
 import { screenTransitionDirection, screenTransitionKey } from "./src/domain/screenTransition.mjs";
 import ScreenTransition from "./src/components/ScreenTransition";
+import NativeAppHeader from "./src/components/NativeAppHeader";
 import {
   PLAYER_POSITION_STORAGE_KEY,
   PLAYER_STATE_STORAGE_KEY,
@@ -275,7 +276,7 @@ function Root() {
   const activeTab = visibleMainTab(tab, session?.id);
   // Detail overlays unmount Discover. Keep only its public destination here,
   // scoped to this viewer, so Back does not unexpectedly switch to Shows.
-  const [discoverDestination, setDiscoverDestination] = useState(() => ({ accountId: session?.id || null, programme: "shows" }));
+  const [discoverDestination, setDiscoverDestination] = useState(() => ({ accountId: session?.id || null, programme: Platform.OS === "web" ? "shows" : "artists" }));
   const rememberedDiscoverProgramme = discoverDestination.accountId === (session?.id || null) ? discoverDestination.programme : "shows";
   // Navigation is a STACK of frames. Each frame is one overlay screen, e.g.
   // { artistName } or { profileId }; the top frame is what's showing. An empty
@@ -1751,6 +1752,7 @@ function Root() {
               </View>
             )}
             <View style={styles.appContent}>
+              {Platform.OS !== "web" && !overlay && <NativeAppHeader onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
               {wide ? <Suspense fallback={<ScreenLoading />}>{desktop}</Suspense> : (
                 <>
                   {showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
@@ -1950,4 +1952,12 @@ const styles = StyleSheet.create({
   previewIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.amber, alignItems: "center", justifyContent: "center", paddingLeft: 2 },
   previewSong: { color: colors.text, fontSize: 14, fontWeight: "600" },
   previewMeta: { color: colors.textDim, fontFamily: mono, fontSize: 11, marginTop: 2 },
+  ...(Platform.OS !== 'web' ? {
+    tabbar: { flexDirection: 'row', alignItems: 'center', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line, backgroundColor: colors.bg, paddingTop: 4, paddingBottom: 4 },
+    tab: { flex: 1, minHeight: 54, alignItems: 'center', justifyContent: 'center', gap: 4 },
+    tabLabel: { color: colors.textDim, fontFamily: font, fontSize: 11, fontWeight: '500' },
+    fabCol: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 54, gap: 4 },
+    fab: { width: 44, height: 44, borderRadius: 8, backgroundColor: colors.amberStrong, alignItems: 'center', justifyContent: 'center' },
+    fabLabel: { color: colors.textDim, fontFamily: font, fontSize: 11, fontWeight: '500' },
+  } : {}),
 });
