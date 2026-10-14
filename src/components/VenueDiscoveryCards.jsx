@@ -122,7 +122,7 @@ export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEven
 }
 
 const styles = StyleSheet.create({
-  venueCard: { minHeight: 82, flexDirection: "row", alignItems: "center", gap: 12, padding: 14, backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card, ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "background-color, border-color, transform" } }) },
+  venueCard: { minHeight: 82, flexDirection: "row", alignItems: "center", gap: 12, padding: 14, backgroundColor: Platform.OS === "web" ? colors.surface : colors.bgElev, borderRadius: Platform.OS === "web" ? radius.md : 12, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card, ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "background-color, border-color, transform" } }) },
   venueCardCompact: { minHeight: 64, padding: 10, gap: 9, boxShadow: "none" },
   venueMark: { width: 42, height: 42, borderRadius: 14, borderCurve: "continuous", alignItems: "center", justifyContent: "center", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
   cardCopy: { flex: 1, minWidth: 0 },

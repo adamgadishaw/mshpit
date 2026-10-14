@@ -854,7 +854,7 @@ export default function DiscoverScreen({
         </View>
       </View>}
 
-      {Platform.OS === "web" && programme === "artists" && <View style={[styles.metrics, compact && styles.metricsCompact]}>{metrics.map((metric) => <MetricTile key={metric.label} {...metric} compact={compact} />)}</View>}
+      {programme === "artists" && <View style={[styles.metrics, compact && styles.metricsCompact]}>{metrics.map((metric) => <MetricTile key={metric.label} {...metric} compact={compact} />)}</View>}
 
       {programme === "shows" && (Platform.OS === "web" || loungeRows.length > 0) && <View style={styles.loungePanel}>
         <SectionHeading title="Popular lounges" detail={region === "Worldwide" ? "The most active concert conversations. Private member data is not used." : `Active concert conversations in ${region}. Private member data is not used.`} />
@@ -1024,18 +1024,4 @@ const styles = StyleSheet.create({
   refreshErrorText: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17, textAlign: "center" },
   refreshRetryButton: { minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center" },
   refreshRetry: { color: colors.danger, fontFamily: font, fontSize: 12, fontWeight: "900", paddingVertical: 8 },
-  ...(Platform.OS !== 'web' ? {
-    content: { width: '100%', maxWidth: 720, alignSelf: 'center', paddingHorizontal: 16, paddingTop: 8, paddingBottom: 24, gap: 16 },
-    contentCompact: { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 24, gap: 16 },
-    hero: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-    heroCompact: {}, heroStripe: { display: 'none' }, heroCopy: { flex: 1, minWidth: 0 },
-    title: { color: colors.text, fontFamily: font, fontSize: 23, lineHeight: 30, fontWeight: '700' }, titleCompact: {},
-    scenePill: { maxWidth: 180, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
-    scenePillText: { color: colors.textDim, fontFamily: font, fontSize: 12, fontWeight: '500', flexShrink: 1 },
-    programmePanel: { gap: 20, width: '100%' }, livePanel: { gap: 12, width: '100%' },
-    liveEmpty: { minHeight: 70, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 16 },
-    eventRecovery: { flexDirection: 'column', alignItems: 'stretch', gap: 12 },
-    liveEmptyText: { flex: 1, color: colors.textDim, fontFamily: font, fontSize: 14, lineHeight: 21 },
-    quickSection: { gap: 10 }, quickGrid: { gap: 0 }, controlsCard: { gap: 12, paddingVertical: 12 },
-  } : {}),
 });

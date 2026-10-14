@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
 import Icon from "../components/Icon";
-import ConcertMap from "../components/ConcertMap";
+import ConcertMap from "../components/NearbyVenueMap";
 import LocationPicker from "../components/LocationPicker";
 import ScreenHeader from "../components/ScreenHeader";
 import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
@@ -21,6 +21,8 @@ const MAP_POINT_LIMIT = 60;
 export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist, initialTab = "venues" }) {
   const { session, localVenues, regionShows, venueSummary, locationCenter, refreshTourDates } = useStore();
   const [center, setCenter] = useState(session?.home || null);
+  const native = Platform.OS !== "web";
+  const [mapVisible, setMapVisible] = useState(false);
   const [km, setKm] = useState(75);
   const [tab, setTab] = useState(() => nearbyInitialTab(initialTab));
   useEffect(() => { setTab(nearbyInitialTab(initialTab)); }, [initialTab]);
@@ -37,6 +39,11 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist, initi
     onError: () => setRefreshError(true),
   });
 
+  // Radius/city/data changes recompute; switching the local view does not rescan the catalog.
+  const nativeResults = useMemo(() => native && mapCoordinate(center) ? {
+    venues: localVenues(km, center), shows: regionShows(km, center),
+  } : null, [native, center, km, localVenues, regionShows]);
+
   if (pickingCity) {
     return (
       <LocationPicker
@@ -51,9 +58,9 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist, initi
 
   const hasCoords = !!mapCoordinate(center);
   const locationPrompt = nearbyLocationPrompt(center);
-  const venues = hasCoords ? localVenues(km, center) : [];
-  const shows = hasCoords ? regionShows(km, center) : [];
-  const mapPoints = nearestMapPoints(venues.map((venue) => {
+  const venues = hasCoords ? (native ? nativeResults.venues : localVenues(km, center)) : [];
+  const shows = hasCoords ? (native ? nativeResults.shows : regionShows(km, center)) : [];
+  const mapPoints = native && !mapVisible ? [] : nearestMapPoints(venues.map((venue) => {
     const summary = venueSummary(venue.name);
     return {
       name: venue.name,
@@ -116,10 +123,10 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist, initi
               <Text style={styles.refreshError} accessibilityRole="alert">Nearby results could not refresh. Your current city, radius, and results are unchanged.</Text>
             ) : null}
             <View style={styles.locationHero}>
-              <View style={styles.heroGlow} />
+              {!native ? <View style={styles.heroGlow} /> : null}
               <Text style={styles.eyebrow}>EXPLORE AROUND YOU</Text>
               <Text style={styles.heroTitle}>{center?.city ? `What’s playing near ${center.city}?` : "Put live music on the map."}</Text>
-              <Text style={styles.heroBody}>Move the radius from neighbourhood rooms to road-trip shows. Results use the city and distance you choose.</Text>
+              {!native ? <Text style={styles.heroBody}>Move the radius from neighbourhood rooms to road-trip shows. Results use the city and distance you choose.</Text> : null}
               <Pressable
                 style={({ pressed, focused }) => [styles.cityButton, pressed && styles.controlPressed, focused && focusRing]}
                 onPress={() => setPickingCity(true)}
@@ -161,12 +168,13 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist, initi
               </View>
             ) : (
               <>
-                <View style={styles.statsRow}>
+                {!native ? <View style={styles.statsRow}>
                   <LocalStat value={venues.length} label="VENUES" icon="pin" />
                   <LocalStat value={shows.length} label="UPCOMING" icon="calendar" accent />
                   <LocalStat value={km} label="KM RADIUS" icon="map" />
-                </View>
-                <View style={styles.mapCard}>
+                </View> : null}
+                {native ? <View style={styles.viewControls}><Text style={styles.resultSummary}>{venues.length} venues · {shows.length} shows</Text><Pressable accessibilityRole="button" accessibilityLabel={mapVisible ? "Hide venue location map" : "Show venue location map"} accessibilityState={{ expanded: mapVisible }} onPress={() => setMapVisible(v => !v)} style={styles.mapToggle}><Icon name="map" size={16} color={colors.amber} /><Text style={styles.changeText}>{mapVisible ? "Hide map" : "Show map"}</Text></Pressable></View> : null}
+                {(!native || mapVisible) ? <View style={styles.mapCard}>
                   <ConcertMap points={mapPoints} highlight={{ lat: center.lat, lng: center.lng }} label={center.city} onOpenVenue={onOpenVenue} />
                   <View style={styles.mapFooter}>
                     <Icon name="map" size={14} color={colors.cool} />
@@ -174,7 +182,7 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist, initi
                       {venues.length > MAP_POINT_LIMIT ? `Nearest ${MAP_POINT_LIMIT} of ${venues.length} venues shown` : `${venues.length} venue${venues.length === 1 ? "" : "s"} mapped`} · {shows.length} show{shows.length === 1 ? "" : "s"} within {km} km
                     </Text>
                   </View>
-                </View>
+                </View> : null}
                 <View style={styles.segment} accessibilityRole="tablist">
                   <Segment label="Venues" count={venues.length} selected={tab === "venues"} onPress={() => setTab("venues")} />
                   <Segment label="Upcoming" count={shows.length} selected={tab === "shows"} onPress={() => setTab("shows")} />
@@ -231,25 +239,29 @@ function ListGap() {
   return <View style={styles.listGap} />;
 }
 
+const nativeControl = Platform.OS !== "web";
 const styles = StyleSheet.create({
+  viewControls: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  resultSummary: { color: colors.textDim, fontSize: 12 },
+  mapToggle: { minHeight: 44, flexDirection: "row", gap: 6, alignItems: "center", paddingHorizontal: 10 },
   wrap: { flex: 1, backgroundColor: colors.bg },
   content: { width: "100%", maxWidth: 980, alignSelf: "center", paddingHorizontal: 16, paddingBottom: 56 },
   headerContent: { gap: 14, paddingTop: 12, paddingBottom: 14 },
   refreshError: { color: colors.danger, fontSize: 12.5, lineHeight: 18 },
-  locationHero: { overflow: "hidden", padding: 22, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
+  locationHero: { overflow: "hidden", padding: nativeControl ? 12 : 22, borderRadius: nativeControl ? 12 : radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
   heroGlow: { position: "absolute", width: 270, height: 270, borderRadius: 135, top: -160, right: -50, backgroundColor: colors.cool, opacity: 0.14, ...Platform.select({ web: { filter: "blur(12px)" } }) },
-  eyebrow: { color: colors.cool, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.7 },
-  heroTitle: { maxWidth: 630, color: colors.text, fontFamily: displayFont, fontSize: 28, lineHeight: 33, fontWeight: "900", letterSpacing: -0.75, marginTop: 7 },
+  eyebrow: { color: nativeControl ? colors.amber : colors.cool, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.7 },
+  heroTitle: { maxWidth: 630, color: colors.text, fontFamily: displayFont, fontSize: Platform.OS === "web" ? 28 : 22, lineHeight: Platform.OS === "web" ? 33 : 28, fontWeight: "900", letterSpacing: -0.75, marginTop: 7 },
   heroBody: { maxWidth: 640, color: colors.textDim, fontSize: 13, lineHeight: 20, marginTop: 7 },
-  cityButton: { minHeight: 66, flexDirection: "row", alignItems: "center", gap: 10, padding: 10, marginTop: 18, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, ...shadow.control },
-  cityIcon: { width: 42, height: 42, alignItems: "center", justifyContent: "center", borderRadius: 14, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.amber },
+  cityButton: { minHeight: Platform.OS === "web" ? 66 : 52, flexDirection: "row", alignItems: "center", gap: 10, padding: nativeControl ? 8 : 10, marginTop: nativeControl ? 12 : 18, borderRadius: nativeControl ? 10 : radius.md, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, ...shadow.control },
+  cityIcon: { width: nativeControl ? 32 : 42, height: nativeControl ? 32 : 42, alignItems: "center", justifyContent: "center", borderRadius: nativeControl ? 8 : 14, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.amber },
   cityCopy: { flex: 1, minWidth: 0 },
   cityLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 1 },
   cityName: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "900", marginTop: 2 },
   changeText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
   controlPressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
   radii: { flexDirection: "row", gap: 8 },
-  radiusChip: { flex: 1, minWidth: 0, minHeight: 48, flexDirection: "row", alignItems: "baseline", justifyContent: "center", gap: 3, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  radiusChip: { flex: 1, minWidth: 0, minHeight: 48, flexDirection: "row", alignItems: nativeControl ? "center" : "baseline", justifyContent: "center", gap: 3, borderRadius: nativeControl ? 8 : radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
   radiusChipOn: { backgroundColor: colors.surfaceAlt, borderColor: colors.amber },
   radiusText: { color: colors.textDim, fontFamily: mono, fontSize: 14, fontWeight: "800", fontVariant: ["tabular-nums"] },
   radiusUnit: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "800" },
@@ -262,9 +274,9 @@ const styles = StyleSheet.create({
   mapCard: { overflow: "hidden", padding: 8, borderRadius: radius.lg, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
   mapFooter: { minHeight: 38, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 8 },
   mapCaption: { flexShrink: 1, color: colors.textFaint, fontFamily: mono, fontSize: 10, textAlign: "center" },
-  segment: { flexDirection: "row", gap: 8, padding: 4, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
-  segmentButton: { flex: 1, minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 14 },
-  segmentButtonOn: { backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
+  segment: { flexDirection: "row", gap: 8, padding: 4, borderRadius: nativeControl ? 10 : radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  segmentButton: { flex: 1, minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: nativeControl ? 8 : 14 },
+  segmentButtonOn: { backgroundColor: nativeControl ? colors.bgElev : colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
   segmentText: { color: colors.textDim, fontFamily: displayFont, fontSize: 13, fontWeight: "800" },
   segmentTextOn: { color: colors.amber },
   segmentCount: { minWidth: 24, height: 22, alignItems: "center", justifyContent: "center", paddingHorizontal: 6, borderRadius: 11, backgroundColor: colors.bgElev },

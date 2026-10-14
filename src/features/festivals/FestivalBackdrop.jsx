@@ -75,8 +75,9 @@ const loop = (frames, duration) => Platform.select({
   default: {},
 });
 
+const absoluteFill = StyleSheet.absoluteFillObject || StyleSheet.absoluteFill;
 const styles = StyleSheet.create({
-  fill: { ...StyleSheet.absoluteFillObject, overflow: "hidden" },
+  fill: { ...absoluteFill, overflow: "hidden" },
   spot: { position: "absolute", width: 360, height: 360 },
   spotA: { top: -150, left: -110 },
   spotB: { bottom: -170, right: -120 },
@@ -88,5 +89,5 @@ const styles = StyleSheet.create({
   sweepLeft: loop({ from: { transform: "rotate(-26deg)" }, to: { transform: "rotate(10deg)" } }, "7s"),
   sweepRight: loop({ from: { transform: "rotate(24deg)" }, to: { transform: "rotate(-12deg)" } }, "8.5s"),
   beam: { position: "absolute", top: 0, left: -60, width: 120, height: 520 },
-  scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(6,6,10,0.28)" },
+  scrim: { ...absoluteFill, backgroundColor: "rgba(6,6,10,0.28)" },
 });

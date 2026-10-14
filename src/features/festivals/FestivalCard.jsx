@@ -48,6 +48,7 @@ export default function FestivalCard({ edition, onOpen, size = "large" }) {
   </Pressable>;
 }
 
+const absoluteFill = StyleSheet.absoluteFillObject || StyleSheet.absoluteFill;
 const styles = StyleSheet.create({
   // Sizing belongs to the list around the card (grid or rail).
   card: {
@@ -58,7 +59,7 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.85 },
   art: { height: 150, backgroundColor: "#0B0A10" },
   artSmall: { height: 116 },
-  shade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.3)" },
+  shade: { ...absoluteFill, backgroundColor: "rgba(0,0,0,0.3)" },
   badges: { position: "absolute", top: space(2), left: space(2), right: space(2), flexDirection: "row", flexWrap: "wrap", gap: space(1) },
   badge: { borderRadius: radius.pill, backgroundColor: "rgba(10,10,12,0.72)", paddingHorizontal: 9, paddingVertical: 4 },
   badgeText: { color: "#FFFFFF", fontFamily: font, fontSize: 11, fontWeight: "900" },

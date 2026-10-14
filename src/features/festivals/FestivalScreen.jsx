@@ -1,5 +1,5 @@
 import { useCallback, useContext, useMemo, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Platform, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, font, mono, radius, space } from "../../theme";
 import Icon from "../../components/Icon";
@@ -75,19 +75,19 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
         </Pressable>)}
       </View> : null}
 
-      {edition ? <View style={[styles.hero, wide && styles.heroWide]}>
+      {edition ? <View style={[styles.hero, wide && styles.heroWide, Platform.OS !== "web" && styles.nativeHero]}>
         {edition.imageUrl ? <>
-          <ExpoImage source={{ uri: edition.imageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" accessibilityIgnoresInvertColors />
-          <View style={styles.heroShade} />
+          <ExpoImage source={{ uri: edition.imageUrl }} style={Platform.OS === "web" ? StyleSheet.absoluteFill : styles.nativePoster} contentFit={Platform.OS === "web" ? "cover" : "contain"} accessibilityIgnoresInvertColors />
+          {Platform.OS === "web" ? <View style={styles.heroShade} /> : null}
         </> : <FestivalBackdrop accent={accent} beams />}
-        <View style={styles.heroBody}>
+        <View style={[styles.heroBody, Platform.OS !== "web" && styles.nativeHeroBody]}>
           <Rise index={0} style={styles.heroTop}>
             <Text style={styles.kicker}>Festival</Text>
             {countdown ? <View style={[styles.countPill, countdown.live && styles.countPillLive]}>
               <Text style={[styles.countText, countdown.live && styles.countTextLive]}>{countdown.label}</Text>
             </View> : null}
           </Rise>
-          <Rise index={1}><Text style={[styles.heroTitle, wide && styles.heroTitleWide]} accessibilityRole="header">{edition.name}</Text></Rise>
+          <Rise index={1}><Text style={[styles.heroTitle, wide && styles.heroTitleWide, Platform.OS !== "web" && styles.nativeHeroTitle]} accessibilityRole="header">{edition.name}</Text></Rise>
           <Rise index={2} style={styles.heroPlace}>
             <Text style={styles.heroWhen}>{festivalDateRange(edition.startDate, edition.endDate)}</Text>
             {festivalPlace(edition) ? <Text style={styles.heroWhere}>{festivalPlace(edition)}</Text> : null}
@@ -282,6 +282,7 @@ function PlanEditor({ slug, edition, plan, onSaved, onCancel }) {
   </View>;
 }
 
+const absoluteFill = StyleSheet.absoluteFillObject || StyleSheet.absoluteFill;
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
   header: { flexDirection: "row", alignItems: "center", gap: space(2), paddingHorizontal: space(3), paddingVertical: space(2), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
@@ -296,9 +297,13 @@ const styles = StyleSheet.create({
   chipText: { color: colors.textDim, fontFamily: font, fontSize: 13, fontWeight: "800" },
   chipTextOn: { color: colors.bg },
   // The hero is a poster: always a dark stage with white type, in every theme.
+  nativeHero: { minHeight: 0, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md },
+  nativePoster: { width: "100%", aspectRatio: 2, backgroundColor: colors.bg },
+  nativeHeroBody: { padding: 16, gap: 10 },
+  nativeHeroTitle: { fontSize: 25, lineHeight: 30, textShadowRadius: 0 },
   hero: { minHeight: 300, justifyContent: "flex-end", borderRadius: radius.lg, overflow: "hidden", backgroundColor: "#0B0A10" },
   heroWide: { minHeight: 360 },
-  heroShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(6,6,10,0.62)" },
+  heroShade: { ...absoluteFill, backgroundColor: "rgba(6,6,10,0.62)" },
   heroBody: { padding: space(5), gap: space(2) },
   heroTop: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(2) },
   kicker: { color: "rgba(255,255,255,0.86)", fontFamily: mono, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },

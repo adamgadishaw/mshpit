@@ -1,7 +1,7 @@
 import CatalogText from "../features/catalogEditor/CatalogText";
 import { Suspense, useState, useEffect, useRef } from "react";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
-import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, Linking, Alert } from "react-native";
+import { Platform, View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, Linking, Alert } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
