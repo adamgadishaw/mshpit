@@ -84,9 +84,7 @@ try {
         card = page.getByRole("link", { name: new RegExp("Open " + artist.name + " at") }).first();
         await card.waitFor();
         assert.equal(await card.getAttribute("href"), `/event/${event.id}`);
-        const festivalCard = page.getByRole("link", { name: new RegExp("Open " + festival.eventName + " at") }).first();
-        assert.equal(await festivalCard.getAttribute("href"), `/event/${festival.id}`);
-        await festivalCard.screenshot({ path: resolve(output, `${width}-${theme}-festival-card.png`) });
+        assert.equal(await page.getByRole("link", { name: new RegExp("Open " + festival.eventName + " at") }).count(), 0, "Festivals stay in their dedicated programme.");
         const credit = page.getByRole("button", { name: "Photo credits", exact: true });
         const box = await credit.boundingBox();
         assert.ok(box.height >= 44, "Photo credits remain a reachable touch target.");
@@ -121,12 +119,7 @@ try {
       await page.getByRole("tab", { name: tab, exact: true }).scrollIntoViewIfNeeded();
       await page.screenshot({ path: resolve(output, `${width}-${theme}-${tab}.png`), fullPage: true });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${width} ${tab} page overflow`);
-      if (tab === "Shows") {
-        await page.getByRole("link", { name: new RegExp("Open " + festival.eventName + " at") }).first().click();
-        await page.waitForURL(`**/event/${festival.id}`);
-        await page.goBack();
-        await page.getByRole("heading", { name: "Discover", exact: true }).waitFor();
-      } else if (tab === "Venues") {
+      if (tab === "Venues") {
         await card.focus();
         await page.keyboard.press("Enter");
         await page.getByRole("heading", { name: event.venue, exact: true }).waitFor();
