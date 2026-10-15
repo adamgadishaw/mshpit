@@ -3031,7 +3031,10 @@ export function StoreProvider({ children }) {
         absorbServerUser(user, { announce: true });
         return { ok: true };
       }, signal);
-    } catch (e) { return { ok: false, error: e.status ? e.message : "Couldn't reset. Try requesting a new link." }; }
+    } catch (error) {
+      if (error?.status >= 400 && error.status < 500) return { ok: false, outcome: "rejected", error: error.message };
+      return { ok: false, outcome: "uncertain", error: "Your password may already have changed. Try logging in with the new password you just entered. If that fails, request a new reset link." };
+    }
   };
 
   // Ensure a handle is unique by suffixing a number if taken.
@@ -3078,9 +3081,9 @@ export function StoreProvider({ children }) {
           return { ok: false, error: "That request did not complete. Please try again." };
         }, signal);
       } catch (e) {
-        if (e.status) return { ok: false, error: e.message };
+        if (e.status >= 400 && e.status < 500) return { ok: false, error: e.message };
       }
-      return { ok: false, error: "Couldn't connect. Check your connection and try again." };
+      return { ok: false, outcome: "uncertain", error: "Your account may already have been created. Try logging in with these details before signing up again. Check your connection if login is unavailable." };
     }
     // Explicit development demos create only local prototype accounts.
     if (users.some((x) => x.email.toLowerCase() === em)) return { ok: false, error: "That email is already registered." };

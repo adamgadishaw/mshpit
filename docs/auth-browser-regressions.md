@@ -133,3 +133,94 @@ Reported timing is a localhost fixture measurement, not a production capacity
 or device performance claim. The listener runs in test/development HTTP mode;
 production HTTPS, `__Host-` cookies, proxies and deployment configuration need
 their separate server/deployment tests.
+
+## Authentication reliability review — 2026-10-15
+
+Release baseline: `92aa96d4f2f18d15222f0453ecf2eed4be971306`. The earlier
+verification fix branch was based on stale local `master`; its two commits have
+been integrated onto `codex/auth-reliability-20261015`. The original branch is
+retained. Do not push the stale local `master` as a release.
+
+Supported account authentication is email/password. Signup supports fan and
+artist intent, and password-matched linked profiles can be selected or switched.
+There is no implemented social-login, passkey, or magic-link sign-in method.
+An email-confirmation link confirms an address; it does not sign in an account.
+
+| Priority | Journey / risk | Required behavior and evidence |
+| --- | --- | --- |
+| High | Signup commits but response disappears | Preserve account creation; show that it may have succeeded and direct the person to deliberate login. Actual HTTP/browser regression drops the successful signup response, then logs in and reloads. No second account is created. |
+| High | Reset commits but response disappears | Keep the token single-use; say the password may already have changed and offer login with the new password. Actual HTTP/browser regression drops a committed reset response, verifies prior-session revocation, logs in, and proves token replay is still rejected. |
+| High | A reset link belongs to a different account | Explain that the link controls its recipient account, show the currently signed-in handle, and label the action as a session switch. Actual HTTP/browser regression verifies the target session changes while an unrelated account's sessions remain intact. |
+| High | Older email link after resend | Reject the replaced token; use the most recent email and offer signed-in recovery. `server/verificationRecovery.test.mjs` performs signup, resend, old-link rejection, newest-link success, a follow write, and feed read. |
+| High | Cross-tab logout, account switch, expired cookie | Revalidate server identity, fence stale replies, clear private state, and retain the durable sign-out barrier. Browser suite covers returning/expired sessions; the actual listener test uses a second live tab during logout and tests stale cookies and expected-account mismatch. |
+| High | Manual admin approval | Admin authority is checked under the write lock. Require reason, selected target, and current email revision. Audit, provenance and token cleanup commit together. Independent-connection tests cover concurrent requests and demotion while awaiting the lock. |
+| Medium | Opening another account link in the same tab | Listen to same-document reset/verify fragment/history navigation, replace the active authentication flow, scrub the URL, and remount token-specific forms so stale requests cannot update the replacement form. Malformed, duplicate or conflicting capabilities clear the older form and show recovery without an authentication request. Browser regression first reproduced failure without reloading the page. |
+| Medium | Forgot-password acknowledgement, cooldown or mail failure | Remain neutral about account existence and delivery. Explain latest-email guidance, one-hour expiry, and the existing 15-minute repeat-request cooldown. Do not report that an email was delivered. |
+| Medium | Reset validation / expired or replaced link | Match the server's password policy before sending. Keep explicit login and request-another-link actions available after rejection. Browser regressions cover both viewport widths. |
+| Medium | Slow or duplicate submissions | Disable repeat submission while pending, preserve form input on failure, cancel ownership when leaving, and revoke uncertain cookie outcomes. Existing keyboard/held-login tests and new reset cross-tab tests exercise real rendered screens. |
+| Medium | Offline startup and unavailable storage | Never authenticate a cached private projection. Keep recovery/retry available; preserve intent through cookie or native persistence fallback. Browser startup/offline cases and native adapter lifecycle tests are separate evidence. |
+| Medium | Additional / linked profiles | Require current credential proof where applicable, preserve two-profile limits, bind expected account on mutations, rotate cookies on switch, and never replay a protected guest action after login. |
+| Low | First public visit | Public browsing remains available without signup. Verification remains required for protected social mutations; recovery changes do not remove that boundary. |
+| Platform gap | Native incoming account links | Shared source declares the `mshpit` scheme but does not consume cold/warm reset or verification URLs. HTTPS association / verified-link configuration is not present. This review does not add an insecure custom-scheme bearer-token handoff or touch the separate Android checkout. Existing native resume and persisted-intent logic can be tested as modules, not claimed as device validation. |
+| Platform gap | Safari, iPhone and proprietary password managers | 390px and 1280px Chromium are browser viewport tests. They are not Safari/WebKit, physical iPhone, native app, email-client, or password-vault validation. These remain an explicit device-test requirement. |
+
+### Release and rollback checklist
+
+1. Read the remote master SHA again before integration. At investigation time it
+   was `92aa96d4f2f18d15222f0453ecf2eed4be971306`; local master was 86 commits
+   behind, and the original fix branch was 2 unique commits ahead / 86 behind.
+   Tracking `origin/master` was stale and must not be mistaken for the fresh
+   remote observation. Integrate only the final reviewed current-base branch,
+   resolve any newer changes, and rerun the full build/tests. Keep the separate
+   Discover work isolated until its reviewed changes are intentionally combined.
+2. Obtain explicit release approval for the exact final commit. Repository
+   configuration targets `master` with `autoDeployTrigger: checksPass`, so a
+   push/merge can initiate deployment. Preparation is not permission to do so.
+3. The configured runtime entry is `scripts/start-production.mjs`. Before it
+   imports the database migration code, it requires a consistent SQLite
+   `VACUUM INTO` snapshot and verifies it. Confirm the snapshot exists on the
+   persistent data disk, opens successfully, and passes the repository's
+   manifest, table-count, integrity and foreign-key checks. Do not copy a live
+   `pit.db` alone while its WAL is active. Do not bypass a backup failure or
+   enable empty-database bootstrap to get past it.
+4. The additive migration creates nullable `email_verification_method`, plus
+   `email_verification_revision INTEGER NOT NULL DEFAULT 0` and an email-update
+   revision trigger. Startup applies these inside its existing immediate
+   transaction. A later migration failure rolls all three back; tests verify
+   this and a subsequent successful retry. Legacy verification/provenance is
+   not reclassified as proof of delivery.
+5. A persistent disk prevents zero-downtime replacement. Confirm startup backup
+   and migration success, then use read-only health/readiness and exact release
+   identifiers to verify rollout. No actual account verification or real email
+   test is implied by release approval. Those need their own authorization.
+6. For a code rollback, retain the additive columns/trigger. An older binary
+   can use the schema but does not enforce the new admin contract or maintain
+   new provenance; do not treat old behavior as equivalent. A database restore
+   is a separate destructive operation that can discard writes since the
+   snapshot and requires an explicit, reviewed recovery plan. Do not restore a
+   backup automatically as part of a code rollback.
+
+The legacy exported `forceVerify` helper has only test callers. Runtime manual
+administration uses the audited HTTP action; new callers must not reuse the
+legacy helper's older welcome/audit behavior. Any future email-change flow must
+still invalidate its verification state and live capabilities; the revision
+trigger protects stale admin selection and does not introduce an email-change
+feature.
+
+### Local validation evidence
+
+The final exported entry is `index-523371a5a202f8f8bd6fb10db2dfc2c4.js`.
+`node scripts/run-tests.mjs` completed with 6,297 passed, one skipped and zero
+failures (6,298 total). `check-syntax` passed all 852 Node files and the
+architecture gate passed without increasing its allowances. Production web
+export passed with 507.6 KiB initial gzip JavaScript against the 512 KiB limit.
+The full mocked-API Chromium browser suite passed 76/76 cases at mobile and
+desktop widths. The actual local listener plus Chromium runner passed 15/15 cases with fresh
+synthetic accounts, an isolated throwaway database, and outbound traffic blocked.
+The independent reviewer reported no remaining blocking findings and separately
+passed 41 focused tests plus 23 final link/parser/transition tests.
+
+The deployed incident's strongest hypothesis remains an older link opened after
+resend; response bodies and account identity were unavailable, so this is not a
+proven root cause. The fix addresses the reproduced failure modes without
+claiming that administrative verification proves delivery of an email.
