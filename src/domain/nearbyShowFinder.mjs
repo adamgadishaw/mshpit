@@ -95,19 +95,21 @@ export function nearbyEventImage(event) {
     return null;
   }
 }
+let eventDateFormatter;
+let eventEndDateFormatter;
 export function nearbyEventDate(event) {
   const date = toIsoDate(event?.date);
   if (!date) return "Date to be announced";
   const [year, month, day] = date.split("-").map(Number);
-  const label = new Intl.DateTimeFormat("en", {
+  const label = (eventDateFormatter ||= new Intl.DateTimeFormat("en", {
     timeZone: "UTC",
     weekday: "short",
     month: "short",
     day: "numeric",
     year: "numeric"
-  }).format(new Date(Date.UTC(year, month - 1, day)));
+  })).format(new Date(Date.UTC(year, month - 1, day)));
   const endDate = toIsoDate(event?.eventEndDate);
-  const range = endDate > date ? " through " + new Intl.DateTimeFormat("en", {timeZone:"UTC",month:"short",day:"numeric",year:"numeric"}).format(new Date(endDate+"T12:00:00Z")) : "";
+  const range = endDate > date ? " through " + (eventEndDateFormatter ||= new Intl.DateTimeFormat("en", {timeZone:"UTC",month:"short",day:"numeric",year:"numeric"})).format(new Date(endDate+"T12:00:00Z")) : "";
   const time = String(event?.startLocalTime || "").match(/^(\d{2}):(\d{2})(?::\d{2})?$/);
   const valid = time && +time[1] < 24 && +time[2] < 60;
   return label + range + (valid ? " · " + (+time[1] % 12 || 12) + ":" + time[2] + (+time[1] >= 12 ? " PM" : " AM") : "");

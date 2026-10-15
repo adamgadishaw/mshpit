@@ -135,3 +135,9 @@ test('manual center rejects ambiguous city names and never averages borrowed ven
   assert.equal(nearbyManualCenter({ city: 'Toronto', state: 'Ohio', country: 'USA' }, geo, coordinates).lat, null);
   assert.equal(nearbyManualCenter({ city: 'Unknown', state: 'Ontario', country: 'Canada' }, geo, coordinates).lat, null);
 });
+
+test('shared date formatting preserves leap days, multi-day ranges, and local midnight', () => {
+  assert.match(nearbyEventDate({date:'2028-02-29',eventEndDate:'2028-03-02',startLocalTime:'00:05:00'}), /Tue.*Feb 29.*2028 through Mar 2.*2028.*12:05 AM/);
+  assert.match(nearbyEventDate({date:'2026-10-15',startLocalTime:'12:05:00'}), /Thu.*Oct 15.*2026.*12:05 PM/);
+  assert.equal(nearbyEventDate({date:'bad'}), 'Date to be announced');
+});

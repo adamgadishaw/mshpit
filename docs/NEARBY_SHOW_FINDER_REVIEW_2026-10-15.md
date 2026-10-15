@@ -1,5 +1,7 @@
 # Nearby show finder: local review, 2026-10-15
 
+**Follow-up:** [focused scroll profile](NEARBY_SCROLL_PROFILE_2026-10-15.md) records 69 passing tests, the measured date-formatter fix, equivalent before/after scroll runs, an independent native control, and the remaining browser-control blocker.
+
 Review branch: `codex/nearby-show-finder-20261015`, based on `f658570`, in `D:\Development\Apps\mshpit`. No push, deployment, production test posts, enrollment, purchases, signing changes or new dependencies. The original website checkout and separate font-CSP review worktree were preserved. The shared website/app change is available for local review only.
 
 ## Behavior
