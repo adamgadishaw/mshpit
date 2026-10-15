@@ -38,11 +38,11 @@ export default function VerifyEmailBanner({ email, onResend, blockedAction = nul
 
   const statusCopy = {
     idle: "Check your inbox for the confirmation link, or request a fresh one.",
-    sending: "Sending a fresh link...",
-    sent: "Fresh link sent. Check your inbox and spam folder.",
+    sending: "Requesting a fresh link. Waiting for the mail provider...",
+    sent: "Mail provider accepted the request; inbox delivery is not confirmed. Use the most recent email and check spam. Earlier links no longer work.",
     recent: "A link was sent recently. Check your inbox and spam folder.",
     confirmed: "Confirmed. Refreshing your account...",
-    unavailable: "We couldn't send a new link just now. Try again in a bit.",
+    unavailable: "Delivery could not be confirmed. A new request may have replaced earlier links. Check the most recent email or try again later.",
   }[state];
   const canResend = state === "idle" || state === "unavailable";
 
@@ -98,8 +98,8 @@ export default function VerifyEmailBanner({ email, onResend, blockedAction = nul
       <View style={styles.bannerMark}><Icon name="mail" size={15} color={colors.gold} /></View>
       <View style={styles.bannerCopy}>
         <Text style={styles.bannerTitle}>Confirm your email to join in</Text>
-        <Text style={styles.bannerText} numberOfLines={2}>
-          You can explore now. Confirm before you post, message, follow, react, or edit public info.
+        <Text style={styles.bannerText} numberOfLines={state === "idle" ? 2 : undefined} accessibilityLiveRegion="polite">
+          {state === "idle" ? "Use the most recent confirmation email. Resending replaces earlier links." : statusCopy}
         </Text>
       </View>
       <Pressable
@@ -111,7 +111,7 @@ export default function VerifyEmailBanner({ email, onResend, blockedAction = nul
         accessibilityState={{ disabled: !canResend, busy: state === "sending" }}
       >
         <Text style={styles.bannerActionText}>
-          {state === "sending" ? "Sending..." : state === "sent" || state === "recent" ? "Email sent" : state === "confirmed" ? "Confirmed" : "Resend"}
+          {state === "sending" ? "Sending..." : state === "sent" || state === "recent" ? "Check inbox" : state === "confirmed" ? "Confirmed" : "Resend"}
         </Text>
       </Pressable>
     </View>

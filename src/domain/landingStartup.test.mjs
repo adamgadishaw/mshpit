@@ -173,6 +173,6 @@ test("actual password reset completion consumes its token before opening Feed in
   assert.equal(calls[0], "clear-token");
   assert.deepEqual(calls[1], { next: { stack: [{}], tab: "feed", landing: false, accountId: null }, path: "/feed", mode: "replace" });
   const source = await readFile(new URL("../../App.js", import.meta.url), "utf8");
-  assert.match(source, /<ResetPasswordScreen token=\{resetToken\} onDone=\{finishPasswordReset\} onCancel=\{clearResetUrl\}/,
+  assert.match(source, /<ResetPasswordScreen token=\{resetToken\} key=\{resetToken\} onDone=\{finishPasswordReset\} onCancel=\{clearResetUrl\}/,
     "cancellation must only consume the reset token, never imply successful authentication");
 });
