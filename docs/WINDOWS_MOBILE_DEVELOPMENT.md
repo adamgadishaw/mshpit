@@ -1,5 +1,7 @@
 # MSHPIT: free Windows Android development
 
+**2026-10-15 update:** the Android emulator and installed development app now run successfully. The initial virtualization blocker below is historical. See [the current local review and run commands](NEARBY_SHOW_FINDER_REVIEW_2026-10-15.md) for verified screenshots, read-only review mode, current branch and remaining device limitations.
+
 Updated 2026-10-14. The isolated app checkout is now `D:\Development\Apps\mshpit`, branch `codex/windows-android-dev-20261014`, based on GitHub master `92aa96d`. The earlier Codex task checkout and the original `D:\Websites\Concert Website\pit` working tree/worktrees were preserved. No production app screen, server behavior, deployment or production data was changed.
 
 ## Verified outcome and remaining blocker

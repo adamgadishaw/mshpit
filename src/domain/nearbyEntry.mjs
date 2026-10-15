@@ -1,5 +1,5 @@
 export function nearbyInitialTab(value) {
-  return value === "shows" ? "shows" : "venues";
+  return value === "venues" ? "venues" : "shows";
 }
 
 export function nearbyLocationPrompt(center) {
@@ -9,6 +9,6 @@ export function nearbyLocationPrompt(center) {
     body: "Choose another city to see nearby venues and shows.",
   } : {
     title: "Choose a city to find shows",
-    body: "Pick a city to see its upcoming concerts and venues. You can browse anywhere.",
+    body: "Choose a city for upcoming shows and venues.",
   };
 }

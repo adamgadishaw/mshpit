@@ -104,3 +104,5 @@ test("unrelated and unresolved collection routes do not manufacture frames", () 
     null,
   );
 });
+
+ test('Nearby entry URL round-trips to the show finder without an entity lookup', () => { assert.deepEqual(publicEntryFrame('/nearby'), { nearby: true }); assert.equal(publicFramePath({ nearby: true }), '/nearby'); });

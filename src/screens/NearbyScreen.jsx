@@ -1,297 +1,221 @@
-import { useEffect, useMemo, useState } from "react";
-import { FlatList, Platform, Pressable, StyleSheet, Text, View } from "react-native";
-import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { colors, displayFont, focusRing, radius } from "../theme";
 import { useStore } from "../store";
-import Icon from "../components/Icon";
-import ConcertMap from "../components/NearbyVenueMap";
+import { GEO } from "../geo";
+import { cityCoords } from "../data";
 import LocationPicker from "../components/LocationPicker";
+import DatePicker from "../components/DatePicker";
 import ScreenHeader from "../components/ScreenHeader";
-import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
+import { NearbyShowRow, NearbyVenueRow } from "../components/NearbyFinderRows";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
-import { nearestMapPoints } from "../domain/venueDiscovery.mjs";
 import { mapCoordinate } from "../domain/mapCoordinates.mjs";
 import { nearbyInitialTab, nearbyLocationPrompt } from "../domain/nearbyEntry.mjs";
+import { nearbyManualCenter, nearbyPlaceMatches, nearbyShowResults, nearbyToday } from "../domain/nearbyShowFinder.mjs";
 import useScopedRefresh from "../hooks/useScopedRefresh";
-import { openTicketLink } from "../lib/ticketLinks";
-
 const RADII = [25, 50, 75, 150];
-const MAP_POINT_LIMIT = 60;
-
-export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist, initialTab = "venues" }) {
-  const { session, localVenues, regionShows, venueSummary, locationCenter, refreshTourDates } = useStore();
-  const [center, setCenter] = useState(session?.home || null);
-  const native = Platform.OS !== "web";
-  const [mapVisible, setMapVisible] = useState(false);
-  const [km, setKm] = useState(75);
-  const [tab, setTab] = useState(() => nearbyInitialTab(initialTab));
-  useEffect(() => { setTab(nearbyInitialTab(initialTab)); }, [initialTab]);
-  const [pickingCity, setPickingCity] = useState(false);
-  const [refreshError, setRefreshError] = useState(false);
-  const nearbyRefreshTarget = [center?.lat ?? "none", center?.lng ?? "none", km, tab].join(":");
-  const nearbyRefreshScope = refreshScope(session?.id, "nearby", nearbyRefreshTarget);
-  const { refresh: refreshNearby, refreshing: nearbyRefreshing } = useScopedRefresh({
+const FILTERS = [["all", "All dates"], ["tonight", "Tonight"], ["weekend", "This weekend"], ["date", "Pick a date"]];
+function Choice({
+  label,
+  selected,
+  onPress
+}) {
+  return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{
+    selected
+  }} style={({
+    focused
+  }) => [styles.choice, selected && styles.choiceOn, focused && focusRing]}><Text style={[styles.choiceText, selected && styles.choiceTextOn]}>{label}</Text></Pressable>;
+}
+export default function NearbyScreen({
+  onClose,
+  onOpenVenue,
+  onOpenArtist,
+  onOpenEvent,
+  initialTab,
+  initialSelection,
+  onSelectionChange
+}) {
+  const {
+    session,
+    localVenues,
+    regionShows,
+    refreshTourDates,
+    tourDates,
+    searchVenues
+  } = useStore();
+  const [center, setCenter] = useState(initialSelection?.center || session?.home || null),
+    [km, setKm] = useState(initialSelection?.km || 75);
+  const [tab, setTab] = useState(() => nearbyInitialTab(initialTab || initialSelection?.tab));
+  useEffect(() => {
+    if (initialTab) setTab(nearbyInitialTab(initialTab));
+  }, [initialTab]);
+  const [mode, setMode] = useState(initialSelection?.mode || "all"),
+    [picked, setPicked] = useState(initialSelection?.picked || ""),
+    [pickingDate, setPickingDate] = useState(false),
+    [pickingCity, setPickingCity] = useState(false),
+    [refreshError, setRefreshError] = useState(false),
+    [now, setNow] = useState(Date.now);
+  const started = useRef(false);
+  useEffect(() => { onSelectionChange?.({ center, km, tab, mode, picked }); }, [center, km, tab, mode, picked, onSelectionChange]);
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(timer);
+  }, []);
+  const nearbyRefreshScope = refreshScope(session?.id, "nearby", [center?.lat, center?.lng, center?.city, km].join(":"));
+  const {
+    refresh: refreshNearby,
+    refreshing
+  } = useScopedRefresh({
     scope: nearbyRefreshScope,
-    task: async ({ signal }) => {
+    task: async ({
+      signal
+    }) => {
       setRefreshError(false);
-      return refreshTourDates({ signal });
+      return refreshTourDates({
+        signal
+      });
     },
-    onError: () => setRefreshError(true),
+    onError: () => setRefreshError(true)
   });
-
-  // Radius/city/data changes recompute; switching the local view does not rescan the catalog.
-  const nativeResults = useMemo(() => native && mapCoordinate(center) ? {
-    venues: localVenues(km, center), shows: regionShows(km, center),
-  } : null, [native, center, km, localVenues, regionShows]);
-
-  if (pickingCity) {
-    return (
-      <LocationPicker
-        onClose={() => setPickingCity(false)}
-        onSelect={(place) => {
-          setCenter(locationCenter(place));
-          setPickingCity(false);
-        }}
-      />
-    );
-  }
-
-  const hasCoords = !!mapCoordinate(center);
-  const locationPrompt = nearbyLocationPrompt(center);
-  const venues = hasCoords ? (native ? nativeResults.venues : localVenues(km, center)) : [];
-  const shows = hasCoords ? (native ? nativeResults.shows : regionShows(km, center)) : [];
-  const mapPoints = native && !mapVisible ? [] : nearestMapPoints(venues.map((venue) => {
-    const summary = venueSummary(venue.name);
-    return {
-      name: venue.name,
-      lat: venue.coord.lat,
-      lng: venue.coord.lng,
-      distanceKm: venue.distanceKm,
-      photo: summary.photo || null,
-      photoProvenance: summary.photoProvenance || null,
-      sub: venue.place || center?.city || "",
-      rating: summary.avgOverall || 0,
-      reviews: summary.totalShows || 0,
-      capacity: summary.capacity || null,
-    };
-  }), MAP_POINT_LIMIT);
-  const data = tab === "venues" ? venues : shows;
-
-  const renderItem = ({ item }) => {
-    if (tab === "venues") {
-      const summary = venueSummary(item.name);
-      return (
-        <VenueDiscoveryCard
-          venue={{ ...item, rating: summary.avgRoom, capacity: summary.capacity }}
-          onPress={() => onOpenVenue?.(item.name)}
-        />
-      );
+  useEffect(() => {
+    if (!started.current) {
+      started.current = true;
+      void refreshNearby();
     }
-    return (
-      <UpcomingEventCard
-        event={item}
-        onOpenArtist={() => onOpenArtist?.(item.artist)}
-        onOpenVenue={() => onOpenVenue?.(item.venue)}
-        onTickets={() => { void openTicketLink(item.ticketUrl); }}
-      />
-    );
-  };
-
-  return (
-    <View style={styles.wrap}>
-      <ScreenHeader title="Near you" onBack={onClose} />
-      <VinylRefreshBoundary
-        refreshing={nearbyRefreshing}
-        onRefresh={refreshNearby}
-        accessibilityLabel="Refresh nearby venues and shows"
-      >
-      <FlatList
-        key={tab}
-        data={data}
-        renderItem={renderItem}
-        keyExtractor={(item) => String(item.id || item.name)}
-        ItemSeparatorComponent={ListGap}
-        contentContainerStyle={styles.content}
-        contentInsetAdjustmentBehavior="automatic"
-        showsVerticalScrollIndicator={false}
-        initialNumToRender={8}
-        maxToRenderPerBatch={8}
-        windowSize={7}
-        ListHeaderComponent={(
-          <View style={styles.headerContent}>
-            {refreshError ? (
-              <Text style={styles.refreshError} accessibilityRole="alert">Nearby results could not refresh. Your current city, radius, and results are unchanged.</Text>
-            ) : null}
-            <View style={styles.locationHero}>
-              {!native ? <View style={styles.heroGlow} /> : null}
-              <Text style={styles.eyebrow}>EXPLORE AROUND YOU</Text>
-              <Text style={styles.heroTitle}>{center?.city ? `What’s playing near ${center.city}?` : "Put live music on the map."}</Text>
-              {!native ? <Text style={styles.heroBody}>Move the radius from neighbourhood rooms to road-trip shows. Results use the city and distance you choose.</Text> : null}
-              <Pressable
-                style={({ pressed, focused }) => [styles.cityButton, pressed && styles.controlPressed, focused && focusRing]}
-                onPress={() => setPickingCity(true)}
-                accessibilityRole="button"
-                accessibilityLabel={`Browse another city${center?.city ? `, currently ${center.city}` : ""}`}
-              >
-                <View style={styles.cityIcon}><Icon name="pin" size={17} color={colors.amber} /></View>
-                <View style={styles.cityCopy}>
-                  <Text style={styles.cityLabel}>BROWSING FROM</Text>
-                  <Text style={styles.cityName}>{center?.label || center?.city || "Choose a city"}</Text>
-                </View>
-                <Text style={styles.changeText}>Browse another city</Text>
-                <Icon name="chevron-right" size={17} color={colors.textFaint} />
-              </Pressable>
-            </View>
-
-            <View accessibilityRole="radiogroup" accessibilityLabel="Search radius" style={styles.radii}>
-              {RADII.map((radiusKm) => (
-                <Pressable
-                  key={radiusKm}
-                  style={({ pressed, focused }) => [styles.radiusChip, km === radiusKm && styles.radiusChipOn, pressed && styles.controlPressed, focused && focusRing]}
-                  onPress={() => setKm(radiusKm)}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: km === radiusKm }}
-                  accessibilityLabel={`${radiusKm} kilometre radius`}
-                >
-                  <Text style={[styles.radiusText, km === radiusKm && styles.radiusTextOn]}>{radiusKm}</Text>
-                  <Text style={[styles.radiusUnit, km === radiusKm && styles.radiusTextOn]}>KM</Text>
-                </Pressable>
-              ))}
-            </View>
-
-            {!hasCoords ? (
-              <View style={styles.emptyLocation}>
-                <View style={styles.emptyLocationIcon}><Icon name="map" size={25} color={colors.textFaint} /></View>
-                <Text style={styles.emptyTitle}>{locationPrompt.title}</Text>
-                <Text style={styles.emptyBody}>{locationPrompt.body}</Text>
-                <Pressable style={styles.chooseButton} onPress={() => setPickingCity(true)}><Text style={styles.chooseText}>Choose a city</Text></Pressable>
-              </View>
-            ) : (
-              <>
-                {!native ? <View style={styles.statsRow}>
-                  <LocalStat value={venues.length} label="VENUES" icon="pin" />
-                  <LocalStat value={shows.length} label="UPCOMING" icon="calendar" accent />
-                  <LocalStat value={km} label="KM RADIUS" icon="map" />
-                </View> : null}
-                {native ? <View style={styles.viewControls}><Text style={styles.resultSummary}>{venues.length} venues · {shows.length} shows</Text><Pressable accessibilityRole="button" accessibilityLabel={mapVisible ? "Hide venue location map" : "Show venue location map"} accessibilityState={{ expanded: mapVisible }} onPress={() => setMapVisible(v => !v)} style={styles.mapToggle}><Icon name="map" size={16} color={colors.amber} /><Text style={styles.changeText}>{mapVisible ? "Hide map" : "Show map"}</Text></Pressable></View> : null}
-                {(!native || mapVisible) ? <View style={styles.mapCard}>
-                  <ConcertMap points={mapPoints} highlight={{ lat: center.lat, lng: center.lng }} label={center.city} onOpenVenue={onOpenVenue} />
-                  <View style={styles.mapFooter}>
-                    <Icon name="map" size={14} color={colors.cool} />
-                    <Text style={styles.mapCaption}>
-                      {venues.length > MAP_POINT_LIMIT ? `Nearest ${MAP_POINT_LIMIT} of ${venues.length} venues shown` : `${venues.length} venue${venues.length === 1 ? "" : "s"} mapped`} · {shows.length} show{shows.length === 1 ? "" : "s"} within {km} km
-                    </Text>
-                  </View>
-                </View> : null}
-                <View style={styles.segment} accessibilityRole="tablist">
-                  <Segment label="Venues" count={venues.length} selected={tab === "venues"} onPress={() => setTab("venues")} />
-                  <Segment label="Upcoming" count={shows.length} selected={tab === "shows"} onPress={() => setTab("shows")} />
-                </View>
-                <View style={styles.sectionHead}>
-                  <Text style={styles.sectionKicker}>{tab === "venues" ? "ROOMS IN RANGE" : "YOUR LOCAL LINEUP"}</Text>
-                  <Text style={styles.sectionTitle}>{tab === "venues" ? "Closest venues first" : "Upcoming shows near you"}</Text>
-                </View>
-              </>
-            )}
-          </View>
-        )}
-        ListEmptyComponent={hasCoords ? (
-          <View style={styles.resultsEmpty}>
-            <Icon name={tab === "venues" ? "pin" : "calendar"} size={25} color={colors.textFaint} />
-            <Text style={styles.emptyTitle}>{tab === "venues" ? "No venues in this radius" : "No upcoming shows in this radius"}</Text>
-            <Text style={styles.emptyBody}>Try widening the search or browsing another city.</Text>
-          </View>
-        ) : null}
-      />
-      </VinylRefreshBoundary>
-    </View>
-  );
+  }, [refreshNearby]);
+  const hasCoords = !!mapCoordinate(center),
+    hasCity = !!center?.city?.trim();
+  const results = useMemo(() => {
+    if (!hasCity) return {
+      venues: [],
+      shows: []
+    };
+    if (hasCoords) return {
+      venues: localVenues(km, center),
+      shows: regionShows(km, center)
+    };
+    return {
+      venues: searchVenues(center.city, 500).filter(v => nearbyPlaceMatches(v, center)),
+      shows: tourDates.filter(e => nearbyPlaceMatches(e, center))
+    };
+  }, [center, km, hasCity, hasCoords, localVenues, regionShows, searchVenues, tourDates]);
+  const shows = useMemo(() => nearbyShowResults(results.shows, {
+    mode,
+    picked,
+    now
+  }), [results.shows, mode, picked, now]);
+  const data = tab === "shows" ? shows : results.venues,
+    locationPrompt = nearbyLocationPrompt(center);
+  if (pickingCity) return <LocationPicker onClose={() => setPickingCity(false)} onSelect={place => {
+    setCenter(nearbyManualCenter(place, GEO, cityCoords));
+    setPickingCity(false);
+  }} />;
+  return <View style={styles.wrap}><ScreenHeader title="Near you" onBack={onClose} /><VinylRefreshBoundary refreshing={refreshing} onRefresh={refreshNearby} accessibilityLabel="Refresh nearby shows and venues"><FlatList key={tab} data={data} keyExtractor={item => String(item.id || item.name)} initialNumToRender={7} maxToRenderPerBatch={7} windowSize={5} showsVerticalScrollIndicator={false} contentInsetAdjustmentBehavior="automatic" contentContainerStyle={styles.content} ItemSeparatorComponent={() => <View style={{
+        height: 10
+      }} />} renderItem={({
+        item
+      }) => tab === "shows" ? <NearbyShowRow event={item} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onOpenEvent={onOpenEvent} /> : <NearbyVenueRow venue={item} onOpenVenue={onOpenVenue} />} ListHeaderComponent={<View style={styles.header}>
+      <Text style={styles.heading}>{hasCity ? "Find shows near " + center.city : "Find your next show"}</Text>
+      <View style={styles.controls}><Choice label={center?.label || center?.city || "Choose a city"} onPress={() => setPickingCity(true)} />{hasCoords ? <View style={styles.choices}>{RADII.map(value => <Choice key={value} label={value + " km"} selected={km === value} onPress={() => setKm(value)} />)}</View> : null}</View>
+      {hasCity && !hasCoords ? <Text style={styles.caption}>City results · distance unavailable</Text> : null}
+      <View style={styles.choices}><Choice label={"Shows (" + shows.length + ")"} selected={tab === "shows"} onPress={() => setTab("shows")} /><Choice label={"Venues (" + results.venues.length + ")"} selected={tab === "venues"} onPress={() => setTab("venues")} /></View>
+      {tab === "shows" ? <><View style={styles.choices}>{FILTERS.map(([value, label]) => <Choice key={value} label={value === "date" && mode === "date" ? picked : label} selected={mode === value} onPress={() => {
+              setMode(value);
+              if (value === "date" && !picked) setPicked(nearbyToday(now, results.shows.find(e => e.eventTimezone)?.eventTimezone || "UTC"));
+              setPickingDate(value === "date");
+            }} />)}</View>{pickingDate ? <View style={styles.picker}><DatePicker value={picked} onChange={setPicked} years={[new Date(now).getUTCFullYear(), new Date(now).getUTCFullYear() + 1, new Date(now).getUTCFullYear() + 2]} accessibilityLabel="Show date" /><Choice label="Done" onPress={() => setPickingDate(false)} /></View> : null}</> : null}
+      {refreshError ? <View><Text style={styles.error} accessibilityRole="alert">Could not refresh. Showing available results.</Text><Choice label="Try again" onPress={refreshNearby} /></View> : null}
+      {refreshing ? <View style={styles.loading}><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.caption}>Updating shows…</Text></View> : null}
+      {tab === "shows" && shows.some(e => !e.eventTimezone) ? <Text style={styles.caption}>Dates use venue time; UTC where unavailable.</Text> : null}
+    </View>} ListEmptyComponent={<View style={styles.empty}><Text style={styles.emptyTitle}>{!hasCity ? locationPrompt.title : refreshing ? "Finding shows…" : tab === "shows" ? "No shows for these filters" : "No venues listed here yet"}</Text><Text style={styles.caption}>{!hasCity ? locationPrompt.body : tab === "shows" ? "Try all dates, a wider distance or another city." : "Try a wider distance or another city."}</Text>{hasCity && tab === "shows" && mode !== "all" ? <Choice label="Show all dates" onPress={() => {
+          setMode("all");
+          setPickingDate(false);
+        }} /> : null}</View>} /></VinylRefreshBoundary></View>;
 }
-
-function Segment({ label, count, selected, onPress }) {
-  return (
-    <Pressable
-      style={({ pressed, focused }) => [styles.segmentButton, selected && styles.segmentButtonOn, pressed && styles.controlPressed, focused && focusRing]}
-      onPress={onPress}
-      accessibilityRole="tab"
-      accessibilityState={{ selected }}
-      accessibilityLabel={`${label}, ${count}`}
-    >
-      <Text style={[styles.segmentText, selected && styles.segmentTextOn]}>{label}</Text>
-      <View style={[styles.segmentCount, selected && styles.segmentCountOn]}><Text style={[styles.segmentCountText, selected && styles.segmentCountTextOn]}>{count}</Text></View>
-    </Pressable>
-  );
-}
-
-function LocalStat({ value, label, icon, accent = false }) {
-  return (
-    <View style={styles.stat}>
-      <Icon name={icon} size={15} color={accent ? colors.amber : colors.textFaint} />
-      <View>
-        <Text style={[styles.statValue, accent && styles.statValueAccent]}>{Number(value || 0).toLocaleString()}</Text>
-        <Text style={styles.statLabel}>{label}</Text>
-      </View>
-    </View>
-  );
-}
-
-function ListGap() {
-  return <View style={styles.listGap} />;
-}
-
-const nativeControl = Platform.OS !== "web";
 const styles = StyleSheet.create({
-  viewControls: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  resultSummary: { color: colors.textDim, fontSize: 12 },
-  mapToggle: { minHeight: 44, flexDirection: "row", gap: 6, alignItems: "center", paddingHorizontal: 10 },
-  wrap: { flex: 1, backgroundColor: colors.bg },
-  content: { width: "100%", maxWidth: 980, alignSelf: "center", paddingHorizontal: 16, paddingBottom: 56 },
-  headerContent: { gap: 14, paddingTop: 12, paddingBottom: 14 },
-  refreshError: { color: colors.danger, fontSize: 12.5, lineHeight: 18 },
-  locationHero: { overflow: "hidden", padding: nativeControl ? 12 : 22, borderRadius: nativeControl ? 12 : radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
-  heroGlow: { position: "absolute", width: 270, height: 270, borderRadius: 135, top: -160, right: -50, backgroundColor: colors.cool, opacity: 0.14, ...Platform.select({ web: { filter: "blur(12px)" } }) },
-  eyebrow: { color: nativeControl ? colors.amber : colors.cool, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.7 },
-  heroTitle: { maxWidth: 630, color: colors.text, fontFamily: displayFont, fontSize: Platform.OS === "web" ? 28 : 22, lineHeight: Platform.OS === "web" ? 33 : 28, fontWeight: "900", letterSpacing: -0.75, marginTop: 7 },
-  heroBody: { maxWidth: 640, color: colors.textDim, fontSize: 13, lineHeight: 20, marginTop: 7 },
-  cityButton: { minHeight: Platform.OS === "web" ? 66 : 52, flexDirection: "row", alignItems: "center", gap: 10, padding: nativeControl ? 8 : 10, marginTop: nativeControl ? 12 : 18, borderRadius: nativeControl ? 10 : radius.md, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, ...shadow.control },
-  cityIcon: { width: nativeControl ? 32 : 42, height: nativeControl ? 32 : 42, alignItems: "center", justifyContent: "center", borderRadius: nativeControl ? 8 : 14, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.amber },
-  cityCopy: { flex: 1, minWidth: 0 },
-  cityLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 1 },
-  cityName: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "900", marginTop: 2 },
-  changeText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
-  controlPressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
-  radii: { flexDirection: "row", gap: 8 },
-  radiusChip: { flex: 1, minWidth: 0, minHeight: 48, flexDirection: "row", alignItems: nativeControl ? "center" : "baseline", justifyContent: "center", gap: 3, borderRadius: nativeControl ? 8 : radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
-  radiusChipOn: { backgroundColor: colors.surfaceAlt, borderColor: colors.amber },
-  radiusText: { color: colors.textDim, fontFamily: mono, fontSize: 14, fontWeight: "800", fontVariant: ["tabular-nums"] },
-  radiusUnit: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "800" },
-  radiusTextOn: { color: colors.amber },
-  statsRow: { flexDirection: "row", gap: 8 },
-  stat: { flex: 1, minWidth: 0, minHeight: 66, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, padding: 9, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
-  statValue: { color: colors.text, fontFamily: mono, fontSize: 17, fontWeight: "900", fontVariant: ["tabular-nums"] },
-  statValueAccent: { color: colors.amber },
-  statLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 7, fontWeight: "900", letterSpacing: 0.6 },
-  mapCard: { overflow: "hidden", padding: 8, borderRadius: radius.lg, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
-  mapFooter: { minHeight: 38, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 8 },
-  mapCaption: { flexShrink: 1, color: colors.textFaint, fontFamily: mono, fontSize: 10, textAlign: "center" },
-  segment: { flexDirection: "row", gap: 8, padding: 4, borderRadius: nativeControl ? 10 : radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
-  segmentButton: { flex: 1, minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: nativeControl ? 8 : 14 },
-  segmentButtonOn: { backgroundColor: nativeControl ? colors.bgElev : colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
-  segmentText: { color: colors.textDim, fontFamily: displayFont, fontSize: 13, fontWeight: "800" },
-  segmentTextOn: { color: colors.amber },
-  segmentCount: { minWidth: 24, height: 22, alignItems: "center", justifyContent: "center", paddingHorizontal: 6, borderRadius: 11, backgroundColor: colors.bgElev },
-  segmentCountOn: { backgroundColor: colors.amberStrong },
-  segmentCountText: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "900", fontVariant: ["tabular-nums"] },
-  segmentCountTextOn: { color: "#1A1206" },
-  sectionHead: { paddingTop: 3 },
-  sectionKicker: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5 },
-  sectionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 18, fontWeight: "900", marginTop: 3 },
-  listGap: { height: 10 },
-  emptyLocation: { alignItems: "center", padding: 28, borderRadius: radius.lg, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
-  emptyLocationIcon: { width: 54, height: 54, alignItems: "center", justifyContent: "center", borderRadius: 18, backgroundColor: colors.bgElev, marginBottom: 12 },
-  resultsEmpty: { alignItems: "center", padding: 28, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
-  emptyTitle: { color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "900", textAlign: "center", marginTop: 9 },
-  emptyBody: { maxWidth: 440, color: colors.textDim, fontSize: 13, lineHeight: 19, textAlign: "center", marginTop: 5 },
-  chooseButton: { minHeight: 44, justifyContent: "center", paddingHorizontal: 17, borderRadius: radius.pill, backgroundColor: colors.amberStrong, marginTop: 15 },
-  chooseText: { color: "#1A1206", fontFamily: displayFont, fontSize: 13, fontWeight: "900" },
+  wrap: {
+    flex: 1,
+    backgroundColor: colors.bg
+  },
+  content: {
+    width: "100%",
+    maxWidth: 980,
+    alignSelf: "center",
+    paddingHorizontal: 16,
+    paddingBottom: 56
+  },
+  header: {
+    gap: 12,
+    paddingTop: 18,
+    paddingBottom: 18
+  },
+  heading: {
+    color: colors.text,
+    fontFamily: displayFont,
+    fontSize: 25,
+    lineHeight: 31,
+    fontWeight: "900"
+  },
+  controls: {
+    gap: 10
+  },
+  choices: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8
+  },
+  choice: {
+    minHeight: 44,
+    paddingHorizontal: 13,
+    justifyContent: "center",
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.bgElev,
+    alignSelf: "flex-start"
+  },
+  choiceOn: {
+    borderColor: colors.amber,
+    backgroundColor: colors.surface
+  },
+  choiceText: {
+    color: colors.textDim,
+    fontSize: 12,
+    fontWeight: "700"
+  },
+  choiceTextOn: {
+    color: colors.amber
+  },
+  caption: {
+    color: colors.textDim,
+    fontSize: 12,
+    lineHeight: 18
+  },
+  error: {
+    color: colors.danger,
+    fontSize: 12,
+    lineHeight: 18
+  },
+  loading: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center"
+  },
+  picker: {
+    padding: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    borderRadius: radius.sm,
+    gap: 10
+  },
+  empty: {
+    paddingVertical: 24,
+    gap: 10
+  },
+  emptyTitle: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: "700"
+  }
 });

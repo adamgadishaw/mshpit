@@ -6118,11 +6118,11 @@ export function StoreProvider({ children }) {
     if (cache.size >= 8192) cache.delete(cache.keys().next().value);
     cache.set(raw, key); return key;
   };
-  const nativeVenueCatalogResolver = useMemo(() => Platform.OS === "web" ? null : createNativeVenueCatalogResolver([
+  const nativeVenueCatalogResolver = useMemo(() => createNativeVenueCatalogResolver([
     ...Object.keys(arenaVenues), ...Object.keys(catalogVenues),
   ]), [catalogVenues]);
-  const venueCatalogEntry = (venueName) => {
-    const key = nativeVenueCatalogResolver ? nativeVenueCatalogResolver(venueName) : resolveVenueCatalogKey(venueName, [
+  const venueCatalogEntry = (venueName, indexed = false) => {
+    const key = (Platform.OS !== "web" || indexed) ? nativeVenueCatalogResolver(venueName) : resolveVenueCatalogKey(venueName, [
       ...Object.keys(arenaVenues),
       ...Object.keys(catalogVenues),
     ]);
@@ -6138,7 +6138,7 @@ export function StoreProvider({ children }) {
   const venueCatalogKey = (venueName) => {
     const canonical = canonicalVenueKey(venueName);
     if (!canonical) return null;
-    const catalogMatch = nativeVenueCatalogResolver ? nativeVenueCatalogResolver(canonical) : resolveVenueCatalogKey(canonical, [
+    const catalogMatch = Platform.OS !== "web" ? nativeVenueCatalogResolver(canonical) : resolveVenueCatalogKey(canonical, [
       ...Object.keys(arenaVenues),
       ...Object.keys(catalogVenues),
     ]);
@@ -6613,13 +6613,13 @@ export function StoreProvider({ children }) {
   };
 
   const nativeVenueCoordinatesRef = useRef(null);
-  const venueCoord = (name) => {
+  const venueCoord = (name, indexed = false) => {
     const k = nativeVenueKey(name) || norm(name);
     const sameVenue = (value) => (nativeVenueKey(value) || norm(value)) === k;
-    const cat = venueCatalogEntry(name);
+    const cat = venueCatalogEntry(name, indexed);
     const catalogCoord = mapCoordinate(cat);
     if (catalogCoord) return catalogCoord;
-    if (Platform.OS !== "web") {
+    if (Platform.OS !== "web" || indexed) {
       let cached = nativeVenueCoordinatesRef.current;
       if (!cached || cached.rated !== ratedShows || cached.dates !== tourDates) {
         cached = { rated: ratedShows, dates: tourDates, index: nativeVenueCoordinates(ratedShows, tourDates, value => nativeVenueKey(value) || norm(value)) };
@@ -6633,16 +6633,16 @@ export function StoreProvider({ children }) {
     return mapCoordinate(event);
   };
 
-  const allVenues = () => {
+  const allVenues = (indexed = false) => {
     const map = {};
     const add = (name, place) => {
       const k = nativeVenueKey(name) || norm(name);
       if (!k || map[k]) return;
-      const cat = venueCatalogEntry(name);
+      const cat = venueCatalogEntry(name, indexed);
       map[k] = {
         name: cat?.name || name,
         place: cat?.place || place || "",
-        coord: venueCoord(name),
+        coord: venueCoord(name, indexed),
         capacity: cat?.capacity || null,
       };
     };
@@ -6653,7 +6653,7 @@ export function StoreProvider({ children }) {
     return Object.values(map);
   };
 
-  const locationCenter = (place) => locationCenterFromVenues(place, allVenues());
+  const locationCenter = (place) => locationCenterFromVenues(place, allVenues(true));
 
   // # of public upcoming dates at a venue (released only).
   const venueUpcomingCount = (name) =>
@@ -6949,39 +6949,22 @@ export function StoreProvider({ children }) {
   const localVenues = (maxKm = 75, center = home) => {
     center = mapCoordinate(center);
     if (!center) return [];
-    if (Platform.OS !== "web") return nativeNearbyVenues(allVenues(), tourDates, {
+    return nativeNearbyVenues(allVenues(true), tourDates, {
       center, maxKm, distance: haversineKm, canonicalKey: name => nativeVenueKey(name) || norm(name),
       isUpcoming: isUpcomingEventDate, now: Date.now(),
     });
-    return allVenues()
-      .filter((v) => v.coord)
-      .map((v) => ({
-        ...v,
-        distanceKm: haversineKm(center, v.coord),
-        upcoming: tourDates.filter((t) => isUpcomingEventDate(t)
-          && (nativeVenueKey(t.venue) || norm(t.venue)) === (nativeVenueKey(v.name) || norm(v.name))
-          && t.releaseAt <= Date.now()).length,
-      }))
-      .filter((v) => v.distanceKm <= maxKm)
-      .sort((a, b) => a.distanceKm - b.distanceKm);
   };
 
-  // Upcoming shows in a region (within maxKm of center), nearest first, with soldOut.
+  // Shared Nearby uses the bounded index on web as well as native; other web lookups retain their resolver.
   const regionShows = (maxKm = 75, center = home) => {
     center = mapCoordinate(center);
     if (!center) return [];
-    if (Platform.OS !== "web") return tourDates
+    return tourDates
       .filter(t => isUpcomingEventDate(t) && t.releaseAt <= Date.now())
-      .map(t => ({ ...t, coord: venueCoord(t.venue) }))
+      .map(t => ({ ...t, coord: mapCoordinate(t) || venueCoord(t.venue, true) }))
       .filter(t => t.coord && haversineKm(center, t.coord) <= maxKm)
       .map(t => ({ ...t, genre: artistGenre(t.artist), distanceKm: haversineKm(center, t.coord) }))
       .sort((a,b) => a.distanceKm - b.distanceKm);
-    return tourDates
-      .filter((t) => isUpcomingEventDate(t) && t.releaseAt <= Date.now())
-      .map((t) => ({ ...t, coord: venueCoord(t.venue), genre: artistGenre(t.artist) }))
-      .filter((t) => t.coord && haversineKm(center, t.coord) <= maxKm)
-      .map((t) => ({ ...t, distanceKm: haversineKm(center, t.coord) }))
-      .sort((a, b) => a.distanceKm - b.distanceKm);
   };
 
   // Feed of people in your city.
