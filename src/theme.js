@@ -173,6 +173,8 @@ export function syncNativeAccountTheme(account) {
   if (!nativeThemeRuntime) return false;
   const ownerId = account?.id || "guest";
   const local = storedThemeSelection();
+  // An unreadable store is not an empty one: never replace a choice we could not inspect.
+  if (local.unavailable) return true;
   const next = local.ownerId === ownerId && validTheme(local.theme) ? local.theme
     : account?.id && validTheme(account.theme) ? account.theme : "stage";
   syncThemeFromAccount(next, ownerId);

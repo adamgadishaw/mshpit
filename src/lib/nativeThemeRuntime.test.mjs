@@ -13,7 +13,7 @@ function setup(initial = null, options = {}) {
   const data = new Map(initial ? [[NATIVE_THEME_KEY, JSON.stringify(initial)]] : []);
   const state = { reloads:0, errors:0, writes:0 };
   const storage = {
-    getItemSync(key) { if(options.readFails) throw Error("read"); return data.get(key) ?? null; },
+    getItemSync(key) { if(options.failNextRead){options.failNextRead=false;throw Error("transient read");} if(options.readFails) throw Error("read"); return data.get(key) ?? null; },
     setItemSync(key,value) { state.writes++; if(options.writeFails) throw Error("write"); if(!options.ignoreWrite)data.set(key,value); },
     removeItemSync(key) { data.delete(key); },
   };
@@ -60,4 +60,29 @@ test("native adapters use installed SQLite and Expo reload, while browser adapte
   const native=readFileSync(new URL("./themeRuntime.native.js",import.meta.url),"utf8"),web=readFileSync(new URL("./themeRuntime.js",import.meta.url),"utf8"),store=readFileSync(new URL("../store.js",import.meta.url),"utf8");
   assert.match(native,/expo-sqlite\/kv-store/);assert.match(native,/reloadAppAsync/);assert.match(web,/writeThemePair\(window\.localStorage/);assert.match(web,/window\.location\.reload/);
   const sync=store.slice(store.indexOf("const syncAccountTheme ="),store.indexOf("// Keep dormant playlist"));assert.ok(sync.indexOf("if (syncNativeAccountTheme(account)) return;")<sync.indexOf('api("/api/me"'),"native reconciliation cannot issue account PATCH");
+});
+
+test("a transient reconciliation read cannot overwrite the same owner's saved preference",async()=>{
+ const faults={},f=setup({theme:"ember",ownerId:"a"},faults),t=f.launch();assert.equal(t.themeKey,"ember");
+ faults.failNextRead=true;t.syncNativeAccountTheme({id:"a",theme:"daylight"});await tick();
+ assert.deepEqual(JSON.parse(f.data.get(NATIVE_THEME_KEY)),{theme:"ember",ownerId:"a"});
+ assert.equal(f.state.writes,0);assert.equal(f.state.reloads,0);
+});
+test("unreadable local preference plus partial account cannot persist a guessed Stage choice",async()=>{
+ const faults={},f=setup({theme:"ember",ownerId:"a"},faults),t=f.launch();
+ faults.failNextRead=true;t.syncNativeAccountTheme({id:"a"});await tick();
+ assert.deepEqual(JSON.parse(f.data.get(NATIVE_THEME_KEY)),{theme:"ember",ownerId:"a"});
+ const next=f.launch();next.syncNativeAccountTheme({id:"a",theme:"daylight"});await tick();
+ assert.equal(f.launch().themeKey,"ember");assert.equal(f.state.writes,0);
+});
+
+test("one failed boot read recovers the saved same-owner choice during confirmed reconciliation",async()=>{
+ const faults={failNextRead:true},f=setup({theme:"ember",ownerId:"a"},faults),t=f.launch();assert.equal(t.themeKey,"stage");
+ t.syncNativeAccountTheme({id:"a",theme:"daylight"});await tick();assert.equal(f.launch().themeKey,"ember");
+ assert.equal(f.state.writes,0);assert.equal(f.state.reloads,1);
+});
+test("unavailable reads preserve saved storage until a readable relaunch, without reloading",async()=>{
+ const faults={readFails:true},f=setup({theme:"ember",ownerId:"a"},faults),t=f.launch();
+ assert.equal(t.storedThemeSelection().unavailable,true);t.syncNativeAccountTheme({id:"a",theme:"daylight"});await tick();
+ assert.equal(f.state.writes,0);assert.equal(f.state.reloads,0);faults.readFails=false;assert.equal(f.launch().themeKey,"ember");
 });

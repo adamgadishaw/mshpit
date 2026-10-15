@@ -4,8 +4,11 @@ export function createNativeThemeRuntime(storage, reload, report = () => {}) {
   let reloadPending = false;
   return {
     readThemeSelection() {
+      let value;
+      try { value = storage.getItemSync(NATIVE_THEME_KEY); }
+      catch { return { theme: null, ownerId: null, unavailable: true }; }
       try {
-        const pair = JSON.parse(storage.getItemSync(NATIVE_THEME_KEY) || "null");
+        const pair = JSON.parse(value || "null");
         return typeof pair?.theme === "string" && typeof pair?.ownerId === "string"
           ? { theme: pair.theme, ownerId: pair.ownerId } : { theme: null, ownerId: null };
       } catch { return { theme: null, ownerId: null }; }
