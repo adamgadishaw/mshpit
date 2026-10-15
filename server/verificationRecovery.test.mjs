@@ -3,6 +3,7 @@ import test, { after } from 'node:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 import { LEGAL_ACCEPTANCE_VERSION } from '../src/domain/privacyDisclosures.mjs';
 const directory = mkdtempSync(join(tmpdir(), 'pit-recovery-'));
 process.env.PIT_DATA_DIR = directory;
@@ -30,7 +31,7 @@ after(async () => { await new Promise(r => setImmediate(r)); globalThis.fetch = 
 let seq = 0;
 function user(role = 'fan') { const id = `recovery_${++seq}`; q.insertUser.run(id, `${id}@example.test`, id, id, 'hash', role, null, null, null, 'R', '#123456', Date.now()); return q.userById.get(id); }
 const context = (u, body = {}, id = null) => ({ user: u, body, params: { id }, ip: `recovery-${++seq}`, requestId: `request-${seq}`, setHeader() {} });
-const manual = (actor, target, overrides = {}) => routes['POST /api/admin/users/:id/verify-email'](context(actor, { reason: 'Email route unavailable; synthetic support review', confirmedTargetId: target.id, confirmedHandle: target.handle, ...overrides }, target.id));
+const manual = (actor, target, overrides = {}) => routes['POST /api/admin/users/:id/verify-email'](context(actor, { reason: 'Email route unavailable; synthetic support review', confirmedTargetId: target.id, confirmedHandle: target.handle, confirmedEmailRevision: target.email_verification_revision, ...overrides }, target.id));
 const verify = (token, u) => routes['POST /api/verify-email'](context(u, { token }));
 const resend = u => routes['POST /api/verify-email/resend'](context(u));
 const tokenIn = m => decodeURIComponent(m.text.match(/#verify=([A-Za-z0-9_-]+)/)[1]);
@@ -147,4 +148,99 @@ test('browser CSRF protection rejects foreign-origin manual verification before 
   assert.doesNotThrow(() => assertUnsafeRequestOrigin('POST', { origin: 'https://www.mshpit.com', 'sec-fetch-site': 'same-origin' }, origins));
   const unverifiedAdmin = user('admin');
   assert.throws(() => gate({ method: 'POST', pathname: '/api/admin/users/target/verify-email', user: unverifiedAdmin }), e => e.code === 'EMAIL_VERIFICATION_REQUIRED');
+});
+
+test('manual confirmation rejects a stale email revision, including a retry after address replacement', () => {
+  const admin = user('admin'), target = user();
+  db.prepare('UPDATE users SET email=? WHERE id=?').run('replacement@example.test', target.id);
+  assert.equal(q.userById.get(target.id).email_verification_revision, target.email_verification_revision + 1);
+  assert.throws(() => manual(admin, target), e => e.code === 'CONFLICT');
+  assert.equal(q.userById.get(target.id).email_verified_at, 0);
+  assert.equal(manual(admin, q.userById.get(target.id)).result, 'verified');
+  db.prepare('UPDATE users SET email=? WHERE id=?').run('another@example.test', target.id);
+  assert.throws(() => manual(admin, target), e => e.code === 'CONFLICT');
+});
+
+function manualConnection(actor, target) {
+  const payload = { actorId: actor.id, token: createSession(actor.id).token, targetId: target.id, body: {
+    reason: 'Synthetic independent-connection verification', confirmedTargetId: target.id,
+    confirmedHandle: target.handle, confirmedEmailRevision: target.email_verification_revision,
+  } };
+  const source = `globalThis.fetch = async () => { throw new Error('No outbound network in test'); };
+    const { db, q } = await import(${JSON.stringify(new URL('./db.js', import.meta.url).href)});
+    const { routes } = await import(${JSON.stringify(new URL('./api.js', import.meta.url).href)});
+    const { readAuthorizedRequest } = await import(${JSON.stringify(new URL('./requestAuthorization.js', import.meta.url).href)});
+    const payload = ${JSON.stringify(payload)};
+    const authorized = await readAuthorizedRequest({ token: payload.token, expectedAccount: payload.actorId, method: 'POST', pathname: '/api/admin/users/'+payload.targetId+'/verify-email', readBody: async () => payload.body });
+    let guards = 0;
+    const ctx = { ...authorized, params: { id: payload.targetId }, assertCurrentSession(options) {
+      const result = authorized.assertCurrentSession(options);
+      if (++guards === 1) process.stdout.write('GUARDED\\n');
+      return result;
+    } };
+    process.stdout.write('READY\\n');
+    process.stdin.once('data', () => {
+      process.stdout.write('START\\n');
+      try {
+        const result = routes['POST /api/admin/users/:id/verify-email'](ctx);
+        process.stdout.write('RESULT ' + JSON.stringify({ result: result.result }) + '\\n');
+      } catch (error) { process.stdout.write('RESULT ' + JSON.stringify({ error: error.code || error.name }) + '\\n'); }
+      db.close(); process.stdin.destroy();
+    });`;
+  // Child processes share only this synthetic DB, never hosted environment keys.
+  const environment = Object.fromEntries(['PATH','SystemRoot','WINDIR','TEMP','TMP','USERPROFILE','LOCALAPPDATA']
+    .filter(key => process.env[key]).map(key => [key, process.env[key]]));
+  Object.assign(environment, { NODE_ENV: 'test', PIT_DATA_DIR: directory, PIT_ALLOW_EMPTY_DB_BOOTSTRAP: 'true' });
+  const child = spawn(process.execPath, ['--input-type=module','-e',source], { env: environment, windowsHide: true, stdio: ['pipe','pipe','pipe'] });
+  let output = '', errorOutput = '', readyResolve, startResolve, guardResolve;
+  const ready = new Promise(resolve => { readyResolve = resolve; });
+  const started = new Promise(resolve => { startResolve = resolve; });
+  const guarded = new Promise(resolve => { guardResolve = resolve; });
+  child.stdout.on('data', data => { output += data; if (output.includes('READY')) readyResolve(); if (output.includes('START')) startResolve(); if (output.includes('GUARDED')) guardResolve(); });
+  child.stderr.on('data', data => { errorOutput += data; });
+  const result = new Promise((resolve,reject) => {
+    child.on('error',reject);
+    child.on('exit',code => {
+      if (code !== 0) { reject(new Error('Synthetic worker failed: '+errorOutput)); return; }
+      const line = output.match(/RESULT (.+)/)?.[1];
+      if (!line) reject(new Error('Synthetic worker returned no result')); else resolve(JSON.parse(line));
+    });
+  });
+  return { child, ready, started, guarded, result };
+}
+
+test('two independent SQLite connections serialize manual verification while a write lock is held', { timeout: 15000 }, async () => {
+  const admin = user('admin'), target = user();
+  db.prepare('UPDATE users SET email_verified_at=? WHERE id=?').run(Date.now(), admin.id);
+  const first = manualConnection(admin,target), second = manualConnection(admin,target);
+  try {
+    await Promise.all([first.ready,second.ready]);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      first.child.stdin.write('go'); second.child.stdin.write('go');
+      await Promise.all([first.started,second.started]);
+    } finally { db.exec('COMMIT'); }
+    const results = await Promise.all([first.result,second.result]);
+    assert.deepEqual(results.map(r => r.result).sort(), ['already-verified','verified']);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM moderation_actions WHERE target_id=? AND action='verify-email'").get(target.id).n,2);
+    assert.equal(q.userById.get(target.id).email_verification_method,'admin-manual');
+  } finally { first.child.kill(); second.child.kill(); }
+});
+
+test('admin authority revoked by another connection while waiting for write lock cannot verify', { timeout: 15000 }, async () => {
+  const admin = user('admin'), target = user();
+  db.prepare('UPDATE users SET email_verified_at=? WHERE id=?').run(Date.now(), admin.id);
+  const worker = manualConnection(admin,target);
+  try {
+    await worker.ready;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      worker.child.stdin.write('go');
+      await worker.guarded;
+      db.prepare("UPDATE users SET role='moderator' WHERE id=?").run(admin.id);
+    } finally { db.exec('COMMIT'); }
+    assert.equal((await worker.result).error, 'AUTH_REQUIRED');
+    assert.equal(q.userById.get(target.id).email_verified_at,0);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM moderation_actions WHERE target_id=? AND action='verify-email'").get(target.id).n,0);
+  } finally { worker.child.kill(); }
 });

@@ -1800,6 +1800,7 @@ const additiveMigrations = [
   // in their own inbox. These are private account state.
   "ALTER TABLE users ADD COLUMN email_verified_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN email_verification_method TEXT",
+  "ALTER TABLE users ADD COLUMN email_verification_revision INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN email_verify_hash TEXT",
   "ALTER TABLE users ADD COLUMN email_verify_expires INTEGER NOT NULL DEFAULT 0",
   // Set when the welcome mail goes out, so verifying twice, an admin marking an
@@ -1982,6 +1983,14 @@ try {
       newlyAddedColumns.add(`${table}.${column}`.toLowerCase());
     }
   }
+  // Bind an admin confirmation to the exact address state it reviewed without
+  // exposing addresses or address hashes to the staff directory. Even a future
+  // address writer that forgets the revision cannot reuse a stale confirmation.
+  db.exec(`CREATE TRIGGER IF NOT EXISTS users_email_verification_revision
+    AFTER UPDATE OF email ON users WHEN NEW.email IS NOT OLD.email
+    BEGIN
+      UPDATE users SET email_verification_revision=OLD.email_verification_revision+1 WHERE id=NEW.id;
+    END`);
   // This fallback is intentionally tied to the first addition of each column.
   // Re-running it on every boot could wrongly assign a slot whose explicit
   // uploader was later erased to the artist-page claimant. The legacy finalize

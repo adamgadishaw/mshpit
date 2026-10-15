@@ -194,7 +194,7 @@ test("local auto-verification and audited admin verification also claim the priv
   const created = (await signup("staff_verified_name"));
   const admin = addUser("handle_verifier_admin", "admin");
   routes["POST /api/admin/users/:id/verify-email"]({ user: admin, params: { id: created.user.id },
-    body: { reason: "Verified fixture", confirmedTargetId: created.user.id, confirmedHandle: created.user.handle }, ip: "staff-handle-verify" });
+    body: { reason: "Verified fixture", confirmedTargetId: created.user.id, confirmedHandle: created.user.handle, confirmedEmailRevision: created.user.email_verification_revision }, ip: "staff-handle-verify" });
   assert.equal(q.userById.get(created.user.id).handle, "staff_verified_name");
 });
 

@@ -9274,8 +9274,13 @@ export const routes = {
     let changed = false;
     try {
       atomicWrite(() => {
+        // A different connection can revoke authority while BEGIN waits for its lock.
+        requireAdmin(ctx);
         const before = q.userById.get(ctx.params.id);
         if (!before) throw new ApiError(404, "No such member.", "NOT_FOUND");
+        if (!Number.isSafeInteger(ctx.body?.confirmedEmailRevision) || ctx.body.confirmedEmailRevision !== before.email_verification_revision) {
+          throw new ApiError(409, "The selected account email changed. Refresh and confirm again.", "CONFLICT");
+        }
         if (!before.email_verified_at && ctx.body?.confirmedHandle !== before.handle) throw new ApiError(409, "The selected member changed. Refresh and confirm again.", "CONFLICT");
         changed = db.prepare(`UPDATE users SET email_verified_at=?, email_verification_method='admin-manual',
           email_verify_hash=NULL, email_verify_expires=0 WHERE id=? AND email_verified_at=0`).run(now(), before.id).changes === 1;
@@ -9514,7 +9519,7 @@ export const routes = {
     if (cursor) pageArgs.push(cursor.createdAt, cursor.createdAt, cursor.id);
     pageArgs.push(memberLimit + 1);
     const found = db.prepare(`SELECT id,name,handle,initials,avatar_uri,avatar_color,verified,sponsor,role,home_city,
-      is_banned,suspended_until,created_at,email_verified_at,email_verification_method FROM users ${whereSql} ${cursorSql}
+      is_banned,suspended_until,created_at,email_verified_at,email_verification_method,email_verification_revision FROM users ${whereSql} ${cursorSql}
       ORDER BY created_at DESC,id DESC LIMIT ?`).all(...pageArgs);
     const { rows, nextCursor } = finishPage(found, memberLimit);
     // `emailVerified` is private state that publicUser withholds from everyone but
@@ -9542,7 +9547,7 @@ export const routes = {
       createdAt: r.created_at, badges: badgesByUser.get(r.id) || [],
       // Address-confirmation state is private and actionable only by admins.
       // Moderators still receive the restriction fields they need for triage.
-      ...(actor.role === "admin" ? { emailVerified: !!r.email_verified_at, emailVerificationMethod: r.email_verification_method || (r.email_verified_at ? "legacy" : null) } : {}),
+      ...(actor.role === "admin" ? { emailVerified: !!r.email_verified_at, emailVerificationRevision: r.email_verification_revision, emailVerificationMethod: r.email_verification_method || (r.email_verified_at ? "legacy" : null) } : {}),
     }));
     const total = db.prepare("SELECT COUNT(*) c FROM users").get().c;
     const matchingTotal = filters.length
