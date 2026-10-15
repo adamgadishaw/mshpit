@@ -127,3 +127,5 @@ Run `npm run mobile:go` for the LAN QR code. Its safe localhost API default does
 react-native-share is loaded dynamically only when needed and is not bundled in Expo Go. Instagram Stories, X/Facebook image handoff, target-app detection and native social image sharing require custom native builds. Expo Go also does not verify this app's configured native splash, identifiers, permissions, package queries or deep links. Other SDK libraries' presence is not proof of device feature execution.
 
 Android testing does not certify iOS. Windows cannot run Xcode or Apple's local simulator. An unsigned simulator compile on a suitable Mac could later check native compilation. EAS Simulator access was not assumed and no paid/cloud build was used. Real signed iPhone/TestFlight tests remain for later Apple Developer enrollment.
+
+Latest bounded navigation review: [Native usability audit](NATIVE_USABILITY_AUDIT_2026-10-15.md).

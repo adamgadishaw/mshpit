@@ -993,16 +993,38 @@ function Root() {
   restoreBrowserPathRef.current = restoreBrowserPath;
   const nativeNewsNavigateRef = useRef(null);
   nativeNewsNavigateRef.current = go;
+  const nativeNewsIngressRef = useRef({ active: false, ready: false, initialRequested: false, warmSeen: false, pending: null });
+  const flushNativeNews = () => {
+    const ingress = nativeNewsIngressRef.current;
+    if (!ingress.active || !ingress.ready || !ingress.pending) return;
+    const frame = ingress.pending;
+    ingress.pending = null;
+    nativeNewsNavigateRef.current?.(frame);
+  };
   useEffect(() => {
-    if (web || !authReady) return undefined;
-    let active = true;
-    const open = (url) => {
-      const frame = nativeNewsLinkFrame(url);
-      if (active && frame) nativeNewsNavigateRef.current?.(frame);
-    };
-    const subscription = Linking.addEventListener("url", ({ url }) => open(url));
-    Linking.getInitialURL().then(open).catch(() => { /* architecture: allow-empty-catch -- Missing native entry URLs leave the current navigation intact. */ });
-    return () => { active = false; subscription.remove(); };
+    if (web) return undefined;
+    const ingress = nativeNewsIngressRef.current;
+    ingress.active = true;
+    const subscription = Linking.addEventListener("url", ({ url }) => {
+      // Any newer native intent supersedes a launch News link, including an
+      // account link handled by the separate account gateway.
+      ingress.warmSeen = true;
+      ingress.pending = nativeNewsLinkFrame(url);
+      flushNativeNews();
+    });
+    if (!ingress.initialRequested) {
+      ingress.initialRequested = true;
+      Linking.getInitialURL().then((url) => {
+        if (ingress.warmSeen) return;
+        ingress.pending = nativeNewsLinkFrame(url);
+        flushNativeNews();
+      }).catch(() => { /* architecture: allow-empty-catch -- Missing native entry URLs leave the current navigation intact. */ });
+    }
+    return () => { ingress.active = false; ingress.ready = false; subscription.remove(); };
+  }, [web]);
+  useEffect(() => {
+    nativeNewsIngressRef.current.ready = !web && authReady;
+    flushNativeNews();
   }, [web, authReady]);
 
   useEffect(() => {
