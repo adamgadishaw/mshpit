@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
 import useAppActive from "../lib/useAppActive";
@@ -19,12 +19,21 @@ export default function ConvertingClipNotice({ clips, onReady }) {
   const pollActive = Platform.OS === "web" || appActive;
   const [states, setStates] = useState(() => new Map(clips.map((clip) => [clip.id, clip.state])));
   const [retrying, setRetrying] = useState(false);
+  const retryGeneration = useRef(0);
+  const retryInFlight = useRef(false);
   const readyRef = useRef(onReady);
   readyRef.current = onReady;
   const clipKey = clips.map((clip) => `${clip.id}:${clip.state}`).join(",");
 
-  useEffect(() => {
+  // Retire retries during commit, before an old promise can settle ahead of passive effects.
+  useLayoutEffect(() => {
+    const generation = ++retryGeneration.current;
+    retryInFlight.current = false;
+    setRetrying(false);
     setStates(new Map(clips.map((clip) => [clip.id, clip.state])));
+    return () => {
+      if (retryGeneration.current === generation) retryGeneration.current++;
+    };
     // clipKey captures every id and state the server reported.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipKey]);
@@ -71,9 +80,14 @@ export default function ConvertingClipNotice({ clips, onReady }) {
   if (!summary) return null;
 
   const retry = async () => {
-    if (retrying) return;
+    if (retrying || retryInFlight.current) return;
+    retryInFlight.current = true;
+    const generation = retryGeneration.current;
     setRetrying(true);
     const outcomes = await Promise.allSettled(failed.map((id) => retryConvertingClip(id)));
+    // A replaced or unmounted notice cannot publish a retired retry result.
+    if (generation !== retryGeneration.current) return;
+    retryInFlight.current = false;
     setStates((current) => {
       const next = new Map(current);
       outcomes.forEach((outcome, index) => {
