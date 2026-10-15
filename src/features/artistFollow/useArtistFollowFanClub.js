@@ -17,7 +17,7 @@ export function useArtistFollowFanClub({
   artistKey = null,
   artistName,
   favoriteArtists,
-  updateProfile,
+  setArtistFollowing,
   isMember = false,
   joinFanClub,
 } = {}) {
@@ -53,7 +53,7 @@ export function useArtistFollowFanClub({
   }, [scope]);
 
   const toggleFollow = async () => {
-    if (!accountId || ui.busy || ui.joining || typeof updateProfile !== "function") return;
+    if (!accountId || ui.busy || ui.joining || typeof setArtistFollowing !== "function") return;
     const operation = claimAction();
     const targetFollowing = !followed;
     const selection = nextArtistFollowSelection(favoriteArtists, artistName, { following: targetFollowing });
@@ -70,7 +70,7 @@ export function useArtistFollowFanClub({
     updateUi(scope, { busy: true, targetFollowing, invite: false, error: "", notice: "" });
     let result;
     try {
-      result = await updateProfile({ favoriteArtists: selection.artists });
+      result = await setArtistFollowing(artistKey || artistName, targetFollowing);
     } catch {
       result = null;
     }

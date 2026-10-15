@@ -11,6 +11,7 @@ test("each screen has a stable key; updating a screen in place keeps it", () => 
   assert.equal(screenTransitionKey({ auth: true, authMode: "login" }), "auth:", "switching log in and sign up does not re-animate");
   assert.notEqual(screenTransitionKey({ artistName: "Wet Leg" }), screenTransitionKey({ artistName: "Idles" }));
   assert.equal(screenTransitionKey(null, "you"), "tab:you");
+  assert.equal(screenTransitionKey({ catalogEditor: true }), "catalogEditor:");
 });
 
 test("moves read as forward, back or a fade", () => {

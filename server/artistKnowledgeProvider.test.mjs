@@ -180,6 +180,15 @@ test("network errors, malformed JSON and oversized bodies remain provider errors
   assert.equal(cancelled, true);
 });
 
+test("a rejected record does not cache its error as an outage for the next artist", async () => {
+  for (const bad of [json({}, { status: 400 }), json({ error: { code: "badvalue" } }), new Response("invalid json")]) {
+    const f = fixture([bad, search([])]);
+    await assert.rejects(f.run(), error => /wikidata_(?:response|rejected)/u.test(error.code));
+    assert.equal(await f.run({ mbid: OTHER_MBID }), null);
+    assert.equal(f.calls.length, 2, "the healthy neighbour reaches the provider without a fake global cooldown");
+  }
+});
+
 test("timeouts bound both response headers and a stalled body; caller abort remains caller cancellation", async () => {
   const never = () => new Promise(() => {});
   const headers = fixture([never], { timeoutMs: 20 });

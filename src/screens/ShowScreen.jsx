@@ -1,4 +1,8 @@
+import CatalogText from "../features/catalogEditor/CatalogText";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import LineupDetails from "../components/LineupDetails";
+import { postHeadline } from "../domain/lineup.mjs";
+import { ordinalWord } from "../domain/supportingActs.mjs";
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from "react-native";
 import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
@@ -70,10 +74,11 @@ function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue, artistI
     </ScrollView>
   );
   const venue = { name: event.venue, source: event.source, providerVenueId: event.providerVenueId };
+  const cancelled = showLifecycleView(null, null, false, Date.now(), event, event).lifecycle === "cancelled";
   return (
     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
       <View style={styles.ticket}>
-        <Text style={styles.ticketKicker}>EVENT DETAILS</Text>
+        <Text style={styles.ticketKicker}>{cancelled ? "THIS SHOW WAS CANCELLED" : "EVENT DETAILS"}</Text>
         <Text style={styles.artist}>{event.name}</Text>
         <View style={styles.perfWrap}><View style={styles.dashed} /></View>
         <View style={styles.stubRow}>
@@ -86,14 +91,15 @@ function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue, artistI
           <View style={styles.stubDateColumn}>
             <Text style={styles.stubLabel}>THE DATE</Text>
             <Text style={styles.date}>{formatDate(event.date, event.date)}</Text>
-            {event.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
+            {!cancelled && event.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
           </View>
         </View>
       </View>
-      {event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${event.name} at ${event.venue}`}>
+      <CatalogText type="event" entityKey={event.id} />
+      {!cancelled && event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${event.name} at ${event.venue}`}>
         <Text style={styles.ticketsTxt}>Get tickets</Text>
       </Pressable> : null}
-      <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
+      {!cancelled && <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
         <View style={styles.reviewUnavailableCopy}>
           <Text style={styles.reviewUnavailableTitle}>{artistIdentityPending ? "Artist profile not linked yet" : "The event is here. Artist features are separate."}</Text>
           <Text style={styles.reviewUnavailableText}>{artistIdentityPending
@@ -104,7 +110,7 @@ function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue, artistI
             <Text style={styles.reviewUnavailableRetryText}>{loading ? "Refreshing…" : "Refresh details"}</Text>
           </Pressable>
         </View>
-      </View>
+      </View>}
       <Pressable style={styles.seeBtn} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
         <Icon name="pin" size={16} color={colors.amber} />
         <Text style={styles.seeTxt}>See this venue</Text>
@@ -194,8 +200,12 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const artist = trustedShow?.artist || legacyArtist;
   const overall = typeof log.overall === "number" ? log.overall : null;
   const setlist = Array.isArray(log.setlist) ? log.setlist : [];
+  // A festival review names the festival; a co-headline review, every headliner.
+  const reviewFormat = log?.kind === "status" ? null : log?.showFormat || null;
+  const festivalReview = reviewFormat === "festival";
   const norm = {
     ...log,
+    ...(festivalReview && log.endDate ? { eventEndDate: log.endDate } : {}),
     artist,
     artistKey: artistIdentityPending ? null : trustedShow?.artistKey || log.artistKey,
     venue,
@@ -203,7 +213,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     city,
     date: trustedShow?.localDate || trustedShow?.date || log.date,
   };
-  const eventTitle = liveEventTitle(norm);
+  const eventTitle = festivalReview ? artist : reviewFormat === "co_headline" ? postHeadline(norm) || liveEventTitle(norm) : liveEventTitle(norm);
   const isNamedLiveEvent = isNamedSpecialEvent(norm) || eventTitle !== artist;
   const eventLineup = isNamedLiveEvent ? liveEventLineupLabel(norm, { limit: 5 }) : "";
   const eventEndDate = typeof norm.eventEndDate === "string"
@@ -222,6 +232,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     artistKey: memorialArtistKey,
     status: artistIdentityStatus,
     retry: retryArtistIdentity,
+    retryDisabled: artistIdentityRetryDisabled,
+    missing: artistIdentityMissing,
   } = useCanonicalArtistIdentity({
     artistName: artist,
     artistKey: norm.artistKey || null,
@@ -488,6 +500,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     overall != null,
     Date.now(),
     norm,
+    eventIdentitySnapshot,
   );
   const presentation = showPresentationModel(lifecycleView);
   const [, setCountdownRevision] = useState(0);
@@ -552,7 +565,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   return (
     <View style={styles.wrap}>
       <ScreenHeader
-        kicker={!showPageAllowed && publicEventId && !legacyMode ? "Event details" : presentation.screenKicker}
+        kicker={!showPageAllowed && publicEventId && !legacyMode && lifecycleView.lifecycle !== "cancelled" ? "Event details" : presentation.screenKicker}
         title={!showPageAllowed && publicEventSnapshot ? publicEventSnapshot.name : eventTitle}
         onBack={onClose}
         backLabel={`Leave ${eventTitle} ${socialObjectLabel} page`}
@@ -571,6 +584,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           state={profileGateState}
           onBack={onClose}
           onRetry={retryProfileStatus}
+          retryDisabled={artistIdentityStatus === "unavailable" && artistIdentityRetryDisabled}
+          identityMissing={artistIdentityMissing}
         />
       ) : <VinylRefreshBoundary
         refreshing={showRefreshing}
@@ -578,6 +593,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         accessibilityLabel={`Refresh ${eventTitle} show page`}
       >
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        <CatalogText type="event" entityKey={publicEventId || tourDateId} />
         {/* Ticket-style hero: this is what makes a NIGHT read differently from
             a venue. Artist headline, then a perforated stub strip carrying the
             room + the date, like the ticket you'd have kept. */}
@@ -593,7 +609,12 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           <View style={[styles.heroTicketColumn, !presentation.showPostEvent && tabletLayout && styles.heroTicketColumnWide]}>
         <View style={styles.ticket}>
           <Text style={styles.ticketKicker}>{presentation.ticketKicker}</Text>
-          {isNamedLiveEvent ? (
+          {festivalReview ? (
+            <View>
+              <Text style={styles.artist}>{eventTitle}</Text>
+              <Text style={styles.eventLineup}>FESTIVAL</Text>
+            </View>
+          ) : isNamedLiveEvent ? (
             <View>
               <Text style={styles.artist}>{eventTitle}</Text>
               {!!eventLineup && <Text style={styles.eventLineup} numberOfLines={2}>LINEUP · {eventLineup}</Text>}
@@ -638,6 +659,10 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
+          {/* A review's lineup with each set's rating and note, and how many
+              times its author has now seen the headliner. */}
+          <LineupDetails post={log} onOpenArtist={onOpenArtist} style={styles.supportingActs} />
+          {log.seen > 1 ? <Text style={styles.seenLine}>{ordinalWord(log.seen)} time in the pit</Text> : null}
           {ticketShow?.timing?.length ? (
             <View style={styles.timingRow}>
               {ticketShow.timing.map((timing) => (
@@ -774,7 +799,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           ? social.loungeCutoffSource === "show_start"
             ? "Doors time was unavailable, so the Lounge closed 24 hours after show start."
             : "The Lounge closed 24 hours after doors opened."
-          : "One Lounge for this exact show — available before, during, and until 24 hours after doors open."}</Text> : null}
+          : "One Lounge for this exact show, open before, during, and until 24 hours after doors open."}</Text> : null}
         {liveActionsAvailable && goingTicketPrompt && tourDateId ? (
           <GoingTicketComposer
             event={ticketEvent}
@@ -1125,6 +1150,8 @@ const styles = StyleSheet.create({
   noScoreTitle: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "800" },
 
   artist: { color: colors.text, fontFamily: displayFont, fontSize: 26, fontWeight: "900", letterSpacing: -0.4 },
+  supportingActs: { marginTop: 10 },
+  seenLine: { color: colors.gold, fontSize: 12.5, fontWeight: "800", marginTop: 4 },
   eventLineup: { color: colors.textDim, fontFamily: mono, fontSize: 10, lineHeight: 16, letterSpacing: 0.7, marginTop: 6 },
   artistLink: { color: colors.amber, fontSize: 12, marginTop: 4, fontWeight: "600" },
   seeRow: { flexDirection: "row", gap: 10, marginTop: 16 },

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, mono } from "../theme";
 
@@ -18,9 +18,18 @@ const partsFor = (value, fallbackYear, today = new Date()) => {
 const defaultYearsFor = (today) => Array.from({ length: 10 }, (_, index) => today.getFullYear() + index);
 
 function Column({ values, selected, onSelect, render, label, accessibilityLabelFor }) {
+  // Open with the chosen value in view (the 27th, or 1998 in a long year
+  // list), once; after that the person scrolls freely.
+  const scrollRef = useRef(null);
+  const placed = useRef(false);
+  const reveal = (event) => {
+    if (placed.current) return;
+    placed.current = true;
+    scrollRef.current?.scrollTo?.({ y: Math.max(0, event.nativeEvent.layout.y - 50), animated: false });
+  };
   return (
     <View style={styles.column} accessibilityRole="radiogroup" accessibilityLabel={label}>
-      <ScrollView style={styles.col} contentContainerStyle={styles.colContent} showsVerticalScrollIndicator={false}>
+      <ScrollView ref={scrollRef} style={styles.col} contentContainerStyle={styles.colContent} showsVerticalScrollIndicator={false}>
         {values.map((v) => {
           const on = v === selected;
           const rendered = render ? render(v) : pad(v);
@@ -29,6 +38,7 @@ function Column({ values, selected, onSelect, render, label, accessibilityLabelF
               key={v}
               style={[styles.cell, on && styles.cellOn]}
               onPress={() => onSelect(v)}
+              onLayout={on ? reveal : undefined}
               accessibilityRole="radio"
               accessibilityLabel={accessibilityLabelFor ? accessibilityLabelFor(v) : String(rendered)}
               accessibilityState={{ checked: on }}
@@ -42,12 +52,14 @@ function Column({ values, selected, onSelect, render, label, accessibilityLabelF
   );
 }
 
-export default function DatePicker({ value, onChange, years, defaultYear, accessibilityLabel = "Choose date" }) {
+// `newestFirst` lists years from the latest down, for dates in the past
+// (logging a show); future dates keep this year first.
+export default function DatePicker({ value, onChange, years, defaultYear, newestFirst = false, accessibilityLabel = "Choose date" }) {
   const today = new Date();
   const configuredYears = Array.isArray(years) && years.length ? [...new Set(years)].sort((a, b) => a - b) : defaultYearsFor(today);
   const valueYear = Number(String(value || "").match(/^(\d{4})-/)?.[1]) || null;
   const fallbackYear = defaultYear || valueYear || configuredYears[0];
-  const selectableYears = [...new Set([...configuredYears, fallbackYear])].sort((a, b) => a - b);
+  const selectableYears = [...new Set([...configuredYears, fallbackYear])].sort((a, b) => (newestFirst ? b - a : a - b));
   const initial = partsFor(value, fallbackYear, today);
   const [year, setYear] = useState(initial.year);
   const [month, setMonth] = useState(initial.month);

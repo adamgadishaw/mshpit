@@ -2,6 +2,7 @@
 // shares this process-wide gate. The gate is deliberately bounded: an upstream
 // outage must not turn a one-request-per-second provider into an ever-growing
 // in-process backlog that consumes memory and makes interactive requests hang.
+import { PROVIDER_RETRY_AFTER_MAX_MS, withProviderRetryDeadline } from "./providerResponsePolicy.js";
 
 export const MUSICBRAINZ_REQUEST_INTERVAL_MS = 1_100;
 export const MUSICBRAINZ_MAX_PENDING_REQUESTS = 8;
@@ -33,15 +34,16 @@ function abortableDelay(milliseconds, { signal } = {}) {
 }
 
 export class MusicBrainzThrottleError extends Error {
-  constructor(code, message, retryAfterMs = null) {
+  constructor(code, message, retryAfterMs = null, at = Date.now()) {
     super(message);
     this.name = "MusicBrainzThrottleError";
     this.code = code;
     this.status = 503;
     this.retryable = true;
-    this.retryAfterMs = Number.isFinite(Number(retryAfterMs))
+    this.retryAfterMs = retryAfterMs != null && Number.isFinite(Number(retryAfterMs))
       ? Math.max(0, Math.trunc(Number(retryAfterMs)))
       : null;
+    this.retryAt = this.retryAfterMs == null ? null : at + this.retryAfterMs;
   }
 }
 
@@ -82,7 +84,12 @@ export function createMusicBrainzRequestThrottle({
   breakerMaxMs = MUSICBRAINZ_BREAKER_MAX_MS,
   clock = () => Date.now(),
   wait = abortableDelay,
+  cooldownStore = null,
+  onCooldownPersistenceError = (operation) => console.error(`[musicbrainz] cooldown state ${operation} failed; provider requests remain bounded.`),
 } = {}) {
+  if (cooldownStore && (typeof cooldownStore.readDeadline !== "function" || typeof cooldownStore.extendDeadline !== "function")) {
+    throw new TypeError("MusicBrainz cooldown storage requires readDeadline and extendDeadline.");
+  }
   const interval = boundedInteger(minimumIntervalMs, MUSICBRAINZ_REQUEST_INTERVAL_MS, 1_000, 60_000);
   const capacity = boundedInteger(maxPendingRequests, MUSICBRAINZ_MAX_PENDING_REQUESTS, 1, 1_000);
   const interactiveReserve = boundedInteger(interactiveReservedSlots, 2, 0, Math.max(0, capacity - 1));
@@ -98,7 +105,37 @@ export function createMusicBrainzRequestThrottle({
   let consecutiveFailures = 0;
   let breakerTrips = 0;
   let breakerOpenUntil = 0;
+  let highestObservedCooldownDeadline = 0;
   let halfOpenProbe = false;
+  let cooldownPersistenceError = null;
+
+  function persistenceFailed(operation) {
+    if (cooldownPersistenceError !== operation) {
+      try { onCooldownPersistenceError(operation); }
+      catch { /* architecture: allow-empty-catch -- a diagnostic callback must not mask the original provider failure */ }
+    }
+    cooldownPersistenceError = operation;
+  }
+
+  function synchronizeCooldown(at) {
+    if (!cooldownStore) return;
+    try {
+      const deadline = cooldownStore.readDeadline(at);
+      if (Number.isSafeInteger(deadline) && deadline > highestObservedCooldownDeadline
+        && deadline <= at + PROVIDER_RETRY_AFTER_MAX_MS) {
+        // A fresh process restores one recovery probe even if the durable wait
+        // already expired. Remember the row so success cannot restore it again.
+        highestObservedCooldownDeadline = deadline;
+        breakerOpenUntil = Math.max(breakerOpenUntil, deadline);
+      }
+      if (cooldownPersistenceError === "read") cooldownPersistenceError = null;
+    } catch {
+      persistenceFailed("read");
+      throw new MusicBrainzThrottleError(
+        "cooldown_state_unavailable", "MusicBrainz recovery state is temporarily unavailable.", breakerBase, at,
+      );
+    }
+  }
 
   function removeQueued(job) {
     const index = queue.indexOf(job);
@@ -119,24 +156,45 @@ export function createMusicBrainzRequestThrottle({
       "circuit_open",
       "MusicBrainz requests are paused while the provider recovers.",
       remaining,
+      at,
     );
   }
 
   function retryDelay(error, at) {
     // Some background providers report an absolute Retry-After deadline. It
     // protects interactive callers too, not just that individual scheduler.
-    return Math.max(0, Number(error?.retryAfterMs) || 0, (Number(error?.retryAt) || 0) - at);
+    const absolute = Number(error?.retryAt);
+    if (error?.retryAt != null && Number.isSafeInteger(absolute) && absolute > 0) {
+      return Math.max(0, Math.min(PROVIDER_RETRY_AFTER_MAX_MS, absolute - at));
+    }
+    const relative = Number(error?.retryAfterMs);
+    return Number.isFinite(relative) ? Math.max(0, Math.min(PROVIDER_RETRY_AFTER_MAX_MS, relative)) : 0;
   }
 
   function openBreaker(at, error) {
     breakerTrips += 1;
     const cooldown = Math.min(breakerMaximum, breakerBase * (2 ** Math.min(8, breakerTrips - 1)));
     const requested = retryDelay(error, Number(at));
-    breakerOpenUntil = Number(at) + Math.max(cooldown, Math.min(60 * 60_000, requested));
+    breakerOpenUntil = Math.max(breakerOpenUntil, Number(at) + Math.max(cooldown, requested));
+    if (cooldownStore) {
+      try {
+        const stored = cooldownStore.extendDeadline(breakerOpenUntil, Number(at));
+        if (Number.isSafeInteger(stored) && stored > 0 && stored <= Number(at) + PROVIDER_RETRY_AFTER_MAX_MS) {
+          breakerOpenUntil = Math.max(breakerOpenUntil, stored);
+        }
+        cooldownPersistenceError = null;
+      } catch {
+        // Keep the in-memory wait and original provider error, but expose that
+        // this process cannot promise recovery state will survive a restart.
+        persistenceFailed("write");
+      }
+    }
+    return withProviderRetryDeadline(error, breakerOpenUntil, Number(clock()));
   }
 
   function beforeProviderRequest() {
     const at = Number(clock());
+    synchronizeCooldown(at);
     if (breakerOpenUntil > at) throw circuitError(at);
     if (breakerOpenUntil > 0) {
       // Only one request probes a provider after the cooldown. Other queued
@@ -151,7 +209,9 @@ export function createMusicBrainzRequestThrottle({
   function providerSucceeded() {
     consecutiveFailures = 0;
     breakerTrips = 0;
-    breakerOpenUntil = 0;
+    // Success never deletes durable state: a different process may have
+    // extended the deadline while this request was in flight.
+    if (breakerOpenUntil <= Number(clock())) breakerOpenUntil = 0;
   }
 
   function providerFailed(error, { probe = false } = {}) {
@@ -165,8 +225,7 @@ export function createMusicBrainzRequestThrottle({
     // catalogue/genre/memorial request until one bounded half-open probe.
     if (providerRefusedRequests(error)) {
       consecutiveFailures += 1;
-      openBreaker(Number(clock()), error);
-      return;
+      return openBreaker(Number(clock()), error);
     }
     if (deterministicProviderResponse(error)) {
       // A deterministic 4xx still proves that the provider is reachable. Do
@@ -179,13 +238,15 @@ export function createMusicBrainzRequestThrottle({
     // half-open circuit and release the queued background fan-out.
     consecutiveFailures += 1;
     if (probe || Number(error?.status) === 429 || retryDelay(error, Number(clock())) > 0 || consecutiveFailures >= failureThreshold) {
-      openBreaker(Number(clock()), error);
+      return openBreaker(Number(clock()), error);
     }
+    return error;
   }
 
   async function execute(job) {
     if (job.signal?.aborted) throw abortError(job.signal);
-    const probe = beforeProviderRequest();
+    let probe = false;
+    let requested = false;
     try {
       if (lastStartedAt != null) {
         // Recheck after every wait so an early timer or a test clock that moves
@@ -197,13 +258,23 @@ export function createMusicBrainzRequestThrottle({
           remaining = lastStartedAt + interval - Number(clock());
         }
       }
+      // Re-read after pacing in case another process received Retry-After
+      // since this request joined the queue.
+      probe = beforeProviderRequest();
+      if (job.signal?.aborted) throw abortError(job.signal);
       lastStartedAt = Number(clock());
+      requested = true;
       const result = await job.request();
+      if (job.signal?.aborted) throw abortError(job.signal);
       providerSucceeded();
       return result;
     } catch (error) {
-      providerFailed(error, { probe });
-      throw error;
+      // A transport abort says nothing about the provider. A concrete response
+      // received before cancellation still carries provider policy for everyone.
+      const rejection = requested && (!job.signal?.aborted || error?.providerResponse === true)
+        ? providerFailed(error, { probe }) || error : error;
+      if (job.signal?.aborted) throw abortError(job.signal);
+      throw rejection;
     } finally {
       if (probe) halfOpenProbe = false;
     }
@@ -240,6 +311,8 @@ export function createMusicBrainzRequestThrottle({
     if (typeof request !== "function") return Promise.reject(new TypeError("MusicBrainz request must be a function"));
     if (signal?.aborted) return Promise.reject(abortError(signal));
     const at = Number(clock());
+    try { synchronizeCooldown(at); }
+    catch (error) { return Promise.reject(error); }
     if (breakerOpenUntil > at) return Promise.reject(circuitError(at));
     const interactive = priority === "interactive";
     const totalPending = queue.length + (active ? 1 : 0);
@@ -250,6 +323,7 @@ export function createMusicBrainzRequestThrottle({
         "queue_saturated",
         "MusicBrainz request capacity is temporarily full.",
         queueDeadline,
+        at,
       ));
     }
 
@@ -279,6 +353,7 @@ export function createMusicBrainzRequestThrottle({
           "queue_timeout",
           "MusicBrainz request waited too long for provider capacity.",
           queueDeadline,
+          Number(clock()),
         ));
         pump();
       }, queueDeadline);
@@ -295,15 +370,37 @@ export function createMusicBrainzRequestThrottle({
     });
   }
 
-  runMusicBrainzRequest.status = () => Object.freeze({
-    active: Boolean(active),
-    queued: queue.filter((job) => !job.settled).length,
-    capacity,
-    circuitOpen: breakerOpenUntil > Number(clock()),
-    retryAt: breakerOpenUntil > Number(clock()) ? breakerOpenUntil : null,
-    consecutiveFailures,
-  });
+  runMusicBrainzRequest.status = () => {
+    const at = Number(clock());
+    try { synchronizeCooldown(at); }
+    catch { /* architecture: allow-empty-catch -- report storage failures without breaking local status reads; outbound admission fails closed */ }
+    return Object.freeze({
+      active: Boolean(active),
+      queued: queue.filter((job) => !job.settled).length,
+      capacity,
+      circuitOpen: breakerOpenUntil > at || cooldownPersistenceError === "read",
+      retryAt: breakerOpenUntil > at ? breakerOpenUntil : null,
+      consecutiveFailures,
+      ...(cooldownPersistenceError ? { cooldownPersistenceError } : {}),
+    });
+  };
   return runMusicBrainzRequest;
 }
 
-export const runMusicBrainzRequest = createMusicBrainzRequestThrottle();
+let configuredCooldownStore = null;
+
+// db.js binds app_meta after schema initialization. This module stays safe to
+// import in isolated clients and tests without opening a production database.
+export function configureMusicBrainzCooldownStore(store) {
+  if (typeof store?.readDeadline !== "function" || typeof store?.extendDeadline !== "function") {
+    throw new TypeError("MusicBrainz cooldown storage requires readDeadline and extendDeadline.");
+  }
+  configuredCooldownStore = store;
+}
+
+export const runMusicBrainzRequest = createMusicBrainzRequestThrottle({
+  cooldownStore: {
+    readDeadline: (at) => configuredCooldownStore?.readDeadline(at) || 0,
+    extendDeadline: (deadline, at) => configuredCooldownStore?.extendDeadline(deadline, at) || deadline,
+  },
+});

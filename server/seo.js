@@ -1,3 +1,4 @@
+import { publicProviderEventText } from "./providerEventText.js";
 // Public discovery documents, canonical URL resolution, and crawler controls.
 //
 // The interactive app remains an Expo web bundle. Public entity routes receive
@@ -8,6 +9,7 @@
 
 import { DATABASE_DIRECTORY, DATABASE_PATH, db, artistStmts, normName } from "./db.js";
 import { activeAccountSql } from "./accountVisibility.js";
+import { artistAuthoredTourDateVisibleSql } from "./artistAuthoredTourDateVisibility.js";
 import { artistCatalogVisibleTo } from "./artistCatalogVisibility.js";
 import { htmlRobotsDirective, isProduction } from "./environment.js";
 import { profileAllowsSearchIndexing } from "./profileSearchIndexing.js";
@@ -49,6 +51,7 @@ import {
   isStrictCalendarDate,
   publicIndexableMusicEventSql,
   publicMusicEventCandidateSql,
+  isIndexableMusicEventRecord,
 } from "./features/seo/publicEntityPolicy.js";
 import { effectiveTourDateEndSql } from "./tourDateLifecycle.js";
 import { artistHasLegacyMemorial, tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
@@ -60,6 +63,11 @@ import { LANDING_IDENTITY_COPY } from "../src/domain/landingPresentation.mjs";
 import { CREW_ENABLED } from "../src/domain/crewAvailability.mjs";
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
 import { projectNewsDocument } from "./features/artistUpdates/newsDocuments.js";
+import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
+import { liveEventBySlug, liveEventPages } from "./features/newsDesk/newsLive.js";
+import { livePagePath, projectLiveDocument } from "./features/newsDesk/newsLiveDocument.js";
+import { createFestivalReader } from "./features/festivals/festivalStore.js";
+import { FESTIVALS_HUB_PATH, festivalPagePath, projectFestivalDocument, projectFestivalsHubDocument } from "./features/festivals/festivalDocument.js";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_TITLE = "Mshpit: concert reviews, photos and live music discovery";
@@ -79,6 +87,7 @@ export const origin = () => configuredOrigin(process.env);
 
 // New releases and new tour dates, read with the same public rules as the
 // event pages. Artist pages show their latest few; /news shows everyone's.
+const newsDesk = createNewsDeskReader(db);
 const artistNews = createArtistNewsReader(db, {
   eventPathFor: (id) => eventPath(id),
   artistPathFor: (row) => artistPath({ name: row?.name, public_slug: row?.public_slug }),
@@ -88,6 +97,8 @@ const publicDocuments = createPublicDocumentService({
   database: db,
   origin: origin(),
   artistNews: (options) => artistNews.read(options),
+  // Mshpit News stories about the artist ("In the news" on the artist page).
+  artistHeadlines: ({ artistKey, limit }) => newsDesk.list({ artist: artistKey, limit }).stories,
   paths: {
     artist: (row) => artistPath({
       name: row?.name,
@@ -116,6 +127,7 @@ const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   LEFT JOIN artists canonical_artist ON canonical_artist.norm=td.artist_key
   WHERE td.id=?1 AND td.release_at<=?2
+    AND ${artistAuthoredTourDateVisibleSql("td")}
     AND ${publicMusicEventCandidateSql("td")}
     AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
     AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?3)
@@ -141,6 +153,7 @@ const PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS = `td.venue,LOWER(td.venue) AS venue_k
 // venue page or make its canonical document disagree with sitemap eligibility.
 const PUBLIC_VENUE_EVENT_EVIDENCE_SQL = `td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
     AND date(td.date)=td.date
+    AND ${artistAuthoredTourDateVisibleSql("td")}
     AND ${publicMusicEventCandidateSql("td")}
     AND ${publicIndexableMusicEventSql("td")}`;
 const venueProviderByPublicSlug = db.prepare(`SELECT ${PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS}
@@ -254,7 +267,7 @@ function eventResolution(id, at = Date.now()) {
   const instant = Number.isFinite(Number(at)) ? Number(at) : Date.now();
   const today = new Date(instant).toISOString().slice(0, 10);
   const event = publicEventIdentity.get(String(id || ""), instant, today);
-  if (!event || !isStrictCalendarDate(event.date)) return null;
+  if (!event || !isStrictCalendarDate(event.date) || !isIndexableMusicEventRecord(event)) return null;
   // A public event snapshot is permission to read this one eligible event, not
   // to unlock its artist page or member actions. Apply the same protected legacy
   // identity boundary as the event service before adding the server-only marker.
@@ -263,18 +276,19 @@ function eventResolution(id, at = Date.now()) {
   const artistProjection = publicTourDateArtistProjection(event);
   const artistKey = artistProjection.bindingAllowed ? event.canonical_artist_key || null : null;
   const path = eventPath(event.id);
+  const display = (value) => publicProviderEventText(value, event.owner_id);
   return {
     entity: {
       kind: "event",
       id: event.id,
       publicEventSnapshot: true,
-      name: event.event_name || `${artistProjection.artist} at ${event.venue}`,
-      eventName: event.event_name || null,
+      name: display(event.event_name) || `${display(artistProjection.artist)} at ${display(event.venue)}`,
+      eventName: display(event.event_name) || null,
       eventKind: event.event_kind || "concert",
-      artist: artistProjection.artist,
+      artist: display(artistProjection.artist),
       artistKey,
       artistIdentityPending,
-      venue: event.venue,
+      venue: display(event.venue),
       place: event.place || "",
       city: event.place || "",
       date: event.date,
@@ -370,8 +384,11 @@ function venueResolution(value) {
   if (!requestedSlug || requestedSlug.length > 240 || slugify(requestedSlug) !== requestedSlug) return null;
   const at = Date.now();
   const today = new Date(at).toISOString().slice(0, 10);
+  // Known provider namespaces are durable IDs, including when their last
+  // public record disappears. Never reinterpret one as a venue display name.
+  const providerNamespace = /^(?:ticketmaster|bandsintown|eventbrite|provider)-/.test(requestedSlug);
   const venue = venueProviderByPublicSlug.get(requestedSlug, at, today)
-    || unambiguousVenueByNameSlug(requestedSlug, at, today);
+    || (!providerNamespace && unambiguousVenueByNameSlug(requestedSlug, at, today));
   if (!venue) return null;
   const path = venuePath({
     name: venue.venue,
@@ -380,7 +397,8 @@ function venueResolution(value) {
   });
   if (!path) return null;
   return {
-    entity: { kind: "venue", name: venue.venue, city: venue.city || null, path },
+    entity: { kind: "venue", name: venue.venue, city: venue.city || null,
+      source: venue.source || null, providerVenueId: venue.venue_provider_id || null, path },
     canonicalPath: path,
     documentRequest: {
       kind: "venue",
@@ -439,6 +457,16 @@ export function resolveEntity(pathname) {
   return path ? entityResolution(path)?.entity || null : null;
 }
 
+// Resolve aliases before reading; an explicit provider URL never falls back to
+// a namesake. The snapshot uses the same anonymous publication rules as SSR.
+export function publicVenueSnapshotForPath(pathname, after = null) {
+  const path = cleanPathname(pathname);
+  const parsed = path ? parsePath(path) : null;
+  if (parsed?.type !== "venue") return null;
+  const resolution = venueResolution(parsed.value);
+  return resolution ? publicDocuments.venueSnapshot({ ...resolution.documentRequest, after }) : null;
+}
+
 const APP_SCREENS = new Set([
   "/about", "/admin", "/badges", "/calendar", "/clips", "/discover",
   "/download", "/feed", "/help", "/home", "/inbox", "/login", "/menu",
@@ -449,11 +477,45 @@ const APP_SCREENS = new Set([
   ...(CREW_ENABLED ? ["/crew"] : []),
 ]);
 
+// Live coverage pages: /news/live/<slug>, one per award show or big night.
+function newsLiveRoute(path) {
+  const match = path.match(/^\/news\/live\/([A-Za-z0-9-]{1,80})\/*$/u);
+  if (!match) return null;
+  const canonicalPath = livePagePath(match[1].toLowerCase());
+  if (path !== canonicalPath) return { type: "redirect", status: 301, location: canonicalPath, canonicalPath };
+  const document = safePublicDocument(() => projectLiveDocument({ origin: origin(), event: liveEventBySlug(db, match[1]) }));
+  if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+  if (!document) return { type: "not-found", status: 404 };
+  return { type: "document", status: 200, canonicalPath, indexable: document.indexable, document };
+}
+
+// Festivals: /festival/<slug> for one festival, /festivals for all of them.
+function festivalRoute(path) {
+  if (/^\/festivals\/*$/iu.test(path)) {
+    if (path !== FESTIVALS_HUB_PATH) return { type: "redirect", status: 301, location: FESTIVALS_HUB_PATH, canonicalPath: FESTIVALS_HUB_PATH };
+    const reader = createFestivalReader(db);
+    const document = safePublicDocument(() => projectFestivalsHubDocument({ origin: origin(), upcoming: reader.upcoming({ limit: 100 }), festivals: reader.festivals() }));
+    if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+    return { type: "document", status: 200, canonicalPath: FESTIVALS_HUB_PATH, indexable: document.indexable, document };
+  }
+  const match = path.match(/^\/festival\/([A-Za-z0-9-]{1,80})\/*$/u);
+  if (!match) return null;
+  const canonicalPath = festivalPagePath(match[1].toLowerCase());
+  if (path !== canonicalPath) return { type: "redirect", status: 301, location: canonicalPath, canonicalPath };
+  const document = safePublicDocument(() => projectFestivalDocument({ origin: origin(), page: createFestivalReader(db).festival(match[1].toLowerCase()) }));
+  if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+  if (!document) return { type: "not-found", status: 404 };
+  return { type: "document", status: 200, canonicalPath, indexable: document.indexable, document };
+}
+
 function newsRoute(path) {
+  const live = newsLiveRoute(path);
+  if (live) return live;
   if (!/^\/news\/*$/iu.test(path)) return null;
   if (path !== "/news") return { type: "redirect", status: 301, location: "/news", canonicalPath: "/news" };
   const at = Date.now();
-  const document = safePublicDocument(() => projectNewsDocument({ origin: origin(), items: artistNews.read({ limit: 60, at }).items, at }));
+  const document = safePublicDocument(() => projectNewsDocument({ origin: origin(), stories: newsDesk.list({ limit: 40 }).stories,
+    live: liveEventPages(db, { at, limit: 6 }), at }));
   if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
   if (!document) return { type: "not-found", status: 404 };
   return { type: "document", status: 200, canonicalPath: "/news", indexable: document.indexable, document };
@@ -464,6 +526,8 @@ function publicRoute(pathname) {
   if (!path) return { type: "not-found", status: 404 };
   const news = newsRoute(path);
   if (news) return news;
+  const festival = festivalRoute(path);
+  if (festival) return festival;
   if (/^\/cities\/*$/iu.test(path)) {
     const document = safePublicDocument(() => publicDocuments.citiesDocument({ at: Date.now() }));
     if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
@@ -624,6 +688,7 @@ function documentIsIndexable(document) {
   if (document.kind === "artist") {
     return substantiveText(document.memorial?.summary, 20)
       || substantiveText(document.artist?.bio, 80)
+      || substantiveText(document.catalogText?.summary, 80)
       || document.reviews?.some((review) => substantiveText(review.text, 40) || review.media?.length)
       || document.events?.length > 0
       || document.concerts?.length > 0;

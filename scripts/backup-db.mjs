@@ -22,6 +22,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
 import { uploadPrivateBackup } from "../server/backupTransfer.js";
+import { fenceBackupSnapshot } from "../server/databaseRecovery.js";
 import {
   backupRetentionCount,
   backupSourceManifest,
@@ -193,6 +194,12 @@ try {
     copyDatabaseInto(partial);
   }
 
+  const snapshot = new DatabaseSync(partial);
+  try {
+    // Keep all source data; require an explicit privacy/security review if this
+    // snapshot is ever used as a live database. The source is never fenced.
+    fenceBackupSnapshot(snapshot);
+  } finally { snapshot.close(); }
   got = verifyBackupSnapshot(partial, expected, sourceManifest);
   bytes = statSync(partial).size;
   // Keep the verified local recovery point even if the provider is unavailable.

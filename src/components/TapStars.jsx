@@ -20,7 +20,7 @@ function OneStar({ size, fill, color }) {
 
 // Tap a star to rate. Tap the left half for a half-star, right half for a full
 // one. No plus/minus buttons. value is 0-5 in 0.5 steps.
-export default function TapStars({ value = 0, onChange, size = 40, gap = 8, color = colors.gold }) {
+export default function TapStars({ value = 0, onChange, size = 40, gap = 8, color = colors.gold, accessibilityLabel = "Rating" }) {
   const rating = Math.max(0, Math.min(5, Number(value) || 0));
   const width = size * 5 + gap * 4;
   const choose = (event) => {
@@ -63,7 +63,7 @@ export default function TapStars({ value = 0, onChange, size = 40, gap = 8, colo
       style={({ focused }) => [{ width, minHeight: 44, justifyContent: "center" }, focused && focusRing]}
       onPress={choose}
       accessibilityRole="adjustable"
-      accessibilityLabel="Rating"
+      accessibilityLabel={accessibilityLabel}
       accessibilityHint="Swipe up or down to change the rating by half a star"
       accessibilityValue={{ min: 0, max: 5, now: rating, text: `${rating} out of 5 stars` }}
       accessibilityActions={[{ name: "increment", label: "Increase rating" }, { name: "decrement", label: "Decrease rating" }]}

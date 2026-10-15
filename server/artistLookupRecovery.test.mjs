@@ -142,7 +142,8 @@ test("public provider outage is distinguishable from no matching artist and neve
     globalThis.fetch = async () => ({ ok: false, status: 503 });
     await assert.rejects(routes["GET /api/artists/resolve"](context({}, { name: "Recovery Outage Fixture" })),
       (error) => error.status === 502 && error.code === "PROVIDER_UNAVAILABLE");
-    globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ artists: [] }) });
+    globalThis.fetch = async (url) => ({ ok: true, status: 200,
+      json: async () => String(url).includes("musicbrainz.org") ? { artists: [] } : { data: [] } });
     const missing = await routes["GET /api/artists/resolve"](context({}, { name: "Recovery Empty Fixture" }));
     assert.deepEqual(missing, { artist: null, created: false });
     globalThis.fetch = async () => ({ ok: true, status: 200, json: async () => ({ artists: [{

@@ -12,6 +12,7 @@ import { db, emailStmts, q } from "./db.js";
 import { publicOrigin, sendTemplate, sendTemplateInBackground } from "./emailService.js";
 import { claimPendingSignupHandle } from "./features/accountOnboarding/signupHandle.js";
 import { privateErrorLabel } from "./errors.js";
+import { grantFirstWaveBadge } from "./memberBadges.js";
 
 const TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -28,10 +29,12 @@ function verificationWrite(work) {
   }
 }
 
-function markVerifiedWithSignupPreference(userId, at = Date.now()) {
+function markVerifiedWithSignupPreference(userId, at = Date.now(), method = "local-bypass") {
   return verificationWrite(() => {
     emailStmts.markEmailVerified.run(at, userId);
+    db.prepare("UPDATE users SET email_verification_method=? WHERE id=?").run(method, userId);
     claimPendingSignupHandle(db, q.userById.get(userId), at);
+    grantFirstWaveBadge(db, userId, { at });
   });
 }
 
@@ -146,6 +149,7 @@ export function completeVerification(token, now = Date.now()) {
       emailStmts.recordVerificationReceipt.run(tokenHash, user.id, hashToken(user.email), now, user.email_verify_expires);
       emailStmts.markEmailVerified.run(now, user.id);
       claimPendingSignupHandle(db, q.userById.get(user.id), now);
+      grantFirstWaveBadge(db, user.id, { at: now });
       completion = { user: q.userById.get(user.id), replayed: false };
     } else {
       const receipt = emailStmts.verificationReceiptByHash.get(tokenHash, now);
@@ -175,22 +179,24 @@ export function completeVerification(token, now = Date.now()) {
 export function forceVerify(userId) {
   const user = q.userById.get(userId);
   if (!user) return null;
-  if (!user.email_verified_at) markVerifiedWithSignupPreference(userId);
+  if (!user.email_verified_at) markVerifiedWithSignupPreference(userId, Date.now(), "admin-manual");
   sendWelcomeOnce(user, { background: true });
   return q.userById.get(userId);
 }
 
 /** Re-send the verification mail. No-op on an already-verified account. */
-export function resendVerification(user) {
+export async function resendVerification(user) {
   if (!user || user.email_verified_at) return { sent: false, reason: "already-verified" };
   if (!verificationEnabled()) return { sent: false, reason: "verification-disabled" };
   const token = mintVerifyToken(user.id);
-  sendTemplateInBackground("verify_email", {
+  const delivery = await sendTemplate("verify_email", {
     user,
     vars: { name: user.name, link: verifyLink(token) },
     idempotencyKey: `verify-${hashToken(token).slice(0, 32)}`,
   });
-  return { sent: true, reason: null };
+  const sent = delivery?.sent === true;
+  console.info('[verification] resend outcome=' + (sent ? 'provider-accepted' : 'delivery-failed'));
+  return { sent, reason: sent ? null : 'delivery-failed', deliveryStatus: sent ? 'provider-accepted' : 'failed' };
 }
 
 // NOTE: there is deliberately no "email changed" path here, because the API has

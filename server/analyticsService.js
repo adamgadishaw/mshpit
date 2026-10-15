@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { db } from "./db.js";
+import { activeAccountSql } from "./accountVisibility.js";
 import { ANALYTICS_BATCH_LIMIT, sanitizeAnalyticsEvent } from "../src/domain/analyticsPolicy.mjs";
 
 // Raw rows are intentionally short lived. At 100k events/day, 180 days would be
@@ -63,20 +64,7 @@ export function ingestAnalyticsBatch({ user, events, requireIds = false, at = Da
     const clientId = event.id || `legacy_${randomUUID()}`;
     accepted.push({ ...event, storageId: durableEventId(user.id, clientId) });
   }
-  // Regex-shaped ids are not proof of canonical content. Resolve the bounded
-  // batch once and reject events referencing unknown posts so a modified client
-  // cannot smuggle authored text through a fake `p_*` identifier.
-  const referencedPostIds = [...new Set(accepted.map((event) => event.props.postId).filter(Boolean))];
-  const knownPostIds = new Set();
-  if (referencedPostIds.length) {
-    const placeholders = referencedPostIds.map(() => "?").join(",");
-    for (const row of db.prepare(`SELECT id FROM posts WHERE id IN (${placeholders})`).all(...referencedPostIds)) knownPostIds.add(row.id);
-  }
-  const canonical = accepted.filter((event) => !event.props.postId || knownPostIds.has(event.props.postId));
-  if (!canonical.length) {
-    return { ok: true, received: incoming.length, accepted: 0, stored: 0, duplicates: 0, rejected: incoming.length };
-  }
-
+  let canonical = [];
   const insert = db.prepare("INSERT OR IGNORE INTO events (id,user_id,name,props,ip,created_at) VALUES (?,?,?,?,NULL,?)");
   let stored = 0;
   db.exec("BEGIN IMMEDIATE");
@@ -84,10 +72,30 @@ export function ingestAnalyticsBatch({ user, events, requireIds = false, at = Da
     // The HTTP request context is captured before its body finishes streaming.
     // Re-read consent after taking the write lock so an opt-out that completed
     // during that wait cannot be followed by an insert from the stale snapshot.
-    const currentUser = db.prepare("SELECT id,extras FROM users WHERE id=?").get(user.id);
+    const currentUser = db.prepare(`SELECT id,extras FROM users WHERE id=? AND ${activeAccountSql("users")}`).get(user.id);
     if (!analyticsEnabledFor(currentUser)) {
       db.exec("COMMIT");
       return empty;
+    }
+    // Regex-shaped ids are not proof of canonical content. Resolve the bounded
+    // batch once and reject events referencing unknown posts so a modified client
+    // cannot smuggle authored text through a fake `p_*` identifier.
+    const referencedPostIds = [...new Set(accepted.map((event) => event.props.postId).filter(Boolean))];
+    const knownPostIds = new Set();
+    if (referencedPostIds.length) {
+      const placeholders = referencedPostIds.map(() => "?").join(",");
+      // Public posts are independent of the author's profile audience, but a
+      // stale/modified client must not train on removed or blocked content.
+      for (const row of db.prepare(`SELECT p.id FROM posts p JOIN users author ON author.id=p.user_id
+        WHERE p.id IN (${placeholders}) AND p.removed=0 AND ${activeAccountSql("author")}
+        AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+          (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))`)
+        .all(...referencedPostIds, user.id, user.id)) knownPostIds.add(row.id);
+    }
+    canonical = accepted.filter((event) => !event.props.postId || knownPostIds.has(event.props.postId));
+    if (!canonical.length) {
+      db.exec("COMMIT");
+      return { ok: true, received: incoming.length, accepted: 0, stored: 0, duplicates: 0, rejected: incoming.length };
     }
     const shouldPrune = at - lastPruneAt >= 60 * 60 * 1000;
     if (shouldPrune) pruneAnalyticsData({ at, advanceClock: false });

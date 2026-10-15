@@ -234,3 +234,21 @@ test("rich music-event evidence requires the same identity, time, and address fi
     assert.equal(hasCompleteRichMusicEventRecord({ ...complete, [field]: null }), false, field);
   }
 });
+
+
+test("SQL and JS accept repaired provider apostrophes while preserving exclusions", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    installPublicMusicEventPolicySql(database);
+    const check = database.prepare("SELECT pit_indexable_music_event(?,?,?,?,?,?,?,?,?,?) AS eligible");
+    const title = 'Miind\u00e2\u0080\u0099S Eye with Nautiloid';
+    const base = { owner_id: null, music_qualified: 1, event_kind: 'concert', event_name: title, artist: title, venue: "What's Left Records", date: '2036-10-07' };
+    for (const [change, expected] of [[{},true], [{music_qualified:0},false], [{owner_id:'member'},false],
+      [{event_name:'Unknown\ufffd title'},false], [{event_name:'2026 Formula 1 MSC Cruises USGP - Friday Admission'},false],
+      [{event_name:'Miind\u00e2\u0080\u0099S Eye VIP Upgrade'},false]]) {
+      const row = { ...base, ...change };
+      assert.equal(isIndexableMusicEventRecord(row), expected);
+      assert.equal(check.get(row.owner_id,row.music_qualified,row.event_kind,row.event_name,row.artist,row.venue,null,'[]',row.date,null).eligible, Number(expected));
+    }
+  } finally { database.close(); }
+});

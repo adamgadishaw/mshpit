@@ -6,10 +6,11 @@ import { parse } from "@babel/parser";
 import { replaceNavigationFrame } from "./navigationStack.mjs";
 import { navigationFrameForAccount } from "./memberAccess.mjs";
 import { createBrowserHistory } from "./browserHistory.mjs";
+import { createArtistLookupController } from "../features/artistSearch/artistLookupController.mjs";
 
 const source = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
 const syntax = parse(source, { sourceType: "module", plugins: ["jsx"] });
-const names = ["cancelPublicRoute", "applyNavigation", "writeNavigation", "runAfterComposerClose", "commitGo", "commitReplace", "popStack", "requestComposerPop", "back", "onPop"];
+const names = ["cancelNewsStory", "cancelPublicRoute", "applyNavigation", "writeNavigation", "runAfterComposerClose", "commitGo", "commitReplace", "popStack", "requestComposerPop", "back", "onPop"];
 const declarations = new Map();
 function visit(node) {
   if (!node || typeof node !== "object") return;
@@ -66,20 +67,26 @@ function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => f
   for (let i = 1; i < initialStack.length; i++) browser.write({ ...base, stack: initialStack.slice(0, i + 1) }, initialStack[i].path);
   calls.length = 0;
   const guardRef = { current: null };
+  const newsOpenRef = { current: 0 };
   const sessionRef = { current: session };
+  const publicLookup = { lookup: null };
+  const publicNavigationPendingRef = { current: null };
+  const publicRouteRequestRef = { current: null };
   functions = runInNewContext(actualFunctions, {
     web, stackRef, navigationRef, replaceNavigationFrame, prepareAvailableNavigationFrame: prepare, navigationFrameForAccount, session,
     pathForFrame: (frame) => frame.path || null, serverDocumentNavigationPath: () => null,
     setStack: (update) => queued.push(update), setTab: () => {}, setLanding: () => {},
     window: { history, location }, browser, browserHistoryRef: { current: browser },
-    publicRouteRequestRef: { current: null },
+    publicLookup, publicNavigationPendingRef, publicRouteRequestRef,
     setPublicNavigationNotice: () => {},
+    newsOpenRef, setNewsStoryNotice: () => {},
     restoreBrowserPathRef: { current: onRestore },
     composerCloseGuardRef: guardRef, bypassNextPopRef: { current: null },
     authNavigationAbortRef: { current: null }, sessionRef,
   });
   return {
-    ...functions, calls, entries, stackRef, guardRef, history, sessionRef,
+    ...functions, calls, entries, stackRef, guardRef, history, sessionRef, newsOpenRef,
+    publicLookup, publicNavigationPendingRef, publicRouteRequestRef,
     get cursor() { return cursor; },
     get state() { return snapshot(state); },
     flush() {
@@ -104,6 +111,21 @@ test("App root replacement pushes browser history and its real Back reaches tabs
   assert.deepEqual(app.state, [{}]);
   assert.equal(app.cursor, 0);
   assert.deepEqual(app.calls.map((call) => call.method), ["pushState", "back"]);
+});
+
+test("committed navigation cancels directory work and pending destination without erasing its account cooldown", () => {
+  const app = appNavigation(), scope = app.sessionRef.current.id;
+  const lookup = app.publicLookup.lookup = createArtistLookupController({ clock: () => 1_000 });
+  const request = lookup.begin(scope, "Artist");
+  lookup.fail(request, { serverCode: "PROVIDER_UNAVAILABLE", retryAt: 7_201_000 });
+  const route = app.publicRouteRequestRef.current = new AbortController();
+  app.publicNavigationPendingRef.current = JSON.stringify([{ artistName: "Artist" }, null]);
+  app.commitReplace({ nearby: true });
+  assert.equal(request.controller.signal.aborted, true);
+  assert.equal(route.signal.aborted, true);
+  assert.equal(app.publicNavigationPendingRef.current, null);
+  assert.equal(app.publicRouteRequestRef.current, null);
+  assert.equal(lookup.retryAt(scope), 7_201_000);
 });
 
 test("guest protected navigation opens one auth frame and Back keeps the public destination", () => {
@@ -247,4 +269,12 @@ test("App account-boundary Back keeps only a public post ID hint and re-resolves
   assert.equal(app.state.at(-1).auth, true, "old guest content is not painted before the fresh resolver completes");
   assert.match(source, /const restoreBrowserPath = async \(path, \{ replace: replaceUrl = false, publicFrameHint = null \}/);
   assert.match(source, /publicBrowserDestination\(path, \{\s*accountId, signal: controller\.signal, publicFrameHint,/);
+});
+
+test("native Back invalidates an in-flight news open before returning to the previous page", () => {
+  const app = appNavigation([{}, { news: true }], { web: false });
+  const request = app.newsOpenRef.current;
+  app.back(); app.flush();
+  assert.ok(app.newsOpenRef.current > request, "late story response cannot push after Back");
+  assert.deepEqual(app.state, [{}]);
 });

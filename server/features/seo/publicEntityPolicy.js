@@ -3,6 +3,8 @@ import {
   MAX_PROVIDER_MULTI_DAY_SPAN_DAYS,
 } from "../../tourDateLifecycle.js";
 
+import { publicProviderEventText } from "../../providerEventText.js";
+
 export const PUBLIC_ENTITY_THRESHOLDS = Object.freeze({
   artistBioCharacters: 80, memberBioCharacters: 60, authoredBodyCharacters: 40,
   cityConcertItems: 3, cityConcertVenues: 2, cityVenueItems: 3, cityVenueVenues: 2,
@@ -111,9 +113,10 @@ export function isIndexableMusicEventRecord(value = {}) {
     if (!evidence || publicBilledArtists(value).length === 0) return false;
   }
   if (!hasBoundedProviderRange(value, kind, ownerId)) return false;
-  const name = normalizedPublicText(value.eventName ?? value.event_name ?? value.name ?? value.artist);
-  const artist = normalizedPublicText(value.artist);
-  const venue = normalizedPublicText(value.venue);
+  const display = (text) => normalizedPublicText(publicProviderEventText(text, ownerId));
+  const name = display(value.eventName ?? value.event_name ?? value.name ?? value.artist);
+  const artist = display(value.artist);
+  const venue = display(value.venue);
   return Boolean(name)
     && ![name, artist, venue].some((text) => PUBLIC_TEXT_ENCODING_HAZARD.test(text))
     && publicMusicEventTitleViolations(name).length === 0;

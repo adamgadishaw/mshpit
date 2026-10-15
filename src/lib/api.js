@@ -182,6 +182,7 @@ export async function api(path, { method = "GET", body, context, silent = false,
     throw apiFailure(error, { path, method: verb, context: operation, silent, kind });
   }
 
+  const retryReceivedAt = Date.now();
   let text;
   try {
     text = await res.text();
@@ -236,8 +237,8 @@ export async function api(path, { method = "GET", body, context, silent = false,
       context: operation,
       source: "api",
     });
-    const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable, code: err.serverCode });
-    if (retryAfterMs != null) err.retryAfterMs = retryAfterMs;
+    const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable, code: err.serverCode, now: retryReceivedAt });
+    if (retryAfterMs != null) { err.retryAfterMs = retryAfterMs; err.retryAt = retryReceivedAt + retryAfterMs; }
     throw apiFailure(err, { path, method: verb, context: operation, silent });
   }
   // Even a correctly bound response can finish after this tab deliberately
@@ -327,6 +328,7 @@ export async function apiBinary(path, {
     throw apiFailure(error, { path, method: verb, context: operation, silent, kind });
   }
 
+  const retryReceivedAt = Date.now();
   const requestId = res.headers?.get?.("x-request-id")
     || res.headers?.get?.("x-render-request-id")
     || undefined;
@@ -360,8 +362,8 @@ export async function apiBinary(path, {
       context: operation,
       source: "api",
     });
-    const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable, code: err.serverCode });
-    if (retryAfterMs != null) err.retryAfterMs = retryAfterMs;
+    const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable, code: err.serverCode, now: retryReceivedAt });
+    if (retryAfterMs != null) { err.retryAfterMs = retryAfterMs; err.retryAt = retryReceivedAt + retryAfterMs; }
     throw apiFailure(err, { path, method: verb, context: operation, silent });
   }
 

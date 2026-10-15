@@ -109,3 +109,11 @@ test("analytics latency buckets are stable at their boundaries", () => {
   assert.equal(analyticsDwellBucket(2999), "under_3s");
   assert.equal(analyticsDwellBucket(30_000), "30_to_90s");
 });
+
+test("news and measured playback survive categorical validation without widening receipt IDs", () => {
+  const props = {postId:"news_article_123",surface:"news",position:0,algorithm:"music-affinity-v3",reasonCode:"community_discovery"};
+  assert.deepEqual(sanitizeAnalyticsEvent({id:"evt_new_123",name:"feed_impression",props},{requireId:true}),{id:"evt_new_123",name:"feed_impression",props});
+  assert.equal(sanitizeAnalyticsEvent({id:"news_fake_receipt",name:"feed_impression",props},{requireId:true}),null);
+  const progress = sanitizeAnalyticsEvent({name:"video_progress",props:{postId:"p_example_12",surface:"clips",milestone:"50",measurement:"watched-v1",url:"private",currentTime:150}});
+  assert.deepEqual(progress.props,{postId:"p_example_12",surface:"clips",milestone:"50",measurement:"watched-v1"});
+});

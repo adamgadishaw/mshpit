@@ -60,7 +60,7 @@ export function playerYouTubeStatusMessage(notice, { preview = false, previewSta
   const previewMessage = previewState === "playing"
     ? "Preview playing."
     : previewState === "requires_gesture"
-      ? "Preview ready — press Play."
+      ? "Preview ready. Press Play."
       : "Preview available.";
   return `${message} ${previewMessage}`;
 }

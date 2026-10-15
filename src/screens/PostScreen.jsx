@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Platform, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
-import { colors, mono, radius, roleColor } from "../theme";
+import { colors, mono, radius, roleColor, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
@@ -17,6 +17,8 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
+import NewsStoryCard from "../components/news/NewsStoryCard";
+import { CommentLikeButton } from "../components/SocialReactionButtons";
 
 const ago = (ts) => {
   if (!ts) return "";
@@ -29,8 +31,8 @@ const ago = (ts) => {
 
 // One comment row + its nested replies. A reply-to-comment is indented and shows
 // who it answers, so the thread reads like a forum, not a flat list.
-function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId, onOpenProfile, userById, userBadges }) {
-  const author = resolvePostAuthor({ userId: c.userId, cached: userById?.(c.userId), embedded: { name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, profileUpdatedAt: c.profileUpdatedAt } });
+function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId, onOpenProfile, userById, userBadges, postId, onLike, onRequireAuth }) {
+  const author = resolvePostAuthor({ userId: c.userId, cached: userById?.(c.userId), embedded: { name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, membershipBadge: c.membershipBadge, profileUpdatedAt: c.profileUpdatedAt } });
   const own = !c.deleted && !!sessionId && c.userId === sessionId;
   return (
     <View style={depth > 0 ? (depth <= 3 ? styles.replyWrap : styles.deepReplyWrap) : null}>
@@ -54,6 +56,7 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
           </View>
           <Text style={[styles.cText, c.deleted && styles.deletedText]}>{c.deleted ? "Comment deleted" : c.text}</Text>
           {!c.deleted && <View style={styles.commentActions}>
+            {!c.pending && c.canLike !== false && <CommentLikeButton comment={c} postId={postId} accountId={sessionId} onLike={onLike} onRequireAuth={onRequireAuth} />}
             <Pressable onPress={() => onReply(c)} hitSlop={6} accessibilityRole="button" accessibilityLabel="Reply to comment"><Text style={styles.replyBtn}>Reply</Text></Pressable>
             {own && <Pressable onPress={() => onDelete(c)} hitSlop={6}><Text style={styles.deleteBtn}>Delete</Text></Pressable>}
             {!own && c.userId && onReport ? (
@@ -77,7 +80,7 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
         </View>
       </View>
       {replies.map((r) => (
-        <CommentNode key={r.c.id} c={r.c} replies={r.replies} depth={depth + 1} onReply={onReply} onDelete={onDelete} onReport={onReport} sessionId={sessionId} onOpenProfile={onOpenProfile} userById={userById} userBadges={userBadges} />
+        <CommentNode key={r.c.id} c={r.c} replies={r.replies} depth={depth + 1} onReply={onReply} onDelete={onDelete} onReport={onReport} sessionId={sessionId} onOpenProfile={onOpenProfile} userById={userById} userBadges={userBadges} postId={postId} onLike={onLike} onRequireAuth={onRequireAuth} />
       ))}
     </View>
   );
@@ -86,7 +89,7 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
 // Post detail — the actual post + its comment thread. This is where like/comment
 // notifications land (not the performance page), and where forum-style replies live.
 export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag }) {
-  const { session, feed, commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, userById, userBadges } = useStore();
+  const { session, feed, commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, userById, userBadges, setCommentLike } = useStore();
   const [postLocalOverrides, setPostLocalOverrides] = useState({});
   // Navigation keeps the post that was originally opened. Resolve it against
   // live feed state so an edit made on this screen appears immediately. A
@@ -271,15 +274,15 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
   };
 
   // Deleting the post you're viewing must also leave this now-empty screen.
-  const removePost = (postId) => { deleteOwnPost(postId); onClose?.(); };
+  const removePost = async (postId) => { const result = await deleteOwnPost(postId); if (result?.ok) onClose?.(); return result; };
 
   return (
-    <View style={styles.wrap}>
+    <View style={styles.wrap} testID="post-content-shell">
       <ScreenHeader
-        kicker={isOnlineReview ? "Online concert review" : activeLog.review ? "Review" : "Post"}
-        title="Original post"
+        kicker={activeLog.news ? "Mshpit News" : isOnlineReview ? "Online concert review" : activeLog.review ? "Review" : "Post"}
+        title={activeLog.news ? "Story" : "Original post"}
         onBack={onClose}
-        backLabel="Leave the original post"
+        backLabel={activeLog.news ? "Leave the story" : "Leave the original post"}
         backHint={isOnlineReview ? "Returns to the page or feed you came from" : "Returns to the show, artist, or feed you came from"}
       />
       <VinylRefreshBoundary
@@ -288,7 +291,9 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
         accessibilityLabel="Refresh post and comments"
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <TicketStub log={activeLog} compactContent={false} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} onRequireAuth={onRequireAuth} onComment={showComments} onOpenPost={showComments} />
+        {activeLog.news ? (
+          <NewsStoryCard story={activeLog.news} post={activeLog} full accountId={session?.id || null} onOpen={showComments} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onDelete={removePost} onRequireAuth={onRequireAuth} />
+        ) : <TicketStub log={activeLog} compactContent={false} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} onRequireAuth={onRequireAuth} onComment={showComments} onOpenPost={showComments} />}
 
         <Text style={styles.sectionLabel}>
           {commentsUsable ? `${flat.length} COMMENT${flat.length === 1 ? "" : "S"}` : "COMMENTS"}
@@ -317,7 +322,7 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
         ) : null}
         {commentsUsable && tree.length === 0 ? <Text style={styles.empty}>No comments yet. Start the conversation.</Text> : null}
         {commentsUsable ? tree.map((node) => (
-          <CommentNode key={node.c.id} c={node.c} replies={node.replies} depth={0} onReply={reply} onDelete={removeComment} onReport={onReport} sessionId={session?.id} onOpenProfile={onOpenProfile} userById={userById} userBadges={userBadges} />
+          <CommentNode key={node.c.id} c={node.c} replies={node.replies} depth={0} onReply={reply} onDelete={removeComment} onReport={onReport} sessionId={session?.id} onOpenProfile={onOpenProfile} userById={userById} userBadges={userBadges} postId={log.id} onLike={setCommentLike} onRequireAuth={onRequireAuth} />
         )) : null}
         <View style={{ height: 20 }} />
       </ScrollView>
@@ -366,8 +371,8 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: 16, paddingBottom: 24, ...(Platform.OS === "web" ? { width: "100%", maxWidth: 900, alignSelf: "center" } : null) },
+  wrap: { flex: 1, minWidth: 0, width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.bg },
+  content: { padding: 16, paddingBottom: 24 },
   sectionLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 4, marginBottom: 12 },
   empty: { color: colors.textDim, fontSize: 14, fontStyle: "italic", marginBottom: 12 },
   threadState: { flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 14 },
@@ -386,11 +391,11 @@ const styles = StyleSheet.create({
   cTime: { color: colors.textFaint, fontSize: 11, fontFamily: mono },
   cText: { color: colors.text, fontSize: 14.5, lineHeight: 21, marginTop: 3 },
   deletedText: { color: colors.textFaint, fontSize: 13.5, fontStyle: "italic" },
-  commentActions: { flexDirection: "row", alignItems: "center", gap: 16, marginTop: 6 },
+  commentActions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 16, rowGap: 4, marginTop: 6 },
   replyBtn: { color: colors.amber, fontSize: 12.5, fontWeight: "700", marginTop: 6 },
   deleteBtn: { color: colors.danger, fontSize: 12.5, fontWeight: "700", marginTop: 6 },
   reportBtn: { color: colors.textDim, fontSize: 12.5, fontWeight: "700", marginTop: 6 },
-  composerWrap: { borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: 12, paddingTop: 8, paddingBottom: 12 },
+  composerWrap: { borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 },
   replyingTo: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingHorizontal: 6, paddingBottom: 8 },
   replyingTxt: { color: colors.amber, fontSize: 12.5, fontWeight: "700", flex: 1 },
   composer: { flexDirection: "row", alignItems: "flex-end", gap: 8 },

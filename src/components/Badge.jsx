@@ -44,6 +44,8 @@ const STAR = "12 6.2 13.7 10.2 18 10.5 14.7 13.3 15.7 17.5 12 15.2 8.3 17.5 9.3 
 // keeps the badges on-brand.
 function config(type) {
   switch (type) {
+    case "first-wave": return { fill: colors.gold, edge: "#7A5A12", glyph: "wave", tip: "First Wave" };
+    case "email-confirmed": return { fill: "#C7CDD6", edge: "#6E7784", glyph: "mail", tip: "Email confirmed" };
     case "top100": return { fill: colors.gold, edge: "#7A5A12", glyph: "star", tip: "Top 100 artist" };
     case "rank1": return { fill: colors.gold, edge: "#7A5A12", glyph: "num", num: "1", tip: "#1 this week" };
     case "rank2": return { fill: "#C7CDD6", edge: "#6E7784", glyph: "num", num: "2", tip: "#2 this week" };
@@ -59,6 +61,8 @@ function config(type) {
 }
 
 function Glyph({ c }) {
+  if (c.glyph === "wave") return <Path d="M5.7 10.1c2.1-4.4 3.8 4.4 6.1 0s4 4.4 6.5 0M5.7 14.1c2.1-4.4 3.8 4.4 6.1 0s4 4.4 6.5 0" fill="none" stroke="#ffffff" strokeWidth="1.8" strokeLinecap="round" />;
+  if (c.glyph === "mail") return <Path d="M6.5 8.3h11v7.4h-11zM6.5 8.3l5.5 4 5.5-4" fill="none" stroke="#ffffff" strokeWidth="1.5" strokeLinejoin="round" />;
   if (c.glyph === "check")
     return <Polyline points="7.6 12.4 10.6 15.3 16.4 8.9" fill="none" stroke="#ffffff" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" />;
   // "num" is the built-in rank glyph; "char" is the admin-created equivalent and
@@ -99,7 +103,7 @@ export default function Badge({ type = "verified", size = 18, tooltip = true, ba
   const custom = badge ? badgeArt({ color: badge.color, glyph: badge.glyph, glyphChar: badge.glyphChar }) : null;
   const info = badge ? { label: badge.label, desc: badge.description || "", how: "" } : STATUS_BADGES[type];
   const seal = <Seal type={type} size={size} custom={custom} />;
-  if (!web || !tooltip || !info) return seal;
+  if (!web || !tooltip || !info) return <View accessible accessibilityRole="image" accessibilityLabel={info ? `${info.label} badge. ${info.desc}` : "Badge"}>{seal}</View>;
   return (
     <View style={styles.tipWrap}>
       <Pressable onHoverIn={() => setHover(true)} onHoverOut={() => setHover(false)} accessibilityRole="image" accessibilityLabel={`${info.label} badge. ${info.desc}`}>

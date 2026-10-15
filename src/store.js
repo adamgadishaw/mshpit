@@ -1,9 +1,13 @@
 import { createContext, useContext, useState, useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
 import { seedFeed, ratedShows, haversineKm, installDemoCatalogShows } from "./data";
+import { memberBadgeTypes } from "./domain/memberBadges.mjs";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
 import { load, remove, save } from "./lib/persist";
 import { api, AppError, captureAppError, configureApiIdentity } from "./lib/api";
+import { fetchPostById } from "./lib/newsDeskApi";
+import { saveArtistFollowing } from "./lib/connectionsApi";
+import { MAX_FOLLOWED_ARTISTS, artistFollowReceipt } from "./domain/artistFollowFanClub.mjs";
 import { authTransitions, AUTH_INTENT_KEY } from "./lib/authTransitions";
 import { classifyAccountAgeBand, requestAccountExport, updateAnnouncementEmailPreference, updateDirectMessagePreference, updateProfileAudience, updateProfileSearchIndexingPreference } from "./lib/accountPrivacyApi";
 import { requestFreshDeezerPreview } from "./lib/playbackApi";
@@ -36,6 +40,7 @@ import { createAccountReadCoordinator } from "./domain/accountReadCoordinator.mj
 import { createAccountPreferenceWrites } from "./domain/accountPreferenceWrites.mjs";
 import { hiddenRecommendationIds } from "./domain/startupCacheState.mjs";
 import { commentRequestCacheKey } from "./domain/commentCache.mjs";
+import { reconcileCommentRead } from "./domain/commentReadProjection.mjs";
 import {
   applyFanClubMembership,
   createFanClubDirectoryReadCoordinator,
@@ -56,7 +61,7 @@ import {
   withoutChatOutboxItem,
 } from "./domain/chatDelivery.mjs";
 import { createStaffReadCoordinator, staffScopeFor } from "./domain/staffReadCoordinator.mjs";
-import { confirmedRoleMutationPatch, patchModerationMemberContext } from "./domain/moderationConsole.mjs";
+import { confirmedRoleMutationPatch, patchModerationMemberContext } from "./domain/moderationPatches.mjs";
 import {
   deleteAccountDraft,
   draftsForAccount,
@@ -66,7 +71,7 @@ import {
 } from "./domain/draftPolicy.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./domain/mediaUploadPolicy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "./domain/privacyDisclosures.mjs";
-import { buildMemoryCreateBody, buildMemoryEditBody, buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
+import { buildMemoryCreateBody, buildMemoryEditBody, buildReviewCreateBody, buildReviewEditBody, buildStatusCreateBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { isInPersonConcertReview } from "./domain/onlineReview.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
@@ -123,7 +128,9 @@ import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.
 import { saveMemoryPostEdit } from "./features/postEditing/services/memoryPostEditApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
 import { attachArtistSuggestion, fetchArtistSuggestions, fetchResolvedArtist, mergeArtistSearchCacheEntry, refreshArtistCatalogEntry } from "./features/artistSearch/artistSearchApi.mjs";
+import { createSessionValidationRetry } from "./domain/sessionValidationRetry.mjs";
 import { useAccountCommentCache } from "./features/comments/useAccountCommentCache";
+import { writeCommentLike, writePostRepost, notifySocialReactionChange } from "./features/socialReactions/socialReactionsApi";
 import { useAccountArtistPageCache } from "./features/artistPage/useAccountArtistPageCache";
 import { artistMemorialPreparationName } from "./domain/artistMemorialCandidate.mjs";
 import { prepareArtistMemorialCandidate } from "./features/artistMemorials/services/artistMemorialApi.mjs";
@@ -329,6 +336,10 @@ const normalizeServerPost = (post) => ({
   media: Array.isArray(post?.media) ? post.media : [],
   mediaAssetIds: Array.isArray(post?.mediaAssetIds) ? post.mediaAssetIds : [],
   setlist: Array.isArray(post?.setlist) ? post.setlist : [],
+  supportingActs: Array.isArray(post?.supportingActs) ? post.supportingActs : [],
+  lineup: Array.isArray(post?.lineup) ? post.lineup : [],
+  showFormat: typeof post?.showFormat === "string" ? post.showFormat : "headline",
+  endDate: typeof post?.endDate === "string" ? post.endDate : "",
   taggedPeople: normalizeTaggedPeople(post?.taggedPeople),
   timeAgo: ago(post?.createdAt),
 });
@@ -341,6 +352,8 @@ const sameServerPost = (a, b) => !!a && !!b
   && a.version === b.version
   && a.likes === b.likes
   && a.comments === b.comments
+  && a.reposts === b.reposts && a.reposted === b.reposted
+  && JSON.stringify(a.repostedBy || []) === JSON.stringify(b.repostedBy || [])
   && a.liked === b.liked
   && a.flags === b.flags
   && a.viewCount === b.viewCount
@@ -1187,7 +1200,7 @@ export function StoreProvider({ children }) {
       let payload;
       let fallback = false;
       let mode = "for-you";
-      let algorithm = "music-affinity-v2";
+      let algorithm = "music-affinity-v3";
       try {
         payload = await api(`/api/feed/for-you?limit=${FEED_PAGE_LIMIT}`, {
           expectedAccountId: read.accountId,
@@ -1337,7 +1350,7 @@ export function StoreProvider({ children }) {
     const accountId = sessionRef.current?.id || null;
     if (!authReadyRef.current || !accountId || signal?.aborted) return null;
     const allIds = feedRef.current.map((post) => post?.id)
-      .filter((id) => typeof id === "string" && /^p_[A-Za-z0-9_-]{1,77}$/.test(id));
+      .filter((id) => typeof id === "string" && /^(?:p|news)_[A-Za-z0-9_-]{1,77}$/.test(id));
     const start = allIds.length ? feedRevalidationOffsetRef.current % allIds.length : 0;
     const ids = [...allIds.slice(start), ...allIds.slice(0, start)].slice(0, 200);
     feedRevalidationOffsetRef.current = allIds.length ? (start + ids.length) % allIds.length : 0;
@@ -1611,8 +1624,9 @@ export function StoreProvider({ children }) {
     let followers;
     let following;
     let fol;
+    let favoriteShows;
     try {
-      ({ user: su, followers, following, isFollowing: fol } = await api(`/api/users/${encodeURIComponent(id)}`, {
+      ({ user: su, followers, following, isFollowing: fol, favoriteShows } = await api(`/api/users/${encodeURIComponent(id)}`, {
         signal,
         silent: true,
         context: "Loading this profile",
@@ -1640,7 +1654,8 @@ export function StoreProvider({ children }) {
     // loader metadata-only prevents ProfileScreen from issuing two identical
     // head reads and lets history failures retry without downgrading valid
     // profile identity/follower metadata.
-    return { status: "ready", reason: "confirmed", evict: false, user: su, error: "" };
+    // The member's pinned favorite shows travel with the profile read, not the user cache.
+    return { status: "ready", reason: "confirmed", evict: false, user: su, error: "", favoriteShows: Array.isArray(favoriteShows) ? favoriteShows.slice(0, 4) : [] };
   };
   // Recent searches are device-local but identity-scoped. The old global key is
   // eligible to seed the guest bucket only; a signed-in account must never see
@@ -2673,6 +2688,7 @@ export function StoreProvider({ children }) {
     let retryTimer = null;
     let identityHasBeenConfirmed = authReadyRef.current;
     let coordinator;
+    const validationRetry = createSessionValidationRetry();
 
     const lockIdentity = () => {
       const accountId = sessionRef.current?.id || null;
@@ -2694,13 +2710,13 @@ export function StoreProvider({ children }) {
       identityHasBeenConfirmed = true;
     };
 
-    const scheduleRetry = (strict) => {
+    const scheduleRetry = (strict, error) => {
       if (stopped) return;
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = setTimeout(() => {
         retryTimer = null;
         void coordinator.validate({ force: true, strict, reason: "retry" });
-      }, 5_000);
+      }, validationRetry.next(error));
     };
 
     const runValidation = async (context) => {
@@ -2804,13 +2820,17 @@ export function StoreProvider({ children }) {
         // Cold starts and explicit cross-tab changes remain locked while retrying.
         const mustStayLocked = !confirmedBeforeValidation || context.isStrict();
         if (mustStayLocked) lockIdentity();
-        scheduleRetry(mustStayLocked);
+        scheduleRetry(mustStayLocked, error);
         return { authoritative: false, outcome: outcome.kind };
       }
     };
 
     coordinator = createSessionValidationCoordinator({
-      run: runValidation,
+      run: async (context) => {
+        const result = await runValidation(context);
+        if (result.authoritative) validationRetry.reset();
+        return result;
+      },
       onStrictRequest: lockIdentity,
     });
     const stopAuthRetry = authTransitions.onPendingRevocation(() => scheduleRetry(false));
@@ -3011,7 +3031,10 @@ export function StoreProvider({ children }) {
         absorbServerUser(user, { announce: true });
         return { ok: true };
       }, signal);
-    } catch (e) { return { ok: false, error: e.status ? e.message : "Couldn't reset. Try requesting a new link." }; }
+    } catch (error) {
+      if (error?.status >= 400 && error.status < 500) return { ok: false, outcome: "rejected", error: error.message };
+      return { ok: false, outcome: "uncertain", error: "Your password may already have changed. Try logging in with the new password you just entered. If that fails, request a new reset link." };
+    }
   };
 
   // Ensure a handle is unique by suffixing a number if taken.
@@ -3058,9 +3081,9 @@ export function StoreProvider({ children }) {
           return { ok: false, error: "That request did not complete. Please try again." };
         }, signal);
       } catch (e) {
-        if (e.status) return { ok: false, error: e.message };
+        if (e.status >= 400 && e.status < 500) return { ok: false, error: e.message };
       }
-      return { ok: false, error: "Couldn't connect. Check your connection and try again." };
+      return { ok: false, outcome: "uncertain", error: "Your account may already have been created. Try logging in with these details before signing up again. Check your connection if login is unavailable." };
     }
     // Explicit development demos create only local prototype accounts.
     if (users.some((x) => x.email.toLowerCase() === em)) return { ok: false, error: "That email is already registered." };
@@ -3346,6 +3369,28 @@ export function StoreProvider({ children }) {
     return { ok: true };
   };
 
+  const setArtistFollowing = async (key, following) => {
+    const actor = currentMutationActor();
+    if (!actor) return { ok: false };
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    try {
+      const result = await saveArtistFollowing(key, following, { accountId: actor.id });
+      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) return { ok: false, stale: true };
+      if (!Array.isArray(result.favoriteArtists)) return { ok: false };
+      // A late response for another artist cannot overwrite a newer selection.
+      const receipt = artistFollowReceipt(sessionRef.artistFollowReceipt, mutation, result.profileUpdatedAt);
+      if (receipt) {
+        sessionRef.artistFollowReceipt = receipt;
+        const confirmed = { favoriteArtists: result.favoriteArtists, profileUpdatedAt: Math.max(Number(sessionRef.current?.profileUpdatedAt) || 0, result.profileUpdatedAt) };
+        sessionRef.current = { ...sessionRef.current, ...confirmed };
+        setSession((current) => current?.id === actor.id ? { ...current, ...confirmed } : current);
+        setUsers((all) => all.map((user) => user.id === actor.id ? publicProfileCacheEntry({ ...user, ...confirmed }) : user));
+      }
+      return { ok: true, user: sessionRef.current, following: result.following };
+    } catch (error) {
+      return { ok: false, error, stale: !accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current) };
+    }
+  };
   const updateProfile = (patch, { expectedAccountId, signal, optimistic = true } = {}) => {
     const actor = currentMutationActor();
     if (!actor) return Promise.resolve({ ok: false });
@@ -3356,7 +3401,7 @@ export function StoreProvider({ children }) {
     const accountMutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     // General profile edits cannot optimistically adopt permissions or replay a
     // whole privacy/consent snapshot. Those choices have dedicated mutations.
-    const editableFields = ["name", "bio", "handle", "avatarUri", "banner", "concertMapVisible", "home", "genres", "favoriteArtists", "nowPlaying", "treble", "bass", "playlists"];
+    const editableFields = ["name", "bio", "handle", "avatarUri", "banner", "concertMapVisible", "home", "genres", "favoriteArtists", "nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows"];
     const safe = Object.fromEntries(editableFields.filter((key) => Object.hasOwn(patch || {}, key)).map((key) => [key, patch[key]]));
     if (Object.prototype.hasOwnProperty.call(safe, "genres")) {
       const genreSelection = profileGenreSelection(safe.genres);
@@ -3373,7 +3418,7 @@ export function StoreProvider({ children }) {
       if (!isHandle(h)) return Promise.resolve({ ok: false, error: "Use 3–20 letters, numbers, or underscores for your @username." });
       safe.handle = h;
     }
-    if (Array.isArray(safe.favoriteArtists)) safe.favoriteArtists = safe.favoriteArtists.map((n) => clean(n, { max: 80 })).filter(Boolean).slice(0, 50);
+    if (Array.isArray(safe.favoriteArtists)) safe.favoriteArtists = safe.favoriteArtists.map((n) => clean(n, { max: 80 })).filter(Boolean).slice(0, MAX_FOLLOWED_ARTISTS);
     if ("name" in safe) safe.initials = (safe.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
     // Persist to the server so profile edits (incl. your @handle) survive sign-out
     // and follow you to a new device. The server is the authority on handle
@@ -3386,7 +3431,7 @@ export function StoreProvider({ children }) {
 
     // The server merges this bounded envelope. Send changed music fields only;
     // never replay older theme, consent, privacy, or unrelated music choices.
-    const changedExtras = ["nowPlaying", "treble", "bass", "playlists"].filter((key) => key in safe);
+    const changedExtras = ["nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows"].filter((key) => key in safe);
     if (changedExtras.length) body.extras = Object.fromEntries(changedExtras.map((key) => [key, safe[key]]));
     if (!Object.keys(body).length) return Promise.resolve({ ok: true, patch: safe });
 
@@ -3407,6 +3452,11 @@ export function StoreProvider({ children }) {
         const confirmedFields = new Set(Object.keys(safe));
         if ("handle" in safe) { confirmedFields.add("handleChangeAvailableAt"); confirmedFields.add("pendingSignupHandle"); }
         const confirmed = Object.fromEntries([...confirmedFields].filter((key) => Object.hasOwn(user, key)).map((key) => [key, user[key]]));
+        if (Object.hasOwn(confirmed, "favoriteArtists")) {
+          const receipt = artistFollowReceipt(sessionRef.artistFollowReceipt, accountMutation, user.profileUpdatedAt);
+          if (receipt) sessionRef.artistFollowReceipt = receipt;
+          else delete confirmed.favoriteArtists;
+        }
         const mergeConfirmed = (current) => {
           const next = { ...current, ...confirmed };
           if (Number.isFinite(user.profileUpdatedAt)) next.profileUpdatedAt = Math.max(Number(current?.profileUpdatedAt) || 0, user.profileUpdatedAt);
@@ -3553,7 +3603,7 @@ export function StoreProvider({ children }) {
               } : {}),
             },
           }
-          : { clientMutationId: localId, kind: "status", review: safe.review, taggedUserIds: taggedUserIdsFromPeople(safe.taggedPeople), song: safe.song || null, photos: safe.photos || [], ...(Array.isArray(safe.mediaAssetIds) ? { mediaAssetIds: safe.mediaAssetIds } : {}), photosPublic: safe.photosPublic === false ? 0 : 1, ...(log.playlistId ? { playlistId: log.playlistId } : {}), campaign: safe.campaign }
+          : buildStatusCreateBody(safe)
         : buildReviewCreateBody(safe);
       return deliverPostCreate({
         apiCall: api,
@@ -3600,6 +3650,19 @@ export function StoreProvider({ children }) {
           removeProfileHistoryPost(postingActor.id, postingActor.id, localId);
           return { ok: false, error };
         });
+    }
+  };
+
+  // Loads one post the feed may not hold yet, such as a story opened from the
+  // news panel, in the same shape as feed posts.
+  const loadPostForView = async (id, { signal } = {}) => {
+    if (typeof id !== "string" || !id || id.length > 200) return null;
+    try {
+      const { post } = await fetchPostById(id, { signal });
+      return post ? normalizeServerPost(post) : null;
+    } catch {
+      // architecture: allow-ambiguous-result -- opening a story is optional; the reader stays where they were
+      return null;
     }
   };
 
@@ -4054,6 +4117,8 @@ export function StoreProvider({ children }) {
   const isFollowing = (id) => (follows[session?.id] || []).includes(id);
   const bumpFollowers = (id, d) =>
     setUserStats((m) => (m[id] ? { ...m, [id]: { ...m[id], followers: Math.max(0, (m[id].followers || 0) + d) } } : m));
+  const bumpFollowing = (id, d) =>
+    setUserStats((m) => (m[id] ? { ...m, [id]: { ...m[id], following: Math.max(0, (m[id].following || 0) + d) } } : m));
   const follow = (id) => {
     const actor = currentMutationActor();
     if (!actor || (follows[actor.id] || []).includes(id)) return;
@@ -4061,16 +4126,19 @@ export function StoreProvider({ children }) {
     const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     setFollows((f) => ({ ...f, [actor.id]: [...new Set([...(f[actor.id] || []), id])] }));
     bumpFollowers(id, 1);
+    bumpFollowing(actor.id, 1);
     return api(`/api/users/${id}/follow`, { method: "POST", body: { following: true }, context: "Following this fan", expectedAccountId: actor.id })
       .then(() => {
         if (!isCurrent()) return { ok: false, stale: true };
         track("follow"); notify(id, "follow");
+        notifySocialReactionChange(actor.id);
         return { ok: true };
       })
       .catch(() => {
         if (!isCurrent()) return { ok: false, stale: true };
         setFollows((f) => ({ ...f, [actor.id]: (f[actor.id] || []).filter((x) => x !== id) }));
         bumpFollowers(id, -1);
+        bumpFollowing(actor.id, -1);
         return { ok: false };
       });
   };
@@ -4081,12 +4149,18 @@ export function StoreProvider({ children }) {
     const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     setFollows((f) => ({ ...f, [actor.id]: (f[actor.id] || []).filter((x) => x !== id) }));
     bumpFollowers(id, -1);
+    bumpFollowing(actor.id, -1);
     return api(`/api/users/${id}/follow`, { method: "POST", body: { following: false }, context: "Unfollowing this fan", expectedAccountId: actor.id })
-      .then(() => isCurrent() ? { ok: true } : { ok: false, stale: true })
+      .then(() => {
+        if (!isCurrent()) return { ok: false, stale: true };
+        notifySocialReactionChange(actor.id);
+        return { ok: true };
+      })
       .catch(() => {
         if (!isCurrent()) return { ok: false, stale: true };
         setFollows((f) => ({ ...f, [actor.id]: [...new Set([...(f[actor.id] || []), id])] }));
         bumpFollowers(id, 1);
+        bumpFollowing(actor.id, 1);
         return { ok: false };
       });
   };
@@ -4461,32 +4535,22 @@ export function StoreProvider({ children }) {
     if (!force && commentCache.requestIsFresh(requestKey, 30_000)) {
       return Promise.resolve({ ok: true, cached: true });
     }
+    const readRevision=accountMutationEpochRef.commentRevision || 0;
     const request = api(`/api/posts/${id}/comments?limit=${safeLimit}`, {
       silent: true,
       context: "Loading comments",
       expectedAccountId: claim.accountId,
       signal,
     })
-      .then(({ comments: rows, removedIds = [] }) => {
+      .then(({ comments: rows }) => {
         if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
+        if (readRevision !== (accountMutationEpochRef.commentRevision || 0)) return { ok:false,stale:true };
         if (!Array.isArray(rows)) throw new Error("The comment response was invalid.");
         commentCache.markRequestFresh(requestKey);
         setComments((m) => {
           const existing = m[id] || [];
-          const byId = new Map(existing.map((c) => [c.id, c]));
-          const incomingIds = new Set(rows.map((comment) => comment.id));
-          // Leaf deletions disappear. Deleted parents returned as tombstones stay
-          // long enough to hold their replies in the right place.
-          for (const removedId of removedIds) if (!incomingIds.has(removedId)) byId.delete(removedId);
-          // Merge server rows over local (adopt parentId/avatar/role), keep any
-          // optimistic locals not yet on the server. Sorted oldest→newest.
-          for (const c of rows) byId.set(c.id, { id: c.id, userId: c.userId, name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, text: c.text, deleted: !!c.deleted, parentId: c.parentId || null, at: c.createdAt, likes: 0 });
-          const merged = [...byId.values()].sort((a, b) => (a.at || 0) - (b.at || 0));
-          const unchanged = merged.length === existing.length && merged.every((comment, index) => {
-            const previous = existing[index];
-            return previous?.id === comment.id && previous.text === comment.text && previous.deleted === comment.deleted && previous.parentId === comment.parentId && previous.at === comment.at;
-          });
-          return unchanged ? m : { ...m, [id]: merged };
+          const merged=reconcileCommentRead(existing,rows);
+          return merged===existing ? m : { ...m, [id]: merged };
         });
         return { ok: true };
       })
@@ -4516,6 +4580,7 @@ export function StoreProvider({ children }) {
       .then(({ id: sid, parentId: acceptedParentId = parentId || null, duplicate = false, commentCount }) => {
         if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
         if (!sid) throw new Error("The server did not confirm your comment. Your draft is still available to retry.");
+        accountMutationEpochRef.commentRevision=(accountMutationEpochRef.commentRevision || 0)+1;
         const published = { ...c, id: sid, parentId: acceptedParentId, pending: false, createdAt: c.at };
         setComments((m) => {
           const current = m[id] || [];
@@ -4560,6 +4625,7 @@ export function StoreProvider({ children }) {
       expectedAccountId: claim.accountId,
     })).then(({ tombstone }) => {
       if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
+      accountMutationEpochRef.commentRevision=(accountMutationEpochRef.commentRevision || 0)+1;
       setComments((all) => {
         const current = all[postId] || [];
         const next = tombstone
@@ -4571,6 +4637,31 @@ export function StoreProvider({ children }) {
       });
       return { ok: true, tombstone: !!tombstone };
     }).catch((error) => commentClaimIsCurrent(claim) ? { ok: false, error } : { ok: false, stale: true });
+  };
+  const setCommentLike = (postId,commentId,liked) => {
+    const actor=currentMutationActor();
+    const claim=commentCache.capture();
+    if (!actor || actor.id!==claim.accountId || !commentClaimIsCurrent(claim)) return Promise.resolve({ok:false});
+    return writePostComment(claim,postId,()=>writeCommentLike(postId,commentId,liked,actor.id)).then(result=>{
+      if (!commentClaimIsCurrent(claim)) return {ok:false,stale:true};
+      accountMutationEpochRef.commentRevision=(accountMutationEpochRef.commentRevision || 0)+1;
+      setComments(all=>({...all,[postId]:(all[postId]||[]).map(comment=>comment.id===commentId ? {...comment,likes:result.likes,liked:result.liked} : comment)}));
+      return result;
+    }).catch(error=>commentClaimIsCurrent(claim) ? {ok:false,error} : {ok:false,stale:true});
+  };
+  const setPostRepost = (postId,reposted) => {
+    const actor=currentMutationActor();
+    if (!actor || !postId) return Promise.resolve({ok:false});
+    const mutation=captureAccountMutation(actor.id,accountMutationEpochRef.current);
+    const isCurrent=()=>accountMutationIsCurrent(mutation,sessionRef.current?.id,accountMutationEpochRef.current);
+    const queue=accountMutationEpochRef.repostWrites ||= createAccountPreferenceWrites();
+    return queue.run(JSON.stringify([actor.id,mutation.epoch,postId]),isCurrent,()=>writePostRepost(postId,reposted,actor.id)).then(result=>{
+      if (!isCurrent()) return {ok:false,stale:true};
+      feedMutationRevisionRef.current++;
+      setFeed(posts=>posts.map(post=>post.id===postId ? {...post,reposts:result.reposts,reposted:result.reposted,repostedBy:result.repostedBy} : post));
+      notifySocialReactionChange(actor.id);
+      return result;
+    }).catch(error=>isCurrent() ? {ok:false,error} : {ok:false,stale:true});
   };
   // Delete your own post. Optimistic: drop it from the feed immediately, and if
   // the write fails put it back exactly where it was so nothing is silently
@@ -4593,6 +4684,7 @@ export function StoreProvider({ children }) {
       .then(() => {
         if (!isCurrent()) return { ok: false, stale: true };
         track("delete_post", { postId });
+        setRemovedIds((ids) => ids.includes(postId) ? ids : [...ids, postId]);
         return { ok: true };
       })
       .catch((error) => {
@@ -4629,17 +4721,17 @@ export function StoreProvider({ children }) {
       return { ok: false, error };
     }
   };
-  const likeInfo = (id, base = 0) => ({ count: (likes[id] ?? base) + (myLikes[id] ? 1 : 0), liked: !!myLikes[id] });
-  const toggleLike = (id, base = 0) => {
+  const likeInfo = (id, base = 0, initiallyLiked = false) => ({ count: (likes[id] ?? Math.max(0, base - (initiallyLiked ? 1 : 0))) + ((myLikes[id] ?? initiallyLiked) ? 1 : 0), liked: !!(myLikes[id] ?? initiallyLiked) });
+  const toggleLike = (id, base = 0, initiallyLiked = false) => {
     const actor = currentMutationActor();
     if (!actor || !id) return Promise.resolve({ ok: false });
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
-    const previous = !!myLikes[id];
+    const previous = !!(myLikes[id] ?? initiallyLiked);
     const liked = !previous;
     feedMutationRevisionRef.current += 1;
     setMyLikes((m) => ({ ...m, [id]: liked }));
-    setLikes((l) => ({ ...l, [id]: l[id] ?? base }));
+    setLikes((l) => ({ ...l, [id]: l[id] ?? Math.max(0, base - (initiallyLiked ? 1 : 0)) }));
     return api(`/api/posts/${id}/like`, { method: "POST", body: { liked }, context: liked ? "Liking this review" : "Removing your like", expectedAccountId: actor.id })
       .then((result) => {
         if (!isCurrent()) return { ok: false, stale: true };
@@ -4751,7 +4843,7 @@ export function StoreProvider({ children }) {
   const followingFeed = (staff) => {
     const ids = new Set([...(follows[session?.id] || []), session?.id]);
     return visibleFeed(staff)
-      .filter((l) => ids.has(l.userId))
+      .filter((l) => !l.news && !String(l.id).startsWith("news_") && ids.has(l.userId))
       .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0) || String(b.id).localeCompare(String(a.id)));
   };
 
@@ -5397,6 +5489,7 @@ export function StoreProvider({ children }) {
         userId: post.userId,
         text: post.text,
         ts: ago(post.createdAt),
+        ...(post.contributor ? { contributor: post.contributor } : {}),
       }));
       // This is an authoritative moderation-aware snapshot. Replacing it also
       // removes a post that staff hid since this device last opened the page.
@@ -5896,14 +5989,14 @@ export function StoreProvider({ children }) {
   // Confirm someone's address for them. Distinct from setVerified above: this is
   // private account state and grants no public badge, so it only ever moves to
   // true and there is no "unconfirm".
-  const markEmailVerified = async (id) => {
-    if (!isStaff(sessionRef.current?.role)) return false;
+  const markEmailVerified = async (id, reason, confirmedHandle, confirmedEmailRevision) => {
+    if (sessionRef.current?.role !== "admin") return false;
     const scope = staffScopeFor(sessionRef.current);
     try {
-      await staffApi(`/api/admin/users/${id}/verify-email`, { method: "POST", body: {}, context: "Confirming a member's email" });
+      const result = await staffApi(`/api/admin/users/${id}/verify-email`, { method: "POST", body: { reason, confirmedTargetId: id, confirmedHandle, confirmedEmailRevision }, context: "Manually verifying a member" });
       if (staffMutationStillOwned(scope)) {
         invalidateStaffMemberReads();
-        patchStaffMember(id, { emailVerified: true });
+        patchStaffMember(id, { emailVerified: true, emailVerificationMethod: result?.method || "legacy" });
         setSession((s) => (s && s.id === id ? { ...s, emailVerified: true } : s));
       }
       return true;
@@ -6638,6 +6731,7 @@ export function StoreProvider({ children }) {
     if (rb) b.add(rb);
     if (u.verified) b.add("verified"); // admin-granted check, any account
     if (u.sponsor) b.add("sponsor");   // admin-granted partner/sponsor mark
+    for (const badge of memberBadgeTypes(u)) b.add(badge);
     if (u.artistName && isTop100(u.artistName)) b.add("top100");
     return [...b];
   };
@@ -6864,7 +6958,7 @@ export function StoreProvider({ children }) {
     if (!city) return [];
     const localIds = new Set(users.filter((u) => u.home?.city === city).map((u) => u.id));
     return visibleFeed(staff)
-      .filter((l) => localIds.has(l.userId))
+      .filter((l) => !l.news && !String(l.id).startsWith("news_") && localIds.has(l.userId))
       .sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0) || String(b.id).localeCompare(String(a.id)));
   };
 
@@ -6972,15 +7066,16 @@ export function StoreProvider({ children }) {
   };
 
   const value = {
+    mutedIds, followedArtists: [...(session?.favoriteArtists || []), ...(fanClubs[session?.id] || [])],
     users, adminMembers, adminMemberDirectory, session, authReady, feed, removedIds, blockedIds, requests, tourDates, reports, moderationConsole, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, switchLinkedAccount, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme, syncAccountTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
-    requestArtist, approveArtist, rejectArtist, createArtistPage, loadArtistAccount, createArtistVerificationChallenge, reviewArtistIdentity, returnArtistPageToCatalogue, searchArtistIdentities,
+    requestArtist, approveArtist, rejectArtist, createArtistPage, loadArtistAccount, createArtistVerificationChallenge, reviewArtistIdentity, returnArtistPageToCatalogue, searchArtistIdentities, loadPostForView,
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,
-    loadUser, followersOf, followingOf,
+    loadUser, followersOf, followingOf, setArtistFollowing,
     isBlocked, blockUser, unblockUser, blockedUsers, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending,
     isMuted, muteUser, unmuteUser, mutedUsers, exportMyData,
     searchArtistsApi, refreshArtistCatalogMetadata, attachArtistSuggestionApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeVideoRejected, youtubeLookupStatus, resolveDeezerPreview,
@@ -7000,7 +7095,7 @@ export function StoreProvider({ children }) {
     isVerifiedArtist, isTop100, artistRank, artistBadges, userBadges,
     activityStats, userAchievements, userPoints, loadRewards,
     chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, topArtistsBy, topSongsBy,
-    commentsFor, addComment, deleteOwnComment, deleteOwnPost, removeMyPostTag, loadComments, likeInfo, toggleLike,
+    commentsFor, addComment, deleteOwnComment, deleteOwnPost, removeMyPostTag, loadComments, likeInfo, toggleLike, setCommentLike, setPostRepost,
     concertKey, loungeFor, enterLounge, addLoungeMessage, loadLounge, clearLounge,
     albumRating, songRating, rateAlbum, rateSong, loadRating,
     fanClubFor, loadFanClub, loadFanClubsDirectory, fanClubDirectoryStatus, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,

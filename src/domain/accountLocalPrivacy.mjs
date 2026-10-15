@@ -1,3 +1,4 @@
+import { newsroomDraftStorageKey } from "./newsroomComposition.mjs";
 import { venueReviewStorageKey } from "./accountMediaCache.mjs";
 import { artistPageCacheStorageKeys } from "./artistPageCache.mjs";
 import { commentCacheStorageKey } from "./commentCache.mjs";
@@ -50,6 +51,7 @@ export const recentSearchStorageKey = (accountId) => accountId
   ? `pit.recentSearches.user.${encodeURIComponent(String(accountId))}`
   : "pit.recentSearches.guest";
 export const productAnalyticsStorageKey = (accountId) => accountId ? `pit.analytics.v2.${accountId}` : null;
+export const catalogBatchStorageKey = accountId => accountId ? `pit.catalogBatch.v1.${encodeURIComponent(String(accountId))}` : null;
 
 export function accountScopedPrivateStorageKeys(accountId) {
   const id = accountIdFor(accountId);
@@ -69,6 +71,8 @@ export function accountScopedPrivateStorageKeys(accountId) {
     youtubeVideoRejectionStorageKey(id),
     productAnalyticsStorageKey(id),
     diagnosticsStorageKey(id),
+    newsroomDraftStorageKey(id),
+    catalogBatchStorageKey(id),
   ].filter(Boolean);
 }
 

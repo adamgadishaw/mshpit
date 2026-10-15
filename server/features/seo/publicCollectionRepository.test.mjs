@@ -1,3 +1,4 @@
+import { ensureArtistAccessRetentionTables } from "../artistAccounts/artistAccessRetention.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -58,6 +59,7 @@ function createDatabase() {
     CREATE INDEX city_lookup ON tour_dates(venue_country_code,venue_city,release_at,date,id);
     CREATE INDEX post_artist_archive ON posts(artist_key,date DESC,id);
   `);
+  ensureArtistAccessRetentionTables(db);
   return db;
 }
 

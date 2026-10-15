@@ -4,12 +4,14 @@ import { clean, clampRating, LIMITS } from "./validation.mjs";
 import { normalizeArtistCampaign } from "./artistCampaignPost.mjs";
 import { normalizeTaggedPeople, normalizeTaggedUserIds } from "./postFriendTags.mjs";
 import { canonicalYouTubeReviewUrl, normalizeReviewExperienceType } from "./onlineReview.mjs";
+import { parseTimesSeen, supportingActNames } from "./supportingActs.mjs";
+import { cleanShowFormat, lineupComparable } from "./lineup.mjs";
 
 const DIMENSION_KEYS = ["performance", "setlist", "sound", "venue", "crowd", "experience"];
 const EDITABLE_KEYS = new Set([
   "artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims",
   "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign",
-  "experienceType", "onlineTitle", "youtubeUrl",
+  "experienceType", "onlineTitle", "youtubeUrl", "supportingActs", "timesSeen", "lineup", "showFormat", "endDate",
 ]);
 const INVALID_STORED_VALUE = Symbol("invalid-stored-post-value");
 
@@ -87,6 +89,11 @@ function intendedValue(key, value) {
     case "photosPublic":
     case "landingShowcase": return !!value;
     case "setlist": return cleanArray(value, { maxItems: 40, maxLen: 120 });
+    case "supportingActs": return supportingActNames(value);
+    case "lineup": return lineupComparable(value);
+    case "showFormat": return cleanShowFormat(value);
+    case "endDate": return typeof value === "string" ? value : "";
+    case "timesSeen": return parseTimesSeen(value);
     case "tour": return clean(value, { max: 80 }) || null;
     case "tags": return cleanTags(value);
     case "taggedUserIds": return normalizeTaggedUserIds(value);
@@ -102,7 +109,8 @@ function isPlainObject(value) {
 }
 
 function storedValue(post, key) {
-  const storedKey = key === "playlistId" ? "playlist" : key === "taggedUserIds" ? "taggedPeople" : key;
+  // The server echoes "times seen" as the review's `seen` number.
+  const storedKey = key === "playlistId" ? "playlist" : key === "taggedUserIds" ? "taggedPeople" : key === "timesSeen" ? "seen" : key;
   if (!post || !Object.prototype.hasOwnProperty.call(post, storedKey)) return INVALID_STORED_VALUE;
   const value = post[storedKey];
   switch (key) {
@@ -143,6 +151,20 @@ function storedValue(post, key) {
     case "tags":
       if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) return INVALID_STORED_VALUE;
       break;
+    case "supportingActs":
+      if (!Array.isArray(value) || value.some((item) => typeof item?.name !== "string")) return INVALID_STORED_VALUE;
+      return supportingActNames(value);
+    case "lineup":
+      if (!Array.isArray(value) || value.some((item) => typeof item?.name !== "string")) return INVALID_STORED_VALUE;
+      return lineupComparable(value);
+    case "showFormat":
+      return cleanShowFormat(value);
+    case "endDate":
+      if (value !== null && value !== undefined && typeof value !== "string") return INVALID_STORED_VALUE;
+      return value || "";
+    case "timesSeen":
+      if (!Number.isSafeInteger(value)) return INVALID_STORED_VALUE;
+      return parseTimesSeen(value);
     case "photosPublic":
     case "landingShowcase":
       if (typeof value !== "boolean" && value !== 0 && value !== 1) return INVALID_STORED_VALUE;

@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { Suspense, useState, useEffect, useMemo, useRef } from "react";
 import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
-import { colors, mono, radius, space } from "../theme";
+import { colors, mono, radius, space, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { useStore, isStaff, isMod } from "../store";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
@@ -35,9 +35,14 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import CatalogMaintenancePanel from "../features/catalogMaintenance/CatalogMaintenancePanel";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+
+// The newsroom loads with its own chunk (shared with the Newsroom screen).
+const NewsDeskEditor = lazyWithRetry(() => import("../features/newsroom/newsroomEntry").then((module) => ({ default: module.NewsDeskEditor })), "NewsDeskEditor");
+import SearchGrowthPanel from "../features/searchGrowth/SearchGrowthPanel";
 
 const ADMIN_ONLY_TABS = new Set([
-  "overview", "analytics", "catalog", "email", "cities", "badges", "suggestions", "memorials", "requests",
+  "overview", "analytics", "catalog", "newsroom", "email", "cities", "badges", "suggestions", "memorials", "requests",
 ]);
 
 // Privacy-bounded first-party product analytics for operator diagnosis. Public
@@ -733,6 +738,7 @@ export default function AdminScreen({ onClose }) {
     { key: "members", label: "Members", icon: "you", badge: bannedCount || undefined },
     { key: "content", label: "Content", icon: "feed" },
     { key: "catalog", label: "Catalog", icon: "music", admin: true },
+    { key: "newsroom", label: "Newsroom", icon: "feed", admin: true },
     { key: "email", label: "Email", icon: "feed", admin: true },
     { key: "cities", label: "City pages", icon: "map", admin: true },
     { key: "badges", label: "Badges", icon: "star", admin: true },
@@ -752,7 +758,7 @@ export default function AdminScreen({ onClose }) {
   }
 
   return (
-    <View style={styles.wrap}>
+    <View style={styles.wrap} testID="moderation-shell">
       <SheetHeader title="Moderation" onBack={onClose} />
 
       <View style={[styles.column, styles.h1Row]}>
@@ -763,9 +769,18 @@ export default function AdminScreen({ onClose }) {
         </View>
       </View>
 
-      {/* tab bar, a clean segmented control (no more stretched ovals) */}
+      {/* Keep the same role-filtered destinations, grouped by the task. */}
       <View accessibilityRole="tablist" accessibilityLabel="Moderation sections" style={[styles.column, styles.tabbar]}>
-        {TABS.map((t) => (
+        {[
+          ["Review", ["overview", "reports", "members", "artist_alerts", "requests"]],
+          ["Publishing", ["content", "catalog", "newsroom", "cities", "memorials"]],
+          ["Operations", ["analytics", "email", "badges", "suggestions"]],
+        ].map(([label, keys]) => {
+          const tabs = TABS.filter(t => keys.includes(t.key));
+          return tabs.length ? <View key={label} style={styles.tabGroup}>
+          <Text style={styles.tabGroupLabel}>{label}</Text>
+          <View style={styles.tabItems}>
+          {tabs.map((t) => (
           <Pressable
             key={t.key}
             accessibilityRole="tab"
@@ -778,7 +793,10 @@ export default function AdminScreen({ onClose }) {
             <Text style={[styles.tabTxt, activeTab === t.key && styles.tabTxtOn]}>{t.label}</Text>
             {t.badge ? <View style={styles.tabBadge}><Text style={styles.tabBadgeTxt}>{t.badge}</Text></View> : null}
           </Pressable>
-        ))}
+          ))}
+          </View>
+          </View> : null;
+        })}
       </View>
 
       <VinylRefreshBoundary
@@ -981,10 +999,18 @@ export default function AdminScreen({ onClose }) {
           </>
         )}
 
+        {/* ---- NEWSROOM ---- */}
+        {activeTab === "newsroom" && iAmAdmin ? (
+          <Suspense fallback={<Text style={styles.empty}>Opening the newsroom...</Text>}>
+            <NewsDeskEditor key={`newsroom:${session?.id}:${session?.role}`} accountId={session?.id} role={session?.role} active={appActive} />
+          </Suspense>
+        ) : null}
+
         {/* ---- CATALOG ---- */}
         {activeTab === "catalog" && (
           <>
             {iAmAdmin ? <CatalogMaintenancePanel key={`catalog-upkeep:${session?.id}:${session?.role}`} accountId={session?.id} role={session?.role} active={appActive} refreshRegistry={adminRefreshRegistry} /> : null}
+            {session?.role === "admin" && session?.emailVerified === true ? <SearchGrowthPanel key={`search-growth:${session.id}:${session.role}`} accountId={session.id} role={session.role} emailVerified={session.emailVerified} active={appActive} refreshRegistry={adminRefreshRegistry} /> : null}
             <Text style={styles.policy}>Artists people looked up. Seed them from Deezer (photo, popularity, top songs) on demand, the targeted alternative to a blind bulk dump. Purge dead or typo entries.</Text>
 
             {/* Grow the whole catalog across all genres, in the background */}
@@ -1193,23 +1219,25 @@ export default function AdminScreen({ onClose }) {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: colors.bg },
+  wrap: { flex: 1, minWidth: 0, width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.bg },
   // One readable column for the whole console. Applied to the title row, the tab
   // bar and the scroll content together: capping only the content would leave the
   // tabs stretched across the window and the two would visibly disagree. The
-  // SheetHeader above stays full width because it is page chrome, not content.
-  // 900 matches DiscoverScreen, the widest existing cap in the app.
-  column: { width: "100%", maxWidth: 900, alignSelf: "center" },
+  // The header shares this boundary with the scroll content.
+  column: { width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center" },
   h1Row: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingTop: 6 },
   h1: { color: colors.text, fontSize: 20, fontWeight: "800" },
-  tabbar: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
+  tabbar: { flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start", gap: space(4), paddingHorizontal: 16, paddingTop: 12, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
+  tabGroup: { flexGrow: 1, flexBasis: 240, minWidth: 0, gap: space(2) },
+  tabGroupLabel: { color: colors.textFaint, fontSize: 11, fontWeight: "700", letterSpacing: 1 },
+  tabItems: { flexDirection: "row", flexWrap: "wrap", gap: space(2) },
   tab: { flexDirection: "row", alignItems: "center", gap: 7, minHeight: 44, paddingHorizontal: 15, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   tabOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   tabTxt: { color: colors.textDim, fontSize: 13, fontWeight: "700" },
   tabTxtOn: { color: "#1A1206" },
   tabBadge: { minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5, backgroundColor: colors.danger, alignItems: "center", justifyContent: "center" },
   tabBadgeTxt: { color: "#fff", fontSize: 10, fontWeight: "800" },
-  content: { paddingHorizontal: 16, paddingBottom: 60 },
+  content: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 60 },
   sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
   policy: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginBottom: 12, marginTop: 4, fontStyle: "italic" },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginTop: 4 },
@@ -1261,7 +1289,7 @@ const styles = StyleSheet.create({
   requestRetryText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
   requestDismiss: { minHeight: 44, justifyContent: "center", paddingHorizontal: 12 },
   requestDismissText: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
-  btn: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.sm, borderWidth: 1 },
+  btn: { alignSelf: "flex-start", maxWidth: "100%", minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.sm, borderWidth: 1 },
   remove: { borderColor: colors.danger, backgroundColor: "rgba(224,69,123,0.08)" },
   reject: { borderColor: colors.line },
   suspend: { borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.08)" },

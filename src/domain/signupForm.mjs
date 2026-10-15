@@ -15,16 +15,39 @@ export function signupAriaProps(platform, state = {}, value = {}) {
   return props;
 }
 
-export function signupAccountError({ name, handle, email, password, artistIntent } = {}, availability = null) {
+const handleTaken = (handle, availability) => availability?.handle === cleanHandle(handle) && availability.available === false
+  ? { field: "handle", message: "That @username is taken. Try another." } : null;
+
+// Who the member is: the first signup step.
+export function signupIdentityError({ name, handle, artistIntent } = {}, availability = null) {
   if (artistIntent && (typeof artistIntent.artistName !== "string" || artistIntent.artistName.trim().length < 2 || artistIntent.artistName.trim().length > 60)) return { field: "artistName", message: "Use 2–60 characters for your artist or band name." };
   if (!isName(name)) return { field: "name", message: "Add your name to continue." };
   if (!isHandle(handle)) return { field: "handle", message: "Use 3 to 20 letters, numbers, or underscores for your @username." };
+  return handleTaken(handle, availability);
+}
+
+export function signupAccountError({ name, handle, email, password, artistIntent } = {}, availability = null) {
+  const identity = signupIdentityError({ name, handle, artistIntent });
+  if (identity) return identity;
   if (!isEmail(email)) return { field: "email", message: "Enter a valid email address." };
   if (!isPassword(password)) return { field: "password", message: "Use 8 or more characters, including a letter and a number." };
-  if (availability?.handle === cleanHandle(handle) && availability.available === false) {
-    return { field: "handle", message: "That @username is taken. Try another." };
+  return handleTaken(handle, availability);
+}
+
+// Signup in four short steps. Each step checks only its own answers, and the
+// account is created at the last one, so leaving part way saves nothing.
+export const SIGNUP_STEPS = Object.freeze(["You", "Sign-in", "Music", "Finish"]);
+const STEP_OF_FIELD = Object.freeze({ artistName: 1, name: 1, handle: 1, currentPassword: 2, email: 2, password: 2, genres: 3, ageBand: 4, agreed: 4 });
+export const signupStepForField = (field) => STEP_OF_FIELD[field] || 1;
+
+export function signupStepError(step, values = {}, availability = null) {
+  if (step === 1) return signupIdentityError(values, availability);
+  if (step === 2) return signupAccountError(values, availability);
+  if (step === 3) {
+    const failure = signupAccountError(values, availability) || signupMusicError(values);
+    return failure && signupStepForField(failure.field) <= 3 ? failure : null;
   }
-  return null;
+  return signupAccountError(values, availability) || signupMusicError(values);
 }
 
 export function signupMusicError({ genres, ageBand, agreed } = {}) {

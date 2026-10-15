@@ -12,13 +12,13 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists, DATABASE_DIRECTORY, DATABASE_PATH } from "./db.js";
-import { artistDeathWatchService, eraseAccountForInactivity, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startVideoProcessingRetries, startWebProfiles } from "./api.js";
+import { artistDeathWatchService, eraseAccountForInactivity, replayPrivacyJournalOnRestore, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startFestivals, startNewsDesk, startPrivacyJournal, startVideoProcessingRetries, startWebProfiles, startSearchGrowth } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
-import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
-import { createAlertDrainScheduler } from "./alertDrainScheduler.js";
+import { pruneErrors, recordError, scheduleErrorAlert, stopErrorAlertScheduler } from "./errorLog.js";
 import { startMemoryMonitor } from "./memoryAdmission.js";
 import { observeRequestResponse } from "./requestMetrics.js";
+import { artistResolverEntryPoint, formatArtistResolverFailure, sanitizeArtistResolverDiagnostic } from "./artistResolverDiagnostics.js";
 import { startStorageMaintenance } from "./storageMaintenanceScheduler.js";
 import { pruneExpiredProviderData } from "./musicProviders.js";
 import { sitemapStartupRefreshDecision } from "./features/seo/sitemapSnapshotManager.js";
@@ -84,6 +84,8 @@ import { pruneExpiredFeedImpressionHistory } from "./feedImpressions.js";
 import { startArtistDeathWatchScheduler } from "./features/artistDeathWatch/artistDeathWatchScheduler.js";
 import { missingStaticAssetResponse, privateStaticAssetResponse } from "./staticPolicy.js";
 import { publicPageFor, renderPublicPage } from "./publicPages.js";
+import { createJobRepository } from "./features/jobs/jobRepository.js";
+import { jobPublicPage } from "./features/jobs/jobPublicPage.js";
 import { SECURITY_TXT_PATH, securityTxtResponse } from "./securityTxt.js";
 import { staticAssetCacheControl } from "./staticAssetCache.js";
 import { randomUUID } from "node:crypto";
@@ -146,10 +148,10 @@ const UNSAFE_REQUEST_ORIGINS = allowedUnsafeRequestOrigins({
 const TRUSTED_PROXY_CIDRS = trustedProxyCidrs(process.env.PIT_TRUSTED_PROXY_CIDRS);
 const RENDER_PROXY_HEADERS = process.env.RENDER === "true";
 const ACTIVE_SESSION_COOKIE = sessionCookieName(PROD);
-// Render gives this service 60 seconds to stop. Keep the process-level guard
-// just inside that window so cooperative job cancellation and SQLite close get
-// a real chance to finish without letting a wedged provider hang deployment.
-const SHUTDOWN_FORCE_EXIT_MS = 55_000;
+// Disk-backed Render services cannot configure a longer shutdown delay. Leave
+// five seconds before Render's documented general 30-second cutoff while
+// cooperative job cancellation and SQLite close drain normally.
+const SHUTDOWN_FORCE_EXIT_MS = 25_000;
 
 function mediaConnectOrigin() {
   try {
@@ -316,8 +318,10 @@ function serveSecurityFile(req, res) {
 // App stores, search engines, and signed-out people need legal/support pages
 // that do not depend on the client bundle or an API session. Keep this before
 // the SPA fallback, while leaving every non-document route on the existing app.
+const publicJobRepository = createJobRepository(db);
 function servePublicPage(req, res, pathname) {
-  const page = publicPageFor(pathname);
+  const jobsPage = jobPublicPage(publicJobRepository, pathname, { cursor: new URL(req.url, "http://localhost").searchParams.get("cursor") || "" });
+  const page = jobsPage || publicPageFor(pathname);
   if (!page) return false;
   const indexable = page.indexable !== false;
   if (pathname !== page.path) {
@@ -330,13 +334,13 @@ function servePublicPage(req, res, pathname) {
     res.end();
     return true;
   }
-  const body = renderPublicPage(page.path);
+  const body = renderPublicPage(page.path, process.env, jobsPage);
   if (!body) return false;
-  res.writeHead(200, {
+  res.writeHead(page.status || 200, {
     ...HEADERS,
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
-    "Cache-Control": "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
+    "Cache-Control": jobsPage ? "no-store" : "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
     "X-Robots-Tag": htmlRobotsDirective({ indexable }),
     Link: `<${origin()}${page.path}>; rel="canonical"`,
   });
@@ -521,6 +525,7 @@ async function handleRequest(req, res) {
   });
   res.setHeader("X-Request-Id", requestId);
   let pathname = "/", query = {}, routePattern = "", search = "";
+  let artistResolverDiagnostic = null;
   try {
     const u = new URL(req.url, "http://x");
     pathname = u.pathname;
@@ -548,7 +553,7 @@ async function handleRequest(req, res) {
     ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
         "Access-Control-Allow-Headers": `Content-Type, X-Request-Id, X-Pit-Expected-Account, ${CAPACITY_CHALLENGE_HEADER}`,
-        "Access-Control-Expose-Headers": "X-Request-Id, Link, Content-Disposition, X-Pit-Results-Truncated" }
+        "Access-Control-Expose-Headers": "X-Request-Id, Link, Content-Disposition, X-Pit-Results-Truncated, Retry-After" }
     : {};
   if (req.method === "OPTIONS") return send(res, 204, "", createApiResponseHeaders(cors));
 
@@ -645,6 +650,13 @@ async function handleRequest(req, res) {
       const capacityChallengeHeader = req.headers["x-pit-capacity-challenge"];
       const capacityChallenge = Array.isArray(capacityChallengeHeader)
         ? capacityChallengeHeader[0] : capacityChallengeHeader;
+      // The disabled-by-default Media API receives its bearer credential only
+      // in the route context. It is never copied into logs, cookies, or the
+      // ordinary session user identity.
+      const mediaApiAuthorization = typeof req.headers.authorization === "string"
+        ? req.headers.authorization : "";
+      const mediaApiIdempotencyKey = typeof req.headers["idempotency-key"] === "string"
+        ? req.headers["idempotency-key"] : "";
 
       const setCookies = [];
       const responseHeaders = createApiResponseHeaders();
@@ -661,7 +673,12 @@ async function handleRequest(req, res) {
         query, params: match.params, ip, ua: req.headers["user-agent"], token, user,
         host: req.headers.host, proto, origin: `${proto}://${req.headers.host}`, requestId,
         capacityChallenge,
+        mediaApiAuthorization,
+        mediaApiIdempotencyKey,
         signal: requestAbort.signal,
+        artistResolverEntryPoint: pathname === "/api/artists/resolve"
+          ? artistResolverEntryPoint(req.headers.referer, process.env.PUBLIC_ORIGIN) : "unknown",
+        captureArtistResolverDiagnostics: (detail) => { artistResolverDiagnostic = sanitizeArtistResolverDiagnostic(detail); },
         setCookie: (c) => setCookies.push(c),
         setSession: (s) => setCookies.push(...sessionCookieHeaders(s.token, s.expiresAt, PROD)),
         clearSession: () => setCookies.push(...clearSessionCookies(PROD)),
@@ -724,14 +741,14 @@ async function handleRequest(req, res) {
           code: e.code,
         });
         if (observable) {
-          console.error(`[pit] ${e.status} ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): code=${e.code} cause=${failure.cause}`);
+          console.error(`[pit] ${e.status} ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): code=${e.code} cause=${failure.cause}${formatArtistResolverFailure(artistResolverDiagnostic)}`);
           recordError({ level: "error", code: e.code, status: e.status, method: failure.method, route: routePattern, cause: failure.cause, requestId, error: e });
           scheduleAlert();
         }
       }
       return sendApiError(res, e, requestId, cors);
     }
-    console.error(`[pit] 500 ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): cause=${failure.cause}`);
+    console.error(`[pit] 500 ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): cause=${failure.cause}${formatArtistResolverFailure(artistResolverDiagnostic)}`);
     recordError({ level: "error", code: "UNHANDLED", status: 500, method: failure.method, route: routePattern, cause: failure.cause, requestId, error: e });
     scheduleAlert();
     return sendApiError(res, e, requestId, cors);
@@ -790,9 +807,8 @@ setInterval(() => {
 // add latency to the response that triggered it. One pending drain covers every
 // error already recorded before its timer runs; a storm no longer creates one
 // zero-delay timer per request. maybeAlert still owns the delivery cooldown.
-const alertDrains = createAlertDrainScheduler({ drain: () => maybeAlert() });
 function scheduleAlert() {
-  alertDrains.schedule();
+  scheduleErrorAlert();
 }
 
 function reportBackgroundStartupFailure(routePattern, error) {
@@ -833,10 +849,14 @@ let artistDeathWatchScheduler = null;
 let tourDateScheduler = null;
 let cacheWarmScheduler = null;
 let artistKnowledgeScheduler = null;
+let searchGrowthScheduler = null;
 let venuePhotoScheduler = null;
 let backupScheduler = null;
 let mediaDeletionScheduler = null;
 let accountLifecycleScheduler = null;
+// These workers also use SQLite after asynchronous provider calls. Keep their
+// handles so shutdown cannot close the connection while they still run.
+const additionalSchedulers = new Map();
 let privateMediaIsolationMonitor = null;
 let sitemapRefreshTimer = null;
 let sitemapRetryTimer = null;
@@ -845,6 +865,7 @@ let storageMaintenance = null;
 function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
+  const alertStop = stopErrorAlertScheduler();
   memoryMonitor?.stop();
   storageMaintenance?.stop();
   console.log("\n[pit] shutting down…");
@@ -855,10 +876,15 @@ function shutdown(exitCode = 0) {
   const tourDateStop = tourDateScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const cacheWarmStop = cacheWarmScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const artistKnowledgeStop = artistKnowledgeScheduler?.stop({ abortActive: true }) || Promise.resolve();
+  const searchGrowthStop = searchGrowthScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const venuePhotoStop = venuePhotoScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const backupStop = backupScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const mediaDeletionStop = mediaDeletionScheduler?.stop({ abortActive: true }) || Promise.resolve();
   const accountLifecycleStop = accountLifecycleScheduler?.stop() || Promise.resolve();
+  const additionalStops = Promise.all([...additionalSchedulers].map(async ([name, scheduler]) => {
+    try { await scheduler?.stop?.({ abortActive: true }); }
+    catch (error) { console.error(`[pit] ${name} shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+  }));
   const artistTourDateRefreshStop = stopArtistTourDateDemandRefresh({ abortActive: true });
   const artistGenreRefreshStop = stopMusicBrainzGenreRefreshScheduler({ abortActive: true });
   const artistPhotoSeedStop = stopArtistPhotoSeedScheduler({ abortActive: true });
@@ -883,6 +909,8 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[pit] catalogue enrichment shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await artistKnowledgeStop; }
     catch (error) { console.error(`[pit] artist knowledge shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await searchGrowthStop; }
+    catch (error) { console.error(`[seo] search growth shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await venuePhotoStop; }
     catch (error) { console.error(`[pit] venue photo shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await backupStop; }
@@ -901,6 +929,8 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[seo] sitemap refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await privateMediaIsolationStop; }
     catch (error) { console.error(`[media] privacy recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    await additionalStops;
+    await alertStop;
     try { db.close(); }
     catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     process.exit(exitCode);
@@ -996,7 +1026,14 @@ async function startServer() {
   if (!loadedSitemap.ok && loadedSitemap.reason !== "missing") {
     console.error(`[seo] persisted sitemap rejected safely: category=${loadedSitemap.reason}`);
   }
+  // A database restored from a backup replays the privacy journal before it
+  // serves anyone or starts a worker; a live database skips this at once.
+  const privacyReplay = await replayPrivacyJournalOnRestore();
+  if (privacyReplay.needed) {
+    console.log(`[privacy-journal] restored database: ${privacyReplay.waived ? `replay waived (${privacyReplay.waived})` : `replayed ${privacyReplay.verified} entries, ${privacyReplay.erased} accounts erased, ${privacyReplay.optedOut} opt-outs, ${privacyReplay.rejected} rejected`}`);
+  }
   await listenForServer(server, PORT);
+  additionalSchedulers.set("privacy-journal", startBackgroundRuntime("/startup/privacy-journal", () => startPrivacyJournal())); // ships erasure/opt-out records to the private backup bucket
   storageMaintenance = startBackgroundRuntime("/startup/storage-maintenance", () => startStorageMaintenance({
     database: db, databasePath: DATABASE_PATH, pruneProviders: pruneExpiredProviderData, sweepSessions: sweepExpiredSessions,
   }));
@@ -1021,6 +1058,7 @@ async function startServer() {
       console.log("[mail] automatic campaign recovery disabled; resume only after privacy replay and restore review.");
     }
     tourDateScheduler = startBackgroundRuntime("/startup/tour-dates", () => startTourDateScheduler()); // scrapes tour dates into the DB on a timer (no cron/redeploy)
+    searchGrowthScheduler = startBackgroundRuntime("/startup/search-growth", () => startSearchGrowth()); // opt-in, bounded read-only Google imports; never a request dependency
     startBackgroundRuntime("/startup/artist-tourdate-demand", () => startArtistTourDateDemandRefresh()); // drains durable exact-artist demand without delaying reads
     startBackgroundRuntime("/startup/artist-genres", () => startMusicBrainzGenreRefreshScheduler()); // exact-MBID genre evidence, bounded and never on a foreground read
     startBackgroundRuntime("/startup/artist-photos", () => startArtistPhotoSeedScheduler()); // Spotify artist-page images, bounded and never on a foreground read
@@ -1050,11 +1088,13 @@ async function startServer() {
     }));
     legacyVideoPosterScheduler = startBackgroundRuntime("/startup/legacy-video-posters", () => startLegacyVideoPosterVerificationScheduler({ database: db }));
     startBackgroundRuntime("/startup/video-verifier-health", () => startVideoVerifierHealthScheduler());
-    startBackgroundRuntime("/startup/video-processing", () => startVideoProcessingRetries()); // resumes clip conversions after a restart and retries failed attempts
-    startBackgroundRuntime("/startup/catalog-research", () => startCatalogResearch()); // Claude web research for empty artist/venue pages; needs ANTHROPIC_API_KEY
-    startBackgroundRuntime("/startup/web-profiles", () => startWebProfiles()); // Ticketmaster performer/venue records + Wikidata ID check; uses TICKETMASTER_KEY
-    startBackgroundRuntime("/startup/artist-news", () => startArtistNews()); // new releases (Deezer, keyless) + new tour dates for followers
-    startBackgroundRuntime("/startup/artist-photos", () => startArtistPhotos()); // Deezer artist photos, Discover first, when Spotify is not configured
+    additionalSchedulers.set("video-processing", startBackgroundRuntime("/startup/video-processing", () => startVideoProcessingRetries())); // resumes clip conversions after a restart and retries failed attempts
+    additionalSchedulers.set("catalog-research", startBackgroundRuntime("/startup/catalog-research", () => startCatalogResearch())); // Claude web research for empty artist/venue pages; needs ANTHROPIC_API_KEY
+    additionalSchedulers.set("web-profiles", startBackgroundRuntime("/startup/web-profiles", () => startWebProfiles())); // Ticketmaster performer/venue records + Wikidata ID check; uses TICKETMASTER_KEY
+    additionalSchedulers.set("artist-news", startBackgroundRuntime("/startup/artist-news", () => startArtistNews())); // new releases (Deezer, keyless) + new tour dates for followers
+    additionalSchedulers.set("news-desk", startBackgroundRuntime("/startup/news-desk", () => startNewsDesk())); // confirmed music news from @news_mod; existing news/Claude caps remain authoritative
+    additionalSchedulers.set("festivals", startBackgroundRuntime("/startup/festivals", () => startFestivals())); // festival editions and lineups (Ticketmaster), histories (Wikipedia); needs TICKETMASTER_KEY
+    additionalSchedulers.set("artist-photos", startBackgroundRuntime("/startup/artist-photos", () => startArtistPhotos())); // Deezer artist photos, Discover first, when Spotify is not configured
     // Sitemap reads serve only the validated persisted/current LKG. Reuse a
     // fresh current-revision snapshot across deploys; missing, stale, future,
     // or incompatible snapshots still rebuild after readiness. HTTP reads never

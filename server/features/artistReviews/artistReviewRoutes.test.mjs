@@ -42,6 +42,7 @@ function createDatabase() {
       tags TEXT NOT NULL DEFAULT '[]',
       kind TEXT NOT NULL DEFAULT 'review',
       experience_type TEXT NOT NULL DEFAULT 'in_person',
+      show_format TEXT NOT NULL DEFAULT 'headline',
       removed INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER,
       created_at INTEGER NOT NULL

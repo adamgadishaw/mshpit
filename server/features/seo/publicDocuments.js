@@ -5,6 +5,7 @@ import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
 import { createPublicVenueReviewService } from "./publicVenueReviews.js";
 import { createPublicCollectionDocumentService } from "./publicCollectionDocuments.js";
 import { createPublicDocumentProjector } from "./publicDocumentProjection.js";
+import { projectPublicVenueSnapshot, publicVenueEventCursor } from "./publicVenueSnapshot.js";
 import { decodeArchiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { isLegacyArtistMemorial } from "../../../src/domain/artistLegacy.mjs";
 import { tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
@@ -25,7 +26,7 @@ import {
  * public URL resolver owns ambiguous vanity-route precedence; this layer owns
  * only privacy-safe reads, public projection and HTML rendering.
  */
-export function createPublicDocumentService({ database, origin, paths, artistMemorialService = null, artistNews = null } = {}) {
+export function createPublicDocumentService({ database, origin, paths, artistMemorialService = null, artistNews = null, artistHeadlines = null } = {}) {
   let artistLiveSummary;
   const repository = createPublicDocumentRepository(database, {
     venueReviews: createPublicVenueReviewService(database),
@@ -108,6 +109,7 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
       return projector.artist({
         ...raw,
         news: artistNews ? artistNews({ artistKey: raw.artist.norm, limit: 6, at }).items : [],
+        headlines: artistHeadlines ? artistHeadlines({ artistKey: raw.artist.norm, limit: 4 }) : [],
         memorial: memorialDetail?.memorial || null,
         memorialUpdatedAt: memorialDetail?.updatedAt ?? null,
       }, options);
@@ -152,6 +154,12 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
     venueDocument(options = {}) {
       const raw = repository.readVenue(options);
       return raw ? projector.venue(raw, options) : null;
+    },
+
+    venueSnapshot(options = {}) {
+      const eventAfter = publicVenueEventCursor(options.after, options.canonicalPath);
+      const raw = repository.readVenue({ ...options, eventAfter, eventLimit: 8, includeCommunity: false });
+      return raw ? projectPublicVenueSnapshot(raw, projector.venue(raw, options), options) : null;
     },
 
     cityVenuesDocument(options = {}) {

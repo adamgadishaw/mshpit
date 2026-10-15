@@ -45,6 +45,9 @@ export function journeyMenuModel({ session = null, inboxUnread = 0, notification
     ...(role === "admin" || role === "moderator"
       ? [{ key: "admin", icon: "shield", title: "Moderation", detail: "Reports, members, and content" }]
       : []),
+    ...(role === "admin" || role === "editor"
+      ? [{ key: "newsroom", icon: "feed", title: "Newsroom", detail: "Write stories and run live coverage" }]
+      : []),
     ...(role === "admin"
       ? [{ key: "tourDates", icon: "calendar", title: "Events & tour dates", detail: "Publish festivals, fairs, and artist dates" }]
       : []),

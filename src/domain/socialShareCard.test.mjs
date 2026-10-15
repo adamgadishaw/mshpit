@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   buildAttendanceShareModel,
+  buildNewsShareModel,
   buildPostShareModel,
   socialShareFileName,
   socialShareIntentUrl,
@@ -120,4 +121,15 @@ test("share identity applies NFKC and trim without truncating", () => {
   const post = buildPostShareModel({ id: "  ｐｏｓｔ：42  ", kind: "review", artist: "SZA", overall: 5 });
   assert.equal(post.id, "post:42");
   assert.deepEqual(post.renderRequest, { kind: "post", postId: "post:42" });
+});
+
+test("a Mshpit News story shares its own page and news card", () => {
+  const model = buildNewsShareModel({ postId: "news_abc-1", headline: "Band announce world tour", summary: "Two outlets report it." });
+  assert.equal(model.kind, "news");
+  assert.equal(model.url, "https://www.mshpit.com/post/news_abc-1");
+  assert.deepEqual(model.renderRequest, { kind: "post", postId: "news_abc-1" });
+  assert.equal(model.shareText, "Band announce world tour (Mshpit News)");
+  assert.doesNotMatch(model.shareText, /\u2014/u, "no em dash in shared text");
+  assert.equal(buildNewsShareModel({ postId: "p_member", headline: "Not news" }), null);
+  assert.equal(buildNewsShareModel({ postId: "news_x" }), null, "a story needs a headline");
 });

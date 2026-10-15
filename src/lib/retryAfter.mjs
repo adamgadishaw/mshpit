@@ -1,5 +1,5 @@
 const MAX_RETRY_AFTER_MS = 60 * 60_000;
-const ARTIST_CAMPAIGN_MAX_RETRY_AFTER_MS = 24 * 60 * 60_000;
+export const PROVIDER_RETRY_AFTER_MAX_MS = 24 * 60 * 60_000;
 
 // Retry-After is only a manual-retry hint. Ignore unrelated/auth failures and
 // malformed values; no caller should ever schedule an unbounded/NaN timer.
@@ -14,6 +14,7 @@ export function retryAfterDelayMs(value, { status, retryable, code, now = Date.n
     delay = Date.parse(text) - now;
   } else return null;
   if (!Number.isFinite(delay) || delay < 0) return null;
-  const maximum = code === "ARTIST_CAMPAIGN_LIMIT" ? ARTIST_CAMPAIGN_MAX_RETRY_AFTER_MS : MAX_RETRY_AFTER_MS;
+  const maximum = ["ARTIST_CAMPAIGN_LIMIT", "PROVIDER_UNAVAILABLE"].includes(code)
+    ? PROVIDER_RETRY_AFTER_MAX_MS : MAX_RETRY_AFTER_MS;
   return Math.min(maximum, Math.ceil(delay));
 }

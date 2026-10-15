@@ -6,6 +6,7 @@ import {
   ARTIST_DEATH_WATCH_MAX_CONFIRMATIONS,
 } from "../../../src/domain/artistDeathWatch.mjs";
 import { createArtistDeathWatchService } from "./artistDeathWatchService.js";
+import { confirmMusicBrainzDeathSignal } from "./artistDeathWatchProviders.js";
 
 const AT = Date.parse("2026-08-30T12:00:00.000Z");
 const mbid = (index) => `${String(index).padStart(8, "0")}-1111-4111-8111-${String(index).padStart(12, "0")}`;
@@ -147,6 +148,47 @@ test("a recent signal with no unique local MBID match fails closed before MusicB
   assert.equal(confirmations, 0);
   assert.equal(result.inserted, 0);
   assert.deepEqual(service.list(), []);
+});
+
+test("a delayed 24-hour provider deadline survives persistence and service reconstruction", async () => {
+  const artist = { artist_key: "alpha", artist_name: "Alpha", artist_mbid: mbid(903) };
+  const repository = fakeRepository([artist]);
+  let clock = AT;
+  let requests = 0;
+  let unavailable = true;
+  const receivedAt = AT + 75_000;
+  const retryAt = receivedAt + 86_400_000;
+  const fetchImpl = async () => {
+    requests += 1;
+    if (unavailable) {
+      clock = receivedAt;
+      return { ok: false, status: 503, headers: new Headers({ "Retry-After": "86400" }) };
+    }
+    return { ok: true, status: 200, json: async () => ({
+      id: artist.artist_mbid, type: "Person", "life-span": { ended: true, end: "2026-08-29" },
+    }) };
+  };
+  const makeService = () => createArtistDeathWatchService({
+    repository, sleep: async () => {}, recentWikidataReader: async () => [],
+    wikidataReader: async (rows) => new Map(rows.map((row) => [row.artistKey, {
+      ...row, wikidataId: "Q903", deathDate: "2026-08-29",
+    }])),
+    musicBrainzReader: (expected, options) => confirmMusicBrainzDeathSignal(expected, {
+      ...options, now: () => clock, requestGate: (work) => work(),
+    }),
+  });
+  await assert.rejects(makeService().scan({ at: AT, force: true, fetchImpl }),
+    (error) => error.code === "musicbrainz_unavailable" && error.retryAt === retryAt);
+  assert.equal(repository.readSettings().last_scan_at, AT, "evidence keeps the scan timestamp");
+  assert.equal(repository.readSettings().next_scan_at, retryAt);
+  const restarted = makeService();
+  assert.equal((await restarted.scan({ at: AT + 86_400_000, force: true, fetchImpl })).reason, "provider_cooldown");
+  assert.equal(requests, 1, "a restart cannot shorten the stored provider deadline");
+  unavailable = false;
+  clock = retryAt;
+  const recovered = await restarted.scan({ at: retryAt, fetchImpl });
+  assert.equal(recovered.inserted, 1);
+  assert.equal(requests, 2);
 });
 
 test("one run corroborates at most five exact identities and spaces confirmations", async () => {

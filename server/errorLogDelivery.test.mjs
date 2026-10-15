@@ -24,8 +24,8 @@ const hooks = registerHooks({
   },
 });
 const { db } = await import("./db.js");
-const { maybeAlert, recordError, recentErrors, resetAlertStateForTests } = await import("./errorLog.js");
-after(() => { db.close(); hooks.deregister(); delete globalThis.__pitAlertTestSend; rmSync(directory, { recursive: true, force: true }); });
+const { maybeAlert, recordError, recentErrors, resetAlertStateForTests, scheduleErrorAlert, stopErrorAlertScheduler } = await import("./errorLog.js");
+after(async () => { await stopErrorAlertScheduler(); db.close(); hooks.deregister(); delete globalThis.__pitAlertTestSend; rmSync(directory, { recursive: true, force: true }); });
 beforeEach(() => {
   db.exec("DELETE FROM error_events");
   db.exec("DELETE FROM error_event_details");
@@ -33,7 +33,7 @@ beforeEach(() => {
   delete process.env.ERROR_ALERTS_ENABLED;
   delete process.env.ERROR_ALERT_COOLDOWN_MIN;
   delete process.env.ALERT_EMAIL;
-  resetAlertStateForTests();
+  resetAlertStateForTests({ scheduleTask: () => ({ unref() {} }), cancelTask: () => undefined });
   packets.length = 0;
   send = async () => ({ sent: true });
 });
@@ -185,4 +185,324 @@ test("the alert says where and why each problem happened, and which release prod
     if (previousRelease === undefined) delete process.env.RENDER_GIT_COMMIT;
     else process.env.RENDER_GIT_COMMIT = previousRelease;
   }
+});
+
+function scheduledClock(t, initial = minute(6)) {
+  let now = initial;
+  const timers = new Set();
+  const options = {
+    clock: () => now,
+    scheduleTask(task, delay) {
+      const timer = { task, at: now + delay, unref() {} };
+      timers.add(timer);
+      return timer;
+    },
+    cancelTask: (timer) => timers.delete(timer),
+  };
+  t.mock.method(Date, "now", () => now);
+  resetAlertStateForTests(options);
+  t.after(() => stopErrorAlertScheduler());
+  const next = () => [...timers].sort((left, right) => left.at - right.at)[0];
+  return {
+    options,
+    set: (value) => { now = value; },
+    size: () => timers.size,
+    nextAt: () => next()?.at,
+    async runNext() {
+      const timer = next();
+      assert.ok(timer, "expected one pending alert timer");
+      timers.delete(timer);
+      now = Math.max(now, timer.at);
+      await timer.task();
+    },
+  };
+}
+
+test("a new fault during cooldown sends once at expiry without another request", async (t) => {
+  const clock = scheduledClock(t);
+  crash();
+  await maybeAlert();
+  clock.set(minute(10));
+  crash({ requestId: secondId, at: minute(10) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  assert.equal(clock.nextAt(), minute(36));
+  for (let index = 0; index < 100; index += 1) scheduleErrorAlert();
+  assert.equal(clock.size(), 1);
+  await clock.runNext();
+  assert.equal(packets.length, 2);
+  assert.match(packets[1].vars.detail, /^1x /);
+  assert.ok(packets[1].vars.detail.includes(secondId));
+  assert.equal(clock.size(), 0);
+  assert.equal((await maybeAlert({ now: minute(70) })).reason, "nothing-serious");
+});
+
+test("empty, subthreshold and disabled alerts do not keep cooldown timers alive", async (t) => {
+  const clock = scheduledClock(t);
+  crash();
+  await maybeAlert();
+  clock.set(minute(10));
+  scheduleErrorAlert();
+  await clock.runNext();
+  assert.equal(clock.size(), 0, "acknowledged counts need no timer");
+  recordError({ code: "PROVIDER_UNAVAILABLE", status: 502, method: "GET", route: "/api/artists/resolve", cause: "ProviderError/network" });
+  scheduleErrorAlert();
+  await clock.runNext();
+  assert.equal(clock.size(), 0, "one network blip remains below the unchanged threshold");
+  crash({ requestId: secondId, at: minute(10) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  assert.equal(clock.nextAt(), minute(36));
+  process.env.ERROR_ALERTS_ENABLED = "false";
+  await clock.runNext();
+  assert.equal(packets.length, 1);
+  assert.equal(clock.size(), 0);
+  assert.equal(recentErrors().find((row) => row.code === "PIT-APP-001").count, 2);
+});
+
+test("a manual send postpones an existing wake-up to the new durable cooldown", async (t) => {
+  const clock = scheduledClock(t);
+  crash();
+  await maybeAlert();
+  clock.set(minute(10));
+  crash({ requestId: secondId, at: minute(10) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  clock.set(minute(20));
+  assert.equal((await maybeAlert({ force: true })).sent, true);
+  clock.set(minute(21));
+  crash({ requestId: firstId, at: minute(21) });
+  scheduleErrorAlert();
+  assert.equal(clock.size(), 1);
+  await clock.runNext();
+  assert.equal(packets.length, 2, "the old wake-up must not send before the manual send's cooldown");
+  assert.equal(clock.nextAt(), minute(50));
+  await clock.runNext();
+  assert.equal(packets.length, 3);
+  assert.match(packets[2].vars.detail, /^1x /);
+  assert.equal(clock.size(), 0);
+});
+
+test("a failed scheduled send stops and retains the same batch for the next incident trigger", async (t) => {
+  const clock = scheduledClock(t);
+  crash();
+  await maybeAlert();
+  clock.set(minute(10));
+  crash({ requestId: secondId, at: minute(10) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  send = async () => ({ sent: false, reason: "provider-unavailable" });
+  await clock.runNext();
+  assert.equal(clock.size(), 0, "failed delivery must not start a new automatic retry policy");
+  const frozen = packets[1];
+  clock.set(minute(40));
+  crash({ at: minute(40) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  assert.equal(packets.length, 2, "local failed-attempt cooldown still blocks another send");
+  assert.equal(clock.nextAt(), minute(66));
+  send = async () => ({ sent: true });
+  await clock.runNext();
+  assert.deepEqual(packets[2], frozen);
+  assert.equal(clock.nextAt(), minute(96), "successful retry drains newer eligible arrivals after another cooldown");
+  await clock.runNext();
+  assert.equal(packets.length, 4);
+  assert.notEqual(packets[3].idempotencyKey, frozen.idempotencyKey);
+  assert.match(packets[3].vars.detail, /Last occurred: 2026-09-08 16:40:00\.000 UTC/);
+  assert.equal(clock.size(), 0);
+});
+
+test("a trigger after restart reconstructs the durable cooldown without a startup send", async (t) => {
+  const clock = scheduledClock(t);
+  crash();
+  await maybeAlert();
+  clock.set(minute(10));
+  crash({ requestId: secondId, at: minute(10) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  assert.equal(clock.nextAt(), minute(36));
+  resetAlertStateForTests(clock.options);
+  assert.equal(clock.size(), 0, "restart alone neither sends nor retries mail");
+  clock.set(minute(11));
+  scheduleErrorAlert();
+  await clock.runNext();
+  assert.equal(clock.nextAt(), minute(36));
+  await clock.runNext();
+  assert.equal(packets.length, 2);
+  assert.match(packets[1].vars.detail, /^1x /);
+  assert.equal(clock.size(), 0);
+});
+
+test("a scheduled wake-up waits for a manual delivery and preserves arrivals during it", async (t) => {
+  const clock = scheduledClock(t);
+  crash();
+  await maybeAlert();
+  clock.set(minute(10));
+  crash({ requestId: secondId, at: minute(10) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  let finish;
+  send = () => new Promise((resolve) => { finish = resolve; });
+  clock.set(minute(20));
+  const manual = maybeAlert({ force: true });
+  while (!finish) await new Promise((resolve) => setImmediate(resolve));
+  clock.set(minute(30));
+  crash({ at: minute(30) });
+  scheduleErrorAlert();
+  const wake = clock.runNext();
+  await Promise.resolve();
+  assert.equal(packets.length, 2);
+  finish({ sent: true });
+  await Promise.all([manual, wake]);
+  assert.equal(clock.nextAt(), minute(50));
+  send = async () => ({ sent: true });
+  await clock.runNext();
+  assert.equal(packets.length, 3);
+  assert.match(packets[2].vars.detail, /Last occurred: 2026-09-08 16:30:00\.000 UTC/);
+  assert.equal(clock.size(), 0);
+});
+
+test("shutdown while a scheduled drain waits for manual delivery cannot start another send", async (t) => {
+  const clock = scheduledClock(t);
+  crash();
+  let finish;
+  send = () => new Promise((resolve) => { finish = resolve; });
+  const manual = maybeAlert({ force: true });
+  while (!finish) await new Promise((resolve) => setImmediate(resolve));
+  crash({ requestId: secondId, at: minute(6) });
+  scheduleErrorAlert();
+  const wake = clock.runNext();
+  await Promise.resolve();
+  const stop = stopErrorAlertScheduler();
+  finish({ sent: true });
+  await Promise.all([manual, wake, stop]);
+  assert.equal(packets.length, 1);
+  assert.equal(clock.size(), 0);
+  assert.equal(scheduleErrorAlert(), false);
+  assert.equal(recentErrors()[0].count, 2, "the later occurrence remains saved for a future process/trigger");
+});
+
+test("a coalesced backlog drains capped batches at cooldown boundaries without repeating counts", async (t) => {
+  const clock = scheduledClock(t);
+  for (let index = 0; index < 45; index += 1) {
+    crash({ cause: `RenderError.Kind${index}` });
+    scheduleErrorAlert();
+  }
+  assert.equal(clock.size(), 1);
+  await clock.runNext();
+  assert.match(packets[0].vars.summary, /^20 errors across 20 kinds$/);
+  assert.equal(clock.nextAt(), minute(36));
+  await clock.runNext();
+  assert.match(packets[1].vars.summary, /^20 errors across 20 kinds$/);
+  assert.equal(clock.nextAt(), minute(66));
+  await clock.runNext();
+  assert.match(packets[2].vars.summary, /^5 errors across 5 kinds$/);
+  assert.equal(clock.size(), 0);
+  assert.equal(db.prepare("SELECT SUM(through_count) count FROM error_alert_checkpoints").get().count, 45);
+  const causes = packets.flatMap((packet) => [...packet.vars.detail.matchAll(/\(RenderError\.Kind(\d+)\)/g)].map((match) => match[1]));
+  assert.equal(causes.length, 45);
+  assert.equal(new Set(causes).size, 45);
+});
+
+test("a failed or skipped manual send invalidates an older cooldown wake-up", async (t) => {
+  const clock = scheduledClock(t);
+  crash();
+  await maybeAlert();
+  clock.set(minute(10));
+  crash({ requestId: secondId, at: minute(10) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  assert.equal(clock.nextAt(), minute(36));
+  clock.set(minute(20));
+  send = async () => ({ sent: false, reason: "not-configured" });
+  assert.equal((await maybeAlert({ force: true })).sent, false);
+  assert.equal(clock.size(), 0, "an earlier timer must not retry the skipped manual send");
+  const frozen = packets[1];
+  clock.set(minute(25));
+  crash({ at: minute(25) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  assert.equal(clock.nextAt(), minute(50), "a later incident retains its own trigger");
+  send = async () => ({ sent: true });
+  await clock.runNext();
+  assert.deepEqual(packets[2], frozen);
+});
+
+test("a wake-up awaiting a failed manual delivery stops until another incident", async (t) => {
+  const clock = scheduledClock(t);
+  crash();
+  await maybeAlert();
+  clock.set(minute(10));
+  crash({ requestId: secondId, at: minute(10) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  let finish;
+  send = () => new Promise((resolve) => { finish = resolve; });
+  clock.set(minute(20));
+  const manual = maybeAlert({ force: true });
+  while (!finish) await new Promise((resolve) => setImmediate(resolve));
+  const wake = clock.runNext();
+  await Promise.resolve();
+  finish({ sent: false, reason: "provider-unavailable" });
+  await Promise.all([manual, wake]);
+  assert.equal(packets.length, 2);
+  assert.equal(clock.size(), 0);
+  clock.set(minute(40));
+  crash({ at: minute(40) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  assert.equal(clock.nextAt(), minute(50));
+});
+
+test("an incident during a failed scheduled delivery retains one cooldown trigger", async (t) => {
+  const clock = scheduledClock(t);
+  crash();
+  let finish;
+  send = () => new Promise((resolve) => { finish = resolve; });
+  scheduleErrorAlert();
+  const first = clock.runNext();
+  while (!finish) await new Promise((resolve) => setImmediate(resolve));
+  clock.set(minute(7));
+  crash({ requestId: secondId, at: minute(7) });
+  scheduleErrorAlert();
+  finish({ sent: false, reason: "provider-unavailable" });
+  await first;
+  assert.equal(clock.size(), 1, "the new incident, rather than the failure, still owns a trigger");
+  await clock.runNext();
+  assert.equal(clock.nextAt(), minute(36));
+  assert.equal(packets.length, 1);
+  send = async () => ({ sent: true });
+  await clock.runNext();
+  assert.deepEqual(packets[1], packets[0], "the uncertain first batch remains unchanged");
+  assert.equal(clock.nextAt(), minute(66));
+  await clock.runNext();
+  assert.ok(packets[2].vars.detail.includes(secondId));
+  assert.equal(clock.size(), 0);
+});
+
+test("a new incident during a failed manual send survives cancellation of the older wake-up", async (t) => {
+  const clock = scheduledClock(t);
+  crash();
+  await maybeAlert();
+  clock.set(minute(10));
+  crash({ requestId: secondId, at: minute(10) });
+  scheduleErrorAlert();
+  await clock.runNext();
+  let finish;
+  send = () => new Promise((resolve) => { finish = resolve; });
+  clock.set(minute(20));
+  const manual = maybeAlert({ force: true });
+  while (!finish) await new Promise((resolve) => setImmediate(resolve));
+  clock.set(minute(21));
+  crash({ at: minute(21) });
+  scheduleErrorAlert();
+  finish({ sent: false, reason: "provider-unavailable" });
+  await manual;
+  assert.equal(clock.size(), 1);
+  await clock.runNext();
+  assert.equal(clock.nextAt(), minute(50));
+  assert.equal(packets.length, 2);
+  send = async () => ({ sent: true });
+  await clock.runNext();
+  assert.deepEqual(packets[2], packets[1]);
 });

@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, mono, radius, roleColor, space } from "../theme";
 import { useStore } from "../store";
@@ -28,14 +28,53 @@ import { useConcertHistory } from "../features/concertHistory/useConcertHistory"
 import { concertNightKey } from "../features/concertHistory/concertHistoryModel.mjs";
 import ConcertHistory from "../features/concertHistory/ConcertHistory";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
+import NewsStoryCard from "../components/news/NewsStoryCard";
+import { PostNavigationContext } from "../components/PostNavigationContext";
+import { profileAccentColor } from "../domain/profileAccents.mjs";
 
-const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "" });
 const EMPTY_LIST = Object.freeze([]);
+const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "", favoriteShows: EMPTY_LIST });
+
+// The member's pinned favorite shows, in their order, near the top.
+function FavoriteShows({ shows, accent, isSelf, onOpen, onManage }) {
+  if (!shows.length) {
+    return isSelf && onManage ? (
+      <Pressable style={styles.favoriteEmpty} onPress={onManage} accessibilityRole="button" accessibilityLabel="Pin your favorite shows">
+        <Icon name="star" size={16} color={colors.amber} />
+        <Text style={styles.favoriteEmptyText}>Pin up to four favorite shows to the top of your profile.</Text>
+        <Icon name="chevron-right" size={16} color={colors.textDim} />
+      </Pressable>
+    ) : null;
+  }
+  return (
+    <View style={styles.favorites}>
+      <Text style={styles.favoritesTitle} accessibilityRole="header">Favorite shows</Text>
+      <View style={styles.favoriteGrid}>
+        {shows.map((show) => {
+          const title = show.artist || show.onlineTitle || "A show";
+          const meta = [show.venue || (show.online ? "Watched online" : show.city), show.date ? formatDate(show.date, show.date) : ""].filter(Boolean).join(" · ");
+          return (
+            <Pressable key={show.id} style={[styles.favoriteCard, accent && { borderColor: accent }]} onPress={() => onOpen?.(show.id)} disabled={!onOpen}
+              accessibilityRole="button" accessibilityLabel={`${title}${meta ? `, ${meta}` : ""}. Open the review.`}>
+              {show.photo ? <SmartImage uri={show.photo} style={styles.favoritePhoto} contain={false} accessible={false} />
+                : <View style={[styles.favoritePhoto, styles.favoritePhotoEmpty, accent && { backgroundColor: accent }]}><Icon name="ticket" size={20} color="#FFFFFF" /></View>}
+              <View style={styles.favoriteCopy}>
+                <Text style={styles.favoriteArtist} numberOfLines={1}>{title}</Text>
+                {meta ? <Text style={styles.favoriteMeta} numberOfLines={1}>{meta}</Text> : null}
+                {show.overall ? <Text style={[styles.favoriteScore, accent && { color: accent }]}>{show.overall.toFixed(1)}</Text> : null}
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
 const EMPTY_CALENDAR = Object.freeze({ upcoming: EMPTY_LIST, past: EMPTY_LIST });
 
 function Stat({ value, label, onPress }) {
   return (
-    <Pressable style={styles.stat} onPress={onPress} disabled={!onPress}>
+    <Pressable style={styles.stat} onPress={onPress} disabled={!onPress} accessibilityRole={onPress ? "button" : undefined} accessibilityLabel={`${value} ${label}`}>
       <Text style={styles.statVal}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </Pressable>
@@ -63,7 +102,7 @@ const ProfileMediaTile = memo(function ProfileMediaTile({ item, index, viewerIte
   );
 });
 
-const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capabilities }) {
+const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capabilities, accountId = null }) {
   const openShow = useCallback((...args) => actionsRef.current.onOpenShow?.(...args), [actionsRef]);
   const openPost = useCallback((...args) => actionsRef.current.onOpenPost?.(...args), [actionsRef]);
   const requireAuth = useCallback(() => actionsRef.current.onRequireAuth?.(), [actionsRef]);
@@ -91,6 +130,9 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
     }));
   }, [actionsRef]);
 
+  if (log.news) {
+    return <NewsStoryCard story={log.news} post={log} accountId={accountId} onOpen={capabilities.openPost ? () => openPost(log) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onDelete={deletePost} onRequireAuth={requireAuth} />;
+  }
   return (
     <TicketStub
       log={log}
@@ -141,6 +183,16 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
     ? null
     : session?.id === userId ? { ...cachedUser, ...session } : cachedUser;
   const isSelf = !!user && session?.id === user.id;
+  const openPostById = useContext(PostNavigationContext);
+  const accentColor = profileAccentColor(user?.accent);
+  // Back from the editor with different pins: read the profile again so the
+  // cards match. Runs only when the pin list itself changes.
+  const pinnedKey = isSelf && Array.isArray(session?.favoriteShows) ? session.favoriteShows.join(",") : "";
+  useEffect(() => {
+    if (!pinnedKey && !profileView.favoriteShows?.length) return;
+    if (pinnedKey !== (profileView.favoriteShows || []).map((show) => show.id).join(",")) setProfileRevision((value) => value + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinnedKey]);
   const concertScope = `${profileScope}:${chatAuthEpoch}:${user?.concertMapVisible !== false}`;
   const concertScopeRef = useRef(concertScope);
   concertScopeRef.current = concertScope;
@@ -278,6 +330,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             error: typeof outcome?.error === "string"
               ? outcome.error
               : "This profile could not be loaded. Check your connection and try again.",
+            favoriteShows: Array.isArray(outcome?.favoriteShows) ? outcome.favoriteShows : EMPTY_LIST,
           },
         });
       })
@@ -310,6 +363,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           error: typeof outcome?.error === "string"
             ? outcome.error
             : outcome?.error?.message || "",
+          favoriteShows: Array.isArray(outcome?.favoriteShows) ? outcome.favoriteShows : EMPTY_LIST,
         },
       });
       if (outcome?.status === "error") {
@@ -447,8 +501,9 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         )}
         {/* banner + avatar */}
         <View style={styles.banner}>
-          {user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={styles.bannerFallback} />}
+          {user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }]} />}
           <View style={styles.bannerShade} />
+          {accentColor ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
         </View>
         <View style={styles.head}>
           <View style={styles.avatarWrap}><Avatar user={user} size={88} /></View>
@@ -456,7 +511,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             <Text style={styles.name}>{user.name}</Text>
             <BadgeRow badges={userBadges(user)} size={20} />
           </View>
-          <Text style={[styles.handle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}</Text>
+          <Text style={[styles.handle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}{user.pronouns ? <Text style={styles.pronouns}>{` · ${user.pronouns}`}</Text> : null}</Text>
           <View style={styles.roleBadge}><Text style={styles.roleTxt}>{roleLabel}</Text></View>
           {!!user.bio && (
             <ExpandableText
@@ -511,6 +566,12 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         {/* The owner's private block (the You tab passes concert memories here). */}
         {isSelf ? children : null}
 
+        <View style={styles.statsRow}>
+          <Stat value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
+          <Stat value={followingCount(user.id)} label="People following" onPress={() => onOpenFollowList?.(user.id, "following")} />
+          <Stat value={isSelf ? new Set((session?.favoriteArtists || []).map((name) => String(name).trim().toLowerCase())).size : user.artistFollowingCount ?? (user.favoriteArtists || []).length} label="Artists followed" onPress={() => onOpenFollowList?.(user.id, "artists")} />
+        </View>
+        <FavoriteShows shows={profileView.favoriteShows || EMPTY_LIST} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} />
         {!session ? (
           <AccountSnapshotPrompt
             title={`Meet ${user.name} on Mshpit`}
@@ -522,8 +583,6 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         <View style={styles.statsRow}>
           <Stat value={historyCount(reviews.length)} label="Reviews" />
           <Stat value={planned.length} label="Upcoming" />
-          <Stat value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
-          <Stat value={followingCount(user.id)} label="Following" onPress={() => onOpenFollowList?.(user.id, "following")} />
         </View>
 
         {/* Rewards: points + badges earned, tap for the full legend. */}
@@ -680,6 +739,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             <ProfileTicketRow
               key={l.id}
               log={l}
+              accountId={session?.id || null}
               actionsRef={postActionsRef}
               capabilities={profilePostCapabilities}
             />
@@ -740,6 +800,20 @@ const styles = StyleSheet.create({
   banner: { height: 120, overflow: "hidden", backgroundColor: colors.surfaceAlt },
   bannerFallback: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.surfaceAlt },
   bannerShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(11,14,22,0.25)" },
+  accentStripe: { position: "absolute", left: 0, right: 0, bottom: 0, height: 5 },
+  pronouns: { color: colors.textDim, fontWeight: "600" },
+  favorites: { marginHorizontal: 16, marginTop: 16, gap: 10 },
+  favoritesTitle: { color: colors.text, fontSize: 16, fontWeight: "900" },
+  favoriteGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  favoriteCard: { flexGrow: 1, flexBasis: "46%", minWidth: 140, maxWidth: 360, flexDirection: "row", alignItems: "center", gap: 10, padding: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  favoritePhoto: { width: 56, height: 56, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt, overflow: "hidden" },
+  favoritePhotoEmpty: { alignItems: "center", justifyContent: "center", backgroundColor: colors.amberStrong },
+  favoriteCopy: { flex: 1, minWidth: 0, gap: 1 },
+  favoriteArtist: { color: colors.text, fontSize: 14, fontWeight: "900" },
+  favoriteMeta: { color: colors.textDim, fontSize: 12 },
+  favoriteScore: { color: colors.amber, fontFamily: mono, fontSize: 12.5, fontWeight: "900", marginTop: 2 },
+  favoriteEmpty: { marginHorizontal: 16, marginTop: 16, flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: radius.md, borderWidth: 1, borderStyle: "dashed", borderColor: colors.line },
+  favoriteEmptyText: { flex: 1, minWidth: 0, color: colors.textDim, fontSize: 13, lineHeight: 18 },
   head: { alignItems: "center", paddingHorizontal: 16 },
   avatarWrap: { marginTop: -44, borderWidth: 3, borderColor: colors.bg, borderRadius: 50 },
   nameRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10 },

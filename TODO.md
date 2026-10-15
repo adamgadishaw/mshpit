@@ -243,6 +243,145 @@ remains a broad context whose changing value can rerender unrelated consumers.
 - **Animated story:** an MP4 version of the share card needs a render service
   with ffmpeg.
 
+## Newsroom and owner list follow-ups (2026-09-28)
+
+- **Share card photos beyond the catalog:** a Wikimedia Commons picker for
+  the news team (free licences, author credit, mirrored to our media store
+  first). Google Images stays out: the photos are copyrighted.
+- **Editor accounts:** the role exists; no one holds it yet. Grant it from
+  Members once a news hire is named (Owner approval applies).
+- **External links elsewhere:** feed posts, comments and bios still link out
+  without the "leaving Mshpit" step that ticket links use. Apply the same
+  allowlist and confirm step.
+- **Owner list:** all items from the 2026-09-28 list are done (profile
+  customization 2026-09-30). Next ideas: pin from a review's own menu, a
+  profile theme song from YouTube, and favorite venues.
+- **Startup bundle:** 509.1 of 512 KiB after the profile fields in the store.
+  Move something out of the startup path before the next store change.
+- **Profile browser suite:** no committed browser case covers Edit profile
+  and the favorite shows cards yet; add one. (Festival page look and order, the Discover list
+  view: done 2026-09-28. Regional news: done 2026-09-30.)
+- **Regional news follow-ups:** "Your artists" tour-date updates still list
+  cities anywhere; put dates near the member first. Guests could pick a
+  region too (today they see everything). Watch real stories for tagging
+  misses and add places to `newsRegions.js`.
+- **Festival plans export:** `festival_plans` rows are not in the account
+  export yet; add them.
+- **Discover list:** small festivals that are not in the festival catalog
+  now only show on event, city and venue pages. Consider listing them in the
+  Festivals tab as "More festivals" from tour dates.
+- **Festival photos:** most editions have no image, so the page uses the
+  festival's colours. A licensed photo per festival (Wikimedia Commons, with
+  credit) would help the hero and share cards.
+
+## Lineup follow-ups (2026-09-28)
+
+- **Festivals section:** shipped 2026-09-28. Follow-ups: past lineups from
+  MusicBrainz festival series, a festival picker in the review form (today it
+  is free text matched by name), notifications when a followed festival's
+  lineup drops, friends going, and festival pages linked from artist pages.
+- **Em-dashes in app copy:** the lounge sheet, a playback message and the
+  archive date range still use them; replace with plain punctuation.
+- **Startup bundle:** 511.8 of 512 KiB. Trim before any other feed change.
+- **Artist page "Live sets" paging:** shows the latest 12 sets; add "more".
+- **Initial bundle:** 511.4 of 512 KiB. Move `src/domain/lineup.mjs` card
+  helpers or another feed dependency behind a lazy import before adding more.
+
+## Openers and times seen follow-ups (2026-09-28)
+
+- **Artist search for openers:** done 2026-09-28 (catalog suggestions only).
+  A "search beyond catalogue" option like the headliner field has is not
+  offered for openers yet.
+- **Festival lineup chips:** done 2026-09-28 (lineup suggestions with days).
+- **Profile stats:** count openers in "artists seen" totals and concert
+  history, not only on the review itself.
+- **Web bundle budget:** 508.8 of 512 KiB initial JavaScript; lazy-load or
+  trim before the next feed-level feature.
+
+## Live coverage follow-ups (2026-09-27)
+
+- **Share image:** `/news/live/<slug>` uses the site's default preview image;
+  a card with the show name and "Winners" would share better.
+- **Search Console:** after the next big show, check the page is indexed and
+  whether it earns clicks for "<show> winners"; Google favours established
+  publishers in Top stories, so long-tail and next-year searches are the
+  realistic win at first.
+- **Web bundle budget:** initial JavaScript is 508.2 of 512 KiB gzip; the next
+  feed-level feature should lazy-load or trim something first.
+- **Nominee import:** categories are pasted by hand; importing an outlet's
+  nominations list would save typing (a Claude call, so metered).
+
+## News desk editor follow-ups (2026-09-27)
+
+- **Edit before publishing:** drafts are publish-or-discard; add a small
+  editor for the headline and summary if Claude's wording needs a touch.
+- **Draft from any outlet:** pasted links must come from the 17 outlets the
+  desk reads (ownership is known only for those). Adding an outlet to
+  `newsSources.js` is how to widen it.
+
+## Codex audit follow-ups (2026-09-27)
+
+All code findings are closed (STATUS, 2026-09-27 entries and Codex's
+ce60742). Still open:
+
+- **Owner: add `PRIVACY_JOURNAL_KEY`** in Render (Environment, Add, key
+  `PRIVACY_JOURNAL_KEY`, Generate). Until then account deletions and email
+  opt-outs are kept on the server only; the upkeep panel shows how many wait.
+  Never change the key except right after a verified backup.
+- **Journal single deletions:** posts, comments, messages and media removed
+  by their author are not journaled yet, so a restore can bring them back
+  until reviewed by hand. Add a `content_deleted` kind at each delete route.
+- **Bucket lifecycle vs journal:** the backup bucket's lifecycle rule must
+  keep `privacy-journal/` objects at least as long as the oldest backup that
+  could be restored (today both are 14 days).
+- **Owner: Render support ticket** for the 2026-09-26 55-minute silent start
+  (audit step 11); ask what happened between "stopping instance" and the next
+  instance log line.
+- **Monthly: reconcile Claude spending** by comparing the upkeep panel's
+  confirmed total with console.anthropic.com usage (audit step 13).
+- **Before shrinking the video service:** measure real iPhone/HEVC upload
+  peaks first (audit step 14).
+- **@news_mod must stay active:** stories now hide when the author is banned,
+  suspended or dormant, so the lifecycle item below also decides whether News
+  shows anything at all.
+
+## Mshpit News desk follow-ups (2026-09-26)
+
+- **Old Anthropic keys:** the working key is in the Default workspace. Delete
+  the two Organization-scoped keys (`mshpit-render`, `mshpit news`; both
+  expire 2026-10-26) in the Claude Console.
+- **Backup restore drill:** passed 2026-09-27 (see STATUS). Repeat monthly.
+  Still missing: the erasure/email-suppression journal that a restore must
+  replay before traffic (`SECURITY.md`, section 2).
+- **Unused R2 tokens:** Cloudflare lists three older "PIT ... media pipeline"
+  tokens and an "R2 Account Token" with media access; keep only the one Render
+  uses and revoke the rest.
+- **After deploy:** verify the Blueprint's `NEWS_DESK_ENABLED=true` and
+  `CATALOG_RESEARCH_ENABLED=true`, then watch `[news-desk]` and
+  `[catalog-research]` log lines and the Anthropic console. The approved
+  expansion allows two supported stories per slot, ten per Toronto day.
+  Verify news allowances of $0.75/day and $15/month, catalogue $0.30/day and
+  $4/month, and the shared `ANTHROPIC_MONTHLY_USD=20` admission ceiling.
+  Configure provider-side spending controls separately. Persist any lower
+  limits in the Blueprint; sync can overwrite dashboard-only reductions.
+- **First real stories:** read the first few write-ups for tone, length and
+  attribution; tune the prompt in `newsSummarizer.js` if they drift.
+- **Share preview check:** paste a story link into X, Facebook and iMessage and
+  confirm the 1200x630 card shows (Cloudflare may cache the image for an hour).
+- **Corrections:** an admin control to unpublish a story (today: delete the
+  @news_mod post, which hides it from the feed, `/news` and the sitemap).
+- **Outlets:** 17 outlets from 14 companies since 2026-09-27 (STATUS). Watch
+  `[news-desk] <id> feed unavailable` lines for a week and drop any feed that
+  keeps failing. Pollstar's article pages open with a newsletter prompt, so
+  its lead paragraph is weak; its headline still counts. Possible later:
+  Exclaim! and BrooklynVegan if they publish working feeds, and a country
+  outlet that is not Townsquare-owned.
+- **@news_mod account lifecycle:** desk posts are not sign-ins, so the account
+  goes dormant (hidden from For You) a year after its last login and is
+  deleted after two. Before 2027-09, either sign in to @news_mod now and then
+  or add a reviewed service-account exemption to the inactivity policy (and the
+  privacy disclosures).
+
 ## Artist news follow-ups (2026-09-25)
 
 - **After deploy:** watch `[artist-news]` log lines. The first pass is a quiet
@@ -298,6 +437,14 @@ remains a broad context whose changing value can rerender unrelated consumers.
 
 ## Test reliability follow-ups (2026-09-25)
 
+- **Flaky video verifier test (2026-09-26):** on CI for b53bd9d,
+  `server/videoVerifierService.test.mjs` "authoritative bounded H.264 job strips
+  metadata by remux..." failed in 10 ms with ENOENT opening the job's
+  `delivery.mp4`; it passed on the commits before and after and locally. The
+  fake runner writes that file only when `args.at(-1)` ends in `delivery.mp4`,
+  so check whether the remux call's last argument can differ, and look for a
+  temp-directory cleanup racing the read. A red CI run blocks Render's
+  auto-deploy.
 - **Flaky schema race:** `server/catalogPhotoIntegrity.test.mjs` failed once in
   `npm run check` with "trigger trg_posts_legacy_author_tombstone already
   exists" from `server/db.js`, then passed alone and on rerun. Test files run

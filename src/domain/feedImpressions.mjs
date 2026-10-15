@@ -2,8 +2,9 @@ export const FEED_IMPRESSION_BATCH_MAX = 50;
 export const FEED_IMPRESSION_QUEUE_MAX = 500;
 export const FEED_IMPRESSION_FLUSH_MS = 1_500;
 
-const POST_ID = /^p_[A-Za-z0-9_-]{1,77}$/;
-const SURFACES = new Set(["feed", "for_you", "following", "local", "clips", "profile", "post", "artist"]);
+// Member posts (p_) and Mshpit News posts (news_) both count as views.
+const POST_ID = /^(?:p|news)_[A-Za-z0-9_-]{1,77}$/;
+const SURFACES = new Set(["feed", "for_you", "following", "local", "clips", "profile", "post", "artist", "news"]);
 
 const normalizedAccountId = (value) => (
   typeof value === "string" && value.trim() ? value.trim() : null

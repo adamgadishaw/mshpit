@@ -36,6 +36,33 @@ function started(database, assetId = "ma_clip", at = 1_000) {
 
 const storageDown = () => new ApiError(503, "Clip processing is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
 
+test("deterministic converter failure stops after one attempt and survives a restart", () => {
+  const database = queueDatabase();
+  started(database);
+  assert.equal(noteVideoProcessingOutcome(database, { assetId: "ma_clip",
+    error: new ApiError(500, "Clip processing failed.", "MEDIA_CONVERSION_FAILED"), at: 2000 }).state, "failed");
+  assert.equal(recoverInterruptedVideoProcessing(database, { at: 3000 }), 0);
+  assert.equal(dueVideoProcessingJob(database, { at: Number.MAX_SAFE_INTEGER }), null);
+  const state = videoProcessingState(database, { ownerId: "u_owner", assetId: "ma_clip" });
+  assert.equal(state.error.retryable, false);
+  assert.match(state.error.message, /Keep the original and contact support/);
+  assert.equal(database.prepare("SELECT attempts FROM media_processing_jobs").get().attempts, 1);
+  database.close();
+});
+
+test("an interrupted/resource-failed process gets one transient retry, then stops spending conversion work", () => {
+  const database = queueDatabase(); started(database);
+  const interrupted = () => Object.defineProperty(storageDown(), "videoProcessFailed", { value: true });
+  assert.equal(noteVideoProcessingOutcome(database, { assetId: "ma_clip", error: interrupted(), at: 2000 }).state, "retry");
+  recoverInterruptedVideoProcessing(database, { at: 3000 });
+  noteVideoProcessingAttemptStarted(database, { assetId: "ma_clip", at: 4000 });
+  assert.equal(noteVideoProcessingOutcome(database, { assetId: "ma_clip", error: interrupted(), at: 5000 }).state, "failed");
+  assert.equal(dueVideoProcessingJob(database, { at: Number.MAX_SAFE_INTEGER }), null);
+  assert.equal(videoProcessingState(database, { ownerId: "u_owner", assetId: "ma_clip" }).error.retryable, true);
+  assert.equal(database.prepare("SELECT attempts FROM media_processing_jobs").get().attempts, 2);
+  database.close();
+});
+
 test("a temporary failure is retried on a growing schedule and finally reported", () => {
   const database = queueDatabase();
   started(database);

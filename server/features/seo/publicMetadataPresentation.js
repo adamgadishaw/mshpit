@@ -49,13 +49,29 @@ export function publicEventMetadata(event, { today, posts = [] } = {}) {
   const hasMemories = posts.some((post) => line(post?.text) || post?.media?.length);
   const hasPhotos = posts.some((post) => post?.media?.some((asset) => asset.kind === "image"));
   const details = cancelled ? "This event is cancelled." : postponed ? "The listed date is postponed; check the organizer for updates."
-    : past ? "Past event details." : "View the date, venue and event details.";
+    : past ? "Past event details." : event?.ticketUrl ? "Tickets, venue details and who's going." : "Venue details and who's going.";
   const community = hasMemories ? ` Read fan memories${hasPhotos ? " and view concert photos" : ""}.` : "";
   return {
     heading,
     title: `${heading} | Mshpit`,
     description: publicMetadataSummary(`${prefix}${identity}${place ? ` in ${place}` : ""}${dateLabel ? ` on ${dateLabel}` : ""}. ${details}${community}`),
   };
+}
+
+// Place names as people search them. Provider region codes are kept where
+// they are what people use (US, Canadian and Australian states); elsewhere a
+// numeric or two-letter code ("Hem, 59", "Co Donegal, DL") is dropped.
+const COUNTRY_NAMES = new Map([["united states of america", "United States"], ["united kingdom of great britain and northern ireland", "United Kingdom"]]);
+const CODE_REGION_COUNTRIES = new Set(["US", "CA", "AU", "UNITED STATES", "UNITED STATES OF AMERICA", "CANADA", "AUSTRALIA"]);
+export function readableCountryName(value) {
+  const name = line(value);
+  return COUNTRY_NAMES.get(name.toLocaleLowerCase("en")) || name;
+}
+export function readableRegion(region, country) {
+  const value = line(region);
+  if (!value || /^\d+$/u.test(value)) return "";
+  if (value.length <= 3 && !CODE_REGION_COUNTRIES.has(line(country).toUpperCase())) return "";
+  return value;
 }
 
 export function publicVenueMetadataName(name, place) {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createTourDateArtistPhotoReader } from "./tourDateArtistPhotos.js";
+import { ensureArtistAccessRetentionTables } from "./features/artistAccounts/artistAccessRetention.js";
 
 function database() {
   const db = new DatabaseSync(":memory:");
@@ -9,6 +10,7 @@ function database() {
       profile_audience TEXT DEFAULT 'everyone',extras TEXT DEFAULT '{}',role TEXT DEFAULT 'fan',created_at INTEGER DEFAULT 0);
     CREATE TABLE artists (norm TEXT PRIMARY KEY,name TEXT,photo TEXT,data TEXT,source TEXT);
     CREATE TABLE artist_profiles (artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0,identity_review_status TEXT DEFAULT 'clear');`);
+  ensureArtistAccessRetentionTables(db);
   const add = db.prepare("INSERT INTO artists (norm,name,photo,data,source) VALUES (?,?,?,?,?)");
   add.run("idles", "IDLES", "https://cdn-images.dzcdn.net/images/artist/a/500x500.jpg", JSON.stringify({ photoCredit: "Deezer" }), null);
   add.run("hidden", "Hidden", "https://cdn-images.dzcdn.net/images/artist/h/500x500.jpg", JSON.stringify({ photoCredit: "Deezer" }), null);

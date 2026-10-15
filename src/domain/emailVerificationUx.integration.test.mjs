@@ -50,8 +50,8 @@ test("new-account artist picks intercept save before the protected profile reque
 
 test("confirmation and expired links offer a direct login continuation without auto-signing in", () => {
   assert.match(confirmation, /Continue to log in/);
-  assert.match(confirmation, /Log in to get a new link/);
-  assert.equal((confirmation.match(/onPress=\{onLogin \|\| onDone\}/g) || []).length, 2);
+  assert.match(confirmation, /Log in to request a new link/);
+  assert.equal((confirmation.match(/onPress=\{session \? onDone : onLogin \|\| onDone\}/g) || []).length, 2);
   assert.match(confirmation, /if \(requestRef\.current\) return;/);
   const tree = parse(app, { sourceType: "module", plugins: ["jsx"] });
   let login;

@@ -8,13 +8,17 @@ import { readVenuePhotoEnrichmentStatus } from "../../venuePhotoEnrichment.js";
 import { readArtistPhotoSeedStatus } from "../../artistPhotoSeedStatus.js";
 import { collectCatalogResearchStatus, ensureCatalogResearchSchema } from "../catalogResearch/catalogResearchService.js";
 import { collectProviderProfileStatus, ensureProviderProfileSchema } from "../providerProfiles/providerProfileService.js";
+import { ensureNewsDeskSchema } from "../newsDesk/newsDeskService.js";
+import { collectNewsDeskStatus } from "../newsDesk/newsDeskStatus.js";
+import { collectClaudeSpendStatus } from "../../claudeSpendStatus.js";
+import { ensurePrivacyJournalSchema, privacyJournalStatus } from "../../privacyJournal.js";
 
 const sources = Object.freeze({
   artist: Object.freeze({ name: "Wikidata / Wikipedia", scope: "Exact artist identities; missing biography and country fields. Artists recently shown in Discover get priority alongside regular catalogue work, within the same limits. Staff edits and claimed profiles stay protected." }),
   venues: Object.freeze({ name: "Saved event facts + licensed venue photography", scope: "Verified event records supply locations and calendars. A separate bounded worker checks missing venue photos against Commons identity and licensing evidence and mirrors accepted images. It does not invent venue biographies, capacity or accessibility claims." }),
   events: Object.freeze({ name: "Ticketmaster / Bandsintown", scope: "Scheduled, bounded show-date refreshes stored locally. User-created shows stay protected." }),
   profiles: Object.freeze({ name: "Ticketmaster performer and venue records + Wikidata", scope: "For every performer and venue behind an imported show: official links, genre, box office, parking, accessibility and entry rules. A MusicBrainz ID Ticketmaster lists is kept only when Wikidata confirms it belongs to an artist with the same name, and then the Wikipedia worker fills the biography. Never changes an existing ID, a biography or a staff genre." }),
-  research: Object.freeze({ name: "Claude web research", scope: "Fills artist and venue pages the other sources leave empty with a short summary and facts, each linked to the page it came from. Acts and rooms with shows on file go first, inside a daily spending cap. It never edits a biography, a claimed artist page or staff facts, and staff can hide any result." }),
+  research: Object.freeze({ name: "Claude web research", scope: "Fills artist pages only where the other sources leave them empty with a short summary and facts, each linked to the page it came from. Acts with shows on file go first; venues and events are excluded, inside a daily spending cap. It never edits a biography, a claimed artist page or staff facts, and staff can hide any result." }),
 });
 
 export function createCatalogMaintenanceService({ database, databasePath, env = process.env,
@@ -24,6 +28,8 @@ export function createCatalogMaintenanceService({ database, databasePath, env = 
   ensureCatalogKnowledgeControl(database, { env, at: now() });
   ensureCatalogResearchSchema(database);
   ensureProviderProfileSchema(database);
+  ensureNewsDeskSchema(database);
+  ensurePrivacyJournalSchema(database);
   return {
     inspectControl: () => readCatalogKnowledgeControl(database, { env, at: now() }),
     setControl: (mode) => setCatalogKnowledgeMode(database, mode, { env, at: now() }),
@@ -42,6 +48,9 @@ export function createCatalogMaintenanceService({ database, databasePath, env = 
         seo: seoStatus(),
         research: collectCatalogResearchStatus(database, { env, at }),
         webProfiles: collectProviderProfileStatus(database, { env, at }),
+        newsDesk: collectNewsDeskStatus(database, { env, at }),
+        claudeSpend: collectClaudeSpendStatus(database, { env, at }),
+        privacyJournal: privacyJournalStatus(database, env),
       };
     },
   };

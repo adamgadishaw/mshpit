@@ -26,6 +26,7 @@ reuse a published `PIT-*` code for a different meaning.
 | `PIT-UPLOAD-002` | Upload | Unsupported media type | Choose another file |
 | `PIT-UPLOAD-003` | Upload | Media exceeds the size limit | Resize first |
 | `PIT-UPLOAD-004` | Upload | Media upload failed | Yes |
+| `PIT-UPLOAD-007` | Upload | Deterministic video conversion/output validation failed | Contact support; no automatic retry |
 | `PIT-MEDIA-001` | Playback | Audio/video could not start | Yes |
 | `PIT-STORE-001` | Storage | Device-local persistence failed | Yes |
 | `PIT-APP-001` | Application | React render failure caught by the app boundary | Yes |
@@ -74,7 +75,13 @@ captureAppError(error, {
 ## Privacy rule
 
 Diagnostics may contain only operation labels, route templates, HTTP method and
-status, stable error codes, source, timestamp, and request ID. Never record:
+status, stable error codes, source, timestamp, and request ID. Bounded server
+resolver observations may also contain fixed categories for saved-result source,
+provider outcome/work origin, cache-write outcome and optional same-origin page
+category, plus capped elapsed durations. Rolling staff-only summaries retain
+fixed-category counts and duration buckets, never individual request history.
+The page category is untrusted optional context, not proof of visitor identity
+or automation. Never record:
 
 - passwords, session/reset tokens, authorization headers, or cookies;
 - request/response bodies or query-string values;

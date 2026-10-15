@@ -23,6 +23,9 @@ function reviewQuery(identitySql) {
         WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0
+      -- A festival review is about the festival; its sets reach artist pages
+      -- through post_lineup_acts instead.
+      AND COALESCE(p.show_format,'headline')<>'festival'
       AND (${inPersonReviewSql("p")} OR (
         p.kind='status' AND p.artist_key IS NOT NULL AND p.artist_mbid IS NOT NULL AND p.overall=0
         AND EXISTS (SELECT 1 FROM artist_memorials memory_memorial

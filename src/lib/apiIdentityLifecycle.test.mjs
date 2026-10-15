@@ -21,19 +21,20 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-function fixture() {
+function fixture({ clock = Date.now } = {}) {
   const response = deferred(), requests = [], diagnostics = [];
   const bindings = {
     Platform: { OS: "test" }, apiBaseForRuntime: () => "http://fixture.invalid",
     AppError: class extends Error { constructor(message, options = {}) { super(message); Object.assign(this, options); } },
     captureAppError: (error) => { diagnostics.push(error); return error; },
+    Date: { now: clock },
     apiIdentityBarrierDecision, createRequestControl, retryAfterDelayMs, photoCreditUrlFromLinkHeader: () => null,
     fetch: async (url, options) => { requests.push({ url, options }); return response.promise; },
   };
   const transport = new Function(...Object.keys(bindings), `${body}\nreturn { api, apiBinary, configureApiIdentity, waiting: () => identityWaiters.size };`)(...Object.values(bindings));
   transport.configureApiIdentity("a");
   return {
-    ...transport, requests, diagnostics,
+    ...transport, requests, diagnostics, respond: response.resolve,
     fail: ({ status = 502, retryAfter = "30", retryable = true } = {}) => response.resolve(new Response(JSON.stringify({ code: "PROVIDER_UNAVAILABLE", retryable }), {
       status, headers: { "Content-Type": "application/json", "Retry-After": retryAfter },
     })),
@@ -44,17 +45,33 @@ function fixture() {
 }
 
 for (const binary of [false, true]) {
+  test(`${binary ? "binary" : "JSON"} retry deadline is anchored before a slow error body is consumed`, async () => {
+    let now = 1_000;
+    const f = fixture({ clock: () => now }), errorBody = deferred();
+    const pending = (binary ? f.apiBinary : f.api)("/api/artists/resolve?name=fixture", { silent: true }).catch(error => error);
+    f.respond({ ok: false, status: 502, headers: new Headers({ "Retry-After": "7200" }), text: () => errorBody.promise });
+    await new Promise(resolve => setImmediate(resolve));
+    now += 1_500;
+    errorBody.resolve(JSON.stringify({ code: "PROVIDER_UNAVAILABLE", retryable: true }));
+    const error = await pending;
+    assert.equal(error.retryAt, 7_201_000);
+    assert.equal(error.retryAt - now, 7_198_500, "body latency cannot restart the provider delay");
+    assert.equal(f.requests.length, 1);
+  });
   test(`${binary ? "binary" : "JSON"} error retains a bounded manual retry hint without retrying the request`, async () => {
     for (const [options, expected] of [
-      [{}, 30_000], [{ retryAfter: "999999999" }, 3_600_000],
+      [{}, 30_000], [{ retryAfter: "7200" }, 7_200_000], [{ retryAfter: "999999999" }, 86_400_000],
       [{ retryAfter: "Infinity" }, undefined], [{ retryAfter: "-1" }, undefined],
       [{ status: 401 }, undefined], [{ status: 502, retryable: false }, undefined],
     ]) {
       const f = fixture();
+      const startedAt = Date.now();
       const pending = (binary ? f.apiBinary : f.api)("/api/artists/resolve?name=fixture", { silent: true }).catch(error => error);
       f.fail(options);
       const error = await pending;
       assert.equal(error.retryAfterMs, expected);
+      if (expected !== undefined) assert.ok(error.retryAt >= startedAt + expected && error.retryAt <= Date.now() + expected);
+      else assert.equal(error.retryAt, undefined);
       assert.equal(error.serverCode, "PROVIDER_UNAVAILABLE");
       assert.equal(f.requests.length, 1);
     }

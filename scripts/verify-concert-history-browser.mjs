@@ -175,6 +175,7 @@ async function runCase(browser, origin, item) {
       if (url.pathname === "/api/media/reactions") return await json({ reactions: {} });
       if (url.pathname.startsWith("/api/feed")) return await json({ posts: [], hasMore: false, hiddenPostIds: [] });
       if (url.pathname === "/api/tourdates") return await json({ tourDates: [] });
+      if (url.pathname === "/api/news-desk/stories") return await json({ stories: [], nextCursor: null });
       if (url.pathname === "/api/discovery/sidebar") return await json({ upcomingEvents: [], suggestedUsers: [], topArtists: [], trendingVenues: [], popularLounges: [], landingMedia: [], catalogTotals: { artists: 40, venues: 80 } });
       if (url.pathname === "/api/discover/overview") return await json({ artists: [], venues: [], events: [], genres: [], countries: [] });
       throw new Error(`Missing fixture for ${request.method()} ${url.pathname}${url.search}`);

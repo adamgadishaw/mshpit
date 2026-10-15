@@ -14,6 +14,7 @@ import {
 import { displayGenre, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
 import { artistRow, artistStmts, mergeBundledArtist, publicArtist } from "./db.js";
 import { ProviderError } from "./musicProviders.js";
+import { createMusicBrainzRequestThrottle } from "./musicBrainzRequestThrottle.js";
 
 const catalogSeedSource = readFileSync(new URL("./catalogSeed.js", import.meta.url), "utf8");
 
@@ -106,6 +107,154 @@ test("cancelled MusicBrainz catalog requests do not retry or reach fetch", async
     fetchImpl: () => assert.fail("cancelled request must not fetch"),
     pause: () => assert.fail("cancelled request must not retry"),
   }), { name: "AbortError" });
+});
+
+for (const status of [429, 503]) {
+  for (const format of ["seconds", "date"]) {
+    test(`MusicBrainz catalog ${status} ${format} Retry-After protects other callers and survives disposal failure`, async (t) => {
+      let now = Date.parse("2026-10-09T12:00:00Z");
+      t.mock.method(Date, "now", () => now);
+      const delay = 2 * 60 * 60_000;
+      const retryAt = now + delay;
+      const requestGate = createMusicBrainzRequestThrottle({
+        clock: () => now,
+        wait: async (ms) => { now += ms; },
+      });
+      let requests = 0, discarded = 0;
+      await assert.rejects(mbTag("rock", 0, {
+        requestGate,
+        fetchImpl: async () => {
+          requests += 1;
+          return {
+            ok: false, status,
+            headers: new Headers({ "Retry-After": format === "seconds" ? String(delay / 1000) : new Date(retryAt).toUTCString() }),
+            body: { cancel() {
+              discarded += 1;
+              const error = new Error("disposal failed");
+              if (format === "seconds") throw error;
+              return Promise.reject(error);
+            } },
+          };
+        },
+        pause: () => assert.fail("a provider retry deadline must not trigger a futile local retry"),
+      }), (error) => {
+        assert.equal(error.name, "ProviderError");
+        assert.equal(error.status, status);
+        assert.equal(error.code, status === 429 ? "rate_limited" : "http_error");
+        assert.equal(error.retryAfterMs, delay);
+        assert.equal(error.retryAt, retryAt);
+        return true;
+      });
+      assert.equal(requests, 1);
+      assert.equal(discarded, 1);
+      assert.equal(requestGate.status().retryAt, retryAt);
+      await assert.rejects(requestGate(() => assert.fail("the cooldown must protect interactive callers"), {
+        priority: "interactive",
+      }), { code: "circuit_open" });
+    });
+  }
+}
+
+test("MusicBrainz catalog failures expose the gate cooldown without a redundant retry", async () => {
+  let now = 1_000, requests = 0, gates = 0, discarded = 0;
+  const gate = createMusicBrainzRequestThrottle({ clock: () => now, wait: async (ms) => { now += ms; } });
+  await assert.rejects(mbTag("rock", 0, {
+    requestGate: (run, options) => { gates += 1; return gate(run, options); },
+    fetchImpl: async () => {
+      requests += 1;
+      return { ok: false, status: 429, body: { cancel: () => { discarded += 1; } } };
+    },
+    pause: async (ms) => { now += ms; },
+  }), { name: "ProviderError", status: 429, code: "rate_limited", retryAfterMs: 30_000, retryAt: 31_000 });
+  assert.equal(requests, 1);
+  assert.equal(gates, 1, "the triggering error carries the effective cooldown, so no retry admission is needed");
+  assert.equal(discarded, 1);
+});
+
+test("MusicBrainz catalog requests preserve initial queue saturation without retrying", async () => {
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const gate = createMusicBrainzRequestThrottle({ maxPendingRequests: 1 });
+  const active = gate(() => pending);
+  try {
+    await assert.rejects(mbTag("rock", 0, {
+      requestGate: gate,
+      fetchImpl: () => assert.fail("a saturated gate must not fetch"),
+      pause: () => assert.fail("initial saturation must be returned without retrying"),
+    }), { name: "MusicBrainzThrottleError", code: "queue_saturated" });
+  } finally {
+    release();
+    await active;
+  }
+});
+
+for (const phase of ["response", "disposal"]) {
+  test(`MusicBrainz catalog cancellation during ${phase} preserves the received provider cooldown`, async (t) => {
+    let now = Date.parse("2026-10-09T12:00:00Z");
+    t.mock.method(Date, "now", () => now);
+    const retryAt = now + 2 * 60 * 60_000;
+    const controller = new AbortController();
+    const reason = new DOMException("Stopped", "AbortError");
+    const gate = createMusicBrainzRequestThrottle({ clock: () => now, wait: async (ms) => { now += ms; } });
+    let requests = 0, discarded = 0;
+    await assert.rejects(mbTag("rock", 0, {
+      signal: controller.signal,
+      requestGate: gate,
+      fetchImpl: async () => {
+        requests += 1;
+        if (phase === "response") controller.abort(reason);
+        return {
+          ok: false, status: phase === "response" ? 429 : 503,
+          headers: new Headers({ "Retry-After": phase === "response" ? "7200" : new Date(retryAt).toUTCString() }),
+          body: { cancel() {
+            discarded += 1;
+            if (phase === "disposal") controller.abort(reason);
+            throw new Error("disposal failed after cancellation");
+          } },
+        };
+      },
+      pause: () => assert.fail("cancelled work must not retry"),
+    }), (error) => error === reason);
+    assert.equal(requests, 1);
+    assert.equal(discarded, 1);
+    assert.equal(gate.status().consecutiveFailures, 1);
+    assert.equal(gate.status().retryAt, retryAt);
+    await assert.rejects(gate(() => assert.fail("received refusal must protect subsequent callers")), { code: "circuit_open" });
+  });
+}
+
+test("MusicBrainz catalog transport cancellation creates no provider outage", async () => {
+  const controller = new AbortController();
+  const reason = new DOMException("Stopped", "AbortError");
+  const gate = createMusicBrainzRequestThrottle();
+  let requests = 0;
+  await assert.rejects(mbTag("rock", 0, {
+    signal: controller.signal,
+    requestGate: gate,
+    fetchImpl: async () => {
+      requests += 1;
+      controller.abort(reason);
+      throw new Error("transport closed after cancellation");
+    },
+    pause: () => assert.fail("cancelled work must not retry"),
+  }), (error) => error === reason);
+  assert.equal(requests, 1);
+  assert.equal(gate.status().consecutiveFailures, 0);
+  assert.equal(gate.status().retryAt, null);
+});
+
+test("MusicBrainz catalog cancellation during retry delay never enters another request gate", async () => {
+  const controller = new AbortController();
+  const reason = new DOMException("Stopped", "AbortError");
+  let gates = 0, requests = 0;
+  await assert.rejects(mbTag("rock", 0, {
+    signal: controller.signal,
+    requestGate: (run) => { gates += 1; return run(); },
+    fetchImpl: async () => { requests += 1; return { ok: false, status: 503 }; },
+    pause: async () => { controller.abort(reason); },
+  }), (error) => error === reason);
+  assert.equal(gates, 1);
+  assert.equal(requests, 1);
 });
 
 test("MusicBrainz catalog pages reject oversized provider bodies within the gate", async () => {

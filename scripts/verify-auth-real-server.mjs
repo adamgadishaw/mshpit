@@ -136,7 +136,15 @@ async function main() {
       assert.equal(mismatch.status, 409); assert.equal(mismatch.data.code, "IDENTITY_CHANGED");
     });
     await check("real-browser-logout-reload-and-old-cookie-replay", async () => {
+      const mirror = await context.newPage(); mirror.setDefaultTimeout(timeoutMs);
+      await mirror.goto(origin+"/feed", { waitUntil: "networkidle" });
+      await mirror.getByText("Your life's musical journey", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Settings", exact: true }).click();
       await page.getByText("Log out", { exact: true }).click();
+      await mirror.getByRole("link", { name: "Browse concerts", exact: true }).waitFor();
+      await mirror.reload({ waitUntil: "networkidle" });
+      assert.equal((await mirror.locator("body").innerText()).includes(fixture.bob.name), false);
+      await mirror.close();
       await page.getByRole("link", { name: "Browse concerts", exact: true }).waitFor();
       await page.reload({ waitUntil: "networkidle" });
       await page.getByRole("link", { name: "Browse concerts", exact: true }).waitFor();
@@ -206,7 +214,103 @@ async function main() {
       }
       // The city label is intentionally public; exact saved coordinates are not.
       assert.deepEqual(publicProfile.data.user.home, { city: before.home.city });
-      assert.equal(publicProfile.headers.get("cache-control"), "no-store");
+      assert.match(publicProfile.headers.get("cache-control"), /(?:^|,\s*)no-store(?:$|,)/);
+    });
+    await check("real-browser-signup-response-lost-recovers-through-existing-account-login", async () => {
+      const signupContext = await browser.newContext({viewport:{width:390,height:844},serviceWorkers:"block"});
+      const signupPage = await signupContext.newPage(); signupPage.setDefaultTimeout(timeoutMs);
+      let created = 0, logins = 0;
+      await signupContext.route("**/*", async route => {
+        const url = new URL(route.request().url()); if(url.origin!==origin) return route.abort();
+        if(url.pathname==="/api/signup" && route.request().method()==="POST") {
+          const result=await route.fetch(); assert.equal(result.status(),200); assert.equal((await result.json()).created,true); created++;
+          return route.abort("failed");
+        }
+        if(url.pathname==="/api/login") logins++;
+        if(url.pathname==="/api/client-errors") receipts.push(true);
+        return route.continue();
+      });
+      signupPage.on("pageerror", error=>pageErrors.push(error.message));
+      await signupPage.goto(origin+"/signup",{waitUntil:"networkidle"});
+      await signupPage.getByLabel("Name",{exact:true}).fill("New Recovery Fixture");
+      await signupPage.getByLabel("Username",{exact:true}).fill("realnewrecovery");
+      await signupPage.getByRole("button",{name:"Continue to sign-in",exact:true}).click();
+      await signupPage.getByLabel("Email",{exact:true}).fill("real-new-recovery@example.test");
+      await signupPage.getByLabel("Password",{exact:true}).fill("Signup-password1");
+      await signupPage.getByRole("button",{name:"Continue to music",exact:true}).click();
+      await signupPage.getByRole("checkbox",{name:"Rock",exact:true}).click();
+      await signupPage.getByRole("button",{name:"Continue to the last step",exact:true}).click();
+      await signupPage.getByRole("radio",{name:"18+",exact:true}).click();
+      await signupPage.getByRole("checkbox",{name:"I agree to the Terms and Privacy policy",exact:true}).click();
+      await signupPage.getByRole("button",{name:"Create account",exact:true}).click();
+      await signupPage.getByText(/account may already have been created/).waitFor();
+      await signupPage.getByRole("button",{name:"Have an account? Log in",exact:true}).click();
+      await signupPage.getByLabel("Password",{exact:true}).fill("Signup-password1");
+      await signupPage.getByRole("button",{name:"Log in",exact:true}).last().click();
+      await signupPage.getByText("Your life's musical journey",{exact:true}).waitFor();
+      const cookie=(await signupContext.cookies()).find(c=>c.name===fixture.cookieName);
+      const current=(await request("/api/me",{cookie:fixture.cookieName+'='+cookie.value})).data.user;
+      assert.equal(current.email,"real-new-recovery@example.test"); assert.equal(current.emailVerified,false);
+      assert.equal(created,1);assert.equal(logins,1);
+      await signupPage.reload({waitUntil:"networkidle"});
+      await signupPage.getByText("Your life's musical journey",{exact:true}).waitFor();
+      assert.equal((await request('/api/users/'+fixture.alice.id+'/follow',{cookie:fixture.cookieName+'='+cookie.value,expected:current.id,method:'POST',body:{following:true}})).data.code,'EMAIL_VERIFICATION_REQUIRED');
+      await signupContext.close();
+    });
+    await check("real-browser-reset-commits-response-lost-then-deliberate-login-recovers", async () => {
+      const recoveryContext = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
+      const recoveryPage = await recoveryContext.newPage(); recoveryPage.setDefaultTimeout(timeoutMs);
+      let resetCommits = 0, deliberateLogins = 0;
+      recoveryPage.on("pageerror", error => pageErrors.push(error.message));
+      await recoveryContext.route("**/*", async route => {
+        const url = new URL(route.request().url());
+        if (url.origin !== origin) return route.abort();
+        if (url.pathname === "/api/reset") {
+          const committed = await route.fetch();
+          assert.equal(committed.status(),200); resetCommits++;
+          return route.abort("failed");
+        }
+        if (url.pathname === "/api/login") deliberateLogins++;
+        if (url.pathname === "/api/client-errors") receipts.push(true);
+        return route.continue();
+      });
+      await recoveryPage.goto(origin+'/#reset='+fixture.lostReset.token,{ waitUntil: "networkidle" });
+      await recoveryPage.getByLabel("New password",{exact:true}).fill("Reset-password4");
+      await recoveryPage.getByLabel("Confirm new password",{exact:true}).fill("Reset-password4");
+      await recoveryPage.getByRole("button",{name:"RESET PASSWORD",exact:true}).click();
+      await recoveryPage.getByText(/password may already have changed/).waitFor();
+      assert.equal(resetCommits,1);
+      assert.equal((await request("/api/me",{cookie:fixture.lostReset.oldCookie})).data.user,null);
+      await recoveryPage.getByRole("button",{name:"Log in with the new password",exact:true}).click();
+      await recoveryPage.getByLabel("Email",{exact:true}).fill(fixture.lostReset.email);
+      await recoveryPage.getByLabel("Password",{exact:true}).fill("Reset-password4");
+      await recoveryPage.getByRole("button",{name:"Log in",exact:true}).last().click();
+      await recoveryPage.getByText("Your life's musical journey",{exact:true}).waitFor();
+      assert.equal(deliberateLogins,1); assert.equal(resetCommits,1);
+      const sessionCookie = (await recoveryContext.cookies()).find(c => c.name === fixture.cookieName);
+      assert.equal((await request("/api/me",{cookie:fixture.cookieName+'='+sessionCookie.value})).data.user.id,fixture.lostReset.id);
+      assert.equal((await request("/api/reset",{method:"POST",body:{token:fixture.lostReset.token,password:"Reset-password5"}})).status,400,"The spent token remains invalid");
+      assert.equal(new URL(recoveryPage.url()).hash.includes('reset='),false);
+      await recoveryContext.close();
+    });
+    await check("real-browser-reset-warns-current-account-and-only-revokes-target-sessions", async () => {
+      const handoffContext = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
+      const current = fixture.readers[4];
+      await handoffContext.addCookies([{ name:fixture.cookieName,value:current.cookie.slice(fixture.cookieName.length+1),url:origin,httpOnly:true,sameSite:"Lax" }]);
+      await handoffContext.route("**/*",route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
+      const handoffPage = await handoffContext.newPage(); handoffPage.setDefaultTimeout(timeoutMs);
+      handoffPage.on("pageerror",error => pageErrors.push(error.message));
+      await handoffPage.goto(origin+'/#reset='+fixture.otherReset.token,{waitUntil:"networkidle"});
+      await handoffPage.getByText(/currently signed in as @realread4/).waitFor();
+      await handoffPage.getByLabel("New password",{exact:true}).fill("Reset-password6");
+      await handoffPage.getByLabel("Confirm new password",{exact:true}).fill("Reset-password6");
+      await handoffPage.getByRole("button",{name:"Reset linked account and sign in",exact:true}).click();
+      await handoffPage.getByText("Your life's musical journey",{exact:true}).waitFor();
+      const cookie = (await handoffContext.cookies()).find(c=>c.name===fixture.cookieName);
+      assert.equal((await request("/api/me",{cookie:fixture.cookieName+'='+cookie.value})).data.user.id,fixture.otherReset.id);
+      assert.equal((await request("/api/me",{cookie:fixture.otherReset.oldCookie})).data.user,null);
+      assert.equal((await request("/api/me",{cookie:current.cookie})).data.user.id,current.id,"An unrelated current account keeps its own session");
+      await handoffContext.close();
     });
     const concurrency = [];
     for (const count of [5, 10, 50, 100]) await check(`real-authenticated-me-parallel-${count}`, async () => {
@@ -230,7 +334,7 @@ async function main() {
     failure = error;
     // Never print raw fixture credentials; startup debugging is opt-in/redacted.
     const redact = value => String(value).replace(/(?:pit_session|__Host-pit_session)=[^\s;"']+/g, "[session redacted]")
-      .replace(/(?:Fixture|Reset|Changed)-password\d+/g, "[fixture password redacted]").replace(/[A-Za-z0-9_-]{43}/g, "[fixture token redacted]");
+      .replace(/(?:Fixture|Reset|Changed|Signup)-password\d+/g, "[fixture password redacted]").replace(/[A-Za-z0-9_-]{43}/g, "[fixture token redacted]");
     console.error(JSON.stringify({ passed: checks.length, failed: 1, failure: redact(error.message).slice(0, 600), serverExited: exited,
       ...(process.env.PIT_AUTH_FIXTURE_DEBUG === "1" ? { fixtureStartup: redact(serverOutput).slice(-3000) } : {}),
       serverErrorClasses: [...new Set(serverOutput.match(/(?:TypeError|ReferenceError|SyntaxError|SQLITE_[A-Z_]+)/g) || [])] }));

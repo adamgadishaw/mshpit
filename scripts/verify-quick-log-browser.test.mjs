@@ -8,6 +8,7 @@ function quickLog() {
     overall: 5, band: null, room: null,
     dims: { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 5 },
     review: "I remember the music, not the exact date. Fixture only.", tour: "A remembered tour",
+    supportingActs: ["MUNA"],
   };
 }
 
@@ -25,4 +26,5 @@ test("quick-log browser contract rejects invented dates and component scores", (
 test("quick-log browser contract catches loss of the remembered review during retry", () => {
   assert.throws(() => assertQuickLogPayload({ ...quickLog(), review: "" }));
   assert.throws(() => assertQuickLogPayload({ ...quickLog(), tour: "" }));
+  assert.throws(() => assertQuickLogPayload({ ...quickLog(), supportingActs: [] }), /opener suggestion/);
 });

@@ -1,9 +1,31 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { parseDocument } from "yaml";
 
 const dockerfile = await readFile(new URL("../Dockerfile.video-verifier", import.meta.url), "utf8");
 const blueprint = (await readFile(new URL("../render.yaml", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+
+test("proposed image CI is scoped, uses the exact Dockerfile, and bounds offline execution without publication", async () => {
+  const text = await readFile(new URL("../.github/workflows/video-converter.yml", import.meta.url), "utf8");
+  const yaml = parseDocument(text); assert.deepEqual(yaml.errors, []);
+  const workflow = yaml.toJS();
+  assert.equal(workflow.permissions.contents, "read");
+  assert.ok(workflow.on.pull_request.paths.includes("Dockerfile.video-verifier"));
+  assert.equal(workflow.on.push, undefined);
+  const commands = workflow.jobs["exact-image"].steps.map((step) => step.run || "").join("\n");
+  assert.match(commands, /--file Dockerfile\.video-verifier/);
+  assert.match(commands, /--driver-opt memory=2g,memory-swap=2g,cpu-period=100000,cpu-quota=100000,cpuset-cpus=0/);
+  for (const command of commands.split("docker run ").slice(1)) {
+    const run = command.split("\n").slice(0, 7).join("\n");
+    assert.match(run, /--cpus=1 --memory=2g --memory-swap=2g --pids-limit=128/);
+    assert.match(run, /--network=none --read-only/);
+    assert.match(run, /--tmpfs \/tmp:rw,nosuid,nodev,size=768m/);
+  }
+  assert.match(commands, /docker stats --no-stream/);
+  assert.match(commands, /node --test server\/videoVerifierService\.test\.mjs/);
+  assert.doesNotMatch(commands, /--push|docker login|render deploy|secrets\.|--privileged|--env-file/);
+});
 
 function serviceBlock(name, nextName) {
   const start = blueprint.indexOf(`  - type: pserv\n    name: ${name}\n`);
@@ -19,6 +41,9 @@ test("video verifier container pins its runtime and drops root privileges", () =
   assert.match(dockerfile, /^ARG FFMPEG_SHA256=[a-f0-9]{64}$/m);
   assert.match(dockerfile, /--disable-network/);
   assert.match(dockerfile, /--enable-libx264/);
+  assert.match(dockerfile, /--enable-libzimg/);
+  assert.match(dockerfile, /libzimg-dev="\$\{ZIMG_VERSION\}"/);
+  assert.match(dockerfile, /libzimg2="\$\{ZIMG_VERSION\}"/);
   assert.match(dockerfile, /sha256sum --check --strict/);
   assert.match(dockerfile, /^\s*make install; \\$/m);
   assert.doesNotMatch(dockerfile, /install-strip/);

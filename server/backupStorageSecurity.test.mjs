@@ -43,3 +43,16 @@ test("backup privacy probe accepts only explicit anonymous authorization failure
     /privacy probe failed closed/,
   );
 });
+
+test("an R2 bucket's exact unsigned-request rejection counts as private, nothing looser does", async () => {
+  const R2 = { ...ENV, BACKUP_S3_ENDPOINT: "https://6096cbb7a3964ada3a38667d71055a29.r2.cloudflarestorage.com" };
+  const r2Rejection = '<?xml version="1.0" encoding="UTF-8"?><Error><Code>InvalidArgument</Code><Message>Authorization</Message></Error>';
+  const respond = (status, body) => async () => new Response(body, { status, headers: { "content-type": "application/xml" } });
+  assert.deepEqual(await verifyPrivateBackupBucket({ env: R2, fetchImpl: respond(400, r2Rejection) }), { private: true });
+  await assert.rejects(verifyPrivateBackupBucket({ env: R2, fetchImpl: respond(400, "<Error><Code>InvalidRequest</Code></Error>") }),
+    /privacy probe failed closed/, "any other 400 still fails");
+  await assert.rejects(verifyPrivateBackupBucket({ env: ENV, fetchImpl: respond(400, r2Rejection) }),
+    /privacy probe failed closed/, "only a real R2 account endpoint may answer with 400");
+  await assert.rejects(verifyPrivateBackupBucket({ env: { ...R2, BACKUP_S3_ENDPOINT: "https://6096cbb7a3964ada3a38667d71055a29.r2.cloudflarestorage.com.evil.example" },
+    fetchImpl: respond(400, r2Rejection) }), /privacy probe failed closed/, "a lookalike host never counts");
+});

@@ -1,6 +1,6 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, FlatList, Platform, Pressable, useWindowDimensions } from "react-native";
-import { colors, mono, radius, shadow } from "../theme";
+import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { View, Text, StyleSheet, FlatList, Platform, Pressable, ScrollView, useWindowDimensions } from "react-native";
+import { colors, mono, radius, shadow, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { load, save } from "../lib/persist";
 import TicketStub from "../components/TicketStub";
 import Icon from "../components/Icon";
@@ -9,10 +9,21 @@ import { feedFilterStorageKey, feedFooterState, normalizeFeedFilter } from "../d
 import { nextVisibleMediaPostIds } from "../domain/posterVisibility.mjs";
 import { JOURNEY_TAGLINE } from "../domain/menuJourney.mjs";
 import { HOME_JOURNEY_LINE, homeGuideStorageKey } from "../domain/homeJourney.mjs";
-import HomeShowCountdown from "../components/HomeShowCountdown";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import SuggestedPittersRail from "../components/SuggestedPittersRail";
 import useAppActive from "../lib/useAppActive";
+import NewsStoryCard from "../components/news/NewsStoryCard";
+import useNewsDeskStories from "../components/news/useNewsDeskStories";
+import useNewsIntroduction from "../components/news/useNewsIntroduction";
+import { newsAwareFeed } from "../domain/newsReaderState.mjs";
+import { useNewsInteractions } from "../components/news/NewsInteractionContext";
+import useFollowingFeed from "../features/socialReactions/useFollowingFeed";
+
+// Optional panels load inside their own boundary so opening News or a countdown
+// cannot make the primary feed disappear while its module loads.
+const HomeShowCountdown = lazyWithRetry(() => import("../components/HomeShowCountdown"), "HomeShowCountdown");
+const LiveCoverageCard = lazyWithRetry(() => import("../components/news/LiveCoverageCard"), "LiveCoverageCard");
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 const REFRESH_RETRY_HINT = Platform.OS === "web"
@@ -25,7 +36,7 @@ const feedKeyExtractor = (item) => String(item.id);
 // header state. The ref-backed handlers always call the latest screen props,
 // while stable row callbacks let React skip cards whose post and visibility did
 // not change.
-const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewable, surface, actionsRef, capabilities }) {
+const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewable, surface, actionsRef, capabilities, accountId = null }) {
   const open = useCallback((_unused) => actionsRef.current.onOpen?.(item, { surface, position: itemIndex }), [actionsRef, item, itemIndex, surface]);
   const openShow = useCallback((show) => actionsRef.current.onOpen?.(show, { surface, position: itemIndex }), [actionsRef, itemIndex, surface]);
   const comment = useCallback((...args) => actionsRef.current.onComment?.(...args), [actionsRef]);
@@ -41,6 +52,11 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   const play = useCallback((...args) => actionsRef.current.onPlay?.(...args), [actionsRef]);
   const removeMyPostTag = useCallback((...args) => actionsRef.current.onRemoveMyPostTag?.(...args), [actionsRef]);
   const hideRecommendation = useCallback((...args) => actionsRef.current.hideRecommendation?.(...args), [actionsRef]);
+
+  // A Mshpit News story posted from @news_mod.
+  if (item.news) {
+    return <NewsStoryCard story={item.news} post={item} accountId={accountId} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onEdit={capabilities.edit ? edit : undefined} onRequireAuth={requireAuth} />;
+  }
 
   return (
     <TicketStub
@@ -67,7 +83,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   );
 });
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
   const { width } = useWindowDimensions();
   const appActive = useAppActive();
   const phone = width < 700;
@@ -100,10 +116,23 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     setGuideState({ scope: guideScope, dismissed: true });
     save(guideScope, true);
   };
-  const full = filter === "following" ? followingFeed : filter === "local" ? localFeed : feed;
+  const newsTab = filter === "news";
+  const { followedArtists = [], blockedIds = [], mutedIds = [], removedIds = [] } = useNewsInteractions();
+  const following = useFollowingFeed({ accountId, enabled: filter === "following" && loggedIn && visible && appActive,
+    privacyScope: JSON.stringify([blockedIds,mutedIds,removedIds]) });
+  const news = useNewsDeskStories({ limit: 20, enabled: newsTab });
+  // The phone strip shows top stories; the News tab lists the newest.
+  const topNews = useNewsDeskStories({ limit: 6, sort: "top", enabled: phone && newsTab });
+  const introduction = useNewsIntroduction(visible && filter === "everyone" && loggedIn && appActive);
+  const full = useMemo(() => newsAwareFeed(filter === "following" ? following.posts : filter === "local" ? localFeed : feed,
+    { filter, accountId, followedArtists, introduction: introduction.post }), [filter, accountId, followedArtists, feed, following.posts, localFeed, introduction.post]);
   const data = useMemo(() => full.slice(0, count), [count, full]);
-  const filteredPageLoading = loadingMore && count >= full.length;
-  const surface = filter === "following" ? "following" : filter === "local" ? "local" : "everyone";
+  const listData = newsTab ? news.stories : data;
+  const openAllNews = () => (loggedIn ? pick("news") : onOpenNews?.());
+  const effectiveHasMore = filter === "following" ? !!following.nextCursor : hasMore;
+  const effectiveLoading = filter === "following" ? following.status === "loading" : loadingMore;
+  const filteredPageLoading = effectiveLoading && count >= full.length;
+  const surface = filter === "following" ? "following" : filter === "local" ? "local" : filter === "news" ? "news" : "everyone";
   const analyticsRef = useRef({ surface, onImpression, onDwell });
   analyticsRef.current = { surface, onImpression, onDwell };
   activityRef.current = appActive;
@@ -135,7 +164,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     if (!activityRef.current) return;
     const at = Date.now();
     for (const token of changed || []) {
-      const item = token?.item;
+      // News tab rows are stories; their view belongs to the story's post.
+      const item = token?.item?.postId ? { ...token.item, id: token.item.postId } : token?.item;
       if (!item?.id) continue;
       if (token.isViewable) {
         const viewedSurface = analyticsRef.current.surface;
@@ -209,6 +239,11 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     }
   };
   const loadOlderFiltered = async () => {
+    if (filter === "following") {
+      if (count < full.length) setCount(current => current + PAGE);
+      else if (following.status !== "loading" && following.nextCursor && await following.loadMore()) setCount(current => current + PAGE);
+      return;
+    }
     const action = filteredFeedNextAction({
       filter,
       visibleCount: count,
@@ -228,7 +263,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     const loaded = await onLoadMore?.();
     if (loaded) setCount((c) => c + PAGE);
   };
-  const footer = feedFooterState({ visibleCount: count, loadedCount: full.length, hasMore, loading: filteredPageLoading });
+  const footer = feedFooterState({ visibleCount: count, loadedCount: full.length, hasMore: effectiveHasMore, loading: filteredPageLoading });
   const advanceFeed = filter === "everyone" ? loadMore : loadOlderFiltered;
   const hideRecommendation = async (log) => {
     if (!log?.id || !onNotInterested) return;
@@ -256,12 +291,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   };
   const refresh = async () => {
     if (refreshControllerRef.current || !onRefresh) return false;
+    if (filter === "everyone") introduction.dismiss();
     const controller = new AbortController();
     refreshControllerRef.current = controller;
     setRefreshing(true);
     setRefreshError(false);
     try {
-      const result = await onRefresh({ signal: controller.signal });
+      const result = newsTab ? await news.reload() : filter === "following" ? await following.reload() : await onRefresh({ signal: controller.signal });
       if (controller.signal.aborted || refreshControllerRef.current !== controller) return false;
       const failed = result === false || result == null;
       setRefreshError(failed);
@@ -322,7 +358,9 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     report: canReport,
     requireAuth: canRequireAuth,
   }), [canComment, canEdit, canHideRecommendation, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenProfile, canOpenVenue, canPlay, canPreview, canRemoveMyPostTag, canReport, canRequireAuth]);
-  const renderFeedItem = useCallback(({ item, index: itemIndex }) => (
+  const renderFeedItem = useCallback(({ item, index: itemIndex }) => (newsTab ? (
+    <NewsStoryCard story={item} accountId={accountId} onOpen={onOpenNewsStory} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onEdit={onEdit} onRequireAuth={onRequireAuth} />
+  ) : (
     <FeedTicketRow
       item={item}
       itemIndex={itemIndex}
@@ -330,8 +368,9 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
       surface={surface}
       actionsRef={rowActionsRef}
       capabilities={rowCapabilities}
+      accountId={accountId}
     />
-  ), [rowCapabilities, surface, visibleMediaPostIds]);
+  )), [accountId, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
@@ -343,7 +382,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
       testID="feed-refresh"
     >
     <FlatList
-      data={data}
+      data={listData}
       extraData={visibleMediaPostIds}
       keyExtractor={feedKeyExtractor}
       contentContainerStyle={styles.content}
@@ -393,7 +432,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
 
           {loggedIn && showHomeCountdown && countdownPlan ? (
             <View style={styles.countdownTop}>
-              <HomeShowCountdown plan={countdownPlan} onOpen={onOpenCountdown} onViewAll={onViewAllCountdown} />
+              <Suspense fallback={<Text style={styles.tag}>Loading your next show…</Text>}><HomeShowCountdown plan={countdownPlan} onOpen={onOpenCountdown} onViewAll={onViewAllCountdown} /></Suspense>
             </View>
           ) : null}
 
@@ -417,7 +456,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
                 </View>
                 <Pressable onPress={dismissGuide} hitSlop={10} accessibilityRole="button" accessibilityLabel="Dismiss getting started guide"><Icon name="x" size={16} color={colors.textDim} /></Pressable>
               </View>
-              <Text style={styles.gsSub}>{onFinishSetup ? "Have a look around. Your profile photo, banner and city welcome can wait—find them in Settings anytime." : "Find a show, save the night, then come back to rate it, share the memory, and meet other fans."}</Text>
+              <Text style={styles.gsSub}>{onFinishSetup ? "Have a look around. Your profile photo, banner and city welcome can wait. Find them in Settings anytime." : "Find a show, save the night, then come back to rate it, share the memory, and meet other fans."}</Text>
               <View style={styles.gsActions}>
                 <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />
                 {onFinishSetup ? <HomeAction icon="you" label="Finish profile setup" onPress={onFinishSetup} /> : <HomeAction icon="plus" label="Log a show" onPress={onLogShow} primary />}
@@ -430,8 +469,29 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
               <Seg label="Following" on={filter === "following"} onPress={() => pick("following")} />
               <Seg label="Local" on={filter === "local"} onPress={() => pick("local")} />
               <Seg label="For You" on={filter === "everyone"} onPress={() => pick("everyone")} />
+              <Seg label="News" on={filter === "news"} onPress={() => pick("news")} />
             </View>
           )}
+
+          {introduction.error ? <Pressable onPress={introduction.retry} accessibilityRole="button" style={{ padding: 12 }}><Text style={{ color: colors.textDim }}>News from your artists couldn't load. Try again.</Text></Pressable> : null}
+          {newsTab ? <View style={styles.liveCoverage}><Suspense fallback={<Text style={styles.tag}>Loading live coverage…</Text>}><LiveCoverageCard /></Suspense></View> : null}
+          {phone && newsTab && topNews.stories.length ? (
+            <View style={styles.newsStrip} accessibilityLabel="Music news">
+              <View style={styles.newsStripHead}>
+                <Text style={styles.newsStripTitle}>MUSIC NEWS</Text>
+                <Pressable onPress={openAllNews} hitSlop={8} accessibilityRole="button" accessibilityLabel="See all music news">
+                  <Text style={styles.newsStripAll}>All news</Text>
+                </Pressable>
+              </View>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.newsStripRow}>
+                {topNews.stories.slice(0, 6).map((story) => (
+                  <View key={story.id} style={styles.newsStripItem}>
+                    <NewsStoryCard compact story={story} onOpen={onOpenNewsStory} />
+                  </View>
+                ))}
+              </ScrollView>
+            </View>
+          ) : null}
 
           {loggedIn && showSuggestedPitters ? (
             <SuggestedPittersRail
@@ -466,21 +526,29 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
           )}
         </View>
       }
-      ListEmptyComponent={
+      ListEmptyComponent={newsTab ? (
+        <View style={styles.emptyBox} accessibilityLiveRegion="polite">
+          <View style={styles.emptyIcon}><Icon name="music" size={26} color={colors.textFaint} /></View>
+          <Text style={styles.emptyTitle}>{news.status === "error" ? "The news could not load" : news.status === "ready" ? "No stories yet" : "Loading music news..."}</Text>
+          <Text style={styles.emptySub}>{news.status === "error"
+            ? REFRESH_RETRY_HINT
+            : "Stories are scheduled after three independent publisher groups corroborate them, with a limited two-source fallback on quiet days."}</Text>
+        </View>
+      ) : (
         <View style={styles.emptyBox}>
           <View style={styles.emptyIcon}>
             <Icon name={filter === "following" ? "you" : filter === "local" ? "pin" : "feed"} size={26} color={colors.textFaint} />
           </View>
           <Text style={styles.emptyTitle}>
             {filter === "following"
-              ? (hasMore ? "No followed posts in the newest batch" : "Your Following feed is quiet")
+              ? (following.status === "error" ? "Following couldn't load" : !following.loaded ? "Loading your Following feed..." : effectiveHasMore ? "More followed posts are available" : "Your Following feed is quiet")
               : filter === "local"
               ? (hasMore ? `No recent posts from ${homeCity || "your city"}` : `Nothing in ${homeCity || "your city"} yet`)
               : "No shows logged yet"}
           </Text>
           <Text style={styles.emptySub}>
             {filter === "following"
-              ? (hasMore ? "Load one older page at a time to keep looking without hammering your phone connection." : "Follow people whose taste matches yours, tap any reviewer's name to see their profile and follow.")
+              ? (following.status === "error" ? "Refresh to try again. Your existing posts are kept." : "Posts and reposts from people you follow appear here, always credited to their original authors.")
               : filter === "local"
               ? (hasMore ? "Load one older page at a time to look for nearby concert posts." : "Be the first to log a show in your city, tap the + to post one.")
               : "Log the first show, tap the + to rate the band and the room."}
@@ -490,10 +558,17 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
             <HomeAction icon="plus" label="Log a show" onPress={onLogShow} primary />
           </View>
         </View>
-      }
-      ListFooterComponent={(
+      )}
+      ListFooterComponent={newsTab ? (news.nextCursor ? (
+        <Pressable style={[styles.olderBtn, news.status === "loading" && styles.olderBtnOff]} onPress={news.loadMore}
+          disabled={news.status === "loading"} accessibilityRole="button" accessibilityLabel="Load older stories">
+          <Text style={styles.olderTxt}>{news.status === "loading" ? "Loading..." : "Load older stories"}</Text>
+        </Pressable>
+      ) : null) : (
         <View>
-          {footer.kind === "reveal" || footer.kind === "fetch" || footer.kind === "loading" ? (
+          {following.status === "error" && filter === "following" ? (
+            <Pressable style={styles.olderBtn} onPress={following.reload} accessibilityRole="button" accessibilityLabel="Retry Following feed"><Text style={styles.olderTxt}>Try again</Text></Pressable>
+          ) : footer.kind === "reveal" || footer.kind === "fetch" || footer.kind === "loading" ? (
             <Pressable
               style={[styles.olderBtn, filteredPageLoading && styles.olderBtnOff]}
               onPress={advanceFeed}
@@ -515,7 +590,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
           ) : null}
           {loggedIn && showHomeCountdown && !countdownPlan ? (
             <View style={styles.countdownBottom}>
-              <HomeShowCountdown compact onFindShow={onOpenDiscover} />
+              <Suspense fallback={<Text style={styles.tag}>Loading show suggestions…</Text>}><HomeShowCountdown compact onFindShow={onOpenDiscover} /></Suspense>
             </View>
           ) : null}
         </View>
@@ -557,7 +632,7 @@ function HomeAction({ icon, label, onPress, primary = false }) {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: 16, paddingBottom: 40, ...(Platform.OS === "web" ? { width: "100%", maxWidth: 900, alignSelf: "center" } : null) },
+  content: { padding: 16, paddingBottom: 40, ...(Platform.OS === "web" ? { width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center" } : null) },
   gs: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.amber, padding: 13, marginBottom: 14, gap: 8 },
   gsHead: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
   gsTitle: { color: colors.text, fontSize: 16, fontWeight: "800" },
@@ -610,4 +685,11 @@ const styles = StyleSheet.create({
   undoBtn: { minHeight: 36, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.good },
   undoBtnTxt: { color: colors.bg, fontSize: 12.5, fontWeight: "900" },
   empty: { color: colors.textDim, fontSize: 14, lineHeight: 21, fontStyle: "italic", paddingHorizontal: 4 },
+  liveCoverage: { paddingTop: 10 },
+  newsStrip: { marginTop: 14, gap: 8 },
+  newsStripHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  newsStripTitle: { color: colors.text, fontFamily: mono, fontSize: 11, fontWeight: "900", letterSpacing: 1.4 },
+  newsStripAll: { color: colors.amber, fontSize: 13, fontWeight: "800" },
+  newsStripRow: { gap: 10, paddingRight: 4 },
+  newsStripItem: { width: 270 },
 });

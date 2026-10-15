@@ -3,15 +3,18 @@ import { randomUUID } from "node:crypto";
 import { canonicalVenueKey } from "../../../src/domain/venueIdentity.mjs";
 import { backgroundJobEnabled } from "../../backgroundJobs.js";
 import { readCatalogKnowledgeControl } from "../../catalogKnowledgeControl.js";
+import { anthropicMonthlyCeilingMicroUsd, admitClaudeSpend, claudeCeilingLeftMicroUsd, claudeRequestDefinitelyRejected, utcMonthStartDay } from "../../claudeSpendCeiling.js";
+import { anthropicErrorSummary } from "../../anthropicErrors.js";
 import { privateErrorLabel } from "../../errors.js";
 import { startPeriodicJob } from "../../periodicJobScheduler.js";
 import { publicCatalogResearch, validateCatalogResearchFindings } from "./catalogResearchFindings.js";
 import { catalogResearchModel, researchCatalogSubject } from "./catalogResearchProvider.js";
+import { searchGrowthArtistPriorityKeys, searchGrowthVenuePriorityRows } from "../searchGrowth/searchGrowthPriorities.js";
 
-// The research agent fills the artist and venue pages the catalogue sources
+// The research agent fills only artist pages the catalogue sources
 // leave empty. It works through the pages fans are most likely to open first
-// (acts and rooms with shows on file), one at a time, inside a daily dollar
-// cap, and only ever adds a sourced summary and facts next to what a page
+// (acts with shows on file), one at a time, inside daily and
+// monthly dollar caps and the shared Claude ceiling, and only ever adds a sourced summary and facts next to what a page
 // already has. It never edits a biography, a claimed artist page or staff
 // facts, and a staff member can hide any result.
 
@@ -33,9 +36,27 @@ export function catalogResearchConfigured(env = process.env) {
   return !!String(env.ANTHROPIC_API_KEY || "").trim();
 }
 
+const usdSetting = (value, fallback, max) => {
+  const raw = String(value ?? "").trim();
+  const usd = raw ? Number(raw) : fallback;
+  return Math.round((Number.isFinite(usd) && usd >= 0 ? Math.min(usd, max) : fallback) * 1_000_000);
+};
+
+// Modest by default: $4 a month, and never more than a tenth of the month's
+// allowance in one day, so research fills pages steadily instead of spending
+// the month on its first day (whatever CATALOG_RESEARCH_DAILY_USD says).
+export function catalogResearchMonthlyBudgetMicroUsd(env = process.env) {
+  return usdSetting(env.CATALOG_RESEARCH_MONTHLY_USD, 4, 1000);
+}
+
 export function catalogResearchDailyBudgetMicroUsd(env = process.env) {
-  const usd = Number(env.CATALOG_RESEARCH_DAILY_USD);
-  return Math.round((Number.isFinite(usd) && usd >= 0 ? Math.min(usd, 500) : 5) * 1_000_000);
+  return Math.min(usdSetting(env.CATALOG_RESEARCH_DAILY_USD, 0.3, 500),
+    Math.floor(catalogResearchMonthlyBudgetMicroUsd(env) / 10));
+}
+
+function monthSpendMicroUsd(database, at) {
+  return Math.ceil(Number(database.prepare(`SELECT COALESCE(SUM(charged_micro_usd),0) AS micro
+    FROM catalog_research_spend WHERE utc_day>=?`).get(utcMonthStartDay(at))?.micro) || 0);
 }
 
 export function ensureCatalogResearchSchema(database) {
@@ -102,12 +123,12 @@ function pruneSpendReceipts(database, at) {
 
 // Reserve before sending a paid request. The ledger survives a restart and
 // keeps old-day evidence when a request finishes after midnight.
-function reserveSpend(database, token, budget, at) {
+function reserveSpend(database, token, budget, at, reserveMicroUsd = RUN_RESERVE_MICRO_USD, countRun = true) {
   database.exec("SAVEPOINT catalog_research_reserve");
   try {
     database.prepare(`INSERT INTO catalog_research_spend(token,utc_day,reserved_micro_usd,charged_micro_usd,status,created_at)
-      VALUES (?,?,?,?,'reserved',?)`).run(token, budget.utcDay, RUN_RESERVE_MICRO_USD, RUN_RESERVE_MICRO_USD, at);
-    saveBudget(database, { ...budget, spentMicroUsd: budget.spentMicroUsd + RUN_RESERVE_MICRO_USD, runs: budget.runs + 1 });
+      VALUES (?,?,?,?,'reserved',?)`).run(token, budget.utcDay, reserveMicroUsd, reserveMicroUsd, at);
+    saveBudget(database, { ...budget, spentMicroUsd: budget.spentMicroUsd + reserveMicroUsd, runs: budget.runs + (countRun ? 1 : 0) });
     database.exec("RELEASE catalog_research_reserve");
   } catch (error) {
     database.exec("ROLLBACK TO catalog_research_reserve; RELEASE catalog_research_reserve");
@@ -158,16 +179,43 @@ function artistSubject(database, row) {
   };
 }
 
-// Artists with shows on file first (fans open those pages from the calendar),
-// then everyone else by popularity. Only pages with no biography, no claimed
-// owner and no staff-written profile text are eligible.
+// Artists in the news first, then artists with shows on file (fans open those
+// pages from the calendar), then everyone else by popularity. Only pages with
+// no biography, no claimed owner and no staff-written profile text are
+// eligible.
 const ARTIST_ELIGIBLE = `(a.bio IS NULL OR trim(a.bio)='')
   AND NOT EXISTS (SELECT 1 FROM artist_profiles p WHERE p.artist_key=a.norm AND p.removed=0
     AND (p.owner_id IS NOT NULL OR (p.bio IS NOT NULL AND trim(p.bio)<>'')))
   AND NOT EXISTS (SELECT 1 FROM catalog_research r WHERE r.entity_type='artist' AND r.entity_key=a.norm
     AND (r.status='hidden' OR r.next_attempt_at>?))`;
 
-export function nextArtistResearchSubject(database, { at = Date.now() } = {}) {
+// Artists in a Mshpit News story from the last 30 days go first: fans reading
+// the story are about to open their pages. Before the news desk has run there
+// is no story table, and nobody is in the news.
+function inTheNewsArtistRow(database, at) {
+  try {
+    return database.prepare(`SELECT a.norm,a.name,a.mbid,a.genre,a.country FROM
+        (SELECT j.value AS artist_key,MAX(s.created_at) latest FROM news_stories s, json_each(s.artist_keys) j
+          WHERE s.status='published' AND s.created_at>=? GROUP BY j.value) n
+        JOIN artists a ON a.norm=n.artist_key
+        WHERE ${ARTIST_ELIGIBLE}
+        ORDER BY n.latest DESC, a.norm LIMIT 1`).get(at - 30 * DAY, at);
+  } catch (error) {
+    if (/no such table/iu.test(String(error?.message))) return null;
+    throw error;
+  }
+}
+
+export function nextArtistResearchSubject(database, { at = Date.now(), prioritizeSearch = false, env = process.env } = {}) {
+  if (prioritizeSearch) {
+    for (const key of searchGrowthArtistPriorityKeys(database, { at, env })) {
+      const row = database.prepare(`SELECT a.norm,a.name,a.mbid,a.genre,a.country FROM artists a
+        WHERE ${ARTIST_ELIGIBLE} AND a.norm=? LIMIT 1`).get(at, key);
+      if (row && text(row.name)) return artistSubject(database, row);
+    }
+  }
+  const inTheNews = inTheNewsArtistRow(database, at);
+  if (inTheNews && text(inTheNews.name)) return artistSubject(database, inTheNews);
   const withShows = database.prepare(`SELECT a.norm,a.name,a.mbid,a.genre,a.country FROM
       (SELECT artist_key,COUNT(*) shows FROM tour_dates WHERE artist_key IS NOT NULL AND owner_id IS NULL
         GROUP BY artist_key ORDER BY shows DESC LIMIT 2000) t
@@ -187,12 +235,29 @@ export function venueResearchKey(name, city, country) {
 
 // Rooms with the most shows on file first. A venue is identified by its name
 // and city together, because many cities have a "Fillmore" or a "Paradise".
-export function nextVenueResearchSubject(database, { at = Date.now() } = {}) {
-  const rows = database.prepare(`SELECT MIN(venue) venue,MIN(venue_city) city,MIN(venue_region) region,
+// Pages of 2,000 rooms, busiest first, so a room below the first page is
+// reached once everything above it is done (bounded at 25 pages).
+const VENUE_PAGE = 2000;
+const VENUE_PAGES = 25;
+export function nextVenueResearchSubject(database, { at = Date.now(), prioritizeSearch = false, env = process.env } = {}) {
+  if (prioritizeSearch) {
+    const selected = firstDueVenue(database, searchGrowthVenuePriorityRows(database, { at, env }), at);
+    if (selected) return selected;
+  }
+  const page = database.prepare(`SELECT MIN(venue) venue,MIN(venue_city) city,MIN(venue_region) region,
       MIN(venue_country_code) country,MAX(venue_address_line1) address,COUNT(*) shows
     FROM tour_dates WHERE venue IS NOT NULL AND trim(venue)<>'' AND owner_id IS NULL
     GROUP BY lower(trim(venue)),lower(coalesce(venue_city,'')),lower(coalesce(venue_country_code,''))
-    ORDER BY shows DESC, lower(trim(MIN(venue))), lower(coalesce(MIN(venue_city),'')) LIMIT 2000`).all();
+    ORDER BY shows DESC, lower(trim(MIN(venue))), lower(coalesce(MIN(venue_city),'')) LIMIT ? OFFSET ?`);
+  for (let index = 0; index < VENUE_PAGES; index += 1) {
+    const rows = page.all(VENUE_PAGE, index * VENUE_PAGE);
+    const subject = firstDueVenue(database, rows, at);
+    if (subject || rows.length < VENUE_PAGE) return subject;
+  }
+  return null;
+}
+
+function firstDueVenue(database, rows, at) {
   for (const row of rows) {
     const key = venueResearchKey(row.venue, row.city, row.country);
     if (!key || !dueRow(database, "venue", key, at)) continue;
@@ -262,10 +327,12 @@ export async function runCatalogResearchPass({
 } = {}) {
   const outcome = { researched: 0, published: 0, stopped: null };
   if (!catalogResearchConfigured(env)) return { ...outcome, stopped: "not_configured" };
+  if (!backgroundJobEnabled(env, "CATALOG_RESEARCH_ENABLED")) return { ...outcome, stopped: "disabled" };
   const control = readCatalogKnowledgeControl(database, { env, at: now() });
   if (control?.mode === "paused") return { ...outcome, stopped: "paused" };
   pruneSpendReceipts(database, now());
   const cap = catalogResearchDailyBudgetMicroUsd(env);
+  const monthlyCap = catalogResearchMonthlyBudgetMicroUsd(env);
   const model = catalogResearchModel(env);
   for (let index = 0; index < maxItems; index += 1) {
     if (signal?.aborted) return { ...outcome, stopped: "aborted" };
@@ -274,32 +341,63 @@ export async function runCatalogResearchPass({
     const unresolved = unresolvedSpend(database, budget.utcDay);
     if (unresolved) return { ...outcome, stopped: unresolved === "uncertain" ? "cost_unconfirmed" : "reservation_pending" };
     if (budget.spentMicroUsd + RUN_RESERVE_MICRO_USD > cap) return { ...outcome, stopped: "daily_budget" };
-    // Alternate artists and venues so neither backlog starves the other.
-    const order = index % 2 === 0 ? ["artist", "venue"] : ["venue", "artist"];
-    let subject = null;
-    for (const type of order) {
-      subject = type === "artist" ? nextArtistResearchSubject(database, { at }) : nextVenueResearchSubject(database, { at });
-      if (subject) break;
-    }
+    const monthLeft = monthlyCap - monthSpendMicroUsd(database, at);
+    if (monthLeft < RUN_RESERVE_MICRO_USD) return { ...outcome, stopped: "monthly_budget" };
+    const ceilingLeft = claudeCeilingLeftMicroUsd(database, { env, at });
+    if (ceilingLeft < RUN_RESERVE_MICRO_USD) return { ...outcome, stopped: "claude_monthly_ceiling" };
+    // Artist-only by owner policy. Legacy venue turns and empty artist queues
+    // must never spend this allowance researching a venue or an event.
+    const priorityKey = "catalog-research:v1:search-turn:artist";
+    const prioritizeSearch = database.prepare("SELECT value FROM app_meta WHERE key=?")
+      .get(priorityKey)?.value !== "regular";
+    const subject = nextArtistResearchSubject(database, { at, env, prioritizeSearch });
     if (!subject) return { ...outcome, stopped: "nothing_due" };
     const token = claimSubject(database, subject, at);
     if (!token) continue;
-    reserveSpend(database, token, budget, at);
+    database.prepare("INSERT INTO app_meta(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+      .run(priorityKey, prioritizeSearch ? "regular" : "priority");
+    const reserveRequest = (receiptToken, reserveMicroUsd, countRun) => {
+      const requestAt = now();
+      return admitClaudeSpend(database, { env, at: requestAt, reserveMicroUsd,
+        dailyCapMicroUsd: cap, monthlyCapMicroUsd: monthlyCap,
+        readDailySpendMicroUsd: () => readBudget(database, requestAt).spentMicroUsd,
+        readMonthlySpendMicroUsd: () => monthSpendMicroUsd(database, requestAt),
+        reserve: () => {
+          reserveSpend(database, receiptToken, readBudget(database, requestAt), requestAt, reserveMicroUsd, countRun);
+          return receiptToken;
+        },
+      });
+    };
+    const initialAdmission = reserveRequest(token, RUN_RESERVE_MICRO_USD, true);
+    if (!initialAdmission.ok) return { ...outcome, stopped: initialAdmission.reason };
     let result;
     try {
       result = await research(subject, { apiKey: String(env.ANTHROPIC_API_KEY).trim(), model, fetchImpl, signal,
-        budgetMicroUsd: Math.max(0, cap - budget.spentMicroUsd), requestReserveMicroUsd: RUN_RESERVE_MICRO_USD });
+        budgetMicroUsd: Math.max(0, Math.min(cap - budget.spentMicroUsd, monthLeft, ceilingLeft)),
+        requestReserveMicroUsd: RUN_RESERVE_MICRO_USD,
+        admitRequest: ({ turn, reserveMicroUsd }) => {
+          if (turn === 0) return token;
+          const admission = reserveRequest(randomUUID(), reserveMicroUsd, false);
+          if (!admission.ok) throw Object.assign(new Error("Research allowance cannot cover another request."), {
+            code: "research_budget", budgetReason: admission.reason, accountingUncertain: false,
+          });
+          return admission.value;
+        },
+        settleRequest: (receipt, settlement) => settleSpend(database, receipt, { ...settlement, at: now() }),
+      });
     } catch (error) {
       const code = typeof error?.code === "string" ? error.code : "research_error";
-      const uncertain = error?.accountingUncertain !== false || !Number.isFinite(error?.costMicroUsd);
+      const uncertain = !claudeRequestDefinitelyRejected(error)
+        && (error?.accountingUncertain !== false || !Number.isFinite(error?.costMicroUsd));
       settleSpend(database, token, { costMicroUsd: error?.costMicroUsd, uncertain, at: now() });
       finishSubject(database, subject, token, { status: "failed", reason: code, costMicroUsd: Math.max(0, Number(error?.costMicroUsd) || 0), at: now() });
       budget = readBudget(database, now());
       saveBudget(database, { ...budget, lastRunAt: now(), lastError: { code, at: now() } });
-      // A bad key, a rate limit or an overloaded API will not clear up by
-      // trying the next page straight away.
-      if (["research_auth", "research_rate_limited", "research_overloaded", "research_unavailable", "research_budget"].includes(code) || signal?.aborted) {
-        return { ...outcome, stopped: code };
+      // A bad key, a rejected request, a rate limit or an overloaded API will
+      // not clear up by trying the next page straight away.
+      if (["research_auth", "research_rejected", "research_rate_limited", "research_overloaded", "research_unavailable", "research_budget"].includes(code) || signal?.aborted) {
+        const failure = anthropicErrorSummary(error);
+        return { ...outcome, stopped: code, ...(failure ? { failure } : {}) };
       }
       if (uncertain) return { ...outcome, stopped: "cost_unconfirmed" };
       continue;
@@ -382,8 +480,11 @@ export function collectCatalogResearchStatus(database, { env = process.env, at =
   return {
     configured: catalogResearchConfigured(env),
     enabled: catalogResearchConfigured(env) && backgroundJobEnabled(env, "CATALOG_RESEARCH_ENABLED"),
+    entityTypes: ["artist"],
     model: catalogResearchModel(env),
     dailyBudgetUsd: catalogResearchDailyBudgetMicroUsd(env) / 1_000_000,
+    monthlyBudgetUsd: catalogResearchMonthlyBudgetMicroUsd(env) / 1_000_000,
+    monthSpentUsd: Math.round(monthSpendMicroUsd(database, at) / 10_000) / 100,
     accountingState: unresolvedSpend(database, budget.utcDay),
     today: {
       spentUsd: Math.round(budget.spentMicroUsd / 10_000) / 100,
@@ -400,14 +501,16 @@ export function collectCatalogResearchStatus(database, { env = process.env, at =
 export function startCatalogResearchScheduler({ database, env = process.env, now = Date.now, fetchImpl = globalThis.fetch } = {}) {
   ensureCatalogResearchSchema(database);
   if (!catalogResearchConfigured(env) || !backgroundJobEnabled(env, "CATALOG_RESEARCH_ENABLED")) return null;
+  // Non-secret startup evidence verifies the effective scope and runtime caps.
+  console.log(`[catalog-research] on: scope=artist dailyUsd=${catalogResearchDailyBudgetMicroUsd(env) / 1_000_000} monthlyUsd=${catalogResearchMonthlyBudgetMicroUsd(env) / 1_000_000} sharedMonthlyUsd=${anthropicMonthlyCeilingMicroUsd(env) / 1_000_000}`);
   // A lease left by a stopped process expires by itself after LEASE_MS.
   return startPeriodicJob({
     initialDelayMs: 3 * MINUTE,
     intervalMs: 10 * MINUTE,
     run: async ({ signal }) => {
       const result = await runCatalogResearchPass({ database, env, now, fetchImpl, signal });
-      if (result.researched || (result.stopped && !["nothing_due", "daily_budget", "paused"].includes(result.stopped))) {
-        console.log(`[catalog-research] researched=${result.researched} published=${result.published} stopped=${result.stopped || "pass_done"}`);
+      if (result.researched || (result.stopped && !["nothing_due", "daily_budget", "monthly_budget", "paused"].includes(result.stopped))) {
+        console.log(`[catalog-research] researched=${result.researched} published=${result.published} stopped=${result.stopped || "pass_done"}${result.failure ? ` ${result.failure}` : ""}`);
       }
       return true;
     },

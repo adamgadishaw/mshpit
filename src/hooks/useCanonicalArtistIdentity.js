@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   canonicalArtistIdentity,
   canonicalArtistIdentityScope,
 } from "../domain/canonicalArtistIdentity.mjs";
 import { useStore } from "../store";
+import { createArtistLookupController } from "../features/artistSearch/artistLookupController.mjs";
 
 const projectedResolution = (current, scope, immediate, enabled) => {
   if (current?.scope === scope) return current;
@@ -23,12 +24,18 @@ export default function useCanonicalArtistIdentity({
   artistKey = null,
   enabled = true,
 } = {}) {
-  const { remoteArtistMeta, resolveArtist } = useStore();
+  const { session, remoteArtistMeta, resolveArtist } = useStore();
+  const accountScope = session?.id || "guest";
+  const lookup = useMemo(() => createArtistLookupController(), [accountScope]);
+  const lookupRef = useRef(lookup);
+  lookupRef.current = lookup;
   const resolverRef = useRef(resolveArtist);
   const cachedReaderRef = useRef(remoteArtistMeta);
   resolverRef.current = resolveArtist;
   cachedReaderRef.current = remoteArtistMeta;
-  const scope = canonicalArtistIdentityScope({ artistName, artistKey });
+  const scope = JSON.stringify([accountScope, canonicalArtistIdentityScope({ artistName, artistKey })]);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const immediate = canonicalArtistIdentity({
     artistName,
     artistKey,
@@ -36,9 +43,19 @@ export default function useCanonicalArtistIdentity({
   });
   const [resolution, setResolution] = useState(null);
   const [revision, setRevision] = useState(0);
+  const [, refreshCooldown] = useState(0);
+  const retryRequested = useRef(false);
   const sequence = useRef(0);
+  const retryAt = lookup.retryAt(accountScope);
+  useEffect(() => () => lookup.reset(), [lookup]);
+  useEffect(() => {
+    if (!retryAt) return undefined;
+    const timer = setTimeout(() => refreshCooldown((value) => value + 1), Math.max(1, retryAt - Date.now()));
+    return () => clearTimeout(timer);
+  }, [retryAt, lookup]);
 
   useEffect(() => {
+    retryRequested.current = false;
     const ticket = ++sequence.current;
     const cached = canonicalArtistIdentity({
       artistName,
@@ -53,31 +70,54 @@ export default function useCanonicalArtistIdentity({
       setResolution({ scope, status: "ready", identity: cached });
       return undefined;
     }
-    let cancelled = false;
+    const request = lookup.begin(accountScope, cached.artistName);
+    if (!request) {
+      setResolution({ scope, status: "unavailable", identity: cached });
+      return undefined;
+    }
+    const isCurrent = () => lookupRef.current === lookup && scopeRef.current === scope
+      && sequence.current === ticket && lookup.isCurrent(request);
     setResolution({ scope, status: "checking", identity: cached });
-    Promise.resolve(resolverRef.current?.(cached.artistName))
+    Promise.resolve().then(() => {
+      if (!isCurrent()) return null;
+      return resolverRef.current?.(cached.artistName, { signal: request.controller.signal, throwOnError: true });
+    })
       .then((catalogArtist) => {
-        if (cancelled || sequence.current !== ticket) return;
+        if (!isCurrent()) return;
         const identity = canonicalArtistIdentity({ artistName: cached.artistName, catalogArtist });
         setResolution({
           scope,
           status: identity.artistKey ? "ready" : "unavailable",
           identity,
+          missing: !identity.artistKey,
         });
       })
-      .catch(() => {
-        if (cancelled || sequence.current !== ticket) return;
-        setResolution({ scope, status: "unavailable", identity: cached });
+      .catch((error) => {
+        if (!isCurrent()) return;
+        lookup.fail(request, error);
+        setResolution({ scope, status: "unavailable", identity: cached, error });
+      })
+      .finally(() => {
+        lookup.finish(request);
       });
     return () => {
-      cancelled = true;
+      request.controller.abort();
+      lookup.finish(request);
     };
-  }, [artistKey, artistName, enabled, revision, scope]);
+  }, [artistKey, artistName, enabled, revision, scope, lookup, accountScope, immediate.artistKey]);
 
   const projected = projectedResolution(resolution, scope, immediate, enabled);
   return {
     ...projected.identity,
     status: projected.status,
-    retry: useCallback(() => setRevision((current) => current + 1), []),
+    error: projected.error || null,
+    missing: projected.missing === true,
+    retryAt,
+    retryDisabled: projected.status === "checking" || retryAt > Date.now(),
+    retry: useCallback(() => {
+      if (lookup.current() || lookup.retryAt(accountScope) > Date.now() || retryRequested.current) return;
+      retryRequested.current = true;
+      setRevision((current) => current + 1);
+    }, [lookup, accountScope]),
   };
 }

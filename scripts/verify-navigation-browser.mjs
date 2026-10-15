@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { venueHydrationAlias, venueHydrationPath, venueHydrationResponse, venueHydrationText } from "./venue-hydration-fixture.mjs";
 
 const require = createRequire(import.meta.url);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -21,6 +22,14 @@ export const navigationUser = Object.freeze({
 });
 export const postPath = "/post/p_navigation_fixture";
 export const eventPath = "/event/tm_navigation_fixture";
+export const cancelledEventFixture = Object.freeze({
+  id: "tm_navigation_fixture", kind: "event", path: eventPath, publicEventSnapshot: true,
+  name: "Fixture Artist Live", artist: "Fixture Artist", artistKey: "fixture-artist", venue: "Fixture Venue", city: "Toronto",
+  date: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10),
+  startDateTime: new Date(Date.now() + 2 * 86400000).toISOString(),
+  eventStatus: "cancelled", ticketUrl: "https://www.ticketmaster.ca/event/cancelled-fixture",
+});
+const cancelledShowPath = `/api/shows/${encodeURIComponent(`fixture artist|fixture venue|${cancelledEventFixture.date}`)}`;
 export const artistPath = "/artist/fixture-artist";
 export const navigationArtist = Object.freeze({
   name: "Fixture Artist", key: "fixture-artist", publicSlug: "fixture-artist",
@@ -61,7 +70,11 @@ export const serverCollectionPaths = Object.freeze([
 export const clientCollectionPaths = Object.freeze(["/artists", "/events", "/venues"]);
 export const navigationCases = Object.freeze([
   ...[390, 1280].flatMap(width => [
+    ...[venueHydrationAlias, venueHydrationPath].map(path => ({ name: `cold-guest-venue-${path.split("/").at(-1)}-${width}`, kind: "venue-hydration", path, width })),
     ...[postPath, eventPath].map(path => ({ name: `deep-link-${width < 620 ? "home" : "intro"}-${path.startsWith("/post") ? "post" : "event"}-${width}`, kind: "deep-link", path, width })),
+    ...["canonical-404", "stale-upcoming", "artist-fallback"].map(mode => ({
+      name: `cancelled-event-${mode}-${width}`, kind: "cancelled-event", mode, path: eventPath, width, member: mode === "stale-upcoming",
+    })),
     { name: `query-entry-tracking-${width}`, kind: "query-entry", path: `${eventPath}?utm_source=google&gclid=fixture-click`, queryIndexable: true, width },
     { name: `query-entry-functional-${width}`, kind: "query-entry", path: `${eventPath}?sort=recent`, queryIndexable: false, width },
     { name: `query-entry-directory-${width}`, kind: "query-entry", path: "/events?sort=recent", queryIndexable: false, width },
@@ -104,9 +117,21 @@ function injectQueryMetadataFixture(html, url) {
     .replace("</head>", head + "</head>");
 }
 
-export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, discoverArtwork = false, artistLookupTransient = false, artistIdentityPending = false } = {}) {
+export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, discoverArtwork = false, artistLookupTransient = false, artistIdentityPending = false, cancelledEvent = false, venueHydration = false, after = null } = {}) {
   if (pathname === "/api/client-errors" && method === "POST") return { ok: true };
   assert.equal(method, "GET", `Navigation must not mutate data: ${method} ${pathname}`);
+  if (venueHydration) {
+    const result = venueHydrationResponse(pathname, { resolvedPath, after });
+    if (result) return result;
+  }
+  if (cancelledEvent && pathname === "/api/resolve" && resolvedPath === eventPath) {
+    return { entity: { ...cancelledEventFixture, artistIdentityPending } };
+  }
+  if (cancelledEvent && pathname === cancelledShowPath) {
+    return { show: { id: `show_${"a".repeat(64)}`, canonicalKey: "ticketmaster:navigation-fixture", lifecycle: "upcoming",
+      artist: "Fixture Artist", artistKey: "fixture-artist", venue: "Fixture Venue", date: cancelledEventFixture.date,
+      startsAt: Date.parse(cancelledEventFixture.startDateTime), provider: { name: "ticketmaster", eventId: "navigation-fixture", backed: true } } };
+  }
   if (discoverShow) {
     const event = { ...discoverArtistEvent, artistKey: artistIdentityPending ? null : discoverArtistEvent.artistKey, artistIdentityPending,
       ...(discoverArtwork ? { eventImage: discoverEventArtwork } : {}) };
@@ -126,6 +151,7 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
       schedule: { items: [discoverArtistEvent], total: 1, hasMore: false, nextCursor: null, legacy: false, coverage: { status: "fresh" } },
     };
   }
+  if (pathname.startsWith("/api/catalog-text/")) return { text: null };
   if (pathname === "/api/me") return { user: member ? navigationUser : null };
   if (pathname === "/api/page-head") {
     assert.match(resolvedPath, /^\/[a-zA-Z0-9_/-]*$/, "Fixture metadata paths must be inert local paths.");
@@ -148,6 +174,11 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   } };
   if (pathname === "/api/posts/p_navigation_fixture/comments") return { comments: [] };
   if (pathname === "/api/media/reactions") return { reactions: {} };
+  if (pathname === "/api/news-desk/stories") return { stories: [], nextCursor: null };
+  if (pathname === "/api/news-desk/live") return { events: [] };
+  if (pathname === "/api/me/seen-count") return { count: 1 };
+  if (pathname === "/api/lineup/suggestions") return { suggestions: [] };
+  if (pathname === "/api/artists/sets") return { summary: {}, sets: [], openedFor: [], festivals: [] };
   if (pathname === "/api/discovery/sidebar") return { upcomingEvents: [], suggestedUsers: [], topArtists: [], trendingVenues: [], popularLounges: [], landingMedia: [], catalogTotals: { artists: 40, venues: 80 } };
   if (pathname === "/api/tourdates") return { tourDates: [] };
   if (pathname === "/api/discover/overview") return {
@@ -314,6 +345,9 @@ async function runCase(browser, origin, item) {
       if (item.kind === "artist-lookup-recovery"
         && message.location().url.startsWith(origin + "/api/artists/resolve?")
         && /Failed to load resource:.*502/.test(message.text())) state.expectedLookupErrors += 1;
+      else if (item.kind === "cancelled-event" && item.mode !== "stale-upcoming"
+        && message.location().url === origin + cancelledShowPath
+        && /Failed to load resource:.*404/.test(message.text())) state.expectedLookupErrors += 1;
       else state.consoleErrors.push(message.text());
     });
   });
@@ -330,6 +364,10 @@ async function runCase(browser, origin, item) {
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       state.calls.push({ path: url.pathname, method: request.method(), query: url.search });
       if (url.pathname === "/api/client-errors") state.reports.push(request.postDataJSON());
+      if (item.kind === "cancelled-event" && item.mode !== "stale-upcoming" && url.pathname === cancelledShowPath) {
+        assert.equal(request.method(), "GET");
+        return await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "Show unavailable", code: "NOT_FOUND" }) });
+      }
       if (item.kind === "artist-lookup-recovery" && url.pathname === "/api/analytics/guest-search") {
         assert.equal(request.method(), "POST");
         const payload = request.postDataJSON();
@@ -359,7 +397,9 @@ async function runCase(browser, origin, item) {
         state.lookupAttempts += 1;
       }
       const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist", discoverShow, discoverArtwork: item.kind === "discover-event-back",
-        artistIdentityPending: item.kind === "discover-show-artist-conflict" && !state.identityConfirmed,
+        venueHydration: item.kind === "venue-hydration", after: url.searchParams.get("after"),
+        cancelledEvent: item.kind === "cancelled-event",
+        artistIdentityPending: (item.kind === "discover-show-artist-conflict" && !state.identityConfirmed) || (item.kind === "cancelled-event" && item.mode === "artist-fallback"),
         artistLookupTransient: item.kind === "discover-show-artist-recovery" && !state.catalogRepaired });
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
     } catch (error) {
@@ -380,7 +420,54 @@ async function runCase(browser, origin, item) {
       await page.goto(origin + "/", { waitUntil: "networkidle" }); await landing(page);
     }
     await page.goto(origin + start, { waitUntil: item.kind === "delayed" ? "domcontentloaded" : "networkidle", timeout: timeoutMs });
-    if (item.kind === "deep-link") {
+    if (item.kind === "venue-hydration") {
+      const assertVenue = async () => {
+        await page.getByRole("heading", { name: "Lee's Palace", exact: true }).waitFor();
+        await assertPath(page, venueHydrationPath);
+        await page.getByText("Toronto, Ontario, Canada", { exact: true }).last().waitFor();
+        await page.getByText("529 Bloor Street West · M5S 1Y5", { exact: true }).waitFor();
+        await page.getByText(venueHydrationText, { exact: true }).waitFor();
+        // Concert cards show the artist; the distinct event name stays in the snapshot.
+        await page.getByText("Fixture Band 1", { exact: true }).waitFor();
+        assert.equal(await page.getByRole("link", { name: "Open event details for Fixture Band 1", exact: true }).getAttribute("href"), "/event/venue-hydration-1");
+        await page.getByText("UPCOMING PREVIEW", { exact: true }).waitFor();
+        assert.equal(await page.getByText("No announced shows yet", { exact: true }).count(), 0);
+      };
+      await assertVenue();
+      await page.getByRole("tab", { name: "Shows venue page section", exact: true }).click();
+      await page.getByRole("button", { name: "Show 2 more upcoming shows. 2 remaining.", exact: true }).click();
+      await page.getByText("Fixture Band 8", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Next upcoming shows", exact: true }).click();
+      await page.getByText("Fixture Band 9", { exact: true }).waitFor();
+      assert.equal(await page.getByRole("link", { name: "Open event details for Fixture Band 9", exact: true }).getAttribute("href"), "/event/venue-hydration-9");
+      assert.equal(await page.getByText("Fixture Band 1", { exact: true }).count(), 0, "Paging replaces the bounded window");
+      await page.getByText("UPCOMING PREVIEW", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "First upcoming shows", exact: true }).click();
+      await page.getByText("Fixture Band 1", { exact: true }).waitFor();
+      assert.equal(await page.getByText("Fixture Band 9", { exact: true }).count(), 0, "Returning to the first page replaces the next window");
+      await page.reload({ waitUntil: "networkidle" }); await assertVenue();
+      assert.equal(state.calls.some(call => call.path.startsWith("/api/feed")), false);
+      assert.ok(state.calls.some(call => call.path === "/api/venue-snapshot" && call.query.includes("after=fixture-next")));
+      await snapshot("cold guest venue canonical identity, public facts and paging");
+    } else if (item.kind === "cancelled-event") {
+      const assertCancelled = async () => {
+        await page.getByText("THIS SHOW WAS CANCELLED", { exact: true }).waitFor();
+        if (item.mode !== "artist-fallback") {
+          await page.getByRole("button", { name: "Open this show's Lounge, 0 messages", exact: true }).waitFor();
+          assert.ok(state.calls.some(call => call.path === cancelledShowPath), "Exercise the real canonical read before checking presentation");
+        }
+        await assertPath(page, eventPath);
+        assert.equal(await page.getByRole("button", { name: "Open Fixture Venue's venue page", exact: true }).first().isEnabled(), true);
+        assert.equal(await page.getByRole("link", { name: /Get tickets for/ }).count(), 0);
+        assert.equal(await page.getByRole("button", { name: /Add this show to Going|Mark as going/i }).count(), 0);
+        assert.equal(await page.getByRole("radio", { name: "Going", exact: true }).count(), 0);
+        assert.doesNotMatch(await page.locator("body").innerText(), /Upcoming concert|until showtime|until verified doors|until event access|This show is available|available tickets|I'm going/);
+        assert.equal(state.calls.some(call => call.method !== "GET" && call.path !== "/api/client-errors"), false, "Cancellation display must not mutate attendance or event data");
+      };
+      await assertCancelled(); await snapshot("cancelled event entry");
+      await page.reload({ waitUntil: "networkidle" }); await assertCancelled();
+      await snapshot("cancelled event reload");
+    } else if (item.kind === "deep-link") {
       await visiblePage(page, start); await assertPath(page, start); await assertPageIdentity(page, start); await snapshot("entry");
       await intro(page, item.width); await landing(page); await assertPath(page, "/"); await assertPageIdentity(page, "/"); await snapshot("intro");
       await page.reload({ waitUntil: "networkidle" }); await landing(page); await assertPath(page, "/"); await snapshot("intro reload");
@@ -533,13 +620,15 @@ async function runCase(browser, origin, item) {
       await snapshot("show detail artist link");
       await openArtist.click();
       if (item.kind === "discover-show-artist-recovery") {
-        const unavailable = page.getByText("This artist or profile could not be opened.", { exact: true });
+        const unavailable = page.getByText("This artist or profile does not have an available page yet.", { exact: true });
         await unavailable.waitFor();
         await assertPath(page, discoverArtistEventPath);
         assert.equal(state.lookupAttempts, 1, "A transient provider preview must not trigger automatic retries or a fabricated page.");
         assert.equal(state.calls.some(call => call.path === "/api/artists/imran%20khan/profile"), false);
         await snapshot("preview-only artist stays on show");
         state.catalogRepaired = true;
+        assert.equal(await page.getByRole("button", { name: "Try again", exact: true }).last().isEnabled(), true,
+          "A valid preview without a stored page must allow manual retry without a provider cooldown.");
         await page.getByRole("button", { name: "Try again", exact: true }).last().click();
         await unavailable.waitFor({ state: "hidden" });
       }
@@ -548,7 +637,7 @@ async function runCase(browser, origin, item) {
       await assertPageIdentity(page, discoverShowArtistPath);
       await waitFor(() => state.calls.some(call => call.path === "/api/artists/imran%20khan/profile"), "The show artist must hydrate its local profile.");
       assert.equal(state.lookupAttempts, item.kind === "discover-show-artist-recovery" ? 2 : 1);
-      assert.equal(await page.getByText("This artist or profile could not be opened.", { exact: true }).count(), 0);
+      assert.equal(await page.getByText("This artist or profile does not have an available page yet.", { exact: true }).count(), 0);
       assert.equal(await page.getByTestId("public-route-error").count(), 0);
       await snapshot("stored artist opened from show without reloading");
       await page.goBack({ waitUntil: "networkidle" });
@@ -706,6 +795,11 @@ async function runCase(browser, origin, item) {
   } catch (error) {
     failure = error.message;
     await snapshot("failure").catch(() => {});
+    if (item.kind === "venue-hydration" && !state.member) {
+      // Only this synthetic guest document's visible text; no storage, cookies or HTML.
+      state.venueFailureText = await page.evaluate(expectedOrigin => location.origin === expectedOrigin
+        ? (document.body?.innerText || "").slice(0, 6000) : "Outside fixture origin", origin).catch(() => "Page unavailable");
+    }
   } finally {
     state.releaseResolve?.();
     state.releaseLookup?.();

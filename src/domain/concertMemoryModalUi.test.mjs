@@ -58,10 +58,10 @@ test("the memory sheet shows the owner post, full ratings, and manually browsed 
 
 test("each exact show has one lifecycle-spanning Lounge and nearby maps are labeled plainly", () => {
   assert.match(lounge, /const key = concertKey\(log\)/);
-  assert.match(lounge, /One room for this exact show — before, during, and after/);
+  assert.match(lounge, /One room for this exact show: before, during, and after/);
   assert.match(lounge, /This is the only Lounge for this show/);
   assert.doesNotMatch(lounge, /afterparty/i);
-  assert.match(show, /One Lounge for this exact show — available before, during, and until 24 hours after doors open/);
+  assert.match(show, /One Lounge for this exact show, open before, during, and until 24 hours after doors open/);
   assert.match(lounge, /enabled: !!key && entered && loungeOpen/);
   assert.match(lounge, /This show's Lounge has closed/);
   assert.match(lounge, /Continue in the artist Fan Club/);

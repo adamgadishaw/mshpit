@@ -1,4 +1,5 @@
 import { useContext, useMemo, useState } from "react";
+import SupportingActsLine from "./SupportingActsLine";
 import { View, Text, StyleSheet, Pressable, Alert, Linking, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, font, glow, mono, radius, shadow, roleColor, space } from "../theme";
@@ -14,6 +15,7 @@ import PostMediaGrid from "./PostMediaGrid";
 import ConvertingClipNotice from "./ConvertingClipNotice";
 import SongAttachment from "./SongAttachment";
 import { useStore } from "../store";
+import { RepostButton, RepostAttribution } from "./SocialReactionButtons";
 import { BadgeRow } from "./Badge";
 import { formatDate, relativeTime } from "../domain/dates.mjs";
 import { mediaDisplayItems } from "../domain/postMediaDisplay.mjs";
@@ -191,7 +193,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
   // Comments are public post navigation, never a fallback to artist/show detail.
   // Leave the callback absent when unavailable so the canonical web href works.
   const openComments = onComment || onOpenPost ? () => (onComment || onOpenPost)(log) : undefined;
-  const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost, refreshFeed } = useStore();
+  const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost, refreshFeed, setPostRepost } = useStore();
   // The server lists converting clips only to the author; check the id too so
   // a cached card can never show it to someone else on a shared device.
   const convertingClips = Array.isArray(log.convertingMedia) && session?.id && log.userId === session.id
@@ -439,6 +441,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />
 
         <View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
+          <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
           <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} palette={campaignTreatment} />
           <Pressable style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={pressLike} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
             <Icon name="heart" size={18} color={campaignPresentation ? (liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor) : liked ? colors.magenta : colors.textDim} filled={liked} />
@@ -457,6 +460,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         </View>
 
         {showComments && <CommentPreview log={log} onOpen={openComments} palette={campaignTreatment} />}
+        <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
         </View>
       </View>
     );
@@ -464,6 +468,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 
   return (
     <View style={styles.card}>
+      <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
       {/* who + score */}
       <View style={styles.header}>
         <Avatar user={author} size={38} priority={avatarPriority} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
@@ -502,7 +507,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           </View>
           <View style={styles.performanceCardBody}>
             <View style={styles.performanceTopline}>
-              <Text style={styles.performanceEyebrow}>{isOnlineReview ? "ONLINE CONCERT" : titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
+              <Text style={styles.performanceEyebrow}>{isOnlineReview ? "ONLINE CONCERT" : performance.festival ? "FESTIVAL" : titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
               <Text style={styles.performanceArchiveMark}>{isOnlineReview ? "MSHPIT / ONLINE REVIEW" : "MSHPIT / LIVE MEMORY"}</Text>
             </View>
             <Text style={styles.performanceTitle} numberOfLines={3}>
@@ -528,10 +533,11 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
                   ) : null}
                   {!!log.venue && <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.performanceVenue}>{log.venue}</PublicTextLink>}
                   {!!log.city && <Text style={styles.dim}>{log.venue ? " · " : ""}<PublicTextLink href={cityHref} onNavigate={cityIdentity && onOpenCity ? () => onOpenCity(cityIdentity) : undefined} style={styles.dim}>{log.city}</PublicTextLink></Text>}
-                  {!!log.date && <Text style={styles.performanceDate}> · {formatDate(log.date, log.date)}</Text>}
+                  {!!log.date && <Text style={styles.performanceDate}> · {formatDate(log.date, log.date)}{performance.festival && log.endDate && log.endDate > log.date ? ` to ${formatDate(log.endDate, log.endDate)}` : ""}</Text>}
                 </Text>
                 {!!log.eventAddress && <Text selectable style={styles.seenTxt} numberOfLines={2}>Event address: {log.eventAddress}</Text>}
                 {log.seen > 1 ? <Text style={styles.seenTxt}>{ordinal(log.seen)} time in the pit</Text> : null}
+                <SupportingActsLine post={log} onOpenArtist={onOpenArtist} />
               </>
             )}
           </View>
@@ -665,6 +671,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 
       {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
       <View style={styles.footer}>
+        <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
         <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
         <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={pressLike} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />

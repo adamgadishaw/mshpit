@@ -78,7 +78,7 @@
   },
   "legacyApi": {
     "file": "server/api.js",
-    "maxInlineRoutes": 158,
+    "maxInlineRoutes": 156,
     "allowedInlineRoutes": [
       "DELETE /api/admin/catalog/seed",
       "DELETE /api/admin/email/templates/:key",
@@ -153,8 +153,6 @@
       "GET /api/unsubscribe",
       "GET /api/users/:id",
       "GET /api/users/:id/badges",
-      "GET /api/users/:id/followers",
-      "GET /api/users/:id/following",
       "GET /api/users/:id/playlists",
       "GET /api/users/:id/posts",
       "GET /api/users/:id/rewards",
@@ -304,8 +302,8 @@
       "fingerprint": "ba56d867b8c79dc4fe90"
     },
     "src/components/PhotoViewer.jsx": {
-      "count": 3,
-      "fingerprint": "74663b09c290477a8de1"
+      "count": 1,
+      "fingerprint": "3823935d2ed6b2954d62"
     },
     "src/components/PlayerBar.jsx": {
       "count": 1,
@@ -372,8 +370,8 @@
       "fingerprint": "e2192c0aa04e191bbea1"
     },
     "src/screens/ClipsScreen.jsx": {
-      "count": 4,
-      "fingerprint": "a95a9c366db7b96909f2"
+      "count": 1,
+      "fingerprint": "10e1d9525b96c18492d0"
     },
     "src/screens/FanClubScreen.jsx": {
       "count": 1,

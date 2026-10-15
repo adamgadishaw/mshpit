@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, copyFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -116,6 +116,23 @@ function serviceError(code, message, { status = 422, cause } = {}) {
   return error;
 }
 
+// Diagnostics contain fixed predicates and bounded scalars only, never probe
+// JSON, metadata strings, paths, storage capabilities or decoder stderr.
+function requireVideoCheck(ok, predicate, expected, observed, generated = false) {
+  if (ok) return;
+  throw namedValidationError(generated ? "delivery_invalid" : "unsupported_media",
+    generated ? "delivery_probe" : "source_probe", predicate, expected, observed);
+}
+
+function namedValidationError(code, stage, predicate, expected, observed) {
+  const error = serviceError(code, "Clip validation failed.");
+  const scalar = (value) => typeof value === "boolean" ? value
+    : typeof value === "number" && Number.isFinite(value) ? value : null;
+  error.videoCheck = { stage, predicate,
+    expected: scalar(expected), observed: scalar(observed) };
+  return error;
+}
+
 function boundedInteger(value, { min, max, label }) {
   const number = Number(value);
   if (!Number.isSafeInteger(number) || number < min || number > max) {
@@ -224,17 +241,19 @@ export function runVerifierProcess(executable, args, {
       else resolve(value);
     };
     let abortError = null;
+    let outputError = null;
     const onAbort = () => {
       abortError = serviceError("job_cancelled", "Decoder job was cancelled.", { status: 503, cause: signal?.reason });
       killProcessGroup(child);
     };
     const collect = (list, chunk, stream) => {
+      if (settled || outputError) return;
       const bytes = Buffer.byteLength(chunk);
       if (stream === "stdout") stdoutBytes += bytes;
       else stderrBytes += bytes;
       if (stdoutBytes > outputLimit) {
         killProcessGroup(child);
-        finish(serviceError("decoder_output_invalid", "Decoder produced too much output.", { status: 503 }));
+        outputError = serviceError("decoder_output_invalid", "Decoder produced too much output.", { status: 503 });
         return;
       }
       list.push(Buffer.from(chunk));
@@ -256,7 +275,21 @@ export function runVerifierProcess(executable, args, {
         finish(abortError);
         return;
       }
-      if (code !== 0) {
+      if (outputError) { finish(outputError); return; }
+      if (code !== 0 || closeSignal) {
+        // A signal is not evidence of corrupt media. Allocation/thread failure
+        // can also exit normally. Windows TerminateProcess often reports only
+        // exit 1, so retain that ambiguous case as a transient process fault.
+        const resourceFailure = /cannot allocate memory|out of memory|resource temporarily unavailable|pthread_create.*failed|(?:error|failed) allocating|could not allocate memory/iu
+          .test(Buffer.concat(stderr).toString("utf8"));
+        if (closeSignal || code === null || code < 0 || code >= 128 || resourceFailure
+            || (process.platform === "win32" && code === 1)) {
+          const error = serviceError("decoder_process_failed", "Decoder process was interrupted or unavailable.", { status: 503 });
+          error.videoCheck = { stage: "decoder_process", predicate: "process_completed", expected: 0,
+            observed: Number.isSafeInteger(code) ? code : null };
+          finish(error);
+          return;
+        }
         finish(serviceError("decode_failed", "Media decode failed.", {
           status: 422,
           cause: new Error(`decoder exit=${String(code)} signal=${String(closeSignal || "none")}: ${stderrTail(stderr)}`),
@@ -508,12 +541,13 @@ async function probeVideo(filePath, config, {
   structural,
   useStructuralSampleCount = false,
   maxFrameRate = MEDIA_VIDEO_MAX_FRAME_RATE,
+  generated = false,
 }) {
   const result = await runProcess(config.ffprobe, [
     "-v", "error",
     "-protocol_whitelist", "file,pipe",
     "-f", "mov",
-    "-show_entries", "stream=codec_type,codec_name,codec_tag_string,profile,level,pix_fmt,width,height,coded_width,coded_height,field_order,sample_aspect_ratio,avg_frame_rate,r_frame_rate,nb_frames,channels,channel_layout,sample_rate:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation:format=format_name,duration:format_tags=major_brand,compatible_brands",
+    "-show_entries", "stream=codec_type,codec_name,codec_tag_string,profile,level,pix_fmt,width,height,coded_width,coded_height,field_order,sample_aspect_ratio,avg_frame_rate,r_frame_rate,nb_frames,channels,channel_layout,sample_rate,color_space,color_transfer,color_primaries,color_range,start_time,duration:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation:format=format_name,duration:format_tags=major_brand,compatible_brands",
     "-of", "json",
     filePath,
   ], { cwd: directory, signal });
@@ -592,7 +626,7 @@ async function probeVideo(filePath, config, {
   const noExplicitSourceAspect = !hasSampleAspectRatio
     || (quickTime && sampleAspectRatio === "N/A");
   const sourceAspectAccepted = sampleAspectRatio === "1:1"
-    || (hasStructuralEnvelope && noExplicitSourceAspect);
+    || (!generated && hasStructuralEnvelope && noExplicitSourceAspect);
   const estimatedSamples = Number.isFinite(avgFps) && Number.isFinite(realFps) && Number.isSafeInteger(durationMs)
     ? Math.ceil(Math.max(avgFps, realFps) * (durationMs / 1_000))
     : VIDEO_MAX_SAMPLES + 1;
@@ -612,28 +646,38 @@ async function probeVideo(filePath, config, {
       && Number.isSafeInteger(workHeight) && Number.isSafeInteger(workSamples)
     ? BigInt(workWidth) * BigInt(workHeight) * BigInt(workSamples)
     : VIDEO_MAX_CODED_PIXEL_SAMPLES + 1n;
-  if (video.length !== 1 || (!h264 && !hevc) || !codecProfileValid
-      || video[0]?.field_order !== "progressive"
-      || !sourceAspectAccepted
-      || video[0]?.disposition?.attached_pic === 1
-      || !Number.isFinite(avgFps) || avgFps <= 0 || avgFps > maxFrameRate + 0.01
-      || !Number.isFinite(realFps) || realFps <= 0 || realFps > maxFrameRate + 0.01
-      || audio.length > 1 || audio.some((stream) => stream?.codec_name !== "aac" || stream?.codec_tag_string !== "mp4a")
-      || (audio.length && (audioProfile !== "LC"
-        || !new Set([1, 2]).has(Number(audio[0]?.channels))
-        || !new Set(["mono", "stereo"]).has(String(audio[0]?.channel_layout || ""))
-        || !Number.isInteger(sampleRate) || sampleRate < 8_000 || sampleRate > 48_000))
-      || !Number.isSafeInteger(codedWidth) || !Number.isSafeInteger(codedHeight)
-      || Math.min(widthValue, heightValue) > MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE
-      || !codedReportMatches
-      || (hasReportedSamples && !sourceCountMatches)
-      || workSamples > VIDEO_MAX_SAMPLES || estimatedCodedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES
-      || unknown.length
-      || discardedQuickTime.length > VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS
-      || !containerValid
-      || !Number.isSafeInteger(durationMs) || durationMs < 1 || durationMs > VIDEO_MAX_DURATION_MS) {
-    throw serviceError("unsupported_media", "Clip must be a bounded compatible MP4 or QuickTime MOV.");
-  }
+  const check = (ok, name, expected, observed) => requireVideoCheck(ok, name, expected, observed, generated);
+  check(video.length === 1, "video_track_count", 1, video.length);
+  check(new Set(["h264", "hevc"]).has(sourceCodec) && (!generated || sourceCodec === "h264"), "video_codec", true, false);
+  check(h264 || hevc, "video_codec_tag", true, false);
+  check((hevc && videoProfile === "Main 10" ? new Set(["yuv420p", "yuv420p10le"]) : new Set(["yuv420p"])).has(video[0]?.pix_fmt),
+    "pixel_format", true, false);
+  check(Number.isInteger(videoLevel) && videoLevel >= (hevc ? 30 : 10) && videoLevel <= (hevc ? 186 : 52),
+    "video_level", hevc ? 186 : 52, videoLevel);
+  check(codecProfileValid, "video_profile", true, false);
+  check(video[0]?.field_order === "progressive", "progressive", true, false);
+  check(sourceAspectAccepted, "square_pixels", true, false);
+  check(video[0]?.disposition?.attached_pic !== 1, "attached_picture", false, video[0]?.disposition?.attached_pic === 1);
+  check(Number.isFinite(avgFps) && avgFps > 0 && avgFps <= maxFrameRate + 0.01, "average_frame_rate", maxFrameRate, avgFps);
+  check(Number.isFinite(realFps) && realFps > 0 && realFps <= maxFrameRate + 0.01, "real_frame_rate", maxFrameRate, realFps);
+  check(audio.length <= 1, "audio_track_count", 1, audio.length);
+  check(audio.every((stream) => stream?.codec_name === "aac"), "audio_codec", true, false);
+  check(audio.every((stream) => stream?.codec_tag_string === "mp4a"), "audio_codec_tag", true, false);
+  check(!audio.length || audioProfile === "LC", "audio_profile", true, false);
+  check(!audio.length || new Set([1, 2]).has(Number(audio[0]?.channels)), "audio_channels", 2, Number(audio[0]?.channels));
+  check(!audio.length || new Set(["mono", "stereo"]).has(String(audio[0]?.channel_layout || "")), "audio_layout", true, false);
+  check(!audio.length || (Number.isInteger(sampleRate) && sampleRate >= 8_000 && sampleRate <= 48_000),
+    "audio_sample_rate", 48_000, sampleRate);
+  check(Number.isSafeInteger(codedWidth) && Number.isSafeInteger(codedHeight) && codedReportMatches, "coded_dimensions", true, false);
+  check(Math.min(widthValue, heightValue) <= MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE, "short_edge", MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE, Math.min(widthValue, heightValue));
+  check(!hasReportedSamples || sourceCountMatches, "source_frame_count", structural?.sampleCount, reportedSamples);
+  check(workSamples <= VIDEO_MAX_SAMPLES, "frame_work_limit", VIDEO_MAX_SAMPLES, workSamples);
+  check(estimatedCodedWork <= VIDEO_MAX_CODED_PIXEL_SAMPLES, "pixel_work_limit", Number(VIDEO_MAX_CODED_PIXEL_SAMPLES), Number(estimatedCodedWork));
+  check(!unknown.length && discardedQuickTime.length <= VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS, "extra_tracks", 0, unknown.length);
+  check(!!containerValid, "container_brands", true, false);
+  check(Number.isSafeInteger(durationMs) && durationMs >= 1 && durationMs <= VIDEO_MAX_DURATION_MS, "duration_limit", VIDEO_MAX_DURATION_MS, durationMs);
+  check(Number.isSafeInteger(widthValue) && widthValue >= 1 && widthValue <= VIDEO_MAX_EDGE
+    && Number.isSafeInteger(heightValue) && heightValue >= 1 && heightValue <= VIDEO_MAX_EDGE, "dimensions", VIDEO_MAX_EDGE, Math.max(widthValue, heightValue));
   const width = boundedInteger(video[0]?.width, { min: 1, max: VIDEO_MAX_EDGE, label: "Decoded width" });
   const height = boundedInteger(video[0]?.height, { min: 1, max: VIDEO_MAX_EDGE, label: "Decoded height" });
   const rotations = [
@@ -643,9 +687,15 @@ async function probeVideo(filePath, config, {
     .map((value) => ((Number(value) % 360) + 360) % 360);
   if (rotations.some((value) => ![0, 90, 180, 270].includes(value))
       || rotations.some((value) => value !== rotations[0])) {
-    throw serviceError("unsupported_media", "Clip rotation metadata is invalid.");
+    requireVideoCheck(false, "rotation_metadata", true, false, generated);
   }
   const rotation = rotations[0] || 0;
+  if (generated) {
+    check(rotation === 0, "rotation_cleared", 0, rotation);
+    check(Math.max(width, height) <= DELIVERY_MAX_WIDTH && Math.min(width, height) <= DELIVERY_MAX_HEIGHT,
+      "delivery_dimensions", DELIVERY_MAX_WIDTH, Math.max(width, height));
+    check(!isHdrVideo(video[0]), "sdr_transfer", true, false);
+  }
   return {
     width,
     height,
@@ -656,13 +706,59 @@ async function probeVideo(filePath, config, {
     frameRate: Math.max(avgFps, realFps),
     codec: hevc ? "hevc" : "h264",
     audioCodec: audio.length ? "aac" : "none",
+    ...probedColor(video[0]),
+    videoStart: Number(video[0]?.start_time),
+    audioStart: Number(audio[0]?.start_time),
+    videoDuration: Number(video[0]?.duration),
+    audioDuration: Number(audio[0]?.duration),
+    selectedDurationMs: selectedMediaDuration(video[0], audio[0]),
   };
+}
+
+function selectedMediaDuration(video, audio) {
+  const streams = [video, audio].filter(Boolean);
+  const durations = streams.map((stream) => Number(stream.duration));
+  if (!durations.every((value) => Number.isFinite(value) && value > 0)) return null;
+  if (streams.length === 1) return Math.round(durations[0] * 1_000);
+  const starts = streams.map((stream) => Number(stream.start_time));
+  if (!starts.every(Number.isFinite)) return null;
+  return Math.round((Math.max(...durations.map((duration, index) => duration + starts[index]))
+    - Math.min(...starts)) * 1_000);
+}
+
+function probedColor(stream) {
+  return { colorTransfer: String(stream?.color_transfer || ""), colorPrimaries: String(stream?.color_primaries || ""),
+    colorSpace: String(stream?.color_space || ""), colorRange: String(stream?.color_range || "") };
+}
+
+function isHdrVideo(video) {
+  return new Set(["smpte2084", "arib-std-b67"]).has(video?.colorTransfer || video?.color_transfer);
 }
 
 function probedFrameRate(value) {
   const match = /^([0-9]+)\/([1-9][0-9]*)$/.exec(String(value || ""));
   const rate = match ? Number(match[1]) / Number(match[2]) : Number.NaN;
   return Number.isFinite(rate) && rate > 0 ? rate : Number.NaN;
+}
+
+async function probeDelivery(filePath, config, options) {
+  try { return await probeVideo(filePath, config, { ...options, generated: true }); }
+  catch (error) {
+    if (error?.status !== 422 || error.code === "delivery_invalid") throw error;
+    const failure = serviceError("delivery_invalid", "Generated clip could not be validated.", { cause: error });
+    failure.videoCheck = { stage: "delivery_probe", predicate: "readable_metadata", expected: true, observed: false };
+    throw failure;
+  }
+}
+
+async function decodeDelivery(filePath, config, options) {
+  try { await decodeAllStreams(filePath, config, options); }
+  catch (error) {
+    if (error?.code !== "decode_failed") throw error;
+    const failure = serviceError("delivery_invalid", "Generated clip did not fully decode.", { cause: error });
+    failure.videoCheck = { stage: "delivery_decode", predicate: "full_decode", expected: true, observed: false };
+    throw failure;
+  }
 }
 
 // Reads any admitted container without the MP4-only structural proof. The
@@ -678,70 +774,87 @@ export async function probeUniversalVideo(filePath, contentType, config, { runPr
       "-v", "error",
       "-protocol_whitelist", "file,pipe",
       "-f", demuxer,
-      "-show_entries", "stream=index,codec_type,codec_name,width,height,field_order,sample_aspect_ratio,avg_frame_rate,r_frame_rate,nb_frames,duration,channels:stream_disposition=attached_pic:stream_tags=rotate:stream_side_data=rotation:format=duration",
+      "-show_entries", "stream=index,codec_type,codec_name,width,height,pix_fmt,field_order,sample_aspect_ratio,avg_frame_rate,r_frame_rate,nb_frames,duration,start_time,channels,color_space,color_transfer,color_primaries,color_range:stream_disposition=attached_pic,default:stream_tags=rotate:stream_side_data=rotation:format=duration",
       "-of", "json",
       filePath,
     ], { cwd: directory, signal });
   } catch (error) {
-    if (error?.code === "decode_failed") throw serviceError("unsupported_media", "Clip could not be read.", { cause: error });
+    if (error?.code === "decode_failed") requireVideoCheck(false, "readable_metadata", true, false);
     throw error;
   }
   let probe;
   try { probe = parseProbeJson(result.stdout, "Video"); }
-  catch (error) { throw serviceError("unsupported_media", "Clip could not be read.", { cause: error }); }
+  catch { requireVideoCheck(false, "readable_metadata", true, false); }
   const streams = Array.isArray(probe.streams) ? probe.streams : [];
   const video = streams.find((stream) => stream?.codec_type === "video"
     && stream?.disposition?.attached_pic !== 1
     && UNIVERSAL_VIDEO_CODECS.has(String(stream?.codec_name || "")));
-  const audio = streams.find((stream) => stream?.codec_type === "audio"
+  const playableAudio = streams.filter((stream) => stream?.codec_type === "audio"
     && UNIVERSAL_AUDIO_CODECS.has(String(stream?.codec_name || ""))
     && Number(stream?.channels) >= 1);
+  const audio = playableAudio.find((stream) => stream?.disposition?.default === 1) || playableAudio[0];
   const width = Number(video?.width);
   const height = Number(video?.height);
-  const seconds = [probe.format?.duration, video?.duration].map(Number).find((value) => Number.isFinite(value) && value > 0);
+  // Whole-container length remains conservative admission/work evidence. It
+  // is not the intended delivery timeline when unselected tracks extend it.
+  const resourceDurations = [probe.format?.duration, ...streams.map((stream) => stream?.duration)]
+    .map(Number).filter((value) => Number.isFinite(value) && value > 0);
+  const seconds = resourceDurations.length ? Math.max(...resourceDurations) : Number.NaN;
   // Browser recordings (MediaRecorder WebM) often store no length at all. The
   // conversion then runs within the job deadline and the converted copy's
   // measured length is checked against the same ten-minute limit.
-  const durationMs = Number.isFinite(Number(seconds)) ? Math.round(Number(seconds) * 1_000) : null;
-  const knownDuration = Number.isSafeInteger(durationMs) && durationMs > 0;
+  const resourceDurationMs = Number.isFinite(seconds) ? Math.round(seconds * 1_000) : null;
+  const knownDuration = Number.isSafeInteger(resourceDurationMs) && resourceDurationMs > 0;
+  const selectedDurationMs = selectedMediaDuration(video, audio);
+  const hasUnselectedTracks = streams.some((stream) => stream !== video && stream !== audio);
+  const durationMs = selectedDurationMs ?? (hasUnselectedTracks ? null : resourceDurationMs);
   // Variable-frame-rate recordings often report a timebase such as 1000/1 as
   // their rate. Only a believable rate is used; otherwise budget at 60 fps and
   // deliver at 30.
   const frames = /^[1-9][0-9]*$/.test(String(video?.nb_frames ?? "")) ? Number(video.nb_frames) : Number.NaN;
   const reportedRates = [probedFrameRate(video?.avg_frame_rate), probedFrameRate(video?.r_frame_rate),
-    Number.isSafeInteger(frames) && knownDuration ? frames / (durationMs / 1_000) : Number.NaN]
+    Number.isSafeInteger(frames) && knownDuration ? frames / (resourceDurationMs / 1_000) : Number.NaN]
     .filter((rate) => Number.isFinite(rate) && rate <= MEDIA_VIDEO_MAX_FRAME_RATE + 0.01);
   const sourceFrameRate = reportedRates.length ? Math.max(...reportedRates) : Number.NaN;
   const budgetFrameRate = Number.isFinite(sourceFrameRate) ? sourceFrameRate : MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE;
   const outputFrameRate = Number.isFinite(sourceFrameRate)
-    ? Math.max(1, Math.min(MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE, Math.round(sourceFrameRate)))
+    ? Math.max(1, Math.min(MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE, sourceFrameRate))
     : UNIVERSAL_DEFAULT_FRAME_RATE;
+  const outputFrameRateExpression = [video?.avg_frame_rate, video?.r_frame_rate]
+    .find((value) => probedFrameRate(value) === outputFrameRate) || String(outputFrameRate);
   const codedWidth = Math.ceil(width / 16) * 16;
   const codedHeight = Math.ceil(height / 16) * 16;
-  const samples = knownDuration ? Math.ceil(budgetFrameRate * (durationMs / 1_000)) : 0;
+  const samples = Math.max(Number.isSafeInteger(frames) ? frames : 0,
+    knownDuration ? Math.ceil(budgetFrameRate * (resourceDurationMs / 1_000)) : 0);
   const codedWork = Number.isSafeInteger(codedWidth) && Number.isSafeInteger(codedHeight)
     ? BigInt(codedWidth) * BigInt(codedHeight) * BigInt(samples)
     : VIDEO_MAX_CODED_PIXEL_SAMPLES + 1n;
-  if (!video
-      || !Number.isSafeInteger(width) || width < 2 || width > VIDEO_MAX_EDGE
-      || !Number.isSafeInteger(height) || height < 2 || height > VIDEO_MAX_EDGE
-      || Math.min(width, height) > MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE
-      || (knownDuration && durationMs > VIDEO_MAX_DURATION_MS)
-      || samples > VIDEO_MAX_SAMPLES || codedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES) {
-    throw serviceError("unsupported_media", "Clip is outside the supported size, length or format.");
-  }
+  requireVideoCheck(!!video, "decodable_video", true, false);
+  requireVideoCheck(Number.isSafeInteger(width) && width >= 2 && width <= VIDEO_MAX_EDGE
+    && Number.isSafeInteger(height) && height >= 2 && height <= VIDEO_MAX_EDGE,
+    "dimensions", VIDEO_MAX_EDGE, Math.max(width, height));
+  requireVideoCheck(Math.min(width, height) <= MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE,
+    "short_edge", MEDIA_VIDEO_SOURCE_MAX_SHORT_EDGE, Math.min(width, height));
+  requireVideoCheck(!knownDuration || resourceDurationMs <= VIDEO_MAX_DURATION_MS,
+    "duration_limit", VIDEO_MAX_DURATION_MS, resourceDurationMs);
+  requireVideoCheck(samples <= VIDEO_MAX_SAMPLES, "frame_work_limit", VIDEO_MAX_SAMPLES, samples);
+  requireVideoCheck(codedWork <= VIDEO_MAX_CODED_PIXEL_SAMPLES, "pixel_work_limit", Number(VIDEO_MAX_CODED_PIXEL_SAMPLES), Number(codedWork));
   const rotations = [
     video?.tags?.rotate,
     ...(Array.isArray(video?.side_data_list) ? video.side_data_list.map((item) => item?.rotation) : []),
   ].filter((value) => value !== undefined && value !== null && value !== "")
-    .map((value) => ((Math.round(Number(value)) % 360) + 360) % 360)
-    .filter((value) => [0, 90, 180, 270].includes(value));
+    .map((value) => ((Number(value) % 360) + 360) % 360);
+  requireVideoCheck(!rotations.some((value) => ![0, 90, 180, 270].includes(value) || value !== rotations[0]),
+    "rotation_metadata", true, false);
+  requireVideoCheck(!streams.some((stream) => stream?.codec_type === "audio") || !!audio, "decodable_audio", true, false);
   return {
     width,
     height,
     codedWidth,
     codedHeight,
-    durationMs: knownDuration ? durationMs : null,
+    durationMs,
+    selectedDurationMs,
+    resourceDurationMs: knownDuration ? resourceDurationMs : null,
     rotation: rotations[0] || 0,
     frameRate: Number.isFinite(sourceFrameRate) ? sourceFrameRate : UNIVERSAL_DEFAULT_FRAME_RATE,
     codec: String(video.codec_name),
@@ -753,6 +866,12 @@ export async function probeUniversalVideo(filePath, contentType, config, { runPr
     interlaced: !new Set(["progressive", "unknown", "", "undefined"]).has(String(video?.field_order ?? "")),
     sampleAspectRatio: String(video?.sample_aspect_ratio ?? ""),
     outputFrameRate,
+    outputFrameRateExpression,
+    ...probedColor(video),
+    videoStart: Number(video?.start_time),
+    audioStart: Number(audio?.start_time),
+    videoDuration: Number(video?.duration),
+    audioDuration: Number(audio?.duration),
   };
 }
 
@@ -790,6 +909,7 @@ async function decodeAllStreams(filePath, config, { runProcess, directory, signa
 
 export function videoDeliveryStrategy(video = {}) {
   return video?.codec === "h264"
+    && !isHdrVideo(video)
     && new Set(["aac", "none"]).has(video?.audioCodec)
     && Number(video?.rotation) === 0
     && (video?.frameRate === undefined
@@ -845,6 +965,7 @@ export function universalRemuxEligible(video = {}) {
     && Number.isSafeInteger(width) && Number.isSafeInteger(height)
     && Math.max(width, height) <= DELIVERY_MAX_WIDTH
     && Math.min(width, height) <= DELIVERY_MAX_HEIGHT
+    && !isHdrVideo(video)
     && SQUARE_OR_UNSET_ASPECT.has(String(video.sampleAspectRatio ?? ""));
 }
 
@@ -865,11 +986,12 @@ async function createUniversalRemux(sourcePath, deliveryPath, sourceVideo, confi
   if (!file.isFile() || file.size < 16 || file.size > VIDEO_MAX_BYTES) {
     throw serviceError("delivery_invalid", "Repackaged clip is outside its byte limit.");
   }
-  const video = await probeVideo(deliveryPath, config, {
+  const video = await probeDelivery(deliveryPath, config, {
     runProcess,
     directory,
     signal,
     maxFrameRate: MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE,
+    generated: true,
   });
   if (video.rotation !== 0 || video.codec !== "h264"
       || video.audioCodec !== sourceVideo.audioCodec
@@ -878,18 +1000,123 @@ async function createUniversalRemux(sourcePath, deliveryPath, sourceVideo, confi
       || Math.abs(video.durationMs - sourceVideo.durationMs) > 1_500) {
     throw serviceError("delivery_invalid", "Repackaged clip changed its streams.");
   }
-  await decodeAllStreams(deliveryPath, config, { runProcess, directory, signal });
+  await decodeDelivery(deliveryPath, config, { runProcess, directory, signal });
   return { file, video, strategy: "remux" };
 }
 
-// One line for the private converter log: the stable code plus the first
-// underlying cause. Never includes object keys or signed URLs.
+// One line for the private converter log: the stable code and a named check.
+// Never includes raw metadata, decoder stderr, object keys or signed URLs.
 function jobFailureSummary(error) {
-  const parts = [String(error?.code || "error"), String(error?.message || "")].filter(Boolean);
-  for (let cause = error?.cause, depth = 0; cause && depth < 3; cause = cause.cause, depth += 1) {
-    if (cause?.message) parts.push(String(cause.message));
+  const code = /^[a-z_]{2,40}$/.test(String(error?.code || "")) ? error.code : "verification_failed";
+  return `${code}${error?.videoCheck ? ` ${JSON.stringify(error.videoCheck)}` : ""}`;
+}
+
+export function videoColorFilter(video) {
+  if (!isHdrVideo(video)) {
+    // -pix_fmt alone changes the encoder format, not full-range sample values.
+    // Normalize SDR range before encoding; preserve its matrix/transfer/primaries.
+    return video?.colorRange === "pc"
+      ? "scale=in_range=pc:out_range=tv,format=yuv420p," : "";
   }
-  return parts.join(": ").replace(/https?:\/\/\S+/gu, "[url]").slice(0, 700);
+  // Only a declared BT.2020 PQ/HLG signal has a defined conversion here.
+  // Do not guess missing primaries/matrix or silently relabel HDR as SDR.
+  requireVideoCheck(video.colorPrimaries === "bt2020" && video.colorSpace === "bt2020nc",
+    "hdr_color_metadata", true, false);
+  return "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,setparams=colorspace=bt709,"
+    + "tonemap=tonemap=hable:desat=2:peak=10,setparams=colorspace=gbr,zscale=t=bt709:m=bt709:r=limited,format=yuv420p,sidedata=mode=delete,";
+}
+
+// Generated linear-light bands relative to a 100-nit reference: 0, 10, 50,
+// 100, 400 and 1000 nits. This exercises highlights rather than SDR relabeling.
+function hdrHighlightFixtureFilter() {
+  const level = "if(lt(X,W/6),0,if(lt(X,2*W/6),0.1,if(lt(X,3*W/6),0.5,if(lt(X,4*W/6),1,if(lt(X,5*W/6),4,10)))))";
+  return `format=gbrpf32le,geq=r='${level}':g='${level}':b='${level}',`
+    + "zscale=pin=bt2020:tin=linear:min=gbr:rin=full:p=bt2020:t=smpte2084:m=bt2020nc:r=limited:npl=100,format=yuv420p10le";
+}
+
+async function verifyHdrHighlightBands(sourcePath, deliveryPath, config, { runProcess, directory }) {
+  const levels = [];
+  for (const [name, path] of [["source", sourcePath], ["delivery", deliveryPath]]) {
+    const pixelsPath = join(directory, `highlight-${name}.float`);
+    await runProcess(config.ffmpeg, ["-nostdin", "-v", "error", "-i", path, "-frames:v", "1",
+      "-vf", "zscale=t=linear:npl=100,format=gbrpf32le", "-pix_fmt", "gbrpf32le", "-f", "rawvideo", "-y", pixelsPath], { cwd: directory });
+    const pixels = await readFile(pixelsPath);
+    if (pixels.length !== 384 * 64 * 12) throw new Error("Highlight frame shape changed.");
+    levels.push(Array.from({ length: 6 }, (_, index) => pixels.readFloatLE((32 * 384 + index * 64 + 32) * 4)));
+  }
+  const [source, delivery] = levels;
+  // Independent signal/range assertions. They prove a bounded roll-off on this
+  // synthetic grayscale signal, not calibrated appearance or Dolby Vision.
+  if (source[4] < 3.5 || source[5] < 9 || source[3] < 0.9) throw new Error("Fixture lacks real PQ highlight energy.");
+  // The 8-bit CRF encoder can overshoot white slightly; permit a small decoded
+  // quantization tolerance, while requiring substantial highlight separation.
+  if (delivery.some((value) => !Number.isFinite(value) || value < -0.01 || value > 1.05)
+      || delivery[0] > 0.01 || delivery[1] < 0.02
+      || delivery[5] - delivery[4] < 0.1
+      || delivery.some((value, index) => index > 0 && value <= delivery[index - 1] + 0.01)) {
+    throw new Error(`Synthetic HDR range/highlight separation failed: source=${source.join(",")} delivery=${delivery.join(",")}`);
+  }
+  return { sourceLinear100NitReference: source, deliveryLinearSdr: delivery };
+}
+
+async function verifySdrRangeFixture(sourcePath, deliveryPath, source, delivery, sample, config, { runProcess, directory }) {
+  const pictures = [];
+  const bands = [];
+  for (const [name, path, video] of [["source", sourcePath, source], ["delivery", deliveryPath, delivery]]) {
+    const range = video.colorRange === "pc" ? "pc" : "tv";
+    const rgbPath = join(directory, `${sample.name}-${name}.rgb`);
+    await runProcess(config.ffmpeg, ["-nostdin", "-v", "error", "-i", path, "-map", "0:v:0", "-frames:v", "1",
+      "-vf", `scale=in_range=${range}:out_range=pc,format=rgb24`, "-pix_fmt", "rgb24", "-f", "rawvideo", "-y", rgbPath], { cwd: directory });
+    pictures.push(await readFile(rgbPath));
+    if (sample.grayBands) {
+      const yuvPath = join(directory, `${sample.name}-${name}.yuv`);
+      await runProcess(config.ffmpeg, ["-nostdin", "-v", "error", "-i", path, "-map", "0:v:0", "-frames:v", "1",
+        "-pix_fmt", range === "pc" ? "yuvj420p" : "yuv420p", "-f", "rawvideo", "-y", yuvPath], { cwd: directory });
+      const pixels = await readFile(yuvPath);
+      bands.push([0, 1, 2, 3, 4, 5].map((band) => pixels[Math.floor(video.height / 2) * video.width
+        + Math.floor((band + 0.5) * video.width / 6)]));
+    }
+  }
+  if (pictures[0].length !== pictures[1].length) throw new Error("SDR fixture geometry changed.");
+  const rgbMae = pictures[0].reduce((sum, value, index) => sum + Math.abs(value - pictures[1][index]), 0) / pictures[0].length;
+  if (rgbMae > 5) throw new Error(`SDR fixture decoded RGB changed: ${rgbMae}`);
+  if (sample.grayBands) {
+    const limited = [16, 30, 71, 126, 218, 235];
+    const sourceExpected = source.colorRange === "pc" ? [0, 16, 64, 128, 235, 255] : limited;
+    if (bands[0].some((value, index) => Math.abs(value - sourceExpected[index]) > 2)
+        || bands[1].some((value, index) => Math.abs(value - limited[index]) > 2)) {
+      throw new Error(`SDR sample range conversion failed: ${JSON.stringify(bands)}`);
+    }
+  }
+  if (delivery.colorRange === "pc" || delivery.colorSpace !== source.colorSpace
+      || delivery.colorPrimaries !== source.colorPrimaries || delivery.colorTransfer !== source.colorTransfer) {
+    throw new Error("SDR range normalization relabeled color metadata.");
+  }
+  return { rgbMae, ...(sample.grayBands ? { sourceY: bands[0], deliveryY: bands[1] } : {}),
+    colorRange: delivery.colorRange, colorSpace: delivery.colorSpace, colorTransfer: delivery.colorTransfer };
+}
+
+function checkDeliveryContinuity(source, delivery) {
+  const check = (ok, name, expected, observed) => requireVideoCheck(ok, name, expected, observed, true);
+  const toleranceMs = Math.max(250, 2_000 / Math.max(1, delivery.frameRate));
+  const intendedDuration = source.selectedDurationMs ?? source.durationMs;
+  const outputDuration = delivery.selectedDurationMs ?? delivery.durationMs;
+  check(intendedDuration === null || Math.abs(outputDuration - intendedDuration) <= toleranceMs,
+    "duration_preserved", intendedDuration, outputDuration);
+  check(delivery.audioCodec === (source.audioCodec === "none" ? "none" : "aac"), "audio_preserved", true, false);
+  // Compare relative stream offsets; normal mux timestamp shifts affect both
+  // streams equally. Preserve intentionally delayed/shorter selected audio.
+  const sourceOffset = source.audioStart - source.videoStart;
+  const outputOffset = delivery.audioStart - delivery.videoStart;
+  if (source.audioCodec !== "none" && Number.isFinite(sourceOffset) && Number.isFinite(outputOffset)) {
+    check(Math.abs(sourceOffset - outputOffset) <= 0.1, "av_start_offset", sourceOffset, outputOffset);
+  }
+  for (const field of ["videoDuration", "audioDuration"]) {
+    if (Number.isFinite(source[field]) && Number.isFinite(delivery[field])) {
+      check(Math.abs(source[field] - delivery[field]) * 1_000 <= toleranceMs, `${field === "videoDuration" ? "video" : "audio"}_duration_preserved`,
+        source[field], delivery[field]);
+    }
+  }
 }
 
 export function universalDeliveryDimensions(video) {
@@ -924,7 +1151,7 @@ export function universalDeliveryDimensions(video) {
   };
 }
 
-async function createSanitizedDelivery(
+export async function createSanitizedDelivery(
   sourcePath,
   deliveryPath,
   sourceVideo,
@@ -933,9 +1160,12 @@ async function createSanitizedDelivery(
   { runProcess, directory, signal, log },
 ) {
   const universal = sourceVideo?.universal === true;
+  const colorFilter = videoColorFilter(sourceVideo);
   if (universal && universalRemuxEligible(sourceVideo)) {
     try {
-      return await createUniversalRemux(sourcePath, deliveryPath, sourceVideo, config, { runProcess, directory, signal });
+      const delivery = await createUniversalRemux(sourcePath, deliveryPath, sourceVideo, config, { runProcess, directory, signal });
+      checkDeliveryContinuity(sourceVideo, delivery.video);
+      return delivery;
     } catch (error) {
       if (signal?.aborted) throw error;
       log?.(`fast repackage skipped, converting in full: ${jobFailureSummary(error)}`);
@@ -944,7 +1174,7 @@ async function createSanitizedDelivery(
   const strategy = universal ? "transcode" : videoDeliveryStrategy(sourceVideo);
   // An unknown universal length is budgeted as the longest allowed clip.
   const bitrate = strategy === "transcode"
-    ? videoTranscodeBitrateBudget(sourceVideo.durationMs ?? VIDEO_MAX_DURATION_MS)
+    ? videoTranscodeBitrateBudget(sourceVideo.resourceDurationMs ?? sourceVideo.durationMs ?? VIDEO_MAX_DURATION_MS)
     : null;
   const frameRateFilter = sourceVideo.frameRate > MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE + 0.01
     ? `fps=${MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE},`
@@ -970,9 +1200,9 @@ async function createSanitizedDelivery(
   // portrait keeps its full 1080 width and anamorphic footage keeps its shape.
   const dimensions = universal ? universalDeliveryDimensions(sourceVideo) : null;
   const videoFilter = universal
-    ? `${sourceVideo.interlaced ? "yadif=deint=interlaced," : ""}fps=${sourceVideo.outputFrameRate},`
-      + `scale=w=${dimensions.width}:h=${dimensions.height},setsar=1`
-    : `${frameRateFilter}scale=w='min(${DELIVERY_MAX_WIDTH},iw)':h='min(${DELIVERY_MAX_HEIGHT},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`;
+    ? `${sourceVideo.interlaced ? "yadif=deint=interlaced," : ""}fps=${sourceVideo.outputFrameRateExpression || sourceVideo.outputFrameRate},`
+      + `scale=w=${dimensions.width}:h=${dimensions.height},${colorFilter}setsar=1`
+    : `${frameRateFilter}scale=w='min(${DELIVERY_MAX_WIDTH},iw)':h='min(${DELIVERY_MAX_HEIGHT},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,${colorFilter}setsar=1`;
   const output = strategy === "remux"
     ? [
         // The source has already passed the strict H.264/AAC/container probe.
@@ -980,6 +1210,7 @@ async function createSanitizedDelivery(
         // selecting A/V streams plus dropping metadata/chapters removes camera
         // location, device and discarded QuickTime tracks without re-encoding.
         "-c:v", "copy", "-c:a", "copy",
+        "-bsf:v", "h264_metadata=sample_aspect_ratio=1/1",
       ]
     : [
         `-vf`, videoFilter,
@@ -989,9 +1220,13 @@ async function createSanitizedDelivery(
         // CRF still spends fewer bits on easier scenes and short clips retain
         // the existing 11 Mbps ceiling. Never truncate output with -fs or -t.
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+        "-threads:v", "2", "-threads:a", "1",
         "-maxrate", String(bitrate.maxRate), "-bufsize", String(bitrate.bufferSize),
         "-profile:v", "high", "-level:v", "4.2", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-profile:a", "aac_low", "-ac", "2", "-ar", "48000", "-b:a", String(bitrate.audioRate),
+        ...(isHdrVideo(sourceVideo)
+          ? ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"]
+          : sourceVideo.colorRange === "pc" ? ["-color_range", "tv"] : []),
       ];
   try {
     await runProcess(config.ffmpeg, [
@@ -1001,10 +1236,12 @@ async function createSanitizedDelivery(
       "-movflags", "+faststart", "-brand", "mp42", "-f", "mp4", "-y", deliveryPath,
     ], { cwd: directory, signal });
   } catch (error) {
-    // Only the member's file is read here for a universal source, so a
-    // failed conversion means FFmpeg could not decode that file.
-    if (universal && error?.code === "decode_failed") {
-      throw serviceError("unsupported_media", "Clip could not be decoded.", { cause: error });
+    // This command also runs filters, an encoder and a muxer. A nonzero exit
+    // cannot prove that the source was unsupported; never blame the member.
+    if (error?.code === "decode_failed") {
+      const failure = serviceError("conversion_failed", "Clip conversion did not complete.", { cause: error });
+      failure.videoCheck = { stage: "conversion", predicate: "encode_complete", expected: true, observed: false };
+      throw failure;
     }
     throw error;
   }
@@ -1012,16 +1249,17 @@ async function createSanitizedDelivery(
   if (!file.isFile() || file.size < 16 || file.size > VIDEO_MAX_BYTES) {
     throw serviceError("delivery_invalid", "Sanitized delivery is outside its byte limit.");
   }
-  const video = await probeVideo(deliveryPath, config, {
+  const video = await probeDelivery(deliveryPath, config, {
     runProcess,
     directory,
     signal,
-    // A stream copy preserves the already-proven AVC coded envelope. Passing
-    // that signed envelope also lets reviewed iPhone AVC files retain their
-    // valid implicit square-pixel representation when ffprobe omits SAR.
+    // A stream copy preserves the already-proven AVC coded envelope. The
+    // metadata bitstream filter must still state square pixels explicitly.
     structural: strategy === "remux" ? structural : undefined,
     maxFrameRate: MEDIA_VIDEO_DELIVERY_MAX_FRAME_RATE,
+    generated: true,
   });
+  checkDeliveryContinuity(sourceVideo, video);
   if (video.rotation !== 0) throw serviceError("delivery_invalid", "Sanitized delivery retained rotation metadata.");
   if (strategy === "remux" && (video.codec !== "h264"
       || video.audioCodec !== sourceVideo.audioCodec
@@ -1033,7 +1271,7 @@ async function createSanitizedDelivery(
   // Stream-copy deliberately does not decode source packets. This full output
   // pass remains mandatory for both strategies, so corrupt later access units
   // cannot be published merely because metadata and the first frame looked safe.
-  await decodeAllStreams(deliveryPath, config, { runProcess, directory, signal });
+  await decodeDelivery(deliveryPath, config, { runProcess, directory, signal });
   return { file, video, strategy };
 }
 
@@ -1076,10 +1314,25 @@ async function uploadSanitizedDelivery(job, deliveryPath, delivery, { fetchImpl,
   };
 }
 
+async function posterStep(stage, predicate, action) {
+  try { return await action(); }
+  catch (error) {
+    // Signals, allocation failures, cancellation and unavailable executables
+    // remain transient. Only identified generated-artifact errors terminate.
+    if (!new Set(["decode_failed", "decoder_output_invalid", "invalid_request", "unsupported_media", "ENOENT"]).has(error?.code)) throw error;
+    const failure = namedValidationError("poster_invalid", stage, predicate, true, false);
+    failure.cause = error;
+    throw failure;
+  }
+}
+
 async function generateAndVerifyPoster(filePath, posterPath, job, video, config, { runProcess, directory, signal }) {
+  const check = (ok, stage, predicate, expected, observed) => {
+    if (!ok) throw namedValidationError("poster_invalid", stage, predicate, expected, observed);
+  };
   const seconds = (job.poster.timeMs / 1_000).toFixed(3);
   const scale = `scale=w='min(${job.poster.maxEdge},iw)':h='min(${job.poster.maxEdge},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`;
-  await runProcess(config.ffmpeg, [
+  await posterStep("poster_encode", "encode_complete", () => runProcess(config.ffmpeg, [
     "-nostdin",
     "-v", "error",
     "-xerror",
@@ -1101,36 +1354,37 @@ async function generateAndVerifyPoster(filePath, posterPath, job, video, config,
     "-f", "image2",
     "-y",
     posterPath,
-  ], { cwd: directory, signal });
-  const file = await stat(posterPath);
-  if (!file.isFile() || file.size < 4 || file.size > job.poster.maxBytes) {
-    throw serviceError("poster_invalid", "Generated cover is outside its byte limit.");
-  }
-  const probeResult = await runProcess(config.ffprobe, [
+  ], { cwd: directory, signal }));
+  const file = await posterStep("poster_bytes", "artifact_exists", () => stat(posterPath));
+  check(file.isFile() && file.size >= 4 && file.size <= job.poster.maxBytes,
+    "poster_bytes", "byte_limit", job.poster.maxBytes, file.size);
+  const probeResult = await posterStep("poster_probe", "readable_metadata", () => runProcess(config.ffprobe, [
     "-v", "error",
     "-f", "image2",
     "-c:v", "mjpeg",
     "-show_entries", "stream=codec_type,codec_name,width,height",
     "-of", "json",
     posterPath,
-  ], { cwd: directory, signal });
-  const probe = parseProbeJson(probeResult.stdout, "Poster");
+  ], { cwd: directory, signal }));
+  const probe = await posterStep("poster_probe", "readable_metadata", () => parseProbeJson(probeResult.stdout, "Poster"));
   const streams = Array.isArray(probe.streams) ? probe.streams : [];
-  if (streams.length !== 1 || streams[0]?.codec_type !== "video" || streams[0]?.codec_name !== "mjpeg") {
-    throw serviceError("poster_invalid", "Generated cover codec is invalid.");
-  }
-  const width = boundedInteger(streams[0]?.width, { min: 1, max: job.poster.maxEdge, label: "Poster width" });
-  const height = boundedInteger(streams[0]?.height, { min: 1, max: job.poster.maxEdge, label: "Poster height" });
+  check(streams.length === 1, "poster_probe", "track_count", 1, streams.length);
+  check(streams[0]?.codec_type === "video" && streams[0]?.codec_name === "mjpeg",
+    "poster_probe", "jpeg_codec", true, false);
+  const width = Number(streams[0]?.width);
+  const height = Number(streams[0]?.height);
+  check(Number.isSafeInteger(width) && width >= 1 && width <= job.poster.maxEdge
+    && Number.isSafeInteger(height) && height >= 1 && height <= job.poster.maxEdge,
+    "poster_probe", "dimensions", job.poster.maxEdge, Math.max(width, height));
   const displayWidth = video.rotation === 90 || video.rotation === 270 ? video.height : video.width;
   const displayHeight = video.rotation === 90 || video.rotation === 270 ? video.width : video.height;
   const sourceRatio = displayWidth / displayHeight;
   const posterRatio = width / height;
-  if (Math.abs(sourceRatio - posterRatio) > Math.max(0.02, sourceRatio * 0.02)) {
-    throw serviceError("poster_invalid", "Generated cover orientation is invalid.");
-  }
+  check(Math.abs(sourceRatio - posterRatio) <= Math.max(0.02, sourceRatio * 0.02),
+    "poster_probe", "aspect_ratio", sourceRatio, posterRatio);
   // Decode the generated artifact independently. Successful encode alone is not
   // accepted as proof that the returned JPEG can be consumed by clients.
-  await runProcess(config.ffmpeg, [
+  await posterStep("poster_decode", "full_decode", () => runProcess(config.ffmpeg, [
     "-nostdin",
     "-v", "error",
     "-xerror",
@@ -1142,12 +1396,11 @@ async function generateAndVerifyPoster(filePath, posterPath, job, video, config,
     "-frames:v", "1",
     "-f", "null",
     "-",
-  ], { cwd: directory, signal });
-  const bytes = await readFile(posterPath);
-  if (bytes.byteLength !== file.size || bytes[0] !== 0xff || bytes[1] !== 0xd8
-      || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) {
-    throw serviceError("poster_invalid", "Generated cover bytes are invalid.");
-  }
+  ], { cwd: directory, signal }));
+  const bytes = await posterStep("poster_bytes", "artifact_exists", () => readFile(posterPath));
+  check(bytes.byteLength === file.size && bytes[0] === 0xff && bytes[1] === 0xd8
+    && bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9,
+    "poster_bytes", "jpeg_bytes", true, false);
   return {
     contentType: "image/jpeg",
     byteSize: bytes.byteLength,
@@ -1247,7 +1500,7 @@ export async function runVideoVerifierJob(payload, {
       protocol: VIDEO_VERIFIER_PROTOCOL_VERSION,
       pipeline: VIDEO_VERIFIER_PIPELINE_VERSION,
       object: { key: job.objectKey, byteSize: job.byteSize, contentType: job.contentType, etag: job.etag },
-      video: job.universal ? publicVideoSummary(video) : video,
+      video: publicVideoSummary(video),
       delivery: published,
       poster,
     };
@@ -1596,6 +1849,24 @@ export async function runVideoVerifierSelfTest({
 } = {}) {
   const directory = await mkdtemp(join(temporaryRoot, "pit-video-selftest-"));
   const samples = [
+    ...[
+      { name: "full-range-gray.mp4", fullRange: true, grayBands: true, fallback: true },
+      { name: "full-range-color.mp4", fullRange: true, rate: 120 },
+      { name: "limited-range-gray.mp4", grayBands: true, rate: 120 },
+    ].map((sample) => ({ ...sample, contentType: "video/mp4", size: "384x64", duration: 2, sdrRange: true, strategy: "transcode",
+      encode: ["-vf", sample.grayBands
+        ? `geq=lum='${sample.fullRange
+          ? "if(lt(X,W/6),0,if(lt(X,2*W/6),16,if(lt(X,3*W/6),64,if(lt(X,4*W/6),128,if(lt(X,5*W/6),235,255)))))"
+          : "if(lt(X,W/6),16,if(lt(X,2*W/6),30,if(lt(X,3*W/6),71,if(lt(X,4*W/6),126,if(lt(X,5*W/6),218,235)))))"}':cb=128:cr=128,`
+          + `setparams=range=${sample.fullRange ? "full" : "limited"}`
+        : `scale=in_range=tv:out_range=${sample.fullRange ? "pc" : "tv"}`,
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-color_range", sample.fullRange ? "pc" : "tv",
+      "-color_primaries", "smpte170m", "-color_trc", "smpte170m", "-colorspace", "smpte170m", "-c:a", "aac"] })),
+    { name: "pq-highlights.mp4", contentType: "video/mp4", size: "384x64", rate: 24, duration: 1,
+      encode: ["-vf", hdrHighlightFixtureFilter(), "-c:v", "libx264", "-preset", "ultrafast", "-profile:v", "high10",
+        "-pix_fmt", "yuv420p10le", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc", "-c:a", "aac"],
+      hdr: true, highlights: true, strategy: "transcode" },
+    { name: "hevc-hlg-rotated.mov", contentType: "video/quicktime", sourceFixture: true, strategy: "transcode", hdr: true },
     { name: "clip.avi", contentType: "video/x-msvideo", encode: ["-c:v", "mpeg4", "-c:a", "pcm_s16le"] },
     { name: "clip.mkv", contentType: "video/x-matroska", encode: ["-c:v", "mpeg4", "-c:a", "ac3"] },
     { name: "clip.webm", contentType: "video/webm", encode: ["-c:v", "mpeg4", "-c:a", "ac3", "-f", "matroska"] },
@@ -1624,16 +1895,33 @@ export async function runVideoVerifierSelfTest({
       encode: ["-vf", "setsar=4/3", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac"],
       strategy: "transcode",
     },
+    {
+      name: "rational-1080.mp4", contentType: "video/mp4", size: "1920x1080", rate: "30000/1001", duration: 3,
+      encode: ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac"], strategy: "remux",
+    },
+    {
+      name: "vfr.mp4", contentType: "video/mp4", duration: 3,
+      encode: ["-vf", "select='if(lt(t,1),not(mod(n,2)),1)'", "-fps_mode", "vfr",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac"],
+    },
+    ...["smpte2084", "arib-std-b67"].map((transfer) => ({
+      name: `${transfer}.mp4`, contentType: "video/mp4", duration: 2,
+      encode: ["-vf", `zscale=pin=bt709:tin=bt709:min=bt709:rin=limited:p=bt2020:t=${transfer}:m=bt2020nc:r=limited:npl=100,format=yuv420p10le`,
+        "-c:v", "libx264", "-preset", "ultrafast", "-profile:v", "high10", "-pix_fmt", "yuv420p10le",
+        "-color_primaries", "bt2020", "-color_trc", transfer, "-colorspace", "bt2020nc", "-c:a", "aac"],
+      strategy: "transcode", hdr: true,
+    })),
   ];
   const results = [];
   try {
     for (const sample of samples) {
       const sourcePath = join(directory, sample.name);
-      await runProcess(config.ffmpeg, [
+      if (sample.sourceFixture) await copyFile(new URL(`./fixtures/${sample.name}`, import.meta.url), sourcePath);
+      else await runProcess(config.ffmpeg, [
         "-nostdin", "-v", "error",
         "-f", "lavfi", "-i", `testsrc2=size=${sample.size || "320x240"}:rate=${sample.rate || 25}`,
         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
-        "-t", "1", ...sample.encode, "-y", sourcePath,
+        "-t", String(sample.duration || 1), ...sample.encode, "-y", sourcePath,
       ], { cwd: directory });
       const video = await probeUniversalVideo(sourcePath, sample.contentType, config, { runProcess, directory });
       const deliveryPath = join(directory, `${sample.name}.delivery.mp4`);
@@ -1647,10 +1935,25 @@ export async function runVideoVerifierSelfTest({
       if (sample.strategy && delivery.strategy !== sample.strategy) {
         throw new Error(`${sample.name} took the ${delivery.strategy} path instead of ${sample.strategy}. ${skipped.join(" ")}`);
       }
+      if (sample.hdr && (delivery.video.colorTransfer !== "bt709" || delivery.video.colorPrimaries !== "bt709"
+          || delivery.video.colorSpace !== "bt709")) throw new Error(`${sample.name} did not produce declared BT.709 SDR.`);
+      const highlightBands = sample.highlights
+        ? await verifyHdrHighlightBands(sourcePath, deliveryPath, config, { runProcess, directory }) : undefined;
+      if (sample.fallback && !skipped.some((line) => line.includes('"predicate":"pixel_format"'))) {
+        throw new Error("Full-range fixture did not exercise rejected remux fallback.");
+      }
+      if (sample.sdrRange && (Math.abs(video.durationMs - delivery.video.durationMs) > 250
+          || Math.abs((video.audioStart - video.videoStart) - (delivery.video.audioStart - delivery.video.videoStart)) > 0.1)) {
+        throw new Error("SDR range fixture changed its A/V timeline.");
+      }
+      const sdrRange = sample.sdrRange
+        ? await verifySdrRangeFixture(sourcePath, deliveryPath, video, delivery.video, sample, config, { runProcess, directory }) : undefined;
       await generateAndVerifyPoster(deliveryPath, join(directory, `${sample.name}.jpg`), {
         poster: { timeMs: videoVerifierUniversalPosterTimeMs(500, delivery.video.durationMs), maxBytes: POSTER_MAX_BYTES, maxEdge: POSTER_MAX_EDGE },
       }, delivery.video, config, { runProcess, directory });
-      results.push({ name: sample.name, width: delivery.video.width, height: delivery.video.height, strategy: delivery.strategy });
+      results.push({ name: sample.name, width: delivery.video.width, height: delivery.video.height, strategy: delivery.strategy,
+        durationMs: delivery.video.durationMs, frameRate: delivery.video.frameRate, colorTransfer: delivery.video.colorTransfer,
+        ...(highlightBands ? { highlightBands } : {}), ...(sdrRange ? { sdrRange } : {}) });
     }
     return results;
   } finally {

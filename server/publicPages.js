@@ -8,6 +8,8 @@ import {
   MEDIA_AND_SESSION_SECURITY_DISCLOSURE,
   PRIVACY_POLICY_UPDATED,
   PROFILE_SEARCH_INDEXING_DISCLOSURE,
+  PROMOTIONAL_CONTENT_TERMS,
+  PROMOTIONAL_CONTENT_PRIVACY,
   TERMS_POLICY_UPDATED,
 } from "../src/domain/privacyDisclosures.mjs";
 import { SUPPORT_EMAIL } from "../src/domain/contact.mjs";
@@ -24,6 +26,8 @@ export const PUBLIC_PAGE_PATHS = Object.freeze([
   "/ratings-methodology",
   "/privacy",
   "/terms",
+  "/photo-rights",
+  "/promotion-sources",
   "/support",
   "/account-deletion",
 ]);
@@ -90,6 +94,22 @@ const PAGES = Object.freeze({
         paragraphs: ["Partnership, press, and other business enquiries can begin at the same monitored address and will be routed to the appropriate owner."],
         links: [link(SUPPORT_EMAIL, `mailto:${SUPPORT_EMAIL}`)],
       },
+      {
+        heading: "Appeals",
+        paragraphs: ["To appeal a moderation or account decision, email support with your handle, the decision reference if available, and a short explanation. Send only the information needed to review the decision; do not include private messages or other people's records."],
+        links: [link("Email an appeal", `mailto:${SUPPORT_EMAIL}?subject=Moderation%20appeal`)],
+      },
+      {
+        heading: "General enquiries",
+        paragraphs: ["For questions that do not fit the topics above, use the same support address."],
+        links: [link("Email an enquiry", `mailto:${SUPPORT_EMAIL}?subject=General%20enquiry`)],
+      },
+      {
+        heading: "Advertising enquiries",
+        paragraphs: ["Contact us about family-friendly advertising. Any advertising is subject to manual review and approval before it appears. An enquiry does not reserve a placement or guarantee acceptance."],
+        links: [link("Ask about advertising", `mailto:${SUPPORT_EMAIL}?subject=Advertising%20enquiry`)],
+      },
+      { heading: "Work at mshpit", paragraphs: ["Find published openings on our jobs page."], links: [link("View current openings", "/jobs")] },
     ],
   },
   "/community-guidelines": {
@@ -216,6 +236,11 @@ const PAGES = Object.freeze({
         ],
       },
       {
+        heading: PROMOTIONAL_CONTENT_PRIVACY.heading,
+        paragraphs: [...PROMOTIONAL_CONTENT_PRIVACY.paragraphs],
+        links: [link("Promotion sources and credits", "/promotion-sources"), link("Arrange or withdraw permission", "/support")],
+      },
+      {
         heading: "Advertising and profiling",
         paragraphs: [
           "Pit is designed to support an advertising-funded service, but the current first-party product analytics system is not an ad-network integration and does not send your event history or searches to advertisers. If Pit later adds third-party advertising or materially changes profiling, this policy and the relevant choices will be updated before that use begins.",
@@ -324,6 +349,12 @@ const PAGES = Object.freeze({
       {
         heading: "Your content and licence",
         paragraphs: ["You keep ownership of the reviews, photos, messages, and other content you create. By posting, you grant Pit a worldwide, non-exclusive, royalty-free licence to host, store, reproduce, adapt, display, and distribute that content to operate and improve the service, consistent with the audience and reuse settings you choose. Artist-page photo reuse and community or homepage spotlights require their separate controls; both stay off unless you turn them on. This licence ends when you delete the content or your account, except for copies retained for backups, legal reasons, or where already shared with others."],
+        links: [link("Photo rights and permission requests", "/photo-rights")],
+      },
+      {
+        heading: PROMOTIONAL_CONTENT_TERMS.heading,
+        paragraphs: [...PROMOTIONAL_CONTENT_TERMS.paragraphs],
+        links: [link("Promotion sources and credits", "/promotion-sources"), link("Arrange or withdraw permission", "/support")],
       },
       {
         heading: "Photo and video upload limits",
@@ -391,6 +422,57 @@ const PAGES = Object.freeze({
       },
     ],
   },
+  "/promotion-sources": {
+    title: "Promotion sources and credits",
+    description: "How Mshpit credits separately approved member content used to promote the app, and how to request a correction or withdraw permission.",
+    intro: "Mshpit promotion must credit the people whose content it uses. Social-media posts and paid ads require separate permission for the specific content and intended use; a public upload or community spotlight setting is not that permission.",
+    note: "No promotional source entries have been published on this page. This page does not itself grant permission to reuse anyone's content.",
+    sections: [
+      {
+        id: "credits",
+        heading: "Credit for each promotion",
+        paragraphs: ["Before a promotion relies on this page for attribution, a corresponding source entry must be published and the promotion must visibly link directly to it. Each entry must identify the promotion, the approved public name or handle, the source content and original public post where available and appropriate, and any required third-party attribution. A generic link to this page without a corresponding entry is not enough.", "We do not publish permission correspondence, private names, email addresses, or other private contact details as credits. A sharing credit is not proof of copyright ownership or permission for other people to reuse the content. Separate catalogue-image licences remain subject to their own attribution conditions."],
+      },
+      {
+        heading: "Permission and withdrawal",
+        paragraphs: ["Mshpit must record express permission before using member content in social-media promotion or paid ads. Until a dedicated permission control is available, the content, uses, channels, period, and public credit are agreed in writing through Support. Permission is optional and does not affect your ability to use Mshpit.", "To withdraw permission, correct a credit, or report a promotion with a missing source entry, contact Support with the public post or promotion link and the relevant credit. Do not send passwords, verification codes, or unnecessary private information. The Terms explain how withdrawal, deletion, and private-content changes affect promotional use."],
+        links: [link("Contact Support", "/support"), link("Promotional permission terms", "/terms"), link("Privacy policy", "/privacy")],
+      },
+    ],
+  },
+  "/photo-rights": {
+    title: "Photo rights and permission requests",
+    description: "How member photo rights work on Mshpit and how to ask the rights holder for permission to reuse an image.",
+    intro: "A photo being visible on Mshpit does not give everyone permission to copy or reuse it. This page explains the existing Terms; it does not grant a new licence or offer images for sale.",
+    note: "A sharing credit identifies the member who posted an image. It is not proof that the member took the photo or owns every right in it.",
+    sections: [
+      {
+        heading: "Member photos and permitted use",
+        paragraphs: ["Members keep ownership of the content they create. Under the Terms, posting gives Mshpit a limited, non-exclusive licence to host and display content to operate the service, consistent with the member's audience and reuse settings. That licence does not automatically give another person permission to download, republish, adapt, or use the photo commercially. Public display is not a Creative Commons or public-domain dedication. Any rights or exceptions provided by applicable law remain unaffected."],
+        links: [link("Read the existing Terms", "/terms")],
+      },
+      {
+        id: "request-permission",
+        heading: "Request permission for a specific photo",
+        paragraphs: ["Identify the exact photo and its original Mshpit post. Ask the credited member who owns the relevant rights and whether they can give permission. Explain the proposed use, where it will appear, and whether it is commercial. The member may not be the photographer or rights holder, may decline, or may not respond; a sharing credit or lack of reply is not permission.", "If you cannot identify or contact the rights holder, email Mshpit support with the public post link, a description of the photo, and the proposed use. Support can help with the request but cannot grant someone else's rights or guarantee permission. We do not publish private member contact details. Obtain the rights holder's permission where required before reusing an image, and keep any agreed conditions and attribution."],
+        links: [link("Ask support about a photo", `mailto:${SUPPORT_EMAIL}?subject=Photo%20permission%20request`)],
+      },
+      {
+        heading: "Separately licensed catalogue photos",
+        paragraphs: ["Some artist or venue catalogue photos have a separate creator credit, source link, and licence. Follow that specific image's published licence and conditions; this member-photo page does not replace those terms or grant additional rights. A licence for one photo does not apply to other images on the same page."],
+      },
+      {
+        heading: "Mshpit promotional use is separate",
+        paragraphs: ["Mshpit's social-media posts and paid ads require separate express permission for the specific member content, channels, period, and public credit. Uploading or enabling an artist-page or community spotlight does not grant that permission. Each approved promotional use must include credit or visibly link to its corresponding source entry. This does not give other people permission to reuse the content."],
+        links: [link("Promotional permission terms", "/terms"), link("Promotion sources and credits", "/promotion-sources")],
+      },
+      {
+        heading: "Report a rights concern",
+        paragraphs: ["Use the post's Report action or contact support with the public page link and enough information to identify the image and explain your concern. Do not send passwords, verification codes, or unnecessary private information."],
+        links: [link("Contact support", "/support")],
+      },
+    ],
+  },
   "/support": {
     title: "Support",
     description: "Get help with a Mshpit account, technical issue, safety report, privacy request, or account deletion.",
@@ -409,6 +491,7 @@ const PAGES = Object.freeze({
       {
         heading: "Safety and content reports",
         paragraphs: ["When a Report action is available in Pit, use it so the moderation team receives the relevant item and context. For something you cannot report in the app, email support with a link or the public handle involved and a short description. Do not resend harmful content unless support asks for it."],
+        links: [link("Photo rights and permission requests", "/photo-rights#request-permission")],
       },
       {
         heading: "Privacy and account data",
@@ -493,11 +576,12 @@ function renderLinks(links = []) {
 }
 
 function renderSection(section) {
+  const id = typeof section.id === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(section.id) ? section.id : null;
   const paragraphs = (section.paragraphs || []).map((paragraph) => `<p>${esc(paragraph)}</p>`).join("\n        ");
   const ordered = section.ordered?.length
     ? `<ol>${section.ordered.map((item) => `<li>${esc(item)}</li>`).join("")}</ol>`
     : "";
-  return `<section>
+  return `<section${id ? ` id="${esc(id)}"` : ""}>
       <h2>${esc(section.heading)}</h2>
       ${paragraphs}
       ${ordered}
@@ -562,8 +646,8 @@ function exactDateModified(value) {
   return Number.isNaN(timestamp.valueOf()) ? null : timestamp.toISOString();
 }
 
-export function renderPublicPage(pathname, env = process.env) {
-  const page = publicPageFor(pathname);
+export function renderPublicPage(pathname, env = process.env, pageOverride = null) {
+  const page = pageOverride || publicPageFor(pathname);
   if (!page) return null;
   const canonical = `${publicOrigin(env)}${page.path}`;
   const fullTitle = /\bmshpit\b/i.test(page.title) ? page.title : `${page.title} | ${SITE_NAME}`;
@@ -693,6 +777,7 @@ export function renderPublicPage(pathname, env = process.env) {
     <div class="bar">
       <a class="brand" href="/" aria-label="Mshpit home">Mshpit</a>
       <nav aria-label="Public information">
+        <a href="/jobs">Work at mshpit</a>
         ${PUBLIC_PAGE_PATHS.map((path) => `<a href="${path}"${path === page.path ? ' aria-current="page"' : ""}>${path === "/account-deletion" ? "Delete account" : esc(PAGES[path].title)}</a>`).join("\n        ")}
       </nav>
     </div>

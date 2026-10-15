@@ -1,10 +1,909 @@
 # Pit current status
 
-Last production reconciliation: **2026-08-13**. Local working-tree review:
-**2026-09-02**. This is the source of truth for current code, release, and
+## 2026-10-13 Video converter review (local only)
+
+- Isolated branch `fix/video-converter-20261013` starts at `81e63f7`.
+  The separate newsroom photo fix is not included. No production records,
+  live jobs, credentials, permissions, deployment or publication changed.
+- Generated-output rejection stays distinct from unsupported source input.
+  Deterministic conversion failures stop automatic retries; process/resource failures get one bounded retry. Generated failures use
+  `PIT-UPLOAD-007`. Named private checks retain bounded scalar diagnostics
+  without raw metadata, decoder text or capabilities.
+- Conversion keeps rational frame rates, selects default supported audio,
+  checks duration/A/V preservation and adds explicit PQ/HLG-to-SDR processing.
+  CRF 21/veryfast, one slot, upload/duration/work limits and create-only storage
+  remain; encoder threads are explicitly bounded.
+- Evidence and pending release gates are in
+  `docs/VIDEO_CONVERTER_REVIEW_2026-10-13.md`. The original production failed
+  predicate remains unknown; local fixtures do not prove its root cause.
+
+
+Last production reconciliation: **2026-10-10**. Local working-tree review:
+**2026-10-10**. This is the source of truth for current code, release, and
 production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
+
+## 2026-10-10 Accepted corrections only (release review)
+
+- Branch `review/privacy-diagnostics-alerts` starts at verified release base
+  `ceab0d50b82c6a9fa88e13e8f79c7e2462948114`. It contains the independently
+  reviewed public event visibility fix, bounded resolver diagnostics and alert
+  cooldown wake-up correction. No abuse-hardening or page-admission experiment
+  is included. That experiment and its failed load acceptance remain separate.
+- Fresh default and hosted suites on this exact smaller composition each
+  pass 6214 tests with zero failures and one existing Windows symlink
+  skip. Independent focused review passes 142 cases; Blueprint, syntax,
+  architecture and web export pass. The aggregate wrapper stops at its guarded
+  registry audit; its native result and the audit disposition are preserved in
+  `docs/ACCEPTED_CORRECTIONS_REVIEW_2026-10-10.md`. Earlier larger-tree passes
+  are not substituted. No commit, push or deployment occurred.
+
+## 2026-10-10 Public event visibility (release review)
+
+- Exact-ID public resolution now reuses the existing artist-authored visibility
+  predicate. Public snapshot scope remains anonymous for unrelated members,
+  owners and staff. Authorized calendar reads, provider identities and saved
+  records are preserved. Eight restricted synthetic cases failed before the
+  one-line correction; prior focused and independent reviews passed.
+
+## 2026-10-10 Resolver diagnostics and alert delivery (local review)
+
+- Branch `fix/resolver-diagnostics-alert-drain` starts from verified remote
+  `master` and deployed PR 39 commit
+  `ceab0d50b82c6a9fa88e13e8f79c7e2462948114`. This separate checkout preserves
+  the prior release and pending overload candidate. Nothing in this follow-up
+  is pushed, merged or deployed.
+- The owner authorized bounded operational diagnostics for artist resolution
+  and a correction to the existing alert scheduler's cooldown wake-up. Provider
+  deadlines, identity matching, cancellation, cache protection, alert eligibility
+  and delivery idempotency remain requirements, not tuning targets.
+- Diagnosis, implementation details, validation and remaining limitations are
+  recorded in `docs/RESOLVER_DIAGNOSTICS_ALERT_DELIVERY_2026-10-10.md`.
+
+## 2026-10-09 MusicBrainz reliability (released via PR 39)
+
+- PR 39 passed both Quality jobs and was merged as
+  `ceab0d50b82c6a9fa88e13e8f79c7e2462948114`. Render evidence supplied for this
+  investigation identifies that full commit live on October 10 at 02:44:10 UTC.
+  Public GitHub metadata confirms its tree equals the reviewed release tree.
+  The October 9 audit preserves the earlier preparation and access limitations;
+  this later reconciliation supersedes its pending-release status.
+- The patch persists shared cooldown deadlines in existing `app_meta`, carries
+  accurate Retry-After timing, distinguishes unavailable providers from genuine
+  empty results, and preserves exact stored artist identities and client input
+  through manual recovery. No schema migration, identity-matching relaxation,
+  dependency, credential, budget or production-setting change is required.
+- Historical local validation and source-tree qualifications are recorded in
+  `docs/MUSICBRAINZ_RELIABILITY_2026-10-09.md`. Exact-head cloud normal and hosted
+  suites each passed 6,159 tests; production audit and all 16 browser suites
+  passed. The separate overload candidate, festival patch and Newsroom importer
+  remain excluded. Provider recovery is not established by a catalog response.
+
+## 2026-10-07 Artist-only research and provider event text (review branch)
+
+- Branch `codex/artist-research-event-repair-20261007` starts at deployed master
+  `a056e64d`. Research selects artists only and preserves old venue findings,
+  pause/claim protections and spend ledgers. The Blueprint sets the approved
+  shared/catalog monthly caps to $10, retaining $0.30/day and automatic news off.
+- A narrow display-only apostrophe repair resolves the confirmed provider-title
+  corruption. Opaque event IDs, stored names, artist bindings and intentional
+  public exclusions remain protected. No data migration is required.
+- PR 33 and other unfinished branches remain separate. Validation, access
+  blockers and required final-commit cloud/deployment verification are recorded
+  in `docs/ARTIST_RESEARCH_EVENT_REPAIR_2026-10-07.md`. No deployment is claimed.
+- Owner-created draft PR 35 passed all 6,044 cloud tests on `c5473b8`, then the
+  dependency gate identified the existing Sharp/librsvg advisory. A focused
+  follow-up pins Sharp to patched `0.35.5`; the production lockfile audit passes.
+  The packaging regression now requires that patched pin while retaining its
+  production-dependency protections. Fresh final-commit cloud checks remain
+  required before merge or deployment.
+
+## 2026-10-04 Same-grant draft recovery (review branch)
+
+- The Owner approved one additional `news:write` operation: exact GET of an
+  unpublished self-written draft created by the same grant and owner. Branch
+  `codex/media-draft-recovery-20261004` starts at released master `a74c002`.
+- The new route returns safe editorial fields, revision and verified photo
+  metadata. It adds no list/update operation, scope, credential or activation.
+  Other-grant/staff, legacy-unbound and non-draft records return the same 404.
+- Validation and remaining cloud/release gates are recorded in
+  `docs/MEDIA_DRAFT_RECOVERY_2026-10-04.md`. No merge or deployment yet.
+
+## 2026-10-04 Newsroom entry from Settings (review branch)
+
+- Branch `codex/newsroom-settings-entry-20261004` starts at `15c4cb44`.
+  Settings now offers Newsroom to the existing admin/editor roles and opens the
+  existing standalone screen. Direct Menu entry and all server guards remain.
+- This navigation-only change retains Back/dismissal, account-scoped drafts and
+  the existing composition guard. It does not open the combined moderation
+  overview, change publishing policy or resolve any external browser gate.
+- Validation and the pending cloud cases are recorded in
+  `docs/NEWSROOM_SETTINGS_ENTRY_2026-10-04.md`. No merge or deployment yet.
+- PR30 run `37228104631` passed test/build, navigation and general news, then
+  exposed an immediate Menu-count race in the first new browser case. The
+  harness now confirms the account and waits for the lazy account Menu before
+  either allowed or denied-role assertions. All eight new cases still require
+  updated-head cloud execution; production code and timeouts are unchanged.
+
+## 2026-10-04 Completion plan and saved catalog batches (draft PR 29)
+
+- Branch `codex/catalog-completion-review-20261004` starts at released master
+  `d82b7ee47e2e524c83fd129c5a31e74e8a390cab` (including the queue work below).
+  Draft PR 29 is open; the completion patch has not been merged or deployed.
+- Existing admin reads can return a bounded artist/venue completion plan with
+  exact identity, protected text, source and accepted-photo status. New short
+  drafts use stored matching provider facts; no worker/provider is activated.
+- Batches persist by account on the current device, support edit/remove and
+  publish sequentially with durable per-entry retry keys. Uncertain saves stop
+  publication and remain locked; receipts are distinct from public verification.
+- No dependency, schema, worker-limit, grant, event-length or public UI change.
+  Focused tests and independent review passed. Cloud validation confirmed all
+  2,143 exported files, 72 tests, architecture and a 508.5-KiB gzip web build
+  below the unchanged 512-KiB budget. PR CI run 37217330043 passed test/build and
+  the three existing 390px catalog cases, then exposed a completion test race:
+  its generic photo acknowledgement was still showing the previous artist
+  while the venue read was pending. The runner now waits for the requested
+  exact identity and photo before checking text, with unchanged assertions and
+  timeouts. Updated CI must pass all eight cases; the four 1280px cases did not
+  run on that failed attempt. Native administrator
+  UI/storage validation remains pending before a native rollout. See
+  `docs/CATALOG_COMPLETION_REVIEW_2026-10-04.md` for scope and evidence.
+- Run 37218346003 passed the corrected artist/venue assertions and all 6,025
+  tests in both default and hosted configurations, but then found a fixture
+  navigation omission after reload: Catalog editor is under Settings, not the
+  Menu itself. Initial entry, account switch and reload now share that exact UI
+  path. A two-draft reload/edit/publish regression covers the remaining flow;
+  no runtime change, timeout increase or weakened assertion is included.
+
+## 2026-10-04 Catalog empty-page queue (historical pre-release checkpoint)
+
+- The editor's default fill queue skips existing biographies and staff text,
+  found or intentionally hidden research, intentional biography clears, hidden
+  staff text and changed staff identities. Exact-key reads and explicit review
+  of all eligible pages retain their existing behavior and permissions.
+- A request returns up to 30 matches while inspecting at most 150 candidates.
+  Continuation starts after the last inspected key, preserving the lookahead
+  and avoiding omissions when a result page fills before the scan budget.
+  Venue name search remains bounded; it does not become a global fuzzy lookup.
+- Changing the name filter clears the previous queue and cursor. A limited
+  search explains that more matches may remain and offers Continue search.
+- No schema migration, provider call, public-content mutation, staff grant,
+  batch-publication change or console redesign is part of this patch.
+- Validation and pending browser evidence are recorded in
+  `docs/CATALOG_QUEUE_REVIEW_2026-10-04.md`.
+- Cloud validation confirmed the exact reviewed source, 34 focused checks and
+  the web export (508.4 KiB gzip, below 512 KiB). Chromium could not launch under
+  the runner's socket restriction; four queue/exact-key browser cases remain
+  unexecuted. Existing PR CI includes all four cases. No merge or deployment.
+
+## 2026-09-30 Profiles: favorite shows, accent colour, pronouns
+
+- Edit profile has a "Make it yours" section: pronouns (24 characters,
+  shown after the @username), an accent colour from eight (the banner when
+  there is no photo, a stripe under the banner, the favorite show cards),
+  and Favorite shows: up to four of the member's own reviews pinned to the
+  top of their profile, in the order picked.
+- Stored in the existing validated profile extras (`accent`, `pronouns`,
+  `favoriteShows`); no schema change. The server checks that pins are the
+  member's own live show reviews (not plain posts, not someone else's) and
+  screens pronouns like other authored text. `GET /api/users/:id` returns
+  small cards for the pins; a pin whose review is removed drops out. null or
+  an empty list clears. All three are public and in the account export.
+- Tests: `server/profileCustomization.test.mjs` (save, ownership, order,
+  removal, clearing), `src/domain/profileAccents.test.mjs` (client palette
+  and limits match the server).
+
+## 2026-09-30 Reviewing a show in steps
+
+- A new show or festival review is no longer one long form. It goes The
+  show (in person or online, kind of show, artist or festival), Where and
+  when (venue, city, address, tour, dates), The music (openers, co-headliner
+  or festival sets, the overall rating, band, room and crowd), Your story
+  (review, photos and video, YouTube, people). Online reviews have three
+  steps (The show, The video, Your story).
+- A progress bar with step names you can tap to jump, Next and Back at the
+  bottom, "Post to feed" on the last step. Post in the header still works
+  from any step, so one rating is still enough to post.
+- Steps only hide sections, so typed text, drafts, uploads and ratings stay
+  put between steps and after a failed save. Editing a post and plain posts
+  show everything at once, as before.
+- Quick-log browser suite walks the steps: each step shows all of its own
+  fields without an extra tap, Post works from the ratings step, and every
+  step keeps its values after a failed save.
+
+## 2026-09-30 Signup in four short steps
+
+- Signup was two dense pages (purpose, name, username, email and password
+  together, then music, city, age and terms). It is now four steps with a
+  progress bar and step names: You (fan or artist, name, username), Sign-in
+  (email, password), Music (genres and city, which now says it sets nearby
+  shows and regional news), Finish (age group, terms, optional analytics).
+- Each step checks only its own answers (`signupStepError`), a problem sends
+  the member back to the step that asks for it, and Back keeps everything
+  typed. All credential inputs stay in one form across steps so password
+  managers work.
+- Nothing is saved until "Create account" on the last step, so leaving part
+  way leaves no account behind (unchanged, now stated).
+- Browser suites updated: auth (five native form submissions for the full
+  path, progress value checked) and artist account.
+
+## 2026-09-30 Regional news
+
+- A member's news follows where they live. Each News desk story gets its
+  regions from its own words, with no model cost (`newsRegions.js`): only
+  things happening in a place count ("UK and Ireland stadium dates", "shows
+  in Glasgow", "Official Albums Chart", "Glastonbury", "Juno Awards",
+  "Billboard Hot 100"). Where an artist is from, lives, recorded or died
+  never counts. A story naming two regions, a world tour or a worldwide night
+  (Grammys, Oscars, Super Bowl, VMAs), and every death or court story, is
+  shown everywhere.
+- The reader's region comes from their home city's country (London, Ontario
+  stays in Canada). They can pick another region or Everywhere from the new
+  bar at the top of News ("News for US and Canada. Picked from your city,
+  Toronto. Change"). Table `news_region_prefs` (automatic stores nothing),
+  `GET/PUT /api/me/news-region`, included in the account export and removed
+  with the account.
+- Applied to the News list (paging reads on past hidden stories), top
+  stories (the reader's own city, then their region, rise), the desktop news
+  panel and the For You news slot. An artist's page still shows all of that
+  artist's news. Guests see everything.
+- Stories naming the reader's city get an "In Toronto" marker.
+- Account deletion now also clears who picked a news card photo
+  (`news_card_photos.chosen_by`), like other newsroom attribution.
+- Tests: `newsRegions.test.mjs` (tagging traps: nationality, birthplace,
+  deaths, "us" the pronoun, lists), `newsRegionReader.test.mjs` (paging and
+  top stories), For You regional case, and a `news-region` browser case.
+
+## 2026-09-28 Discover shows: list view instead of "load more"
+
+- Discover's Shows tab showed four events and a "Load 4 more events" button
+  over a range of up to 500 loaded shows. The button is gone. Cards show the
+  first four and "See all N shows as a list". A Cards/List switch sits above
+  the dates (the choice lasts while the app is open, no browser storage).
+- **List view:** every show in the range, a week at a time: week tabs with
+  counts ("This week 8", "Next week 11", "Oct 12 to 18 11"), each day as a
+  heading ("Today", "Tomorrow", "Fri, Oct 2") with compact rows (artist,
+  venue, city; "Sold out" when the provider says so), and previous/next week
+  buttons. Later pages load on their own, once each, up to 500 shows.
+- **Festivals out of Shows:** listings whose kind is festival or multi-day
+  no longer appear in the Shows list, its slideshow, or the side rail's
+  "Upcoming events"; they belong to the Festivals tab. `isFestivalListing`
+  lives in `src/domain/liveDiscovery.mjs`.
+- New browser suite `verify:discover-events-browser` (in CI): cards, list,
+  week paging, page two fetched once, festival kept out, no sideways scroll.
+  Week and festival day tabs now expose `aria-selected`.
+
+## 2026-09-28 Festival pages: look, order and accuracy
+
+- **Look:** the Festivals tab and `/festivals` open on a lit stage: the next
+  festival's two-colour gel, drifting spotlights and two sweeping beams,
+  with the count of festivals ahead, new lineups, countries and a "Next up"
+  card with a countdown. Cards are posters with a calendar tile, a countdown
+  ("In 3 weeks", "Happening now") and the length. A festival page opens on a
+  poster hero with the same stage and its lineup in a poster frame. Content
+  rises in one piece after another. The motion is CSS on the web only; with
+  reduced motion (or on native) the page is still. Each festival keeps its
+  own colours (`festivalAccent`).
+- **Order:** a month filter above the list ("All dates", "Jul 2027 3"),
+  sentence-case section headings with counts, even grid columns so a lone
+  card no longer stretches across the page, and the day chart only shows
+  when members have picked days (it used to draw empty bars).
+- **Accuracy:** an edition was named after one ticket listing, so pages read
+  "Lollapalooza 2027 - Thursday" or "Lollapalooza 2026 4-Day". Names now drop
+  the ticket product and carry the year ("Lollapalooza 2027"; "Weekend 1"
+  stays). Applied when editions are built and when they are read, so stored
+  editions are fixed without a rescan. The structured data no longer claims
+  tickets are in stock; we only know the link.
+- **Search:** the hub title carries the years ("Music Festivals 2027:
+  Dates, Lineups & Tickets") and lists festivals under month headings; each
+  festival page has an "at a glance" list (dates, where, length, lineup
+  size, first held, official site).
+- Browser suite: the phone pass runs with reduced motion; both passes check
+  for no sideways scroll with the beams.
+
+## 2026-09-28 Newsroom, news card photos, player and link safety
+
+From the owner's list:
+- **Newsroom** is its own place: a Moderation tab for admins and a Newsroom
+  screen (menu) for the new **editor** role, the news team, which has no
+  other staff access. Editor changes need the Owner's approval like other
+  staff roles. The news editor and live coverage routes accept admins and
+  editors (`requireNewsEditor`). The forms were rebuilt: each input has a
+  label, an example and one line of help, inputs are one line tall (a flex
+  basis had made them 220 px), start time is a Now/Later choice and the run
+  length is a set of chips. Files moved to `src/features/newsroom/`.
+- **News share cards** no longer use the generic illustration. The photo is
+  the first artist in the story with a usable photo: their own profile photo,
+  then a licensed catalog photo; otherwise a clean headline card. The news
+  team can pick another artist from the story or no photo ("Share card
+  photos" in the Newsroom; table `news_card_photos`). Google Images are not
+  used: the photos are copyrighted and Google's terms forbid reuse.
+- **Video player:** the browser's own centre play circle no longer shows
+  behind "Play video" (hidden by CSS; the native control bar stays for
+  keyboard and screen reader users).
+- **External links:** a shared YouTube video that opens YouTube now says
+  "Watch on YouTube" with the external-link icon instead of a play triangle.
+  Live coverage update links are limited to the outlets the desk reads, the
+  award shows' official sites, YouTube and major social sites. Ticket links
+  already accept only known ticket sellers and ask before opening an artist's
+  own link.
+
+## 2026-09-28 Search snippets, plain copy, startup bundle
+
+From the owner's Search Console numbers (19k impressions, 0.45% clicks):
+- Artist pages with upcoming dates and no reviews now read "Odd Mob tour
+  2026: 6 upcoming shows, next in Perth (Sep 27), Sydney (Oct 3). Dates,
+  venues and tickets on Mshpit." Artists with no dates or reviews get
+  "<Name>: Albums, Biography & Live Shows" (or "Albums & EPs", "Biography &
+  Live Music") instead of "music artist profile", only when the page has them.
+- Event pages end with "Tickets, venue details and who's going." (only when a
+  ticket link exists) instead of "View the date, venue and event details."
+- City titles drop numeric or cryptic region codes outside the US, Canada and
+  Australia ("Hem, 59" becomes "Hem, France") and say "United States".
+- Prose em-dashes are gone from app copy (posting errors, upload errors, the
+  Lounge sheet, the player's preview notice, onboarding, artist setup, venue
+  reputation, share text, a staff campaign error). A lone dash still marks a
+  missing score.
+- The store now imports two small moderation helpers from
+  `src/domain/moderationPatches.mjs` instead of the whole staff console.
+
+## 2026-09-28 Festivals section
+
+From the owner: festivals are multi-day events and should be showcased on
+their own, never mixed into regular shows, with lineups by day, histories,
+expected dates, "going" plans and share cards.
+
+- **Discover > Festivals** (new tab): upcoming editions month by month, with
+  a "Lineups just announced" rail. Festival listings no longer appear in the
+  regular show lists (`upcomingEventsForScope` skips `eventKind: festival`).
+- **Festival page** (`/festival/<slug>`, hub at `/festivals`): the next
+  edition's dates, place, ticket link and lineup as a poster, filterable by
+  day; members going per day and the most wanted sets; the member's own plan
+  (days going, must-see sets); fan reviews and public fan photos from past
+  years; past editions; an "Expected late July 2027" estimate from the last
+  edition when none is listed (labelled as not announced); history from
+  Wikipedia with attribution, first year and official site from Wikidata.
+- **Share cards:** a lineup poster and an "I'm going" card (days and
+  must-see sets), rendered as type-only story images. Ticketmaster festival
+  art is not licensed for derivative share images, so it is never used.
+- **SEO:** each festival page is a server-rendered document titled
+  "<Name> <year> Lineup, Dates & Tickets" with the lineup by day in the HTML
+  and `Festival` structured data (dates, place, performers, ticket offer);
+  festival pages and the hub are in the pages sitemap once they have content.
+
+Data: `server/features/festivals/`. A catalog of about 60 major festivals
+(identity only: name, match phrases, usual city, Wikipedia title). Tables
+`festivals`, `festival_listings` (every ticket listing seen, kept for
+history), `festival_editions` (listings grouped into runs; the two weekends of
+a festival stay separate), `festival_plans`. A job every three hours reuses
+festival rows the tour-date ingest already stored, then asks Ticketmaster
+about six festivals (the whole list about once a day) and refreshes up to
+four Wikipedia histories. It runs whenever `TICKETMASTER_KEY` is set (no new
+Render variable needed); `FESTIVAL_SCAN_ENABLED=false` stops it. Lineups
+found in the first 30 hours are not flagged as "just announced". Routes:
+`GET /api/festivals`, `GET /api/festivals/:slug`, `PUT|DELETE
+/api/festivals/:slug/plan` (verified members), share-card kind `festival`.
+
+The whole client feature loads through one lazy entry
+(`src/features/festivals/festivalsEntry.js`) so it stays out of the startup
+bundle, which is 511.8 of 512 KiB. New browser suite:
+`verify:festivals-browser` (in CI).
+
+## 2026-09-28 Lineups: festivals, co-headliners and rated openers
+
+From the owner: festivals are not regular shows, openers can make or break a
+night, and a show can have several headliners. A concert review now has a
+format, chosen at the top of the form ("What kind of show?"):
+
+- **Concert:** one headliner plus openers.
+- **Co-headliners:** two or more headliners (Chris Brown & Usher), plus
+  openers. The card and show page lead with every headliner.
+- **Festival:** the post's artist is the festival's name (never bound to a
+  catalog artist), with a first and last day (up to two weeks). Each set seen
+  carries its day and stage. The band ratings are replaced by per-set ratings.
+
+Every act (opener, co-headliner, festival set) can have its own half-star
+rating and a note (600 characters). The card shows each act's rating; the show
+page lists every act with its note, grouped by festival day. Each rated set
+reaches that artist's page in a new "Live sets" section: averages for opening,
+co-headline and festival sets, who they opened for, festivals played, and the
+latest notes. The form suggests acts from the show's Ticketmaster billing and
+from openers other fans listed on the same run (150 days either side); a
+festival gets its billing with each act's day. A festival listing's "Review
+this show" opens the form in festival mode.
+
+Data: the lineup stays in `posts.supporting_acts` as richer JSON (`name`,
+`artistKey`, `role`, `rating`, `review`, `day`, `stage`); older name-only rows
+read as unrated openers. New columns `posts.show_format` and `posts.end_date`.
+Table `post_lineup_acts` is an index kept by triggers on every write, filled
+once from older posts (marker `schema:post-lineup-acts:v1`). New routes:
+`GET /api/lineup/suggestions` (signed in) and `GET /api/artists/sets` (public,
+blocks applied). Older app versions still send and receive `supportingActs`;
+a names-only edit keeps saved ratings. Unrated opener lists keep the old retry
+fingerprint. Festival reviews no longer appear in an artist's top reviews.
+
+Checked: `npm run check` (5,850 tests), all eleven browser suites. The
+initial web bundle is 511.4 of 512 KiB (the lineup helpers ship with the feed
+card); the next feed-level change must trim first.
+
+## 2026-09-28 Staff can follow artists; opener suggestions
+
+**Follow button missing for staff.** The owner could not follow artists.
+Cause: `ArtistScreen` hid Follow when `isArtistOwner(name)` was true, and that
+store helper returns true for every staff account (staff can manage any artist
+page), so admins never saw Follow anywhere. The button, its notices and the
+news section's follow action now hide only for the artist's own account
+(`artistWorkspaceOwnsArtist`); report buttons keep the old rule. The follow
+API itself was fine. `verify:connections-browser` gained an admin run, and a
+build with the old line fails it (Follow never appears).
+
+**Opener suggestions.** The "Who opened?" field suggests catalog artists as
+you type, from the same catalog search as the headliner field (no remote
+lookups). It searches the name after the last comma, leaves out the headliner
+and acts already added, and a pick keeps any earlier typed names. Picked names
+match the catalog exactly, so they link to artist pages. Typing a name and
+pressing Add still works.
+
+Checked: `npm run check` (5,837 tests; initial web JS 508.8 of 512 KiB), the
+connections suite with the new admin run, and the other ten browser suites
+(quick-log now picks an opener suggestion at 375 and 1280 px).
+
+## 2026-09-28 Openers, festival acts and times seen on concert reviews
+
+From the owner's site feedback. A concert review can list who opened ("Who
+opened?"), or at a festival the acts seen ("Who else did you see?", shown
+when the tour or event name says fest/festival). Each act counts as an artist
+seen live. When the author also reviewed one of those acts on the same night,
+the main review links to it ("(review)"), which is how a festival review
+connects its per-artist reviews. The card and the show page show
+"Openers: Muna · Phoebe Bridgers (review)".
+
+"Times seen" ("2nd time in the pit"): now counted by show date instead of
+posting order (logging an older show later no longer mislabels it), including
+times the artist opened a show the author reviewed on an earlier night (the
+same night counts once), plus a per-artist "seen before logging" number. The
+form shows "Your 3rd time seeing boygenius" with Change; a changed number is
+stored as unlogged earlier shows, so later reviews keep counting from it.
+
+Data: `posts.supporting_acts` ([{name, artistKey}], catalog keys only on an
+exact normalized match), table `artist_seen_baselines`. Both are in the
+account export; deleting a review scrubs its openers; online reviews have
+none. Openers enter the retry hash only when present (existing hashes are
+unchanged); times seen stays out of it. Server: `server/supportingActs.js`,
+`GET /api/me/seen-count` in `server/features/concertLineup/`. App:
+`ShowLineupFields`, `SupportingActsLine`, `PostNavigationContext` (opens a
+linked review by id).
+
+Checked: `npm run check` (5,599 tests), all ten browser suites, and a local
+boot with seeded reviews (card, show page and form at 390 px). The initial web
+bundle is 510.1 of its 512 KiB budget.
+Live at 23:10 EDT (56444f1): the additive migration ran on start, and
+`/api/me/seen-count` answers 401 for guests.
+
+## 2026-09-27 Award show winners tracker and live coverage pages (SEO)
+
+Built for any award show, not only the VMAs (which ended 21:30 ET, before the
+first version of live coverage went live at 21:08 EDT).
+
+- **Schedule ahead:** live coverage can start now or at a set time up to 60
+  days out ("2027-02-01 20:00", the owner's time zone). A scheduled show is
+  private until it starts, so its categories can be set up in advance.
+- **Categories:** paste once, one category per line ("Video of the Year: A;
+  B; C") or a category line followed by one nominee per line. Pasting again
+  keeps winners already marked.
+- **Winners:** tap the nominee who won; it becomes the category's winner and
+  posts "X wins Y" to the timeline (Clear undoes both). Outlet headlines that
+  name a nominee, a win verb and a word from the category show as "NME
+  reports X won" with a Confirm button. Nothing is marked automatically.
+- **After the show:** ending coverage keeps the show editable as a recap, so
+  winners can still be filled in for its winners-list page; a new show can be
+  started alongside it.
+
+Live: the winners tracker and pages at 21:43 EDT (a941b1f); the editable recap
+at 22:04 EDT (0c4a13f), about a minute of downtime each.
+- **Readers:** the LIVE card shows "Winners: 2 of 5 categories announced",
+  the latest winners and "Full winners list", which opens
+  `/news/live/<slug>` in the app: a Category | Winner | Nominees table (rows
+  stack on phones) and the updates.
+- **Search:** `/news/live/<slug>` is server rendered like an outlet's winners
+  list: title "<Show> Winners List (Updating Live) | Mshpit" while live and
+  "<Show> Winners: Full List | Mshpit" after, a description naming the first
+  winners, the whole table in the HTML, a LiveBlogPosting (coverage start
+  and end, every update with its time, the winners in articleBody) and
+  breadcrumbs, a modified time that moves with each winner, and the same
+  60-second CDN cache as other public pages. Pages with categories are in
+  the sitemap and linked from `/news` ("Live coverage"). An empty page stays
+  noindex.
+
+Checked: `npm run check` (5,591 tests), the ten CI browser suites (the news
+suite opens `/news/live/2026-mtv-vmas`; the Moderation suite pastes
+categories and taps a winner), and a local boot with a seeded show: the
+crawler HTML has the title, canonical, LiveBlogPosting and all five rows;
+the app shows three columns at 1280 px and stacked rows at 390 px.
+
+## 2026-09-27 Live coverage for big nights (VMAs)
+
+The owner asked for a live page during the 2026 VMAs. Moderation, Catalog
+Upkeep, News desk, "Live coverage": title, keywords the outlets will use
+("VMAs, Video Music Awards") and hours (1 to 12) start an event. Readers see a
+LIVE card at the top of the News tab and the desktop news rail: every outlet
+headline matching a keyword (from 3 hours before the start), linking to the
+outlet, plus the owner's own short updates (280 characters, optional https
+link), newest first, refreshed every minute. While an event is live the desk
+reads the 17 outlets every 5 minutes instead of 20. "End live coverage" turns
+it into a RECAP card that stays until the next evening. No Claude calls; all
+starts, updates, removals and ends are audited.
+
+Code: `server/features/newsDesk/newsLive.js` (+ routes, tests),
+`src/components/news/LiveCoverageCard.jsx`, `src/domain/newsLive.mjs`, live
+controls in `src/features/catalogMaintenance/NewsDeskEditor.jsx`. Checked by
+unit tests and the news and upkeep browser suites (LIVE card on the News tab
+at 390 and 1280 px; starting coverage from Moderation). The initial web
+bundle is now 508.2 of its 512 KiB budget.
+
+## 2026-09-27 Write a news story on demand (owner)
+
+Moderation, Catalog Upkeep, News desk, "Write a story now". The owner (any
+verified admin) can pick one of the stories the outlets are covering (ready
+ones first; ones one outlet short say so), search the last week of outlet
+coverage for an artist or topic, or paste up to 3 links from the 17 outlets
+the desk reads. "Write it" makes one Claude call and saves a draft (headline,
+summary, body, sources, cost) to review; "Publish now" posts it from the news
+account right away, outside the time slots; "Discard" drops it. Claude still
+turns down gossip and non-music items, and the sourcing rule is unchanged: two
+independent outlets, three for deaths and legal news; the check runs before
+any money is spent.
+
+Spending: listing and searching read saved reports only (free). Each draft is
+reserved against the same news daily/monthly budgets and the shared Claude
+ceiling as the automatic desk (about 2 cents), with at most 10 drafts in any
+24 hours and one at a time. A published draft counts toward the day's slots,
+so the automatic desk publishes correspondingly less that day. Every draft,
+publish and discard is written to the moderation audit trail.
+
+Code: `server/features/newsDesk/newsDeskEditor.js` (+ routes and tests),
+`src/features/catalogMaintenance/NewsDeskEditor.jsx`; the desk exposes
+`editorTools` and a `manual` publish flag. Checked: `npm run check` and the
+browser suites; the upkeep suite clicks Write it, reviews and publishes at 390
+and 1280 px.
+
+## 2026-09-27 Rest of the Codex audit: worker status, redirects, privacy journal
+
+Codex's ce60742 already closed findings A (per-record failures and a provider
+circuit instead of a global cooldown), G (Like, comment and Report on news),
+the immutable @news_mod publisher binding, bounded news clustering behind the
+shared job coordinator, and the fenced restore preparation. This batch closes
+what was left:
+
+- **Worker status in Moderation (audit step 8 and "why news can look
+  quiet"):** the Catalog Upkeep panel has a News desk section (on/off, stories
+  today of 5, next slot in Toronto time, the last check and why it did or did
+  not publish, spending today and this month, last 7 days, last problem) and a
+  Claude spending section (shared limit used and left; news and research each
+  split into confirmed, held for a call in flight, and unconfirmed). The totals
+  equal what the shared ceiling counts, so the confirmed figure can be compared
+  with the Anthropic console. The news job saves one small record per pass and
+  one per failure in `app_meta` (`news-desk:v1:last-pass`, `:last-error`).
+- **Redirect safety (qualified risk 1):** besides staying on the publisher's
+  own site over https, every hop's hostname must now resolve only to public
+  addresses (private, loopback, link-local, carrier NAT, reserved, IPv4-mapped
+  and NAT64 forms refused). fetch resolves again when it connects, so a
+  publisher whose DNS is hijacked could still race the check; noted in code.
+- **Privacy journal (SECURITY.md section 2, audit "remaining recovery
+  proof"):** account erasures and email opt-outs are journaled in the same
+  transaction, signed with `PRIVACY_JOURNAL_KEY`, and copied every 5 minutes to
+  `privacy-journal/v1/` in the private backup bucket (only account IDs, never
+  emails). A prepared restore refuses to serve until it replays the journal and
+  saves evidence, or the owner records a waiver. Needs the owner to add
+  `PRIVACY_JOURNAL_KEY` in Render; until then entries wait on the server and
+  the panel says so.
+
+Checked: `npm run check` (5,570 tests, 1 skipped), `check:blueprint`, and all
+ten browser suites; the upkeep suite now asserts the new sections at 390 and
+1280 px. Not done: journaling single post, comment and message deletions
+(TODO). Codex's open PR #13 touches `server/api.js`, `server/index.js` and the
+news desk too, so it will need a rebase onto this commit.
+Live at 17:40 EDT (e38b589): CI passed 17:29, about a minute of downtime, then
+health, the news list and the home page answered 200.
+
+## 2026-09-27 Nine more news outlets (14 independent companies)
+
+At the owner's request the desk now also reads Loudwire and XXL (both
+Townsquare Media, counted once), SPIN (spinmagazine.com since February 2026),
+Clash, DIY, HotNewHipHop, The FADER, Pollstar and JamBase: 17 outlets from 14
+independent companies, up from 8 from 6. Each feed was fetched with the
+production fetcher and parser before it was added; ownership was checked the
+same day. Left out: Alternative Press (owned by Live Nation's Veeps, staff laid
+off August 2026), Kerrang! (one item, articles blocked), NPR Music and Paste
+(features and reviews, not news), Soompi and Taste of Country (mostly TV and
+gossip), and outlets with no working https feed (Exclaim!, Complex,
+BrooklynVegan's is stale, HipHopDX's stopped in April). DIY writes "Sept" in
+its dates; the parser now accepts it. The 3-company rule is unchanged.
+
+Dry run on the live feeds (Sunday 11:05 EDT, Claude stubbed): 108 reports from
+16 outlets in 10 s (DIY posts on weekdays); one story cleared 3 companies,
+the already published Pearl Jam drummer story, now carried by 4.
+Live at 11:42 EDT (541e044, CI then about a minute of downtime).
+
+
+Fixes for the highest-priority findings in the owner's 2026-09-27 audit,
+committed together so they ship in one deploy:
+
+- **Spending:** every news desk Claude call now reserves its worst-case price
+  in `news_desk_receipts` before it is sent (same synchronous step as the
+  budget check) and settles to the real cost after; a call that fails once it
+  may have been sent stays counted at the reserved price (`uncertain`). The
+  shared $10 ceiling reads these receipts, so catalog research sees a news call
+  in flight. The summarizer makes one attempt: SDK retries off, server-side
+  fallbacks and their beta removed, so no attempt is ever billed that the
+  budget did not reserve. Old `news_desk_spend` totals still count.
+- **News permissions:** the desk list, top stories, share export and link
+  preview image only show stories whose @news_mod author is an active public
+  account (not banned, suspended or dormant). A member who blocked @news_mod,
+  or was blocked by it, gets an empty list; signed-in answers are
+  `private, no-store`, guests keep the 2-minute public cache. The share export
+  rechecks the block after rendering, like member posts.
+- **Feed fetching:** feed and article requests follow at most 3 redirects and
+  only within the publisher's own site over https (no other host, IP address,
+  port or credentials).
+- **Late sources:** outlets that report a story after it is published are
+  gathered per story and written in one transaction, so none overwrites
+  another.
+- **Page size:** fractional `limit` values are floored instead of erroring.
+- **Views:** News tab views count toward the story's post (`news_` ids and the
+  `news` surface are accepted by the client queue and the server).
+- **Opening a story:** only the latest tap opens, any navigation cancels a
+  pending one, and a failure says "This story could not be opened." with Try
+  again.
+- **Catalog research:** whose turn is next (artist or venue) is kept in
+  `app_meta` across passes, so one-page passes no longer always start with
+  artists; venue candidates are read in pages of 2,000 (up to 25) so rooms
+  below the busiest 2,000 are reached.
+
+Checked: `npm run check` (5,492 tests) and the nine CI browser suites pass.
+Live at 11:22 EDT (4364489): `?limit=2.5` went from 500 to 200.
+@news_mod is active in the 2026-09-27 snapshot, so live stories stay visible.
+Deferred to the next batch: see TODO "Codex audit follow-ups".
+
+## 2026-09-27 Why no stories for 15 hours
+
+A dry run on the live feeds found no new story that 3 or more independent
+outlet groups carried; the only such stories were already published. With
+Billboard, Rolling Stone and Variety counted as one company, the desk reads
+only six independent groups, so a quiet Sunday can pass with nothing that
+qualifies. The desk logs only when it publishes or declines, so silence is
+the expected log. The drought ended on its own at 10:52 EDT when Stereogum
+became the third company on the GWAR (Chuck Varga) story.
+
+## 2026-09-27 Restore drill from R2: passed
+
+At the owner's request, with explicit approval to download the snapshot:
+
+- Downloaded `db/pit-20260927-031736.db` from `mshpit-backups` through the
+  owner's Cloudflare dashboard session into a private recovery directory on
+  the owner's PC: 188,776,448 bytes, SHA-256 `70ee645c...b07371`, identical to
+  the object's `sha256` metadata written by the uploader.
+- `npm run backup:verify`: ok (page integrity, zero foreign-key violations,
+  core schema and identity); users=21, posts=73, artists=31,908,
+  tour_dates=67,721, artist_profiles=9, app_meta=142.
+- Isolated application restore: the snapshot copied as `pit.db` into an empty
+  data directory and served by the current code (`RENDER=true` so every
+  background job stays off, `BACKUP_ENABLED=false`, no email, media, Anthropic
+  or Ticketmaster credentials). Up in about 6 s; `/api/health` and
+  `/api/readiness` ok; catalogue totals 31,908 artists and 8,262 venues; a
+  member review post (656 characters, 3 media items) and U2's artist page came
+  back; the news desk served the 4 live stories with the withdrawn ones still
+  hidden; a story page returned 200. The production database was never
+  touched.
+- Not covered: the erasure/email-suppression journal replay in `SECURITY.md`
+  does not exist yet, so a real restore could still resurrect data deleted
+  after the snapshot. Campaign email recovery stays off by default for that
+  reason.
+
+## 2026-09-26 Outage 20:52-21:48 EDT and R2 backup privacy probe
+
+- Outage: the deploy of 0480513 (news takedown) stopped the live instance at
+  about 20:52 and no new instance produced any log line until 21:47:09: the
+  deploy timed out at 21:12 ("waiting for internal health check"), and a
+  manual restart of e8889be at 21:21 also stayed silent. At 21:47 the
+  instance started normally (pre-migration snapshot verified, 180 MB, up in
+  17 s) and the site returned at 21:48. Render's log store failed at the same
+  time ("too many unhealthy instances in the ring"); Render's status page
+  showed no incident. The same commit boots locally in 4 s, and e8889be had
+  booted at 20:47 with the same settings, so the delay was Render starting
+  the instance (likely the persistent disk moving), not the code. 0480513 is
+  on master but not live.
+- Backups: the owner created the R2 token (scoped to `mshpit-backups`) and
+  added the four `BACKUP_S3_*` values. The first scheduled upload (20:52)
+  failed: R2 answers an unsigned request with 400 InvalidArgument/Authorization,
+  and the backup privacy probe accepted only 401/403 (the media probe already
+  handled R2). `backupStorageSecurity.js` now accepts that exact R2 body from
+  an R2 account endpoint only; a generic 400, a 404 or a lookalike host still
+  fails closed.
+- Deployed afea942 at 23:12 EDT with the owner's go-ahead (about one minute
+  down during the disk swap). Verified: the four withdrawn stories return 404
+  and the feed shows U2, Ed Sheeran, Pearl Jam and one New York festival
+  story; at 23:17:50 the log reads "database backup verified and uploaded
+  off-host", and R2 holds `db/pit-20260927-031736.db` (188.78 MB, 23:17:49
+  EDT) in `mshpit-backups` with public access disabled. Off-host backups are
+  live; a restore drill from R2 is still outstanding.
+
+## 2026-09-26 Mshpit News publishing slots
+
+The owner: "I dont want us burning all our stories first thing in the morning or
+at noon or at night. We need to take the top stories at the time and publish
+those leaving room for more news later on in the day." The first version
+counted days in UTC and allowed one story every 3 hours from midnight UTC, so
+all five would have gone out between 8pm and 8am Toronto time.
+
+- `publishingSlot` in `newsEditorial.js`: five 3-hour slots a day in Toronto
+  time (8-11am, 11am-2pm, 2-5pm, 5-8pm, 8-11pm; the day starts at local
+  midnight, clock changes handled). Each slot takes one story, the top one
+  available while it is open; a slot with nothing good enough passes unused
+  instead of piling up for the evening. Stories are at least 2 hours apart.
+  After 11pm and before 8am only breaking news (score 55+) goes out, at least
+  30 minutes after the previous story, using the slot it falls in or the next
+  one. Never more than five a day.
+- The log line for each published story names its slot (`open`/`breaking`).
+- Before the policy deployed, the old rules published 8 stories between 18:07
+  and 18:53 EDT, including the New York festival cancellations twice. The
+  owner had four taken down (the duplicate, and three with two independent
+  outlets: Ween's box set, Olivia Rodrigo's tour opener, the Jingle Ball
+  lineups): a one-time change (`news-desk:withdraw:2026-09-26` in app_meta)
+  hides the posts (removed=1, text kept) and marks the stories declined. Live:
+  U2, Ed Sheeran, Pearl Jam, one New York festival story. The owner also
+  restarted the count: only stories chosen under the policy (with signals)
+  use the day's slots. Later reports on a story with no catalogue artist now
+  join the published story (headline overlap 0.3), so it is not written twice.
+
+## 2026-09-26 Mshpit News editorial policy: big news only
+
+The owner asked, before adding backup keys, that the desk stop publishing
+"random things": big news only (to save money and for how the site is seen),
+more outlets means bigger news, and publish what people interact with most.
+Choices made with the owner: up to 5 stories a day; 3+ independent outlets and
+real music news only; ranked by outlets, internet buzz and Mshpit fans.
+
+- `server/features/newsDesk/newsEditorial.js`: the policy. A story needs 3
+  independent outlets (was 2). Score = 10 per independent outlet + 2 per extra
+  same-company outlet + up to 20 for Wikipedia buzz (8 per doubling of readers
+  over a normal day) + up to 10 for artist popularity + up to 15 for Mshpit
+  fans (followers, fan club, reviewers, listeners) - 1 per 6 hours since first
+  reported. Stories older than 36 hours are dropped. The desk writes the best
+  one per pass, spending up to 3 Claude calls per pass to find one Claude
+  agrees to publish; when it may publish is set by the slots above.
+- Real music news only: Claude may publish only release, tour, festival,
+  lineup, awards, charts, legal or death stories and must mark gossip, feuds,
+  one artist criticising another, film and TV casting and the music business as
+  `not_music_news` (always declined). Headline filters skip the obvious ones
+  before any Claude call ("ruined", "hits back", "biopic", "cast as", ...).
+- `newsBuzz.js`: Wikipedia readers in the last two days against the median day
+  of the month before, from the free Wikimedia pageviews API. The article comes
+  from the artist's Wikidata id or, by name, only if Wikipedia describes a
+  musician or band (a disambiguation page or "Storm" the weather gives no
+  signal). Titles are cached 30 days in `news_artist_wiki`.
+- Clustering: reports about the same artist merge on a strong headline overlap
+  even when one outlet reads it as a release and another as a tour date (U2's
+  50th anniversary show had split into two 2-outlet stories).
+- Each story stores its `score` and `signals`; the log names every published
+  story with its score, outlets, Wikipedia ratio, popularity and fans.
+- Top stories: `GET /api/news-desk/stories?sort=top` ranks the last 3 days by
+  score plus Mshpit engagement (3 per like, 5 per comment, 0.1 per view),
+  halving every day. The desktop news panel and the phone strip show top
+  stories; the News tab and /news stay newest first.
+- Dry run on 2026-09-26's feeds: 4 of 9 two-outlet stories clear the bar, in
+  this order: U2 50th anniversary (53.5, Wikipedia x8.1), Ed Sheeran's Gillette
+  cancellations (51.2, x2.3), Pearl Jam at Ohana (36.4), New York festival
+  cancellations (25.2). The Taylor Swift feud (4 outlets) and the Sabrina
+  Carpenter biopic casting (3) are filtered out before Claude.
+
+## 2026-09-26 Mshpit News desk
+
+The owner asked for real music news on the feed, posted by @news_mod, instead
+of follow alerts buried in Discover. After reviewing the first screenshots they
+asked for a share card like other posts, links to the artists' profiles, a real
+news write-up rather than a two-line blurb, spending inside $10 a month, and
+profiles updated from the news. Built on `feat/news-desk`, merged to master.
+
+- Server (`server/features/newsDesk/`): every 20 minutes reads RSS from eight
+  outlets (Billboard, Rolling Stone, Variety, Pitchfork, Stereogum, NME,
+  Consequence, The Guardian). Reports are grouped into stories by headline
+  overlap; a story needs two independent publisher groups (Billboard, Rolling
+  Stone and Variety count as one group, PMC), three for deaths and legal news.
+  Reviews, polls, lists and gossip are skipped. For a confirmed story the desk
+  reads the opening paragraphs of up to four of the articles (one per publisher
+  group, only https pages on that outlet's own domain, 3 MB and 15 s caps), and
+  Claude (`claude-opus-5`, low effort, JSON schema output) writes a headline, a
+  one or two sentence lede and a 120 to 200 word story in its own words (a
+  detail only one outlet gives is attributed by name), or declines. Each story
+  becomes a status post from @news_mod with every outlet's link. Source links
+  drop tracking parameters.
+- Cost: about 2 cents a story. Limits (superseded by the editorial policy
+  above): 8 stories a day, 3 per pass, $0.30 a day
+  and $6 a month (`NEWS_DESK_DAILY_USD`, `NEWS_DESK_MONTHLY_USD`), and the shared
+  Claude ceiling (`ANTHROPIC_MONTHLY_USD`, $10, see the next entry). Each call
+  must fit its worst-case price in what is left. Off unless `NEWS_DESK_ENABLED`
+  and `ANTHROPIC_API_KEY` are set in the Render dashboard.
+- Artist matching: headline names are matched to catalogue artists (popularity
+  35+). Short names now count when they contain a digit or are all capitals in
+  exactly that form ("U2", "BTS", "SZA"); "Yes" or "Low" in a headline still do
+  not.
+- Feed: a News segment next to Following, Local and For You; news posts show
+  as story cards with a Share button, artist chips (photo, name, opens the
+  profile), "Read the full story" and "Confirmed by" links; a "Music news" panel
+  in the desktop right rail and a strip on phones (both hidden while there are
+  no stories). Opening a story shows the whole write-up ("Mshpit News / Story").
+  The News screen has "Music news" and "Your artists" (follow alerts) tabs; the
+  Discover news strip is gone. @news_mod's profile shows its posts as news cards.
+- Sharing: the share sheet (Instagram Story, X, Facebook, copy link, download)
+  now takes news posts. The story card is text only (MSHPIT NEWS, category,
+  date, headline, lede, artists, outlets); Deezer photos are never composited
+  into exported images. `GET /api/news-desk/stories/:id/image.png` renders a
+  1200x630 link preview, public and cached for an hour, used as og:image.
+- Story pages (`/post/news_<id>`): title "<headline> | Mshpit News", the lede as
+  description, the link preview image, NewsArticle structured data with
+  citations and the artists (MusicGroup with their page URLs), and the full
+  write-up with artist links and nofollow outlet links in the HTML.
+- Artist pages: "In the news" lists that artist's stories (app and public page,
+  `GET /api/news-desk/stories?artist=<key>`). Catalog research now takes artists
+  from the last 30 days of stories first, so thin pages of artists in the news
+  get a sourced summary sooner.
+- `/news` (crawlable page and sitemap) lists desk stories as NewsArticle items
+  with source citations, indexable from 3 stories.
+- Dry run against live feeds (no Claude calls) found 5 confirmed stories on
+  2026-09-26: U2 50th anniversary, Pearl Jam's new drummer, the New York
+  festival cancellations, Jingle Ball lineups and Ed Sheeran's Gillette shows.
+- Full `npm run check` passed on the branch (5,474 tests, first load 503.9 KiB).
+- Production, 2026-09-26: 86f9f1a deployed 14:10 EDT. The owner added
+  `NEWS_DESK_ENABLED` and `CATALOG_RESEARCH_ENABLED` in Render. The log shows
+  `[news-desk] on: $0.3/day, $6/month, shared Claude ceiling $10/month`, but the
+  first pass failed and catalog research stopped with `research_auth`: Anthropic
+  rejects the `ANTHROPIC_API_KEY` value (HTTP 401/403). No stories yet; nothing
+  spent. The desk's failure log now includes the HTTP status. Owner to replace
+  the key; the jobs retry on their own (desk every 20 minutes, research every 10).
+- Later on 2026-09-26: the owner replaced the key (deploy 0763158 at 14:45 EDT).
+  Anthropic now accepts it but the desk's pass fails with `status=400`. The
+  account has $20.00 credit, $0 spent, a $10 monthly limit and web search
+  allowed, so it is not billing. Both jobs now log Anthropic's error type and a
+  cleaned reason (`server/anthropicErrors.js`), and research stops a pass on a
+  rejected request instead of marking page after page failed.
+- 45d9771 (browser fixtures for `/api/news-desk/stories`; browser-regressions
+  had failed since the merge, which blocked Render auto-deploy) deployed at
+  17:33 EDT. The logged reason for the 400: "This API key is not scoped to a
+  workspace, so this request must include the anthropic-workspace-id header".
+  Both keys in the Console are Organization-scoped and expire 2026-10-26. The
+  org has one workspace, Default, with no keys. Owner to create a key in the
+  Default workspace (no expiry) and replace `ANTHROPIC_API_KEY` in Render.
+- Working, 18:07 EDT (key in the Default workspace): `[news-desk] reports=0
+  confirmed=12 published=2 declined=1 left=$0.23` (3 Claude calls, $0.07).
+  Published: Ed Sheeran's Gillette Stadium cancellations (Stereogum, Variety,
+  NME) and Pearl Jam's Ohana set with Abe Laboriel Jr. (Rolling Stone,
+  Stereogum, NME), each about 170 words with attribution. Bug found: the Ed
+  Sheeran story was tagged with the act "Storm" (headline word) and Pearl Jam
+  with Paul McCartney (passing mention). Fixed: tags are kept only when Claude
+  names the artist as the story's subject, and a one-time repair keeps only the
+  artists each earlier story's headline names. Catalog research reports
+  `cost_unconfirmed`: a call interrupted by one of today's restarts, so it
+  pauses until the UTC day ends (20:00 EDT) by design.
+
+## 2026-09-26 Claude spending capped at $10 a month
+
+The owner does not want catalog research to use up the Claude budget and asked
+for all Claude spending to stay at or under $10 a month for now, with modest
+catalog filling.
+
+- `server/claudeSpendCeiling.js`: one shared monthly ceiling for every Claude
+  feature, `ANTHROPIC_MONTHLY_USD` (default $10, UTC calendar month), summed
+  from the research and news desk spend ledgers (a missing ledger counts as 0).
+- Catalog research: new `CATALOG_RESEARCH_MONTHLY_USD` (default $4); the daily
+  default drops from $5 to $0.30 and a day can never exceed a tenth of the
+  monthly cap, so an old `CATALOG_RESEARCH_DAILY_USD=5` in Render is held to
+  $0.40. A pass stops with `monthly_budget` or `claude_monthly_ceiling`. The
+  admin catalog screen shows this month's research spend.
+- About 2 to 4 pages a day at 5 to 12 cents each. Research still needs
+  `CATALOG_RESEARCH_ENABLED=true` in the Render dashboard to run at all.
+- The Anthropic console's own $10 monthly limit stays as the backstop.
 
 ## 2026-09-26 independent application/database integrity review
 
@@ -26,8 +925,12 @@ Historical moderator ownership removals also block legacy self-reclaims until
 staff approve a new claim.
 Local read-only database audit now has 44 checks, all passing. Production backup
 reported structural integrity OK, but a full live relational audit and off-host
-restore proof remain outstanding. Owner requested a new private R2 backup bucket;
-creation is blocked by unavailable Cloudflare access, not marked complete.
+restore proof remain outstanding. The private R2 backup bucket `mshpit-backups`
+now exists (created 2026-09-26 in the owner's Cloudflare account, public access
+off, lifecycle rule deletes objects after 14 days). Still pending: the owner's
+restricted API token (Object Read & Write on that bucket only), the four
+`BACKUP_S3_*` values in the Render dashboard, a verified upload and a restore
+drill. Off-host backups are not live until a backup object is seen in the bucket.
 
 ## 2026-09-26 Search Console: image metadata and indexing
 
@@ -424,7 +1327,8 @@ Wikidata run dry, and asked for an AI agent with web search to fill them.
   "Summarised from" source links; pages without research look as before.
 - Controls: needs `ANTHROPIC_API_KEY` (Render secret, owner to add) and
   `CATALOG_RESEARCH_ENABLED=true` (in render.yaml). Spending stops for the day
-  at `CATALOG_RESEARCH_DAILY_USD` (default $5, about 40 to 100 pages). Pausing
+  at `CATALOG_RESEARCH_DAILY_USD` (default $5 at the time; since 2026-09-26 the
+  default is $0.30 a day and $4 a month, see the entry above). Pausing
   catalog upkeep pauses research. Staff can hide a wrong result with
   `POST /api/moderation/catalog-research/hide` (audited). The admin catalog
   screen shows spend, pages filled and the last error.

@@ -1,3 +1,4 @@
+import { ensureArtistAccessRetentionTables } from "../artistAccounts/artistAccessRetention.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -11,6 +12,7 @@ import { ensureCitySchema } from "../cities/citySchema.js";
 import { musicBrainzBiographyFacts, validateStaffArtistBiography } from "../../../src/domain/artistBiography.mjs";
 import { createArtistLiveSummaryService } from "../artistArchive/artistLiveSummaryService.js";
 import { ensureArtistScheduleRevisionSchema } from "../artistArchive/artistScheduleCandidateIndex.js";
+import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
 
 const ARTIST_MBID = "12345678-1234-4234-8234-123456789abc";
 const OTHER_MBID = "22345678-1234-4234-8234-123456789abc";
@@ -109,6 +111,7 @@ function createDatabase() {
     CREATE TABLE artist_tourdate_refresh_queue(artist_key TEXT PRIMARY KEY,status TEXT,attempted_at INTEGER,
       succeeded_at INTEGER,ticketmaster_coverage_limited INTEGER DEFAULT 0,last_error_code TEXT);`);
   ensureArtistScheduleRevisionSchema(database);
+  ensureArtistAccessRetentionTables(database);
   return database;
 }
 
@@ -668,7 +671,7 @@ test("artist document uses only active UGC and references Event leaf pages witho
     assert.deepEqual(document.jsonLd[0].mainEntity, { "@id": "https://www.example.com/artist/alpha#artist" });
     assert.deepEqual(document.jsonLd[0].about.sameAs, [`https://musicbrainz.org/artist/${ARTIST_MBID}`]);
     assert.equal(Object.hasOwn(invalidMbidDocument.jsonLd[0].about, "sameAs"), false);
-    assert.equal(invalidMbidDocument.title, "Bad MBID music artist profile | Mshpit");
+    assert.equal(invalidMbidDocument.title, "Bad MBID Biography & Live Music | Mshpit");
     assert.doesNotMatch(`${invalidMbidDocument.title} ${invalidMbidDocument.description}`, /reviews|photos|tour dates|upcoming/iu);
     assert.deepEqual(document.reviews.map((review) => review.id), ["visible", "private-gallery"]);
     assert.deepEqual(document.events.map((event) => event.id), ["event-public"]);
@@ -1834,6 +1837,43 @@ test("incomplete legacy media does not emit an incomplete posting schema", () =>
   }
 });
 
+test("member image rights stay truthful across two-photo posts and artist reuse without exposing unready media", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Sharing Member", handle: "sharing-member" });
+    addArtist(database);
+    addPost(database, { id: "photo-rights-post" });
+    for (const suffix of ["one", "two"]) {
+      addReadyImage(database, { assetId: `rights-${suffix}`, ownerId: "active", postId: "photo-rights-post",
+        url: `https://media.example/public/rights-${suffix}.jpg` });
+    }
+    const documents = service(database);
+    const post = documents.postDocument({ id: "photo-rights-post" });
+    assert.equal(post.jsonLd[0].image.length, 2);
+    for (const image of post.jsonLd[0].image) {
+      assert.equal(image.creditText, "Shared by Sharing Member on Mshpit");
+      assert.equal(image.license, "https://www.example.com/photo-rights");
+      assert.equal(image.acquireLicensePage, "https://www.example.com/photo-rights#request-permission");
+      assert.equal(Object.hasOwn(image, "creator"), false);
+      assert.equal(Object.hasOwn(image, "copyrightNotice"), false);
+    }
+    const artist = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(artist.jsonLd[0].about.image.creditText, "Shared by Sharing Member on Mshpit");
+    assert.equal(artist.jsonLd[0].about.image.license, "https://www.example.com/photo-rights");
+    assert.equal(artist.jsonLd[0].about.image.acquireLicensePage, "https://www.example.com/photo-rights#request-permission");
+    assert.equal(Object.hasOwn(artist.jsonLd[0].about.image, "creator"), false);
+    assert.equal(Object.hasOwn(artist.jsonLd[0].about.image, "copyrightNotice"), false);
+    assert.match(documents.render(artist), /Photos shared by Sharing Member\./);
+    database.prepare("UPDATE media_assets SET status='upload_pending' WHERE owner_id=?").run("active");
+    const unreadyMediaPost = documents.postDocument({ id: "photo-rights-post" });
+    assert.equal(unreadyMediaPost.post.media.length, 0);
+    assert.equal(Object.hasOwn(unreadyMediaPost.jsonLd[0], "image"), false);
+    assert.doesNotMatch(documents.render(unreadyMediaPost), /rights-(one|two)\.jpg|class="micro media-rights"/);
+  } finally {
+    database.close();
+  }
+});
+
 test("verified post images are ImageObjects and the public artist directory is substantive and bounded", () => {
   const database = createDatabase();
   try {
@@ -1851,8 +1891,13 @@ test("verified post images are ImageObjects and the public artist directory is s
     const imageDocument = service(database).postDocument({ id: "image-post" });
     assert.equal(imageDocument.jsonLd[0].image[0]["@type"], "ImageObject");
     assert.equal(imageDocument.jsonLd[0].image[0].contentUrl, "https://media.example/public/schema-image.jpg");
-    assert.equal(imageDocument.jsonLd[0].image[0].creditText, "Photo by Image Fan on Mshpit");
-    assert.equal(imageDocument.jsonLd[0].image[0].copyrightNotice, "© Image Fan", "members keep ownership of their photos");
+    assert.equal(imageDocument.jsonLd[0].image[0].creditText, "Shared by Image Fan on Mshpit");
+    assert.equal(Object.hasOwn(imageDocument.jsonLd[0].image[0], "creator"), false, "upload custody does not prove who took the photo");
+    assert.equal(Object.hasOwn(imageDocument.jsonLd[0].image[0], "copyrightNotice"), false, "upload custody does not prove copyright ownership");
+    assert.equal(imageDocument.jsonLd[0].image[0].license, "https://www.example.com/photo-rights");
+    assert.equal(imageDocument.jsonLd[0].image[0].acquireLicensePage, "https://www.example.com/photo-rights#request-permission");
+    assert.match(service(database).render(imageDocument), /Photos shared by Image Fan\. <a href="\/photo-rights">Photo rights<\/a>/);
+    assert.match(service(database).render(imageDocument), /href="\/photo-rights#request-permission">Request permission<\/a>/);
     assert.equal(Object.hasOwn(imageDocument.jsonLd[0], "associatedMedia"), false);
 
     const longBio = "A substantive artist biography covering live history, musical style, recordings, tours, collaborators, and fan context.";
@@ -1895,6 +1940,78 @@ test("verified post images are ImageObjects and the public artist directory is s
     }
   } finally {
     database.close();
+  }
+});
+
+test("Discover event previews stop evaluating after their bounded page while directories retain exact totals", () => {
+  const database = createDatabase();
+  try {
+    database.exec("CREATE INDEX idx_tourdates_sitemap_cursor ON tour_dates(date,id,release_at,provider_active)");
+    addArtist(database, { bio: "An established public biography. ".repeat(4) });
+    const insert = database.prepare(`INSERT INTO tour_dates(id,artist,artist_key,venue,date,release_at)
+      VALUES (?,'Alpha','alpha','Public Hall','2026-09-01',0)`);
+    for (let i = 0; i < 1000; i++) insert.run(`bounded-${String(i).padStart(4, '0')}`);
+    let evaluations = 0;
+    const instrumented = new Proxy(database, { get(target, property) {
+      if (property === "function") return (name, options, callback) => target.function(name, options,
+        name === "pit_indexable_music_event" ? function(a, b, c, d, e, f, g, h, i, j) {
+          evaluations++; return callback(a, b, c, d, e, f, g, h, i, j);
+        } : callback);
+      return typeof target[property] === "function" ? target[property].bind(target) : target[property];
+    } });
+    const repository = createPublicDocumentRepository(instrumented);
+    const preview = repository.readDiscover({ at: NOW, artistLimit: 1, eventLimit: 12 });
+    assert.equal(preview.events.length, 12);
+    assert.ok(evaluations < 50, `a twelve-row preview evaluated ${evaluations} events`);
+    const directory = repository.readDirectory({ kind: "events", at: NOW });
+    assert.equal(directory.total, 1000);
+    assert.equal(directory.hasNext, true);
+  } finally { database.close(); }
+});
+
+test("Discover previews retain directory eligibility, order and fresh reads with and without the existing cursor index", () => {
+  for (const indexed of [false, true]) {
+    const database = createDatabase();
+    try {
+      if (indexed) database.exec("CREATE INDEX idx_tourdates_sitemap_cursor ON tour_dates(date,id,release_at,provider_active)");
+      addUser(database, "active");
+      addUser(database, "banned", { banned: true });
+      for (let i = 0; i < 20; i++) {
+        addArtist(database, { key: `preview-${i}`, name: `Preview Artist ${i}`, bio: "" });
+        database.prepare(`INSERT INTO tour_dates
+          (id,artist,artist_key,venue,date,release_at,owner_id,event_status)
+          VALUES (?,?,?,?,?,?,?,?)`).run(`preview-${i}`, `Preview Artist ${i}`, `preview-${i}`,
+          "Preview Hall", "2026-09-01", i === 0 ? NOW + 1000 : 0,
+          i === 1 ? "banned" : i === 2 ? "active" : null, "scheduled");
+      }
+      const repository = createPublicDocumentRepository(database);
+      const parity = () => {
+        const preview = repository.readDiscover({ at: NOW, artistLimit: 12, eventLimit: 12 });
+        for (const kind of ["artists", "events"]) {
+          const directory = repository.readDirectory({ kind, limit: 12, at: NOW });
+          assert.deepEqual(preview[kind].map(row => ({ ...row })),
+            directory[kind].map(({ directory_total: _count, ...row }) => row));
+          assert.equal(directory.total, 18);
+          assert.equal(directory.hasNext, true);
+        }
+        return preview;
+      };
+      const before = parity();
+      assert.equal(before.events.some(row => row.id === "preview-0" || row.id === "preview-1"), false);
+      // A changed row remains observable on the next read; no projected rows or
+      // privacy decisions are retained between requests.
+      database.prepare("UPDATE tour_dates SET event_status='cancelled' WHERE id='preview-10'").run();
+      const cancelled = parity();
+      assert.equal(cancelled.events.find(row => row.id === "preview-10")?.event_status, "cancelled");
+      database.prepare("UPDATE tour_dates SET provider_active=0 WHERE id='preview-10'").run();
+      database.prepare("UPDATE tour_dates SET release_at=? WHERE id='preview-3'").run(NOW + 1000);
+      database.prepare("UPDATE users SET is_banned=1 WHERE id='active'").run();
+      const changed = repository.readDiscover({ at: NOW, eventLimit: 12 });
+      assert.equal(changed.events.some(row => ["preview-2", "preview-3", "preview-10"].includes(row.id)), false);
+      assert.equal(repository.readDirectory({ kind: "events", at: NOW }).total, 15);
+      const released = repository.readDiscover({ at: NOW + 1001, eventLimit: 12 });
+      assert.equal(released.events.some(row => row.id === "preview-0"), true);
+    } finally { database.close(); }
   }
 });
 

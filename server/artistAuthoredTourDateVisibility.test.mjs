@@ -10,6 +10,8 @@ const directory = mkdtempSync(join(tmpdir(), "pit-artist-authored-dates-"));
 process.env.PIT_DATA_DIR = directory;
 const { db, q } = await import("./db.js");
 const { routes } = await import("./api.js");
+const { resolveEntity, seoHttpPlan } = await import("./seo.js");
+const { eventPath } = await import("../src/domain/urls.mjs");
 const { createPublicDocumentRepository } = await import("./features/seo/publicDocumentRepository.js");
 const { materializeSitemapCandidates } = await import("./features/seo/sitemapService.js");
 const { createEventCoverageService } = await import("./features/discovery/eventCoverageService.js");
@@ -95,3 +97,67 @@ test("holding a provider-catalog artist withdraws that owner's dates but not ind
   assert.equal(visibleTourDateRowsFrom(db, null, { id, at }).length, 1);
   assert.ok(documents.readEvent({ id, at }), "an independent provider import is still a public fact");
 });
+
+const resolutionCases = [
+  { label: "everyone", public: true, readers: [true, true, true, true, true] },
+  { label: "approved identity", identity: "approved", public: true, readers: [true, true, true, true, true] },
+  { label: "only-me audience", audience: "only_me", readers: [false, false, true, true, false] },
+  { label: "members audience", audience: "members", readers: [false, true, true, true, true] },
+  { label: "pending identity", identity: "pending" },
+  { label: "rejected identity", identity: "rejected" },
+  { label: "pending imported identity", identity: "pending", imported: true },
+  { label: "rejected imported identity", identity: "rejected", imported: true },
+  { label: "removed artist profile", removed: true },
+  { label: "withdrawn ownership", withdrawn: true },
+  { label: "banned owner", banned: true },
+  { label: "suspended owner", suspended: true },
+  { label: "dormant owner", dormant: true },
+  { label: "independent provider event", audience: "only_me", identity: "rejected", removed: true,
+    provider: true, public: true, readers: [true, true, true, true, true] },
+];
+
+for (const scenario of resolutionCases) {
+  test(`public event resolution applies anonymous publication rules to every caller: ${scenario.label}`, () => {
+    const { owner, artist, id } = published();
+    const unrelated = member();
+    const admin = member();
+    const moderator = member();
+    db.prepare("UPDATE users SET role='admin' WHERE id=?").run(admin.id);
+    db.prepare("UPDATE users SET role='moderator' WHERE id=?").run(moderator.id);
+    if (scenario.audience) db.prepare("UPDATE users SET profile_audience=? WHERE id=?").run(scenario.audience, owner.id);
+    if (scenario.identity) db.prepare("UPDATE artist_profiles SET identity_review_status=? WHERE artist_key=?").run(scenario.identity, artist.key);
+    if (scenario.imported) db.prepare("UPDATE artists SET source='musicbrainz' WHERE norm=?").run(artist.key);
+    if (scenario.removed) db.prepare("UPDATE artist_profiles SET removed=1 WHERE artist_key=?").run(artist.key);
+    if (scenario.withdrawn) db.prepare("UPDATE artist_profiles SET owner_id=NULL WHERE artist_key=?").run(artist.key);
+    if (scenario.banned) db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(owner.id);
+    if (scenario.suspended) db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(at + 86_400_000, owner.id);
+    if (scenario.dormant) db.prepare("UPDATE users SET dormant_at=? WHERE id=?").run(at, owner.id);
+    if (scenario.provider) db.prepare("UPDATE tour_dates SET owner_id=NULL,source='ticketmaster' WHERE id=?").run(id);
+
+    const path = eventPath(id);
+    const publicResult = resolveEntity(path);
+    const isPublic = scenario.public === true;
+    assert.equal(Boolean(documents.readEvent({ id, at })), isPublic, "existing public document policy");
+    assert.equal(Boolean(publicResult), isPublic, "exact-ID resolution must agree with the public document");
+    assert.equal(seoHttpPlan(path).status, isPublic ? 200 : 404);
+    if (isPublic) {
+      assert.equal(publicResult.id, id);
+      assert.equal(publicResult.publicEventSnapshot, true);
+      assert.equal(publicResult.artist, artist.name);
+      assert.equal(Object.hasOwn(publicResult, "ownerId"), false);
+      assert.equal(Object.hasOwn(publicResult, "owner_id"), false);
+    } else {
+      assert.equal(publicResult, null, "restricted events receive the same result as unknown IDs");
+    }
+
+    const viewers = [null, unrelated, owner, admin, moderator].map(viewer => viewer && q.userById.get(viewer.id));
+    const labels = ["anonymous", "unrelated member", "owner", "admin", "moderator"];
+    const expectedReaders = scenario.readers || [false, false, false, true, false];
+    for (const [index, viewer] of viewers.entries()) {
+      const resolved = routes["GET /api/resolve"]({ user: viewer, query: { path }, ip: `public-scope-${id}` });
+      assert.deepEqual(resolved, { entity: publicResult }, `${labels[index]} cannot widen a public snapshot`);
+      const managed = routes["GET /api/tourdates"]({ user: viewer, query: {} }).tourDates;
+      assert.equal(managed.some(row => row.id === id), expectedReaders[index], `${labels[index]} retains existing calendar permissions`);
+    }
+  });
+}

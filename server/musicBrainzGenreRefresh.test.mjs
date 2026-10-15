@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { createMusicBrainzRequestThrottle } from "./musicBrainzRequestThrottle.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-musicbrainz-genres-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -89,6 +90,110 @@ test("the exact lookup never name-searches and sends the required identifying Us
     `https://musicbrainz.org/ws/2/artist/${ALPHA_MBID}?inc=genres&fmt=json`,
   );
   assert.equal(request.options.headers["User-Agent"], "Mshpit/1.0 (https://mshpit.com)");
+});
+
+for (const status of [429, 503]) {
+  for (const format of ["seconds", "date"]) {
+    test(`MusicBrainz genre ${status} ${format} Retry-After protects other callers and survives disposal failure`, async (t) => {
+      let now = Date.parse("2026-10-09T12:00:00Z");
+      t.mock.method(Date, "now", () => now);
+      const delay = 2 * 60 * 60_000;
+      const retryAt = now + delay;
+      const requestGate = createMusicBrainzRequestThrottle({
+        clock: () => now,
+        wait: async (ms) => { now += ms; },
+      });
+      let requests = 0, discarded = 0;
+      await assert.rejects(fetchExactMusicBrainzArtistGenres(ALPHA_MBID, {
+        requestGate,
+        fetchImpl: async () => {
+          requests += 1;
+          return {
+            ok: false, status,
+            headers: new Headers({ "Retry-After": format === "seconds" ? String(delay / 1000) : new Date(retryAt).toUTCString() }),
+            body: { cancel() {
+              discarded += 1;
+              const error = new Error("disposal failed");
+              if (format === "seconds") throw error;
+              return Promise.reject(error);
+            } },
+          };
+        },
+      }), (error) => {
+        assert.equal(error.message, "MusicBrainz genre lookup failed.");
+        assert.equal(error.status, status);
+        assert.equal(error.retryAfterMs, delay);
+        assert.equal(error.retryAt, retryAt);
+        return true;
+      });
+      assert.equal(requests, 1);
+      assert.equal(discarded, 1);
+      assert.equal(requestGate.status().retryAt, retryAt);
+      await assert.rejects(requestGate(() => assert.fail("the cooldown must protect interactive callers"), {
+        priority: "interactive",
+      }), { code: "circuit_open" });
+    });
+  }
+}
+
+for (const phase of ["response", "disposal"]) {
+  test(`MusicBrainz genre cancellation during ${phase} preserves the received provider cooldown`, async (t) => {
+    let now = Date.parse("2026-10-09T12:00:00Z");
+    t.mock.method(Date, "now", () => now);
+    const retryAt = now + 2 * 60 * 60_000;
+    const controller = new AbortController();
+    const reason = new DOMException("Stopped", "AbortError");
+    const gate = createMusicBrainzRequestThrottle({ clock: () => now, wait: async (ms) => { now += ms; } });
+    let requests = 0, discarded = 0;
+    await assert.rejects(fetchExactMusicBrainzArtistGenres(ALPHA_MBID, {
+      signal: controller.signal,
+      requestGate: gate,
+      fetchImpl: async () => {
+        requests += 1;
+        if (phase === "response") controller.abort(reason);
+        return {
+          ok: false, status: phase === "response" ? 429 : 503,
+          headers: new Headers({ "Retry-After": phase === "response" ? "7200" : new Date(retryAt).toUTCString() }),
+          body: { cancel() {
+            discarded += 1;
+            if (phase === "disposal") controller.abort(reason);
+            return Promise.reject(new Error("disposal failed after cancellation"));
+          } },
+        };
+      },
+    }), (error) => error === reason);
+    assert.equal(requests, 1);
+    assert.equal(discarded, 1);
+    assert.equal(gate.status().consecutiveFailures, 1);
+    assert.equal(gate.status().retryAt, retryAt);
+    await assert.rejects(gate(() => assert.fail("received refusal must protect subsequent callers")), { code: "circuit_open" });
+  });
+}
+
+test("MusicBrainz genre cancellation before the gate starts never reaches fetch", async () => {
+  const controller = new AbortController();
+  const reason = new DOMException("Stopped", "AbortError");
+  await assert.rejects(fetchExactMusicBrainzArtistGenres(ALPHA_MBID, {
+    signal: controller.signal,
+    requestGate: (run) => { controller.abort(reason); return run(); },
+    fetchImpl: () => assert.fail("cancelled request must not fetch"),
+  }), (error) => error === reason);
+});
+
+test("MusicBrainz genre transport errors after cancellation preserve the caller reason", async () => {
+  const controller = new AbortController();
+  const reason = new DOMException("Stopped", "AbortError");
+  const gate = createMusicBrainzRequestThrottle();
+  await assert.rejects(fetchExactMusicBrainzArtistGenres(ALPHA_MBID, {
+    signal: controller.signal,
+    requestGate: gate,
+    fetchImpl: async () => {
+      controller.abort(reason);
+      throw new Error("transport closed after cancellation");
+    },
+  }), (error) => error === reason);
+  assert.equal(gate.status().consecutiveFailures, 0);
+  assert.equal(gate.status().retryAt, null);
 });
 
 test("the bounded worker persists verified evidence, cursor, and per-artist checks", async () => {

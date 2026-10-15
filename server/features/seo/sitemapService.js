@@ -1,3 +1,4 @@
+import { publicCatalogEditorArtistTexts } from "../catalogEditor/catalogEditorRepository.js";
 import { activeAccountSql } from "../../accountVisibility.js";
 import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
 import { publicArtistCatalogSql } from "../../artistCatalogVisibility.js";
@@ -44,7 +45,7 @@ import {
 import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
 import { foldedCityName } from "./publicCollectionRepository.js";
 import { createCityGuideRepository } from "../cities/cityGuideRepository.js";
-import { createArtistNewsReader } from "../artistUpdates/artistNewsReader.js";
+import { createNewsDeskReader } from "../newsDesk/newsDeskService.js";
 import { NEWS_INDEX_MIN_ITEMS } from "../artistUpdates/newsDocuments.js";
 import { effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
 import {
@@ -526,6 +527,7 @@ export function profileSitemapEntries(database, { candidates = null } = {}) {
 export function artistSitemapEntries(database, { now = Date.now(), candidates = null } = {}) {
   const requestedAt = Number(now);
   const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
+  const catalogTexts = publicCatalogEditorArtistTexts(database, at);
   const today = new Date(at).toISOString().slice(0, 10);
   const profileDetails = new Map(database.prepare(`SELECT ap.artist_key,ap.bio,ap.bio_staff_curated,ap.updated_at,
       CASE WHEN ap.owner_id IS NULL OR ${activeAccountSql("owner")} THEN 1 ELSE 0 END AS owner_public
@@ -555,7 +557,9 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
     try { imported = knowledge ? JSON.parse(knowledge) : null; }
     catch { imported = null; }
     const displayBio = artistKnowledgeDisplayBio({ artistKnowledge: imported }, { mbid: row.mbid, bio: selectedBio });
-    artistRows.push({ ...identity, substantiveBio: substantiveVisibleText(displayBio, 80, 2_000) });
+    const catalogText = catalogTexts.get(row.norm);
+    artistRows.push({ ...identity, catalogTextUpdatedAt: catalogText?.updatedAt || null,
+      substantiveBio: substantiveVisibleText(displayBio, 80, 2_000) || substantiveVisibleText(catalogText?.summary, 80, 2_400) });
   }
   const artistByNorm = new Map(artistRows.map((row) => [String(row.norm || "").trim().toLowerCase(), row]));
   const artistByName = new Map();
@@ -646,6 +650,7 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
       legacy: isLegacyArtistMemorial(memorialDetails.get(row.norm)?.memorial),
       lastmod: newest(
         row.updated_at,
+        row.catalogTextUpdatedAt,
         Number(profileDetails.get(row.norm)?.owner_public) === 1 ? profileDetails.get(row.norm).updated_at : null,
         officialUpdates.get(row.norm),
         postUpdates.get(row.norm),
@@ -1226,9 +1231,28 @@ export function buildSitemapDatasets(database, { now = Date.now() } = {}) {
   if (guideCities.length) pages.push({ path: "/cities" });
   // /news is noindex until it has enough items; listing it earlier only
   // shows up in Search Console as "Excluded by noindex". Same read as the page.
-  const newsItems = createArtistNewsReader(database, { ensureSchema: false })
-    .read({ limit: 60, at: candidates.generatedAt }).items;
-  if (newsItems.length >= NEWS_INDEX_MIN_ITEMS) pages.push({ path: "/news" });
+  const newsStories = createNewsDeskReader(database, { ensureSchema: false }).list({ limit: 40 }).stories;
+  if (newsStories.length >= NEWS_INDEX_MIN_ITEMS) pages.push({ path: "/news" });
+  // Live coverage pages with a winners list (award shows): indexable, and
+  // worth a crawl while the night and the morning-after searches are on.
+  if (database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='news_live_categories'").get()) {
+    for (const row of database.prepare(`SELECT e.slug, MAX(COALESCE(c.announced_at,c.updated_at)) AS lastmod FROM news_live_events e
+      JOIN news_live_categories c ON c.event_id=e.id WHERE e.starts_at<=? GROUP BY e.id ORDER BY e.starts_at DESC LIMIT 200`).all(candidates.generatedAt)) {
+      if (/^[a-z0-9-]{1,80}$/u.test(row.slug)) pages.push({ path: `/news/live/${row.slug}`, lastmod: row.lastmod });
+    }
+  }
+  // Festivals: the hub once it lists a few, and every festival with dates,
+  // a history or past editions (the same test the page uses to be indexable).
+  if (database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='festival_editions'").get()) {
+    const today = new Date(candidates.generatedAt).toISOString().slice(0, 10);
+    const upcomingFestivals = database.prepare("SELECT COUNT(DISTINCT festival_slug) AS n FROM festival_editions WHERE end_date >= ?").get(today)?.n || 0;
+    if (upcomingFestivals >= 3) pages.push({ path: "/festivals" });
+    for (const row of database.prepare(`SELECT f.slug, MAX(COALESCE(e.updated_at, f.updated_at)) AS lastmod FROM festivals f
+      LEFT JOIN festival_editions e ON e.festival_slug=f.slug
+      WHERE e.id IS NOT NULL OR (f.about IS NOT NULL AND f.about<>'') GROUP BY f.slug ORDER BY f.slug LIMIT 500`).all()) {
+      if (/^[a-z0-9-]{1,80}$/u.test(row.slug)) pages.push({ path: `/festival/${row.slug}`, lastmod: row.lastmod });
+    }
+  }
   const cities = [...citySitemapEntries({ candidates, venueEntries: venues, concerts }), ...guideCities];
   const artistArchives = artistArchiveSitemapEntries({ artistEntries: artists, concerts });
   const datasets = new Map([

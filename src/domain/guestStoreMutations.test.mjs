@@ -6,7 +6,7 @@ import { accountMutationIsCurrent, captureAccountMutation } from "./accountMutat
 import { normalizeArtistCampaign } from "./artistCampaignPost.mjs";
 import { normalizeTaggedPeople, taggedUserIdsFromPeople } from "./postFriendTags.mjs";
 import { deliverPostCreate } from "./postDelivery.mjs";
-import { buildMemoryCreateBody, buildReviewCreateBody, cleanArtistKey } from "./post-payload.mjs";
+import { buildMemoryCreateBody, buildReviewCreateBody, buildStatusCreateBody, cleanArtistKey } from "./post-payload.mjs";
 import { clean, clampRating, LIMITS } from "./validation.mjs";
 
 // Execute the actual Store callbacks and their rendered-account guard. Only
@@ -29,7 +29,7 @@ const seedPost = { id: "post-1", userId: owner.id, kind: "status", review: "An e
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 function fixture({ actor = owner, ready = true, demo = false } = {}) {
-  const state = { feed: [structuredClone(seedPost)], myLikes: {}, likes: {}, media: { photo: { count: 3, mine: false } } };
+  const state = { feed: [structuredClone(seedPost)], removedIds: [], myLikes: {}, likes: {}, media: { photo: { count: 3, mine: false } } };
   const writes = [], calls = [], effects = [];
   const sessionRef = { current: actor }, authReadyRef = { current: ready };
   const accountMutationEpochRef = { current: 1 }, feedMutationRevisionRef = { current: 0 };
@@ -38,13 +38,14 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
     session: actor, sessionRef, authReadyRef, accountMutationEpochRef, feedMutationRevisionRef,
     captureAccountMutation, accountMutationIsCurrent,
     clean, clampRating, LIMITS, cleanArtistKey, normalizeArtistCampaign,
-    normalizeTaggedPeople, taggedUserIdsFromPeople, buildMemoryCreateBody, buildReviewCreateBody,
+    normalizeTaggedPeople, taggedUserIdsFromPeople, buildMemoryCreateBody, buildReviewCreateBody, buildStatusCreateBody,
     deliverPostCreate: (options) => deliverPostCreate({ ...options, retryDelaysMs: [] }),
     normalizeServerPost: (post) => post,
     AppError: class extends Error { constructor(message, options) { super(message); Object.assign(this, options); } },
     ENABLE_DEMO_DATA: demo,
     feed: state.feed, myLikes: state.myLikes, likes: state.likes,
     setFeed: update("feed"), setMyLikes: update("myLikes"), setLikes: update("likes"), setMediaReactions: update("media"),
+    setRemovedIds: update("removedIds"),
     upsertProfileHistoryPost: (...args) => effects.push(["upsert", ...args]),
     removeProfileHistoryPost: (...args) => effects.push(["remove", ...args]),
     track: (...args) => effects.push(["track", ...args]),
@@ -135,6 +136,7 @@ for (const [name, invoke] of Object.entries(commands)) {
     const result = await pending;
     assert.equal(result.ok, true);
     if (name === "addLog") assert.equal(f.state.feed[0].userId, owner.id);
+    if (name === "deleteOwnPost") assert.deepEqual(f.state.removedIds, [seedPost.id], "confirmed deletion invalidates cached story cards");
   });
 
   test(`${name}: late success or failure cannot publish into a changed account epoch`, async () => {

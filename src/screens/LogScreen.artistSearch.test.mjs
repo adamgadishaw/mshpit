@@ -42,7 +42,7 @@ function fixture({ apiClient = async () => ({ artists: [] }), query = "Unknown A
   accountTasks.setAccount("account-a"); accountTasks.mount();
   let now = 1_000, timer;
   const bindings = {
-    session: { id: "account-a" }, accountTasks, COMPOSER_ARTIST_SEARCH_LIMIT, artistLookupFailureMessage,
+    session: { id: "account-a" }, accountTasks, COMPOSER_ARTIST_SEARCH_LIMIT, artistLookupFailureMessage, isFestival: false,
     fetchResolvedArtist, api: apiClient,
     searchArtistsApi: (query, options) => fetchArtistSuggestions(query, { ...options, apiClient }),
     artistRequestRef: { current: 0 }, artistCatalogControllerRef: { current: null },

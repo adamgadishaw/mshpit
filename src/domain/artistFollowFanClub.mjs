@@ -1,6 +1,6 @@
 import { accountTargetScope } from "./screenScope.mjs";
 
-export const MAX_FOLLOWED_ARTISTS = 50;
+export const MAX_FOLLOWED_ARTISTS = 500;
 
 const cleanArtistName = (value) => String(value || "").replace(/\s+/g, " ").trim().slice(0, 80);
 const artistIdentity = (value) => cleanArtistName(value).toLocaleLowerCase();
@@ -47,4 +47,11 @@ export function nextArtistFollowSelection(values, name, { following, limit = MAX
 
 export function shouldOfferFanClubInvite({ followSucceeded = false, following = false, member = false } = {}) {
   return !!followSucceeded && !!following && !member;
+}
+// Versions belong to the artist-selection field, not unrelated profile saves.
+export function artistFollowReceipt(previous, mutation, version) {
+  const parsed = Number(version);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) return null;
+  if (previous?.accountId === mutation.accountId && previous?.epoch === mutation.epoch && previous.version > parsed) return null;
+  return { ...mutation, version: parsed };
 }

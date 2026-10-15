@@ -1,8 +1,29 @@
-export const PRIVACY_POLICY_UPDATED = "September 11, 2026";
-export const TERMS_POLICY_UPDATED = "September 11, 2026";
+export const PRIVACY_POLICY_UPDATED = "September 28, 2026";
+export const TERMS_POLICY_UPDATED = "September 28, 2026";
 // Sent by current clients and persisted with account creation so an acceptance
 // record identifies the exact materially revised Terms + Privacy pair.
-export const LEGAL_ACCEPTANCE_VERSION = "2026-09-11";
+export const LEGAL_ACCEPTANCE_VERSION = "2026-09-28";
+
+// This describes a separate, item-specific permission. Terms acceptance and
+// existing spotlight/email/analytics flags are NOT promotional-media consent.
+export const PROMOTIONAL_CONTENT_TERMS = Object.freeze({
+  heading: "Optional permission for Mshpit promotion",
+  paragraphs: Object.freeze([
+    "You keep ownership of your content. Only if you separately and expressly approve a promotional use, you grant Mshpit a non-exclusive, worldwide, royalty-free licence to reproduce, crop, resize, excerpt, caption, display, and distribute the specific public content you approve to promote Mshpit and its app. This can include Mshpit's social-media posts and paid advertisements, but only in the channels and for the period described in your permission. Providers may handle that content only on Mshpit's behalf for that approved use, not sell it or use it to advertise unrelated products.",
+    "Permission is optional and is not a condition of having an account or posting. Uploading, accepting these Terms, continuing to use Mshpit, or enabling artist-page sharing, community spotlights, announcement emails, or analytics does not grant this separate permission. Existing content and existing permissions are not automatically enrolled. Private posts, drafts, messages, and non-public account information are excluded. Mshpit must obtain and record your express permission for the identified content, uses, channels, period, and public credit before a campaign uses it; until a dedicated permission control is available, this is arranged in writing through Support.",
+    "Mshpit will always give credit for each approved promotional use. Credit will use the public name or handle you approve and identify the source content, linking to the original public post where available and appropriate. Credit may appear on a corresponding entry on Mshpit's public credits/source page instead of being overlaid on the photo or video. In that case, each promotion must visibly link directly to that entry from its caption, description, or accompanying material; a generic homepage link is not enough. Where the format cannot carry that link, credit must appear with the promotion. Private names, email addresses, and other private contact details will not be used as credit.",
+    "You may approve only rights you hold or are authorized to license. A posting credit does not establish copyright ownership. Mshpit must separately clear any additional rights needed for the intended use, including music, performances, other people's likenesses, or third-party material. Edits must not materially misrepresent you or the content, imply an endorsement you did not approve, or remove required third-party attribution. This permission does not transfer copyright or waive moral rights.",
+    "You can withdraw promotional permission through Support at any time without losing your account. Making the approved content private, deleting it, or deleting your account also ends permission for new promotional use. Mshpit will stop new uses and promptly pause or remove promotional copies it controls, including active paid ads, and remove or revise the corresponding public credit entry as needed to respect your privacy. Copies already distributed by third parties may not be fully retrievable, but that does not authorize Mshpit to keep publishing or running ads. Limited private records may be retained where needed to document permission, withdrawal, or legal obligations; they do not authorize further promotion.",
+  ]),
+});
+
+export const PROMOTIONAL_CONTENT_PRIVACY = Object.freeze({
+  heading: "Optional promotional content and source credits",
+  paragraphs: Object.freeze([
+    "Mshpit may use specific public content in its social-media posts or paid ads only after you separately approve the content, channels, period, and public credit in writing through Support or a dedicated permission control if one becomes available. This is optional; existing content and artist-page, spotlight, email, or analytics permissions are not automatically included. Private posts, drafts, messages, and non-public account information are excluded.",
+    "For an approved use, the agreed content and public name or handle can be shared with the approved social or advertising service and shown on a public credits/source entry visibly linked from the promotion. Those services may process the published material under their own policies. Permission and withdrawal records are kept privately, not on the credits page. You can withdraw through Support; making the content private or deleting it or your account also ends permission for new use. Mshpit will stop new uses, promptly pause or remove copies it controls, and remove or revise public credits as needed for privacy. Third-party copies may not be fully retrievable. The Terms explain the licence and attribution requirements.",
+  ]),
+});
 
 export const ANNOUNCEMENT_EMAIL_DISCLOSURE = Object.freeze({
   heading: "Email and announcement choices",

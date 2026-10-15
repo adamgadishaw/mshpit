@@ -1,4 +1,6 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
+import { parseTimesSeen } from "./supportingActs.mjs";
+import { lineupRequestFields } from "./lineup.mjs";
 import { clean, clampRating, LIMITS } from "./validation.mjs";
 import { taggedUserIdsFromPeople } from "./postFriendTags.mjs";
 import {
@@ -26,6 +28,23 @@ export function cleanMediaAssetIds(value) {
   return ids;
 }
 
+export function postCreateMediaFields(post) {
+  const photos = Array.isArray(post?.photos) ? post.photos : [];
+  if (!Array.isArray(post?.mediaAssetIds)) return { photos };
+  const mediaAssetIds = cleanMediaAssetIds(post.mediaAssetIds);
+  // Converting clips have stable IDs but no ready URLs in the composer. They
+  // may finish before Post or an idempotent retry; let the server resolve the
+  // entire exact ID selection rather than comparing that stale URL snapshot.
+  return { ...(mediaAssetIds.length > photos.length ? {} : { photos }), mediaAssetIds };
+}
+
+export function buildStatusCreateBody(post) {
+  return { clientMutationId: post.id, kind: "status", review: post.review,
+    taggedUserIds: taggedUserIdsFromPeople(post.taggedPeople), song: post.song || null,
+    ...postCreateMediaFields(post), photosPublic: post.photosPublic === false ? 0 : 1,
+    ...(post.playlistId ? { playlistId: post.playlistId } : {}), campaign: post.campaign };
+}
+
 export function buildReviewCreateBody(post) {
   const online = isOnlineReview(post);
   return {
@@ -45,11 +64,14 @@ export function buildReviewCreateBody(post) {
     youtubeUrl: online ? canonicalYouTubeReviewUrl(post.youtubeUrl, post.youtubeVideoId) : null,
     review: post.review,
     taggedUserIds: taggedUserIdsFromPeople(post.taggedPeople),
-    photos: post.photos,
-    ...(Array.isArray(post.mediaAssetIds) ? { mediaAssetIds: cleanMediaAssetIds(post.mediaAssetIds) } : {}),
+    ...postCreateMediaFields(post),
     photosPublic: post.photosPublic ? 1 : 0,
     landingShowcase: !online && post.photosPublic && post.landingShowcase ? 1 : 0,
     setlist: online ? [] : post.setlist,
+    // The show's format and every act on it, each counted as seen live.
+    ...lineupRequestFields(post, { online }),
+    // Only when the person set it: "this was my Nth time".
+    ...(!online && parseTimesSeen(post.timesSeen) ? { timesSeen: parseTimesSeen(post.timesSeen) } : {}),
     tour: online ? null : post.tour || null,
     // Descriptive post tags are retired. Concert companion tagging remains a
     // separate, structured user relationship in taggedUserIds.
@@ -81,6 +103,9 @@ export function buildReviewEditBody(changes) {
     photosPublic: !!changes.photosPublic,
     landingShowcase: !online && !!changes.photosPublic && !!changes.landingShowcase,
     setlist: !online && Array.isArray(changes.setlist) ? changes.setlist.filter((item) => typeof item === "string").slice(0, 40) : [],
+    // Sent only when the form holds the list, so a partial edit never wipes it.
+    ...(Array.isArray(changes.lineup) || Array.isArray(changes.supportingActs) ? lineupRequestFields(changes, { online }) : {}),
+    ...(!online && parseTimesSeen(changes.timesSeen) ? { timesSeen: parseTimesSeen(changes.timesSeen) } : {}),
     tour: online ? null : clean(changes.tour, { max: 80 }) || null,
     tags: [],
     song: !online && changes.song?.videoId ? changes.song : null,
@@ -105,8 +130,7 @@ export function buildMemoryCreateBody(post, { textOnly = false } = {}) {
     ...body,
     taggedUserIds: taggedUserIdsFromPeople(post?.taggedPeople),
     song: post?.song || null,
-    photos: Array.isArray(post?.photos) ? post.photos : [],
-    ...(Array.isArray(post?.mediaAssetIds) ? { mediaAssetIds: cleanMediaAssetIds(post.mediaAssetIds) } : {}),
+    ...postCreateMediaFields(post),
     photosPublic: post?.photosPublic === false ? 0 : 1,
   };
 }

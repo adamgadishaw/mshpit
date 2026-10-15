@@ -8,7 +8,7 @@ const typeIcon = (type) => (type === "food" ? "food" : type === "activity" ? "st
 
 export default function NearbyAfterparty({ log, coord }) {
   const [mapsError, setMapsError] = useState("");
-  const nearbySearches = nearbyShowSearches(coord);
+  const nearbySearches = nearbyShowSearches(coord, [log?.venue, log?.city].filter(Boolean).join(", "));
 
   const openSearch = async (url) => {
     setMapsError("");
@@ -26,7 +26,7 @@ export default function NearbyAfterparty({ log, coord }) {
       {nearbySearches.length > 0 ? (
         <>
           <Text style={styles.nearbyNote}>
-            Opens current Google Maps results. Verify hours, distance, age rules, and accessibility before you go.
+            Opens Google Maps around the venue, even if you are not there yet. Verify hours, distance, age rules, and accessibility before you go.
           </Text>
           {nearbySearches.map((search) => (
             <Pressable

@@ -1,3 +1,4 @@
+import CatalogText from "../features/catalogEditor/CatalogText";
 import { Suspense, useState, useEffect, useRef } from "react";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, Linking, Alert } from "react-native";
@@ -51,6 +52,8 @@ import { settleArtistPageRead } from "../domain/artistPageRead.mjs";
 import { artistInitials } from "../domain/artistInitials.mjs";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
 import Button from "../components/Button";
+import ArtistLiveSets from "../components/ArtistLiveSets";
+import { fetchArtistSets } from "../lib/lineupApi";
 
 const ArtistNewsSection = lazyWithRetry(() => import("../components/news/NewsViews").then((module) => ({ default: module.ArtistNewsSection })), "ArtistNewsSection");
 
@@ -299,11 +302,11 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
 
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenPost, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onShareMemory, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport, onRequireAuth }) {
+export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenArtist, onOpenPost, onOpenNewsStory, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onShareMemory, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport, onRequireAuth }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, artistPageCacheEpoch,
     artistGallery, loadArtistPhotos, removePhoto, artistBadges, remoteArtistMeta,
-    artistDiscography, artistSeenCount, reportTrack, updateProfile, isFanClubMember, joinFanClub,
+    artistDiscography, artistSeenCount, reportTrack, setArtistFollowing, isFanClubMember, joinFanClub,
   } = useStore();
   const a = artistSummary(artistName);
   const artistPageProofScope = refreshScope(session?.id, "artist-page-proof", `${a.profileKey || a.name}:${artistPageCacheEpoch}`);
@@ -383,6 +386,17 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     limit: 3,
   });
   const topReviewsPresentation = selectArtistReviewsPresentation(topReviewsResource, a.nights, { limit: 3, memorialMode: deceased });
+  // Sets on other people's bills: opening, co-headline and festival sets.
+  const [liveSets, setLiveSets] = useState(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLiveSets(null);
+    fetchArtistSets({ artistKey: a.profileKey || null, name: a.name, signal: controller.signal })
+      .then((result) => { if (!controller.signal.aborted) setLiveSets(result); })
+      // architecture: allow-ambiguous-result -- the section is optional; the rest of the page does not depend on it
+      .catch(() => { if (!controller.signal.aborted) setLiveSets(null); });
+    return () => controller.abort();
+  }, [a.name, a.profileKey, session?.id]);
   const topReviews = topReviewsPresentation.reviews;
   const visibleTopReviews = artistPagePreview(topReviews, { condensed: sectionModel.condensed, limit: ARTIST_OVERVIEW_LIMITS.reviews });
   const { resource: liveArchiveResource, reload: retryLiveArchive, refresh: refreshLiveArchive } = useArtistEventArchive({
@@ -426,6 +440,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   // this public profile directly, but never enter an artist-only workspace.
   const ownsArtistPage = isArtistOwner(a.name);
   const ownsNamedArtistPage = artistWorkspaceOwnsArtist(session, a.name);
+  // Following is for everyone except the artist's own account. Staff can
+  // manage every page (ownsArtistPage) and must still be able to follow.
+  const followHidden = ownsNamedArtistPage;
   const canManagePublicPage = profileServicesAvailable && ownsArtistPage && !previewAsFan;
   const highlights = artistPageHighlights({
     upcomingCount: liveAvailable ? overviewResource.data?.schedule?.total : 0,
@@ -455,6 +472,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     heroGallery,
   } = artistPresentation;
   const bioSource = publicArtistKnowledgeSource(meta, { bio });
+  const bioContributor = currentConfirmedArtistPage?.profile?.bioContributor || a.bioContributor;
+  const artworkContributors = [currentConfirmedArtistPage?.profile?.avatarContributor, currentConfirmedArtistPage?.profile?.bannerContributor].filter(Boolean);
   const hasRegularHeroImage = artistCinematicMedia({
     bannerUri,
     profileUri,
@@ -478,7 +497,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     artistKey: a.profileKey,
     artistName: a.name,
     favoriteArtists: session?.favoriteArtists,
-    updateProfile,
+    setArtistFollowing,
     isMember: fanClubMember,
     joinFanClub,
   });
@@ -1000,10 +1019,10 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 <Text style={styles.statusTxt}>INACTIVE</Text>
               </View>
             )}
-            {session && !ownsArtistPage ? (
+            {!followHidden ? (
               <Pressable
                 style={[styles.artistFollowBtn, followed && styles.artistFollowBtnOn, followUi.busy && styles.artistFollowBtnBusy]}
-                onPress={followUi.toggleFollow}
+                onPress={session ? followUi.toggleFollow : onRequireAuth}
                 disabled={followUi.busy || followUi.joining}
                 accessibilityRole="button"
                 accessibilityLabel={`${followed ? "Unfollow" : "Follow"} ${a.name}`}
@@ -1028,9 +1047,10 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             {!legacyMode && !!bio && (
               <View style={styles.heroIntro}>
                 <Text style={styles.bio}>{artistPageSynopsis(bio, { condensed: true, limit: artistWide ? 220 : 160 }).text}</Text>
-                <ArtistBiographyAttribution source={bioSource} />
+                {bioContributor ? <Text style={styles.postTs}>Biography contributed by {bioContributor.handle ? `@${bioContributor.handle}` : bioContributor.name}</Text> : <ArtistBiographyAttribution source={bioSource} />}
               </View>
             )}
+        {!legacyMode && artworkContributors.length ? <Text style={styles.postTs}>Page artwork contributed by {[...new Set(artworkContributors.map(author => author.handle ? `@${author.handle}` : author.name))].join(", ")}</Text> : null}
         {!legacyMode ? <View style={styles.repCard}>
           <Text style={styles.repLabel}>{deceased ? "CREATIVE LEGACY" : liveAvailable ? "CONCERT RATINGS" : "ARTIST STATUS"}</Text>
           {deceased ? (
@@ -1118,21 +1138,21 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         {!session ? <AccountSnapshotPrompt title={`More with ${a.name}`} body="Follow this artist, share your concert memories, and join the conversation. Artist details and show dates are open to browse." onRequireAuth={onRequireAuth} /> : null}
 
 
-        {session && !ownsArtistPage && followUi.error ? (
+        {session && !followHidden && followUi.error ? (
           <View style={styles.followFeedbackError} accessibilityLiveRegion="assertive">
             <Icon name="flag" size={14} color={colors.danger} />
             <Text style={styles.followFeedbackErrorText} selectable>{followUi.error}</Text>
           </View>
         ) : null}
 
-        {session && !ownsArtistPage && followUi.notice ? (
+        {session && !followHidden && followUi.notice ? (
           <View style={styles.followFeedback} accessibilityLiveRegion="polite">
             <Icon name="check" size={14} color={colors.good} />
             <Text style={styles.followFeedbackText}>{followUi.notice}</Text>
           </View>
         ) : null}
 
-        {profileServicesAvailable && session && !ownsArtistPage && followUi.invite && followed && !fanClubMember ? (
+        {profileServicesAvailable && session && !followHidden && followUi.invite && followed && !fanClubMember ? (
           <View style={styles.fanClubInvite} accessibilityLiveRegion="polite">
             <View style={styles.fanClubInviteIcon}>
               <Icon name="comment" size={17} color={colors.amber} />
@@ -1173,8 +1193,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             demand so artist pages add nothing to the first page load. */}
         {profileServicesAvailable && sectionModel.active === "overview" && !legacyMode ? (
           <Suspense fallback={null}>
-            <ArtistNewsSection artistName={a.name} following={!!session && followed}
-              onFollow={ownsArtistPage ? undefined : session ? followUi.toggleFollow : onRequireAuth} />
+            <ArtistNewsSection artistName={a.name} artistKey={a.profileKey || null} onOpenStory={onOpenNewsStory} following={!!session && followed}
+              onFollow={followHidden ? undefined : session ? followUi.toggleFollow : onRequireAuth} />
           </Suspense>
         ) : null}
 
@@ -1210,7 +1230,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               moreAccessibilityLabel={`Read the full ${a.name} biography`}
               lessAccessibilityLabel={`Show a shorter ${a.name} biography`}
             />
-            <ArtistBiographyAttribution source={bioSource} />
+            {bioContributor ? <Text style={styles.postTs}>Biography contributed by {bioContributor.handle ? `@${bioContributor.handle}` : bioContributor.name}</Text> : <ArtistBiographyAttribution source={bioSource} />}
           </View>
         ) : null}
 
@@ -1377,6 +1397,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </>
         )}
 
+        {!deceased && liveSets ? <ArtistLiveSets data={liveSets} artistName={a.name} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} /> : null}
+
         {/* The overview stays bounded; the gallery owns the full collection and
             pagination after the schedule and review previews. */}
         {(sectionModel.showCommunity || publicArtistPreview) && (gallery.length > 0 || !sectionModel.condensed) && (
@@ -1491,7 +1513,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 <View style={styles.postTop}>
                   {legacyMode ? <View style={styles.editorialMark}><BrandMark size={19} color={colors.gold} /></View> : <Avatar user={avatarUser} size={28} />}
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.postName}>{legacyMode ? "Mshpit editorial" : a.name}</Text>
+                    <Text style={styles.postName}>{legacyMode ? "Mshpit editorial" : p.contributor ? `Contributed by ${p.contributor.handle ? `@${p.contributor.handle}` : p.contributor.name}` : a.name}</Text>
                     <Text style={styles.postTs}>{legacyMode ? `HISTORY NOTE · ${p.ts}` : p.ts}</Text>
                   </View>
                   {!ownsArtistPage && onReport ? (
@@ -1541,7 +1563,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               moreAccessibilityLabel={`Read the full ${a.name} biography`}
               lessAccessibilityLabel={`Show a shorter ${a.name} biography`}
             />
-            <ArtistBiographyAttribution source={bioSource} />
+            {bioContributor ? <Text style={styles.postTs}>Biography contributed by {bioContributor.handle ? `@${bioContributor.handle}` : bioContributor.name}</Text> : <ArtistBiographyAttribution source={bioSource} />}
           </>
         )}
 
@@ -1550,7 +1572,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <ResearchedAbout kind="artist" entityKey={a.profileKey} label="THE ARTIST" />
         )}
         {sectionModel.showAbout && (!legacyMode || sectionModel.active === "about") && (
-          <ArtistOfficialLinks artistKey={a.profileKey} label="OFFICIAL LINKS" />
+          <><CatalogText type="artist" entityKey={a.profileKey} /><ArtistOfficialLinks artistKey={a.profileKey} label="OFFICIAL LINKS" /></>
         )}
 
         {sectionModel.showAbout && biographyRows.length > 0 && (

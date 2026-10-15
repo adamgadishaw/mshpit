@@ -38,6 +38,7 @@ export function assertQuickLogPayload(body) {
   for (const key of ["performance", "setlist", "sound", "venue", "crowd"]) assert.equal(body.dims[key], 0);
   assert.equal(body.review, review);
   assert.equal(body.tour, "A remembered tour");
+  assert.deepEqual(body.supportingActs, ["MUNA"], "A picked opener suggestion is saved by its catalog name.");
 }
 
 async function localServer() {
@@ -83,6 +84,11 @@ async function scenario(browser, origin, width) {
       state.calls.push({ path: url.pathname, method: request.method() });
       if (url.pathname === "/api/client-errors") { state.reports.push(request.postDataJSON()); return await json({ ok: true }); }
       if (url.pathname === "/api/health") return await json({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: true } } });
+      // Opener search: the headliner comes back too and must not be offered.
+      if (url.pathname === "/api/artists" && /^mu/i.test(url.searchParams.get("q") || "")) return await json({ artists: [
+        { key: "a_fixture_muna", name: "MUNA", genre: "Pop", country: "US" },
+        { key: "fixture-artist", name: "Fixture Artist" },
+      ] });
       if (url.pathname === "/api/posts" && request.method() === "POST") {
         assert.equal(request.headers()["x-pit-expected-account"], navigationUser.id);
         const body = request.postDataJSON(); assertQuickLogPayload(body); state.writes.push(body);
@@ -110,33 +116,60 @@ async function scenario(browser, origin, width) {
     const city = page.getByLabel("Concert city, region and country", { exact: true });
     const tour = page.getByLabel("Tour or special event name", { exact: true });
     const post = page.getByRole("button", { name: "Post to feed", exact: true });
+    const headerPost = page.getByRole("button", { name: "Post", exact: true });
     await artist.waitFor();
-    const assertVisibleDetails = async () => {
+    // A new review goes one short step at a time; each step shows all of its
+    // own fields without an expansion tap.
+    const progress = () => page.getByRole("progressbar", { name: "Review progress", exact: true }).getAttribute("aria-valuetext");
+    const next = (name) => page.getByRole("button", { name: `Next: ${name}`, exact: true }).click();
+    const jump = (name) => page.getByRole("button", { name: `Go to ${name}`, exact: true }).click();
+    const assertPlaceDetails = async () => {
+      assert.equal(await tour.isVisible(), true);
+      assert.equal(await city.isVisible(), true);
+      assert.equal(await page.getByLabel("Public event address, optional", { exact: true }).isVisible(), true);
+    };
+    const assertRatings = async () => {
       const ratings = page.getByLabel("Rating", { exact: true });
       assert.equal(await ratings.count(), 6, "Overall, band, room and crowd ratings must all appear without an expansion tap.");
       for (const rating of await ratings.all()) assert.equal(await rating.isVisible(), true);
-      assert.equal(await tour.isVisible(), true);
-      assert.equal(await page.getByLabel("Public event address, optional", { exact: true }).isVisible(), true);
     };
-    await assertVisibleDetails();
-    await artist.fill("Fixture Artist"); await city.fill("Toronto, Ontario, Canada");
+    assert.equal(await progress(), "Step 1 of 4: The show");
+    await artist.fill("Fixture Artist");
+    await page.getByRole("tab", { name: "Online concert review", exact: true }).click();
+    assert.equal(await progress(), "Step 1 of 3: The show", "an online review has three steps");
+    await page.getByRole("tab", { name: "In person concert review", exact: true }).click();
+    await next("Where and when");
+    assert.equal(await progress(), "Step 2 of 4: Where and when");
+    await assertPlaceDetails();
+    await city.fill("Toronto, Ontario, Canada");
     await page.getByRole("button", { name: "I don't remember the concert date", exact: true }).click();
     await page.getByText("Date not remembered", { exact: true }).waitFor();
-    await page.getByRole("tab", { name: "Online concert review", exact: true }).click();
-    await page.getByRole("tab", { name: "In person concert review", exact: true }).click();
-    await page.getByText("Date not remembered", { exact: true }).waitFor();
-    await assertVisibleDetails();
+    await tour.fill("A remembered tour");
+    await page.screenshot({ path: join(shots, `quick-log-${width}-where.png`) });
+    await next("The music");
+    await assertRatings();
     await page.getByLabel("Rating", { exact: true }).first().press("End");
-    assert.equal(await post.isEnabled(), true, "A city-only show with an unknown date and one rating must be publishable.");
+    assert.equal(await headerPost.isEnabled(), true, "A city-only show with an unknown date and one rating must be publishable from any step.");
     await page.getByLabel("Rating", { exact: true }).nth(1).press("End");
     await page.getByRole("button", { name: "Leave performance unrated", exact: true }).click();
-    await tour.fill("A remembered tour");
-    await tour.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: join(shots, `quick-log-${width}-details.png`) });
-    const reviewInput = page.getByPlaceholder("What made the night? Be honest - this is what people read.", { exact: true });
-    await reviewInput.fill(review);
+    const opener = page.getByLabel("Add an opener", { exact: true });
+    await opener.fill("Mu");
+    const munaSuggestion = page.getByRole("button", { name: "Add MUNA as an opener", exact: true });
+    await munaSuggestion.waitFor();
+    assert.equal(await page.getByRole("button", { name: "Add Fixture Artist as an opener", exact: true }).count(), 0, "The headliner is never suggested as its own opener.");
+    await opener.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: join(shots, `quick-log-${width}-opener-suggestions.png`) });
+    await munaSuggestion.click();
+    await page.getByRole("button", { name: "Remove MUNA", exact: true }).waitFor();
+    assert.equal(await opener.inputValue(), "", "Picking a suggestion clears the opener input.");
+    assert.equal(await munaSuggestion.count(), 0);
     await page.getByText("BAND, ROOM & CROWD", { exact: false }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(shots, `quick-log-${width}-ratings.png`) });
+    await next("Your story");
+    assert.equal(await progress(), "Step 4 of 4: Your story");
+    const reviewInput = page.getByPlaceholder("What made the night? Be honest - this is what people read.", { exact: true });
+    await reviewInput.fill(review);
+    await page.screenshot({ path: join(shots, `quick-log-${width}-details.png`) });
     await post.click();
     await page.getByText(/Posting is paused for \d+ second.*Your post is still here\./).waitFor();
     const rateLimitedAttempts = state.writes.length;
@@ -156,10 +189,16 @@ async function scenario(browser, origin, width) {
     const failedAttempts = state.writes.length;
     assert.ok(failedAttempts >= 1); assert.equal(await artist.inputValue(), "Fixture Artist");
     assert.equal(await city.inputValue(), "Toronto, Ontario, Canada"); assert.equal(await reviewInput.inputValue(), review);
-    await assertVisibleDetails();
+    // Every step still holds what was entered after a failed save.
+    await jump("Where and when");
+    await assertPlaceDetails();
     assert.equal(await tour.inputValue(), "A remembered tour");
-    await page.getByText("5.0", { exact: true }).waitFor();
     await page.getByText("Date not remembered", { exact: true }).waitFor();
+    await jump("The music");
+    await assertRatings();
+    await page.getByText("5.0", { exact: true }).waitFor();
+    await jump("Your story");
+    assert.equal(await reviewInput.inputValue(), review);
     assert.equal(await post.isEnabled(), true);
     await page.getByText(failureCopy, { exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: join(shots, `quick-log-${width}-failed-save.png`) });
@@ -167,6 +206,9 @@ async function scenario(browser, origin, width) {
     await post.click();
     await artist.waitFor({ state: "hidden" });
     await page.getByText(review, { exact: true }).waitFor();
+    await page.getByRole("button", {
+      name: "Overall 5.0 out of 5. Show the rating breakdown.", exact: true,
+    }).waitFor();
     const publishedText = await page.locator("body").innerText();
     assert.doesNotMatch(publishedText, /Band 0\.0|Room 0\.0|Night 2\.5/, "Unrated dimensions must not become zero scores or halve the remembered experience.");
     assert.match(publishedText, /5\.0/, "The published card must retain the member's overall experience score.");

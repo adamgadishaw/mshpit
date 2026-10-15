@@ -23,6 +23,13 @@ const count = (value) => {
   return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0;
 };
 
+// Festivals and other multi-day programmes have their own Festivals tab; lists
+// of regular shows leave them out.
+export function isFestivalListing(event) {
+  const kind = String(event?.eventKind || "").toLowerCase();
+  return kind === "festival" || kind === "multi_day";
+}
+
 export function liveEventTitle(event) {
   const artist = clean(event?.artist, 160);
   const eventName = clean(event?.eventName, 200);
@@ -75,6 +82,8 @@ export function upcomingEventsForScope({
   const rows = [];
   for (const event of source) {
     if (!event || typeof event !== "object") continue;
+    // Festivals have their own Discover section; regular show lists skip them.
+    if (event.eventKind === "festival") continue;
     const identity = eventIdentity(event);
     if (!identity || seen.has(identity)) continue;
     seen.add(identity);

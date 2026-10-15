@@ -1,7 +1,9 @@
 import { LANDING_IDENTITY_COPY, LANDING_BROWSE_LINKS } from "../../../src/domain/landingPresentation.mjs";
 import { canonicalYouTubeReviewLink } from "../../onlineReviews.js";
 import { renderCityGuideMain, renderCityDirectoryMain } from "./cityGuideDocument.js";
-import { NEWS_STYLES, renderArtistNewsSection, renderNewsMain } from "../artistUpdates/newsDocuments.js";
+import { NEWS_STYLES, renderArtistHeadlinesSection, renderArtistNewsSection, renderNewsMain } from "../artistUpdates/newsDocuments.js";
+import { LIVE_STYLES, renderLiveMain } from "../newsDesk/newsLiveDocument.js";
+import { FESTIVAL_STYLES, renderFestivalMain } from "../festivals/festivalDocument.js";
 import { CITY_GUIDE_STYLES } from "./cityGuideStyles.js";
 import { artistBiographyRows } from "../../../src/domain/artistBiography.mjs";
 import { validateArtistKnowledgeSource } from "../../../src/domain/artistKnowledge.mjs";
@@ -111,7 +113,7 @@ function postalAddress(address) {
     : "";
 }
 
-function mediaGallery(media, label, { primary = false } = {}) {
+function mediaGallery(media, label, { primary = false, sharedBy = null } = {}) {
   const items = (Array.isArray(media) ? media : []).flatMap((asset, index) => {
     const url = publicMediaUrl(asset?.url);
     if (!url) return [];
@@ -124,7 +126,9 @@ function mediaGallery(media, label, { primary = false } = {}) {
     const priority = primary && index === 0;
     return [`<figure class="media-item"><img src="${esc(url)}" alt="${esc(alt)}" loading="${priority ? "eager" : "lazy"}" decoding="async"${priority ? ' fetchpriority="high"' : ""}${asset.width ? ` width="${esc(asset.width)}"` : ""}${asset.height ? ` height="${esc(asset.height)}"` : ""} /><figcaption>${esc(alt)}</figcaption></figure>`];
   });
-  return items.length ? `<div class="media-grid">${items.join("")}</div>` : "";
+  const hasImages = (Array.isArray(media) ? media : []).some((asset) => asset.kind !== "video" && publicMediaUrl(asset?.url));
+  const rights = hasImages ? `<p class="micro media-rights">${sharedBy ? `Photos shared by ${esc(sharedBy)}. ` : ""}<a href="/photo-rights">Photo rights</a> · <a href="/photo-rights#request-permission">Request permission</a></p>` : "";
+  return items.length ? `<div class="media-grid">${items.join("")}</div>${rights}` : "";
 }
 
 function compactPost(post, { full = false, showShowDetails = full, hideRating = false } = {}) {
@@ -162,7 +166,7 @@ function compactPost(post, { full = false, showShowDetails = full, hideRating = 
     <div class="post-copy">${body}</div>
     ${tour}${setlist}
     ${youtube ? `<p><a class="button" href="${esc(youtube.youtubeUrl)}" target="_blank" rel="ugc nofollow noopener noreferrer">Watch on YouTube</a></p>` : ""}
-    ${mediaGallery(post.media, post.artist || "Concert post", { primary: full })}
+    ${mediaGallery(post.media, post.artist || "Concert post", { primary: full, sharedBy: post.author?.name })}
     <footer><span>${esc(post.likes)} likes</span><span>${esc(post.comments)} comments</span>${!full && post.path ? link(post.path, "Read the full post", "text-link") : ""}</footer>
   </article>`;
 }
@@ -237,9 +241,10 @@ function artistMain(document) {
   const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong>${publicEventTimeLabel(event.localTime) ? `<small>${esc(publicEventTimeLabel(event.localTime))}</small>` : ""}</time><div><h3>${link(event.path, event.name)}</h3><p>${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : event.statusLabel !== "scheduled" ? `<span class="pill">${esc(event.statusLabel)}</span>` : ""}</li>`).join("");
   const concerts = legacyMode ? "" : (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h3>${link(concert.path, concert.venue)}</h3>${concert.city ? `<p>${esc(concert.city)}</p>` : ""}</div><span class="archive-score">${memorialMode ? `${esc(concert.reviewCount)} ${concert.reviewCount === 1 ? "fan memory" : "fan memories"}` : `${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : ""}${esc(concert.ratingCount)} ${concert.ratingCount === 1 ? "rating" : "ratings"}`}</span></li>`).join("");
   const archiveLink = !legacyMode && document.archivePath && Number(document.archiveTotal) > 3 ? link(document.archivePath, "View full concert archive") : "";
+  const hasContributorUpdates = document.updates.some(update => update.contributor);
   const updates = document.updates.map((update) => {
     const date = dateTimeLabel(update.publishedAt);
-    return `<article class="update"><p>${esc(update.text)}</p>${date ? `<time datetime="${esc(date.iso)}">${esc(date.label)}</time>` : ""}</article>`;
+    return `<article class="update">${update.contributor ? `<p>Contributed by ${esc(update.contributor.handle ? `@${update.contributor.handle}` : update.contributor.name)}</p>` : ""}<p>${esc(update.text)}</p>${date ? `<time datetime="${esc(date.iso)}">${esc(date.label)}</time>` : ""}</article>`;
   }).join("");
   const reviews = document.reviews.map((review) => compactPost(review, { hideRating: memorialMode })).join("");
   const musicBrainz = publicHttpsUrl(document.musicBrainzUrl);
@@ -267,18 +272,20 @@ function artistMain(document) {
       <p class="eyebrow">${legacyMode ? "Educational legacy profile" : memorialMode ? "In memory" : "Artist on Mshpit"}</p>
       <h1>${esc(artist.name)}</h1>
       ${artist.genres.length ? `<p class="genres">${esc(artist.genres.join(" · "))}</p>` : ""}
-      ${artist.bio ? `<div class="bio">${paragraphs(artist.bio)}</div>${bioAttribution}` : ""}
+      ${artist.bio ? `<div class="bio">${paragraphs(artist.bio)}</div>${artist.bioContributor ? `<p>Biography contributed by ${esc(artist.bioContributor.handle ? `@${artist.bioContributor.handle}` : artist.bioContributor.name)}</p>` : bioAttribution}` : ""}
+      ${(artist.artworkContributors || []).length ? `<p>Page artwork contributed by ${[...new Set(artist.artworkContributors.map(author => author.handle ? `@${author.handle}` : author.name))].map(esc).join(", ")}</p>` : ""}
       ${legacyMode ? `<p class="artist-guide-copy">A protected educational page for biography, music history and written community memories. Live dates, tour archives, new media uploads and fan clubs are closed.</p>` : !memorialMode ? `<p class="artist-guide-copy">Fan reviews, concert photos and upcoming dates in one place.</p>` : ""}
       <dl class="stats artist-facts">${artistFacts}</dl>
       ${nextShow}
     </section>
     ${memorial}
+    ${!memorialMode ? renderArtistHeadlinesSection(document) : ""}
     ${!memorialMode ? renderArtistNewsSection(document) : ""}
     ${biography ? `<section class="section"><h2>About ${esc(artist.name)}</h2><dl class="stats">${biography}</dl></section>` : ""}
     ${!memorialMode && events ? `<section class="section" id="shows"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2>${upcomingTotal > document.events.length ? `<p class="micro">Next ${document.events.length} of ${esc(upcomingTotal)} listed shows. The Shows tab on this artist page has the full schedule.</p>` : ""}</div></div><ol class="event-list">${events}</ol></section>` : ""}
     ${concerts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the archive</p><h2>${memorialMode ? "Concert history" : "Top-rated concert nights"}</h2></div>${archiveLink}</div><ol class="event-list archive-list">${concerts}</ol></section>` : ""}
     ${discography ? `<section class="section" id="discography"><div class="section-heading"><div><p class="eyebrow">On record</p><h2>${esc(artist.name)} albums and EPs</h2></div></div><ol class="discography">${discography}</ol>${musicBrainz ? `<p class="micro">Release list from <a href="${esc(musicBrainz)}" rel="noopener noreferrer">MusicBrainz</a>.</p>` : ""}</section>` : ""}
-    ${updates ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">${legacyMode ? "Mshpit editorial" : "Official notes"}</p><h2>${legacyMode ? "History and context" : `From ${esc(artist.name)}`}</h2></div></div><div class="updates">${updates}</div></section>` : ""}
+    ${updates ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">${legacyMode ? "Mshpit editorial" : hasContributorUpdates ? "Contributor updates" : "Official notes"}</p><h2>${legacyMode ? "History and context" : hasContributorUpdates ? `Updates about ${esc(artist.name)}` : `From ${esc(artist.name)}`}</h2></div></div><div class="updates">${updates}</div></section>` : ""}
     ${reviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">${legacyMode ? "Community archive" : "People who were there"}</p><h2>${legacyMode ? "Community memories" : memorialMode ? "Fan memories" : "Top live reviews"}</h2></div></div><div class="post-list">${reviews}</div></section>` : ""}
   </main>`;
 }
@@ -301,6 +308,28 @@ function memberMain(document) {
   </main>`;
 }
 
+// A Mshpit News story: headline, lede, the write-up, artist links and every
+// outlet's report. Outlet links are nofollow; they are citations, not ads.
+function newsStoryMain(document) {
+  const story = document.news;
+  const date = dateTimeLabel(story.publishedAt);
+  const artists = story.artists.map((artist) => link(artist.path, artist.name)).join(", ");
+  const sources = story.sources.map((source) => `<li><strong>${esc(source.kind === "photo" ? "Photo" : "Article")}:</strong> <a href="${esc(source.url)}" rel="nofollow noopener noreferrer">${esc(source.name)}</a>${source.title ? ` <span>${esc(source.title)}</span>` : ""}${source.credit ? ` <span>(${esc(source.credit)})</span>` : ""}</li>`).join("");
+  const sourceControl = sources ? `<details class="news-sources"><summary>Sources</summary><ul>${sources}</ul></details>` : "";
+  const image = publicMediaUrl(document.image);
+  return `<article class="news-story">
+      <p class="eyebrow">Mshpit News · ${esc(story.category)}${date ? ` · <time datetime="${esc(date.iso)}">${esc(date.label)}</time>` : ""}</p>
+      <h1>${esc(story.headline)}</h1>
+      ${story.summary ? `<p class="hero-copy"><strong>${esc(story.summary)}</strong></p>` : ""}
+      ${image ? `<figure class="news-photo"><img src="${esc(image)}" alt="${esc(document.imageAlt || story.headline)}" loading="eager" decoding="async"${document.imageWidth ? ` width="${esc(document.imageWidth)}"` : ""}${document.imageHeight ? ` height="${esc(document.imageHeight)}"` : ""} /><figcaption>${esc(document.imageProvenance === "self-written-article-photo" ? "Article photo" : "News image")}</figcaption></figure>` : ""}
+      ${paragraphs(story.body)}
+      ${artists ? `<p>About ${artists}</p>` : ""}
+      ${sourceControl}
+      <p class="news-more"><a class="button secondary" href="/news">Read more music news</a></p>
+      <footer><a href="/contact">Contact us</a></footer>
+    </article>`;
+}
+
 function postMain(document) {
   const comments = document.comments.map((comment) => {
     const date = dateTimeLabel(comment.publishedAt);
@@ -311,7 +340,7 @@ function postMain(document) {
   }).join("");
   return `<main id="main" class="post-page">
     ${breadcrumbs(document)}
-    ${compactPost(document.post, { full: true })}
+    ${document.news ? newsStoryMain(document) : compactPost(document.post, { full: true })}
     <section class="section comments"><div class="section-heading"><div><p class="eyebrow">${document.post.experienceType === "online" ? "Discussion" : "After the show"}</p><h2>Comments</h2></div><span>${esc(document.post.comments)}</span></div>${comments ? `<ol>${comments}</ol>` : '<p class="empty">No public comments yet.</p>'}</section>
   </main>`;
 }
@@ -486,20 +515,29 @@ function directoryMain(document) {
   </main>`;
 }
 
+function withCatalogText(html, document) {
+  const content = document.catalogText;
+  if (!content?.summary) return html;
+  const sources = (content.sources || []).map(source => `<a href="${esc(publicHttpsUrl(source.url) || "#")}" rel="nofollow noopener noreferrer">${esc(source.label)}</a>`).join(" · ");
+  return html.replace("</main>", `<section class="section" data-catalog-text="true"><h2>Sourced page context</h2><p>${esc(content.summary)}</p><p>${sources}</p></section></main>`);
+}
+
 export function renderPublicDocumentMain(document) {
   if (document?.kind === "news") return renderNewsMain(document);
+  if (document?.kind === "news-live") return renderLiveMain(document);
+  if (document?.kind === "festival" || document?.kind === "festivals") return renderFestivalMain(document);
   if (document?.kind === "city-directory") return renderCityDirectoryMain(document);
   if (document?.kind === "city") return renderCityGuideMain(document);
   if (!document || !["home", "discover", "search", "artist", "member", "post", "event", "concert", "venue", "directory"].includes(document.kind)) return null;
   if (document.kind === "home") return homeMain(document);
   if (document.kind === "discover") return discoverMain(document);
   if (document.kind === "search") return searchMain(document);
-  if (document.kind === "artist") return artistMain(document);
+  if (document.kind === "artist") return withCatalogText(artistMain(document), document);
   if (document.kind === "member") return memberMain(document);
   if (document.kind === "post") return postMain(document);
-  if (document.kind === "event") return eventMain(document);
+  if (document.kind === "event") return withCatalogText(eventMain(document), document);
   if (document.kind === "concert") return concertMain(document);
-  if (document.kind === "venue") return venueMain(document);
+  if (document.kind === "venue") return withCatalogText(venueMain(document), document);
   return directoryMain(document);
 }
 
@@ -577,13 +615,13 @@ export function renderPublicDocumentShell(document) {
   // Keep the style element inside #root. React's createRoot replaces both the
   // semantic preview and these temporary styles when the interactive client
   // mounts, so crawler-first CSS cannot leak into the signed-in application.
-  return `<style data-mshpit-public-document>${STYLES}${["city", "city-directory"].includes(document.kind) ? CITY_GUIDE_STYLES : ""}${["news", "artist"].includes(document.kind) ? NEWS_STYLES : ""}
+  return `<style data-mshpit-public-document>${STYLES}${["city", "city-directory"].includes(document.kind) ? CITY_GUIDE_STYLES : ""}${["news", "artist", "news-live", "festival", "festivals"].includes(document.kind) ? NEWS_STYLES : ""}${document.kind === "news-live" ? LIVE_STYLES : ""}${["festival", "festivals"].includes(document.kind) ? FESTIVAL_STYLES : ""}
     .landing-browse a{display:inline-flex;align-items:center;min-height:44px;padding:0 .35rem;font-weight:700}
     @media(max-width:760px){.site-header>div{flex-wrap:wrap;gap:.5rem}.site-header nav{width:100%;max-width:100%;overflow-x:auto;flex-wrap:nowrap;padding-bottom:.2rem}.site-header nav a,.site-header nav a:not(:last-child){display:inline-flex;flex-shrink:0;align-items:center;min-height:44px}.landing-browse{gap:1rem;justify-content:center}}
     </style>
     <div class="seo-document">
       <a class="skip" href="#main">Skip to content</a>
-      <header class="site-header"><div data-nosnippet><a class="brand" href="/" aria-label="Mshpit home">MSHPIT</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Upcoming shows</a><a href="/news">News</a><a href="/venues">Venues</a><a href="/cities">Music cities</a><a href="/concerts">Concert archive</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
+      <header class="site-header"><div data-nosnippet><a class="brand" href="/" aria-label="Mshpit home">MSHPIT</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Upcoming shows</a><a href="/news">News</a><a href="/festivals">Festivals</a><a href="/venues">Venues</a><a href="/cities">Music cities</a><a href="/concerts">Concert archive</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
       ${main}
       <footer class="site-footer"><span data-nosnippet>© ${new Date().getUTCFullYear()} Mshpit</span><div data-nosnippet><a href="/about">About</a><a href="/contact">Contact</a><a href="/community-guidelines">Guidelines</a><a href="/ratings-methodology">Ratings</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a></div></footer>
     </div>`;

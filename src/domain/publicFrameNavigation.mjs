@@ -4,6 +4,7 @@ import {
   cityPath,
   concertPath,
   eventPath,
+  festivalPath,
   parsePublicCollectionPath,
   postPath,
   profilePath,
@@ -13,6 +14,14 @@ import { showNavigationPostId } from "./showNavigation.mjs";
 import { CREW_ENABLED } from "./crewAvailability.mjs";
 
 const text = (value) => String(value ?? "").trim();
+
+export function needsPublicFrameIdentity(frame, options = {}) {
+  const artistName = text(frame?.artistName || frame?.artistArchive?.name);
+  if (!frame || (!artistName && !frame.profileId)) return false;
+  const cached = artistName ? options.resolveArtistMeta?.(artistName) : null;
+  if (cached?.transient === true && !frame.artistPublicSlug && !frame.artistArchive?.publicSlug) return true;
+  return !publicFramePath(frame, options);
+}
 
 // Convert an in-memory navigation frame into the public URL it owns. Frames
 // without a public identity deliberately return null so temporary app state is
@@ -24,7 +33,9 @@ export function publicFramePath(frame, { resolveArtistMeta, resolveUser } = {}) 
   if (frame.cityGuide) return frame.cityGuide.directory ? "/cities" : cityPath(frame.cityGuide);
   if (frame.venues) return "/venues";
   if (CREW_ENABLED && frame.crew) return "/crew";
-  if (frame.news) return "/news";
+  if (frame.news) return frame.liveSlug && /^[a-z0-9-]{1,80}$/u.test(frame.liveSlug) ? `/news/live/${frame.liveSlug}` : "/news";
+  if (frame.festival?.slug) return festivalPath(frame.festival.slug);
+  if (frame.festivals) return "/festivals";
   if (frame.auth) return frame.authMode === "signup" ? "/signup" : "/login";
   if (frame.directory === "artists" || frame.directory === "events") return `/${frame.directory}`;
   if (frame.artistArchive?.name) {
@@ -58,6 +69,11 @@ export function publicEntryFrame(pathname) {
   if (pathname === "/venues") return { venues: true };
   if (CREW_ENABLED && pathname === "/crew") return { crew: true };
   if (pathname === "/news") return { news: true };
+  const live = /^\/news\/live\/([a-z0-9-]{1,80})$/u.exec(pathname || "");
+  if (live) return { news: true, liveSlug: live[1] };
+  if (pathname === "/festivals") return { festivals: true };
+  const festival = /^\/festival\/([a-z0-9-]{1,80})$/u.exec(pathname || "");
+  if (festival) return { festival: { slug: festival[1] } };
   if (pathname === "/signup") return { auth: true, authMode: "signup" };
   if (pathname === "/login") return { auth: true, authMode: "login" };
   return null;

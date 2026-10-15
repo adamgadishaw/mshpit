@@ -50,7 +50,7 @@ for (const restriction of ["dormant", "banned", "suspended"]) {
         const thread = comments(state, viewer, limit);
         assert.deepEqual(thread.find((comment) => comment.id === state.parentId), {
           id: state.parentId, userId: null, name: null, initials: null, avatarUri: null,
-          avatarColor: null, role: null, verified: false, text: "", deleted: true,
+          avatarColor: null, role: null, verified: false, membershipBadge: null, text: "", deleted: true,
           parentId: null, createdAt: 101,
         });
         assert.equal(thread.find((comment) => comment.id === state.childId).parentId, state.parentId);

@@ -1,3 +1,4 @@
+import { seenOrdinalSql } from "./supportingActs.js";
 import { randomUUID } from "node:crypto";
 import { db, parseJsonArray } from "./db.js";
 import { ApiError } from "./errors.js";
@@ -11,6 +12,8 @@ import { activeAccountSql } from "./accountVisibility.js";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
 import { viewerPostImpressionMap } from "./feedImpressions.js";
+import { eligibleNewsPosts, isNewsPostId } from "./features/newsDesk/newsFeedPlacement.js";
+import { REPOST_VISIBLE_SQL } from "./features/socialReactions/socialReactions.js";
 
 const CANDIDATE_LIMIT = Math.max(200, Math.min(1200, Number(process.env.RECOMMENDATION_CANDIDATE_LIMIT) || 600));
 const CANDIDATE_SCAN_LIMIT = Math.min(2400, CANDIDATE_LIMIT * 4);
@@ -35,7 +38,7 @@ export const RECOMMENDATION_CANDIDATE_SELECT = `
     CASE WHEN json_valid(p.photos) THEN json_array_length(p.photos) ELSE 0 END AS media_count,
     length(p.review) AS review_length,
     (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id
-      WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
+      WHERE l.post_id=p.id AND l.user_id<>p.user_id AND ${activeAccountSql("lu")}) AS like_count,
     (SELECT COUNT(DISTINCT c.user_id) FROM comments c JOIN users cu ON cu.id=c.user_id
       WHERE c.post_id=p.id AND c.removed=0 AND c.user_id<>p.user_id AND ${activeAccountSql("cu")}) AS comment_count
   FROM posts p
@@ -67,12 +70,7 @@ const POST_SELECT = `
       WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
     (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
       WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
-    CASE WHEN COALESCE(p.kind,'review')='review' AND COALESCE(p.experience_type,'in_person')='in_person'
-      THEN (SELECT COUNT(*) FROM posts seen WHERE seen.user_id=p.user_id AND LOWER(seen.artist)=LOWER(p.artist)
-        AND seen.removed=0 AND COALESCE(seen.kind,'review')='review'
-        AND COALESCE(seen.experience_type,'in_person')='in_person'
-        AND (seen.created_at<p.created_at OR (seen.created_at=p.created_at AND seen.id<=p.id)))
-      ELSE NULL END AS seen_ordinal,
+    ${seenOrdinalSql("p")} AS seen_ordinal,
     a.genre AS artist_genre
   FROM posts p
   JOIN users u ON u.id=p.user_id
@@ -114,7 +112,8 @@ function recommendationSignals(viewer, at) {
       WHERE e.user_id=? AND e.created_at>=? AND (
         e.name='content_open' OR
         (e.name='content_dwell' AND json_extract(e.props,'$.durationBucket') IN ('10_to_30s','30_to_90s','over_90s')) OR
-        (e.name='video_progress' AND json_extract(e.props,'$.milestone') IN ('50','75','100')) OR
+        (e.name='video_progress' AND json_extract(e.props,'$.measurement')='watched-v1'
+          AND json_extract(e.props,'$.milestone') IN ('50','75','100')) OR
         (e.name='recommendation_feedback' AND json_extract(e.props,'$.action') IN ('open','follow','share'))
       ) GROUP BY post_id ORDER BY engaged_at DESC LIMIT 300
     ) signal JOIN posts p ON p.id=signal.post_id
@@ -158,10 +157,12 @@ function candidateGenreMap(rows) {
 }
 
 function candidateRows(viewer, at, hiddenIds = new Set()) {
+  const eligibleNews = new Set(eligibleNewsPosts(db, viewer, at).map((row) => row.post_id));
   const blockSql = viewer?.id ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
-    (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))` : "";
+    (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))
+    AND NOT EXISTS (SELECT 1 FROM account_mutes m WHERE m.muter_id=? AND m.muted_id=p.user_id)` : "";
   const args = [at, at];
-  if (viewer?.id) args.push(viewer.id, viewer.id);
+  if (viewer?.id) args.push(viewer.id, viewer.id, viewer.id);
   args.push(Math.min(2400, CANDIDATE_SCAN_LIMIT + Math.min(500, hiddenIds.size)));
   const rows = db.prepare(`${RECOMMENDATION_CANDIDATE_SELECT}
     WHERE p.removed=0 AND p.created_at<=? AND u.is_banned=0 AND u.dormant_at IS NULL
@@ -170,6 +171,7 @@ function candidateRows(viewer, at, hiddenIds = new Set()) {
     ORDER BY p.created_at DESC,p.id DESC LIMIT ?`).all(...args);
   const authorCounts = new Map();
   const candidates = rows.filter((row) => {
+    if (isNewsPostId(row.id) && !eligibleNews.has(row.id)) return false;
     if (hiddenIds.has(row.id)) return false;
     const count = authorCounts.get(row.user_id) || 0;
     if (count >= CANDIDATE_AUTHOR_LIMIT) return false;
@@ -177,6 +179,20 @@ function candidateRows(viewer, at, hiddenIds = new Set()) {
     return true;
   }).slice(0, CANDIDATE_LIMIT);
   const genres = candidateGenreMap(candidates);
+  const networkReposts = new Map();
+  if (viewer?.id) {
+    for (let offset = 0; offset < candidates.length; offset += 200) {
+      const batch = candidates.slice(offset, offset + 200);
+      const params = { $viewer: viewer.id };
+      const placeholders = batch.map((row, index) => { const key = `$post${index}`; params[key] = row.id; return key; });
+      for (const row of db.prepare(`SELECT r.post_id,COUNT(*) AS count FROM post_reposts r
+        JOIN users actor ON actor.id=r.user_id JOIN posts p ON p.id=r.post_id
+        WHERE r.post_id IN (${placeholders.join(",")}) AND r.active=1 AND r.user_id<>p.user_id
+          AND ${REPOST_VISIBLE_SQL}
+          AND EXISTS (SELECT 1 FROM follows f WHERE f.follower_id=$viewer AND f.followee_id=r.user_id)
+        GROUP BY r.post_id`).all(params)) networkReposts.set(row.post_id, Number(row.count));
+    }
+  }
   const impressions = viewer?.id
     ? viewerPostImpressionMap(db, viewer.id, candidates.map((row) => row.id))
     : new Map();
@@ -186,6 +202,7 @@ function candidateRows(viewer, at, hiddenIds = new Set()) {
     viewer_seen_count: Number(impressions.get(row.id)?.seen_count) || 0,
     viewer_first_seen_at: impressions.get(row.id)?.first_seen_at ?? null,
     viewer_last_seen_at: impressions.get(row.id)?.last_seen_at ?? null,
+    network_reposts: networkReposts.get(row.id) || 0,
   }));
 }
 
@@ -214,6 +231,7 @@ function rankingCandidate(row) {
     kind: row.kind || "review",
     viewerSeenCount: Number(row.viewer_seen_count) || 0,
     viewerLastSeenAt: row.viewer_last_seen_at ?? null,
+    networkReposts: row.network_reposts || 0,
   };
 }
 
@@ -265,6 +283,7 @@ function createSnapshot(viewer, at, hiddenIds) {
       signals: [
         entry.parts.affinity > 0 && "artist",
         entry.parts.following > 0 && "follow",
+        entry.parts.networkRepost > 0 && "network_repost",
         entry.parts.genre > 0 && "genre",
         entry.parts.local > 0 && "local",
         entry.parts.seenPenalty < 0 && "seen_rotation",
@@ -296,13 +315,15 @@ function decodePageCursor(value) {
 }
 
 function liveRows(ids, viewer, at, hiddenIds = new Set()) {
-  const visibleIds = ids.filter((id) => !hiddenIds.has(id));
+  const eligibleNews = new Set(eligibleNewsPosts(db, viewer, at).map((row) => row.post_id));
+  const visibleIds = ids.filter((id) => !hiddenIds.has(id) && (!isNewsPostId(id) || eligibleNews.has(id)));
   if (!visibleIds.length) return [];
   const placeholders = visibleIds.map(() => "?").join(",");
   const blockSql = viewer?.id ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
-    (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))` : "";
+    (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))
+    AND NOT EXISTS (SELECT 1 FROM account_mutes m WHERE m.muter_id=? AND m.muted_id=p.user_id)` : "";
   const args = [...visibleIds, at];
-  if (viewer?.id) args.push(viewer.id, viewer.id);
+  if (viewer?.id) args.push(viewer.id, viewer.id, viewer.id);
   const found = db.prepare(`${POST_SELECT}
     WHERE p.id IN (${placeholders}) AND p.removed=0 AND u.is_banned=0 AND u.dormant_at IS NULL
       AND (u.suspended_until IS NULL OR u.suspended_until<=?)
@@ -361,7 +382,7 @@ export function recommendedFeedPage({ viewer = null, cursor = null, limit = 20, 
       snapshotAt: snapshot.at,
       rankingSignals: [
         "music_affinity", "follow_relationship", "verified_genre", "home_city",
-        "freshness", "conversation", "post_completeness", "seen_rotation",
+        "freshness", "conversation", "post_completeness", "seen_rotation", "network_repost", "community_discovery",
       ],
       seenRotation: "Recently seen posts are lowered, not hidden.",
     },

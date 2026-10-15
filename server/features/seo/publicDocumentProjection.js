@@ -1,3 +1,5 @@
+import { publicProviderEventText } from "../../providerEventText.js";
+import { catalogVenueEditorKey, readPublicCatalogEditorText } from "../catalogEditor/catalogEditorRepository.js";
 import {
   artistConcertsPath,
   artistPath,
@@ -28,6 +30,8 @@ import { publicVenueFacts } from "../../venueFacts.js";
 import { publicTourDateArtistProjection } from "../../tourDateMetadata.js";
 import { tourYearsLabel } from "../../../src/domain/artistNews.mjs";
 import { publicEventMetadata, publicVenueMetadataName } from "./publicMetadataPresentation.js";
+import { createNewsDeskReader } from "../newsDesk/newsDeskService.js";
+import { newsCategoryLabel } from "../../../src/domain/newsDesk.mjs";
 import {
   isCurrentOrUpcomingPublicMusicEvent,
   isIndexableMusicEventRecord,
@@ -396,10 +400,17 @@ function primaryImageSchema(value, name) {
   });
 }
 
-// Google's image metadata wants a copyright notice beside the credit and
-// licence. Catalogued venue photos are CC BY or CC BY-SA, so the photographer
-// keeps the copyright; fan photos stay their author's under the Terms.
+// Catalogue attribution is backed by separately recorded photo provenance.
+// A member upload's owner_id proves account custody, not copyright ownership.
 const copyrightNotice = (holder) => cleanLine(holder, 240) ? `© ${cleanLine(holder, 240)}` : null;
+
+function memberImageRights(origin, author) {
+  return {
+    ...(author?.name ? { creditText: `Shared by ${cleanLine(author.name, 240)} on Mshpit` } : {}),
+    license: absolute(origin, "/photo-rights"),
+    acquireLicensePage: absolute(origin, "/photo-rights#request-permission"),
+  };
+}
 
 function venuePhotoSchema(photo, venueName) {
   if (!photo?.url) return null;
@@ -458,6 +469,93 @@ function postCard(row, media, paths, { textLimit = 8_000 } = {}) {
     comments: count(row.comment_count),
     publishedAt: timestamp(row.created_at),
     modifiedAt: timestamp(row.updated_at) || timestamp(row.created_at),
+  });
+}
+
+// A Mshpit News story's page: its own headline, the full write-up, the
+// artists it is about (linked to their pages) and every outlet that reported
+// it. The link-preview image is the story's news card.
+export function newsStoryPostDocument({ story, card, comments, path, origin, paths }) {
+  const pageUrl = absolute(origin, path);
+  const headline = cleanLine(story.headline, 160);
+  const summaryText = cleanLine(story.summary, 400);
+  const body = story.origin === "self_written"
+    ? cleanBody(story.body, 60_000)
+    : String(story.body || "").split(/\n\s*\n/u).map((paragraph) => cleanLine(paragraph, 1200)).filter(Boolean).join("\n\n");
+  const artists = (story.artists || []).map((artist) => {
+    const name = cleanLine(artist?.name, 160);
+    const artistPagePath = name ? canonicalArtistPath(paths, { name, public_slug: artist.publicSlug || null }) : null;
+    return name ? Object.freeze({ name, path: artistPagePath }) : null;
+  }).filter(Boolean);
+  const sources = (story.sources || []).filter((source) => /^https:\/\//u.test(String(source?.url || "")))
+    .map((source) => Object.freeze({
+      kind: source.kind === "photo" ? "photo" : "article",
+      name: cleanLine(source.name, 80), url: source.url, title: cleanLine(source.title, 200),
+      ...(source.credit ? { credit: cleanLine(source.credit, 240) } : {}),
+    }));
+  const publishedAt = isoTimestamp(story.publishedAt);
+  // The news reader's media projection has already proved that this exact
+  // post attachment is ready and publicly deliverable. Do not reuse the
+  // ordinary post-owner projection here: a self-written photo is uploaded by
+  // the editor and then deliberately attached to the news publisher's post.
+  const selectedPhoto = story.origin === "self_written"
+    ? (story.media || []).find((asset) => asset?.kind === "image" && publicHttpsUrl(asset.url))
+    : null;
+  const selectedPhotoUrl = publicHttpsUrl(selectedPhoto?.url);
+  const image = selectedPhotoUrl || absolute(origin, `/api/news-desk/stories/${encodeURIComponent(story.id)}/image.png`);
+  const organization = { "@type": "Organization", name: "Mshpit News", url: absolute(origin, "/news") };
+  const breadcrumbs = Object.freeze([
+    Object.freeze({ name: "Mshpit", path: "/" }),
+    Object.freeze({ name: "News", path: "/news" }),
+    Object.freeze({ name: headline, path }),
+  ]);
+  const article = {
+    "@context": "https://schema.org",
+    "@type": "NewsArticle",
+    "@id": `${pageUrl}#article`,
+    headline: headline.slice(0, 110),
+    ...(summaryText ? { description: summaryText } : {}),
+    ...(body ? { articleBody: body } : {}),
+    url: pageUrl,
+    mainEntityOfPage: pageUrl,
+    image: [image],
+    ...(publishedAt ? { datePublished: publishedAt } : {}),
+    ...(isoTimestamp(story.updatedAt || card.modifiedAt || story.publishedAt)
+      ? { dateModified: isoTimestamp(story.updatedAt || card.modifiedAt || story.publishedAt) } : {}),
+    author: organization,
+    publisher: organizationReference(origin),
+    articleSection: newsCategoryLabel(story.category),
+    ...(sources.some((source) => source.kind === "article") ? { citation: sources.filter((source) => source.kind === "article").map((source) => source.url) } : {}),
+    ...(artists.length ? { about: artists.map((artist) => ({ "@type": "MusicGroup", name: artist.name, ...(artist.path ? { url: absolute(origin, artist.path) } : {}) })) } : {}),
+    commentCount: card.comments,
+    isPartOf: siteReference(origin),
+  };
+  return Object.freeze({
+    kind: "post",
+    siteName: SITE_NAME,
+    title: `${headline} | Mshpit News`,
+    description: (summaryText || headline).slice(0, 300),
+    canonicalPath: path,
+    canonicalUrl: pageUrl,
+    image,
+    imageProvenance: selectedPhotoUrl ? "self-written-article-photo" : "news-card",
+    imageWidth: Number(selectedPhoto?.width) || 1200,
+    imageHeight: Number(selectedPhoto?.height) || 630,
+    imageMimeType: selectedPhoto?.mimeType || "image/png",
+    imageAlt: headline,
+    video: null,
+    publishedAt: story.publishedAt,
+    modifiedAt: card.modifiedAt,
+    post: card,
+    news: Object.freeze({
+      headline, summary: summaryText, body, category: newsCategoryLabel(story.category),
+      artists: Object.freeze(artists), sources: Object.freeze(sources),
+      image: selectedPhotoUrl ? Object.freeze({ url: selectedPhotoUrl, alt: cleanLine(selectedPhoto.altText || headline, 180) }) : null,
+      publishedAt: story.publishedAt,
+    }),
+    comments,
+    breadcrumbs,
+    jsonLd: [Object.freeze(article), Object.freeze(breadcrumbNode(origin, breadcrumbs))].filter(Boolean),
   });
 }
 
@@ -528,7 +626,6 @@ function mediaSchema(asset, { origin, pageUrl, context, author, publishedAt, ind
     ...(isoTimestamp(asset.createdAt || publishedAt) ? { uploadDate: isoTimestamp(asset.createdAt || publishedAt) } : {}),
     ...(asset.width ? { width: asset.width } : {}),
     ...(asset.height ? { height: asset.height } : {}),
-    ...(author ? { creator: author } : {}),
     isPartOf: siteReference(origin),
   };
   if (asset.kind === "video") {
@@ -540,6 +637,7 @@ function mediaSchema(asset, { origin, pageUrl, context, author, publishedAt, ind
     return {
       "@type": "VideoObject",
       ...common,
+      ...(author ? { creator: author } : {}),
       description: caption,
       thumbnailUrl: [thumbnail],
       duration,
@@ -549,7 +647,7 @@ function mediaSchema(asset, { origin, pageUrl, context, author, publishedAt, ind
   return {
     "@type": "ImageObject",
     ...common,
-    ...(author?.name ? { creditText: `Photo by ${author.name} on Mshpit`, copyrightNotice: copyrightNotice(author.name) } : {}),
+    ...memberImageRights(origin, author),
     ...(asset.mimeType ? { encodingFormat: asset.mimeType } : {}),
   };
 }
@@ -588,11 +686,14 @@ function eventAllowsTicketOffer(event, today = null) {
   return !currentDate || !event.date || event.date >= currentDate;
 }
 
+const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 function eventCard(row, paths) {
   if (!row?.id || !isIndexableMusicEventRecord(row)) return null;
   const projectedArtist = publicTourDateArtistProjection(row);
-  const artist = cleanLine(projectedArtist.artist, 160);
-  const venue = cleanLine(row.venue, 180);
+  const display = (value, length) => cleanLine(publicProviderEventText(value, row.owner_id ?? row.ownerId), length);
+  const artist = display(projectedArtist.artist, 160);
+  const venue = display(row.venue, 180);
   const date = validDate(row.date);
   if (!artist || !venue || !date) return null;
   const ticketUrl = projectedTourDateTicketUrl(row) || null;
@@ -615,11 +716,11 @@ function eventCard(row, paths) {
   return Object.freeze({
     id: String(row.id),
     providerEventId: cleanLine(row.provider_event_id, 180) || null,
-    name: (providerEvidence ? cleanLine(row.event_name, 220) : null) || `${artist} at ${venue}`,
+    name: (providerEvidence ? display(row.event_name, 220) : null) || `${artist} at ${venue}`,
     // Google's Event guidance keeps the venue in location.name rather than
     // repeating it in the event name. Preserve the fuller visible heading,
     // while giving structured data the provider title or artist identity.
-    schemaName: (providerEvidence ? cleanLine(row.event_name, 220) : null) || artist,
+    schemaName: (providerEvidence ? display(row.event_name, 220) : null) || artist,
     path: canonicalEventPath(paths, row),
     artist,
     artistPath: projectedArtist.bindingAllowed ? relatedArtistPath(paths, row) : null,
@@ -791,6 +892,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
     }),
     concert: typeof paths.concert === "function" ? paths.concert : (key) => concertPath(key),
   });
+  // Mshpit News posts carry a story record. Read-only here: a database
+  // without the news tables simply has no stories.
+  const newsStories = createNewsDeskReader(database, { ensureSchema: false });
 
   return Object.freeze({
     home(raw = {}, { canonicalPath: requestedPath = "/" } = {}) {
@@ -928,6 +1032,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
     artist(raw, { canonicalPath: requestedPath = null } = {}) {
       if (!raw?.artist) return null;
       const source = raw.artist;
+      const catalogText = readPublicCatalogEditorText(database, { type: "artist", key: source.norm });
       const artistCanonicalPath = canonicalArtistPath(publicPaths, source);
       const path = canonicalPath(requestedPath, artistCanonicalPath);
       // Legacy vanity routes redirect before rendering, and this second gate
@@ -936,6 +1041,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const legacyMode = memorial?.legacy === true;
       const mediaByPost = publicMediaForRows(database, raw.reviews || [], { galleryOnly: true, maxPerPost: 3 });
       const reviews = (raw.reviews || []).map((row) => postCard(row, mediaByPost.get(row.id), publicPaths));
+      raw = { ...raw, profile: retainedProfileProjection(database, raw.profile) };
       const profilePublic = Number(raw.profile?.owner_public) === 1;
       const profileOwner = legacyMode || profilePublic ? raw.profile?.owner_id || null : null;
       const avatarOwner = raw.profile?.avatar_owner_id || profileOwner;
@@ -960,19 +1066,13 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const fanImage = fanImageReview ? fanImageReview.media
         .map((asset) => asset.kind === "image" ? asset.url : asset.posterUrl)
         .find(Boolean) || null : null;
-      // The fan who took the photo is credited in search results, by name and
-      // with a link to their profile. That credit is part of why fans share.
+      // Credit the member who shared it without claiming they took it or own
+      // the copyright: the upload ledger has no verified rights-holder field.
       const fanImageCredit = fanImage && fanImageReview?.author?.name ? Object.freeze({
         "@type": "ImageObject",
         contentUrl: fanImage,
         url: fanImage,
-        creditText: `Photo by ${fanImageReview.author.name}${fanImageReview.author.handle ? ` (@${fanImageReview.author.handle})` : ""} on Mshpit`,
-        copyrightNotice: copyrightNotice(fanImageReview.author.name),
-        creator: Object.freeze({
-          "@type": "Person",
-          name: fanImageReview.author.name,
-          ...(fanImageReview.author.path ? { url: absolute(publicOrigin, fanImageReview.author.path) } : {}),
-        }),
+        ...memberImageRights(publicOrigin, fanImageReview.author),
       }) : null;
       const name = cleanLine(source.name, 160);
       const staffCuratedBio = Number(raw.profile?.bio_staff_curated) === 1;
@@ -1021,6 +1121,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         text: cleanBody(update.text, 2_000),
         publishedAt: timestamp(update.created_at),
         editorial: legacyMode,
+        contributor: retainedContributor(database, "artist_post", update.id),
       })).filter((update) => update.text);
       const hasReviews = reviewCount > 0;
       const hasUpcomingShows = events.length > 0;
@@ -1035,6 +1136,23 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       // actually fall in, and only when there are upcoming dates.
       const tourYears = tourYearsLabel(events.map((event) => event.date));
       const news = legacyMode || memorial ? [] : (Array.isArray(raw.news) ? raw.news : []).slice(0, 6);
+      const headlines = legacyMode || memorial ? [] : (Array.isArray(raw.headlines) ? raw.headlines : [])
+        .filter((story) => story?.headline && story?.postId).slice(0, 4).map((story) => Object.freeze({
+          headline: cleanLine(story.headline, 160),
+          summary: cleanLine(story.summary, 400),
+          path: showPath(story.postId),
+          publishedAt: story.publishedAt,
+          sources: Object.freeze((story.sources || []).map((source) => cleanLine(source?.name, 80)).filter(Boolean)),
+        }));
+      const hasDiscography = !legacyMode && !memorial && artistDiscography(knowledgeData, source.mbid).length > 0;
+      // "next in Perth (Sep 27), Sydney (Oct 3)": the cities people search
+      // "<artist> <city>" for, straight from the upcoming dates.
+      const nextStops = [...new Map(events.slice(0, 6).map((event) => {
+        const city = cleanLine(String(event.place || "").split(",")[0], 60);
+        const day = validDate(event.date);
+        return city && day ? [city.toLocaleLowerCase("en"), `${city} (${SHORT_MONTHS[Number(day.slice(5, 7)) - 1]} ${Number(day.slice(8, 10))})`] : null;
+      }).filter(Boolean)).values()].slice(0, 3);
+      const nextLine = nextStops.length ? `, next in ${nextStops.join(", ")}` : "";
       const artistTitle = legacyMode
         ? `${name} legacy: biography and community memories | Mshpit`
         : memorial
@@ -1055,18 +1173,27 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ? `${name} Tour ${tourYears}: Concert Dates & Tickets | Mshpit`
         : hasUpcomingShows
         ? `${name} upcoming concerts & artist profile | Mshpit`
+        : hasDiscography && bio
+        ? `${name}: Albums, Biography & Live Shows | Mshpit`
+        : hasDiscography
+        ? `${name} Albums & EPs | Mshpit`
+        : bio
+        ? `${name} Biography & Live Music | Mshpit`
         : `${name} music artist profile | Mshpit`;
       const description = summary(memorial?.summary || (hasReviews
         ? `${name} on Mshpit: ${reviewSignal}${upcomingSignal ? ` and ${upcomingSignal}` : ""}. ${bio ? `${bio} ` : ""}Read firsthand concert reviews${hasFanPhotos ? " and browse fan-shared photos" : ""}${hasUpcomingShows ? ", then see upcoming show details" : ""}.`
         : hasUpcomingShows
-        ? `${name} on Mshpit: ${upcomingSignal}. See upcoming concert dates${bio ? " and artist details" : ""}.`
+        ? `${name}${tourYears ? ` tour ${tourYears}` : ""}: ${upcomingSignal}${nextLine}. Dates, venues and tickets on Mshpit.`
         : bio
         ? `${name} artist profile on Mshpit. ${bio}`
+        : catalogText?.summary
+        ? `${name} artist profile on Mshpit. ${catalogText.summary}`
         : updates.length
         ? `${name} artist profile and public updates on Mshpit.`
         : `${name} music artist profile on Mshpit.`));
       const modifiedAt = Math.max(
         timestamp(source.updated_at) || 0,
+        timestamp(catalogText?.updatedAt) || 0,
         timestamp(raw.profile?.updated_at) || 0,
         timestamp(raw.stats?.latest_at) || 0,
         ...events.map((event) => event.updatedAt || 0),
@@ -1143,6 +1270,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       };
       return Object.freeze({
         kind: "artist",
+        catalogText,
         siteName: SITE_NAME,
         title: artistTitle,
         description,
@@ -1156,12 +1284,15 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageWidth: socialProfileImage?.width || null,
         imageHeight: socialProfileImage?.height || null,
         imageMimeType: socialProfileImage?.mimeType || null,
-        artist: Object.freeze({ name, bio, bioSource, genres: publicArtistGenres(source), country: cleanLine(artistKnowledgeDisplayCountry(knowledgeData, { mbid: source.mbid, country: source.country }), 100) || null, biographyFacts }),
+        artist: Object.freeze({ name, bio, bioSource, bioContributor: profileBio ? raw.profile?.bioContributor || null : null,
+          artworkContributors: [avatarMedia ? raw.profile?.avatarContributor : null, bannerMedia ? raw.profile?.bannerContributor : null].filter(Boolean),
+          genres: publicArtistGenres(source), country: cleanLine(artistKnowledgeDisplayCountry(knowledgeData, { mbid: source.mbid, country: source.country }), 100) || null, biographyFacts }),
         memorial,
         stats: Object.freeze({ reviewCount, ratingCount, averageRating, upcomingTotal }),
         reviews,
         updates,
         news,
+        headlines,
         discography,
         musicBrainzUrl,
         events,
@@ -1270,6 +1401,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       // can prove only the filtered list it renders, so its visible/schema count
       // is derived from that same list.
       const card = Object.freeze({ ...projectedCard, comments: count(raw.commentCount) });
+      const story = String(source.id || "").startsWith("news_") ? newsStories.forPost(source.id) : null;
+      if (story?.headline) return newsStoryPostDocument({ story, card, comments, path, origin: publicOrigin, paths: publicPaths });
       const isOnlineReview = card.kind === "review" && card.experienceType === "online";
       const isReview = card.kind === "review" && !!card.artist;
       const headline = isOnlineReview
@@ -1403,6 +1536,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       };
       return Object.freeze({
         kind: "event",
+        catalogText: readPublicCatalogEditorText(database, { type: "event", key: raw.event.id, at }),
         siteName: SITE_NAME,
         title: metadata.title,
         heading: metadata.heading,
@@ -1739,6 +1873,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       };
       return Object.freeze({
         kind: "venue",
+        catalogText: readPublicCatalogEditorText(database, { type: "venue", key: catalogVenueEditorKey(raw.venue.source, raw.venue.providerVenueId) }),
         siteName: SITE_NAME,
         title: venueTitle,
         heading: venueTitleName,
@@ -1972,3 +2107,4 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
     },
   });
 }
+import { retainedProfileProjection, retainedContributor } from "../artistAccounts/artistAccessPublication.js";

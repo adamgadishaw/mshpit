@@ -21,6 +21,7 @@
 import { createHash } from "node:crypto";
 import { db, errorStmts } from "./db.js";
 import { alertCooldownMs, createErrorAlertDelivery } from "./errorAlertDelivery.js";
+import { createAlertDrainScheduler } from "./alertDrainScheduler.js";
 import { cleanEmail, isEmail } from "../src/domain/validation.mjs";
 import { formatErrorOccurrenceTime } from "../src/domain/errorDiagnostics.mjs";
 import {
@@ -56,6 +57,19 @@ export { alertCooldownMs };
 // can schedule mail.
 let alerting = false;
 let lastAlertAt = 0;
+let activeAlert = null;
+async function drainErrorAlerts({ signal }) {
+  // A manual send can be in flight when a scheduled wake-up fires. Wait for
+  // its durable acknowledgement before deciding whether another batch is due.
+  while (activeAlert) await activeAlert;
+  if (signal.aborted) return { sent: false, reason: "stopped" };
+  return maybeAlert();
+}
+// All server and client-crash triggers share one timer, including a cooldown
+// wake-up. Constructing it does not send or retry mail on process startup.
+let alertDrains = createAlertDrainScheduler({ drain: drainErrorAlerts });
+export const scheduleErrorAlert = () => alertDrains.schedule();
+export const stopErrorAlertScheduler = () => alertDrains.stop();
 
 // Each field is matched against a SHAPE and replaced wholesale when it does not
 // fit, rather than filtered character by character. Filtering is the wrong tool:
@@ -183,20 +197,24 @@ export function errorStats(sinceMs) {
 export async function maybeAlert({ now = Date.now(), force = false } = {}) {
   if (alerting) return { sent: false, reason: "reentrant" };
   if (!alertsEnabled()) return { sent: false, reason: "disabled" };
-  if (!force && now - lastAlertAt < alertCooldownMs()) return { sent: false, reason: "cooling-down" };
-
   let delivery;
-  try { delivery = alertDelivery.nextBatch({ now, force }); }
+  try { delivery = alertDelivery.nextBatch({ now, force, lastAttemptAt: lastAlertAt }); }
   catch { return { sent: false, reason: "unavailable" }; }
-  if (!delivery.batch) return { sent: false, reason: delivery.reason };
+  if (!delivery.batch) return { sent: false, ...delivery };
   const { batch } = delivery;
   const serious = batch.rows;
 
   alerting = true;
+  const triggerVersion = alertDrains.triggerVersion();
+  let finishAlert;
+  activeAlert = new Promise((resolve) => { finishAlert = resolve; });
   try {
     const { sendTemplate } = await import("./emailService.js");
     const recipient = alertRecipient();
-    if (!recipient) return { sent: false, reason: "no-alert-email" };
+    if (!recipient) {
+      alertDrains.cancelPending({ since: triggerVersion });
+      return { sent: false, reason: "no-alert-email" };
+    }
 
     const total = serious.reduce((sum, r) => sum + r.count, 0);
     const lines = serious.map((r) => {
@@ -229,20 +247,40 @@ export async function maybeAlert({ now = Date.now(), force = false } = {}) {
     lastAlertAt = now;
     // A skipped/failed provider attempt must not consume pending occurrences.
     // Only the captured counts advance; arrivals during delivery remain queued.
-    if (result.sent) alertDelivery.acknowledge(batch.key, now);
-    return { sent: !!result.sent, reason: result.reason ?? null, kinds: serious.length, occurrences: total };
+    let retryAt;
+    if (result.sent) {
+      alertDelivery.acknowledge(batch.key, now);
+      // The digest row cap and arrivals during delivery may leave more eligible
+      // occurrences. Recheck without freezing another batch before cooldown.
+      try {
+        const remaining = alertDelivery.nextBatch({ now, lastAttemptAt: lastAlertAt });
+        if (remaining.reason === "cooling-down") retryAt = remaining.retryAt;
+      } catch { /* architecture: allow-empty-catch -- a follow-up eligibility read must not misreport an acknowledged delivery; the next incident can retry it */ }
+      if (retryAt) alertDrains.defer(retryAt);
+    } else {
+      // Invalidate earlier wake-ups too: a forced manual send may have failed
+      // while a scheduled drain was waiting for its acknowledgement.
+      alertDrains.cancelPending({ since: triggerVersion });
+    }
+    return { sent: !!result.sent, reason: result.reason ?? null, kinds: serious.length, occurrences: total,
+      ...(retryAt ? { retryAt } : {}) };
   } catch {
     // A failed alert must not itself become a recorded error, or the two would
     // feed each other.
     lastAlertAt = now;
+    alertDrains.cancelPending({ since: triggerVersion });
     return { sent: false, reason: "alert-failed" };
   } finally {
     alerting = false;
+    activeAlert = null;
+    finishAlert();
   }
 }
 
 /** Simulate a process restart: clear only local latches, never durable delivery acknowledgements. */
-export function resetAlertStateForTests() {
+export function resetAlertStateForTests(schedulerOptions = {}) {
+  void alertDrains.stop();
+  alertDrains = createAlertDrainScheduler({ ...schedulerOptions, drain: drainErrorAlerts });
   alerting = false;
   lastAlertAt = 0;
 }

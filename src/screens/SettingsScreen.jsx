@@ -8,7 +8,7 @@ import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { profileManagementAction } from "../domain/artistAccountIdentity.mjs";
-import { SUPPORT_EMAIL, SUPPORT_URL } from "../domain/contact.mjs";
+import { CONTACT_URL, JOBS_URL, SUPPORT_EMAIL, SUPPORT_URL } from "../domain/contact.mjs";
 import { visibleThemeChoices } from "../domain/themeChoices.mjs";
 import AccountPasswordForm from "../features/signupOnboarding/AccountPasswordForm";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
@@ -62,7 +62,7 @@ function Toggle({ value, busy = false }) {
   );
 }
 
-export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout, onOpenModeration, onRequestArtist, initialAccountAction = null }) {
+export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout, onOpenCatalogEditor, onOpenNewsroom, onOpenModeration, onOpenAdministration, onRequestArtist, initialAccountAction = null }) {
   const { session, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, updateProfile } = useStore();
   const blocked = session ? blockedUsers() : [];
   const muted = session ? mutedUsers() : [];
@@ -460,6 +460,14 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
         )}
 
         <Text style={styles.section}>ABOUT</Text>
+        <Row icon="mail" label="Contact us" sub="Appeals, general enquiries and advertising" accessibilityRole="link" onPress={() => {
+          setSupportError(null);
+          void Linking.openURL(CONTACT_URL).catch(() => setSupportError(`Contact could not be opened. Email ${SUPPORT_EMAIL}.`));
+        }} />
+        <Row icon="globe" label="Work at mshpit" sub="Current job openings" accessibilityRole="link" onPress={() => {
+          setSupportError(null);
+          void Linking.openURL(JOBS_URL).catch(() => setSupportError("Jobs could not be opened. Try again."));
+        }} />
         <Row
           icon="mail"
           label="Help & support"
@@ -481,6 +489,9 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
         {session && (
           <>
             <View style={{ height: 12 }} />
+            {(session.role === "admin" || session.role === "editor") && onOpenNewsroom && <Row icon="feed" label="Newsroom" sub="Write stories and run live coverage" onPress={onOpenNewsroom} />}
+            {session.role === "admin" && onOpenAdministration && <Row icon="menu" label="Administration" sub="Manage job openings" onPress={onOpenAdministration} />}
+            {session.role === "admin" && onOpenCatalogEditor && <Row icon="music" label="Catalog editor" sub="Sourced artist, venue and event text" onPress={onOpenCatalogEditor} />}
             {isMod(session.role) && onOpenModeration && <Row icon="shield" label="Moderation" sub="Reports, members, and site health" onPress={onOpenModeration} />}
             {session.role === "fan" && onRequestArtist && <Row icon="music" label="Create or claim an artist page" sub="For musicians and the people who run their pages" onPress={onRequestArtist} />}
             <Row icon="logout" label="Log out" danger onPress={onLogout} />

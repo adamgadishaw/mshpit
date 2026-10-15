@@ -147,6 +147,13 @@ async function assertCityMap(page, state, city, mode) {
 export function discoverVenueFixture(pathname, options = {}) {
   assert.equal(options.method || "GET", "GET", "The guest venue explorer must not mutate data.");
   if (pathname === "/api/tourdates") return { tourDates: discoverVenueEvents };
+  if (pathname === "/api/venue-snapshot") {
+    assert.equal(options.resolvedPath, "/venue/ticketmaster-fixture-london-river");
+    const event = discoverVenueEvents.find(row => row.id === "london-river");
+    return { path: options.resolvedPath, venue: { name: event.venue, source: event.source, providerVenueId: event.providerVenueId,
+      place: event.place, coord: { lat: event.lat, lng: event.lng }, address: null, capacity: null },
+      events: [{ ...event, name: event.artist }], hasMore: false, nextCursor: null, after: null };
+  }
   if (pathname === "/api/venues/fixture%20london%20river%20room/photos") return { photos: [], fanPhotos: [], state: "ready" };
   if (pathname === "/api/discover/overview") return {
     chart: { rows: [], source: "popularity" }, genres: [], countries: [{ country: "Canada", count: 16 }, { country: "Portugal", count: 1 }, { country: "United Kingdom", count: 3 }],

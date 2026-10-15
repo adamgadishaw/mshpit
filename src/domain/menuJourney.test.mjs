@@ -33,7 +33,8 @@ test("role-specific account destinations expose one profile-management doorway",
   assert.deepEqual(keysFor("artist", "Model/Actriz"), ["manageProfile", "settings"]);
   assert.deepEqual(keysFor("artist"), ["manageProfile", "settings"]);
   assert.deepEqual(keysFor("moderator"), ["manageProfile", "settings", "admin"]);
-  assert.deepEqual(keysFor("admin"), ["manageProfile", "settings", "admin", "tourDates"]);
+  assert.deepEqual(keysFor("admin"), ["manageProfile", "settings", "admin", "newsroom", "tourDates"]);
+  assert.deepEqual(keysFor("editor"), ["manageProfile", "settings", "newsroom"], "the news team gets the newsroom and nothing else");
   assert.deepEqual(journeyMenuModel().account, []);
 });
 

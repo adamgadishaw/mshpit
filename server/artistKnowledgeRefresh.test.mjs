@@ -5,6 +5,7 @@ import { createArtistKnowledgeRefresher, artistKnowledgeStorageReady, startArtis
   artistKnowledgeMemoryReady, artistKnowledgeDatabaseBytes } from "./artistKnowledgeRefresh.js";
 import { readCatalogKnowledgeControl, setCatalogKnowledgeMode, collectCatalogKnowledgeControl } from "./catalogKnowledgeControl.js";
 import { ArtistKnowledgeProviderError } from "./artistKnowledgeProvider.js";
+import { ARTIST_KNOWLEDGE_CIRCUIT_KEY, createArtistKnowledgeCircuit } from "./artistKnowledgeCircuit.js";
 import { rememberDiscoverArtists, discoverArtistPriorityKeys, DISCOVER_PRIORITY_LIMIT } from "./discoverArtistPriority.js";
 
 const MBID = "11111111-1111-4111-8111-111111111111";
@@ -201,7 +202,7 @@ test("wrong identity, unsafe attribution and corrupt existing JSON never publish
 
 test("outage stops the pass and persistent Retry-After survives a new service", async (t) => {
   let calls = 0, clock = AT;
-  const fetchKnowledge = async () => { calls++; throw Object.assign(new Error("503"), { retryAt: AT + 8_000_000 }); };
+  const fetchKnowledge = async () => { calls++; throw Object.assign(new Error("503"), { status: 503, retryAt: AT + 8_000_000 }); };
   const f = fixture(t, { fetchKnowledge, now: () => clock }); f.insert(); f.insert("another");
   const stats = await f.service.runBatch();
   assert.equal(calls, 1); assert.equal(stats.failed, 1); assert.equal(f.check("another").status, "failed");
@@ -459,7 +460,8 @@ test("provider failure diagnostics are fixed categories, never raw messages or a
   } });
   f.insert(); const stats = await f.service.runBatch();
   assert.equal(stats.failureCategory, "provider_error");
-  assert.equal(stats.cooldownUntil, AT + 30 * 60_000);
+  assert.equal(stats.cooldownUntil, null, "an unclassified record failure does not pause the provider");
+  assert.equal(f.check().next_attempt_at, AT + 30 * 60_000);
   assert.doesNotMatch(JSON.stringify(stats), /secret|token|example/);
 });
 
@@ -478,4 +480,86 @@ test("scheduler logs no-match separately from interrupted work and exposes idle 
   clock += 180_000; await options.run({ signal: new AbortController().signal });
   assert.match(lines.at(-1), /noMatch=1 deferred=2 providerFailures=0/);
   assert.match(lines.at(-1), /failureCategory=none cooldownUntil=\d+ coolingDown=true stoppedEarly=true modePaused=false/);
+});
+
+test("a malformed artist record is quarantined without stopping healthy neighbours, including after restart", async (t) => {
+  let clock = AT, bad = true, requests = 0;
+  const fetchKnowledge = async ({ mbid }) => {
+    requests++;
+    if (mbid === MBID && bad) throw new ArtistKnowledgeProviderError("malformed record", { code: "wikidata_response" });
+    return result(mbid);
+  };
+  const f = fixture(t, { now: () => clock, fetchKnowledge });
+  f.insert("a-bad"); f.insert("b-good", { mbid: OTHER });
+  const first = await f.service.runBatch();
+  assert.equal(first.failed, 1); assert.equal(first.filled, 1); assert.equal(first.cooldownUntil, null);
+  assert.equal(f.check("a-bad").next_attempt_at, AT + 30 * 60_000);
+  assert.equal(f.check("b-good").status, "filled");
+  const restarted = createArtistKnowledgeRefresher({ database: f.database, now: () => clock, fetchKnowledge });
+  f.insert("c-good", { mbid: OTHER });
+  assert.equal((await restarted.runBatch()).filled, 1); assert.equal(requests, 3);
+  clock += 30 * 60_000;
+  assert.equal((await restarted.runBatch()).failed, 1);
+  assert.equal(f.check("a-bad").next_attempt_at, clock + 60 * 60_000, "persistent bad record backs off only itself");
+  clock += 60 * 60_000; bad = false;
+  assert.equal((await restarted.runBatch()).filled, 1, "a corrected or transiently invalid record recovers");
+});
+
+test("provider recovery uses one durable probe across worker instances, then restores normal lanes", async (t) => {
+  let clock = AT, failed = true, completeProbe, requests = 0;
+  const env = { ARTIST_KNOWLEDGE_MODE: "catch_up" };
+  const fetchKnowledge = async () => {
+    requests++;
+    if (failed) throw new ArtistKnowledgeProviderError("outage", { code: "wikidata_unavailable", status: 503 });
+    if (requests === 2) return new Promise(resolve => { completeProbe = () => resolve(result()); });
+    return result();
+  };
+  const f = fixture(t, { now: () => clock, env, fetchKnowledge });
+  for (const key of ["a", "b", "c", "d"]) f.insert(key);
+  const first = await f.service.runBatch({ limit: 1 });
+  assert.equal(first.cooldownUntil, AT + 60_000);
+  const restarted = () => createArtistKnowledgeRefresher({ database: f.database, now: () => clock, env, fetchKnowledge });
+  const waiting = await restarted().runBatch();
+  assert.equal(waiting.coolingDown, true); assert.equal(waiting.failureCategory, "wikidata_unavailable");
+  assert.equal(waiting.failureStatus, 503); assert.equal(requests, 1);
+  clock += 60_000; failed = false;
+  const probe = restarted().runBatch();
+  assert.equal(requests, 2);
+  assert.equal((await restarted().runBatch()).coolingDown, true, "a second worker cannot join the recovery probe");
+  completeProbe();
+  const recovered = await probe;
+  assert.equal(recovered.recoveryProbe, true); assert.equal(recovered.lanes, 1); assert.equal(recovered.checked, 1);
+  const resumed = await restarted().runBatch();
+  assert.equal(resumed.recoveryProbe, false); assert.equal(resumed.checked, 3); assert.equal(resumed.filled, 3);
+});
+
+test("crashed recovery leases expire and locally generated provider pauses never grow to a day", (t) => {
+  let clock = AT;
+  const f = fixture(t, { now: () => clock });
+  const circuit = createArtistKnowledgeCircuit(f.database, { now: () => clock });
+  for (let failure = 0; failure < 12; failure++) {
+    const state = circuit.fail({ code: "wikidata_network" });
+    assert.ok(state.retryAt - clock <= 15 * 60_000);
+    clock = state.retryAt;
+  }
+  const abandoned = circuit.begin();
+  assert.equal(abandoned.allowed, true); assert.ok(abandoned.probeToken);
+  const restarted = createArtistKnowledgeCircuit(f.database, { now: () => clock });
+  assert.equal(restarted.begin().allowed, false);
+  clock += 60_001;
+  const replacement = restarted.begin();
+  assert.equal(replacement.allowed, true); assert.notEqual(replacement.probeToken, abandoned.probeToken);
+  circuit.finishProbe(abandoned.probeToken, true);
+  assert.equal(restarted.read().probeToken, replacement.probeToken, "a late old process cannot close the new probe");
+  assert.equal(JSON.parse(f.database.prepare("SELECT value FROM app_meta WHERE key=?").get(ARTIST_KNOWLEDGE_CIRCUIT_KEY).value).cause, "wikidata_network");
+});
+
+test("historic day-long record cooldown retains evidence but permits a bounded recovery probe", (t) => {
+  const f = fixture(t);
+  f.database.prepare("INSERT INTO app_meta VALUES ('artist-knowledge:v1:cooldown',?)").run(String(AT + 86_400_000));
+  const circuit = createArtistKnowledgeCircuit(f.database, { now: () => AT });
+  const state = circuit.begin().state;
+  assert.equal(state.retryAt, AT + 15 * 60_000);
+  assert.equal(state.previousRetryAt, AT + 86_400_000);
+  assert.equal(state.cause, "legacy_provider_cooldown");
 });

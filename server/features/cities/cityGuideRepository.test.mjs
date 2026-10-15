@@ -1,3 +1,4 @@
+import { ensureArtistAccessRetentionTables } from "../artistAccounts/artistAccessRetention.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -49,6 +50,7 @@ function fixture() {
     db.prepare("INSERT INTO media_variants VALUES (?,?,'render',?,?,800,600,'verified','private_derivative_v1')")
       .run(`v-${id}`,`a-${id}`,`public/${id}`,`https://media.mshpit.com/${id}.jpg`);
   }
+  ensureArtistAccessRetentionTables(db);
   return {db,event,photo,repository:()=>createCityGuideRepository(db)};
 }
 

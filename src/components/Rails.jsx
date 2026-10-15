@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Platform, View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, roleColor, shadow } from "../theme";
 import Avatar from "./Avatar";
@@ -6,7 +6,7 @@ import Icon from "./Icon";
 import { UpcomingEventCard } from "./VenueDiscoveryCards";
 import { PopularLoungeCard } from "./LiveDiscoveryCards";
 import { PublicPressableLink } from "./PublicWebLinks";
-import HomeShowCountdown from "./HomeShowCountdown";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
 import {
   RIGHT_RAIL_EVENT_SCOPE,
   reconcileRightRailScopeChoice,
@@ -14,9 +14,12 @@ import {
   rightRailEventsForScope,
   rightRailScopeIdentity,
 } from "../domain/rightRailEvents.mjs";
-import { liveEventTitle, localDiscoveryEvents } from "../domain/liveDiscovery.mjs";
+import { isFestivalListing, liveEventTitle, localDiscoveryEvents } from "../domain/liveDiscovery.mjs";
 import { artistPath, eventPath, profilePath } from "../domain/urls.mjs";
 import { visibleSuggestedPitters } from "../domain/suggestedPitters.mjs";
+const HomeShowCountdown = lazyWithRetry(() => import("./HomeShowCountdown"), "HomeShowCountdown");
+const NewsRailPanel = lazyWithRetry(() => import("./news/NewsRailPanel"), "NewsRailPanel");
+const SponsorPlaceholder = lazyWithRetry(() => import("./SponsorPlaceholder"), "SponsorPlaceholder");
 
 const NAV = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -236,6 +239,10 @@ export function RightRail({
   onOpenEvent,
   onOpenCountdown,
   onViewAllCountdown,
+  onOpenNewsStory,
+  onOpenNews,
+  showNewsStories = false,
+  showSponsorPlaceholder = false,
 }) {
   const [artistMode, setArtistMode] = useState("top"); // 'top' | 'az'
   const eventScopeIdentity = rightRailScopeIdentity({ accountId, homeCity });
@@ -259,10 +266,11 @@ export function RightRail({
     : artistsAlphabetical(10);
   const lounges = Array.isArray(discoverySidebar.popularLounges) ? discoverySidebar.popularLounges.slice(0, 5) : [];
   const suggestedUsers = visibleSuggestedPitters(discoverySidebar.suggestedUsers, { isFollowing, isBlocked });
+  // Regular shows only: festivals are showcased in their own tab.
   const events = rightRailEventsForScope({
     scope: eventScope,
-    nearEvents: localDiscoveryEvents(discoverySidebar.upcomingEvents, { limit: 6 }),
-    worldEvents: eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD ? upcomingEvents?.(6) : [],
+    nearEvents: localDiscoveryEvents(discoverySidebar.upcomingEvents, { limit: 12 }).filter((event) => !isFestivalListing(event)),
+    worldEvents: eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD ? (upcomingEvents?.(12) || []).filter((event) => !isFestivalListing(event)) : [],
     limit: 6,
   });
   const localLabel = discoverySidebar.location?.city ? ` near ${discoverySidebar.location.city}` : "";
@@ -288,8 +296,11 @@ export function RightRail({
       contentContainerStyle={styles.rightContent}
       showsVerticalScrollIndicator={false}
     >
+      {showSponsorPlaceholder ? <Suspense fallback={null}><SponsorPlaceholder /></Suspense> : null}
+      {showNewsStories ? <Suspense fallback={<Text style={styles.empty}>Loading music news…</Text>}><NewsRailPanel onOpenStory={onOpenNewsStory} onOpenAll={onOpenNews} /></Suspense> : null}
+
       {accountId && countdownPlan ? (
-        <HomeShowCountdown compact plan={countdownPlan} onOpen={onOpenCountdown || onOpenEvent} onViewAll={onViewAllCountdown} />
+        <Suspense fallback={<Text style={styles.empty}>Loading your next show…</Text>}><HomeShowCountdown compact plan={countdownPlan} onOpen={onOpenCountdown || onOpenEvent} onViewAll={onViewAllCountdown} /></Suspense>
       ) : null}
 
       {accountId && (suggestedUsers.length > 0 || discoverySidebarStatus === "loading") ? (
@@ -445,7 +456,7 @@ export function RightRail({
       </View>
 
       {accountId && !countdownPlan ? (
-        <HomeShowCountdown compact onFindShow={onOpenDiscover} />
+        <Suspense fallback={<Text style={styles.empty}>Loading show suggestions…</Text>}><HomeShowCountdown compact onFindShow={onOpenDiscover} /></Suspense>
       ) : null}
     </ScrollView>
   );

@@ -51,7 +51,7 @@ export default function SongAttachment({ song, onPlay, compact = false }) {
           <Text style={styles.compactTitle} numberOfLines={2}>{track.title}</Text>
           <Text style={styles.artist} numberOfLines={1}>{track.artist}</Text>
         </View>
-        <View style={styles.compactPlay}><Icon name="play" size={16} color="#1A1206" /></View>
+        <View style={styles.compactPlay}><Icon name={canUsePlayer ? "play" : "external"} size={16} color="#1A1206" /></View>
       </Pressable>
     );
   }
@@ -63,7 +63,8 @@ export default function SongAttachment({ song, onPlay, compact = false }) {
         {/* A soft bottom gradient-ish scrim keeps the title legible over any frame. */}
         <View style={styles.scrim} pointerEvents="none" />
         <View style={styles.playWrap} pointerEvents="none">
-          <View style={styles.playBig}><Icon name="play" size={26} color="#1A1206" /></View>
+          {canUsePlayer ? <View style={styles.playBig}><Icon name="play" size={26} color="#1A1206" /></View>
+            : <View style={styles.externalPill}><Icon name="external" size={16} color="#1A1206" /><Text style={styles.externalPillText}>Watch on YouTube</Text></View>}
         </View>
         <View style={styles.badge} pointerEvents="none">
           <Icon name="play" size={9} color={colors.amber} />
@@ -79,6 +80,8 @@ export default function SongAttachment({ song, onPlay, compact = false }) {
 }
 
 const styles = StyleSheet.create({
+  externalPill: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 18, paddingVertical: 11, borderRadius: radius.pill, backgroundColor: colors.amber },
+  externalPillText: { color: "#1A1206", fontSize: 14, fontWeight: "900" },
   // ---- large Facebook-style media card (default) ----
   card: {
     marginTop: 12,

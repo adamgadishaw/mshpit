@@ -744,7 +744,7 @@ export default function PlayerBar({
   const previewStatusMessage = previewState === "playing"
     ? "Preview playing."
     : previewState === "requires_gesture"
-      ? "Preview ready — press Play."
+      ? "Preview ready. Press Play."
       : "Preview available.";
   const resolverNoticeMessage = playerYouTubeStatusMessage(resolverNotice, {
     preview: !!previewSrc,

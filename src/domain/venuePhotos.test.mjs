@@ -252,7 +252,7 @@ test("venue and show screens carry exact provider venue identity into photo read
   const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
   const api = readFileSync(new URL("../../server/api.js", import.meta.url), "utf8");
 
-  assert.match(venueScreen, /venueIdentity\?\.source \|\| venue\.source/u);
+  assert.match(venueScreen, /normalizeVenuePhotoProviderIdentity\(snapshot\?\.venue \|\| venueIdentity\)/u);
   assert.match(venueScreen, /venuePhotos\(venue\.name, photoIdentity\)/u);
   assert.match(venueScreen, /loadVenuePhotos\(venue\.name, \{ \.\.\.photoIdentity,/u);
   assert.match(showScreen, /providerVenueId: norm\.providerVenueId \|\| norm\.venue_provider_id/u);

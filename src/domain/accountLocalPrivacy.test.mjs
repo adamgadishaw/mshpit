@@ -39,6 +39,7 @@ test("logout payload policy removes only the departing account from shared store
 test("logout purges every account-a private cache while preserving account-b and public caches", () => {
   const persistence = memoryPersistence();
   const privateA = accountScopedPrivateStorageKeys("account-a");
+  assert.ok(privateA.includes("pit.newsroom.draft.v1.account-a"), "retained newsroom articles are removed at logout");
   const privateB = accountScopedPrivateStorageKeys("account-b");
   for (const key of privateA) persistence.save(key, { owner: "account-a" });
   for (const key of privateB) persistence.save(key, { owner: "account-b" });

@@ -82,6 +82,7 @@ test("review cards lead with the artist for online and festival-set reviews only
     }),
     {
       festivalSet: false,
+      festival: false,
       primary: "Little Simz",
       primaryIsArtist: true,
       secondary: "Live at Glastonbury",
@@ -92,6 +93,7 @@ test("review cards lead with the artist for online and festival-set reviews only
     reviewCardPerformance({ artist: "50 Cent", tour: "Festival set" }),
     {
       festivalSet: true,
+      festival: false,
       primary: "50 Cent",
       primaryIsArtist: true,
       secondary: "Festival set",
@@ -102,12 +104,22 @@ test("review cards lead with the artist for online and festival-set reviews only
     reviewCardPerformance({ artist: "Beyoncé", tour: "Renaissance World Tour" }),
     {
       festivalSet: false,
+      festival: false,
       primary: "Renaissance World Tour",
       primaryIsArtist: false,
       secondary: "",
       showArtistInMeta: true,
     },
   );
+});
+
+test("festival and co-headline cards lead with the festival or every headliner", () => {
+  assert.deepEqual(reviewCardPerformance({ artist: "Rolling Loud Miami", showFormat: "festival", tour: "Whatever" }),
+    { festivalSet: false, festival: true, primary: "Rolling Loud Miami", primaryIsArtist: false, secondary: "", showArtistInMeta: false });
+  const coHeadline = reviewCardPerformance({ artist: "Chris Brown", showFormat: "co_headline", lineup: [{ name: "Usher", role: "co_headliner" }] });
+  assert.deepEqual([coHeadline.primary, coHeadline.primaryIsArtist, coHeadline.festival], ["Chris Brown & Usher", true, false]);
+  assert.equal(reviewCardPerformance({ experienceType: "online", artist: "Usher", showFormat: "festival", youtubeUrl: "x" }).festival, false,
+    "an online review is never a festival card");
 });
 
 test("online reviews reject non-video and lookalike links", () => {

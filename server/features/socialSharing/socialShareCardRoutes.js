@@ -2,9 +2,12 @@ import { createPngApiResponse } from "../../binaryApiResponse.js";
 import { absolutePhotoCreditUrl, photoCreditPathFromArtwork } from "../../photoCredits.js";
 import { isStrictCalendarDate } from "../seo/publicEntityPolicy.js";
 import { normalizeTourDateId } from "../shows/showIdentity.js";
+import { createFestivalReader } from "../festivals/festivalStore.js";
 import {
   createSocialShareCardRenderer,
   eventShareCardModel,
+  festivalShareCardModel,
+  newsShareCardModel,
   reviewShareCardModel,
   SocialShareCardArtworkUnavailableError,
   SocialShareCardBusyError,
@@ -15,6 +18,7 @@ import { eventPath, postPath } from "../../../src/domain/urls.mjs";
 const TEN_MINUTES = 10 * 60 * 1000;
 const ALLOWED_POST_FIELDS = new Set(["kind", "postId"]);
 const ALLOWED_EVENT_FIELDS = new Set(["kind", "eventId", "intent"]);
+const ALLOWED_FESTIVAL_FIELDS = new Set(["kind", "slug", "editionId", "intent"]);
 const ATTRIBUTION_FREE_VENUE_LICENSES = new Map([
   ["CC0-1.0", "https://creativecommons.org/publicdomain/zero/1.0/"],
   ["PDM-1.0", "https://creativecommons.org/publicdomain/mark/1.0/"],
@@ -265,6 +269,9 @@ export function socialShareCardRoutes({
   resolvePublicDocument,
   resolveCurrentArtistProfileImage = null,
   resolveCurrentLicensedArtistPhoto = null,
+  // Mshpit News posts share their story card: (postId) => story or null.
+  resolveNewsStory = null,
+  resolveNewsArtwork = null,
   renderer = createSocialShareCardRenderer(),
   artworkEnv = process.env,
 } = {}) {
@@ -298,68 +305,89 @@ export function socialShareCardRoutes({
         if (!postBoundary || blockedEitherWay(user.id, postBoundary.user_id)) {
           throw new ApiError(404, "That post is not available to share.", "NOT_FOUND");
         }
-        const document = await resolvePublicDocument(postPath(postId));
-        if (document?.kind !== "post") {
-          throw new ApiError(404, "That post is not available to share.", "NOT_FOUND");
-        }
-        const snapshot = JSON.stringify(document.post);
-        assertShareCurrent = async () => {
-          const latestDocument = await resolvePublicDocument(postPath(postId));
-          const latestBoundary = postBoundaryById.get(postId);
-          if (!latestBoundary || blockedEitherWay(user.id, latestBoundary.user_id)
-            || latestDocument?.kind !== "post" || JSON.stringify(latestDocument.post) !== snapshot) {
+        const newsStory = postId.startsWith("news_") && typeof resolveNewsStory === "function"
+          ? resolveNewsStory(postId) : null;
+        if (newsStory) {
+          const snapshot = JSON.stringify(newsStory);
+          const newsModel = (story) => story ? newsShareCardModel(story, {
+            ...(typeof resolveNewsArtwork === "function" ? resolveNewsArtwork(story) : {}),
+            variant: "news",
+          }) : null;
+          model = newsModel(newsStory);
+          assertShareCurrent = async () => {
+            const latestBoundary = postBoundaryById.get(postId);
+            const currentStory = resolveNewsStory(postId);
+            if (!latestBoundary || blockedEitherWay(user.id, latestBoundary.user_id)
+              || JSON.stringify(currentStory) !== snapshot
+              || JSON.stringify(newsModel(currentStory)) !== JSON.stringify(model)) {
+              throw new ApiError(404, "That story is not available to share.", "NOT_FOUND");
+            }
+          };
+          filename = "mshpit-news.png";
+        } else {
+          const document = await resolvePublicDocument(postPath(postId));
+          if (document?.kind !== "post") {
             throw new ApiError(404, "That post is not available to share.", "NOT_FOUND");
           }
-        };
-        model = document.post?.kind === "review"
-          ? reviewShareCardModel(document, {
-              fallbackArtwork: await projectedArtworkFallbacks(
-                document,
-                resolvePublicDocument,
-                artworkEnv,
-              ),
-            })
-          : null;
-        if (!model && document.post?.kind === "status") {
-          const ticketDocument = publicAttendanceTicketShareSnapshot(
-            postBoundary.attendance_ticket,
-            {
-              env: artworkEnv,
-              resolveCurrentArtistProfileImage,
-              resolveCurrentLicensedArtistPhoto,
-            },
-          );
-          if (ticketDocument && typeof assertLiveShareAvailable === "function") {
-            assertLiveShareAvailable({
-              artistKey: ticketDocument.event.artistKey,
-              artist: ticketDocument.event.artist,
+          const snapshot = JSON.stringify(document.post);
+          assertShareCurrent = async () => {
+            const latestDocument = await resolvePublicDocument(postPath(postId));
+            const latestBoundary = postBoundaryById.get(postId);
+            if (!latestBoundary || blockedEitherWay(user.id, latestBoundary.user_id)
+              || latestDocument?.kind !== "post" || JSON.stringify(latestDocument.post) !== snapshot) {
+              throw new ApiError(404, "That post is not available to share.", "NOT_FOUND");
+            }
+          };
+          model = document.post?.kind === "review"
+            ? reviewShareCardModel(document, {
+                fallbackArtwork: await projectedArtworkFallbacks(
+                  document,
+                  resolvePublicDocument,
+                  artworkEnv,
+                ),
+              })
+            : null;
+          if (!model && document.post?.kind === "status") {
+            const ticketDocument = publicAttendanceTicketShareSnapshot(
+              postBoundary.attendance_ticket,
+              {
+                env: artworkEnv,
+                resolveCurrentArtistProfileImage,
+                resolveCurrentLicensedArtistPhoto,
+              },
+            );
+            if (ticketDocument && typeof assertLiveShareAvailable === "function") {
+              assertLiveShareAvailable({
+                artistKey: ticketDocument.event.artistKey,
+                artist: ticketDocument.event.artist,
+              });
+            }
+            const eventId = ticketDocument?.event?.id || null;
+            const resolvedEventDocument = eventId
+              ? (await resolvePublicDocument(eventPath(eventId)) || ticketDocument)
+              : null;
+            const eventDocument = eventDocumentForShare(resolvedEventDocument, artworkEnv);
+            const relatedArtwork = await projectedAttendanceArtwork(
+              eventDocument,
+              resolvePublicDocument,
+              artworkEnv,
+            );
+            const ticketArtwork = ticketDocument?.fallbackArtwork || [];
+            const allowProjectedArtist = typeof resolveCurrentArtistProfileImage !== "function";
+            const artistArtwork = ticketArtwork[0]
+              || (allowProjectedArtist ? relatedArtwork.artist : null);
+            model = eventShareCardModel(eventDocument, "going", {
+              postId,
+              authorName: document.post?.author?.name,
+              preferFallbackArtwork: true,
+              fallbackArtwork: [
+                artistArtwork,
+                relatedArtwork.venue,
+              ].filter(Boolean),
             });
           }
-          const eventId = ticketDocument?.event?.id || null;
-          const resolvedEventDocument = eventId
-            ? (await resolvePublicDocument(eventPath(eventId)) || ticketDocument)
-            : null;
-          const eventDocument = eventDocumentForShare(resolvedEventDocument, artworkEnv);
-          const relatedArtwork = await projectedAttendanceArtwork(
-            eventDocument,
-            resolvePublicDocument,
-            artworkEnv,
-          );
-          const ticketArtwork = ticketDocument?.fallbackArtwork || [];
-          const allowProjectedArtist = typeof resolveCurrentArtistProfileImage !== "function";
-          const artistArtwork = ticketArtwork[0]
-            || (allowProjectedArtist ? relatedArtwork.artist : null);
-          model = eventShareCardModel(eventDocument, "going", {
-            postId,
-            authorName: document.post?.author?.name,
-            preferFallbackArtwork: true,
-            fallbackArtwork: [
-              artistArtwork,
-              relatedArtwork.venue,
-            ].filter(Boolean),
-          });
+          filename = model?.variant === "review" ? "mshpit-review.png" : "mshpit-going.png";
         }
-        filename = model?.variant === "review" ? "mshpit-review.png" : "mshpit-going.png";
       } else if (kind === "event") {
         if (!exactBodyKeys(ctx.body, ALLOWED_EVENT_FIELDS)) {
           throw new ApiError(400, "Choose one event to share.", "VALIDATION_FAILED");
@@ -412,6 +440,33 @@ export function socialShareCardRoutes({
           ].filter(Boolean),
         });
         filename = `mshpit-${intent}.png`;
+      } else if (kind === "festival") {
+        // A festival lineup, or the member's own plan for an edition.
+        if (!exactBodyKeys(ctx.body, ALLOWED_FESTIVAL_FIELDS)) {
+          throw new ApiError(400, "Choose one festival to share.", "VALIDATION_FAILED");
+        }
+        const slug = typeof ctx.body.slug === "string" && /^[a-z0-9-]{1,80}$/u.test(ctx.body.slug) ? ctx.body.slug : null;
+        const editionId = typeof ctx.body.editionId === "string" ? ctx.body.editionId.slice(0, 160) : "";
+        const intent = ctx.body.intent === "going" ? "going" : ctx.body.intent === "lineup" ? "lineup" : null;
+        if (!slug || !editionId || !intent) throw new ApiError(400, "Choose a festival date to share.", "VALIDATION_FAILED");
+        const readPlan = () => createFestivalReader(database).festival(slug, { viewerId: user.id });
+        const page = readPlan();
+        const edition = page?.upcoming?.find((item) => item.id === editionId);
+        if (!edition) throw new ApiError(404, "That festival date is no longer listed.", "NOT_FOUND");
+        if (intent === "going" && !edition.plan) {
+          throw new ApiError(409, "Say which days you're going before sharing your plan.", "CONFLICT");
+        }
+        if (intent === "going") {
+          const planned = JSON.stringify(edition.plan);
+          assertShareCurrent = async () => {
+            const current = readPlan()?.upcoming?.find((item) => item.id === editionId)?.plan;
+            if (JSON.stringify(current) !== planned) {
+              throw new ApiError(409, "Your plan changed. Reopen the festival before sharing it.", "CONFLICT");
+            }
+          };
+        }
+        model = festivalShareCardModel({ festival: page.festival, edition, intent, plan: edition.plan, authorName: user.name });
+        filename = intent === "going" ? "mshpit-festival-going.png" : "mshpit-festival-lineup.png";
       } else {
         throw new ApiError(400, "Choose a review, Going event, or Interested event to share.", "VALIDATION_FAILED");
       }

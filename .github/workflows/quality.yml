@@ -18,11 +18,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      - name: Install with Render production dependency settings
+        run: npm ci
+        env:
+          NODE_ENV: production
+          NPM_CONFIG_INCLUDE: dev
+      - name: Validate Render Blueprint before deployment
+        run: npm run check:blueprint
       - run: npm run check
       # Render passes runtime flags into its build. Exercise that boundary too:
       # a passing local-default suite must not hide a hosted-only failure.
@@ -48,7 +54,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: npm
@@ -70,9 +76,18 @@ jobs:
       - run: npm run verify:artist-account-browser
       - run: npm run verify:artist-identity-moderation-browser
       - run: npm run verify:navigation-browser
+      - run: npm run verify:news-browser
+      - name: Verify news category corrections (isolated fixtures)
+        run: node scripts/verify-news-category-browser.mjs
       - run: npm run verify:discover-photos-browser
       - run: npm run verify:discover-venues-browser
-      - run: npm run verify:catalog-maintenance-browser
+      - name: Catalog upkeep and editor (mobile and desktop)
+        run: npm run verify:catalog-maintenance-browser
       - run: npm run verify:quick-log-browser
+      - run: npm run verify:festivals-browser
+      - run: npm run verify:discover-events-browser
       - run: npm run verify:media-upload-browser
+      - run: npm run verify:player-browser
+      - run: npm run verify:connections-browser
+      - run: npm run verify:social-browser
       # verify:crew-browser returns here when Crew is switched back on.

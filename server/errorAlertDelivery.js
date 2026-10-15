@@ -121,16 +121,20 @@ export function createErrorAlertDelivery(database, { detailsFor = null } = {}) {
     pending_key=NULL,pending_payload=NULL WHERE singleton=1 AND pending_key=?`);
 
   return Object.freeze({
-    nextBatch({ now, force = false, cooldownMs = alertCooldownMs() }) {
+    nextBatch({ now, force = false, cooldownMs = alertCooldownMs(), lastAttemptAt = 0 }) {
       return transaction(database, () => {
         const current = state.get();
         if (!current) throw new Error("Alert delivery state is unavailable");
-        if (!force && now - current.last_sent_at < cooldownMs) return { reason: "cooling-down" };
+        // Only eligible, unacknowledged faults need a wake-up. Do not freeze a
+        // new batch or read its detail until the existing cooldown permits it.
+        const pendingRows = current.pending_key ? null : pending.all(providerBlipThreshold(), MAX_DIGEST_ROWS);
+        if (!current.pending_key && !pendingRows.length) return { reason: "nothing-serious" };
+        const retryAt = Math.ceil(Math.max(current.last_sent_at, lastAttemptAt) + cooldownMs);
+        if (!force && now < retryAt) return { reason: "cooling-down", retryAt };
         // Freeze retries across restarts and concurrent arrivals. A new error
         // must not change the provider idempotency key of an uncertain send.
         if (current.pending_key) return { batch: { ...JSON.parse(current.pending_payload), key: current.pending_key } };
-        const rows = withAlertDetails(pending.all(providerBlipThreshold(), MAX_DIGEST_ROWS).map((row) => ({ ...row })), detailsFor);
-        if (!rows.length) return { reason: "nothing-serious" };
+        const rows = withAlertDetails(pendingRows.map((row) => ({ ...row })), detailsFor);
         const { payload, serialized } = fitAlertPayload({
           rows,
           initialCatchUp: rows.some((row) => row.acknowledged_count < row.legacy_through_count),

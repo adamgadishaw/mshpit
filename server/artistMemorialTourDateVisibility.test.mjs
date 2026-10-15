@@ -1,3 +1,4 @@
+import { ensureArtistAccessRetentionTables } from "./features/artistAccounts/artistAccessRetention.js";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -38,6 +39,7 @@ function fixture() {
   };
   const addDate = database.prepare(`INSERT INTO tour_dates
     (id,artist,artist_key,date,event_end_date,music_qualified,provider_active) VALUES (?,?,?,?,?,1,1)`);
+  ensureArtistAccessRetentionTables(database);
   return { database, addArtist, addMemorial, addDate };
 }
 

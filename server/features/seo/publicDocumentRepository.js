@@ -162,6 +162,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
     FROM artists WHERE name=? COLLATE NOCASE AND ${publicArtistCatalogSql("artists")} ORDER BY norm LIMIT 2`);
   const artistProfile = database.prepare(`SELECT ap.bio,ap.bio_staff_curated,ap.banner,ap.banner_owner_id,
       ap.avatar_uri,ap.avatar_owner_id,ap.feed_enabled,ap.owner_id,ap.updated_at,
+      ap.bio_author_id,ap.bio_retention_id,ap.avatar_retention_id,ap.banner_retention_id,
       CASE WHEN ap.owner_id IS NULL OR (${activeAccountSql("owner")})
         THEN 1 ELSE 0 END AS owner_public,
       CASE WHEN ap.avatar_owner_id IS NOT NULL AND EXISTS (
@@ -398,6 +399,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
     LEFT JOIN users owner ON owner.id=td.owner_id
     LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
     WHERE LOWER(td.venue)=LOWER(?)
+      AND LOWER(TRIM(COALESCE(td.event_status,''))) NOT IN ('cancelled','canceled')
       AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?3")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
       AND ${publicMusicEventCandidateSql("td")}
@@ -405,12 +407,14 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
-    ORDER BY td.date ASC,td.id ASC LIMIT ?`);
+      AND (?4 IS NULL OR (td.date,td.id)>(?4,?5))
+    ORDER BY td.date ASC,td.id ASC LIMIT ?6`);
 
   const venueEventsByProvider = database.prepare(`SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug FROM tour_dates td
     LEFT JOIN users owner ON owner.id=td.owner_id
     LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
     WHERE td.source IS ? AND td.venue_provider_id=?
+      AND LOWER(TRIM(COALESCE(td.event_status,''))) NOT IN ('cancelled','canceled')
       AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?4")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
       AND ${publicMusicEventCandidateSql("td")}
@@ -418,7 +422,8 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
-    ORDER BY td.date ASC,td.id ASC LIMIT ?`);
+      AND (?5 IS NULL OR (td.date,td.id)>(?5,?6))
+    ORDER BY td.date ASC,td.id ASC LIMIT ?7`);
 
   // Other upcoming shows in the same city for an event page. The structured
   // country code and city keep same-named cities apart, the conditions match
@@ -474,8 +479,8 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
     ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
 
-  const directoryArtists = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.genre,a.data,a.bio,a.updated_at,
-      COUNT(*) OVER () AS directory_total
+  const directoryArtistsSql = (includeTotal) => `SELECT a.norm,a.name,a.public_slug,a.genre,a.data,a.bio,a.updated_at
+      ${includeTotal ? ',COUNT(*) OVER () AS directory_total' : ''}
     FROM artists a
     WHERE a.public_slug IS NOT NULL AND TRIM(a.public_slug)<>'' AND ${publicArtistCatalogSql("a")} AND (
       LENGTH(TRIM(COALESCE(a.bio,'')))>=80 OR (a.source='artist-created' AND EXISTS (
@@ -511,10 +516,18 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
           ))
       )
     )
-    ORDER BY a.rank_score DESC,a.popularity DESC,a.name COLLATE NOCASE,a.norm LIMIT ? OFFSET ?`);
+    ORDER BY a.rank_score DESC,a.popularity DESC,a.name COLLATE NOCASE,a.norm LIMIT ? OFFSET ?`;
+  const directoryArtists = database.prepare(directoryArtistsSql(true));
+  const discoverArtists = database.prepare(directoryArtistsSql(false));
 
-  const directoryEvents = database.prepare(`SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug,
-      COUNT(*) OVER () AS directory_total FROM tour_dates td
+  // Production already has this cursor index. Smaller/older read-only fixtures
+  // may not; retain their ordinary planner path without creating an index.
+  const discoverEventIndex = database.prepare(`SELECT 1 FROM sqlite_master
+    WHERE type='index' AND name='idx_tourdates_sitemap_cursor'`).get()
+    ? 'INDEXED BY idx_tourdates_sitemap_cursor' : '';
+  const directoryEventsSql = (includeTotal) => `SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug
+      ${includeTotal ? ',COUNT(*) OVER () AS directory_total' : ''} FROM tour_dates td
+      ${includeTotal ? '' : discoverEventIndex}
     LEFT JOIN users owner ON owner.id=td.owner_id
     LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
     WHERE td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?2")}
@@ -527,7 +540,9 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
-    ORDER BY td.date ASC,td.id ASC LIMIT ? OFFSET ?`);
+    ORDER BY td.date ASC,td.id ASC LIMIT ? OFFSET ?`;
+  const directoryEvents = database.prepare(directoryEventsSql(true));
+  const discoverEvents = database.prepare(directoryEventsSql(false));
 
   const directoryVenues = database.prepare(`WITH canonical_event_rows AS (
     SELECT LOWER(TRIM(td.venue)) AS venue_name,
@@ -761,8 +776,11 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       const day = typeof today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(today)
         ? today : new Date(instant).toISOString().slice(0, 10);
       return {
-        artists: directoryArtists.all(instant, day, bounded(artistLimit, 12, 24), 0),
-        events: directoryEvents.all(instant, day, bounded(eventLimit, 24, 48), 0),
+        // The hub needs a bounded preview, not directory pagination totals.
+        // Omitting the window count lets SQLite stop at the requested rows.
+        // Predicates and ordering remain shared with the counted directories.
+        artists: discoverArtists.all(instant, day, bounded(artistLimit, 12, 24), 0),
+        events: discoverEvents.all(instant, day, bounded(eventLimit, 24, 48), 0),
         posts: discoverPosts.all(bounded(postLimit, 8, 16)),
       };
     },
@@ -854,8 +872,8 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         posts: identityPending ? [] : eventRelatedPosts.all(event.artist_key || "", event.artist, event.venue, event.date, showLimit),
         artistEvents: identityPending ? [] : others(artistEvents.all(event.artist_key || "", event.artist, instant, day, showLimit + 1)),
         venueEvents: others(providerVenueId
-          ? venueEventsByProvider.all(event.source ?? null, providerVenueId, instant, day, showLimit + 1)
-          : venueEventsByName.all(event.venue, instant, day, showLimit + 1)),
+          ? venueEventsByProvider.all(event.source ?? null, providerVenueId, instant, day, null, "", showLimit + 1)
+          : venueEventsByName.all(event.venue, instant, day, null, "", showLimit + 1)),
         cityEvents: countryCode && city ? others(cityEvents.all(countryCode, city,
           String(event.venue || "").trim().toLowerCase(), String(event.artist || "").trim().toLowerCase(),
           event.id, instant, day, cityWindowEnd, showLimit * 4), { onePerArtist: true }) : [],
@@ -887,7 +905,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       };
     },
 
-    readVenue({ venueKey = null, name, providerVenueId = null, source = null, postLimit = 8, eventLimit = 8, at = Date.now(), today = null } = {}) {
+    readVenue({ venueKey = null, name, providerVenueId = null, source = null, postLimit = 8, eventLimit = 8, eventAfter = null, includeCommunity = true, at = Date.now(), today = null } = {}) {
       const venueName = typeof name === "string" ? name.trim() : "";
       const key = typeof venueKey === "string" && venueKey.trim() ? venueKey.trim() : venueName.toLowerCase();
       if (!venueName || !key) return null;
@@ -896,15 +914,15 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         ? today : new Date(instant).toISOString().slice(0, 10);
       const providerId = typeof providerVenueId === "string" ? providerVenueId.trim() : "";
       const providerSource = typeof source === "string" && source.trim() ? source.trim() : null;
-      const posts = providerId
+      const posts = providerId || !includeCommunity
         ? []
         : venuePostsByName.all(key, venueName, bounded(postLimit, 8, 16));
       // Peek one row past the preview instead of scanning every show merely to
       // display a count. Eight preview rows must not look like a total of eight.
       const eventPageSize = bounded(eventLimit, 8, 16);
       const eventRows = providerId
-        ? venueEventsByProvider.all(providerSource, providerId, instant, day, eventPageSize + 1)
-        : venueEventsByName.all(venueName, instant, day, eventPageSize + 1);
+        ? venueEventsByProvider.all(providerSource, providerId, instant, day, eventAfter?.date ?? null, eventAfter?.id || "", eventPageSize + 1)
+        : venueEventsByName.all(venueName, instant, day, eventAfter?.date ?? null, eventAfter?.id || "", eventPageSize + 1);
       const events = eventRows.slice(0, eventPageSize);
       const location = providerId ? venueLocationByProvider.get(
         pitVenuePublicSlug(providerSource, providerId), providerSource, providerId, instant, day,
@@ -915,7 +933,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         posts,
         events,
         eventsHasMore: eventRows.length > eventPageSize,
-        venueReviews: venueReviews?.read({ venueKey: key, limit: 8 }) || {
+        venueReviews: (includeCommunity && venueReviews?.read({ venueKey: key, limit: 8 })) || {
           reviews: [],
           stats: { reviewCount: 0, ratingCount: 0, averageRating: null },
         },

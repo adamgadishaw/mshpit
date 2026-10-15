@@ -2,11 +2,11 @@
 // must not mount (or start their effects) for a guest, including restored frames.
 const MEMBER_TABS = new Set(["feed", "you"]);
 const MEMBER_FRAMES = [
-  "followList", "signupSetup", "welcomeGuide", "pickArtists", "editingPost",
+  "signupSetup", "welcomeGuide", "pickArtists", "editingPost",
   "logging", "editProfile", "reporting", "inbox", "notifications", "calendar",
   "listeningHistory", "clips", "thread", "venueReview", "artistHub",
   "artistPreview", "artistGallery", "editArtist", "fanClub", "fanClubs",
-  "settings", "deleteAccount", "diagnostics", "lounge", "admin", "bulk",
+  "settings", "deleteAccount", "diagnostics", "lounge", "admin", "catalogEditor", "bulk",
   "reqArtist", "addToPlaylist",
 ];
 

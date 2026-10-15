@@ -251,6 +251,8 @@ export default function ArtistArchiveScreen({ artistName, artistKey, onClose, on
     artistKey: resolvedArtistKey,
     status: artistIdentityStatus,
     retry: retryArtistIdentity,
+    retryDisabled: artistIdentityRetryDisabled,
+    missing: artistIdentityMissing,
   } = useCanonicalArtistIdentity({ artistName, artistKey });
   const { resource: memorialResource, availability: memorialAvailability, reload: retryMemorial } = useArtistMemorial({
     accountId,
@@ -306,6 +308,8 @@ export default function ArtistArchiveScreen({ artistName, artistKey, onClose, on
           state={gateState}
           onBack={onClose}
           onRetry={retryProfileStatus}
+          retryDisabled={artistIdentityStatus === "unavailable" && artistIdentityRetryDisabled}
+          identityMissing={artistIdentityMissing}
         />
       ) : initialLoading ? (
         <View style={styles.center} accessibilityLiveRegion="polite"><ActivityIndicator color={colors.amber} /><Text style={styles.stateText}>Opening the live archive…</Text></View>

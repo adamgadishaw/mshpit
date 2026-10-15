@@ -42,6 +42,7 @@ export async function publicBrowserDestination(path, { accountId = null, signal,
   }
   if (entity.kind === "venue") return framed({ venueName: entity.name, venue: {
     name: entity.name, providerVenueId: entity.providerVenueId || entity.venue_provider_id || null, source: entity.source || null,
+    city: entity.city || null, path: canonicalPath,
   } }, canonicalPath);
   if (entity.kind === "profile") {
     const frame = await profileFrame(entity);

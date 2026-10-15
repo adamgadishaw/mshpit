@@ -20,6 +20,7 @@ import {
 } from "./backup-db-verification.mjs";
 import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
 import { PIT_SQLITE_APPLICATION_ID } from "../server/dataDirectory.js";
+import { assertDatabaseRecoveryPathReady } from "../server/databaseRecovery.js";
 
 const BACKUP_SCRIPT = fileURLToPath(new URL("./backup-db.mjs", import.meta.url));
 const snapshotCounts = (overrides = {}) => ({
@@ -259,12 +260,14 @@ test("backup CLI creates, verifies, and retains a VACUUM INTO snapshot end to en
     });
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.match(result.stdout,
-      /verified\s+integrity_check ok\s+schema_version=1\s+users=2\s+posts=1\s+artists=1\s+tour_dates=0\s+artist_profiles=0\s+venue_reviews=0\s+app_meta=1/);
+      /verified\s+integrity_check ok\s+schema_version=1\s+users=2\s+posts=1\s+artists=1\s+tour_dates=0\s+artist_profiles=0\s+venue_reviews=0\s+app_meta=2/);
 
     const snapshots = readdirSync(backupDirectory).filter((name) => name.endsWith(".db"));
     assert.equal(snapshots.length, 1);
     assert.equal(readdirSync(backupDirectory).some((name) => name.includes(".partial-")), false);
-    assert.deepEqual(verifyBackupSnapshot(join(backupDirectory, snapshots[0])), snapshotCounts());
+    assert.deepEqual(verifyBackupSnapshot(join(backupDirectory, snapshots[0])), snapshotCounts({ app_meta: 2 }));
+    assert.throws(() => assertDatabaseRecoveryPathReady(join(backupDirectory, snapshots[0])), /quarantined/);
+    assert.doesNotThrow(() => assertDatabaseRecoveryPathReady(join(dataDirectory, "pit.db")), "the live source must never be fenced");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -287,7 +290,7 @@ test("failed off-host configuration keeps the verified local recovery point but 
     const snapshots = readdirSync(backupDirectory);
     assert.equal(snapshots.length, 1);
     assert.match(snapshots[0], /^pit-\d{8}-\d{6}\.db$/);
-    assert.deepEqual(verifyBackupSnapshot(join(backupDirectory, snapshots[0])), snapshotCounts());
+    assert.deepEqual(verifyBackupSnapshot(join(backupDirectory, snapshots[0])), snapshotCounts({ app_meta: 2 }));
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

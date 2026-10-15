@@ -185,7 +185,7 @@ function providerFetchScope(fetchImpl) {
 }
 
 export class ProviderError extends Error {
-  constructor(provider, status, message, { retryable = true, code = "provider_error", cause, retryAfterMs = null } = {}) {
+  constructor(provider, status, message, { retryable = true, code = "provider_error", cause, retryAfterMs = null, retryAt = null, providerResponse = false } = {}) {
     super(message, cause ? { cause } : undefined);
     this.name = "ProviderError";
     this.provider = provider;
@@ -193,6 +193,8 @@ export class ProviderError extends Error {
     this.retryable = retryable;
     this.code = code;
     this.retryAfterMs = retryAfterMs;
+    this.retryAt = retryAt;
+    if (providerResponse) this.providerResponse = true;
   }
 }
 
@@ -631,12 +633,17 @@ export async function providerJson(provider, url, { timeoutMs = 10_000, fetchImp
       signal: requestSignal,
     });
   } catch (error) {
+    throwIfAborted(signal);
     throw new ProviderError(provider, 502, `${provider} could not be reached.`, { code: "network", cause: error });
   }
   if (!response.ok) {
+    const responseAt = Date.now();
+    const retryAfterMs = providerRetryAfterMs(response, responseAt);
     discardProviderResponse(response);
     throw new ProviderError(provider, response.status, providerMessage(provider, response.status), {
-      retryAfterMs: providerRetryAfterMs(response),
+      retryAfterMs,
+      retryAt: retryAfterMs == null ? null : responseAt + retryAfterMs,
+      providerResponse: true,
       code: response.status === 429 ? "rate_limited" : response.status === 403 ? "quota_or_forbidden" : "http_error",
       retryable: response.status >= 500 || response.status === 429 || response.status === 403,
     });
@@ -648,7 +655,10 @@ export async function providerJson(provider, url, { timeoutMs = 10_000, fetchImp
       signal: requestSignal,
     });
   }
-  catch (error) { throw new ProviderError(provider, 502, `${provider} returned unreadable data.`, { code: "invalid_json", cause: error }); }
+  catch (error) {
+    throwIfAborted(signal);
+    throw new ProviderError(provider, 502, `${provider} returned unreadable data.`, { code: "invalid_json", cause: error });
+  }
   if (data?.error) {
     const code = Number(data.error.code) || 502;
     throw new ProviderError(provider, code, `${provider} rejected the request.`, { code: code === 4 ? "quota_or_forbidden" : "provider_payload_error" });
@@ -745,9 +755,14 @@ async function findDeezerArtistCandidatesUnshared(name, { fetchImpl, limit, sign
   if (!Array.isArray(data?.data)) {
     throw new ProviderError("Deezer", 502, "Deezer returned an invalid artist response.", { code: "invalid_payload" });
   }
-  return data.data.slice(0, limit)
-    .filter((a) => a?.id && a?.name)
+  const candidates = data.data.slice(0, limit)
+    .filter((a) => /^[1-9]\d{0,15}$/u.test(String(a?.id || "")) && Number.isSafeInteger(Number(a.id))
+      && typeof a.name === "string" && a.name.trim())
     .map((a) => ({ id: a.id, name: a.name, fans: Number(a.nb_fan) || 0, albums: Number(a.nb_album) || 0, photo: a.picture_medium || a.picture || null }));
+  if (data.data.length && !candidates.length) {
+    throw new ProviderError("Deezer", 502, "Deezer returned invalid artist identities.", { code: "invalid_payload" });
+  }
+  return candidates;
 }
 
 export async function findDeezerArtistCandidates(name, { fetchImpl = fetch, limit = 8, signal } = {}) {

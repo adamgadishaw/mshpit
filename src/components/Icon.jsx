@@ -16,6 +16,8 @@ export default function Icon({ name, size = 22, color = colors.textDim, filled =
 
 function paths(name, { stroke, solid, color, filled }) {
   switch (name) {
+    case "repeat":
+      return <><Polyline points="3 8 6 5 9 8" {...stroke} /><Path d="M6 5v11a3 3 0 0 0 3 3h5" {...stroke} /><Polyline points="15 16 18 19 21 16" {...stroke} /><Path d="M18 19V8a3 3 0 0 0-3-3h-5" {...stroke} /></>;
     case "feed": // stacked layers
       return (
         <>

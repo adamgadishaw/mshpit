@@ -6,6 +6,9 @@
 // pit.db-wal until a checkpoint, so a bare copy can be torn or stale. Use
 // `npm run backup` (VACUUM INTO), which asks SQLite for a consistent snapshot.
 import { DatabaseSync } from "node:sqlite";
+import { ensureJobSchema } from "./features/jobs/jobRepository.js";
+import { ensureArtistAccessRetentionSchema } from "./features/artistAccounts/artistAccessRetention.js";
+import { assertDatabaseRecoveryReady } from "./databaseRecovery.js";
 import { createHash } from "node:crypto";
 import { toIsoDate } from "../src/domain/dates.mjs";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
@@ -24,6 +27,7 @@ import { handleChangeAvailableAt, pendingSignupHandle } from "./features/account
 import { legacyTrackOverrideIdentityKey, trackOverrideIdentityKey } from "./trackIdentity.js";
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
 import { privateErrorLabel } from "./errors.js";
+import { ensureLineupSchema } from "./supportingActs.js";
 import { quarantineUnsafeLegacyImages } from "./publicMedia.js";
 import { ensurePostMediaCapacity, POST_MEDIA_MAX_POSITION } from "./postMediaSchema.js";
 import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
@@ -33,11 +37,16 @@ import { ensureLoungeSchema } from "./features/lounges/loungeSchema.js";
 import { ensureCitySchema } from "./features/cities/citySchema.js";
 import { ensureSharedEmailSchema } from "./features/accountOnboarding/sharedEmailSchema.js";
 import { ensureAccountLifecycleSchema } from "./features/accountLifecycle/accountLifecycleSchema.js";
+import { ensureMemberBadgeSchema, memberBadgeFor } from "./memberBadges.js";
 import { ensureErrorAlertSchema } from "./errorAlertDelivery.js";
 import { seedReviewedArtistIdentities } from "./reviewedArtistIdentities.js";
 import { ensureProviderArtistRegistrationSchema } from "./providerArtistRegistration.js";
 import { ensureCommentMutationSchema } from "./commentMutationSchema.js";
+import { ensureSocialReactionSchema } from "./features/socialReactions/socialReactions.js";
 import { ensureArtistAccountSchema, pendingArtistSignupIntent } from "./features/artistAccounts/artistAccountPolicy.js";
+import { ensureMediaApiSchema } from "./features/mediaApi/mediaApiPolicy.js";
+import { createMusicBrainzCooldownStore } from "./musicBrainzCooldownStore.js";
+import { configureMusicBrainzCooldownStore } from "./musicBrainzRequestThrottle.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -50,6 +59,7 @@ export const DATABASE_DIRECTORY = prepareDataDirectory({ fallbackDir: join(HERE,
 export const DATABASE_PATH = join(DATABASE_DIRECTORY, "pit.db");
 
 export const db = new DatabaseSync(DATABASE_PATH);
+assertDatabaseRecoveryReady(db);
 registerPitSqliteFunctions(db);
 
 db.exec(`
@@ -142,6 +152,9 @@ CREATE TABLE IF NOT EXISTS posts (
   youtube_video_id TEXT CHECK (youtube_video_id IS NULL OR length(youtube_video_id) = 11),
   tagged_user_ids TEXT NOT NULL DEFAULT '[]',
   setlist       TEXT NOT NULL DEFAULT '[]',
+  supporting_acts TEXT NOT NULL DEFAULT '[]',
+  show_format   TEXT NOT NULL DEFAULT 'headline' CHECK (show_format IN ('headline','co_headline','festival')),
+  end_date      TEXT NOT NULL DEFAULT '',
   client_mutation_id TEXT,
   client_mutation_hash TEXT,
   removed       INTEGER NOT NULL DEFAULT 0,
@@ -149,6 +162,16 @@ CREATE TABLE IF NOT EXISTS posts (
   created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id);
+
+-- Earlier shows a person saw an artist at but never logged, so "times seen"
+-- keeps counting from the number they gave (server/supportingActs.js).
+CREATE TABLE IF NOT EXISTS artist_seen_baselines (
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  artist_ref TEXT NOT NULL,
+  count      INTEGER NOT NULL CHECK (count BETWEEN 0 AND 999),
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, artist_ref)
+);
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_cursor ON posts(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_user_history ON posts(user_id, removed, created_at DESC, id DESC);
@@ -1594,6 +1617,10 @@ CREATE TABLE IF NOT EXISTS email_log (
 // the pre-marker live database is admitted once by the stricter legacy checks.
 db.exec(`PRAGMA application_id = ${PIT_SQLITE_APPLICATION_ID}`);
 
+// Every MusicBrainz client shares this gate. Bind durable recovery state only
+// after app_meta exists, without importing the database from the pure gate.
+configureMusicBrainzCooldownStore(createMusicBrainzCooldownStore(db));
+
 // Additive migrations for DBs created before a column existed. Inspect the
 // actual table before altering it: a real migration failure must stop startup,
 // while an already-present column is safely skipped on every boot.
@@ -1689,6 +1716,12 @@ const additiveMigrations = [
   "ALTER TABLE posts ADD COLUMN artist_mbid TEXT",
   "ALTER TABLE posts ADD COLUMN venue_key TEXT",
   "ALTER TABLE posts ADD COLUMN event_address TEXT CHECK (event_address IS NULL OR length(event_address) <= 240)",
+  // Openers or other acts seen that night: [{ name, artistKey }] (server/supportingActs.js).
+  "ALTER TABLE posts ADD COLUMN supporting_acts TEXT NOT NULL DEFAULT '[]'",
+  // A headline show, a co-headline show, or a festival (whose name is the
+  // post's artist); end_date is a festival's last day (server/supportingActs.js).
+  "ALTER TABLE posts ADD COLUMN show_format TEXT NOT NULL DEFAULT 'headline' CHECK (show_format IN ('headline','co_headline','festival'))",
+  "ALTER TABLE posts ADD COLUMN end_date TEXT NOT NULL DEFAULT ''",
   // Stable per-composer token. If a write commits but its response is lost,
   // retrying returns that row instead of publishing a duplicate review.
   "ALTER TABLE posts ADD COLUMN client_mutation_id TEXT",
@@ -1766,6 +1799,8 @@ const additiveMigrations = [
   // Reusing it would hand a public verification mark to anyone who clicked a link
   // in their own inbox. These are private account state.
   "ALTER TABLE users ADD COLUMN email_verified_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN email_verification_method TEXT",
+  "ALTER TABLE users ADD COLUMN email_verification_revision INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN email_verify_hash TEXT",
   "ALTER TABLE users ADD COLUMN email_verify_expires INTEGER NOT NULL DEFAULT 0",
   // Set when the welcome mail goes out, so verifying twice, an admin marking an
@@ -1948,6 +1983,14 @@ try {
       newlyAddedColumns.add(`${table}.${column}`.toLowerCase());
     }
   }
+  // Bind an admin confirmation to the exact address state it reviewed without
+  // exposing addresses or address hashes to the staff directory. Even a future
+  // address writer that forgets the revision cannot reuse a stale confirmation.
+  db.exec(`CREATE TRIGGER IF NOT EXISTS users_email_verification_revision
+    AFTER UPDATE OF email ON users WHEN NEW.email IS NOT OLD.email
+    BEGIN
+      UPDATE users SET email_verification_revision=OLD.email_verification_revision+1 WHERE id=NEW.id;
+    END`);
   // This fallback is intentionally tied to the first addition of each column.
   // Re-running it on every boot could wrongly assign a slot whose explicit
   // uploader was later erased to the artist-page claimant. The legacy finalize
@@ -2144,6 +2187,11 @@ db.exec(`INSERT OR IGNORE INTO post_create_receipts
     AND (removed=1 OR client_mutation_hash IS NOT NULL)`);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 ensureCommentMutationSchema(db);
+ensureSocialReactionSchema(db);
+ensureJobSchema(db);
+ensureArtistAccessRetentionSchema(db);
+ensureLineupSchema(db);
+ensureMediaApiSchema(db);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_lounge_client_mutation ON lounge_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 // Backfill only a single exact normalized display-name match. Ambiguous and
@@ -2437,6 +2485,7 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(isoDateMigration)) {
 
 ensureSharedEmailSchema(db);
 ensureAccountLifecycleSchema(db);
+ensureMemberBadgeSchema(db);
 
 // Expiry work runs synchronously in the web process. Index the exact predicates
 // and cap each delete so a retention backlog cannot monopolize the event loop.
@@ -2538,7 +2587,7 @@ export const emailStmts = {
   // so a database read cannot be replayed to verify somebody else's address.
   setVerifyToken: db.prepare("UPDATE users SET email_verify_hash=?, email_verify_expires=? WHERE id=?"),
   userByVerifyHash: db.prepare("SELECT * FROM users WHERE email_verify_hash=? AND email_verify_expires > ?"),
-  markEmailVerified: db.prepare("UPDATE users SET email_verified_at=?, email_verify_hash=NULL, email_verify_expires=0 WHERE id=?"),
+  markEmailVerified: db.prepare("UPDATE users SET email_verified_at=?, email_verification_method='email-link', email_verify_hash=NULL, email_verify_expires=0 WHERE id=?"),
   verificationReceiptByHash: db.prepare("SELECT * FROM email_verification_receipts WHERE token_hash=? AND expires_at>?"),
   recordVerificationReceipt: db.prepare(`INSERT INTO email_verification_receipts
     (token_hash,user_id,email_hash,verified_at,expires_at) VALUES (?,?,?,?,?)
@@ -3107,7 +3156,10 @@ export function publicUser(u, { self = false, badges = false } = {}) {
   if (extras.nowPlaying && (!contentSafetyDecision(extras.nowPlaying.title).safe || !contentSafetyDecision(extras.nowPlaying.artist).safe)) {
     delete extras.nowPlaying;
   }
-  const publicExtraKeys = MUSIC_PLAYER_ENABLED ? ["theme", "nowPlaying"] : ["theme"];
+  if (extras.pronouns && !contentSafetyDecision(extras.pronouns).safe) delete extras.pronouns;
+  // Accent, pronouns and pinned favorite shows are the member's own public
+  // personalisation (the pinned ids are resolved to cards by the profile route).
+  const publicExtraKeys = [...(MUSIC_PLAYER_ENABLED ? ["theme", "nowPlaying"] : ["theme"]), "accent", "pronouns", "favoriteShows"];
   const selfExtraKeys = [
     "consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion",
     "analyticsOptOut", "searchIndexingOptOut",
@@ -3128,6 +3180,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
     role: hideArtistIdentity ? "fan" : u.role,
     verified: !hideArtistIdentity && !!u.verified,
     sponsor: !!u.sponsor,
+    membershipBadge: memberBadgeFor(db, u),
     artistName: hideArtistIdentity ? undefined : u.artist_name || undefined,
     home: u.home_city ? {
       city: u.home_city,
@@ -3144,10 +3197,8 @@ export function publicUser(u, { self = false, badges = false } = {}) {
     concertMapVisible: concertMapVisibleFor(u),
     genres: parseJsonArray(u.genres),
     favoriteArtists: parseJsonArray(u.favorite_artists),
-    // Email verification is PRIVATE account state, unlike `verified` above which
-    // is the public admin-granted check. Exposing it publicly would leak whether
-    // a stranger has confirmed their address, and invite it being read as a
-    // trust signal it is not.
+    // Only the cosmetic membershipBadge is public. Address, confirmation time,
+    // and the private account flag remain self-only; no identity check implied.
     ...(badges ? { badges: customBadgesFor(u.id) } : {}),
     ...(self ? {
       email: u.email,
@@ -3155,6 +3206,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
       directMessagePolicy: u.dm_policy || "mutuals",
       profileAudience: u.profile_audience || "everyone",
       emailVerified: !!u.email_verified_at,
+      emailVerificationMethod: u.email_verification_method || (u.email_verified_at ? "legacy" : null),
       pendingArtistIntent: pendingArtistSignupIntent(parseJsonObject(u.extras)),
       ...(!u.email_verified_at ? { pendingSignupHandle: pendingSignupHandle(parseJsonObject(u.extras)) || null } : {}),
       handleChangeAvailableAt: handleChangeAvailableAt(u.handle_changed_at),

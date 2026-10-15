@@ -2,6 +2,7 @@ import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs"
 import { LEGACY_ARTIST_DEATH_DATE_CUTOFF, isLegacyArtistMemorial } from "../src/domain/artistLegacy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
+import { retainedProfileProjection, retainedContributor } from "./features/artistAccounts/artistAccessPublication.js";
 // API routes. Conventions that keep this hard to crash and easy to fix:
 // - every route: authenticate -> rate-limit -> validate (shape) -> act -> respond
 // - all handlers are wrapped by the server's try/catch; throwing ApiError(status,
@@ -17,17 +18,22 @@ import {
   sendTemplate, sendTemplateInBackground, sentToday, templateFor, unsubscribeUrl,
 } from "./emailService.js";
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
+import { adaptLineupToFormat, applyTimesSeen, canonicalLineupFields, cleanEndDate, cleanLineup, cleanShowFormat, cleanTimesSeen,
+  MAX_TIMES_SEEN, mergeLegacyLineup, projectLineup, projectSupportingActs, resolveLineup, seenArtistKey, seenOrdinalSql,
+  storedLineup, storedShowFormat } from "./supportingActs.js";
+import { concertLineupRoutes } from "./features/concertLineup/concertLineupRoutes.js";
 import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists, providerCacheStmts } from "./db.js";
 import { publicArtistPhoto } from "./artistPhotoCatalog.js";
 import { createTourDateArtistPhotoReader } from "./tourDateArtistPhotos.js";
 import { resolveReviewedArtistAlias } from "./reviewedArtistIdentities.js";
 import { assessArtistIdentityRisk, assertMemberIdentityAllowed } from "./features/artistAccounts/artistIdentityRisk.js";
 import { createArtistLookupWork } from "./artistLookupWork.js";
+import { artistResolverMetrics, createArtistResolverDiagnostics } from "./artistResolverDiagnostics.js";
 import { resolveArtistPreviewWithFallback } from "./artistPreviewRecovery.js";
 import { createArtistFallbackCache, isOptionalArtistCacheStorageFailure } from "./artistFallbackCache.js";
-import { discardProviderResponse, providerRetryAfterMs } from "./providerResponsePolicy.js";
+import { discardProviderResponse, providerRetryAfterMs, PROVIDER_RETRY_AFTER_MAX_MS } from "./providerResponsePolicy.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
-import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
+import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError, scheduleErrorAlert } from "./errorLog.js";
 import { boundedAlertDetail, errorDetailsByFingerprint } from "./errorDetails.js";
 import { collectSeriousErrorPatterns } from "./siteHealthErrorPatterns.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
@@ -90,12 +96,31 @@ import { artistResolveRoutes } from "./features/artistSearch/artistResolveRoutes
 import { artistArchiveRoutes } from "./features/artistArchive/artistArchiveRoutes.js";
 import { createArtistLiveSummaryService } from "./features/artistArchive/artistLiveSummaryService.js";
 import { artistLiveSummaryRoutes } from "./features/artistArchive/artistLiveSummaryRoutes.js";
+import { catalogEditorRoutes } from "./features/catalogEditor/catalogEditorRoutes.js";
 import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearchRoutes.js";
+import { createNewsDeskEditor } from "./features/newsDesk/newsDeskEditor.js";
+import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
+import { createMediaApiService } from "./features/mediaApi/mediaApiService.js";
+import { mediaApiRoutes } from "./features/mediaApi/mediaApiRoutes.js";
+import { ensureNewsLiveSchema } from "./features/newsDesk/newsLive.js";
+import { ensureNewsCardPhotoSchema } from "./features/newsDesk/newsCardPhotos.js";
+import { festivalRoutes } from "./features/festivals/festivalRoutes.js";
+import { ensureFestivalSchema } from "./features/festivals/festivalStore.js";
+import { startFestivalScheduler } from "./features/festivals/festivalScan.js";
+import { newsLiveRoutes } from "./features/newsDesk/newsLiveRoutes.js";
 import { providerProfileRoutes } from "./features/providerProfiles/providerProfileRoutes.js";
 import { crewRoutes } from "./features/crew/crewRoutes.js";
 import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoutes.js";
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
 import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
+import { newsDeskRoutes } from "./features/newsDesk/newsDeskRoutes.js";
+import { newsRegionRoutes, viewerNewsRegion } from "./features/newsDesk/newsRegions.js";
+import { favoriteShowCards } from "./features/profileCustomization/favoriteShows.js";
+import { createNewsDeskReader } from "./features/newsDesk/newsDeskService.js";
+import { ensurePrivacyJournalSchema, recordPrivacyEvent, replayPrivacyJournalIfRestored, startPrivacyJournalShipper } from "./privacyJournal.js";
+import { createNewsCardArtworkResolver } from "./features/newsDesk/newsCardArtwork.js";
+import { eligibleNewsPosts, isNewsPostId, newsFeedRoutes } from "./features/newsDesk/newsFeedPlacement.js";
+import { startNewsDeskScheduler } from "./features/newsDesk/newsDeskJob.js";
 import { startDeezerArtistPhotoScheduler } from "./features/artistPhotos/deezerArtistPhotoFill.js";
 import { artistPath as publicArtistPath, eventPath as publicEventPath } from "../src/domain/urls.mjs";
 import { CREW_ENABLED } from "../src/domain/crewAvailability.mjs";
@@ -112,6 +137,7 @@ import { showRoutes } from "./features/shows/showRoutes.js";
 import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
 import { normalizeShowAliasKey, normalizeTourDateId } from "./features/shows/showIdentity.js";
 import { socialShareCardRoutes } from "./features/socialSharing/socialShareCardRoutes.js";
+import { createSocialShareCardRenderer } from "./features/socialSharing/socialShareCardRenderer.js";
 import { createLoungeLifecycleService } from "./features/lounges/loungeLifecycleService.js";
 import { loungeArchiveRoutes } from "./features/lounges/loungeArchiveRoutes.js";
 import {
@@ -141,10 +167,12 @@ import {
   legacyImageRecoveryHealth,
 } from "./legacyPostImageRecovery.js";
 import { discoverySidebar } from "./discovery.js";
-import { pageHeadFor, publicDocumentForPath, resolveEntity, sitemapSnapshotHealth, catalogSeoMaintenanceStatus } from "./seo.js";
+import { pageHeadFor, publicDocumentForPath, publicVenueSnapshotForPath, resolveEntity, sitemapSnapshotHealth, catalogSeoMaintenanceStatus } from "./seo.js";
 import { pageHeadRoutes } from "./features/seo/pageHeadRoutes.js";
+import { publicVenueSnapshotRoutes } from "./features/seo/publicVenueSnapshot.js";
 import { userRewards } from "./rewards.js";
 import { prepareVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
+import { memberBadgeFor, grantFirstWaveBadge } from "./memberBadges.js";
 import {
   clearYouTubeTrackCache,
   ProviderError,
@@ -171,6 +199,9 @@ import { collectStorageHealth } from "./storageHealth.js";
 import { collectArtistKnowledgeStatus } from "./artistKnowledgeStatus.js";
 import { createCatalogMaintenanceService } from "./features/catalogMaintenance/catalogMaintenanceService.js";
 import { catalogMaintenanceRoutes } from "./features/catalogMaintenance/catalogMaintenanceRoutes.js";
+import { createSearchGrowthService, startSearchGrowthScheduler } from "./features/searchGrowth/searchGrowthService.js";
+import { searchGrowthRoutes } from "./features/searchGrowth/searchGrowthRoutes.js";
+import { ensureSearchGrowthPrioritySchema, rememberSearchGrowthPriorities } from "./features/searchGrowth/searchGrowthPriorities.js";
 import { requestMetrics } from "./requestMetrics.js";
 import {
   mediaPublishingCapabilitiesForRuntime,
@@ -205,6 +236,7 @@ import { ANALYTICS_MAX_RAW_ROWS, ANALYTICS_MAX_ROWS_PER_ACCOUNT, ANALYTICS_RETEN
 import { readGuestSearchAnalytics } from "./guestSearchAnalytics.js";
 import { guestSearchAnalyticsRoutes } from "./features/guestSearchAnalytics/guestSearchAnalyticsRoutes.js";
 import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
+import { jobRoutes } from "./features/jobs/jobRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
 import { accountMuteRoutes } from "./features/accountMute/accountMuteRoutes.js";
 import { accountOnboardingRoutes } from "./features/accountOnboarding/accountOnboardingRoutes.js";
@@ -215,6 +247,8 @@ import { claimPendingSignupHandle, handleChangeAvailableAt, HANDLE_COOLDOWN_DAYS
 import { artistSignupIntent, pendingArtistSignupIntent } from "./features/artistAccounts/artistAccountPolicy.js";
 import { artistAccountRoutes } from "./features/artistAccounts/artistAccountRoutes.js";
 import { artistCatalogVisibleTo } from "./artistCatalogVisibility.js";
+import { createConnections } from "./features/connections/connectionsRoutes.js";
+import { MAX_FOLLOWED_ARTISTS } from "../src/domain/artistFollowFanClub.mjs";
 import { cityGuideRoutes } from "./features/cities/cityGuideRoutes.js";
 import { artistBiographyRoutes } from "./features/artists/artistBiographyRoutes.js";
 import { musicBrainzBiographyFacts } from "../src/domain/artistBiography.mjs";
@@ -241,6 +275,7 @@ import { canonicalVenueKey, venueLookupKeys } from "../src/domain/venueIdentity.
 import { publicVenueFanPhotos } from "./venueGallery.js";
 import { publicVenuePhotoPool } from "./venuePhotoCatalog.js";
 import { attachViewerLikes } from "./postViewerLikes.js";
+import { socialReactionRoutes, commentLikeInfo, repostInfo, repostInfoPage, followingPostIds, SOCIAL_NOTIFICATION_VISIBLE_SQL } from "./features/socialReactions/socialReactions.js";
 import { attachPostMediaPageProjection, preloadedPostMedia } from "./postMediaPageProjection.js";
 import { accountIsPublic, activeAccountSql, PROFILE_AUDIENCES, profileAudienceAllows } from "./accountVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
@@ -254,6 +289,7 @@ import {
 } from "./artistMemorialTourDateVisibility.js";
 import {
   isCurrentOrUpcomingLiveEvent,
+  createLiveEventEvaluator,
   liveEventQueryFloorDate,
   liveEventTimeZone,
 } from "../src/domain/eventLifecycle.mjs";
@@ -281,7 +317,6 @@ import {
 import { ownerApprovalRoutes } from "./features/ownerApprovals/ownerApprovalRoutes.js";
 import { clientErrorRoutes } from "./features/clientErrors/clientErrorRoutes.js";
 import { capacityHandshakeRoutes } from "./features/capacity/capacityHandshakeRoutes.js";
-import { createAlertDrainScheduler } from "./alertDrainScheduler.js";
 
 export { ApiError } from "./errors.js";
 
@@ -299,6 +334,9 @@ export const artistDeathWatchService = createArtistDeathWatchService({
   repository: createArtistDeathWatchRepository(db),
 });
 ensureLegacyMediaFinalizeSchema(db);
+ensurePrivacyJournalSchema(db);
+ensureNewsLiveSchema(db);
+ensureFestivalSchema(db);
 const uid = (prefix) => opaqueId(prefix);
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
 const CURRENT_TERMS_VERSION = LEGAL_ACCEPTANCE_VERSION;
@@ -433,6 +471,12 @@ function publicAccountOrNull(id) {
 function requireAdmin(ctx) {
   const u = requireUser(ctx);
   if (u.role !== "admin") throw new ApiError(403, "Admins only.", "FORBIDDEN");
+  return u;
+}
+// The newsroom: admins and editors, the news team role with no other access.
+function requireNewsEditor(ctx) {
+  const u = requireUser(ctx);
+  if (u.role !== "admin" && u.role !== "editor") throw new ApiError(403, "The newsroom is for admins and editors.", "FORBIDDEN");
   return u;
 }
 function requireModerator(ctx) {
@@ -824,7 +868,7 @@ function assertArtistManagementCandidate(user, key) {
   // Explicit revocation is not an unclaimed legacy identity. This audit check
   // also protects pages returned before account-side revocation was fixed.
   if (!ownerId && db.prepare(`SELECT 1 FROM moderation_actions
-      WHERE action='artist_return_to_catalogue' AND target_type='artist' AND target_id=? LIMIT 1`).get(key)) {
+      WHERE action IN ('artist_return_to_catalogue','artist_access_revoked') AND target_type='artist' AND target_id=? LIMIT 1`).get(key)) {
     throw new ApiError(403, "An administrator must approve ownership of this artist page before you can edit it.", "FORBIDDEN");
   }
 }
@@ -993,6 +1037,7 @@ function tourDateRangeRequest(ctx, at) {
 
 function tourDateRangePage(viewer, range, timestamp) {
   const visible = [];
+  const lifecycle = createLiveEventEvaluator(timestamp);
   let cursor = range.after;
   let lastScanned = null;
   let scanned = 0;
@@ -1023,11 +1068,12 @@ function tourDateRangePage(viewer, range, timestamp) {
     const tail = candidates.at(-1);
     lastScanned = { date: tail.date, id: tail.id };
     for (const row of candidates) {
-      if (isCurrentOrUpcomingLiveEvent({
+      if (lifecycle.isCurrentOrUpcoming({
         date: row.date,
         eventEndDate: row.event_end_date,
         eventTimezone: row.event_timezone,
-      }, timestamp)) visible.push(row);
+        eventStatus: row.event_status,
+      })) visible.push(row);
       if (visible.length > range.limit) break;
     }
 
@@ -1256,8 +1302,8 @@ function cleanEventAddress(value) {
   return clean(value, { max: LIMITS.eventAddress }) || null;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,kind,song,playlist,artist_key,artist_mbid,venue_key,experience_type,online_title,youtube_url,youtube_video_id,client_mutation_id,client_mutation_hash,created_at,event_address)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,kind,song,playlist,artist_key,artist_mbid,venue_key,experience_type,online_title,youtube_url,youtube_video_id,client_mutation_id,client_mutation_hash,created_at,event_address,supporting_acts,show_format,end_date)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 const postByClientMutation = db.prepare("SELECT id,removed,client_mutation_hash FROM posts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
 const postReceiptByClientMutation = db.prepare("SELECT post_id AS id,state,client_mutation_hash FROM post_create_receipts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
 const insertPostCreateReceipt = db.prepare(`INSERT OR IGNORE INTO post_create_receipts
@@ -1316,8 +1362,12 @@ function stableMutationValue(value) {
   return value;
 }
 
-function postMutationHash(canonicalPost) {
-  return createHash("sha256").update(JSON.stringify(stableMutationValue(canonicalPost))).digest("hex");
+function postMutationHash(canonicalPost, { legacyMediaUrls = false } = {}) {
+  // Derived URLs can appear while a clip converts. The ordered, owner-checked
+  // IDs are the authored selection; URL-only posts retain their existing hash.
+  const identity = !legacyMediaUrls && canonicalPost?.mediaAssetIds?.length
+    ? { ...canonicalPost, photos: [] } : canonicalPost;
+  return createHash("sha256").update(JSON.stringify(stableMutationValue(identity))).digest("hex");
 }
 
 // A review binds to a catalog entity, not to whatever the user typed. The client
@@ -1409,8 +1459,9 @@ function cleanPlaybackSource(providerValue, sourceIdValue) {
   return { provider: null, sourceId: null };
 }
 
+// Every staff role, the news team's editor included, needs the Owner's approval.
 function roleChangeTouchesHead(currentRole, nextRole) {
-  return [currentRole, nextRole].some((role) => role === "admin" || role === "moderator");
+  return [currentRole, nextRole].some((role) => role === "admin" || role === "moderator" || role === "editor");
 }
 
 function selectedRoleHandle(target, role, requestedHandle = null) {
@@ -1550,13 +1601,10 @@ function playlistPostProjection(value) {
     publishedAt: playlist.publishedAt || null,
   };
 }
-// How many times the author has logged this artist up to and including this
-// post: powers the "3rd time in the pit" marker on the card.
-const SEEN_ORDINAL_SQL = `(CASE WHEN COALESCE(p.kind,'review')='review'
-    AND COALESCE(p.experience_type,'in_person')='in_person' THEN (SELECT COUNT(*) FROM posts s
-    WHERE s.user_id = p.user_id AND LOWER(s.artist) = LOWER(p.artist) AND s.removed = 0
-      AND COALESCE(s.kind,'review')='review' AND COALESCE(s.experience_type,'in_person')='in_person'
-      AND (s.created_at < p.created_at OR (s.created_at = p.created_at AND s.id <= p.id))) ELSE NULL END) AS seen_ordinal`;
+// How many times the author has seen this artist live up to and including
+// this post, by show date, counting openers and earlier unlogged shows: the
+// "3rd time in the pit" marker on the card (server/supportingActs.js).
+const SEEN_ORDINAL_SQL = `${seenOrdinalSql("p")} AS seen_ordinal`;
 const feedPostById = db.prepare(`
   SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
     u.profile_updated_at AS u_profile_updated_at,
@@ -2555,7 +2603,22 @@ function canonicalCreateRequest(user, body, storedPost = null) {
   if (!onlineReview && (v.onlineTitle || onlineLink)) {
     throw new ApiError(400, "YouTube concert details can only be added to an online review.", "VALIDATION_FAILED");
   }
-  const binding = resolveArtistBinding(v.artist, source.artistKey);
+  // A headline show, co-headline show or festival, and who played
+  // (server/supportingActs.js). Online reviews are one performance.
+  const showFormat = onlineReview ? "headline" : cleanShowFormat(source.showFormat);
+  if (showFormat === false) throw new ApiError(400, "Choose a concert, a co-headline show or a festival.", "VALIDATION_FAILED");
+  const endDate = cleanEndDate(source.endDate, { showFormat, date: v.date || "" });
+  if (endDate === false) {
+    throw new ApiError(400, "Pick the festival's first day, then a last day up to two weeks later.", "VALIDATION_FAILED");
+  }
+  const lineup = cleanLineup(onlineReview ? undefined : source.lineup, {
+    legacyNames: source.supportingActs, mainArtist: v.artist, showFormat, date: v.date || "", endDate,
+  });
+  if (lineup.error) throw new ApiError(400, lineup.error, "VALIDATION_FAILED");
+  const timesSeen = cleanTimesSeen(source.timesSeen);
+  if (timesSeen === false) throw new ApiError(400, `Times seen is a whole number from 1 to ${MAX_TIMES_SEEN}.`, "VALIDATION_FAILED");
+  // A festival's name is not a catalog artist.
+  const binding = showFormat === "festival" ? { artist_key: null, artist_mbid: null } : resolveArtistBinding(v.artist, source.artistKey);
   if (!stableMedia) rejectNewLegacyMediaUrls(v.photos || [], parseJsonArray(storedPost?.photos));
   const photos = stableMedia ? stableMedia.photos : (v.photos || []);
   const requestedLandingShowcase = v.photosPublic === 0 ? 0 : (v.landingShowcase ?? 0);
@@ -2584,6 +2647,11 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     photosPublic: v.photosPublic === 0 ? 0 : v.landingShowcase ? 1 : (v.photosPublic ?? 0),
     landingShowcase: onlineReview ? 0 : landingShowcase,
     setlist: onlineReview ? [] : (v.setlist || []),
+    showFormat,
+    endDate,
+    lineup: onlineReview ? [] : lineup.acts,
+    // Sets the "seen before logging" number; not part of the post itself.
+    timesSeen: onlineReview ? null : (timesSeen ?? null),
     tour: onlineReview ? null : (v.tour || null),
     // Descriptive review tags are retired. User companions remain a separate,
     // structured relationship in taggedUserIds.
@@ -2600,6 +2668,9 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     "event address": values.eventAddress,
     review: values.review,
     "setlist entry": values.setlist,
+    "lineup act": values.lineup.map((act) => act.name),
+    "set review": values.lineup.map((act) => act.review).filter(Boolean),
+    stage: values.lineup.map((act) => act.stage).filter(Boolean),
     tour: values.tour,
     "tagged song title": values.song?.title,
     "tagged song artist": values.song?.artist,
@@ -2628,6 +2699,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       photosPublic: values.photosPublic,
       landingShowcase: values.landingShowcase,
       setlist: values.setlist,
+      ...canonicalLineupFields({ showFormat: values.showFormat, endDate: values.endDate, acts: values.lineup }),
       tour: values.tour,
       tags: values.tags,
       taggedUserIds,
@@ -2679,6 +2751,8 @@ function canonicalStoredPost(row) {
     photosPublic: row?.photos_public ? 1 : 0,
     landingShowcase: kind === "review" && online.experienceType !== "online" && row?.landing_showcase ? 1 : 0,
     setlist: kind === "status" || online.experienceType === "online" ? [] : cleanStringArray(parseJsonArray(row?.setlist), { maxItems: 40, maxLen: 120 }),
+    ...(kind !== "status" && online.experienceType !== "online"
+      ? canonicalLineupFields({ showFormat: storedShowFormat(row), endDate: row?.end_date || "", acts: storedLineup(row?.supporting_acts) }) : {}),
     tour: kind === "status" || online.experienceType === "online" ? null : clean(row?.tour, { max: 80 }) || null,
     tags: [],
     taggedUserIds: storedPostTaggedUserIds(row?.tagged_user_ids),
@@ -2693,13 +2767,13 @@ function canonicalStoredPost(row) {
   };
 }
 // Insert a notification for a recipient (never notify yourself).
-const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
+const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at,comment_id) VALUES (?,?,?,?,?,?,?,?,?)");
 const postTagNotifRow = db.prepare("INSERT OR IGNORE INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
 function addNotif(recipientId, actorId, type, extra = {}) {
   if (!recipientId || recipientId === actorId) return;
   if (actorId && blockedEitherWay(recipientId, actorId)) return; // no pings across a block
   if (actorId && mutedBy(recipientId, actorId)) return; // private, one-way social silence
-  notifRow.run(uid("n"), recipientId, actorId, type, extra.postId ?? null, extra.artist ?? null, extra.text ?? null, now());
+  notifRow.run(uid("n"), recipientId, actorId, type, extra.postId ?? null, extra.artist ?? null, extra.text ?? null, now(), extra.commentId ?? null);
 }
 
 // True when either user has blocked the other (blocks act both ways).
@@ -2897,6 +2971,15 @@ function mutedIdSet(userId) {
   return new Set(mutedIdsStmt.all(userId).map((row) => row.id));
 }
 
+const newsDeskReader = createNewsDeskReader(db, { projectReposts:(ids,viewerId)=>repostInfoPage(db,ids,viewerId) });
+const newsDeskEditor = createNewsDeskEditor({ database: db, now });
+const mediaApiService = createMediaApiService({ database: db, now, editor: newsDeskEditor });
+ensureNewsCardPhotoSchema(db);
+const resolveNewsArtwork = createNewsCardArtworkResolver({ database: db, resolveProfilePhoto: (input) => attendanceTicketArtistProfilePhoto(input) });
+// One renderer for every share card and news preview image, so its memory and
+// concurrency limits hold across both.
+const socialShareCardRenderer = createSocialShareCardRenderer();
+
 function postJson(p, viewerId) {
   const artistPublicSlug = publicArtistSlugForPost(p);
   const online = projectedOnlineReviewFields(p);
@@ -2956,7 +3039,7 @@ function postJson(p, viewerId) {
   const campaignAuthorized = !!storedCampaign?.artistKey
     && p.u_role === "artist"
     && normName(p.u_artist_name) === normName(storedCampaign.artistKey)
-    && db.prepare("SELECT 1 FROM artist_profiles WHERE artist_key=? AND owner_id=? AND removed=0")
+    && db.prepare("SELECT 1 FROM artist_profiles WHERE artist_key=? AND owner_id=? AND removed=0 AND COALESCE(identity_review_status,'clear') IN ('clear','approved')")
       .get(normName(storedCampaign.artistKey), p.user_id);
   let campaign = campaignAuthorized ? storedCampaign : null;
   const campaignBackground = campaign?.backgroundAssetId
@@ -2970,7 +3053,7 @@ function postJson(p, viewerId) {
     id: p.id,
     userId: p.user_id,
     kind: p.kind || "review",
-    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0 },
+    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0, membershipBadge: memberBadgeFor(db, { id: p.user_id }) },
     artist: p.artist,
     venue: online.experienceType === "online" ? "" : p.venue,
     city: online.experienceType === "online" ? "" : p.city,
@@ -2988,6 +3071,8 @@ function postJson(p, viewerId) {
     room: online.experienceType === "online" ? null : p.room,
     dims: online.experienceType === "online" ? {} : parseJsonObject(p.dims),
     review: p.review,
+    // A news desk story: headline and the outlets that confirmed it.
+    news: p.kind === "status" && String(p.id).startsWith("news_") ? newsDeskReader.forPost(p.id, { viewerId }) : null,
     // A stable descriptor is the publication authority. If its verified
     // rendition/source becomes unavailable, do not let the denormalized legacy
     // URL column bypass that fail-closed state. Historical URL-only rows are
@@ -3009,6 +3094,13 @@ function postJson(p, viewerId) {
     // Separate homepage consent is owner-only account state, not social proof.
     ...(viewerId === p.user_id ? { landingShowcase: online.experienceType === "online" ? false : !!p.landing_showcase } : {}),
     setlist: online.experienceType === "online" ? [] : parseJsonArray(p.setlist),
+    // Who played and how each set was rated, linked to the author's own review
+    // of that act from the same night when there is one. supportingActs is the
+    // older name-only shape for app versions from before lineups.
+    showFormat: (p.kind || "review") === "status" || online.experienceType === "online" ? "headline" : storedShowFormat(p),
+    endDate: (p.kind || "review") === "status" || online.experienceType === "online" ? "" : p.end_date || "",
+    lineup: (p.kind || "review") === "status" || online.experienceType === "online" ? [] : projectLineup(db, p),
+    supportingActs: (p.kind || "review") === "status" || online.experienceType === "online" ? [] : projectSupportingActs(db, p),
     tour: online.experienceType === "online" ? null : p.tour || null,
     tags: [],
     taggedPeople: projectedPostTaggedPeople(p, viewerId),
@@ -3030,6 +3122,7 @@ function postJson(p, viewerId) {
     } } : {}),
     ...(p.open_reports != null ? { flags: p.open_reports } : {}),
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
+    ...(p.repost_info || repostInfo(db, p.id, viewerId || null)),
     ...(p.comment_preview != null ? { commentPreview: parseJsonArray(p.comment_preview) } : {}),
     liked: p.viewer_liked != null
       ? !!p.viewer_liked
@@ -3041,14 +3134,28 @@ function postJson(p, viewerId) {
 }
 
 function projectPostPage(posts, viewerId) {
+  const reactions = repostInfoPage(db, posts.map(post => post.id), viewerId || null);
   return attachPostMediaPageProjection(db, posts, { ownerId: viewerId || null })
-    .map((post) => postJson(post, viewerId));
+    .map((post) => postJson({ ...post, repost_info: reactions.get(post.id) }, viewerId));
 }
 
 // Feed cards need only the latest two comments. Fetch them for the whole page in
 // one indexed/windowed query instead of mounting N cards that each issue their
 // own HTTP request. Full threads (including ancestor tombstones) remain on the
 // dedicated comments endpoint and load only when somebody opens Afterparty.
+const COMMENT_AUTHOR_IDENTITY_SQL = `u.email_verified_at,
+  CASE WHEN u.role='artist' AND EXISTS (SELECT 1 FROM artist_profiles a
+    WHERE a.owner_id=u.id AND a.artist_key=lower(trim(u.artist_name))
+      AND a.identity_review_status IN ('pending','rejected')) THEN 1 ELSE 0 END AS artist_identity_held`;
+
+function commentAuthorStatus(comment) {
+  return {
+    role: comment.artist_identity_held ? "fan" : comment.role,
+    verified: !comment.artist_identity_held && !!comment.verified,
+    membershipBadge: memberBadgeFor(db, { id: comment.user_id, email_verified_at: comment.email_verified_at }),
+  };
+}
+
 function withCommentPreviews(posts, viewerId) {
   if (!Array.isArray(posts) || !posts.length) return posts || [];
   const ids = posts.map((post) => post.id).filter(Boolean);
@@ -3063,6 +3170,7 @@ function withCommentPreviews(posts, viewerId) {
     SELECT * FROM (
       SELECT c.post_id,c.id,c.user_id,c.text,c.parent_id,c.created_at,
         u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.profile_updated_at,
+        ${COMMENT_AUTHOR_IDENTITY_SQL},
         ROW_NUMBER() OVER (PARTITION BY c.post_id ORDER BY c.created_at DESC,c.id DESC) AS preview_rank
       FROM comments c JOIN users u ON u.id=c.user_id
       WHERE c.post_id IN (${placeholders}) AND c.removed=0 AND ${activeAccountSql("u")} ${blockSql}
@@ -3079,8 +3187,7 @@ function withCommentPreviews(posts, viewerId) {
       avatarUri: safePublicProfileImage(comment.user_id, comment.avatar_uri),
       avatarColor: comment.avatar_color,
       profileUpdatedAt: Number(comment.profile_updated_at) || 0,
-      role: comment.role,
-      verified: !!comment.verified,
+      ...commentAuthorStatus(comment),
       text: comment.text,
       deleted: false,
       parentId: comment.parent_id || null,
@@ -3158,9 +3265,13 @@ async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority 
       });
     }
     if (!response.ok) {
+      const responseAt = Date.now();
+      const retryAfterMs = providerRetryAfterMs(response, responseAt);
       discardProviderResponse(response);
       throw new ProviderError("MusicBrainz", response.status, "MusicBrainz did not return a usable response.", {
-        retryAfterMs: providerRetryAfterMs(response),
+        retryAfterMs,
+        retryAt: retryAfterMs == null ? null : responseAt + retryAfterMs,
+        providerResponse: true,
         code: response.status === 429
           ? "rate_limited"
           : response.status >= 500
@@ -3196,15 +3307,31 @@ async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority 
   }, { signal, priority });
 }
 
-async function readMusicBrainzArtistCandidates(name, { signal, priority = "normal" } = {}) {
+async function readMusicBrainzArtistCandidates(name, { signal, priority = "normal", observe } = {}) {
   const key = normalizedMusicBrainzArtistName(name);
   if (!key) return [];
   return musicBrainzArtistCandidateWork(key, (jobSignal) => readMusicBrainzArtistCandidatesUnshared(name, {
     signal: jobSignal, priority,
-  }), { signal });
+  }), { signal, observe });
 }
 
-async function resolveFromMusicBrainz(name, { requireExactIdentity = false, signal, priority = "normal" } = {}) {
+function artistLookupUnavailable(provider, error) {
+  const failure = new ApiError(502,
+    `${provider} is unavailable right now. Retry the artist lookup before continuing.`,
+    "PROVIDER_UNAVAILABLE", error);
+  const at = Date.now();
+  const deadline = Number(error?.retryAt);
+  const relative = Number(error?.retryAfterMs);
+  // Shared work can replay a failure. Its original absolute deadline wins so
+  // every reader sees the remaining wait, not a newly restarted Retry-After.
+  const remaining = Number.isFinite(deadline) && deadline > 0
+    ? deadline - at : Number.isFinite(relative) && relative > 0 ? relative : 30_000;
+  failure.retryAfterMs = Math.max(0, Math.min(PROVIDER_RETRY_AFTER_MAX_MS, Math.ceil(remaining)));
+  failure.retryAt = at + failure.retryAfterMs;
+  return failure;
+}
+
+async function resolveFromMusicBrainz(name, { requireExactIdentity = false, signal, priority = "normal", observe } = {}) {
   const requestedIdentity = normalizedMusicBrainzArtistName(name);
   if (!requestedIdentity) {
     if (requireExactIdentity) {
@@ -3215,19 +3342,10 @@ async function resolveFromMusicBrainz(name, { requireExactIdentity = false, sign
 
   let candidates;
   try {
-    candidates = await readMusicBrainzArtistCandidates(name, { signal, priority });
+    candidates = await readMusicBrainzArtistCandidates(name, { signal, priority, observe });
   } catch (error) {
     if (signal?.aborted) throw signal.reason || error;
-    const failure = new ApiError(
-      502,
-      "MusicBrainz is unavailable right now. Retry the artist lookup before continuing.",
-      "PROVIDER_UNAVAILABLE",
-      error,
-    );
-    const retryAfter = Number(error?.retryAfterMs);
-    failure.retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0
-      ? Math.max(1_000, Math.min(3_600_000, retryAfter)) : 30_000;
-    throw failure;
+    throw artistLookupUnavailable("MusicBrainz", error);
   }
 
   const exact = candidates.filter(
@@ -3292,15 +3410,17 @@ function cachedMusicBrainzResolution(name) {
 function rememberMusicBrainzResolution(name, artist) {
   const key = musicBrainzResolveCacheKey(name);
   if (!key || !artist?.mbid || !cacheableMusicBrainzResolutions.has(artist)
-    || normalizedMusicBrainzArtistName(artist.name) !== normalizedMusicBrainzArtistName(name)) return;
+    || normalizedMusicBrainzArtistName(artist.name) !== normalizedMusicBrainzArtistName(name)) return "not_eligible";
   const at = Date.now();
   try {
     providerCacheStmts.set.run(key, JSON.stringify(artist), at, at + MUSICBRAINZ_RESOLVE_CACHE_MS);
+    return "stored";
   } catch (error) {
     // Recoverable cache storage pressure must not discard a successful lookup.
     // Database corruption/schema failures still surface; the storage health
     // checks remain responsible for reporting disk capacity independently.
     if (!isOptionalArtistCacheStorageFailure(error)) throw error;
+    return "optional_storage_failure";
   }
 }
 
@@ -3308,16 +3428,16 @@ function rememberMusicBrainzResolution(name, artist) {
 // It is used only when exactly one provider ID has the requested normalized
 // name. Ambiguous same-name acts deliberately remain unresolved for the
 // listener to choose through the existing candidates flow.
-async function resolveFromDeezerExactName(name, { signal } = {}) {
+async function resolveFromDeezerExactName(name, { signal, observe } = {}) {
   const requested = normalizedMusicBrainzArtistName(name);
   if (!requested) return null;
   let candidates;
   try {
     candidates = await deezerArtistFallbackWork(name.normalize("NFKC").toLowerCase(), (jobSignal) =>
-      findDeezerArtistCandidates(name, { limit: 10, signal: jobSignal }), { signal });
+      findDeezerArtistCandidates(name, { limit: 10, signal: jobSignal }), { signal, observe });
   } catch (error) {
     if (signal?.aborted) throw signal.reason || error;
-    if (error?.retryable || error instanceof ProviderError) return null;
+    if (error?.retryable || error instanceof ProviderError) throw artistLookupUnavailable("Deezer", error);
     throw error;
   }
   const exact = new Map(
@@ -3665,11 +3785,7 @@ function observeBackgroundVideoFinalizeFailure(error, requestId) {
     error,
     requestId,
   });
-  setTimeout(() => {
-    maybeAlert().catch((alertError) => {
-      console.error(`[media] background clip alert failed safely: cause=${privateErrorLabel(alertError)}`);
-    });
-  }, 0).unref?.();
+  scheduleErrorAlert();
 }
 
 function requireVideoPublishingActor(user) {
@@ -3908,6 +4024,18 @@ export function startArtistNews() {
   });
 }
 
+// Festival editions and lineups from Ticketmaster, histories from Wikipedia.
+// On whenever a Ticketmaster key is set (a few requests an hour); set
+// FESTIVAL_SCAN_ENABLED=false to stop it.
+export function startFestivals() {
+  return startFestivalScheduler({ database: db, now });
+}
+
+// Confirmed music news, written up and posted from @news_mod.
+export function startNewsDesk() {
+  return startNewsDeskScheduler({ database: db });
+}
+
 export function startCatalogResearch() {
   return startCatalogResearchScheduler({ database: db });
 }
@@ -3944,8 +4072,9 @@ function safePublicArtistProfileImage(profile, slot) {
   return publicArtistProfileMedia(profile, slot)?.url || null;
 }
 
-function publicArtistProfileProjection(profile) {
+function publicArtistProfileProjection(profile, viewer = null) {
   if (!profile || profile.removed) return null;
+  profile = retainedProfileProjection(db, profile, viewer?.id || null, now());
   const owner = profile.owner_id ? q.userById.get(profile.owner_id) : null;
   return {
     ownerId: profile.owner_id || null,
@@ -3953,6 +4082,9 @@ function publicArtistProfileProjection(profile) {
       && normName(owner.artist_name) === profile.artist_key,
     bio: profile.bio ?? null,
     bioStaffCurated: Number(profile.bio_staff_curated) === 1,
+    bioContributor: profile.bioContributor || null,
+    avatarContributor: profile.avatarContributor || null,
+    bannerContributor: profile.bannerContributor || null,
     // A successful mutation must return the same verified media projection that
     // public reads use. This keeps the editor from treating a database write as
     // complete while the next artist-page render still has different artwork.
@@ -3987,6 +4119,7 @@ const ARTIST_PROFILE_SNAPSHOT_FIELDS = Object.freeze([
   "artist_key",
   "owner_id", "bio", "bio_staff_curated", "banner", "banner_owner_id", "avatar_uri", "avatar_owner_id",
   "feed_enabled", "removed", "updated_at", "identity_review_status",
+  "bio_author_id", "bio_retention_id", "avatar_retention_id", "banner_retention_id",
 ]);
 const artistProfileSnapshotByKey = db.prepare(`SELECT ${ARTIST_PROFILE_SNAPSHOT_FIELDS.join(",")}
   FROM artist_profiles WHERE artist_key=?`);
@@ -4072,14 +4205,22 @@ function postJsonWithImpressions(p, viewerId) {
   return postJson(attached || p, viewerId);
 }
 
-function resolvePostCreateRetry(userId, mutationId, mutationHash) {
+function resolvePostCreateRetry(userId, mutationId, mutationHash, { canonical } = {}) {
   if (!mutationId) return null;
   const receipt = postReceiptByClientMutation.get(userId, mutationId);
   if (receipt?.state === "removed") {
     throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
   }
   if (receipt) {
-    if (receipt.client_mutation_hash !== mutationHash) {
+    let matches = receipt.client_mutation_hash === mutationHash;
+    if (!matches && canonical?.mediaAssetIds?.length) {
+      // Compatibility is an exact legacy digest check, never a comparison
+      // waiver. Keep all authored fields, ordered IDs and current ready URLs.
+      // An old receipt whose pending URL subset has since changed cannot be
+      // reconstructed from attempt-start timestamps: retain a safe conflict.
+      matches = receipt.client_mutation_hash === postMutationHash(canonical, { legacyMediaUrls: true });
+    }
+    if (!matches) {
       throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
     }
     const stored = feedPostById.get(receipt.id);
@@ -4116,10 +4257,9 @@ function resolvePostCreateRetry(userId, mutationId, mutationHash) {
   };
 }
 
-// A crash storm owns one deferred digest drain, not one timer per browser.
-const clientCrashAlertDrain = createAlertDrainScheduler({ drain: () => maybeAlert() });
+// Client crashes share the same bounded digest wake-up as server errors.
 function scheduleClientCrashAlert() {
-  clientCrashAlertDrain.schedule();
+  scheduleErrorAlert();
 }
 
 const peopleSuggestionService = createPeopleSuggestionService(db, { projectUser: publicUser });
@@ -4129,6 +4269,12 @@ ensureCrewSchema(db);
 ensureShowPlansSchema(db);
 const catalogMaintenanceService = createCatalogMaintenanceService({ database: db, databasePath: DATABASE_PATH,
   now, seoStatus: catalogSeoMaintenanceStatus });
+ensureSearchGrowthPrioritySchema(db);
+const searchGrowthService = createSearchGrowthService({ database: db, now,
+  onPriorities: (batch) => rememberSearchGrowthPriorities(db, batch) });
+export function startSearchGrowth() {
+  return startSearchGrowthScheduler({ service: searchGrowthService });
+}
 const messageRelationshipContextService = createMessageRelationshipContextService(db);
 
 function deploymentReadinessProjection() {
@@ -4176,6 +4322,7 @@ function staffHealthProjection(actor) {
         capacity: collectStorageHealth(db, { databasePath: DATABASE_PATH }),
       },
       traffic: requestMetrics.snapshot(),
+      artistResolver: artistResolverMetrics.snapshot(),
       artistKnowledge: collectArtistKnowledgeStatus(db),
       mediaObjectStorageConfigured: mediaConfigured(process.env),
       privateVideoSourceStorageConfigured: privateVideoMediaConfigured(process.env),
@@ -4349,7 +4496,8 @@ async function searchYouTubeTrack(ctx, input) {
 // Complete erasure shared by explicit account deletion and the fenced inactivity
 // worker. The caller owns the transaction; no email or object-network operations
 // run here. Durable media cleanup is enqueued before user/content cascades.
-function eraseAccountData(u, { at = now() } = {}) {
+// `journal: false` only for replaying the privacy journal itself.
+function eraseAccountData(u, { at = now(), journal = true } = {}) {
   if (!db.isTransaction) throw new TypeError("Account erasure requires an active transaction");
   if (!u?.id) throw new TypeError("Account erasure requires a current account");
   if (isOwnerId(db, u.id)) throw new ApiError(403, "The permanent Owner account cannot be deleted.", "FORBIDDEN");
@@ -4437,6 +4585,13 @@ function eraseAccountData(u, { at = now() } = {}) {
   db.prepare("UPDATE track_source_overrides SET set_by=NULL WHERE set_by=?").run(u.id);
   db.prepare("UPDATE email_templates SET updated_by=NULL WHERE updated_by=?").run(u.id);
   db.prepare("UPDATE email_campaigns SET created_by=NULL WHERE created_by=?").run(u.id);
+  // News coverage and editorial drafts are shared staff artifacts. Their
+  // creator columns deliberately lack user FKs, so erase attribution here too
+  // (including restore-journal replay) without removing the public coverage.
+  db.prepare("UPDATE news_live_events SET created_by=NULL WHERE created_by=?").run(u.id);
+  db.prepare("UPDATE news_live_notes SET created_by=NULL WHERE created_by=?").run(u.id);
+  db.prepare("UPDATE news_drafts SET created_by=NULL WHERE created_by=?").run(u.id);
+  db.prepare("UPDATE news_card_photos SET chosen_by=NULL WHERE chosen_by=?").run(u.id);
 
   // These relationships use ON DELETE SET NULL so shared rows can normally
   // survive account changes. Deletion is a privacy erasure, so remove the
@@ -4461,7 +4616,48 @@ function eraseAccountData(u, { at = now() } = {}) {
   // Structured post tags are JSON rather than foreign-key rows, so account
   // erasure must explicitly remove this id from posts authored by others.
   scrubTaggedUserFromPosts(u.id);
+  // Off-host record so restoring an older backup cannot bring the account back.
+  if (journal) recordPrivacyEvent(db, { kind: "account_erased", subjectId: u.id, at });
   db.prepare("DELETE FROM users WHERE id=?").run(u.id);
+}
+
+// Marketing consent withdrawn by Settings or an unsubscribe link; journaled in
+// the same transaction so a restored backup cannot quietly resume email.
+function setMarketingPreferenceJournaled(preference) {
+  const write = () => {
+    const before = q.userById.get(preference.id);
+    const result = emailStmts.setMarketingPreference.run(preference);
+    // Only a real withdrawal is journaled, not a repeat unsubscribe click.
+    if (preference.opt_out === 1 && result.changes && before && before.marketing_opt_out !== 1) {
+      recordPrivacyEvent(db, { kind: "marketing_opt_out", subjectId: preference.id, at: preference.at });
+    }
+    return result;
+  };
+  return db.isTransaction ? write() : atomicWrite(write);
+}
+
+// Restore only (server/index.js, before listening): replay erasures and
+// opt-outs recorded after the backup this database came from.
+export function replayPrivacyJournalOnRestore(options = {}) {
+  return replayPrivacyJournalIfRestored(db, {
+    ...options,
+    erase: (userId) => atomicWrite(() => {
+      const user = q.userById.get(userId);
+      if (!user || isOwnerId(db, user.id)) return false;
+      eraseAccountData(user, { at: now(), journal: false });
+      return true;
+    }),
+    optOut: (userId) => {
+      const user = q.userById.get(userId);
+      if (!user || user.marketing_opt_out === 1) return false;
+      emailStmts.setMarketingPreference.run({ id: userId, opt_out: 1, at: now(), version: CURRENT_MARKETING_CONSENT_VERSION, source: "privacy-journal-replay" });
+      return true;
+    },
+  });
+}
+
+export function startPrivacyJournal() {
+  return startPrivacyJournalShipper({ database: db });
 }
 
 // Defense in depth: the maintenance callback repeats the durable Owner,
@@ -4485,9 +4681,18 @@ const linkedAccounts = createLinkedAccounts({ database: db, ApiError, requireSes
   verifyPasswordForUser, atomicWrite, createSession, sessionTtlForRole, publicUser, now });
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
+const connections = createConnections({
+  database: db, ApiError, requireUser, rateLimit: limit, visibleProfileOrNull, blockedEitherWay,
+  projectUser: publicUser, projectArtist: publicArtist, resolveArtist: resolveCatalogArtistReference,
+  decodeKey: (ctx) => decodedPathParam(ctx, "key", { max: 200, label: "artist link" }), atomicWrite, now,
+});
+
 export const routes = {
+  ...jobRoutes({ database: db, ApiError, assertSafeAuthoredText, requireAdmin, rateLimit: limit, now }),
+  ...socialReactionRoutes({ database: db, ApiError, requireUser, rateLimit: limit, atomicWrite, addNotif, now }),
   ...discoverPhotoRoutes({ database: db, rateLimit: limit, ApiError }),
   ...pageHeadRoutes({ ApiError, rateLimit: limit, pageHeadFor }),
+  ...publicVenueSnapshotRoutes({ rateLimit: limit, readSnapshot: publicVenueSnapshotForPath }),
   ...capacityHandshakeRoutes({
     ApiError,
     databasePath: DATABASE_PATH,
@@ -4534,8 +4739,11 @@ export const routes = {
   ...linkedAccounts.routes,
   ...cityGuideRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now }),
   ...artistBiographyRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now, publicArtist }),
+  ...catalogEditorRoutes({ database: db, requireAdmin, rateLimit: limit, decodedPathParam, now }),
   ...catalogMaintenanceRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now,
     ...catalogMaintenanceService }),
+  ...searchGrowthRoutes({ database: db, ApiError, requireAdmin, rateLimit: limit, now,
+    service: searchGrowthService }),
   ...artistRecommendationRoutes({
     service: artistRecommendationService,
     requireUser,
@@ -4595,7 +4803,7 @@ export const routes = {
     projectSelf: (user) => publicUser(user, { self: true }),
     rateLimit: limit,
     requireSessionUser,
-    setMarketingPreference: (preference) => emailStmts.setMarketingPreference.run(preference),
+    setMarketingPreference: setMarketingPreferenceJournaled,
     verifyPassword,
   }),
   ...artistDiscographyRoutes({
@@ -4704,6 +4912,9 @@ export const routes = {
     resolveCurrentArtistProfileImage: attendanceTicketArtistProfilePhoto,
     resolveCurrentLicensedArtistPhoto: attendanceTicketLicensedArtistPhoto,
     resolveCurrentEventProviderImage: attendanceTicketEventProviderPhotoById,
+    resolveNewsStory: (postId) => newsDeskReader.forLivePost(postId),
+    resolveNewsArtwork,
+    renderer: socialShareCardRenderer,
   }),
   ...showRoutes({
     database: db,
@@ -5229,78 +5440,113 @@ export const routes = {
   // returned as request-scoped MusicBrainz projections; ingestion remains an
   // explicit staff/background operation.
   "GET /api/artists/resolve": async (ctx) => {
-    const name = clean(ctx.query.name, { max: 120 });
-    if (!name) throw new ApiError(400, "Missing name.");
-    const existing = resolveCatalogArtistReference(name);
-    if (existing && !artistCatalogVisibleTo(db, existing, ctx.user)) return { artist: null, created: false };
-    if (existing) return {
-      artist: {
-        ...publicArtist(existing),
-        fanClubAvailable: !artistHasLegacyMemorial(db, {
-          artistKey: existing.norm,
-          artist: existing.name,
-        }),
-      },
-      created: false,
-    };
-    const remembered = cachedMusicBrainzResolution(name);
-    // A stale exact identity is still a safer immediate answer than waiting on
-    // an upstream service. Explicit attachment revalidates the provider ID.
-    if (remembered) {
-      return {
-        artist: {
-          ...publicArtist(artistRow(remembered.artist.name, remembered.artist, "musicbrainz")),
-          fanClubAvailable: true,
-        },
-        created: false,
-        transient: true,
-        cached: true,
-        ...(!remembered.fresh ? { stale: true } : {}),
-      };
-    }
-    // A previously successful, unique-exact fallback remains a request-scoped
-    // preview, not a catalogue identity or permission to attach an artist.
-    // The small durable cache survives restarts and expires after 24 hours.
-    const fallbackRemembered = artistFallbackCache.get(name);
-    if (fallbackRemembered) {
-      return {
-        artist: {
-          ...publicArtist(artistRow(fallbackRemembered.name, fallbackRemembered, "deezer")),
-          fanClubAvailable: true,
-        },
-        created: false,
-        transient: true,
-        cached: true,
-        providerFallback: "deezer",
-      };
-    }
-    limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
-    const preview = await resolveArtistPreviewWithFallback({
-      signal: ctx.signal,
-      primary: (signal) => resolveFromMusicBrainz(name, { signal, priority: "interactive" }),
-      fallback: (signal) => resolveFromDeezerExactName(name, { signal }),
+    const diagnostics = createArtistResolverDiagnostics({
+      entryPoint: ctx.artistResolverEntryPoint,
+      capture: (detail) => ctx.captureArtistResolverDiagnostics?.(detail),
     });
-    if (preview.provider === "deezer") {
-      const fallback = preview.artist;
-      artistFallbackCache.remember(name, fallback);
+    try {
+      const name = clean(ctx.query.name, { max: 120 });
+      if (!name) throw new ApiError(400, "Missing name.");
+      const existing = resolveCatalogArtistReference(name);
+      if (existing && !artistCatalogVisibleTo(db, existing, ctx.user)) {
+        diagnostics.source("catalog_hidden");
+        diagnostics.result("no_match");
+        return { artist: null, created: false };
+      }
+      if (existing) {
+        diagnostics.source("catalog");
+        diagnostics.result("matched");
+        return {
+          artist: {
+            ...publicArtist(existing),
+            fanClubAvailable: !artistHasLegacyMemorial(db, {
+              artistKey: existing.norm,
+              artist: existing.name,
+            }),
+          },
+          created: false,
+        };
+      }
+      const remembered = cachedMusicBrainzResolution(name);
+      // A stale exact identity is still a safer immediate answer than waiting on
+      // an upstream service. Explicit attachment revalidates the provider ID.
+      if (remembered) {
+        diagnostics.source(remembered.fresh ? "musicbrainz_cache_fresh" : "musicbrainz_cache_stale");
+        diagnostics.result("matched");
+        return {
+          artist: {
+            ...publicArtist(artistRow(remembered.artist.name, remembered.artist, "musicbrainz")),
+            fanClubAvailable: true,
+          },
+          created: false,
+          transient: true,
+          cached: true,
+          ...(!remembered.fresh ? { stale: true } : {}),
+        };
+      }
+      // A previously successful, unique-exact fallback remains a request-scoped
+      // preview, not a catalogue identity or permission to attach an artist.
+      // The small durable cache survives restarts and expires after 24 hours.
+      const fallbackRemembered = artistFallbackCache.get(name);
+      if (fallbackRemembered) {
+        diagnostics.source("deezer_cache");
+        diagnostics.result("matched");
+        return {
+          artist: {
+            ...publicArtist(artistRow(fallbackRemembered.name, fallbackRemembered, "deezer")),
+            fanClubAvailable: true,
+          },
+          created: false,
+          transient: true,
+          cached: true,
+          providerFallback: "deezer",
+        };
+      }
+      limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
+      const preview = await resolveArtistPreviewWithFallback({
+        signal: ctx.signal,
+        observe: diagnostics.provider,
+        primary: (signal) => resolveFromMusicBrainz(name, { signal, priority: "interactive",
+          observe: (event) => diagnostics.work("musicbrainz", event) }),
+        fallback: (signal) => resolveFromDeezerExactName(name, { signal,
+          observe: (event) => diagnostics.work("deezer", event) }),
+      });
+      if (preview.provider === "deezer") {
+        const fallback = preview.artist;
+        diagnostics.source("deezer");
+        diagnostics.cacheWrite("error");
+        diagnostics.cacheWrite(artistFallbackCache.remember(name, fallback) ? "stored" : "not_written");
+        diagnostics.result("matched");
+        return {
+          artist: {
+            ...publicArtist(artistRow(fallback.name, fallback, "deezer")),
+            fanClubAvailable: true,
+          },
+          created: false,
+          transient: true,
+          providerFallback: "deezer",
+        };
+      }
+      const mb = preview.artist;
+      if (!mb) {
+        diagnostics.result("no_match");
+        return { artist: null, created: false };
+      }
+      diagnostics.source("musicbrainz");
+      diagnostics.cacheWrite("error");
+      diagnostics.cacheWrite(rememberMusicBrainzResolution(name, mb));
+      diagnostics.result("matched");
       return {
-        artist: {
-          ...publicArtist(artistRow(fallback.name, fallback, "deezer")),
-          fanClubAvailable: true,
-        },
+        artist: { ...publicArtist(artistRow(mb.name, mb, "musicbrainz")), fanClubAvailable: true },
         created: false,
         transient: true,
-        providerFallback: "deezer",
       };
+    } catch (error) {
+      diagnostics.failed(error, ctx.signal?.aborted === true);
+      throw error;
+    } finally {
+      diagnostics.finish();
     }
-    const mb = preview.artist;
-    if (!mb) return { artist: null, created: false };
-    rememberMusicBrainzResolution(name, mb);
-    return {
-      artist: { ...publicArtist(artistRow(mb.name, mb, "musicbrainz")), fanClubAvailable: true },
-      created: false,
-      transient: true,
-    };
   },
 
   // Same-named artists disambiguation: a short list of Deezer candidates (fans,
@@ -5314,7 +5560,7 @@ export const routes = {
     try { return { candidates: await findDeezerArtistCandidates(name, { signal: ctx.signal }) }; }
     catch (error) {
       if (ctx.signal?.aborted) throw ctx.signal.reason || error;
-      if (error instanceof ProviderError) return { candidates: [] };
+      if (error instanceof ProviderError) throw artistLookupUnavailable("Deezer", error);
       throw error;
     }
   },
@@ -6087,7 +6333,16 @@ export const routes = {
       assertSafeAuthoredFields({
         "now-playing title": incomingExtras.value.nowPlaying?.title,
         "now-playing artist": incomingExtras.value.nowPlaying?.artist,
+        pronouns: incomingExtras.value.pronouns || undefined,
       });
+      // Favorite shows are the member's own live show reviews, never someone
+      // else's post or a plain status.
+      const pinned = incomingExtras.value.favoriteShows;
+      if (Array.isArray(pinned) && pinned.length) {
+        const owned = db.prepare(`SELECT COUNT(*) AS n FROM posts WHERE user_id=? AND removed=0 AND COALESCE(kind,'review')<>'status'
+          AND id IN (${pinned.map(() => "?").join(",")})`).get(u.id, ...pinned).n;
+        if (owned !== pinned.length) throw new ApiError(400, "Pick up to four of your own show reviews.", "VALIDATION_FAILED");
+      }
     }
 
     const [profileErrors, v] = shape(ctx.body, {
@@ -6100,7 +6355,7 @@ export const routes = {
       lat: { parse: cleanLatitude },
       lng: { parse: cleanLongitude },
       genres: { parse: () => incomingGenres?.genres },
-      favoriteArtists: { parse: (x) => cleanStringArray(x, { maxItems: 50, maxLen: 80 }) },
+      favoriteArtists: { parse: (x) => cleanStringArray(x, { maxItems: MAX_FOLLOWED_ARTISTS, maxLen: 80 }) },
       directMessagePolicy: { parse: (x) => (DIRECT_MESSAGE_POLICIES.includes(x) ? x : undefined) },
       profileAudience: { parse: (x) => (PROFILE_AUDIENCES.includes(x) ? x : undefined) },
       ageBand: { parse: (x) => (isClassifiedAccountAgeBand(x) ? x : undefined) },
@@ -6196,6 +6451,13 @@ export const routes = {
           // playlists array are explicit clears, while omission retains data.
           for (const key of ["theme", "nowPlaying", "treble", "bass", "playlists"]) {
             if (Object.hasOwn(incomingExtras.value, key)) next[key] = incomingExtras.value[key];
+          }
+          // Profile personalisation: null or an empty list removes it.
+          for (const key of ["accent", "pronouns", "favoriteShows"]) {
+            if (!Object.hasOwn(incomingExtras.value, key)) continue;
+            const value = incomingExtras.value[key];
+            if (value === null || (Array.isArray(value) && !value.length)) delete next[key];
+            else next[key] = value;
           }
           const pendingHandle = pendingSignupHandle(stored);
           if (pendingHandle) next.pendingSignupHandle = pendingHandle;
@@ -6308,34 +6570,16 @@ export const routes = {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const u = visibleProfileOrNull(ctx.params.id, ctx.user);
     if (!u) throw new ApiError(404, "No such user.");
-    const followers = db.prepare(`SELECT COUNT(*) c FROM follows f JOIN users actor ON actor.id=f.follower_id
-      WHERE f.followee_id=? AND ${activeAccountSql("actor")}`).get(u.id).c;
-    const following = db.prepare(`SELECT COUNT(*) c FROM follows f JOIN users target ON target.id=f.followee_id
-      WHERE f.follower_id=? AND ${activeAccountSql("target")}`).get(u.id).c;
+    const { followers, following, artistFollowing } = connections.counts(ctx, u);
     const isFollowing = ctx.user ? !!db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(ctx.user.id, u.id) : false;
-    return { user: publicUser(u), followers, following, isFollowing };
+    ctx.setHeader?.("Cache-Control", "private, no-store");
+    const profile = publicUser(u);
+    return { user: { ...profile, artistFollowingCount: artistFollowing }, followers, following, isFollowing,
+      favoriteShows: favoriteShowCards(db, { userId: u.id, ids: profile.favoriteShows, parseArray: parseJsonArray }) };
   },
 
-  // The real people behind the follower/following numbers, so profiles have a
-  // clickable follow list like any social platform.
-  "GET /api/users/:id/followers": (ctx) => {
-    if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    const hidden = blockedIdSet(ctx.user?.id);
-    const rows = db.prepare(`
-      SELECT u.* FROM follows f JOIN users u ON u.id = f.follower_id
-      WHERE f.followee_id = ? AND ${activeAccountSql("u")} ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
-    return { users: rows.filter((r) => !hidden.has(r.id) && profileAudienceAllows(r, ctx.user)).map((r) => publicUser(r)) };
-  },
-  "GET /api/users/:id/following": (ctx) => {
-    if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    const hidden = blockedIdSet(ctx.user?.id);
-    const rows = db.prepare(`
-      SELECT u.* FROM follows f JOIN users u ON u.id = f.followee_id
-      WHERE f.follower_id = ? AND ${activeAccountSql("u")} ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
-    return { users: rows.filter((r) => !hidden.has(r.id) && profileAudienceAllows(r, ctx.user)).map((r) => publicUser(r)) };
-  },
+  // Lists and artist subscriptions share the profile audience/block boundary.
+  ...connections.routes,
 
   "GET /api/users/:id/rewards": (ctx) => {
     if (!visibleProfileOrNull(ctx.params.id, ctx.user)) throw new ApiError(404, "No such user.", "NOT_FOUND");
@@ -6568,6 +6812,20 @@ export const routes = {
     const requestedOffset = Number(ctx.query?.offset);
     const off = !cursor && Number.isSafeInteger(requestedOffset) && requestedOffset > 0 ? Math.min(requestedOffset, 1_000_000) : 0;
     const viewer = user.id;
+    if (ctx.query?.mode === "following") {
+      const found = followingPostIds(db, { viewerId: viewer, cursor, limit: lim });
+      const page = found.slice(0, lim);
+      const rows = page.map((item) => feedPostById.get(item.id)).filter(Boolean);
+      const projected = attachPostImpressionStats(db, attachViewerLikes(db,
+        withTaggedPeople(withCommentPreviews(rows, viewer), viewer), viewer), viewer);
+      const activities = new Map(page.map((item) => [item.id, item.activity_at]));
+      return {
+        posts: projectPostPage(projected, viewer).filter((post) => !isNewsPostId(post.id) || post.news)
+          .map((post) => ({ ...post, followingActivityAt: activities.get(post.id) })),
+        nextCursor: found.length > lim && page.length
+          ? encodeCursor({ id: page.at(-1).id, created_at: page.at(-1).activity_at }) : null,
+      };
+    }
     const blockSql = viewer ? `AND NOT EXISTS (
       SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
     ) AND NOT EXISTS (SELECT 1 FROM account_mutes mute WHERE mute.muter_id=? AND mute.muted_id=p.user_id)` : "";
@@ -6590,7 +6848,7 @@ export const routes = {
           WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
         ${SEEN_ORDINAL_SQL}${flagSql}
       FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE p.removed=0 AND ${activeAccountSql("u")} ${cursorSql} ${blockSql}
+      WHERE p.removed=0 AND substr(p.id,1,5)<>'news_' AND ${activeAccountSql("u")} ${cursorSql} ${blockSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
     const projectedRows = attachPostImpressionStats(db, attachViewerLikes(
@@ -6643,7 +6901,7 @@ export const routes = {
     limit(ctx, "feed-revalidate", 120, 10 * 60 * 1000);
     const requested = Array.isArray(ctx.body?.postIds) ? ctx.body.postIds : [];
     const postIds = [...new Set(requested
-      .filter((id) => typeof id === "string" && /^p_[A-Za-z0-9_-]{1,77}$/.test(id))
+      .filter((id) => typeof id === "string" && /^(?:p|news)_[A-Za-z0-9_-]{1,77}$/.test(id))
       .slice(0, 200))];
     if (!postIds.length) return { invalidPostIds: [] };
     const placeholders = postIds.map(() => "?").join(",");
@@ -6655,7 +6913,8 @@ export const routes = {
     const live = new Set(db.prepare(`SELECT p.id FROM posts p JOIN users u ON u.id=p.user_id
       WHERE p.id IN (${placeholders}) AND p.removed=0 AND ${activeAccountSql("u")}
         ${blockSql} ${preferenceSql}`).all(...args).map((row) => row.id));
-    return { invalidPostIds: postIds.filter((id) => !live.has(id)) };
+    const eligibleNews = new Set(eligibleNewsPosts(db, user, now()).map((row) => row.post_id));
+    return { invalidPostIds: postIds.filter((id) => !live.has(id) || (isNewsPostId(id) && !eligibleNews.has(id))) };
   },
 
   "POST /api/feed/preferences/:postId": (ctx) => {
@@ -6849,7 +7108,8 @@ export const routes = {
     const stored = existing ? feedPostById.get(existing.id) : null;
     const request = canonicalCreateRequest(u, ctx.body, stored);
     const mutationHash = mutationId ? postMutationHash(request.canonical) : null;
-    const duplicate = resolvePostCreateRetry(u.id, mutationId, mutationHash);
+    const retryMedia = { canonical: request.canonical };
+    const duplicate = resolvePostCreateRetry(u.id, mutationId, mutationHash, retryMedia);
     if (duplicate) return duplicate;
     postWriteLimits(ctx, {
       campaign: request.kind === "status" && !!request.values.campaign,
@@ -6865,7 +7125,7 @@ export const routes = {
         // BEGIN IMMEDIATE waits out another writer. Rechecking the key while
         // holding that lock turns simultaneous retries into the same response
         // instead of leaking a SQLite uniqueness failure as a 500.
-        const raced = resolvePostCreateRetry(u.id, mutationId, mutationHash);
+        const raced = resolvePostCreateRetry(u.id, mutationId, mutationHash, retryMedia);
         if (raced) return raced;
         // Re-read consent/account/block state while holding SQLite's write lock.
         // The earlier validation shapes a friendly response quickly; this one
@@ -6901,7 +7161,7 @@ export const routes = {
           "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, v.campaign ? JSON.stringify(v.campaign) : null, "[]", null,
           "[]", JSON.stringify(transactionTaggedUserIds), "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null,
           v.binding?.artist_key || null, v.binding?.artist_mbid || null, null,
-          "in_person", null, null, null, mutationId, mutationHash, now(), null);
+          "in_person", null, null, null, mutationId, mutationHash, now(), null, "[]", "headline", "");
         if (mutationId) insertPostCreateReceipt.run(u.id, mutationId, mutationHash, id, now(), now());
         if (v.attendanceTicket) postAttendanceTicket.run(JSON.stringify(v.attendanceTicket), id, u.id);
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
@@ -6918,7 +7178,7 @@ export const routes = {
     const id = uid("p");
     const racedDuplicate = atomicWrite(() => {
       ctx.assertCurrentSession?.();
-      const raced = resolvePostCreateRetry(u.id, mutationId, mutationHash);
+      const raced = resolvePostCreateRetry(u.id, mutationId, mutationHash, retryMedia);
       if (raced) return raced;
       const transactionTaggedUserIds = validatedPostTaggedUserIds(u, v.taggedUserIds);
       assertPostTagRecipientBudget(u.id, transactionTaggedUserIds);
@@ -6926,7 +7186,11 @@ export const routes = {
         JSON.stringify(v.dims), v.review, JSON.stringify(v.photos), v.photosPublic, v.landingShowcase, null, JSON.stringify(v.setlist), v.tour,
         JSON.stringify(v.tags), JSON.stringify(transactionTaggedUserIds), "review", v.song ? JSON.stringify(v.song) : null, null,
         v.binding.artist_key, v.binding.artist_mbid, v.experienceType === "online" ? null : venueBinding(v.venue),
-        v.experienceType, v.onlineTitle, v.youtubeUrl, v.youtubeVideoId, mutationId, mutationHash, now(), v.eventAddress);
+        v.experienceType, v.onlineTitle, v.youtubeUrl, v.youtubeVideoId, mutationId, mutationHash, now(), v.eventAddress,
+        JSON.stringify(resolveLineup(db, v.lineup, { normName })), v.showFormat, v.endDate);
+      if (v.timesSeen) {
+        applyTimesSeen(db, { userId: u.id, postId: id, artist: v.artist, artistKey: v.binding.artist_key, timesSeen: v.timesSeen, at: now() });
+      }
       if (mutationId) insertPostCreateReceipt.run(u.id, mutationId, mutationHash, id, now(), now());
       markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
       if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
@@ -6957,7 +7221,8 @@ export const routes = {
 
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
-    const editable = ["artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"];
+    const editable = ["artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId",
+      "supportingActs", "timesSeen", "lineup", "showFormat", "endDate"];
     if (!editable.some(has)) throw new ApiError(400, "Make a change before saving this post.", "VALIDATION_FAILED");
 
     // Optimistic concurrency prevents two devices (or an old open edit sheet)
@@ -6973,12 +7238,17 @@ export const routes = {
     const next = { ...current };
     if (current.kind !== "status") next.tags = "[]";
     const currentMemorialMemory = current.kind === "status" && !!current.artist_key && !!current.artist_mbid && !!current.artist;
-    if (currentMemorialMemory && ["artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims", "setlist", "tour", "tags", "landingShowcase", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"].some(has)) {
+    if (currentMemorialMemory && ["artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims", "setlist", "tour", "tags", "landingShowcase", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId", "supportingActs", "timesSeen", "lineup", "showFormat", "endDate"].some(has)) {
       throw new ApiError(400, "A memorial fan memory can edit its words, people, song, and media, but it cannot become a live rating.", "VALIDATION_FAILED");
     }
     if (current.kind === "status" && ["experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId"].some(has)) {
       throw new ApiError(400, "Online concert details can only be added to a review.", "VALIDATION_FAILED");
     }
+    if (current.kind === "status" && ["supportingActs", "timesSeen", "lineup", "showFormat", "endDate"].some(has)) {
+      throw new ApiError(400, "Lineups and times seen belong to a concert review.", "VALIDATION_FAILED");
+    }
+    const editTimesSeen = cleanTimesSeen(body.timesSeen);
+    if (editTimesSeen === false) throw new ApiError(400, `Times seen is a whole number from 1 to ${MAX_TIMES_SEEN}.`, "VALIDATION_FAILED");
     const previousTaggedUserIds = storedPostTaggedUserIds(current.tagged_user_ids);
     const textField = (key, max, { required = false, newlines = false } = {}) => {
       if (!has(key)) return;
@@ -7063,6 +7333,28 @@ export const routes = {
       if (!Array.isArray(body.setlist) || body.setlist.some((item) => typeof item !== "string")) throw new ApiError(400, "setlist is invalid", "VALIDATION_FAILED");
       next.setlist = JSON.stringify(cleanStringArray(body.setlist, { maxItems: 40, maxLen: 120 }));
     }
+    next.show_format = storedShowFormat(current);
+    next.end_date = current.end_date || "";
+    const lineupEdited = ["lineup", "supportingActs", "showFormat", "endDate"].some(has);
+    if (current.kind !== "status" && (lineupEdited || (has("date") && next.show_format === "festival"))) {
+      const format = has("showFormat") ? cleanShowFormat(body.showFormat) : next.show_format;
+      if (format === false) throw new ApiError(400, "Choose a concert, a co-headline show or a festival.", "VALIDATION_FAILED");
+      const endDate = cleanEndDate(has("endDate") ? body.endDate : next.end_date, { showFormat: format, date: next.date || "" });
+      if (endDate === false) {
+        throw new ApiError(400, "Pick the festival's first day, then a last day up to two weeks later.", "VALIDATION_FAILED");
+      }
+      const saved = storedLineup(current.supporting_acts);
+      const options = { mainArtist: next.artist, showFormat: format, date: next.date || "", endDate };
+      // Older app versions send only opener names: keep the saved ratings.
+      const result = has("lineup") ? cleanLineup(body.lineup, options)
+        : has("supportingActs") ? cleanLineup(undefined, { ...options, legacyNames: body.supportingActs })
+          : cleanLineup(adaptLineupToFormat(saved, format), options);
+      if (result.error) throw new ApiError(400, result.error, "VALIDATION_FAILED");
+      const acts = !has("lineup") && has("supportingActs") ? mergeLegacyLineup(result.acts, saved) : result.acts;
+      next.show_format = format;
+      next.end_date = endDate;
+      next.supporting_acts = JSON.stringify(resolveLineup(db, acts, { normName }));
+    }
     if (has("tour")) {
       if (body.tour !== null && typeof body.tour !== "string") throw new ApiError(400, "tour is invalid", "VALIDATION_FAILED");
       next.tour = body.tour === null ? null : clean(body.tour, { max: 80 }) || null;
@@ -7133,6 +7425,9 @@ export const routes = {
       next.room = null;
       next.dims = "{}";
       next.setlist = "[]";
+      next.supporting_acts = "[]";
+      next.show_format = "headline";
+      next.end_date = "";
       next.tour = null;
       next.tags = "[]";
       next.landing_showcase = 0;
@@ -7187,6 +7482,9 @@ export const routes = {
       "event address": has("eventAddress") ? next.event_address : undefined,
       review: has("review") ? next.review : undefined,
       "setlist entry": has("setlist") ? cleanStringArray(body.setlist, { maxItems: 40, maxLen: 120 }) : undefined,
+      "lineup act": lineupEdited ? storedLineup(next.supporting_acts).map((act) => act.name) : undefined,
+      "set review": lineupEdited ? storedLineup(next.supporting_acts).map((act) => act.review).filter(Boolean) : undefined,
+      stage: lineupEdited ? storedLineup(next.supporting_acts).map((act) => act.stage).filter(Boolean) : undefined,
       tour: has("tour") ? next.tour : undefined,
       "tagged song title": editedSong?.title,
       "tagged song artist": editedSong?.artist,
@@ -7276,7 +7574,9 @@ export const routes = {
       ? currentMemorialMemory
         ? { artist_key: current.artist_key, artist_mbid: current.artist_mbid }
         : { artist_key: editedArtistPage || null, artist_mbid: null }
-      : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
+      : next.show_format === "festival" && next.experience_type !== "online"
+        ? { artist_key: null, artist_mbid: null }
+        : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
     // The legacy boundary belongs to the canonical artist identity, not to one
     // post kind. Historical reviews and older clients must not be able to add
     // media after the artist page becomes a protected educational archive.
@@ -7311,6 +7611,10 @@ export const routes = {
       ["room", next.room, current.room],
       ["dims", next.dims, current.dims],
       ["setlist", next.setlist, current.setlist],
+      ["supportingActs", next.supporting_acts, current.supporting_acts],
+      ["lineup", next.supporting_acts, current.supporting_acts],
+      ["showFormat", next.show_format, storedShowFormat(current)],
+      ["endDate", next.end_date, current.end_date || ""],
       ["tour", next.tour, current.tour],
       ["experienceType", next.experience_type, current.experience_type],
     ].some(([field, nextValue, currentValue]) => has(field) && nextValue !== currentValue);
@@ -7364,15 +7668,26 @@ export const routes = {
         addsOnlineVideo: legacyAddsOnlineVideo,
         publishesMedia: legacyPublishesMedia,
       });
-      const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,campaign=?,setlist=?,tour=?,tags=?,tagged_user_ids=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,experience_type=?,online_title=?,youtube_url=?,youtube_video_id=?,updated_at=?,event_address=?
+      const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,campaign=?,setlist=?,tour=?,tags=?,tagged_user_ids=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,experience_type=?,online_title=?,youtube_url=?,youtube_video_id=?,updated_at=?,event_address=?,supporting_acts=?,show_format=?,end_date=?
         WHERE id=? AND user_id=? AND removed=0 AND COALESCE(updated_at,created_at)=?`)
         .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.landing_showcase, next.campaign, next.setlist, next.tour, next.tags, JSON.stringify(transactionTaggedUserIds), next.song, next.playlist,
           editBinding.artist_key, editBinding.artist_mbid, current.kind === "status" || next.experience_type === "online" ? null : venueBinding(next.venue),
           current.kind === "status" ? "in_person" : next.experience_type, current.kind === "status" ? null : next.online_title,
           current.kind === "status" ? null : next.youtube_url, current.kind === "status" ? null : next.youtube_video_id,
-          editedAt, current.kind === "status" ? null : next.event_address || null, current.id, u.id, currentVersion);
+          editedAt, current.kind === "status" ? null : next.event_address || null,
+          current.kind === "status" || next.experience_type === "online" ? "[]" : next.supporting_acts || "[]",
+          current.kind === "status" || next.experience_type === "online" ? "headline" : next.show_format,
+          current.kind === "status" || next.experience_type === "online" || next.show_format !== "festival" ? "" : next.end_date || "",
+          current.id, u.id, currentVersion);
       if (Number(updated.changes || 0) !== 1) {
         throw new ApiError(409, "This review changed on another screen. Refresh before saving again.", "CONFLICT");
+      }
+      if (editTimesSeen !== undefined && current.kind !== "status" && next.experience_type !== "online") {
+        if (editTimesSeen === null) {
+          db.prepare("DELETE FROM artist_seen_baselines WHERE user_id=? AND artist_ref=?").run(u.id, seenArtistKey(next.artist, editBinding.artist_key));
+        } else {
+          applyTimesSeen(db, { userId: u.id, postId: current.id, artist: next.artist, artistKey: editBinding.artist_key, timesSeen: editTimesSeen, at: editedAt });
+        }
       }
       addPostTagNotifications(transactionNewlyTaggedUserIds, u.id, current.id, currentMemorialMemory || current.kind !== "status" ? next.artist : null);
       retireLegacyVideoPosters(db, {
@@ -7463,7 +7778,7 @@ export const routes = {
         // retry can never resurrect this irreversibly deleted post.
         db.prepare(`UPDATE posts SET removed=1,artist='',venue='',city='',event_address=NULL,date='',overall=0,
           band=NULL,room=NULL,dims='{}',review='',photos='[]',photos_public=0,landing_showcase=0,campaign=NULL,
-          setlist='[]',tour=NULL,tags='[]',tagged_user_ids='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
+          setlist='[]',supporting_acts='[]',show_format='headline',end_date='',tour=NULL,tags='[]',tagged_user_ids='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
           venue_key=NULL,experience_type='in_person',online_title=NULL,youtube_url=NULL,youtube_video_id=NULL,
           client_mutation_hash=NULL${postAttendanceTicketScrubSql},updated_at=?
           WHERE id=? AND user_id=?`).run(now(), post.id, u.id);
@@ -7510,7 +7825,7 @@ export const routes = {
     if (viewerId) args.push(viewerId, viewerId);
     if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
     args.push(limit + 1);
-    const found = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified, u.profile_updated_at FROM comments c JOIN users u ON u.id=c.user_id
+    const found = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified, u.profile_updated_at, ${COMMENT_AUTHOR_IDENTITY_SQL} FROM comments c JOIN users u ON u.id=c.user_id
                              WHERE c.post_id=? AND c.removed=0 AND ${activeAccountSql("u")} ${blockSql} ${cursorSql}
                              ORDER BY c.created_at DESC, c.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
@@ -7525,7 +7840,7 @@ export const routes = {
       const ids = [...new Set(pending.filter((id) => !byId.has(id)))].slice(0, 100);
       if (!ids.length) break;
       const placeholders = ids.map(() => "?").join(",");
-      const parents = db.prepare(`SELECT c.*,u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.profile_updated_at,u.is_banned,u.suspended_until,u.dormant_at
+      const parents = db.prepare(`SELECT c.*,u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.profile_updated_at,u.is_banned,u.suspended_until,u.dormant_at,${COMMENT_AUTHOR_IDENTITY_SQL}
         FROM comments c JOIN users u ON u.id=c.user_id
         WHERE c.post_id=? AND c.id IN (${placeholders})`).all(ctx.params.id, ...ids);
       pending = [];
@@ -7536,17 +7851,30 @@ export const routes = {
         if (parent.parent_id) pending.push(parent.parent_id);
       }
     }
+    const canLikeFromPage = (comment) => {
+      const seen=new Set();
+      let current=comment;
+      for (let depth=0; current && depth<64; depth++) {
+        if (seen.has(current.id) || hidden.has(current.user_id) || !accountIsPublic(current)) return false;
+        seen.add(current.id);
+        if (!current.parent_id) return true;
+        current=byId.get(current.parent_id);
+      }
+      return false;
+    };
     const comments = [...byId.values()]
       .sort((a, b) => a.created_at - b.created_at || String(a.id).localeCompare(String(b.id)))
       .map((c) => c.removed ? {
         id: c.id, userId: null, name: null, initials: null, avatarUri: null,
-        avatarColor: null, role: null, verified: false, text: "", deleted: true,
+        avatarColor: null, role: null, verified: false, membershipBadge: null, text: "", deleted: true,
         parentId: c.parent_id || null, createdAt: c.created_at,
       } : {
         id: c.id, userId: c.user_id, name: c.name, initials: c.initials,
-        avatarUri: safePublicProfileImage(c.user_id, c.avatar_uri), avatarColor: c.avatar_color, role: c.role,
-        verified: !!c.verified, profileUpdatedAt: Number(c.profile_updated_at) || 0, text: c.text, deleted: false,
+        avatarUri: safePublicProfileImage(c.user_id, c.avatar_uri), avatarColor: c.avatar_color, ...commentAuthorStatus(c),
+        profileUpdatedAt: Number(c.profile_updated_at) || 0, text: c.text, deleted: false,
         parentId: c.parent_id || null, createdAt: c.created_at,
+        ...commentLikeInfo(db, c.id, viewerId),
+        canLike: canLikeFromPage(c),
       });
     const removedIds = db.prepare("SELECT id FROM comments WHERE post_id=? AND removed=1 ORDER BY created_at DESC LIMIT 500")
       .all(ctx.params.id).map((row) => row.id);
@@ -7802,27 +8130,30 @@ export const routes = {
     const hidden = blockedIdSet(u.id);
     const muted = mutedIdSet(u.id);
     const { cursor, limit } = pageRequest(ctx, 100, 100);
-    const cursorSql = cursor ? "AND (n.created_at < ? OR (n.created_at = ? AND n.id < ?))" : "";
-    const args = cursor ? [u.id, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [u.id, limit + 1];
+    const cursorSql = cursor ? "AND (n.created_at < $before OR (n.created_at = $before AND n.id < $id))" : "";
+    const args = { $viewer:u.id, $limit:limit+1, ...(cursor ? {$before:cursor.createdAt,$id:cursor.id} : {}) };
     const found = db.prepare(`
       SELECT n.*, a.name AS actor_name, a.initials AS actor_initials, a.avatar_uri AS actor_uri, a.avatar_color AS actor_color
       FROM notifications n LEFT JOIN users a ON a.id = n.actor_id
-      WHERE n.user_id = ? ${cursorSql} ORDER BY n.created_at DESC, n.id DESC LIMIT ?`).all(...args);
+      WHERE n.user_id = $viewer AND ${SOCIAL_NOTIFICATION_VISIBLE_SQL} ${cursorSql}
+      ORDER BY n.created_at DESC, n.id DESC LIMIT $limit`).all(args);
     const { rows, nextCursor } = finishPage(found, limit);
     return {
-      notifications: rows.filter((n) => !n.actor_id || (!hidden.has(n.actor_id) && !muted.has(n.actor_id))).map((n) => ({
+      notifications: rows.filter((n) => (!n.actor_id || (!hidden.has(n.actor_id) && !muted.has(n.actor_id))))
+        .map((n) => ({
         id: n.id, type: n.type, actorId: n.actor_id,
         actorName: n.actor_name || "Someone", actorInitials: n.actor_initials || "?",
         actorUri: safePublicProfileImage(n.actor_id, n.actor_uri), actorColor: n.actor_color,
-        postId: n.post_id, artist: n.artist, text: n.text,
+        postId: n.post_id, commentId: n.comment_id || null, artist: n.artist, text: n.text,
         ts: n.created_at, read: !!n.read,
       })),
-      unread: db.prepare(`SELECT COUNT(*) c FROM notifications n WHERE n.user_id=? AND n.read=0
+      unread: db.prepare(`SELECT COUNT(*) c FROM notifications n WHERE n.user_id=$viewer AND n.read=0
+        AND ${SOCIAL_NOTIFICATION_VISIBLE_SQL}
         AND (n.actor_id IS NULL OR NOT EXISTS (
           SELECT 1 FROM blocks b WHERE (b.blocker_id=n.user_id AND b.blocked_id=n.actor_id) OR (b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)
         )) AND (n.actor_id IS NULL OR NOT EXISTS (
           SELECT 1 FROM account_mutes mute WHERE mute.muter_id=n.user_id AND mute.muted_id=n.actor_id
-        ))`).get(u.id).c,
+        ))`).get({$viewer:u.id}).c,
       nextCursor,
     };
   },
@@ -8774,7 +9105,7 @@ export const routes = {
     const started = startCampaign(campaign.id);
     if (!started.ok) {
       if (started.reason === "test-required") {
-        throw new ApiError(422, "Send yourself a test first—or retest the current campaign version—before broadcasting it.", "ACTION_REQUIRED");
+        throw new ApiError(422, "Send yourself a test first, or retest the current campaign version, before broadcasting it.", "ACTION_REQUIRED");
       }
       if (started.reason === "revision-conflict") {
         throw new ApiError(409, "This campaign changed while the broadcast was starting. Refresh it and send a fresh test.", "CONFLICT");
@@ -8831,7 +9162,11 @@ export const routes = {
     limit(ctx, "verify-email", 20, 60 * 60 * 1000);
     const token = clean(ctx.body?.token, { max: 100 });
     const completion = completeVerification(token);
-    if (!completion) return { ok: true, verified: false };
+    if (!completion) {
+      console.info('[verification] confirm outcome=invalid-expired-or-replaced');
+      return { ok: true, verified: false, reason: 'invalid-expired-or-replaced' };
+    }
+    console.info('[verification] confirm outcome=' + (completion.replayed ? 'replayed' : 'confirmed'));
     const response = { ok: true, verified: true, alreadyVerified: completion.replayed };
     // Possession of an email token authorizes confirming that address, not
     // reading the account's private self projection. Only the matching active
@@ -8845,16 +9180,17 @@ export const routes = {
     return response;
   },
 
-  "POST /api/verify-email/resend": (ctx) => {
+  "POST /api/verify-email/resend": async (ctx) => {
     ctx.setHeader?.("Cache-Control", "no-store");
     const u = requireUser(ctx);
     limit(ctx, "verify-resend", 5, 60 * 60 * 1000);
-    const result = resendVerification(q.userById.get(u.id));
+    const result = await resendVerification(q.userById.get(u.id));
     const fresh = q.userById.get(u.id);
     const verified = !!fresh?.email_verified_at;
     return {
       ok: true,
       sent: result.sent,
+      deliveryStatus: result.deliveryStatus || null,
       reason: result.reason,
       verified,
       ...(verified ? { user: publicUser(fresh, { self: true }) } : {}),
@@ -8879,7 +9215,7 @@ export const routes = {
     // A bearer unsubscribe link may only reduce processing. Re-enabling
     // announcements requires an authenticated account session in Settings;
     // otherwise an old or forwarded link could silently undo consent.
-    emailStmts.setMarketingPreference.run({
+    setMarketingPreferenceJournaled({
       id: user.id,
       opt_out: 1,
       at: now(),
@@ -8928,25 +9264,52 @@ export const routes = {
   // it survives reload + shows cross-device.
   // Confirm an address on someone's behalf. Distinct from /verified below, which
   // grants the PUBLIC verification check; this one is private account state and
-  // shows no badge. Also releases the welcome mail, exactly once.
+  // grants no reviewed artist identity or permissions. Manual approval does not prove delivery or send mail.
   "POST /api/admin/users/:id/verify-email": (ctx) => {
-    const actor = requireAdmin(ctx);
-    const before = q.userById.get(ctx.params.id);
-    if (!before) throw new ApiError(404, "No such member.", "NOT_FOUND");
-    if (!before.email_verified_at) atomicWrite(() => {
-      const changed = db.prepare(`UPDATE users
-        SET email_verified_at=?, email_verify_hash=NULL, email_verify_expires=0
-        WHERE id=? AND email_verified_at=0`).run(now(), ctx.params.id).changes === 1;
-      if (changed) claimPendingSignupHandle(db, q.userById.get(before.id), now());
-      if (changed) moderationRecord(ctx, "verify-email", "user", before.id, ctx.body?.reason || "",
-        { emailVerified: false }, { emailVerified: true, by: actor.id });
-    });
+    ctx.setHeader?.("Cache-Control", "no-store");
+    requireAdmin(ctx);
+    const reason = clean(ctx.body?.reason, { max: 500 });
+    if (!reason || reason.length < 10) throw new ApiError(400, "Give a reason of at least 10 characters. Do not include addresses or secrets.", "VALIDATION_FAILED");
+    if (ctx.body?.confirmedTargetId !== ctx.params.id) throw new ApiError(409, "Confirm the selected member again.", "CONFLICT");
+    let changed = false;
+    try {
+      atomicWrite(() => {
+        // A different connection can revoke authority while BEGIN waits for its lock.
+        requireAdmin(ctx);
+        const before = q.userById.get(ctx.params.id);
+        if (!before) throw new ApiError(404, "No such member.", "NOT_FOUND");
+        if (!Number.isSafeInteger(ctx.body?.confirmedEmailRevision) || ctx.body.confirmedEmailRevision !== before.email_verification_revision) {
+          throw new ApiError(409, "The selected account email changed. Refresh and confirm again.", "CONFLICT");
+        }
+        if (!before.email_verified_at && ctx.body?.confirmedHandle !== before.handle) throw new ApiError(409, "The selected member changed. Refresh and confirm again.", "CONFLICT");
+        changed = db.prepare(`UPDATE users SET email_verified_at=?, email_verification_method='admin-manual',
+          email_verify_hash=NULL, email_verify_expires=0 WHERE id=? AND email_verified_at=0`).run(now(), before.id).changes === 1;
+        if (changed) {
+          db.prepare("DELETE FROM email_verification_receipts WHERE user_id=?").run(before.id);
+          claimPendingSignupHandle(db, q.userById.get(before.id), now());
+          grantFirstWaveBadge(db, before.id, { at: now() });
+        }
+        moderationRecord(ctx, "verify-email", "user", before.id, reason,
+          { emailVerified: !!before.email_verified_at },
+          { emailVerified: true, method: changed ? 'admin-manual' : before.email_verification_method || 'legacy',
+            result: changed ? 'verified' : 'already-verified', emailDeliveryProven: false });
+      });
+    } catch (error) {
+      // Preserve a failed-attempt result after rollback when audit storage works.
+      // If that storage itself failed, verification stays rolled back.
+      try {
+        moderationRecord(ctx, "verify-email-failed", "user", ctx.params.id, reason, {},
+          { result: "failed", method: "admin-manual", failureClass: error instanceof ApiError ? error.code : "INTERNAL_ERROR" });
+      } catch {
+        console.warn("[verification] manual outcome=audit-unavailable");
+      }
+      throw error;
+    }
+    console.info("[verification] manual outcome=" + (changed ? "verified" : "already-verified"));
     const target = q.userById.get(ctx.params.id);
-    // External delivery stays outside the transaction. The durable welcome
-    // claim is itself guarded, so a retry repairs a crash after commit without
-    // sending twice; an audit failure rolls verification back before this runs.
-    void sendWelcomeOnce(target, { background: true });
-    return { user: publicUser(target, { self: false }), emailVerified: !!target.email_verified_at };
+    // Manual approval is not evidence of delivery. Do not send welcome mail here.
+    return { user: publicUser(target, { self: false }), emailVerified: !!target.email_verified_at,
+      method: target.email_verification_method || 'legacy', result: changed ? 'verified' : 'already-verified' };
   },
 
   "POST /api/admin/users/:id/verified": (ctx) => {
@@ -9132,7 +9495,7 @@ export const routes = {
     const query = clean(ctx.query?.q, { max: 80 }).toLowerCase();
     const role = clean(ctx.query?.role, { max: 16 }).toLowerCase();
     const status = clean(ctx.query?.status, { max: 16 }).toLowerCase();
-    if (role && !["fan", "artist", "moderator", "admin"].includes(role)) {
+    if (role && !["fan", "artist", "editor", "moderator", "admin"].includes(role)) {
       throw new ApiError(400, "That member role filter is invalid.", "VALIDATION_FAILED");
     }
     if (status && !["active", "banned", "suspended"].includes(status)) {
@@ -9156,12 +9519,12 @@ export const routes = {
     if (cursor) pageArgs.push(cursor.createdAt, cursor.createdAt, cursor.id);
     pageArgs.push(memberLimit + 1);
     const found = db.prepare(`SELECT id,name,handle,initials,avatar_uri,avatar_color,verified,sponsor,role,home_city,
-      is_banned,suspended_until,created_at,email_verified_at FROM users ${whereSql} ${cursorSql}
+      is_banned,suspended_until,created_at,email_verified_at,email_verification_method,email_verification_revision FROM users ${whereSql} ${cursorSql}
       ORDER BY created_at DESC,id DESC LIMIT ?`).all(...pageArgs);
     const { rows, nextCursor } = finishPage(found, memberLimit);
     // `emailVerified` is private state that publicUser withholds from everyone but
     // the account owner. It is included here because this route is staff-only and
-    // an admin needs it to answer "did my mail reach them".
+    // an admin needs to distinguish link confirmation from manual approval.
     // One grouped read for every row's badges. Calling customBadgesFor per user
     // here would be one query per card. Scope the grouped read to this bounded
     // page so a large directory's badge table cannot dominate every search.
@@ -9184,7 +9547,7 @@ export const routes = {
       createdAt: r.created_at, badges: badgesByUser.get(r.id) || [],
       // Address-confirmation state is private and actionable only by admins.
       // Moderators still receive the restriction fields they need for triage.
-      ...(actor.role === "admin" ? { emailVerified: !!r.email_verified_at } : {}),
+      ...(actor.role === "admin" ? { emailVerified: !!r.email_verified_at, emailVerificationRevision: r.email_verification_revision, emailVerificationMethod: r.email_verification_method || (r.email_verified_at ? "legacy" : null) } : {}),
     }));
     const total = db.prepare("SELECT COUNT(*) c FROM users").get().c;
     const matchingTotal = filters.length
@@ -9202,7 +9565,7 @@ export const routes = {
   "POST /api/admin/users/:id/role": (ctx) => {
     const actor = requireAdmin(ctx);
     limit(ctx, "role-change-request", 20, 60 * 60 * 1000);
-    const role = ["fan", "artist", "moderator", "admin"].includes(ctx.body?.role) ? ctx.body.role : null;
+    const role = ["fan", "artist", "editor", "moderator", "admin"].includes(ctx.body?.role) ? ctx.body.role : null;
     if (!role) throw new ApiError(400, "Bad role.");
     if (ctx.params.id === ctx.user.id) throw new ApiError(400, "You can't change your own role.");
     const handle = ctx.body?.handle ? cleanHandle(ctx.body.handle) : null;
@@ -9618,6 +9981,16 @@ export const routes = {
     newId: uid,
     now,
   }) : {}),
+  ...newsDeskRoutes({ rateLimit: limit, reader: newsDeskReader, renderer: socialShareCardRenderer, resolveNewsArtwork,
+    newsRegionFor: (user) => viewerNewsRegion(db, user) }),
+  ...newsRegionRoutes({ database: db, requireUser, rateLimit: limit, ApiError, now }),
+  ...newsFeedRoutes({
+    database: db, requireUser, rateLimit: limit, ApiError, now,
+    project: (postId, viewerId) => {
+      const row = feedPostById.get(postId);
+      return row && !row.removed && !blockedEitherWay(viewerId, row.user_id) ? postJsonWithImpressions(row, viewerId) : null;
+    },
+  }),
   ...artistUpdatesRoutes({
     ApiError,
     rateLimit: limit,
@@ -9633,6 +10006,22 @@ export const routes = {
       const artist = resolveCatalogArtistReference(key);
       return artist && artistCatalogVisibleTo(db, artist, ctx?.user) ? artist : null;
     } }),
+  // Lineups, "times seen", and artist pages' sets on other bills (server/supportingActs.js).
+  ...concertLineupRoutes({ database: db, ApiError, requireUser, rateLimit: limit, clean, cleanDate, artistLimit: LIMITS.artist,
+    catalogKeyExists: (key) => !!artistStmts.byNorm.get(key), normName,
+    artistNameForKey: (key) => artistStmts.byNorm.get(key)?.name || null,
+    projectAuthor: (id) => {
+      const row = q.userById.get(id);
+      return row ? publicUser(row) : null;
+    } }),
+  // Owner-chosen news stories: free to browse, one metered Claude call per draft.
+  ...newsDeskEditorRoutes({ editor: newsDeskEditor, database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now,
+    photoResolver: resolveNewsArtwork, readStory: (postId) => newsDeskReader.forLivePost(postId), listStories: () => newsDeskReader.list({ limit: 10 }).stories || [] }),
+  ...mediaApiRoutes({ service: mediaApiService, requireOwner, rateLimit: limit, ApiError }),
+  // Live coverage for big nights: outlet headlines plus owner updates, no Claude.
+  ...newsLiveRoutes({ database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now }),
+  // Festivals: editions, lineups by day, and members' plans.
+  ...festivalRoutes({ database: db, ApiError, requireVerifiedUser, rateLimit: limit, clean, decodedPathParam, now }),
   ...catalogResearchRoutes({ database: db, ApiError, rateLimit: limit, decodedPathParam, canonicalVenueKey, requireAdmin, now,
     resolveArtist: (key, ctx) => {
       const artist = resolveCatalogArtistReference(key);
@@ -9699,8 +10088,8 @@ export const routes = {
       // Slot owners are storage provenance, not public authors. The claim owner
       // controls page visibility; uploader block/account state must not make
       // staff-seeded catalog artwork disappear.
-      profile: legacyProfile ? publicLegacyArtistProfileProjection(p) : publicArtistProfileProjection(p),
-      posts: posts.map((x) => ({ id: x.id, userId: x.user_id, text: x.text, createdAt: x.created_at })),
+      profile: legacyProfile ? publicLegacyArtistProfileProjection(p) : publicArtistProfileProjection(p, ctx.user),
+      posts: posts.map((x) => ({ id: x.id, userId: x.user_id, text: x.text, createdAt: x.created_at, contributor: retainedContributor(db, "artist_post", x.id) })),
     };
   },
   "PATCH /api/artists/:key/profile": (ctx) => {
@@ -9743,17 +10132,17 @@ export const routes = {
     const avatarChanged = v.avatarUri !== undefined && v.avatarUri !== existing?.avatar_uri;
     const sets = [], args = [];
     if (v.bio !== undefined) {
-      sets.push("bio=?", "bio_staff_curated=?");
+      sets.push("bio=?", "bio_staff_curated=?", "bio_author_id=?", "bio_retention_id=NULL");
       // An intentional staff clear is still an editorial decision. Retain its
       // authority so provider enrichment cannot refill it as a missing bio.
-      args.push(v.bio, u.role === "admin" ? 1 : 0);
+      args.push(v.bio, u.role === "admin" ? 1 : 0, v.bio ? u.id : null);
     }
     if (bannerChanged) {
-      sets.push("banner=?", "banner_owner_id=?");
+      sets.push("banner=?", "banner_owner_id=?", "banner_retention_id=NULL");
       args.push(v.banner, v.banner ? u.id : null);
     }
     if (avatarChanged) {
-      sets.push("avatar_uri=?", "avatar_owner_id=?");
+      sets.push("avatar_uri=?", "avatar_owner_id=?", "avatar_retention_id=NULL");
       args.push(v.avatarUri, v.avatarUri ? u.id : null);
     }
     if (v.feedEnabled !== undefined) { sets.push("feed_enabled=?"); args.push(v.feedEnabled); }

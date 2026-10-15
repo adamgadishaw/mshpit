@@ -1,3 +1,6 @@
+import { PROVIDER_RETRY_AFTER_MAX_MS, withProviderRetryDeadline } from "./providerResponsePolicy.js";
+import { observeArtistLookup } from "./artistResolverDiagnostics.js";
+
 // Bounded remote directory work, separate from durable catalogue identities.
 // Provider failures never become cached "artist does not exist" answers.
 export function createArtistLookupWork({
@@ -42,22 +45,30 @@ export function createArtistLookupWork({
       );
     });
   }
-  async function run(key, work, { signal } = {}) {
+  async function run(key, work, { signal, observe } = {}) {
     if (signal?.aborted) throw abortReason(signal);
     if (typeof key !== "string" || !key || key.length > 500 || typeof work !== "function") {
       throw new TypeError("Artist lookup requires a bounded key and work callback.");
     }
     const cached = settled.get(key);
     if (cached?.expires > clock()) {
+      observeArtistLookup(observe, { origin: cached.error ? "memoized_error" : "memoized_result" });
       if (cached.error) throw cached.error;
       return cached.value;
     }
     if (cached) settled.delete(key);
     let job = active.get(key);
     // Abandoned work retains its capacity reservation until it unwinds.
-    if (job?.controller.signal.aborted) throw busy();
+    if (job?.controller.signal.aborted) {
+      observeArtistLookup(observe, { origin: "capacity_rejected" });
+      throw busy();
+    }
     if (!job) {
-      if (active.size >= maxActive) throw busy();
+      if (active.size >= maxActive) {
+        observeArtistLookup(observe, { origin: "capacity_rejected" });
+        throw busy();
+      }
+      observeArtistLookup(observe, { origin: "new_work" });
       const controller = new AbortController();
       job = { controller, done: false, waiters: 0, promise: null };
       const timeout = () => Object.assign(new Error("Artist lookup exceeded its deadline."), {
@@ -92,13 +103,22 @@ export function createArtistLookupWork({
         });
       }).catch((error) => {
         if (error?.name !== "AbortError" && (!controller.signal.aborted || controller.signal.reason?.name === "ArtistLookupTimeoutError")) {
-          const retry = Number(error?.retryAfterMs);
-          remember(key, { error }, Math.max(failureTtlMs, Math.min(60 * 60_000, Number.isFinite(retry) ? retry : 0)));
+          const at = clock();
+          const deadline = Number(error?.retryAt);
+          const relative = Number(error?.retryAfterMs);
+          const remaining = Number.isFinite(deadline) && deadline > 0
+            ? deadline - at : Number.isFinite(relative) ? relative : 0;
+          const ttl = Math.max(failureTtlMs, Math.min(PROVIDER_RETRY_AFTER_MAX_MS, Math.max(0, remaining)));
+          // Anchor once when the job fails, including our short local cooldown.
+          // Cached reads never renew a provider's original relative delay.
+          const failure = withProviderRetryDeadline(error, at + ttl, at);
+          remember(key, { error: failure }, ttl);
+          throw failure;
         }
         throw error;
       });
       active.set(key, job);
-    }
+    } else observeArtistLookup(observe, { origin: "shared_work" });
     return subscribe(job, signal);
   }
   run.status = () => ({ active: active.size, cached: settled.size });

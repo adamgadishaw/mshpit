@@ -47,11 +47,31 @@ test("directory outage cooldown survives edits, honors finite hints, and enables
 test("only provider unavailable and rate-limit errors impose a bounded cooldown, never auth", () => {
   assert.equal(artistLookupRetryDelay(failure()), 30_000);
   for (const hint of [NaN, Infinity, -1]) assert.equal(artistLookupRetryDelay(failure(hint)), 30_000);
-  assert.equal(artistLookupRetryDelay(failure(999_999_999)), 3_600_000);
+  assert.equal(artistLookupRetryDelay(failure(999_999_999)), 86_400_000);
   assert.equal(artistLookupRetryDelay({ status: 429, retryAfterMs: 7000 }), 7000);
   for (const error of [{ status: 401 }, { status: 403 }, { code: "PIT-AUTH-004" }, { status: 502 }, { name: "AbortError" }, { ...failure(), retryable: false }]) {
     assert.equal(artistLookupRetryDelay(error), 0);
   }
+});
+
+test("absolute provider deadlines count down without renewing a stale or malformed hint", () => {
+  let now = 10_000;
+  const control = createArtistLookupController({ clock: () => now });
+  const retryAt = now + 7_200_000;
+  const error = Object.assign(failure(7_200_000), { retryAt });
+  const request = control.begin("a", "Artist");
+  now += 5_000;
+  assert.equal(control.fail(request, error), retryAt);
+  control.finish(request);
+  assert.equal(control.begin("a", "Another artist"), null);
+  now = retryAt;
+  const retry = control.begin("a", "Artist");
+  assert.ok(retry);
+  assert.equal(control.fail(retry, error), 0, "replaying an old error cannot create another two-hour window");
+  for (const invalid of [NaN, Infinity, "123", -1, null]) {
+    assert.equal(artistLookupRetryDelay({ ...error, retryAt: invalid }, now), 0);
+  }
+  assert.equal(artistLookupRetryDelay({ ...error, retryAt: now + 172_800_000 }, now), 86_400_000);
 });
 
 const source = readFileSync(new URL("../../screens/SearchScreen.jsx", import.meta.url), "utf8");

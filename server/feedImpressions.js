@@ -7,9 +7,10 @@ export const FEED_IMPRESSION_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export const FEED_IMPRESSION_RECEIPT_ACCOUNT_MAX = 5_000;
 export const FEED_IMPRESSION_HISTORY_RETENTION_MS = 180 * 24 * 60 * 60_000;
 
-const POST_ID = /^p_[A-Za-z0-9_-]{1,77}$/;
+// Member posts (p_) and Mshpit News posts (news_) both count as views.
+const POST_ID = /^(?:p|news)_[A-Za-z0-9_-]{1,77}$/;
 const EVENT_ID = /^[A-Za-z0-9_-]{8,100}$/;
-const SURFACES = new Set(["feed", "everyone", "for_you", "following", "local", "clips", "profile", "post", "artist"]);
+const SURFACES = new Set(["feed", "everyone", "for_you", "following", "local", "clips", "profile", "post", "artist", "news"]);
 let lastReceiptPruneAt = 0;
 
 export function cleanFeedImpressionBatch(value) {

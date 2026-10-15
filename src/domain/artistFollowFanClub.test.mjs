@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   MAX_FOLLOWED_ARTISTS,
+  artistFollowReceipt,
   artistFollowScope,
   isArtistFollowed,
   nextArtistFollowSelection,
@@ -48,7 +49,8 @@ test("ArtistScreen keeps Follow and Fan Club membership as separate explicit act
   const joinStart = feature.indexOf("const join =");
   const resultStart = feature.indexOf("return {", joinStart);
   assert.ok(followStart > -1 && joinStart > followStart && resultStart > joinStart);
-  assert.match(feature.slice(followStart, joinStart), /updateProfile\(\{ favoriteArtists: selection\.artists \}\)/);
+  assert.match(feature.slice(followStart, joinStart), /setArtistFollowing\(artistKey \|\| artistName, targetFollowing\)/);
+  assert.doesNotMatch(feature.slice(followStart, joinStart), /updateProfile\(/);
   assert.doesNotMatch(feature.slice(followStart, joinStart), /joinFanClub\(/);
   assert.match(feature.slice(joinStart, resultStart), /joinFanClub\(artistName\)/);
   assert.match(feature, /actionRef\.current\.sequence === operation\.sequence/);
@@ -56,4 +58,13 @@ test("ArtistScreen keeps Follow and Fan Club membership as separate explicit act
   assert.match(source, />Join<\/Text>/);
   assert.match(source, />Not now<\/Text>/);
   assert.match(source, /accessibilityLabel=\{`\$\{followed \? "Unfollow" : "Follow"\} \$\{a\.name\}`\}/);
+});
+
+test("artist selection receipts ignore old responses but reset after account switch or relogin", () => {
+ const a={accountId:"A",epoch:1}; const newest=artistFollowReceipt(null,a,200);
+ assert.equal(artistFollowReceipt(newest,a,100),null);
+ assert.deepEqual(artistFollowReceipt(newest,a,200),newest);
+ assert.equal(artistFollowReceipt(newest,{accountId:"B",epoch:1},100).version,100);
+ assert.equal(artistFollowReceipt(newest,{accountId:"A",epoch:2},100).version,100);
+ assert.equal(artistFollowReceipt(newest,a,"invalid"),null);
 });

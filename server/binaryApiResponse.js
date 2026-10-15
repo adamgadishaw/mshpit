@@ -40,6 +40,9 @@ export function createPngApiResponse(bytes, {
   canonicalUrl = null,
   filename = "mshpit-share.png",
   photoCreditUrl = null,
+  // Link-preview images (og:image) are public and shown inline. Anything
+  // personal keeps the default: a private, uncached download.
+  publicMaxAgeSeconds = null,
 } = {}) {
   if (!isBoundedPng(bytes)) {
     throw new TypeError("PNG API response bytes are invalid");
@@ -51,13 +54,14 @@ export function createPngApiResponse(bytes, {
   if (!canonicalLink) throw new TypeError("PNG API response requires a canonical Mshpit URL");
   const photoCreditLink = photoCreditUrl ? safePhotoCreditLink(photoCreditUrl) : null;
   if (photoCreditUrl && !photoCreditLink) throw new TypeError("PNG API response photo credit URL is invalid");
+  const publicPng = Number.isSafeInteger(publicMaxAgeSeconds) && publicMaxAgeSeconds > 0 && publicMaxAgeSeconds <= 86_400;
   const response = Object.freeze({
     bytes: Buffer.from(bytes),
     headers: Object.freeze({
       "Content-Type": "image/png",
       "Content-Length": String(bytes.length),
-      "Content-Disposition": `attachment; filename="${safeFilename}"`,
-      "Cache-Control": "private, no-store",
+      "Content-Disposition": `${publicPng ? "inline" : "attachment"}; filename="${safeFilename}"`,
+      "Cache-Control": publicPng ? `public, max-age=${publicMaxAgeSeconds}` : "private, no-store",
       Link: [canonicalLink, photoCreditLink].filter(Boolean).join(", "),
     }),
   });

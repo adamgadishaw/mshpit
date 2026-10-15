@@ -15,6 +15,10 @@ test("retry hints accept finite seconds and HTTP dates only for retryable transp
   assert.equal(retryAfterDelayMs("2026", { status: 502, now }), 2_026_000, "numeric text is seconds, not an implicitly parsed year");
   assert.equal(retryAfterDelayMs("86400", { status: 429, code: "ARTIST_CAMPAIGN_LIMIT", now }), 86_400_000);
   assert.equal(retryAfterDelayMs("9999999999", { status: 429, code: "ARTIST_CAMPAIGN_LIMIT", now }), 86_400_000);
+  assert.equal(retryAfterDelayMs("7200", { status: 502, code: "PROVIDER_UNAVAILABLE", now }), 7_200_000);
+  assert.equal(retryAfterDelayMs("Wed, 16 Sep 2026 03:00:00 GMT", { status: 502, code: "PROVIDER_UNAVAILABLE", now }), 7_200_000);
+  assert.equal(retryAfterDelayMs("9999999999", { status: 502, code: "PROVIDER_UNAVAILABLE", now }), 86_400_000);
+  assert.equal(retryAfterDelayMs("7200", { status: 503, code: "MEDIA_STORAGE_UNAVAILABLE", now }), 3_600_000);
   for (const value of [null, undefined, "", "NaN", "Infinity", "-1", "1e9", "x".repeat(200), "Tue, 15 Sep 2026 01:00:00 GMT"]) {
     assert.equal(retryAfterDelayMs(value, { status: 502, now }), null);
   }

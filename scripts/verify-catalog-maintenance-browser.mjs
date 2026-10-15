@@ -12,6 +12,9 @@ import { fixtureApiResponse, navigationUser } from "./verify-navigation-browser.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const path = "/api/moderation/catalog-maintenance";
 export const upkeepAdmin = Object.freeze({ ...navigationUser, role: "admin" });
+export const catalogExactVenueKey = "ticketmaster:rZ7HnEZaeot";
+export const catalogBrowserCases = [390, 1280].flatMap(width =>
+  ["actions", "load-retry", "action-retry", "access-loss", "catalog-editor", "catalog-exact-key", "catalog-queue", "catalog-completion"].map(kind => ({ width, kind })));
 export function upkeepFixture(mode = "maintenance") {
   assert.ok(["maintenance", "catch_up", "paused"].includes(mode));
   const at = 1789488000000;
@@ -45,7 +48,28 @@ export function upkeepFixture(mode = "maintenance") {
     sourceRefresh: { enabled: false, configured: true, state: "failed", at, lastSuccessAt: null, stage: "fetching", category: "provider_network" },
     seo: { state: "ready", lastBuiltAt: at, totalUrls: 43200, nextRefreshMinutes: 15,
       indexingState: "not_measured", sitemapUrl: "https://catalog-fixture.invalid/sitemap.xml" },
+    newsDesk: { configured: true, enabled: true, budget: { dailyUsd: 0.3, monthlyUsd: 6 },
+      spend: { today: { confirmedUsd: 0.02, heldUsd: 0, unconfirmedUsd: 0 }, month: { confirmedUsd: 0.4, heldUsd: 0.05, unconfirmedUsd: 0 } },
+      publisherBound: true, publishedToday: 1, slotsPerDay: 5, nextSlot: { label: "17:00", timeZone: "America/Toronto" },
+      published7d: 6, declined7d: 2, openReports: 41,
+      lastPass: { at, reason: "waiting_for_slot", reportsAdded: 7, confirmed: 0, published: 0, declined: 0, budgetStops: 0, slot: "next_slot", headline: null },
+      lastError: null },
+    claudeSpend: { month: "2026-09", ceilingUsd: 10, totalUsd: 1.29, leftUsd: 8.71,
+      news: { confirmedUsd: 0.4, heldUsd: 0.05, unconfirmedUsd: 0, totalUsd: 0.45 },
+      research: { confirmedUsd: 0.64, heldUsd: 0, unconfirmedUsd: 0.2, totalUsd: 0.84 } },
+    privacyJournal: { signingKey: false, storage: true, pending: 2, oldestPendingAt: at, lastShippedAt: null, lastError: null, lastReplay: null },
   };
+}
+const newsCandidate = { headline: "Radiohead Announce 2027 World Tour", reportUrls: ["https://www.nme.com/news/tour", "https://www.stereogum.com/tour"],
+  outlets: [{ name: "NME", url: "https://www.nme.com/news/tour" }, { name: "Stereogum", url: "https://www.stereogum.com/tour" }],
+  groups: 2, needed: 2, ready: true, category: "tour", ageHours: 5, lead: "Radiohead", score: 20 };
+export const newsDraftFixture = (status = "draft") => ({ id: "draft-fixture-1", status, expired: false, headline: "Radiohead announce a 2027 world tour",
+  summary: "Radiohead will tour the world in 2027, NME and Stereogum report.", body: "First paragraph. Second paragraph.", category: "tour",
+  reason: null, costUsd: 0.018, sources: [{ name: "NME", url: "https://www.nme.com/news/tour", used: true }, { name: "Stereogum", url: "https://www.stereogum.com/tour", used: true }],
+  postId: status === "published" ? "news_fixture" : null, createdAt: 1789488000000 });
+export function newsEditorFixture(drafts = [], live = []) {
+  return { configured: true, publisherReady: true, budget: { leftTodayUsd: 0.28, dailyUsd: 0.3, monthlyUsd: 6, typicalDraftUsd: 0.02 },
+    drafts: { last24h: drafts.length, limit: 10, recent: drafts }, candidates: [newsCandidate], live };
 }
 export function staffFixture(url, method = "GET") {
   assert.equal(method, "GET", "Only an explicit upkeep button may mutate a fixture.");
@@ -59,8 +83,29 @@ export function staffFixture(url, method = "GET") {
     "/api/admin/catalog/seed": { running: false, total: 30161, phase: "idle" },
     "/api/admin/catalog/runs": { runs: [] },
     "/api/moderation/artist-death-watch": { candidates: [], counts: { pending: 0 }, settings: { enabled: false } },
+    "/api/moderation/search-growth": {
+      enabled: false, configured: false, mode: "monitor",
+      connection: { state: "missing_property", property: null },
+      lastSuccessAt: null, nextRunAt: null, lastErrorCode: null, running: false,
+      window: null, previousWindow: null, totals: { current: null, previous: null },
+      truncated: false, opportunities: [],
+      limits: { maxPages: 1000, maxPrioritiesPerDay: 10, retentionDays: 90 },
+      history: [], measurement: { state: "not_connected" },
+    },
   };
   return fixtures[url.pathname] || null;
+}
+const bootstrapStaffPaths = ["/api/admin/moderation", "/api/admin/artist-requests"];
+const unrelatedCatalogStaffRead = call => /^\/api\/(?:admin|moderation)(?:\/|$)/.test(call.path)
+  && !call.path.startsWith("/api/admin/catalog-editor/");
+export function assertCatalogEditorRequestIsolation(calls, { bootstrapCount = 1 } = {}) {
+  const unrelated = calls.filter(unrelatedCatalogStaffRead);
+  // absorbServerUser already loads these two queues at sign-in. Retain the
+  // complete ledger and account for them explicitly; do not reset it at entry.
+  assert.deepEqual(unrelated.filter(call => call.phase === "bootstrap").map(call => `${call.method} ${call.path}`).sort(),
+    Array.from({ length: bootstrapCount }, () => bootstrapStaffPaths.map(path => `GET ${path}`)).flat().sort(), "Only the two existing sign-in queue reads per bootstrap may precede editor entry.");
+  assert.deepEqual(unrelated.filter(call => call.phase !== "bootstrap"), [],
+    "Opening and using the standalone catalog editor must not load unrelated private staff data.");
 }
 async function localServer() {
   const directory = resolve(root, process.env.PIT_NAVIGATION_BROWSER_DIST || "dist");
@@ -81,9 +126,139 @@ async function localServer() {
   await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
   return { server, origin: `http://127.0.0.1:${server.address().port}` };
 }
+function catalogEditorFixture(type) {
+  return { type, key: `${type}-fixture`, identity: { name: `Fixture ${type}`, city: "Toronto", country: "CA" },
+    protectedFacts: { venue: "Provider hall", date: "2027-05-01" }, protectedReason: null, revision: 0,
+    identityHash: "a".repeat(64), expectedHash: "b".repeat(64), content: null, identityCurrent: true,
+    missingFields: ["sourced summary"] };
+}
+export function catalogCompletionFixture(type) {
+  assert.ok(["artist", "venue"].includes(type));
+  return { ...catalogEditorFixture(type), completion: { hash: (type === "artist" ? "c" : "d").repeat(64), identityStatus: "confirmed", textStatus: "draft_ready", photoStatus: "accepted", canDraft: true,
+    photo: { uri: "/fixture-catalog-photo.svg", creator: "Synthetic fixture", license: "CC0", sourcePage: "https://official.example.com/source" },
+    suggested: { summary: `Fixture ${type} has documented music history.`, sources: [{ label: "Official fixture", url: "https://official.example.com/source" }] }, note: "Synthetic accepted photo and sourced text." } };
+}
+export async function waitForCatalogCompletionSelection(page, entity) {
+  // The previous page remains visible while the next exact read is pending.
+  // Its generic photo acknowledgement cannot prove that this selection loaded.
+  await page.getByText(`${entity.type} · ${entity.key} · revision ${entity.revision}`, { exact: true }).waitFor();
+  await page.getByLabel(`Accepted catalog photo of ${entity.identity.name}`, { exact: true }).waitFor();
+  await page.getByText("Accepted photo displayed in this preview; verify the public page after publication.", { exact: true }).waitFor();
+}
+export async function openCatalogEditorFromMenu(page, beforeEntry = async () => {}) {
+  await page.getByRole("button", { name: "Settings. Appearance, privacy, data, and account controls", exact: true }).click();
+  // Finish the existing sign-in queue reads before measuring editor isolation.
+  await beforeEntry();
+  await page.getByRole("button", { name: /Catalog editor/ }).click();
+  await page.getByText("Fill missing page text", { exact: true }).waitFor();
+}
+export function catalogQueueFixture(type, cursor, query = "") {
+  assert.ok(["artist", "venue", "event"].includes(type));
+  assert.ok(["", "Fixture"].includes(query), "Unexpected queue query");
+  if (query) {
+    assert.equal(cursor, "", "A changed name filter must start at the beginning");
+    return { items: [catalogEditorFixture(type)], nextCursor: null, scanLimitReached: false };
+  }
+  assert.ok(["", `${type}-boundary`].includes(cursor), "Unexpected queue cursor");
+  return cursor ? { items: [catalogEditorFixture(type)], nextCursor: null, scanLimitReached: false }
+    : { items: [], nextCursor: `${type}-boundary`, scanLimitReached: true };
+}
+export function exactCatalogFixture(type, key) {
+  if ((type === "artist" && key === catalogExactVenueKey) || (type === "venue" && key === "ticketmaster:fixture-missing")) {
+    return { status: 404, body: { error: "This public catalog identity is unavailable or ambiguous.", code: "NOT_FOUND" } };
+  }
+  assert.equal(type, "venue");
+  const names = { [catalogExactVenueKey]: "Lee's Palace", "ticketmaster:fixture-other": "Fixture Second Venue", "ticketmaster:fixture-pending": "Late account A venue" };
+  assert.ok(Object.hasOwn(names, key), "Unknown exact catalog fixture key");
+  return { status: 200, body: { ...catalogEditorFixture(type), key,
+    identity: { type, key, name: names[key], source: "ticketmaster", providerId: key.split(":")[1], city: "Toronto", country: "CA" },
+    protectedFacts: { address: key === catalogExactVenueKey ? "529 Bloor Street West" : "Fixture address" } } };
+}
+
+async function verifyExactCatalogSelection(page, state, width) {
+  const expectAlert = async message => {
+    await page.getByText(message, { exact: true }).waitFor();
+    assert.equal(await page.getByRole("alert").innerText(), message);
+  };
+  const bounded = async (promise, label) => {
+    let timer;
+    try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(label)), 12000); })]); }
+    finally { clearTimeout(timer); }
+  };
+  const input = page.getByLabel("Exact catalog key", { exact: true });
+  const open = page.getByRole("button", { name: "Open by catalog key", exact: true });
+  await page.getByRole("button", { name: "Venues", exact: true }).click();
+  await page.getByText("Venue name search checks part of the catalog at a time. Continue searching when more pages are available, or open a known catalog key below.", { exact: true }).waitFor();
+  await input.fill("rZ7HnEZaeot"); await open.click();
+  await expectAlert("A venue key must include its source and exact provider ID, separated by a colon.");
+  assert.equal(state.calls.filter(call => call.path.startsWith("/api/admin/catalog-editor/")).length, 0);
+  await input.fill(catalogExactVenueKey); await open.click();
+  await page.getByText("Lee's Palace", { exact: true }).waitFor();
+  await page.getByText(`venue · ${catalogExactVenueKey} · revision 0`, { exact: true }).waitFor();
+  await page.getByText("address: 529 Bloor Street West", { exact: true }).waitFor();
+  for (const [type, key] of [["Artists", catalogExactVenueKey], ["Venues", "ticketmaster:fixture-missing"]]) {
+    await page.getByRole("button", { name: type, exact: true }).click();
+    await input.fill(key); await open.click();
+    await expectAlert(`No eligible ${type === "Artists" ? "artist" : "venue"} matches this exact key. Check the page type, source and letter case.`);
+    await page.getByText("Lee's Palace", { exact: true }).waitFor();
+  }
+  const summary = page.getByLabel("Sourced page text", { exact: true });
+  await summary.fill("Unstaged account A fixture context");
+  const readsBeforeDraftGuard = state.calls.filter(call => call.path.startsWith("/api/admin/catalog-editor/")).length;
+  await input.fill("ticketmaster:fixture-other"); await open.click();
+  await page.getByRole("button", { name: "Keep editing", exact: true }).click();
+  assert.equal(await summary.inputValue(), "Unstaged account A fixture context");
+  assert.equal(state.calls.filter(call => call.path.startsWith("/api/admin/catalog-editor/")).length, readsBeforeDraftGuard, "Opening another key must wait for the draft decision");
+  await open.click(); await page.getByRole("button", { name: "Discard and open page", exact: true }).click();
+  await page.getByText("Fixture Second Venue", { exact: true }).waitFor();
+  assert.equal(await summary.inputValue(), "");
+  await summary.fill("Staged account A fixture context");
+  await page.getByLabel("Named source URLs", { exact: true }).fill("Fixture source | https://official.example.com/context");
+  await page.getByLabel("Reason for catalog change", { exact: true }).fill("Synthetic fixture only");
+  await page.getByRole("button", { name: "Add to batch", exact: true }).click();
+  await page.getByText("Draft batch · 1", { exact: true }).waitFor();
+  await page.waitForLoadState("networkidle");
+  assertCatalogEditorRequestIsolation(state.calls);
+
+  const held = new Promise(resolve => { state.heldReady = resolve; });
+  const finished = new Promise(resolve => { state.heldFinished = resolve; });
+  await input.fill("ticketmaster:fixture-pending"); await open.click(); await bounded(held, "The pending exact read did not reach its fixture");
+  assert.equal(await open.isDisabled(), true);
+  const switchedStaffResponses = Promise.all(bootstrapStaffPaths.map(path =>
+    page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === "GET" && response.status() === 200)));
+  state.phase = "account-boundary";
+  state.account = { ...upkeepAdmin, id: "catalog-exact-fixture-b", name: "Catalog Fixture B", handle: "catalogfixtureb", email: "catalog-b@example.test" };
+  await page.evaluate(() => window.dispatchEvent(new StorageEvent("storage", { key: "pit.auth.epoch.v1", newValue: JSON.stringify({ at: Date.now() }) })));
+  await page.getByText("Fill missing page text", { exact: true }).waitFor({ state: "hidden" });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole("button", { name: "Menu", exact: true }).click();
+  await openCatalogEditorFromMenu(page, async () => { await switchedStaffResponses; state.phase = "catalog-editor"; });
+  await page.setViewportSize({ width, height: 900 });
+  await input.waitFor();
+  assert.equal(await input.inputValue(), "");
+  await page.getByText("Draft batch · 0", { exact: true }).waitFor();
+  state.release(); state.release = null; await bounded(finished, "The old account's fixture did not finish after release");
+  assert.equal(await page.getByText("Late account A venue", { exact: true }).count(), 0);
+  assert.equal(await summary.count(), 0, "The next account must not inherit the previous selection or draft");
+  await page.getByRole("button", { name: "Venues", exact: true }).click();
+  await input.fill(catalogExactVenueKey); await open.click();
+  await page.getByText("Lee's Palace", { exact: true }).waitFor();
+  const reads = state.calls.filter(call => call.path.startsWith("/api/admin/catalog-editor/"));
+  assert.equal(reads.at(-1).expectedAccount, state.account.id);
+  assert.ok(reads.every(call => call.method === "GET" && call.path.split("/").length === 6), "Direct selection must not paginate or write");
+  assert.equal(reads.filter(call => call.path.endsWith("ticketmaster%3ArZ7HnEZaeot") && call.path.includes("/venue/")).length, 2);
+  await page.waitForLoadState("networkidle");
+  state.phase = "account-boundary"; state.account = null;
+  await page.evaluate(() => window.dispatchEvent(new StorageEvent("storage", { key: "pit.auth.epoch.v1", newValue: JSON.stringify({ at: Date.now() }) })));
+  await page.getByRole("link", { name: "Browse concerts", exact: true }).waitFor();
+  assert.equal(await input.count(), 0); assert.equal(await summary.count(), 0);
+  assert.deepEqual(state.errors, []); assert.deepEqual(state.reports, []);
+}
+
 async function scenario(browser, origin, width, kind) {
+  const catalogCase = ["catalog-editor", "catalog-exact-key", "catalog-queue", "catalog-completion"].includes(kind);
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, serviceWorkers: "block" });
-  const state = { mode: "maintenance", calls: [], errors: [], reports: [], gets: 0, posts: 0, release: null, closing: false };
+  const state = { mode: "maintenance", phase: "bootstrap", account: upkeepAdmin, calls: [], errors: [], reports: [], expected404: [], gets: 0, posts: 0, release: null, closing: false, publicText: {} };
   await context.addInitScript(({ origin, user }) => {
     if (location.origin !== origin) return;
     localStorage.setItem("pit_theme", "stage");
@@ -94,10 +269,103 @@ async function scenario(browser, origin, width, kind) {
     const request = route.request(), url = new URL(request.url());
     try {
       if (url.origin !== origin) return await route.abort();
+      if (url.pathname === "/fixture-catalog-photo.svg") return await route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="100"><rect width="160" height="100" fill="#369"/></svg>' });
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       const method = request.method();
-      state.calls.push({ path: url.pathname, method });
+      const call = { path: url.pathname, method, phase: state.phase, expectedAccount: request.headers()["x-pit-expected-account"] };
+      state.calls.push(call);
+      if (catalogCase && state.phase === "catalog-editor") {
+        assert.equal(unrelatedCatalogStaffRead(call), false, `Unexpected private staff request after editor entry: ${url.pathname}`);
+      }
       if (url.pathname === "/api/client-errors") state.reports.push(request.postDataJSON());
+      if (url.pathname.startsWith("/api/catalog-text/")) {
+        assert.equal(method, "GET"); assert.equal(call.expectedAccount, state.account?.id);
+        const type = url.pathname.split("/")[3];
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ text: state.publicText[type] || null }) });
+      }
+      if (url.pathname.startsWith("/api/admin/catalog-editor/")) {
+        assert.equal(call.expectedAccount, state.account?.id);
+        if (kind === "catalog-queue") {
+          assert.equal(method, "GET", "Queue browsing must not prepare or save text");
+          assert.equal(call.expectedAccount, state.account?.id);
+          const parts = url.pathname.split("/");
+          assert.equal(parts.length, 5, "Queue fixture must not make an unrelated record request");
+          assert.equal(url.searchParams.get("missing"), "true");
+          const body = catalogQueueFixture(parts[4], url.searchParams.get("cursor"), url.searchParams.get("q"));
+          return await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+        }
+        if (kind === "catalog-exact-key") {
+          assert.equal(method, "GET", "Exact selection must not write");
+          assert.equal(call.expectedAccount, state.account?.id, "An exact read must be bound to the active account");
+          const parts = url.pathname.split("/");
+          assert.equal(parts.length, 6, "Exact selection must not enumerate the queue");
+          const key = decodeURIComponent(parts[5]);
+          const fixture = exactCatalogFixture(parts[4], key);
+          if (fixture.status === 404) state.expected404.push(url.href);
+          if (key === "ticketmaster:fixture-pending") {
+            await new Promise(resolve => { state.release = resolve; state.heldReady(); });
+            try { return await route.fulfill({ status: fixture.status, contentType: "application/json", body: JSON.stringify(fixture.body) }); }
+            finally { state.heldFinished(); }
+          }
+          return await route.fulfill({ status: fixture.status, contentType: "application/json", body: JSON.stringify(fixture.body) });
+        }
+        let body;
+        if (url.pathname.endsWith("/prepare")) {
+          assert.equal(method, "POST");
+          body = { results: request.postDataJSON().entries.map((draft, index) => ({ index, ok: true, draft,
+            current: catalogEditorFixture(draft.type), payloadHash: `fixture-payload-${index}` })) };
+        } else if (url.pathname.endsWith("/save")) {
+          assert.equal(method, "POST");
+          const { draft, idempotencyKey } = request.postDataJSON();
+          assert.ok(idempotencyKey.length >= 16); assert.equal(draft.expectedRevision, 0);
+          state.posts++;
+          body = { ok: true, revision: 1, auditId: `fixture-receipt-${draft.type}`, replayed: false,
+            saved: { ...catalogEditorFixture(draft.type), revision: 1, content: { summary: draft.summary, sources: draft.sources } } };
+          state.publicText[draft.type] = { summary: draft.summary, sources: draft.sources, revision: 1 };
+        } else {
+          assert.equal(method, "GET");
+          const parts = url.pathname.split("/");
+          const row = url.searchParams.get("completion") === "true" ? catalogCompletionFixture(parts[4]) : catalogEditorFixture(parts[4]);
+          body = parts.length === 5 ? { items: [row], nextCursor: null } : row;
+        }
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+      }
+
+      if (url.pathname === "/api/moderation/news-desk/live") {
+        assert.equal(method, "POST");
+        assert.deepEqual(request.postDataJSON(), { title: "2026 MTV VMAs", keywords: "VMAs, Video Music Awards", hours: 4 });
+        state.newsLive = [{ id: "live-1", slug: "2026-mtv-vmas", title: "2026 MTV VMAs", keywords: ["VMAs", "Video Music Awards"], live: true,
+          startsAt: 1789488000000, endsAt: 1789488000000 + 4 * 3600000, updatedAt: 1789488000000, count: 0, items: [] }];
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ live: state.newsLive }) });
+      }
+      if (url.pathname === "/api/moderation/news-desk/live/live-1/categories") {
+        assert.equal(method, "POST");
+        assert.match(request.postDataJSON().text, /^Video of the Year: Sabrina Carpenter - Manchild; Taylor Swift - Fortnight$/u);
+        state.newsLive[0].winners = { total: 1, announced: 0, categories: [
+          { id: "c1", name: "Video of the Year", nominees: ["Sabrina Carpenter - Manchild", "Taylor Swift - Fortnight"], winner: null, announcedAt: null }] };
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ live: state.newsLive }) });
+      }
+      if (url.pathname === "/api/moderation/news-desk/live/live-1/categories/c1/winner") {
+        assert.deepEqual(request.postDataJSON(), { nominee: "Sabrina Carpenter - Manchild" });
+        Object.assign(state.newsLive[0].winners.categories[0], { winner: "Sabrina Carpenter - Manchild", announcedAt: 1789488000000 });
+        state.newsLive[0].winners.announced = 1;
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ live: state.newsLive }) });
+      }
+      if (url.pathname === "/api/moderation/news-desk/live/live-1/end") {
+        assert.equal(method, "POST");
+        state.newsLive[0].live = false;
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ live: state.newsLive }) });
+      }
+      if (url.pathname.startsWith("/api/moderation/news-desk/editor")) {
+        if (method === "POST" && url.pathname.endsWith("/drafts")) {
+          assert.deepEqual(request.postDataJSON(), { reportUrls: ["https://www.nme.com/news/tour", "https://www.stereogum.com/tour"], links: [] });
+          state.newsDraft = newsDraftFixture("draft");
+        } else if (method === "POST" && url.pathname.endsWith("/draft-fixture-1/publish")) state.newsDraft = newsDraftFixture("published");
+        else assert.equal(method, "GET");
+        const body = method === "GET" ? newsEditorFixture(state.newsDraft ? [state.newsDraft] : [], state.newsLive || [])
+          : url.pathname.endsWith("/publish") ? { draft: state.newsDraft, postId: "news_fixture" } : { draft: state.newsDraft };
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+      }
       if (url.pathname === path) {
         if (method === "GET") {
           state.gets += 1;
@@ -122,8 +390,9 @@ async function scenario(browser, origin, width, kind) {
         }
         return await route.fulfill({ contentType: "application/json", body: JSON.stringify(upkeepFixture(state.mode)) });
       }
-      const body = url.pathname === "/api/me" ? { user: upkeepAdmin }
-        : staffFixture(url, method) || fixtureApiResponse(url.pathname, { member: true, method, resolvedPath: url.searchParams.get("path") || undefined });
+      const fixturePath = kind === "catalog-exact-key" ? url.pathname.replace("/api/users/catalog-exact-fixture-b", "/api/users/navigation-fixture-user") : url.pathname;
+      const body = url.pathname === "/api/me" ? { user: state.account }
+        : staffFixture(url, method) || fixtureApiResponse(fixturePath, { member: !!state.account, method, resolvedPath: url.searchParams.get("path") || undefined });
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
     } catch (error) {
       if (state.closing || /closed|disposed|handled|aborted|canceled|cancelled/i.test(error.message)) return;
@@ -136,11 +405,108 @@ async function scenario(browser, origin, width, kind) {
   page.on("pageerror", error => state.errors.push(error.message));
   page.on("console", message => {
     if (message.type() !== "error") return;
+    if (kind === "catalog-exact-key" && state.expected404.includes(message.location().url) && /Failed to load resource:.*404/.test(message.text())) return;
     if (message.location().url.startsWith(origin + path) && /503|403/.test(message.text()) && kind !== "actions") return;
     state.errors.push(`${message.text()} (${message.location().url})`);
   });
   try {
+    const bootstrapStaffResponses = catalogCase ? Promise.all(bootstrapStaffPaths.map(path =>
+      page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === "GET" && response.status() === 200))) : null;
     await page.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Menu", exact: true }).click();
+    if (catalogCase) {
+      await openCatalogEditorFromMenu(page, async () => {
+        await bootstrapStaffResponses;
+        // Start before the click so lazy mounting and all editor requests count.
+        state.phase = "catalog-editor";
+      });
+      await page.setViewportSize({ width, height: 900 });
+      await page.getByText("Fill missing page text", { exact: true }).waitFor();
+      if (kind === "catalog-queue") {
+        const search = page.getByLabel("Find catalog pages by name", { exact: true });
+        for (const type of ["artist", "venue", "event"]) {
+          await page.getByRole("button", { name: `${type[0].toUpperCase()}${type.slice(1)}s`, exact: true }).click();
+          await search.fill("");
+          await page.getByRole("button", { name: "Find pages", exact: true }).click();
+          await page.getByText("No matching pages found yet. Continue searching.", { exact: true }).waitFor();
+          await page.getByRole("button", { name: "Continue search", exact: true }).click();
+          await page.getByRole("button", { name: "Edit text", exact: true }).waitFor();
+          assert.equal(await page.getByRole("button", { name: "Next page", exact: true }).count(), 0);
+          await search.fill("Fixture");
+          await page.getByRole("button", { name: "Edit text", exact: true }).waitFor({ state: "hidden" });
+          await page.getByRole("button", { name: "Find pages", exact: true }).click();
+          await page.getByText(`Fixture ${type}`, { exact: true }).waitFor();
+        }
+        assert.equal(state.posts, 0);
+        assertCatalogEditorRequestIsolation(state.calls);
+        assert.deepEqual(state.errors, []); assert.deepEqual(state.reports, []);
+        console.log(JSON.stringify({ name: `catalog-queue-${width}`, passed: true, posts: 0 }));
+        return;
+      }
+      if (kind === "catalog-exact-key") {
+        await verifyExactCatalogSelection(page, state, width);
+        console.log(JSON.stringify({ name: `catalog-exact-key-${width}`, passed: true, posts: state.posts }));
+        return;
+      }
+      if (kind === "catalog-completion") {
+        for (const type of ["artist", "venue"]) {
+          await page.getByRole("button", { name: `${type[0].toUpperCase()}${type.slice(1)}s`, exact: true }).click();
+          if (type === "artist") await page.getByRole("button", { name: "Plan text and photo completion", exact: true }).click();
+          await page.getByRole("button", { name: "Find pages", exact: true }).click();
+          await page.getByRole("button", { name: "Edit text", exact: true }).click();
+          await waitForCatalogCompletionSelection(page, catalogCompletionFixture(type));
+          assert.equal(await page.getByLabel("Sourced page text", { exact: true }).inputValue(), `Fixture ${type} has documented music history.`);
+          await page.getByLabel("Reason for catalog change", { exact: true }).fill("Synthetic completion review");
+          await page.getByRole("button", { name: "Add to batch", exact: true }).click();
+        }
+        // Reload from persisted local storage without adopting another account.
+        await page.getByRole("button", { name: "Close", exact: true }).click();
+        state.phase = "bootstrap";
+        const reloadBootstrap = Promise.all(bootstrapStaffPaths.map(path => page.waitForResponse(response => new URL(response.url()).pathname === path && response.status() === 200)));
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await page.getByRole("button", { name: "Menu", exact: true }).click();
+        await openCatalogEditorFromMenu(page, async () => { await reloadBootstrap; state.phase = "catalog-editor"; });
+        await page.getByText("Draft batch · 2", { exact: true }).waitFor();
+        await page.getByRole("button", { name: "Edit saved draft", exact: true }).first().click();
+        await waitForCatalogCompletionSelection(page, catalogCompletionFixture("artist"));
+        await page.getByLabel("Sourced page text", { exact: true }).fill("Fixture artist has reviewed music history.");
+        await page.getByRole("button", { name: "Add to batch", exact: true }).click();
+        await page.getByRole("button", { name: "Review prepared batch", exact: true }).click();
+        await page.getByRole("button", { name: "Confirm all sources and publish sequentially", exact: true }).click();
+        await page.getByText("Draft batch · 0", { exact: true }).waitFor();
+        await page.getByText(/Saved receipts were recorded and public text was checked/).waitFor();
+        assert.equal(state.posts, 2); assertCatalogEditorRequestIsolation(state.calls, { bootstrapCount: 2 });
+        assert.deepEqual(state.errors, []); assert.deepEqual(state.reports, []);
+        console.log(JSON.stringify({ name: `catalog-completion-${width}`, passed: true, posts: state.posts }));
+        return;
+      }
+      for (const type of ["artist", "venue", "event"]) {
+        await page.getByRole("button", { name: `${type[0].toUpperCase()}${type.slice(1)}s`, exact: true }).click();
+        await page.getByRole("button", { name: "Find pages", exact: true }).click();
+        await page.getByRole("button", { name: "Edit text", exact: true }).click();
+        await page.getByLabel("Sourced page text", { exact: true }).fill(`Sourced ${type} context for this isolated browser fixture.`);
+        await page.getByLabel("Named source URLs", { exact: true }).fill("Official | https://official.example.com/context");
+        await page.getByLabel("Reason for catalog change", { exact: true }).fill("Fill missing context");
+        await page.getByRole("button", { name: "Add to batch", exact: true }).click();
+      }
+      await page.getByRole("button", { name: "Review prepared batch", exact: true }).click();
+      assert.equal(state.posts, 0, "Preparation must not publish any page.");
+      await page.getByRole("button", { name: "Confirm sources and publish", exact: true }).first().waitFor();
+      for (const type of ["artist", "venue", "event"]) {
+        await page.getByRole("button", { name: "Confirm sources and publish", exact: true }).first().click();
+        await page.getByText(`${type}-fixture: saved revision 1 · receipt fixture-receipt-${type}`, { exact: true }).waitFor();
+      }
+      assert.equal(state.posts, 3);
+      assertCatalogEditorRequestIsolation(state.calls);
+      assert.deepEqual(state.errors, []); assert.deepEqual(state.reports, []);
+      console.log(JSON.stringify({ name: `catalog-editor-${width}`, passed: true, posts: state.posts }));
+      return;
+    }
+    await page.getByRole("button", { name: "Newsroom. Write stories and run live coverage", exact: true }).click();
+    await page.getByText("Newsroom", { exact: true }).first().waitFor();
+    assert.equal(state.errors.some((error) => /appActive is not defined/i.test(error)), false,
+      "opening Newsroom from Feed must not reference an undeclared appActive");
+    await page.getByRole("button", { name: "Back", exact: true }).click();
     await page.getByRole("button", { name: "Menu", exact: true }).click();
     await page.getByRole("button", { name: "Moderation. Reports, members, and content", exact: true }).click();
     await page.setViewportSize({ width, height: 900 });
@@ -164,6 +530,14 @@ async function scenario(browser, origin, width, kind) {
     await panel.getByText(/Interrupted work stays queued/).waitFor();
     await panel.getByText(/Show-date refresh \(not venue page enrichment\)/).waitFor();
     await panel.getByText(/Show-date scheduler: Disabled/).waitFor();
+    await panel.getByText("News desk", { exact: true }).first().waitFor();
+    await panel.getByText(/1 of 5 stories today\. Next slot: 17:00, Toronto time\./).waitFor();
+    await panel.getByText(/Waiting for the next publishing slot\. 7 new outlet reports/).waitFor();
+    await panel.getByText("Claude spending this month", { exact: true }).waitFor();
+    await panel.getByText("$1.29 / $10.00", { exact: true }).waitFor();
+    await panel.getByText("$0.64 confirmed, $0.00 held, $0.20 unconfirmed", { exact: true }).waitFor();
+    await panel.getByText(/Privacy journal: 2 waiting to copy off-host/).waitFor();
+    await panel.getByText(/Add PRIVACY_JOURNAL_KEY in Render/).waitFor();
     assert.equal(state.posts, 0, "Opening or refreshing the panel must not start work.");
     const catchUp = panel.getByRole("button", { name: "Start catalog catch-up", exact: true });
     await catchUp.click();
@@ -187,6 +561,47 @@ async function scenario(browser, origin, width, kind) {
       await panel.getByText("Maintenance", { exact: true }).waitFor();
       assert.equal(state.posts, kind === "action-retry" ? 4 : 3);
     }
+    if (kind === "actions") {
+      // The newsroom is its own Moderation tab, apart from catalog upkeep.
+      assert.equal(await panel.getByTestId("news-desk-editor").count(), 0, "the news editor no longer sits inside Catalog");
+      await page.getByRole("tab", { name: "Newsroom", exact: true }).click();
+      const editor = page.getByTestId("news-desk-editor");
+      await editor.getByText("Radiohead Announce 2027 World Tour", { exact: true }).waitFor();
+      await editor.getByText(/about 2 cents, from the news budget: \$0\.28 left today\. 0 of 10 drafts/).waitFor();
+      await editor.getByRole("button", { name: "Write a draft about Radiohead Announce 2027 World Tour", exact: true }).click();
+      await editor.getByText("READY TO PUBLISH", { exact: true }).waitFor();
+      await editor.getByText("Radiohead announce a 2027 world tour", { exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Publish Radiohead announce a 2027 world tour", exact: true }).click();
+      await editor.getByText("Published. It is on the News tab now.", { exact: true }).waitFor();
+      await editor.getByText("PUBLISHED", { exact: true }).waitFor();
+      await editor.getByLabel("Event name", { exact: true }).fill("2026 MTV VMAs");
+      await editor.getByLabel("Headline keywords", { exact: true }).fill("VMAs, Video Music Awards");
+      // Inputs are one line tall, not the old 220 pixel boxes.
+      assert.ok((await editor.getByLabel("Event name", { exact: true }).boundingBox()).height < 60);
+      mkdirSync(join(root, ".tmp", "catalog-maintenance-browser"), { recursive: true });
+      await page.screenshot({ path: join(root, ".tmp", "catalog-maintenance-browser", `newsroom-${width}.png`), fullPage: false });
+      await editor.getByRole("button", { name: "Start live coverage", exact: true }).click();
+      await editor.getByText("Live coverage started. It is at the top of the news now.", { exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Post the live update", exact: true }).waitFor();
+      await editor.getByRole("button", { name: "End live coverage of 2026 MTV VMAs", exact: true }).waitFor();
+      await editor.getByText("Public page: https://www.mshpit.com/news/live/2026-mtv-vmas", { exact: true }).waitFor();
+      await editor.getByLabel("Award categories and nominees", { exact: true }).fill("Video of the Year: Sabrina Carpenter - Manchild; Taylor Swift - Fortnight");
+      await editor.getByRole("button", { name: "Save the award categories", exact: true }).click();
+      await editor.getByText("WINNERS · 0 OF 1 ANNOUNCED", { exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Sabrina Carpenter - Manchild won Video of the Year", exact: true }).click();
+      await editor.getByText("Winner: Sabrina Carpenter - Manchild", { exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Clear the winner of Video of the Year", exact: true }).waitFor();
+      // After the show: the recap keeps its winners controls, and a new show can start.
+      await editor.getByRole("button", { name: "End live coverage of 2026 MTV VMAs", exact: true }).click();
+      await editor.getByText("Recap: 2026 MTV VMAs", { exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Clear the winner of Video of the Year", exact: true }).waitFor();
+      await editor.getByRole("button", { name: "Start live coverage", exact: true }).waitFor();
+      assert.equal(await editor.getByRole("button", { name: "Post the live update", exact: true }).count(), 0, "no updates after the show");
+      await page.getByRole("tab", { name: "Catalog", exact: true }).click();
+      await panel.waitFor();
+      // No element screenshot here: capturing an element taller than the
+      // window resizes the page in Chromium and remounts Moderation.
+    }
     assert.deepEqual(state.reports, [], "No client crash reports may be emitted.");
     assert.deepEqual(state.errors, [], "Unhandled errors or missing fixtures fail verification.");
     if (kind === "actions") {
@@ -209,8 +624,10 @@ export async function main() {
   let browser;
   try {
     browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
-    for (const width of [390, 1280]) for (const kind of ["actions", "load-retry", "action-retry", "access-loss"]) await scenario(browser, origin, width, kind);
-    console.log(JSON.stringify({ passed: 8, failed: 0, network: "isolated fixtures only" }));
+    const cases = catalogBrowserCases.filter(item => `${item.kind}-${item.width}`.includes(process.argv[2] || ""));
+    assert.ok(cases.length, "No catalog browser cases matched");
+    for (const { width, kind } of cases) await scenario(browser, origin, width, kind);
+    console.log(JSON.stringify({ passed: cases.length, failed: 0, network: "isolated fixtures only" }));
   } finally { await browser?.close(); await new Promise(done => server.close(done)); }
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) main().catch(error => { console.error(error.message); process.exitCode = 1; });

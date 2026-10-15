@@ -1,6 +1,110 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createArtistLookupWork } from "./artistLookupWork.js";
+import { PROVIDER_RETRY_AFTER_MAX_MS } from "./providerResponsePolicy.js";
+
+test("observers distinguish new, shared, memoized result and memoized failure without keys or errors", async () => {
+  const run = createArtistLookupWork();
+  const events = [], observe = (event) => events.push(event);
+  let release;
+  const first = run("private-artist", () => new Promise((resolve) => { release = resolve; }), { observe });
+  const shared = run("private-artist", () => assert.fail("must coalesce"), { observe });
+  await Promise.resolve();
+  release([]);
+  assert.deepEqual(await first, []); assert.deepEqual(await shared, []);
+  await run("private-artist", () => assert.fail("must replay result"), { observe });
+  const error = Object.assign(new Error("private provider body"), { code: "network" });
+  await assert.rejects(run("private-other", async () => { throw error; }, { observe }), (value) => value === error);
+  await assert.rejects(run("private-other", () => assert.fail("must replay error"), { observe }), (value) => value === error);
+  assert.deepEqual(events, [{ origin: "new_work" }, { origin: "shared_work" }, { origin: "memoized_result" },
+    { origin: "new_work" }, { origin: "memoized_error" }]);
+  assert.doesNotMatch(JSON.stringify(events), /private|network/);
+});
+
+test("observer failures leave shared work and memoized outcomes unchanged", async () => {
+  const run = createArtistLookupWork();
+  const observe = () => { throw new Error("observer only"); };
+  let release;
+  const result = { exact: true };
+  const first = run("shared", () => new Promise((done) => { release = done; }), { observe });
+  const shared = run("shared", () => assert.fail("must share"), { observe });
+  await Promise.resolve(); release(result);
+  assert.equal(await first, result); assert.equal(await shared, result);
+  assert.equal(await run("shared", () => assert.fail("must replay"), { observe }), result);
+});
+
+test("memoized provider failures retain an absolute deadline beyond an hour without renewing it", async () => {
+  let now = 1_000, calls = 0;
+  const run = createArtistLookupWork({ clock: () => now });
+  const retryAt = now + 2 * 60 * 60_000;
+  const outage = Object.assign(new Error("provider down"), { retryAfterMs: 2 * 60 * 60_000, retryAt });
+  const work = async () => { calls++; throw outage; };
+  await assert.rejects(run("same", work), (error) => error.retryAt === retryAt);
+  now += 60 * 60_000;
+  await assert.rejects(run("same", work), (error) => error.retryAt === retryAt);
+  assert.equal(calls, 1, "a two-hour provider wait must not expire at the old one-hour cap");
+  now = retryAt + 1;
+  assert.deepEqual(await run("same", async () => ["recovered"]), ["recovered"]);
+});
+
+test("failure memo uses remaining absolute wait instead of restarting an old relative value", async () => {
+  let now = 1_000;
+  const run = createArtistLookupWork({ clock: () => now });
+  const retryAt = now + 60_000;
+  const outage = Object.assign(new Error("shared provider cooldown"), { retryAfterMs: 2 * 60 * 60_000, retryAt });
+  await assert.rejects(run("same", async () => { throw outage; }), (error) => error.retryAt === retryAt);
+  now = retryAt + 1;
+  assert.equal(await run("same", async () => "recovered"), "recovered");
+});
+
+test("failure memo caps an excessive retry deadline and anchors the no-header local cooldown", async () => {
+  let now = 1_000;
+  const run = createArtistLookupWork({ clock: () => now });
+  const excessive = Object.assign(new Error("long wait"), { retryAt: now + 10 * PROVIDER_RETRY_AFTER_MAX_MS });
+  await assert.rejects(run("excessive", async () => { throw excessive; }),
+    (error) => error.retryAt === now + PROVIDER_RETRY_AFTER_MAX_MS);
+  const local = new Error("network failure");
+  await assert.rejects(run("local", async () => { throw local; }), (error) => error.retryAt === now + 30_000);
+  const deadline = local.retryAt;
+  now += 20_000;
+  await assert.rejects(run("local", async () => assert.fail("cooldown must remain cached")), (error) => error.retryAt === deadline);
+});
+
+for (const immutable of ["frozen", "setter"]) {
+  test(`a ${immutable} provider error keeps its classification and cause through retry memoization`, async () => {
+    let now = 1_000, calls = 0, first;
+    const run = createArtistLookupWork({ clock: () => now });
+    const cause = new Error("upstream transport detail");
+    class DirectoryError extends Error {
+      constructor() {
+        super("Directory unavailable", { cause });
+        this.name = "DirectoryError";
+        this.status = 503;
+        this.code = "upstream_5xx";
+        this.retryAfterMs = 90_000;
+      }
+    }
+    const outage = new DirectoryError();
+    if (immutable === "frozen") Object.freeze(outage);
+    else Object.defineProperty(outage, "retryAt", {
+      get: () => null,
+      set: () => { throw new TypeError("retryAt is controlled by the provider"); },
+    });
+    const work = async () => { calls++; throw outage; };
+    await assert.rejects(run("immutable", work), (error) => {
+      first = error;
+      return error instanceof DirectoryError && error.name === "DirectoryError"
+        && error.message === outage.message && error.status === 503 && error.code === "upstream_5xx"
+        && error.cause === cause && error.retryAt === 91_000 && error.retryAfterMs === 90_000;
+    });
+    assert.notEqual(first, outage, "a provider-controlled error needs a safe copy");
+    now += 60_000;
+    await assert.rejects(run("immutable", work), (error) => error === first && error.retryAt === 91_000);
+    assert.equal(calls, 1, "replaying the preserved failure must not start provider work or renew its deadline");
+    now = 91_001;
+    assert.equal(await run("immutable", async () => "recovered"), "recovered");
+  });
+}
 
 test("successful misses cache briefly but expire and remain distinct from failures", async () => {
   let now = 1_000, calls = 0;

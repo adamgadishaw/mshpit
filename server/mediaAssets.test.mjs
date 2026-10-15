@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { buildStatusCreateBody } from "../src/domain/post-payload.mjs";
 
 import {
   MEDIA_VIDEO_MAX_DURATION_MS,
@@ -3143,7 +3144,7 @@ test("a clip still converting can be posted, stays hidden until ready, then join
     body: sourceBody({ clientAssetId: "converting-clip-source", contentType: "video/webm", fileSize: 2_000_000, name: "clip.webm" }),
     assetId: "ma_converting_clip_source_1",
   });
-  const postBody = { kind: "status", review: "", mediaAssetIds: [created.asset.id], clientMutationId: "post-while-converting-0001" };
+  const postBody = buildStatusCreateBody({ id: "post-while-converting-0001", review: "", photos: [], mediaAssetIds: [created.asset.id] });
   assert.throws(() => routes["POST /api/posts"]({ user, ip: "converting-post-early", body: postBody }),
     (error) => error.status === 409 && /Finish every media upload/.test(error.message),
     "a clip whose conversion was never started cannot be posted");
@@ -3222,6 +3223,93 @@ test("a clip still converting can be posted, stays hidden until ready, then join
   assert.deepEqual(db.prepare("SELECT asset_id FROM post_media WHERE post_id=?").all(posted.id).map((row) => row.asset_id),
     [created.asset.id]);
   assert.equal(db.prepare("SELECT status FROM media_assets WHERE id=?").get(created.asset.id).status, "ready");
+});
+
+test("conversion completed while captioning publishes the exact mixed album from stable IDs", async (context) => {
+  for (const timing of ["before-post", "between-retries", "legacy-receipt"]) await context.test(timing, async () => {
+  let user = addUser(`u_caption_conversion_${timing}`);
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), user.id);
+  user = q.userById.get(user.id);
+  const photo = addReadyPostImage(user.id, `caption_conversion_${timing}`, Date.now());
+  const created = createMediaAsset(db, { ownerId: user.id,
+    body: sourceBody({ clientAssetId: "caption-clip-source", contentType: "video/webm", fileSize: 2_000_000, name: "clip.webm" }),
+    assetId: `ma_caption_clip_source_${timing}` });
+  recordVideoProcessingRequest(db, { ownerId: user.id, assetId: created.asset.id,
+    body: { editRecipe: { kind: "video", coverMs: 0 } }, fingerprint: "e".repeat(64) });
+  const composer = { id: `caption-conversion-${timing}-0001`, review: "Caption entered during conversion",
+    photos: [photo.renderUrl], mediaAssetIds: [photo.assetId, created.asset.id] };
+  const body = buildStatusCreateBody(composer);
+  let releaseConversion, conversionStarted;
+  const started = new Promise((resolve) => { conversionStarted = resolve; });
+  const conversionGate = new Promise((resolve) => { releaseConversion = resolve; });
+  const attemptStartedAt = Date.now() - 1_000;
+  const storage = verifiedMp4WithPoster(2_000_000, 12_000);
+  const finalize = () => finalizeMediaAsset(db, { ownerId: user.id, assetId: created.asset.id, at: attemptStartedAt,
+    body: { editRecipe: { kind: "video", coverMs: 0 } },
+    fetchImpl: async (url, request = {}) => new URL(url).pathname.endsWith(".webm")
+      ? { status: 200, headers: new Headers({ "content-length": "2000000", "content-type": "video/webm", etag: '"caption-webm"' }) }
+      : storage(url, request),
+    universalVideoAdmission: true,
+    authoritativeVideoVerifier: async (input) => {
+      if (timing === "legacy-receipt") { conversionStarted(); await conversionGate; }
+      return authoritativeFixtureDecodeWithPoster({
+        structural: { width: 1_080, height: 1_920, durationMs: 12_000 }, posterTimeMs: 0, output: input.output });
+    }, authoritativePosterRequired: true });
+  const inFlight = timing === "legacy-receipt" ? finalize() : null;
+  if (inFlight) await started;
+  const pending = timing !== "before-post"
+    ? routes["POST /api/posts"]({ user, ip: `caption-pending-${timing}`, body }) : null;
+  if (timing === "legacy-receipt") {
+    // Captured from the unchanged 56528ba legacy URL-inclusive hashing path
+    // for this exact mixed-album fixture before conversion completed.
+    const legacyHash = "679b425ca99f467b1e58f34f9162c76781caefa24952900567b8e952fbb1ceda";
+    db.prepare("UPDATE post_create_receipts SET client_mutation_hash=? WHERE user_id=? AND client_mutation_id=?")
+      .run(legacyHash, user.id, body.clientMutationId);
+    db.prepare("UPDATE posts SET client_mutation_hash=? WHERE id=?").run(legacyHash, pending.id);
+    const retry = routes["POST /api/posts"]({ user, ip: "legacy-pending-retry", body });
+    assert.equal(retry.id, pending.id, "unchanged current URLs retain exact legacy receipt compatibility");
+    assert.throws(() => routes["POST /api/posts"]({ user, ip: "legacy-changed-caption",
+      body: { ...body, review: "Different caption" } }), (error) => error.code === "POST_MUTATION_CONFLICT");
+    releaseConversion();
+  }
+  const finalized = await (inFlight || finalize());
+  noteVideoProcessingOutcome(db, { assetId: created.asset.id });
+  if (timing === "legacy-receipt") {
+    const row = db.prepare("SELECT source_verified_at FROM media_assets WHERE id=?").get(created.asset.id);
+    const receipt = db.prepare("SELECT created_at,client_mutation_hash FROM post_create_receipts WHERE user_id=? AND client_mutation_id=?")
+      .get(user.id, body.clientMutationId);
+    assert.equal(row.source_verified_at, attemptStartedAt, "verification records attempt start, not completion");
+    assert.ok(row.source_verified_at < receipt.created_at, "conversion was already in flight before Post");
+    assert.throws(() => routes["POST /api/posts"]({ user, ip: "legacy-completed-retry", body }),
+      (error) => error.code === "POST_MUTATION_CONFLICT", "the unavailable old ready-URL snapshot remains fail-closed");
+    assert.equal(receipt.client_mutation_hash, "679b425ca99f467b1e58f34f9162c76781caefa24952900567b8e952fbb1ceda");
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM posts WHERE user_id=?").get(user.id).count, 1);
+    return;
+  }
+  assert.throws(() => routes["POST /api/posts"]({ user, ip: "caption-stale-urls",
+    body: { ...body, photos: composer.photos } }), (error) => error.status === 400,
+  "the prior redundant ready-URL snapshot reproduces the race");
+  const posted = routes["POST /api/posts"]({ user, ip: "caption-stable-selection", body });
+  if (pending) assert.equal(posted.id, pending.id, "conversion between retries never creates another post");
+  assert.deepEqual(posted.post.photos, [photo.renderUrl, finalized.asset.url]);
+  assert.deepEqual(posted.post.media.map((item) => item.id), composer.mediaAssetIds);
+  const retry = routes["POST /api/posts"]({ user, ip: "caption-stable-retry", body });
+  assert.equal(retry.id, posted.id);
+  const conflict = (changed) => assert.throws(() => routes["POST /api/posts"]({
+    user, ip: `caption-conflict-${timing}`, body: { ...body, ...changed } }),
+  (error) => error.code === "POST_MUTATION_CONFLICT");
+  conflict({ review: "Different caption" });
+  conflict({ mediaAssetIds: [...composer.mediaAssetIds].reverse() });
+  conflict({ mediaAssetIds: [photo.assetId] });
+  const other = addReadyPostImage(user.id, `caption_other_${timing}`, Date.now());
+  conflict({ mediaAssetIds: [other.assetId, created.asset.id] });
+  const version = db.prepare("SELECT COALESCE(updated_at,created_at) version FROM posts WHERE id=?").get(posted.id).version;
+  routes["PATCH /api/posts/:id"]({ user, ip: `caption-edit-${timing}`, params: { id: posted.id },
+    body: { review: "Edited after create", version } });
+  conflict({ review: "Edited after create" });
+  assert.equal(db.prepare("SELECT review FROM posts WHERE id=?").get(posted.id).review, "Edited after create");
+  assert.deepEqual(composer.photos, [photo.renderUrl], "optimistic local media was not replaced");
+  });
 });
 
 test("a posted clip the converter cannot read stays on the post and its author is told", () => {

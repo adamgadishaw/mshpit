@@ -3,10 +3,13 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 
 import { ApiError } from "../../errors.js";
+import { admitClaudeSpend, claudeMonthSpendMicroUsd } from "../../claudeSpendCeiling.js";
 import { publicCatalogResearch, validateCatalogResearchFindings } from "./catalogResearchFindings.js";
 import { catalogResearchCostMicroUsd, catalogResearchModel, researchCatalogSubject } from "./catalogResearchProvider.js";
 import { catalogResearchRoutes } from "./catalogResearchRoutes.js";
 import {
+  catalogResearchDailyBudgetMicroUsd,
+  catalogResearchMonthlyBudgetMicroUsd,
   collectCatalogResearchStatus,
   ensureCatalogResearchSchema,
   nextArtistResearchSubject,
@@ -161,49 +164,80 @@ test("the agent works through empty pages with shows first and never touches fil
   assert.equal(venue.key, venueResearchKey("The Fillmore", "San Francisco", "US"));
 });
 
-test("a pass stays inside the daily budget, stores sourced results and serves them per page", async (t) => {
+test("artist-only passes preserve daily admission, historical venue research and retries", async (t) => {
   const db = database(t);
-  db.exec(`INSERT INTO artists(norm,name,bio,rank_score) VALUES ('wet leg','Wet Leg',NULL,10);
-    INSERT INTO tour_dates(id,artist,artist_key,venue,date,venue_city,venue_country_code) VALUES
-      ('1','Wet Leg','wet leg','The Fillmore','2026-10-03','San Francisco','US'),
-      ('2','Other','other','The Fillmore','2026-10-04','Philadelphia','US');`);
+  db.exec("INSERT INTO artists(norm,name,rank_score) VALUES ('wet leg','Wet Leg',30),('second act','Second Act',20),('third act','Third Act',10)");
+  db.exec("INSERT INTO tour_dates(id,artist,venue,date,venue_city,venue_country_code) VALUES ('show','Wet Leg','The Fillmore','2026-10-03','San Francisco','US')");
+  db.exec("INSERT INTO app_meta VALUES ('catalog-research:v1:next-type','venue')");
+  const historical = validateCatalogResearchFindings({ match: "confident",
+    summary: "The Fillmore is a historic concert hall in San Francisco that has hosted rock shows since the 1960s.",
+    summarySources: [WIKI], facts: [{ field: "capacity", value: "1315", source: WIKI }] },
+  { type: "venue", name: "The Fillmore", searchedUrls: [WIKI] }).record;
+  const venueKey = venueResearchKey("The Fillmore", "San Francisco", "US");
+  db.prepare("INSERT INTO catalog_research(entity_type,entity_key,identity,status,next_attempt_at,findings) VALUES ('venue',?,'{}','found',0,?)")
+    .run(venueKey, JSON.stringify(historical));
+  const venueBefore = { ...db.prepare("SELECT * FROM catalog_research WHERE entity_type='venue'").get() };
   const researched = [];
   const research = async (subject) => {
-    researched.push(`${subject.type}:${subject.name}:${subject.city || ""}`);
-    if (subject.type === "artist") return { findings: goodFindings(), searchedUrls: [WIKI, SITE], costMicroUsd: 90_000, model: "claude-sonnet-5" };
-    return { findings: { match: subject.city === "San Francisco" ? "confident" : "unsure",
-      summary: "The Fillmore is a historic concert hall in San Francisco that has hosted rock shows since the 1960s.",
-      summarySources: [WIKI], facts: [{ field: "capacity", value: "1315", source: WIKI }] },
-    searchedUrls: [WIKI], costMicroUsd: 90_000, model: "claude-sonnet-5" };
+    assert.equal(subject.type, "artist"); researched.push(subject.name);
+    return { findings: goodFindings({ summary: goodFindings().summary.replace("Wet Leg", subject.name) }),
+      searchedUrls: [WIKI, SITE], costMicroUsd: 90_000, model: "claude-sonnet-5" };
   };
-  const tight = { ANTHROPIC_API_KEY: "key", CATALOG_RESEARCH_DAILY_USD: "0.35" };
-  const env = { ANTHROPIC_API_KEY: "key", CATALOG_RESEARCH_DAILY_USD: "0.5" };
-  let clock = Date.parse("2026-09-24T12:00:00Z");
-  const now = () => clock;
-  assert.deepEqual(await runCatalogResearchPass({ database: db, env: {}, now, research }), { researched: 0, published: 0, stopped: "not_configured" });
-  const capped = await runCatalogResearchPass({ database: db, env: tight, now, research, maxItems: 10 });
-  assert.deepEqual(capped, { researched: 2, published: 1, stopped: "daily_budget" },
-    "$0.35 a day stops before a third $0.09 run would eat into the per-run reserve");
-  const pass = await runCatalogResearchPass({ database: db, env, now, research, maxItems: 10 });
-  assert.deepEqual(pass, { researched: 1, published: 1, stopped: "nothing_due" }, "a higher cap the same day picks up where it left off");
-  assert.deepEqual(researched, ["artist:Wet Leg:", "venue:The Fillmore:Philadelphia", "venue:The Fillmore:San Francisco"]);
-
-  const status = collectCatalogResearchStatus(db, { env, at: now() });
-  assert.deepEqual(status.today, { spentUsd: 0.27, runs: 3, published: 2 });
-  assert.deepEqual(status.venues, { found: 1, notFound: 0, unsure: 1, failed: 0, hidden: 0 });
-
-  assert.equal(readCatalogResearch(db, { type: "artist", key: "wet leg" }).facts[0].value, "Isle of Wight, England");
+  const env = { ANTHROPIC_API_KEY: "fixture", CATALOG_RESEARCH_ENABLED: "true", CATALOG_RESEARCH_DAILY_USD: "0.35", CATALOG_RESEARCH_MONTHLY_USD: "10", ANTHROPIC_MONTHLY_USD: "10" };
+  let at = Date.parse("2026-10-07T12:00:00Z");
+  const pass = (overrides = {}) => runCatalogResearchPass({ database: db, env, now: () => at, research, maxItems: 10, ...overrides });
+  assert.deepEqual(await pass(), { researched: 2, published: 2, stopped: "daily_budget" });
+  assert.deepEqual(await pass({ env: { ...env, CATALOG_RESEARCH_DAILY_USD: "0.5" } }), { researched: 1, published: 1, stopped: "nothing_due" });
+  assert.deepEqual(researched, ["Wet Leg", "Second Act", "Third Act"]);
+  assert.deepEqual(collectCatalogResearchStatus(db, { env, at }).today, { spentUsd: 0.27, runs: 3, published: 3 });
+  assert.deepEqual(collectCatalogResearchStatus(db, { env, at }).entityTypes, ["artist"]);
+  assert.deepEqual({ ...db.prepare("SELECT * FROM catalog_research WHERE entity_type='venue'").get() }, venueBefore);
+  assert.equal(db.prepare("SELECT value FROM app_meta WHERE key='catalog-research:v1:next-type'").get().value, "venue", "legacy cursor is neither used nor reset");
   assert.equal(readCatalogResearch(db, { type: "venue", key: "The Fillmore", city: "San Francisco" }).facts[0].value, "1,315");
-  assert.equal(readCatalogResearch(db, { type: "venue", key: "The Fillmore", city: "Philadelphia" }), null,
-    "the Philadelphia room never shows San Francisco's research");
+  assert.equal(readCatalogResearch(db, { type: "venue", key: "The Fillmore", city: "Philadelphia" }), null);
+  at += 200 * 86_400_000;
+  const stopped = await pass({ research: async () => { throw Object.assign(new Error("overloaded"), { code: "research_overloaded" }); } });
+  assert.equal(stopped.stopped, "research_overloaded");
+  assert.equal(readCatalogResearch(db, { type: "artist", key: "wet leg" }).summary.startsWith("Wet Leg"), true);
+});
 
-  clock += 200 * 24 * 60 * 60 * 1000;
-  const failing = async () => { throw Object.assign(new Error("overloaded"), { code: "research_overloaded" }); };
-  const stopped = await runCatalogResearchPass({ database: db, env, now, research: failing, maxItems: 5 });
-  assert.equal(stopped.stopped, "research_overloaded", "an overloaded API ends the pass instead of burning through pages");
-  assert.equal(collectCatalogResearchStatus(db, { env, at: now() }).lastError.code, "research_overloaded");
-  assert.equal(readCatalogResearch(db, { type: "artist", key: "wet leg" }).summary.startsWith("Wet Leg"), true,
-    "a failed refresh keeps the last good result on the page");
+test("disabled and empty artist passes never fall back to venues or spend", async (t) => {
+  const db = database(t), at = Date.parse("2026-10-07T12:00:00Z");
+  db.exec("INSERT INTO tour_dates(id,artist,venue,date,venue_city,venue_country_code) VALUES ('show','Unknown','Room','2026-11-01','Toronto','CA')");
+  const env = { ANTHROPIC_API_KEY: "fixture", CATALOG_RESEARCH_ENABLED: "true" };
+  const run = (settings) => runCatalogResearchPass({ database: db, env: settings, now: () => at,
+    research: async () => assert.fail("no artist is eligible for paid research") });
+  assert.equal((await run(env)).stopped, "nothing_due");
+  assert.equal((await run({ ...env, CATALOG_RESEARCH_ENABLED: "false" })).stopped, "disabled");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM catalog_research_spend").get().n, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM catalog_research").get().n, 0);
+});
+
+test("research is modest by default and stops at its monthly cap and the shared Claude ceiling", async (t) => {
+  const key = { ANTHROPIC_API_KEY: "key" };
+  assert.equal(catalogResearchMonthlyBudgetMicroUsd(key), 4_000_000, "$4 a month unless the owner says otherwise");
+  assert.equal(catalogResearchDailyBudgetMicroUsd(key), 300_000, "$0.30 a day by default");
+  assert.equal(catalogResearchDailyBudgetMicroUsd({ ...key, CATALOG_RESEARCH_DAILY_USD: "5" }), 400_000,
+    "an old $5 daily setting is held to a tenth of the monthly cap");
+
+  const db = database(t);
+  db.exec("INSERT INTO artists(norm,name,rank_score) VALUES ('wet leg','Wet Leg',10),('other','Other',5)");
+  const research = async () => ({ findings: goodFindings(), searchedUrls: [WIKI, SITE], costMicroUsd: 90_000, model: "claude-sonnet-5" });
+  const at = Date.parse("2026-09-24T12:00:00Z");
+  const spent = db.prepare(`INSERT INTO catalog_research_spend(token,utc_day,reserved_micro_usd,charged_micro_usd,status,created_at)
+    VALUES (?,?,0,?,'settled',0)`);
+  spent.run("august", "2026-08-30", 3_900_000);
+  spent.run("september", "2026-09-02", 3_850_000);
+  assert.deepEqual(await runCatalogResearchPass({ database: db, env: key, now: () => at, research }),
+    { researched: 0, published: 0, stopped: "monthly_budget" }, "August's spend does not count; September's $3.85 leaves too little");
+  assert.equal(collectCatalogResearchStatus(db, { env: key, at }).monthSpentUsd, 3.85);
+
+  db.exec("CREATE TABLE news_desk_spend (day TEXT PRIMARY KEY, usd REAL NOT NULL DEFAULT 0)");
+  db.prepare("INSERT INTO news_desk_spend(day,usd) VALUES ('2026-09-10',16.00)").run();
+  const roomy = { ...key, CATALOG_RESEARCH_MONTHLY_USD: "8" };
+  assert.deepEqual(await runCatalogResearchPass({ database: db, env: roomy, now: () => at, research }),
+    { researched: 0, published: 0, stopped: "claude_monthly_ceiling" }, "research and the news desk share the approved $20 month");
+  assert.equal((await runCatalogResearchPass({ database: db, env: { ...roomy, ANTHROPIC_MONTHLY_USD: "30" }, now: () => at, research })).researched > 0, true);
 });
 
 test("pages read research through the routes and staff can hide a wrong result", (t) => {
@@ -253,8 +287,10 @@ test("a timed-out continuation preserves its earlier paid receipt and stops furt
   assert.equal(caught.costMicroUsd, catalogResearchCostMicroUsd("claude-sonnet-5", usage));
   assert.equal(caught.accountingUncertain, true);
   assert.equal(result.stopped, "cost_unconfirmed");
-  assert.equal(db.prepare("SELECT status FROM catalog_research_spend").get().status, "uncertain");
-  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.2);
+  assert.deepEqual(db.prepare("SELECT status,charged_micro_usd FROM catalog_research_spend ORDER BY rowid").all().map((row) => ({ ...row })), [
+    { status: "settled", charged_micro_usd: catalogResearchCostMicroUsd("claude-sonnet-5", usage) }, { status: "uncertain", charged_micro_usd: 200_000 },
+  ], "the first charge and the second unknown request each keep their own receipt");
+  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.21);
   assert.equal((await runCatalogResearchPass({ database: db, env, now: () => at, research })).stopped, "cost_unconfirmed");
   assert.equal(requests, 2, "another scheduler pass cannot make more paid requests");
 });
@@ -358,4 +394,157 @@ test("continuation admission uses the previous request's actual cost when it exc
     },
   }), (error) => error.code === "research_budget" && error.accountingUncertain === false && error.costMicroUsd === 250_000);
   assert.equal(requests, 1, "the next call needs $0.25 headroom after a $0.25 response, not only $0.20");
+});
+
+test("artists in the news are researched first, for a month", (t) => {
+  const db = database(t);
+  db.exec(`INSERT INTO artists(norm,name,rank_score) VALUES ('popular','Popular',100),('in the news','In The News',1);
+    CREATE TABLE news_stories (id TEXT PRIMARY KEY, status TEXT NOT NULL, artist_keys TEXT NOT NULL, created_at INTEGER NOT NULL);`);
+  db.prepare("INSERT INTO news_stories VALUES ('story','published',?,1000)").run(JSON.stringify(["in the news"]));
+  assert.equal(nextArtistResearchSubject(db, { at: 2_000 }).key, "in the news");
+  assert.equal(nextArtistResearchSubject(db, { at: 1_000 + 31 * 86_400_000 }).key, "popular", "old news no longer jumps the queue");
+  db.prepare("UPDATE news_stories SET status='declined'").run();
+  assert.equal(nextArtistResearchSubject(db, { at: 2_000 }).key, "popular", "only published stories count");
+});
+
+test("a rejected research request stops the pass and logs Anthropic's reason", async (t) => {
+  const db = database(t);
+  db.exec("INSERT INTO artists(norm,name,rank_score) VALUES ('wet leg','Wet Leg',10),('other','Other',5)");
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "Unexpected value for the anthropic-beta header." } }),
+      { status: 400, headers: { "content-type": "application/json" } });
+  };
+  const result = await runCatalogResearchPass({ database: db, env: { ANTHROPIC_API_KEY: "fixture" }, now: () => Date.parse("2026-09-24T12:00:00Z"), fetchImpl, maxItems: 4 });
+  assert.equal(result.stopped, "research_rejected");
+  assert.equal(calls, 1, "the next page is not tried after a rejected request");
+  assert.equal(result.failure, 'status=400 type=invalid_request_error detail="Unexpected value for the anthropic-beta header."');
+  assert.equal(collectCatalogResearchStatus(db, { env: { ANTHROPIC_API_KEY: "fixture" }, at: Date.parse("2026-09-24T12:00:00Z") }).today.spentUsd, 0,
+    "a rejected request costs nothing");
+});
+
+test("artist-only passes stop at an empty queue and legacy venue selection remains read-compatible", async (t) => {
+  const db = database(t);
+  db.exec(`INSERT INTO artists(norm,name,rank_score) VALUES ('first act','First Act',10),('second act','Second Act',9);
+    INSERT INTO tour_dates(id,artist,artist_key,venue,date,venue_city,venue_country_code) VALUES
+      ('t1','First Act','first act','Massey Hall','2026-10-01','Toronto','CA');`);
+  const seen = [];
+  const research = async (subject) => {
+    seen.push(subject.type);
+    return { findings: goodFindings(), searchedUrls: [WIKI, SITE], costMicroUsd: 90_000, model: "claude-sonnet-5" };
+  };
+  const env = { ANTHROPIC_API_KEY: "key", CATALOG_RESEARCH_DAILY_USD: "1", CATALOG_RESEARCH_MONTHLY_USD: "10" };
+  const at = Date.parse("2026-09-24T12:00:00Z");
+  for (let pass = 0; pass < 3; pass += 1) await runCatalogResearchPass({ database: db, env, now: () => at, research, maxItems: 1 });
+  assert.deepEqual(seen, ["artist", "artist"], "a venue backlog is never a fallback after both artists");
+
+  const busy = new DatabaseSync(":memory:");
+  t.after(() => busy.close());
+  busy.exec(`CREATE TABLE app_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+    CREATE TABLE tour_dates(id TEXT PRIMARY KEY,artist TEXT NOT NULL,artist_key TEXT,venue TEXT,date TEXT,owner_id TEXT,
+      venue_city TEXT,venue_region TEXT,venue_country_code TEXT,venue_address_line1 TEXT);`);
+  ensureCatalogResearchSchema(busy);
+  const show = busy.prepare("INSERT INTO tour_dates(id,artist,venue,date,venue_city,venue_country_code) VALUES (?,?,?,?,?,?)");
+  const done = busy.prepare(`INSERT INTO catalog_research(entity_type,entity_key,identity,status,next_attempt_at) VALUES ('venue',?,'{}','found',?)`);
+  busy.exec("BEGIN");
+  for (let room = 0; room < 2000; room += 1) {
+    show.run(`a${room}`, "Act", `Room ${room}`, "2026-10-01", "Toronto", "CA");
+    show.run(`b${room}`, "Act", `Room ${room}`, "2026-10-02", "Toronto", "CA");
+    done.run(venueResearchKey(`Room ${room}`, "Toronto", "CA"), at + 1_000_000);
+  }
+  show.run("quiet", "Act", "The Quiet Room", "2026-10-03", "Toronto", "CA");
+  busy.exec("COMMIT");
+  assert.equal(nextVenueResearchSubject(busy, { at })?.name, "The Quiet Room", "the 2,001st room is next once the busier ones are done");
+});
+
+test("research continuations recheck the shared ceiling after a concurrent news reservation", async (t) => {
+  const db = database(t);
+  db.exec(`INSERT INTO artists(norm,name) VALUES ('wet leg','Wet Leg');
+    CREATE TABLE news_desk_receipts(id TEXT PRIMARY KEY,day TEXT,charged_usd REAL);`);
+  const at = Date.parse("2026-09-27T12:00:00Z");
+  const env = { ANTHROPIC_API_KEY: "fixture", ANTHROPIC_MONTHLY_USD: "0.30" };
+  let requests = 0;
+  const result = await runCatalogResearchPass({ database: db, env, now: () => at, maxItems: 1, fetchImpl: async () => {
+    requests += 1;
+    assert.equal(requests, 1, "the second research HTTP request cannot be admitted");
+    const news = admitClaudeSpend(db, { env, at, reserveMicroUsd: 42_040, dailyCapMicroUsd: 300_000, monthlyCapMicroUsd: 6_000_000,
+      readDailySpendMicroUsd: () => 0, readMonthlySpendMicroUsd: () => 0,
+      reserve: () => db.prepare("INSERT INTO news_desk_receipts VALUES ('news','2026-09-27',0.04204)").run(),
+    });
+    assert.equal(news.ok, true);
+    return Response.json({ stop_reason: "pause_turn", usage: { input_tokens: 50_000, output_tokens: 0 }, content: [] });
+  } });
+  assert.equal(result.stopped, "research_budget");
+  assert.equal(requests, 1);
+  assert.equal(claudeMonthSpendMicroUsd(db, at), 142_040, "both features' durable receipts remain counted");
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM catalog_research_spend WHERE status<>'settled'").get().n, 0);
+});
+
+test("each continued request reserves its own UTC day and confirmed rejections release only that request", async (t) => {
+  const db = database(t);
+  db.exec("INSERT INTO artists(norm,name) VALUES ('wet leg','Wet Leg')");
+  let at = Date.parse("2026-09-27T23:59:59Z");
+  const env = { ANTHROPIC_API_KEY: "fixture" };
+  let requests = 0;
+  const result = await runCatalogResearchPass({ database: db, env, now: () => at, maxItems: 1, fetchImpl: async () => {
+    requests += 1;
+    if (requests === 1) {
+      at += 2000;
+      return Response.json({ stop_reason: "pause_turn", usage: { input_tokens: 1000, output_tokens: 0 }, content: [] });
+    }
+    assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0.2);
+    return Response.json({ error: { type: "authentication_error" } }, { status: 401 });
+  } });
+  assert.equal(result.stopped, "research_auth");
+  assert.deepEqual(db.prepare("SELECT utc_day,charged_micro_usd,status FROM catalog_research_spend ORDER BY rowid").all().map((row) => ({ ...row })), [
+    { utc_day: "2026-09-27", charged_micro_usd: 2000, status: "settled" },
+    { utc_day: "2026-09-28", charged_micro_usd: 0, status: "settled" },
+  ]);
+  assert.equal(collectCatalogResearchStatus(db, { env, at }).today.spentUsd, 0);
+});
+
+test("an ambiguous research server error retains its reservation instead of claiming a free request", async (t) => {
+  const db = database(t);
+  db.exec("INSERT INTO artists(norm,name) VALUES ('wet leg','Wet Leg')");
+  const at = Date.parse("2026-09-27T12:00:00Z");
+  const env = { ANTHROPIC_API_KEY: "fixture" };
+  const value = await runCatalogResearchPass({ database: db, env, now: () => at, maxItems: 1,
+    fetchImpl: async () => Response.json({ error: { type: "api_error" } }, { status: 500 }),
+  });
+  assert.equal(value.stopped, "research_unavailable");
+  assert.deepEqual({ ...db.prepare("SELECT status,charged_micro_usd FROM catalog_research_spend").get() },
+    { status: "uncertain", charged_micro_usd: 200_000 });
+  assert.equal((await runCatalogResearchPass({ database: db, env, now: () => at })).stopped, "cost_unconfirmed");
+});
+
+test("malformed billing usage never settles a paid request as free", async (t) => {
+  for (const usage of [undefined, { input_tokens: -1, output_tokens: 0 },
+    { input_tokens: 10, output_tokens: 0, cache_creation_input_tokens: "Infinity" },
+    { input_tokens: 10, output_tokens: 0, server_tool_use: { web_search_requests: -1 } }]) {
+    const db = database(t);
+    db.exec("INSERT INTO artists(norm,name) VALUES ('wet leg','Wet Leg')");
+    const env = { ANTHROPIC_API_KEY: "fixture" };
+    const value = await runCatalogResearchPass({ database: db, env, now: () => Date.parse("2026-09-27T12:00:00Z"), maxItems: 1,
+      fetchImpl: async () => Response.json({ content: [], stop_reason: "end_turn", usage }),
+    });
+    assert.equal(value.stopped, "cost_unconfirmed");
+    assert.deepEqual({ ...db.prepare("SELECT status,charged_micro_usd FROM catalog_research_spend").get() },
+      { status: "uncertain", charged_micro_usd: 200_000 });
+  }
+});
+
+
+test("approved ten-dollar shared allowance counts prior news and research without resetting receipts", async (t) => {
+  const db=database(t), at=Date.parse('2026-10-07T12:00:00Z');
+  db.exec("INSERT INTO artists(norm,name) VALUES ('wet leg','Wet Leg'); CREATE TABLE news_desk_spend(day TEXT PRIMARY KEY,usd REAL)");
+  db.exec("INSERT INTO news_desk_spend VALUES ('2026-10-01',0.10)");
+  db.exec("INSERT INTO catalog_research_spend VALUES ('prior','2026-10-01',9750000,9750000,'settled',0,1)");
+  const env={ANTHROPIC_API_KEY:'fixture',CATALOG_RESEARCH_ENABLED:'true',CATALOG_RESEARCH_DAILY_USD:'0.30',CATALOG_RESEARCH_MONTHLY_USD:'10',ANTHROPIC_MONTHLY_USD:'10'};
+  const run=(settings)=>runCatalogResearchPass({database:db,env:settings,now:()=>at,research:async()=>assert.fail('insufficient reservation headroom')});
+  assert.equal((await run(env)).stopped,'claude_monthly_ceiling');
+  assert.equal((await run({...env,ANTHROPIC_MONTHLY_USD:'0'})).stopped,'claude_monthly_ceiling');
+  assert.equal((await run({...env,CATALOG_RESEARCH_MONTHLY_USD:'4'})).stopped,'monthly_budget');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM catalog_research_spend').get().n,1);
+  assert.equal(db.prepare('SELECT charged_micro_usd FROM catalog_research_spend').get().charged_micro_usd,9750000);
 });

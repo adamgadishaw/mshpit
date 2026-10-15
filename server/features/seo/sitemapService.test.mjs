@@ -14,6 +14,7 @@ import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { createArtistMemorialRepository } from "../artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "../artistMemorials/artistMemorialService.js";
 import { ensureLegacyMediaFinalizeSchema } from "../../mediaLegacyFinalize.js";
+import { createCatalogEditorService } from "../catalogEditor/catalogEditorService.js";
 
 const MEMORIAL_MBID = "42345678-1234-4234-8234-123456789abc";
 
@@ -41,7 +42,38 @@ const {
   urlsetParts,
 } = await import("./sitemapService.js");
 const { seoHttpPlan } = await import("../../seo.js");
-const { ensureArtistUpdatesSchema } = await import("../artistUpdates/artistUpdatesService.js");
+const { ensureNewsDeskSchema } = await import("../newsDesk/newsDeskService.js");
+
+test("sourced catalog text qualifies empty artists at the existing threshold and tracks identity, hide and lastmod", () => {
+  const key = "sitemap catalog editorial fixture", at = Date.parse("2026-10-04T02:00:00Z");
+  db.prepare(`INSERT INTO artists(norm,name,public_slug,bio,mbid,source,created_at,updated_at)
+    VALUES(?,?,?,NULL,?,'musicbrainz',?,?)`).run(key, "Sitemap Catalog Editorial Fixture", "sitemap-catalog-editorial-fixture", MEMORIAL_MBID, at - 1000, at - 1000);
+  const editor = createCatalogEditorService({ database: db, now: () => at });
+  const entry = () => artistSitemapEntries(db, { now: at }).find(row => row.artistKey === key);
+  const write = (summary, hidden = false) => {
+    const current = editor.read({ type: "artist", key });
+    return editor.save({ actorId: "synthetic-editor", idempotencyKey: `seo-catalog-save-${current.revision}`, draft: {
+      type: "artist", key, expectedRevision: current.revision, expectedHash: current.expectedHash,
+      summary, hidden, sources: [{ label: "Official source", url: "https://www.mshpit.com/about" }], reason: "Synthetic sitemap evidence",
+    } });
+  };
+  // The audit actor must be a real fixture user under the production FK schema.
+  addUser("synthetic-editor", "syntheticeditor");
+  assert.equal(entry(), undefined);
+  write("Brief context."); assert.equal(entry(), undefined, "short text does not lower existing SEO thresholds");
+  const summary = "This sourced artist context explains the public catalog identity and its music history for readers, with an explicit source citation.";
+  write(summary); assert.equal(entry().lastmod, at);
+  const docs = createPublicDocumentService({ database: db, origin: "https://www.example.com" });
+  const page = docs.artistDocument({ artistKey: key, at });
+  assert.equal(page.artist.bio, "", "the existing empty biography display is retained");
+  assert.equal(db.prepare("SELECT bio FROM artists WHERE norm=?").get(key).bio, null, "provider biography is not overwritten");
+  assert.match(page.description, /sourced artist context/);
+  assert.match(docs.render(page), /data-catalog-text="true"/);
+  assert.ok(page.jsonLd.some(node => node.dateModified === new Date(at).toISOString()));
+  write(summary, true); assert.equal(entry(), undefined);
+  write(summary); db.prepare("UPDATE artists SET mbid=? WHERE norm=?").run("52345678-1234-4234-8234-123456789abc", key);
+  assert.equal(entry(), undefined, "replacement identity cannot inherit prior text");
+});
 
 test("a ticket URL alone is not indexable event evidence", () => {
   assert.equal(hasIndexableEventEvidence({
@@ -725,18 +757,19 @@ test("segmented sitemaps contain only substantive canonical public pages", async
   assert.doesNotMatch(pages, /<loc>[^<]*\/search(?:[?<]|$)/, "internal search pages do not belong in the sitemap");
   assert.doesNotMatch(pages, /changefreq|priority/);
   assert.doesNotMatch(pages, /<loc>https:\/\/www\.example\.com\/news<\/loc>/, "a noindex news page stays out of the sitemap");
-  ensureArtistUpdatesSchema(db);
-  const addUpdate = db.prepare(`INSERT INTO artist_updates
-    (id,artist_key,artist_name,kind,dedupe_key,title,payload,source,occurred_at,created_at,updated_at)
-    VALUES (?,?,?,'release',?,?,?,'deezer',1,?,1)`);
+  ensureNewsDeskSchema(db);
+  const newsAuthor = db.prepare("SELECT id FROM users LIMIT 1").get().id;
   for (let index = 0; index < 3; index += 1) {
-    addUpdate.run(`news-${index}`, "news-artist", "News Artist", `news-${index}`, "New album",
-      JSON.stringify({ release: { title: `Record ${index}`, type: "album", releaseDate: "2026-09-01" } }), index + 1);
+    db.prepare("INSERT INTO posts (id,user_id,artist,venue,city,date,overall,review,kind,created_at) VALUES (?,?,'','','','',0,?,'status',?)")
+      .run(`news_story-${index}`, newsAuthor, "A confirmed story.", index + 1);
+    db.prepare(`INSERT INTO news_stories (id,status,headline,summary,sources,post_id,created_at,updated_at)
+      VALUES (?,'published',?,?,?,?,?,?)`).run(`story-${index}`, `Story ${index}`, "A confirmed story.",
+      JSON.stringify([{ name: "NME", url: "https://www.nme.com/a" }, { name: "Stereogum", url: "https://www.stereogum.com/a" }]), `news_story-${index}`, index + 1, index + 1);
   }
+  db.prepare("UPDATE posts SET removed=1 WHERE id='news_story-0'").run();
   assert.doesNotMatch(sitemapXmlFor("/sitemaps/pages.xml", { database: db }), /<loc>https:\/\/www\.example\.com\/news<\/loc>/,
-    "orphaned cached news cannot make the page indexable");
-  db.prepare("INSERT INTO artists(norm,name,data,source,created_at,updated_at) VALUES(?,?,'{}','deezer',1,1)")
-    .run("news-artist", "News Artist");
+    "a removed story post cannot make the page indexable");
+  db.prepare("UPDATE posts SET removed=0 WHERE id='news_story-0'").run();
   assert.match(sitemapXmlFor("/sitemaps/pages.xml", { database: db }), /<loc>https:\/\/www\.example\.com\/news<\/loc>/,
     "news joins the sitemap once the page is indexable");
   const events = sitemapXmlFor("/sitemaps/events.xml", { database: db, now: 1_725_000_000_000 });

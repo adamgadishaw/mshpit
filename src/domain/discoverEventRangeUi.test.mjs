@@ -4,7 +4,7 @@ import test from "node:test";
 
 const read = (path) => readFile(new URL(path, import.meta.url), "utf8");
 
-test("Discover shows four events and fetches the selected scope before offering wider ranges", async () => {
+test("Discover shows four event cards, a week-by-week list, and fetches the selected scope before offering wider ranges", async () => {
   const screen = await read("../screens/DiscoverScreen.jsx");
   const store = await read("../store.js");
   const rangeApi = await read("../features/discovery/tourDateRangeApi.mjs");
@@ -16,12 +16,16 @@ test("Discover shows four events and fetches the selected scope before offering 
   assert.match(screen, /const selectedRangeDays[\s\S]*DISCOVER_RANGE_DAYS\[0\]/);
   assert.match(screen, /const initialRangeEvents = useMemo\(\(\) => selectDiscoverRangeEvents\([\s\S]*days: DISCOVER_RANGE_DAYS\[0\]/);
   assert.match(screen, /const liveEvents = useMemo\(\(\) => upcomingEventsForScope\([\s\S]*worldwideEvents: initialRangeEvents[\s\S]*limit: 4,/);
-  assert.match(screen, /if \(!rangeMatchesScene\)[\s\S]*requestEventRange\(selectedRangeDays\)/);
-  assert.match(screen, /Load \$\{DISCOVER_RANGE_BATCH\} more events/);
+  assert.match(screen, /const openEventList = useCallback[\s\S]*if \(!rangeMatchesScene\) requestEventRange\(selectedRangeDays\)/);
+  assert.doesNotMatch(screen, /more events`/, "no endless load more");
+  assert.match(screen, /See all \$\{rangeEvents\.length\} shows as a list/);
+  assert.match(screen, /<DiscoverEventList events=\{rangeEvents\}/);
+  assert.match(screen, /requestedCursorRef\.current === eventRange\.nextCursor/, "the list never asks for the same page twice");
+  assert.match(screen, /filter\(\(event\) => !isFestivalListing\(event\)\)/, "festivals stay in their own tab");
   assert.match(screen, /selectDiscoverRangeEvents/);
   assert.match(screen, /mergeDiscoverRangePages/);
   assert.match(screen, /rangeRequestRef\.current\.controller\?\.abort\(\)/);
-  assert.match(screen, /useEffect\(\(\) => \{\s*setVisibleEventCount\(DISCOVER_RANGE_BATCH\);\s*requestEventRange\(DISCOVER_RANGE_DAYS\[0\]\)/);
+  assert.match(screen, /useEffect\(\(\) => \{\s*setEventWeek\(null\);\s*requestEventRange\(DISCOVER_RANGE_DAYS\[0\]\)/);
   assert.match(screen, /const local = liveScope === LIVE_EVENT_SCOPE\.LOCAL/);
   assert.match(screen, /rangeLoaderRef\.current\(\{[\s\S]*country: requestCountry,[\s\S]*local,[\s\S]*signal: controller\.signal/);
   assert.doesNotMatch(screen, /rangeLoaderRef\.current\(\{[^}]*\bcity\b/);

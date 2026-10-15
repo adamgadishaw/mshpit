@@ -34,6 +34,21 @@ MAIL_REPLY_TO=support@mshpit.com
 SITE_HEALTH_DIGEST_ENABLED=false
 SITE_HEALTH_DIGEST_HOUR=9
 
+# Server-only Claude allowances. Keep the news worker off for local/staging
+# runs. Up to two supported stories per Toronto slot, ten per local day;
+# quality rules and reservation headroom can yield fewer. Cost ledgers use UTC.
+# Set ANTHROPIC_API_KEY only in private server configuration, never EXPO_PUBLIC.
+NEWS_DESK_ENABLED=false
+NEWS_DESK_DAILY_USD=0.75
+NEWS_DESK_MONTHLY_USD=15
+ANTHROPIC_MONTHLY_USD=20
+CATALOG_RESEARCH_DAILY_USD=0.30
+CATALOG_RESEARCH_MONTHLY_USD=4
+# Application admission limits are not a provider invoice cap. Set a separate
+# provider spending limit. Lower runtime values work (including zero), but a
+# Blueprint sync can overwrite dashboard-only settings: persist reductions in
+# render.yaml and verify effective settings after synchronization.
+
 # Closed Lounges with messages are hidden from members and retained only for
 # authorized moderation/legal review. Keep the default approval-pending policy
 # until product/legal approves a maximum retention period; this setting never

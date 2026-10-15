@@ -809,3 +809,40 @@ test("a venue name resolves despite older rows without a city and duplicate reco
     venuePath({ name: "SEO Double Hall", source: "ticketmaster", providerVenueId: "double-a" }),
     "the record with the most shows stands for the building");
 });
+
+
+test("corrupted provider apostrophes render on direct load without changing identities or exclusions", () => {
+  const id = "tm_16e0Z_o8MG7Bv5g";
+  const title = 'Miind\u00e2\u0080\u0099S Eye with Nautiloid @ What\u00e2\u0080\u0099S Left Records';
+  const repaired = 'Miind’S Eye with Nautiloid @ What’S Left Records';
+  const row = { id, provider_event_id: '16e0Z_o8MG7Bv5g', event_name: title, artist: title, artist_key: null,
+    artist_identity_status: 'pending', venue: "What's Left Records", place: 'Colorado Springs, Colorado, United States Of America',
+    date: '2036-10-07', source: 'ticketmaster', music_qualified: 1, music_evidence: 'ticketmaster:classification:music',
+    event_kind: 'concert', billed_artists: '[]', provider_active: 1, release_at: 0, updated_at: Date.now(),
+    venue_provider_id: 'KovZpZAJdAvA', venue_address_line1: '1 Fixture Street', venue_city: 'Colorado Springs',
+    venue_country_code: 'US', venue_country: 'United States Of America' };
+  db.prepare('INSERT INTO tour_dates ('+Object.keys(row).join(',')+') VALUES ('+Object.keys(row).map(()=>'?').join(',')+')').run(...Object.values(row));
+  try {
+    const path = eventPath(id), entity = resolveEntity(path), plan = seoHttpPlan(path);
+    assert.equal(entity.id, id); assert.equal(entity.eventName, repaired);
+    assert.equal(entity.artistKey, null); assert.equal(entity.artistIdentityPending, true);
+    assert.equal(plan.status, 200); assert.equal(plan.type, 'document'); assert.equal(plan.indexable, true);
+    assert.equal(plan.document.event.name, repaired);
+    assert.equal(plan.document.event.artistPath, null);
+    assert.deepEqual(plan.document.posts, []);
+    const html = injectHead('<html><head></head><body><div id="root"></div></body></html>',path,plan,{PIT_ENV:'production'});
+    assert.ok(html.includes(repaired));
+    assert.ok(html.includes('https://www.example.com'+path));
+    assert.doesNotMatch(html, /[\u0080-\u009f\ufffd]/u);
+    assert.equal(pageHeadFor(path).head, headTagsFor(path));
+    const stored = db.prepare('SELECT event_name,artist,artist_key,provider_event_id FROM tour_dates WHERE id=?').get(id);
+    assert.deepEqual({...stored}, {event_name:title,artist:title,artist_key:null,provider_event_id:'16e0Z_o8MG7Bv5g'});
+    assert.equal(seoHttpPlan(path.toLowerCase()).status, 404, 'opaque IDs remain case-sensitive');
+    for (const excluded of ['2026 Formula 1 MSC Cruises USGP - Friday Admission','Miind’S Eye VIP Upgrade','Unknown\ufffd event']) {
+      db.prepare('UPDATE tour_dates SET event_name=? WHERE id=?').run(excluded,id);
+      assert.equal(seoHttpPlan(path).status,404); assert.equal(resolveEntity(path),null);
+    }
+    db.prepare('UPDATE tour_dates SET event_name=?,release_at=? WHERE id=?').run(title,Date.now()+86_400_000,id);
+    assert.equal(seoHttpPlan(path).status,404,'text repair never publishes an unreleased record');
+  } finally { db.prepare('DELETE FROM tour_dates WHERE id=?').run(id); }
+});

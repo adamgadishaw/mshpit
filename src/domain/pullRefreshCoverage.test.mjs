@@ -47,7 +47,10 @@ test("remote directory pulls await their real loaders and retain current views o
   assert.match(fanClubs, /await loadFanClubsDirectory\(\{ signal \}\)/);
   assert.match(store, /fanClubDirectoryStatus === "ready"[\s\S]{0,160}?fanClubDirectoryStatus === "refreshing"[\s\S]{0,160}?fanClubDirectorySnapshot\.length > 0/);
 
-  assert.match(followList, /readDirectory\(\{ signal, preserveRows: true \}\)/);
+  assert.match(followList, /list\.refresh\(\{ signal \}\)/);
+  const connections = readFileSync(new URL("../features/connections/useConnections.js", import.meta.url), "utf8");
+  assert.match(connections, /signal\?\.addEventListener\("abort", abort/);
+  assert.match(connections, /connectionFailure\(previous, scope, error\)/);
   assert.match(store, /expectedAccountId: accountId,[\s\S]{0,240}?signal\?\.aborted/);
 
   for (const source of [nearby, venues]) {
