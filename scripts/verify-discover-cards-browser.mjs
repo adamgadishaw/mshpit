@@ -63,6 +63,14 @@ try {
         }
         else if (url.pathname === "/api/resolve" && url.searchParams.get("path") === `/event/${festival.id}`)
           body = { entity: { ...festival, kind: "event", name: festival.eventName, path: `/event/${festival.id}`, publicEventSnapshot: true } };
+        else if (url.pathname === "/api/venue-snapshot") {
+          assert.equal(request.method(), "GET");
+          const path = url.searchParams.get("path");
+          assert.match(path, /^\/venue\//);
+          body = { path, venue: { name: event.venue, source: event.source, providerVenueId: null, place: event.place,
+            coord: null, address: null, capacity: null }, events: [{ ...event, name: event.artist }],
+            hasMore: false, nextCursor: null, after: null };
+        }
         else if (/^\/api\/venues\/[^/]+\/photos$/.test(url.pathname)) body = { photos: [], fanPhotos: [], state: "ready" };
         else body = fixtureApiResponse(url.pathname, { method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, discoverShow: true, discoverArtwork: true });
         await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
