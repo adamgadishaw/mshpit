@@ -587,6 +587,9 @@ function Root() {
     newsOpenRef.current += 1;
     setNewsStoryNotice(null);
   };
+  // The Android listener stays mounted; read the current notice on each Back.
+  const newsStoryBackRef = useRef(null);
+  newsStoryBackRef.current = newsStoryNotice ? cancelNewsStory : null;
   const cancelPublicRoute = () => {
     publicLookup.lookup?.cancel();
     publicNavigationPendingRef.current = null;
@@ -1061,10 +1064,11 @@ function Root() {
     pageHeadRef.current?.sync(window.location.pathname + window.location.search);
   }, [web, stack, tab, landing, remoteArtistMeta, userById]);
 
-  // Android hardware back: pop the stack when we have somewhere to go.
+  // Android Back dismisses a pending story before leaving its source screen.
   useEffect(() => {
     if (Platform.OS !== "android") return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (newsStoryBackRef.current) { newsStoryBackRef.current(); return true; }
       if (stackRef.current.length > 1) { requestComposerPop(); return true; }
       return false;
     });

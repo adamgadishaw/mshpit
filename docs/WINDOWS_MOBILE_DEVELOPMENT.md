@@ -1,5 +1,7 @@
 # MSHPIT: free Windows Android development
 
+**Latest News/session check:** [Android Back cancellation, late-response protection, startup and session-restoration timings](NEWS_SESSION_REVIEW_2026-10-15.md).
+
 **Latest validation:** [offline recovery, longer reuse, native share cancellation and the Android fullscreen fix](NETWORK_FULLSCREEN_REVIEW_2026-10-15.md); [exact two-advisory ledger](ADVISORY_LEDGER_2026-10-15.md).
 
 **Latest native runtime evidence:** [Feed/media retention, measured scrolling/navigation and resource reuse](NATIVE_FEED_MEDIA_REVIEW_2026-10-15.md).
