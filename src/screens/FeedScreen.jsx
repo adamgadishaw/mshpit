@@ -1,3 +1,4 @@
+import { nativeFeedCanWork } from "../domain/nativeFeedMediaRetention.mjs";
 import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, FlatList, Platform, Pressable, ScrollView, useWindowDimensions } from "react-native";
 import { colors, mono, radius, shadow, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
@@ -86,6 +87,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
 export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
   const { width } = useWindowDimensions();
   const appActive = useAppActive();
+  const feedActive = nativeFeedCanWork({ platform: Platform.OS, appActive, visible });
   const phone = width < 700;
   const filterScope = feedFilterStorageKey(accountId);
   const [filterState, setFilterState] = useState(() => ({
@@ -111,7 +113,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   const guideDismissed = guideState.scope === guideScope ? guideState.dismissed : load(guideScope, false);
   const visibleSince = useRef(new Map());
   const seenImpressions = useRef(new Set());
-  const activityRef = useRef(appActive);
+  const activityRef = useRef(feedActive);
   const dismissGuide = () => {
     setGuideState({ scope: guideScope, dismissed: true });
     save(guideScope, true);
@@ -135,7 +137,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   const surface = filter === "following" ? "following" : filter === "local" ? "local" : filter === "news" ? "news" : "everyone";
   const analyticsRef = useRef({ surface, onImpression, onDwell });
   analyticsRef.current = { surface, onImpression, onDwell };
-  activityRef.current = appActive;
+  activityRef.current = feedActive;
 
   useEffect(() => {
     refreshControllerRef.current?.abort();
@@ -199,14 +201,14 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   ]).current;
 
   useEffect(() => {
-    if (appActive) return;
+    if (feedActive) return;
     const at = Date.now();
     for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
       analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
     }
     visibleSince.current.clear();
     setVisibleMediaPostIds(new Set());
-  }, [appActive]);
+  }, [feedActive]);
 
   useEffect(() => () => {
     const at = Date.now();
@@ -364,13 +366,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     <FeedTicketRow
       item={item}
       itemIndex={itemIndex}
-      mediaViewable={visibleMediaPostIds.has(String(item.id)) ? true : null}
+      mediaViewable={feedActive ? (visibleMediaPostIds.has(String(item.id)) ? true : null) : false}
       surface={surface}
       actionsRef={rowActionsRef}
       capabilities={rowCapabilities}
       accountId={accountId}
     />
-  )), [accountId, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
+  )), [accountId, feedActive, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.

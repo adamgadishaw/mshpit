@@ -14,7 +14,7 @@ test("feed viewport updates keep stable data and isolate unchanged ticket rows",
   assert.match(feed, /const data = useMemo\(\(\) => full\.slice\(0, count\), \[count, full\]\)/);
   assert.match(feed, /const renderFeedItem = useCallback/);
   assert.match(feed, /rowActionsRef\.current = \{/);
-  assert.match(feed, /mediaViewable=\{visibleMediaPostIds\.has\(String\(item\.id\)\) \? true : null\}/);
+  assert.match(feed, /mediaViewable=\{feedActive \? \(visibleMediaPostIds\.has\(String\(item\.id\)\) \? true : null\) : false\}/);
   assert.match(feed, /renderItem=\{renderFeedItem\}/);
   assert.match(feed, /initialNumToRender=\{phone \? 3 : PAGE\}/);
   assert.match(feed, /windowSize=\{phone \? 3 : 7\}/);

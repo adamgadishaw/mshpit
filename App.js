@@ -36,6 +36,9 @@ const VenueReviewScreen = lazyWithRetry(() => import("./src/screens/VenueReviewS
 const FanClubScreen = lazyWithRetry(() => import("./src/screens/FanClubScreen"), "FanClubScreen");
 import AccountGate from "./src/screens/AccountGate";
 const MenuScreen = lazyWithRetry(() => import("./src/screens/MenuScreen"), "MenuScreen");
+import NativeFeedMediaLayer from "./src/components/NativeFeedMediaLayer";
+import { retainNativeFeedForMedia } from "./src/domain/nativeFeedMediaRetention.mjs";
+
 const PhotoViewer = lazyWithRetry(() => import("./src/components/PhotoViewer"), "PhotoViewer");
 const LogScreen = lazyWithRetry(() => import("./src/screens/LogScreen"), "LogScreen");
 const TopRatedScreen = lazyWithRetry(() => import("./src/screens/TopRatedScreen"), "TopRatedScreen");
@@ -1508,6 +1511,8 @@ function Root() {
     web, pathname: web ? window.location.pathname : null,
   });
 
+  const retainNativeFeed = retainNativeFeedForMedia({ platform: Platform.OS, wide, accountId: session?.id, tab: activeTab, frames: stack, hasOverlay: !!overlay });
+
   const tabScreens = (
             <View style={styles.screen}>
               {activeTab === "feed" && !!session && (
@@ -1605,6 +1610,26 @@ function Root() {
                 />
               )}
             </View>
+  );
+
+  const mobileTabBar = (
+                      <View style={styles.tabbar}>
+                        {LEFT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
+                        <View style={styles.fabCol}>
+                          <Pressable
+                            style={styles.fab}
+                            onPressIn={preloadComposer}
+                            onHoverIn={preloadComposer}
+                            onFocus={preloadComposer}
+                            onPress={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))}
+                            accessibilityLabel="Make a post"
+                          >
+                            <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
+                          </Pressable>
+                          <Text style={styles.fabLabel}>Post</Text>
+                        </View>
+                        {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
+                      </View>
   );
 
   // Desktop: the player owns a persistent left column (outside this routed
@@ -1777,7 +1802,7 @@ function Root() {
               </View>
             )}
             <View style={styles.appContent}>
-              {Platform.OS !== "web" && !overlay && <NativeAppHeader onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
+              {Platform.OS !== "web" && !overlay && !retainNativeFeed && <NativeAppHeader onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
               {wide ? <Suspense fallback={<ScreenLoading />}>{desktop}</Suspense> : (
                 <>
                   {showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
@@ -1789,26 +1814,15 @@ function Root() {
                     onOpenArtist={openArtist}
                     onOpenEvent={openShow}
                   />
-                  {overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense> : (
+                  {retainNativeFeed ? <NativeFeedMediaLayer key={session.id} obscured={!!overlay}
+                    header={<NativeAppHeader onHome={() => switchTab("discover")} loggedIn onAccount={() => openProfileManagement()} />}
+                    tabBar={mobileTabBar}
+                    media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense>}>
+                    <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey="main:feed">{tabScreens}</ScreenTransition></Suspense>
+                  </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense> : (
                     <>
                       <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{tabScreens}</ScreenTransition></Suspense>
-                      <View style={styles.tabbar}>
-                        {LEFT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
-                        <View style={styles.fabCol}>
-                          <Pressable
-                            style={styles.fab}
-                            onPressIn={preloadComposer}
-                            onHoverIn={preloadComposer}
-                            onFocus={preloadComposer}
-                            onPress={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))}
-                            accessibilityLabel="Make a post"
-                          >
-                            <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
-                          </Pressable>
-                          <Text style={styles.fabLabel}>Post</Text>
-                        </View>
-                        {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
-                      </View>
+                      {mobileTabBar}
                     </>
                   )}
                 </>

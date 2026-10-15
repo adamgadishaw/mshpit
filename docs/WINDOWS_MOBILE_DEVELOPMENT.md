@@ -1,5 +1,7 @@
 # MSHPIT: free Windows Android development
 
+**Latest native runtime evidence:** [Feed/media retention, measured scrolling/navigation and resource reuse](NATIVE_FEED_MEDIA_REVIEW_2026-10-15.md).
+
 **Latest SDK patch review:** [compatible updates, 21/21 Expo Doctor, rebuilt Android APK, advisory exposure and successful Library saves](SDK_PATCH_RESOURCE_REVIEW_2026-10-15.md) supersede the earlier patch/Library status below. Native iOS validation remains pending.
 
 **2026-10-15 current evidence:** see [guest/member smoke tests, final exports and store-readiness gates](GUEST_MEMBER_STORE_REVIEW_2026-10-15.md), plus [the verified windowed emulator launcher and player recovery](PLAYER_RECOVERY_REVIEW_2026-10-15.md).

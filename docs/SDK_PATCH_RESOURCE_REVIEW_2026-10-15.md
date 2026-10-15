@@ -21,7 +21,7 @@ The full audit still reports 19 high entries inherited from two root advisories:
 | `braces` 3.0.3 through Expo → `@expo/metro` 56.0.2 → `metro-file-map` 0.84.5 → `micromatch` 4.0.8 | Deep recursive brace-pattern stack exhaustion; [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm) | None published; registry latest is 3.0.3. |
 | `node-forge` 1.4.0 through Expo's CLI and `@expo/code-signing-certificates` 0.0.6 | RSA PKCS#1 v1.5 signature verification weakness; [GHSA-86w9-cpqp-85rv](https://github.com/advisories/GHSA-86w9-cpqp-85rv) | None published; registry latest is 1.4.0. |
 
-Neither package nor micromatch occurs in the completed Android or iOS application source-map graph (2,038 and 2,041 sources respectively). Application/server imports were also checked. `react-native-share` does appear in both mobile graphs, including its native spec: successful exports do not turn those features into Expo Go-supported features. The graph receipt is `.tmp/overnight/sdk-patch-runtime-graphs.json`.
+Neither package nor micromatch occurs in the completed Android or iOS application source-map graph (initial SDK-patch graphs: 2,038 and 2,041 sources; final native-retention graphs: 2,040 and 2,043). Application/server imports were also checked. `react-native-share` does appear in both mobile graphs, including its native spec: successful exports do not turn those features into Expo Go-supported features. The graph receipt is `.tmp/overnight/sdk-patch-runtime-graphs.json`.
 
 This narrows the two findings to the installed host build/development toolchain for these tested application graphs; it does not clear the tools or establish exploitability under every input. `npm audit --omit=dev` returns zero findings for the separate production-server graph. Existing production prune tests reject retained Expo/Metro/CLI/forge tooling. npm's proposed Expo 44 downgrade is incompatible and was not used. Logs: `sdk-patch-full-audit.json` and `sdk-patch-server-audit.log`. No suppression or forced audit fix was added.
 
@@ -54,4 +54,4 @@ The previously interrupted owner Feed screenshot was reopened successfully. No d
 
 ## Runtime follow-up
 
-Updated APK installation, measured navigation/scrolling and bounded media lifecycle/resource checks are in progress. No performance improvement or leak-free claim is made from dependency patching alone.
+Updated APK installation succeeded and the guarded owner session was preserved. [The measured native Feed/media review](NATIVE_FEED_MEDIA_REVIEW_2026-10-15.md) records navigation/scrolling samples, video and photo controls, the corrected Feed scroll-position/remount behavior, bounded resource results and final passing regression/exports. No improvement is attributed to dependency patching alone.
