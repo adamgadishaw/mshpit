@@ -40,7 +40,7 @@ function AuthPressable({ accessibilityState = {}, disabled, ...props }) {
 export default function AuthScreen({ onDone, onCancel, onModeChange, navigationAbortRef, initialMode = "login", addAccount = false, initialEmail = "" }) {
   const { login, signup, forgotPassword, session } = useStore();
   const insets = useSafeAreaInsets();
-  const [mode, setMode] = useState(initialMode === "signup" ? "signup" : "login");
+  const [mode, setMode] = useState(["signup", "forgot"].includes(initialMode) ? initialMode : "login");
   const [step, setStep] = useState(1);
   const [name, setName] = useState("");
   const [artistSignup, setArtistSignup] = useState(false);

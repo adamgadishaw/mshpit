@@ -3029,14 +3029,19 @@ export function StoreProvider({ children }) {
     }
   };
   // Complete a reset from the emailed token; on success we're signed in.
-  const resetPassword = async (token, password, { signal } = {}) => {
+  const resetPassword = async (token, password, { signal, onAccepted } = {}) => {
     try {
       return await performAuthentication(() => api("/api/reset", { method: "POST", body: { token, password }, context: "Resetting your password", silent: true, skipIdentityCheck: true }), ({ user }) => {
         if (!user?.id) { void logout(); return { ok: false, error: "Your sign-in could not be confirmed. Please log in again." }; }
+        // Retire the native capability before publishing its deliberately accepted identity.
+        onAccepted?.();
         absorbServerUser(user, { announce: true });
         return { ok: true };
       }, signal);
-    } catch (e) { return { ok: false, error: e.status ? e.message : "Couldn't reset. Try requesting a new link." }; }
+    } catch (error) {
+      if (error?.status >= 400 && error.status < 500) return { ok: false, outcome: "rejected", error: error.message };
+      return { ok: false, outcome: "uncertain", error: "Your password may already have changed. Try logging in with the new password you just entered. If that fails, request a new reset link." };
+    }
   };
 
   // Ensure a handle is unique by suffixing a number if taken.

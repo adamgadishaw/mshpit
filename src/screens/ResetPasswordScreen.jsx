@@ -1,39 +1,52 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
+import { isPassword } from "../domain/validation.mjs";
 import CredentialForm, { CredentialInput, CredentialLabel, CredentialSubmit } from "../components/credential-form";
+
+const readableError = (error, fallback) => String(typeof error === "string" ? error : error?.userMessage || error?.message || fallback).slice(0, 280);
 
 // Set a new password from an emailed reset link (?reset=TOKEN). On success the
 // account is signed straight in and every other session is invalidated.
-export default function ResetPasswordScreen({ token, onDone, onCancel }) {
-  const { resetPassword } = useStore();
+export default function ResetPasswordScreen({ navigationAbortRef, token, onDone, onCancel, onLogin, onRequestReset, onAccepted }) {
+  const { resetPassword, session } = useStore();
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
+  const [recovery, setRecovery] = useState(null);
   const [busy, setBusy] = useState(false);
   const attempt = useRef(null);
   const confirmationInput = useRef(null);
   useEffect(() => () => { attempt.current?.abort(); }, []);
 
+  useLayoutEffect(() => {
+    if (!navigationAbortRef) return undefined;
+    const cancel = () => { const current = attempt.current; if (!current) return; current.abort(); attempt.current = null; setPassword(""); setConfirm(""); setBusy(false); setRecovery("uncertain"); setError("The reset was interrupted. If you submitted a new password, try logging in with it before requesting another link."); };
+    navigationAbortRef.current = cancel;
+    return () => { if (navigationAbortRef.current === cancel) navigationAbortRef.current = null; };
+  }, [navigationAbortRef]);
+
   const submit = async () => {
     if (busy || attempt.current) return;
-    if (password.length < 8) { setError("Use at least 8 characters."); return; }
+    if (!isPassword(password)) { setError("Use 8 or more characters, including a letter and a number."); return; }
     if (password !== confirm) { setError("The two passwords don't match."); return; }
     setBusy(true);
     setError("");
+    setRecovery(null);
     const controller = new AbortController();
     attempt.current = controller;
     try {
-      const res = await resetPassword(token, password, { signal: controller.signal });
+      const res = await resetPassword(token, password, { signal: controller.signal, onAccepted });
       if (controller.signal.aborted) return;
       if (res?.ok) onDone?.();
-      else setError(res?.error || "Couldn't reset. Request a new link.");
+      else { setError(readableError(res?.error, "Couldn't reset. Request a new link.")); setRecovery(res?.outcome || "rejected"); }
     } catch {
       if (controller.signal.aborted) return;
-      setError("Couldn't reset. Check your connection and request a new link if needed.");
+      setError("Your password may already have changed. Try logging in with the new password you just entered.");
+      setRecovery("uncertain");
     } finally {
       if (attempt.current === controller) attempt.current = null;
       if (!controller.signal.aborted) setBusy(false);
@@ -45,7 +58,8 @@ export default function ResetPasswordScreen({ token, onDone, onCancel }) {
       <SheetHeader title="Set a new password" onClose={onCancel} />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.wordmark}>MSHPIT</Text>
-        <Text style={styles.tag}>Choose a new password for your account.</Text>
+        <Text style={styles.tag}>Choose a new password for the account that received this email link. Completing the reset signs that account in.</Text>
+        {session ? <Text style={styles.tag} accessibilityRole="alert">You are currently signed in as @{session.handle}. This link may be for a different account. Resetting will switch to the account that received the email.</Text> : null}
         <CredentialForm busy={busy} id="pit-reset-password" onSubmit={submit} disabled={busy}>
         <CredentialLabel htmlFor="new-password" style={styles.label}>New password</CredentialLabel>
         <CredentialInput
@@ -86,9 +100,13 @@ export default function ResetPasswordScreen({ token, onDone, onCancel }) {
         />
         {!!error && <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">{error}</Text>}
         <CredentialSubmit style={[styles.primary, busy && styles.disabled]} onPress={submit} disabled={busy} accessibilityRole="button" accessibilityState={{ disabled: busy, busy }}>
-          <Text style={styles.primaryTxt}>{busy ? "SAVING..." : "RESET PASSWORD"}</Text>
+          <Text style={styles.primaryTxt}>{busy ? "SAVING..." : session ? "Reset linked account and sign in" : "RESET PASSWORD"}</Text>
         </CredentialSubmit>
         </CredentialForm>
+        {recovery ? <>
+          <Pressable style={styles.switchButton} onPress={onLogin} disabled={busy} accessibilityRole="button"><Text style={styles.switch}>{recovery === "uncertain" ? "Log in with the new password" : "Go to log in"}</Text></Pressable>
+          <Pressable style={styles.switchButton} onPress={onRequestReset} disabled={busy} accessibilityRole="button"><Text style={styles.switch}>Request a new reset link</Text></Pressable>
+        </> : null}
         <Pressable style={styles.switchButton} onPress={onCancel} disabled={busy} accessibilityRole="button" accessibilityState={{ disabled: busy }}><Text style={styles.switch}>Cancel</Text></Pressable>
         <View style={styles.note}>
           <Icon name="lock" size={15} color={colors.amber} />

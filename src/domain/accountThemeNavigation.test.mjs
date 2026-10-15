@@ -36,7 +36,7 @@ test("actual Root theme effect reads the live destination rather than a stale re
   const node = findNode(source, node => node.type === "CallExpression" && node.callee.name === "useEffect"
     && source.slice(node.arguments[0]?.start, node.arguments[0]?.end).includes("accountThemeNavigationReady"));
   const scope = {
-    web: true, authReady: true, session: { id: "member" }, resetToken: null, ownerApprovalToken: null,
+    nativeAccountLinkActive: false, web: true, authReady: true, session: { id: "member" }, resetToken: null, ownerApprovalToken: null,
     navigationRef: { current: { stack: [{}, { auth: true }] } },
     accountThemeSyncRef: { current: null },
     accountThemeNavigationReady, calls: 0,
@@ -47,6 +47,9 @@ test("actual Root theme effect reads the live destination rather than a stale re
   scope.navigationRef.current.stack = [{}, { routeLoading: "/post/p" }];
   effect(); assert.equal(scope.calls, 0, "fresh public content must settle before a reload");
   scope.navigationRef.current.stack = [{}, { post: { id: "p" } }];
+  scope.nativeAccountLinkActive = true;
+  effect(); assert.equal(scope.calls, 0, "native account links must not be lost to a theme reload");
+  scope.nativeAccountLinkActive = false;
   effect(); assert.equal(scope.calls, 1);
   scope.navigationRef.current.stack = [{}, { venueName: "A different public destination" }];
   effect(); assert.equal(scope.calls, 1, "ordinary navigation must not repeat a preference write");
@@ -87,7 +90,7 @@ test("native Root reconciles a settled guest and Store performs no account mutat
   const effectNode = findNode(app, node => node.type === "CallExpression" && node.callee.name === "useEffect"
     && app.slice(node.arguments[0]?.start, node.arguments[0]?.end).includes("accountThemeNavigationReady"));
   let calls = 0;
-  const rootScope = { web:false, authReady:false, session:null, resetToken:null, ownerApprovalToken:null,
+  const rootScope = { nativeAccountLinkActive:false, web:false, authReady:false, session:null, resetToken:null, ownerApprovalToken:null,
     accountThemeSyncRef:{current:null},navigationRef:{current:{stack:[{}]}},accountThemeNavigationReady,syncAccountTheme:()=>calls++ };
   const effect = runInNewContext(`(${app.slice(effectNode.arguments[0].start,effectNode.arguments[0].end)})`,rootScope);
   effect();assert.equal(calls,0);rootScope.authReady=true;effect();assert.equal(calls,1,"settled sign-out applies guest appearance");

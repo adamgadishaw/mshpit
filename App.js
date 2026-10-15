@@ -1,3 +1,4 @@
+import NativeAccountLinks from "./src/screens/NativeAccountLinks";
 import { nativeNewsLinkFrame } from "./src/domain/nativeNewsLink.mjs";
 import { publicDiscoveryRailAllowed } from "./src/domain/publicPlacementPolicy.mjs";
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, Suspense } from "react";
@@ -508,6 +509,7 @@ function Root() {
     else remove(PLAYER_STATE_STORAGE_KEY);
   }, [authReady, player, playerAccountId, playerStateIsScoped, web]);
   const [acctOpen, setAcctOpen] = useState(false);
+  const [nativeAccountLinkActive, setNativeAccountLinkActive] = useState(false);
   // The reusable product guide remains available from the menu. New-account
   // setup is separate and keyed to private server state below, so it works on
   // web and native and can safely resume after an interrupted first sign-in.
@@ -1041,7 +1043,7 @@ function Root() {
     if (!accountThemeNavigationReady({
       authReady, accountId: session?.id,
       frame: navigationRef.current.stack.at(-1),
-      sensitiveFlow: !!(resetToken || ownerApprovalToken),
+      sensitiveFlow: !!(resetToken || ownerApprovalToken || nativeAccountLinkActive),
     })) return;
     const previous = accountThemeSyncRef.current;
     if (previous?.accountId === session.id && previous?.theme === session.theme) return;
@@ -1049,7 +1051,7 @@ function Root() {
     syncAccountTheme();
     // Account theme synchronization reads the authoritative Store refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authReady, session?.id, session?.theme, stack, resetToken, ownerApprovalToken]);
+  }, [authReady, session?.id, session?.theme, stack, resetToken, ownerApprovalToken, nativeAccountLinkActive]);
 
   useEffect(() => {
     if (web && !nav.routeLoading) browserHistoryRef.current?.capture(navigationRef.current);
@@ -1515,7 +1517,7 @@ function Root() {
   const status = session ? accountStatus(session) : "ok";
   const feedSurfaceVisible = newsFeedSurfaceVisible({
     tab: activeTab, hasOverlay: !!overlay, landing,
-    obscured: status !== "ok" || !!acctOpen || !!welcome || !!resetToken || !!unsubToken || !!verifyToken || !!ownerApprovalToken,
+    obscured: nativeAccountLinkActive || status !== "ok" || !!acctOpen || !!welcome || !!resetToken || !!unsubToken || !!verifyToken || !!ownerApprovalToken,
     pendingNavigation: !!publicNavigationNotice || !!newsStoryNotice,
     web, pathname: web ? window.location.pathname : null,
   });
@@ -1718,7 +1720,7 @@ function Root() {
     }
     return result;
   };
-  const playerObscured = !!resetToken || !!ownerApprovalToken || !!welcome || signupOnboardingVisible || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
+  const playerObscured = nativeAccountLinkActive || !!resetToken || !!ownerApprovalToken || !!welcome || signupOnboardingVisible || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
   const landingSurface = landingRenderSurface({ authReady, session, landing });
 
   return (
@@ -1907,6 +1909,7 @@ function Root() {
           </View>
         )}
 
+        {!web && <NativeAccountLinks onActiveChange={setNativeAccountLinkActive} onEnter={() => { authNavigationAbortRef.current?.(); }} />}
       </SafeAreaView>
     </View>
     </NewsInteractionContext.Provider>

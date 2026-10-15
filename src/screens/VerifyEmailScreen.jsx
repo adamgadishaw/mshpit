@@ -1,17 +1,25 @@
 // Confirmation step for an emailed verification link. The link only carries the
 // token here; confirming happens on the tap below, so a mail scanner prefetching
 // the URL cannot mark an address verified on the owner's behalf.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { colors, radius, space } from "../theme";
 import { useStore } from "../store";
+import VerifyEmailBanner from "../components/VerifyEmailBanner";
 
-export default function VerifyEmailScreen({ token, onConsumed, onDone, onLogin }) {
-  const { confirmEmailVerification } = useStore();
+export default function VerifyEmailScreen({ navigationAbortRef, token, onConsumed, onDone, onLogin }) {
+  const { confirmEmailVerification, resendEmailVerification, session } = useStore();
   const [state, setState] = useState("asking");
   const requestRef = useRef(null);
 
   useEffect(() => () => requestRef.current?.abort(), []);
+
+  useLayoutEffect(() => {
+    if (!navigationAbortRef) return undefined;
+    const cancel = () => { const current = requestRef.current; if (!current) return; current.abort(); requestRef.current = null; setState("failed"); };
+    navigationAbortRef.current = cancel;
+    return () => { if (navigationAbortRef.current === cancel) navigationAbortRef.current = null; };
+  }, [navigationAbortRef]);
 
   const submit = async () => {
     if (requestRef.current) return;
@@ -26,7 +34,7 @@ export default function VerifyEmailScreen({ token, onConsumed, onDone, onLogin }
         onConsumed?.();
         setState(result.sessionUpdated ? "done" : "doneExternal");
       } else {
-        setState("expired");
+        setState("invalid");
       }
     } catch {
       if (!controller.signal.aborted) setState("failed");
@@ -68,21 +76,23 @@ export default function VerifyEmailScreen({ token, onConsumed, onDone, onLogin }
         {state === "doneExternal" && (
           <>
             <Text style={styles.h}>That email is confirmed.</Text>
-            <Text style={styles.p}>Log in to finish your profile, add your photos, and find your first show.</Text>
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onLogin || onDone} accessibilityRole="button">
-              <Text style={styles.btnTxtPrimary}>Continue to log in</Text>
+            <Text style={styles.p}>{session ? "The link confirmed another account. Your current account has not changed. Switch accounts to continue with that account." : "Log in to finish your profile, add your photos, and find your first show."}</Text>
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={session ? onDone : onLogin || onDone} accessibilityRole="button">
+              <Text style={styles.btnTxtPrimary}>{session ? "Back to current account" : "Continue to log in"}</Text>
             </Pressable>
           </>
         )}
 
-        {state === "expired" && (
+        {state === "invalid" && (
           <>
-            <Text style={styles.h}>That link has expired.</Text>
-            <Text style={styles.p}>
-              Verification links last 24 hours. Sign in and you can send yourself a fresh one.
-            </Text>
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onLogin || onDone} accessibilityRole="button">
-              <Text style={styles.btnTxtPrimary}>Log in to get a new link</Text>
+            <Text style={styles.h}>That link cannot be used.</Text>
+            <Text style={styles.p}>It may be invalid, expired, or replaced by a resend. Open the most recent confirmation email. Requesting another link replaces earlier links.</Text>
+            {session ? <>
+              <Text style={styles.p}>Recovery below applies only to your currently signed-in account. If this email was for another account, switch accounts first.</Text>
+              {session.emailVerified === false ? <VerifyEmailBanner email={session.email} onResend={resendEmailVerification} /> : <Text style={styles.p}>Your current account is already verified. This does not validate this link.</Text>}
+            </> : null}
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={session ? onDone : onLogin || onDone} accessibilityRole="button">
+              <Text style={styles.btnTxtPrimary}>{session ? "Back to current account" : "Log in to request a new link"}</Text>
             </Pressable>
           </>
         )}
