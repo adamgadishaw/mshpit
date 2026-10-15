@@ -615,7 +615,7 @@ test("member desired-state actions are safe to retry after a lost response", asy
   const target = addUser("member_action_retry", "fan");
   const roleTarget = addUser("member_role_retry", "fan");
   const adminTarget = addUser("member_admin_retry", "fan");
-  const call = (route, user, id, body = {}) => routes[route](staffCtx(user, { params: { id }, body }));
+  const call = (route, user, id, body = {}) => routes[route](staffCtx(user, { params: { id }, body: route.endsWith("/verify-email") ? { reason: "Local synthetic manual verification", confirmedTargetId: id, confirmedHandle: q.userById.get(id).handle, ...body } : body }));
   const auditCount = (id, action) => db.prepare("SELECT COUNT(*) count FROM moderation_actions WHERE target_id=? AND action=?").get(id, action).count;
 
   const firstSuspend = call("POST /api/admin/users/:id/suspend", moderator, target.id, { days: 1, reason: "retry-safe timeout" });
@@ -644,7 +644,7 @@ test("member desired-state actions are safe to retry after a lost response", asy
   const retriedEmail = call("POST /api/admin/users/:id/verify-email", admin, target.id);
   assert.equal(firstEmail.emailVerified, true);
   assert.equal(retriedEmail.emailVerified, true);
-  assert.equal(auditCount(target.id, "verify-email"), 1);
+  assert.equal(auditCount(target.id, "verify-email"), 2, "each manual attempt records its result");
 
   assert.deepEqual(call("POST /api/admin/users/:id/role", admin, roleTarget.id, { role: "artist" }), { ok: true, role: "artist", handle: roleTarget.handle });
   assert.deepEqual(call("POST /api/admin/users/:id/role", admin, roleTarget.id, { role: "artist" }), { ok: true, role: "artist", handle: roleTarget.handle });
@@ -700,7 +700,7 @@ test("email verification and its moderation audit commit atomically", () => {
     BEGIN SELECT RAISE(ABORT, 'forced verify-email audit failure'); END`);
   try {
     assert.throws(
-      () => routes["POST /api/admin/users/:id/verify-email"](staffCtx(admin, { params: { id: target.id } })),
+      () => routes["POST /api/admin/users/:id/verify-email"](staffCtx(admin, { params: { id: target.id }, body: { reason: "Local synthetic manual verification", confirmedTargetId: target.id, confirmedHandle: target.handle } })),
       /forced verify-email audit failure/,
     );
   } finally {
@@ -712,9 +712,9 @@ test("email verification and its moderation audit commit atomically", () => {
   assert.equal(rolledBack.welcome_sent_at, 0, "welcome delivery must not start before commit");
   assert.equal(db.prepare("SELECT COUNT(*) count FROM moderation_actions WHERE target_id=? AND action='verify-email'").get(target.id).count, 0);
 
-  const completed = routes["POST /api/admin/users/:id/verify-email"](staffCtx(admin, { params: { id: target.id } }));
+  const completed = routes["POST /api/admin/users/:id/verify-email"](staffCtx(admin, { params: { id: target.id }, body: { reason: "Local synthetic manual verification", confirmedTargetId: target.id, confirmedHandle: target.handle } }));
   assert.equal(completed.emailVerified, true);
-  assert.ok(q.userById.get(target.id).welcome_sent_at > 0, "a successful commit releases the guarded welcome");
+  assert.equal(q.userById.get(target.id).welcome_sent_at, 0, "manual approval sends no email");
   assert.equal(db.prepare("SELECT COUNT(*) count FROM moderation_actions WHERE target_id=? AND action='verify-email'").get(target.id).count, 1);
 });
 

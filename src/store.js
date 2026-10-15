@@ -5986,14 +5986,14 @@ export function StoreProvider({ children }) {
   // Confirm someone's address for them. Distinct from setVerified above: this is
   // private account state and grants no public badge, so it only ever moves to
   // true and there is no "unconfirm".
-  const markEmailVerified = async (id) => {
-    if (!isStaff(sessionRef.current?.role)) return false;
+  const markEmailVerified = async (id, reason, confirmedHandle) => {
+    if (sessionRef.current?.role !== "admin") return false;
     const scope = staffScopeFor(sessionRef.current);
     try {
-      await staffApi(`/api/admin/users/${id}/verify-email`, { method: "POST", body: {}, context: "Confirming a member's email" });
+      const result = await staffApi(`/api/admin/users/${id}/verify-email`, { method: "POST", body: { reason, confirmedTargetId: id, confirmedHandle }, context: "Manually verifying a member" });
       if (staffMutationStillOwned(scope)) {
         invalidateStaffMemberReads();
-        patchStaffMember(id, { emailVerified: true });
+        patchStaffMember(id, { emailVerified: true, emailVerificationMethod: result?.method || "legacy" });
         setSession((s) => (s && s.id === id ? { ...s, emailVerified: true } : s));
       }
       return true;

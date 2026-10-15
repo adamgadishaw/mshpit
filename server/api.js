@@ -9162,7 +9162,11 @@ export const routes = {
     limit(ctx, "verify-email", 20, 60 * 60 * 1000);
     const token = clean(ctx.body?.token, { max: 100 });
     const completion = completeVerification(token);
-    if (!completion) return { ok: true, verified: false };
+    if (!completion) {
+      console.info('[verification] confirm outcome=invalid-expired-or-replaced');
+      return { ok: true, verified: false, reason: 'invalid-expired-or-replaced' };
+    }
+    console.info('[verification] confirm outcome=' + (completion.replayed ? 'replayed' : 'confirmed'));
     const response = { ok: true, verified: true, alreadyVerified: completion.replayed };
     // Possession of an email token authorizes confirming that address, not
     // reading the account's private self projection. Only the matching active
@@ -9176,16 +9180,17 @@ export const routes = {
     return response;
   },
 
-  "POST /api/verify-email/resend": (ctx) => {
+  "POST /api/verify-email/resend": async (ctx) => {
     ctx.setHeader?.("Cache-Control", "no-store");
     const u = requireUser(ctx);
     limit(ctx, "verify-resend", 5, 60 * 60 * 1000);
-    const result = resendVerification(q.userById.get(u.id));
+    const result = await resendVerification(q.userById.get(u.id));
     const fresh = q.userById.get(u.id);
     const verified = !!fresh?.email_verified_at;
     return {
       ok: true,
       sent: result.sent,
+      deliveryStatus: result.deliveryStatus || null,
       reason: result.reason,
       verified,
       ...(verified ? { user: publicUser(fresh, { self: true }) } : {}),
@@ -9259,27 +9264,47 @@ export const routes = {
   // it survives reload + shows cross-device.
   // Confirm an address on someone's behalf. Distinct from /verified below, which
   // grants the PUBLIC verification check; this one is private account state and
-  // earns cosmetic email confirmation, never reviewed artist identity or permissions.
-  // Also releases the welcome mail, exactly once.
+  // grants no reviewed artist identity or permissions. Manual approval does not prove delivery or send mail.
   "POST /api/admin/users/:id/verify-email": (ctx) => {
-    const actor = requireAdmin(ctx);
-    const before = q.userById.get(ctx.params.id);
-    if (!before) throw new ApiError(404, "No such member.", "NOT_FOUND");
-    if (!before.email_verified_at) atomicWrite(() => {
-      const changed = db.prepare(`UPDATE users
-        SET email_verified_at=?, email_verify_hash=NULL, email_verify_expires=0
-        WHERE id=? AND email_verified_at=0`).run(now(), ctx.params.id).changes === 1;
-      if (changed) claimPendingSignupHandle(db, q.userById.get(before.id), now());
-      if (changed) grantFirstWaveBadge(db, before.id, { at: now() });
-      if (changed) moderationRecord(ctx, "verify-email", "user", before.id, ctx.body?.reason || "",
-        { emailVerified: false }, { emailVerified: true, by: actor.id });
-    });
+    ctx.setHeader?.("Cache-Control", "no-store");
+    requireAdmin(ctx);
+    const reason = clean(ctx.body?.reason, { max: 500 });
+    if (!reason || reason.length < 10) throw new ApiError(400, "Give a reason of at least 10 characters. Do not include addresses or secrets.", "VALIDATION_FAILED");
+    if (ctx.body?.confirmedTargetId !== ctx.params.id) throw new ApiError(409, "Confirm the selected member again.", "CONFLICT");
+    let changed = false;
+    try {
+      atomicWrite(() => {
+        const before = q.userById.get(ctx.params.id);
+        if (!before) throw new ApiError(404, "No such member.", "NOT_FOUND");
+        if (!before.email_verified_at && ctx.body?.confirmedHandle !== before.handle) throw new ApiError(409, "The selected member changed. Refresh and confirm again.", "CONFLICT");
+        changed = db.prepare(`UPDATE users SET email_verified_at=?, email_verification_method='admin-manual',
+          email_verify_hash=NULL, email_verify_expires=0 WHERE id=? AND email_verified_at=0`).run(now(), before.id).changes === 1;
+        if (changed) {
+          db.prepare("DELETE FROM email_verification_receipts WHERE user_id=?").run(before.id);
+          claimPendingSignupHandle(db, q.userById.get(before.id), now());
+          grantFirstWaveBadge(db, before.id, { at: now() });
+        }
+        moderationRecord(ctx, "verify-email", "user", before.id, reason,
+          { emailVerified: !!before.email_verified_at },
+          { emailVerified: true, method: changed ? 'admin-manual' : before.email_verification_method || 'legacy',
+            result: changed ? 'verified' : 'already-verified', emailDeliveryProven: false });
+      });
+    } catch (error) {
+      // Preserve a failed-attempt result after rollback when audit storage works.
+      // If that storage itself failed, verification stays rolled back.
+      try {
+        moderationRecord(ctx, "verify-email-failed", "user", ctx.params.id, reason, {},
+          { result: "failed", method: "admin-manual", failureClass: error instanceof ApiError ? error.code : "INTERNAL_ERROR" });
+      } catch {
+        console.warn("[verification] manual outcome=audit-unavailable");
+      }
+      throw error;
+    }
+    console.info("[verification] manual outcome=" + (changed ? "verified" : "already-verified"));
     const target = q.userById.get(ctx.params.id);
-    // External delivery stays outside the transaction. The durable welcome
-    // claim is itself guarded, so a retry repairs a crash after commit without
-    // sending twice; an audit failure rolls verification back before this runs.
-    void sendWelcomeOnce(target, { background: true });
-    return { user: publicUser(target, { self: false }), emailVerified: !!target.email_verified_at };
+    // Manual approval is not evidence of delivery. Do not send welcome mail here.
+    return { user: publicUser(target, { self: false }), emailVerified: !!target.email_verified_at,
+      method: target.email_verification_method || 'legacy', result: changed ? 'verified' : 'already-verified' };
   },
 
   "POST /api/admin/users/:id/verified": (ctx) => {
@@ -9489,12 +9514,12 @@ export const routes = {
     if (cursor) pageArgs.push(cursor.createdAt, cursor.createdAt, cursor.id);
     pageArgs.push(memberLimit + 1);
     const found = db.prepare(`SELECT id,name,handle,initials,avatar_uri,avatar_color,verified,sponsor,role,home_city,
-      is_banned,suspended_until,created_at,email_verified_at FROM users ${whereSql} ${cursorSql}
+      is_banned,suspended_until,created_at,email_verified_at,email_verification_method FROM users ${whereSql} ${cursorSql}
       ORDER BY created_at DESC,id DESC LIMIT ?`).all(...pageArgs);
     const { rows, nextCursor } = finishPage(found, memberLimit);
     // `emailVerified` is private state that publicUser withholds from everyone but
     // the account owner. It is included here because this route is staff-only and
-    // an admin needs it to answer "did my mail reach them".
+    // an admin needs to distinguish link confirmation from manual approval.
     // One grouped read for every row's badges. Calling customBadgesFor per user
     // here would be one query per card. Scope the grouped read to this bounded
     // page so a large directory's badge table cannot dominate every search.
@@ -9517,7 +9542,7 @@ export const routes = {
       createdAt: r.created_at, badges: badgesByUser.get(r.id) || [],
       // Address-confirmation state is private and actionable only by admins.
       // Moderators still receive the restriction fields they need for triage.
-      ...(actor.role === "admin" ? { emailVerified: !!r.email_verified_at } : {}),
+      ...(actor.role === "admin" ? { emailVerified: !!r.email_verified_at, emailVerificationMethod: r.email_verification_method || (r.email_verified_at ? "legacy" : null) } : {}),
     }));
     const total = db.prepare("SELECT COUNT(*) c FROM users").get().c;
     const matchingTotal = filters.length

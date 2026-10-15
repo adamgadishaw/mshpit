@@ -109,6 +109,8 @@ function Feedback({ feedback, onClear }) {
 }
 
 function Confirmation({ request, busy, onCancel, onConfirm }) {
+  const [reason, setReason] = useState("");
+  useEffect(() => setReason(""), [request?.key]);
   if (!request) return null;
   return (
     <View accessibilityLiveRegion="polite" accessibilityRole="alert" style={styles.confirmBox}>
@@ -116,6 +118,7 @@ function Confirmation({ request, busy, onCancel, onConfirm }) {
       <View style={styles.confirmCopy}>
         <Text style={styles.confirmTitle}>{request.title}</Text>
         <Text style={styles.confirmDetail}>{request.detail}</Text>
+        {request.requiresReason ? <TextInput accessibilityLabel="Reason for manual verification" placeholder="Required reason (no addresses or secrets)" value={reason} onChangeText={setReason} maxLength={500} editable={!busy} multiline placeholderTextColor={colors.textFaint} style={styles.confirmReason} /> : null}
         <View style={styles.actionRow}>
           <ActionButton label="Cancel" compact disabled={busy} onPress={onCancel} />
           <ActionButton
@@ -123,9 +126,9 @@ function Confirmation({ request, busy, onCancel, onConfirm }) {
             icon={busy ? null : request.icon}
             compact
             tone={request.tone || "warning"}
-            disabled={busy}
+            disabled={busy || (request.requiresReason && reason.trim().length < 10)}
             busy={busy}
-            onPress={onConfirm}
+            onPress={() => onConfirm(reason.trim())}
           />
           {busy ? <ActivityIndicator accessibilityLabel="Action in progress" color={colors.amber} size="small" /> : null}
         </View>
@@ -438,7 +441,7 @@ function MemberDetail({ member, selfId, canAdmin, grantableBadges, busy, confirm
   const banned = status === "banned";
   const scope = `member:${member.id}`;
   const ask = (request) => onRequest({ ...request, scope });
-  const confirmChange = ({ key, title, detail, label, icon, tone, success, run }) => ask({ key: `${scope}:${key}`, title, detail, confirmLabel: label, icon, tone, success, run });
+  const confirmChange = ({ key, title, detail, label, icon, tone, success, run, requiresReason }) => ask({ key: `${scope}:${key}`, title, detail, confirmLabel: label, icon, tone, success, run, requiresReason });
   return (
     <View style={[styles.memberDetail, banned && styles.cardDanger, owner && styles.cardOwner]}>
       <View style={styles.memberDetailHeader}>
@@ -485,7 +488,7 @@ function MemberDetail({ member, selfId, canAdmin, grantableBadges, busy, confirm
           </ControlGroup>
           <ControlGroup label="Trust">
             <ActionButton label={member.verified ? "Remove verification" : "Grant verification"} icon={member.verified ? "x" : "check"} tone={member.verified ? "warning" : "success"} disabled={busy} onPress={() => confirmChange({ key: "verified", title: `${member.verified ? "Remove" : "Grant"} public verification?`, detail: "This controls the public blue check and is separate from email confirmation.", label: member.verified ? "Remove check" : "Grant check", icon: member.verified ? "x" : "check", tone: member.verified ? "warning" : "success", success: member.verified ? "Verification removed." : "Verification granted.", run: () => actions.setVerified(member.id, !member.verified) })} />
-            {!member.emailVerified ? <ActionButton label="Mark email confirmed" icon="mail" tone="success" disabled={busy} onPress={() => confirmChange({ key: "email", title: "Mark this email address confirmed?", detail: "This private account flag cannot be undone here and does not grant a public badge.", label: "Confirm email", icon: "mail", tone: "warning", success: "Email marked confirmed.", run: () => actions.markEmailVerified(member.id) })} /> : <Text style={styles.confirmedText}>Email confirmed</Text>}
+            {!member.emailVerified ? <ActionButton label="Manually verify account" icon="mail" tone="success" disabled={busy} onPress={() => confirmChange({ key: "email", title: `Manually verify @${member.handle} (${member.id})?`, detail: "This grants private account verification without proving email delivery or ownership. Existing account restrictions stay in place. Record why the email route could not be used.", requiresReason: true, label: "Manually verify", icon: "mail", tone: "warning", success: "Account manually verified; email delivery is unproven.", run: (reason) => actions.markEmailVerified(member.id, reason, member.handle) })} /> : <Text style={styles.confirmedText}>{member.emailVerificationMethod === "admin-manual" ? "Manually verified (delivery unproven)" : "Email confirmed"}</Text>}
             <ActionButton label={member.sponsor ? "Remove sponsor mark" : "Grant sponsor mark"} icon={member.sponsor ? "x" : "star"} tone={member.sponsor ? "warning" : "success"} disabled={busy} onPress={() => confirmChange({ key: "sponsor", title: `${member.sponsor ? "Remove" : "Grant"} sponsor mark?`, detail: "This changes the public sponsor badge for this account.", label: member.sponsor ? "Remove mark" : "Grant mark", icon: member.sponsor ? "x" : "star", tone: member.sponsor ? "warning" : "success", success: member.sponsor ? "Sponsor mark removed." : "Sponsor mark granted.", run: () => actions.setSponsor(member.id, !member.sponsor) })} />
           </ControlGroup>
           {(grantableBadges.length || member.badges?.length) ? (
@@ -819,7 +822,7 @@ export default function ModerationConsole({
     setFeedback(null);
     setConfirmation(request);
   };
-  const confirmAction = async () => {
+  const confirmAction = async (reason) => {
     const request = confirmation;
     if (!request || actionLocked || actionInFlight.current) return;
     const operation = { key: request.key, sessionId: session?.id };
@@ -827,7 +830,7 @@ export default function ModerationConsole({
     setBusyKey(request.key);
     setFeedback(null);
     try {
-      const result = await request.run();
+      const result = await request.run(reason);
       if (actionInFlight.current !== operation || activeSessionId.current !== operation.sessionId) return;
       if (result === false || result?.ok === false) throw result?.error || new Error("The server did not apply this change.");
       setConfirmation(null);
@@ -891,6 +894,7 @@ const styles = StyleSheet.create({
   confirmCopy: { flex: 1, gap: space(1) },
   confirmTitle: { color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: "900" },
   confirmDetail: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
+  confirmReason: { color: colors.text, backgroundColor: colors.bg, borderColor: colors.line, borderWidth: 1, borderRadius: radius.md, minHeight: 64, padding: space(2), marginTop: space(2), fontSize: 13 },
   searchField: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: space(2), borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface, paddingHorizontal: space(3) },
   searchInput: { flex: 1, minWidth: 0, color: colors.text, fontSize: 14, paddingVertical: space(3) },
   iconButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },

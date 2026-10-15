@@ -1799,6 +1799,7 @@ const additiveMigrations = [
   // Reusing it would hand a public verification mark to anyone who clicked a link
   // in their own inbox. These are private account state.
   "ALTER TABLE users ADD COLUMN email_verified_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN email_verification_method TEXT",
   "ALTER TABLE users ADD COLUMN email_verify_hash TEXT",
   "ALTER TABLE users ADD COLUMN email_verify_expires INTEGER NOT NULL DEFAULT 0",
   // Set when the welcome mail goes out, so verifying twice, an admin marking an
@@ -2577,7 +2578,7 @@ export const emailStmts = {
   // so a database read cannot be replayed to verify somebody else's address.
   setVerifyToken: db.prepare("UPDATE users SET email_verify_hash=?, email_verify_expires=? WHERE id=?"),
   userByVerifyHash: db.prepare("SELECT * FROM users WHERE email_verify_hash=? AND email_verify_expires > ?"),
-  markEmailVerified: db.prepare("UPDATE users SET email_verified_at=?, email_verify_hash=NULL, email_verify_expires=0 WHERE id=?"),
+  markEmailVerified: db.prepare("UPDATE users SET email_verified_at=?, email_verification_method='email-link', email_verify_hash=NULL, email_verify_expires=0 WHERE id=?"),
   verificationReceiptByHash: db.prepare("SELECT * FROM email_verification_receipts WHERE token_hash=? AND expires_at>?"),
   recordVerificationReceipt: db.prepare(`INSERT INTO email_verification_receipts
     (token_hash,user_id,email_hash,verified_at,expires_at) VALUES (?,?,?,?,?)
@@ -3196,6 +3197,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
       directMessagePolicy: u.dm_policy || "mutuals",
       profileAudience: u.profile_audience || "everyone",
       emailVerified: !!u.email_verified_at,
+      emailVerificationMethod: u.email_verification_method || (u.email_verified_at ? "legacy" : null),
       pendingArtistIntent: pendingArtistSignupIntent(parseJsonObject(u.extras)),
       ...(!u.email_verified_at ? { pendingSignupHandle: pendingSignupHandle(parseJsonObject(u.extras)) || null } : {}),
       handleChangeAvailableAt: handleChangeAvailableAt(u.handle_changed_at),
