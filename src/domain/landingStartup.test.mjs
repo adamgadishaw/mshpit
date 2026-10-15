@@ -110,12 +110,12 @@ test("App delegates startup and auth rendering to the pure landing policy", asyn
 });
 
 test("actual commitGo marks only new Intro-origin auth frames and keeps the marker across mode changes", async () => {
-  const construct = new Function("navigationFrameForAccount", "prepareAvailableNavigationFrame", "session", "stackRef", "navigationRef", "pathForFrame", "web", "serverDocumentNavigationPath", "writeNavigation", `return (${await actualAppFunction("commitGo")});`);
+  const construct = new Function("Platform", "navigationFrameForAccount", "prepareAvailableNavigationFrame", "session", "stackRef", "navigationRef", "pathForFrame", "web", "serverDocumentNavigationPath", "writeNavigation", `return (${await actualAppFunction("commitGo")});`);
   for (const landing of [true, false]) {
     for (const candidate of [{ auth: true, authMode: "login" }, { auth: true, authMode: "signup" }, { directory: "events" }]) {
       const stack = landing ? [{}] : [{}, { show: { id: "context-event" } }];
       let committed;
-      construct(navigationFrameForAccount, (frame) => frame, null, { current: stack }, { current: { stack, landing } },
+      construct({ OS: "android" }, navigationFrameForAccount, (frame) => frame, null, { current: stack }, { current: { stack, landing } },
         () => null, false, () => null, (next) => { committed = next; })(candidate);
       const frame = committed.stack.at(-1);
       assert.equal(frame.authFromLanding, landing && candidate.auth ? true : undefined);

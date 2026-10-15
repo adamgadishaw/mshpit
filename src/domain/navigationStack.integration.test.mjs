@@ -73,7 +73,7 @@ function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => f
   const publicNavigationPendingRef = { current: null };
   const publicRouteRequestRef = { current: null };
   functions = runInNewContext(actualFunctions, {
-    web, stackRef, navigationRef, replaceNavigationFrame, prepareAvailableNavigationFrame: prepare, navigationFrameForAccount, session,
+    web, Platform: { OS: web ? "web" : "android" }, stackRef, navigationRef, replaceNavigationFrame, prepareAvailableNavigationFrame: prepare, navigationFrameForAccount, session,
     pathForFrame: (frame) => frame.path || null, serverDocumentNavigationPath: () => null,
     setStack: (update) => queued.push(update), setTab: () => {}, setLanding: () => {},
     window: { history, location }, browser, browserHistoryRef: { current: browser },

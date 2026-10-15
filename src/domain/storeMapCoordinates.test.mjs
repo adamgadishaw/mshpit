@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "@babel/parser";
+import { canonicalVenueKey } from "./venueIdentity.mjs";
+import { nativeNearbyVenues } from "./nativeNearbyVenues.mjs";
+import { nativeVenueCoordinates } from "./nativeVenueCoordinates.mjs";
+import { isUpcomingEventDate } from "./dataPolicy.mjs";
 import { mapCoordinate } from "./mapCoordinates.mjs";
 
 const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
@@ -18,7 +22,7 @@ function storeFunction(name, dependencies) {
   };
   visit(ast);
   assert.ok(body, `Expected the real store ${name} implementation`);
-  const bindings = { mapCoordinate, ...dependencies };
+  const bindings = { mapCoordinate, Platform: { OS: "web" }, nativeVenueKey: canonicalVenueKey, nativeNearbyVenues, nativeVenueCoordinates, nativeVenueCoordinatesRef: { current: null }, isUpcomingEventDate, ...dependencies };
   return new Function(...Object.keys(bindings), `return (${source.slice(body.start, body.end)});`)(...Object.values(bindings));
 }
 const venueResolver = (catalog, ratedShows = [], tourDates = []) => storeFunction("venueCoord", {

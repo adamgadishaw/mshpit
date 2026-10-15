@@ -53,6 +53,7 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
       },
       PanResponder: { create: () => ({ panHandlers: {} }) },
     };
+    if (dependency === "react-native-safe-area-context") return { useSafeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }) };
     if (dependency === "expo") return { useEvent: () => ({}) };
     if (dependency === "expo-video") return { VideoView: "VideoView", useVideoPlayer: () => ({}) };
     if (dependency === "../theme") return { colors: {}, radius: {}, roleColor: () => null };

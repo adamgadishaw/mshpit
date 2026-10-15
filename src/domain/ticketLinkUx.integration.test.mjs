@@ -7,7 +7,7 @@ const screenPaths = [
   "../screens/ArtistArchiveScreen.jsx",
   "../components/artist/ArtistUpcomingShows.jsx",
   "../screens/CalendarScreen.jsx",
-  "../screens/NearbyScreen.jsx",
+  "../components/NearbyFinderRows.jsx",
   "../screens/SearchScreen.jsx",
   "../screens/ShowScreen.jsx",
   "../screens/VenueScreen.jsx",
