@@ -14,7 +14,7 @@ import { MAX_FOLLOWED_ARTISTS, artistFollowReceipt } from "./domain/artistFollow
 import { authTransitions, AUTH_INTENT_KEY } from "./lib/authTransitions";
 import { classifyAccountAgeBand, requestAccountExport, updateAnnouncementEmailPreference, updateDirectMessagePreference, updateProfileAudience, updateProfileSearchIndexingPreference } from "./lib/accountPrivacyApi";
 import { requestFreshDeezerPreview } from "./lib/playbackApi";
-import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
+import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount, syncNativeAccountTheme } from "./theme";
 import { artistMeta, installIngestedCatalog } from "./seed/ingested";
 import { arenaVenues } from "./seed/arenas";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
@@ -1112,7 +1112,9 @@ export function StoreProvider({ children }) {
   // effect here can race asynchronous browser Back and reload `/login`.
   const syncAccountTheme = () => {
     const account = sessionRef.current;
-    if (!authReadyRef.current || !account?.theme) return;
+    if (!authReadyRef.current) return;
+    if (syncNativeAccountTheme(account)) return;
+    if (!account?.theme) return;
     const { theme: localTheme, ownerId } = storedThemeSelection();
     if (localTheme && ownerId === account.id) {
       if (account.theme !== localTheme) api("/api/me", { method: "PATCH", body: { theme: localTheme }, expectedAccountId: account.id }).catch(() => {

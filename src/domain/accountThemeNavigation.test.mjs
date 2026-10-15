@@ -36,7 +36,7 @@ test("actual Root theme effect reads the live destination rather than a stale re
   const node = findNode(source, node => node.type === "CallExpression" && node.callee.name === "useEffect"
     && source.slice(node.arguments[0]?.start, node.arguments[0]?.end).includes("accountThemeNavigationReady"));
   const scope = {
-    authReady: true, session: { id: "member" }, resetToken: null, ownerApprovalToken: null,
+    web: true, authReady: true, session: { id: "member" }, resetToken: null, ownerApprovalToken: null,
     navigationRef: { current: { stack: [{}, { auth: true }] } },
     accountThemeSyncRef: { current: null },
     accountThemeNavigationReady, calls: 0,
@@ -61,6 +61,7 @@ test("actual Store theme reconciliation binds the current confirmed account", ()
   let stored = { theme: "stage", ownerId: "old-member" };
   const scope = {
     sessionRef: { current: { id: "member", theme: "daylight" } }, authReadyRef: { current: false },
+    syncNativeAccountTheme: () => false,
     storedThemeSelection: () => stored,
     syncThemeFromAccount: (...args) => calls.push(["apply", ...args]),
     api: (...args) => { calls.push(["request", ...args]); return Promise.resolve({}); },
@@ -79,4 +80,19 @@ test("actual Store theme reconciliation binds the current confirmed account", ()
   calls.length = 0;
   scope.sessionRef.current = null;
   sync(); assert.deepEqual(calls, []);
+});
+
+test("native Root reconciles a settled guest and Store performs no account mutation", () => {
+  const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
+  const effectNode = findNode(app, node => node.type === "CallExpression" && node.callee.name === "useEffect"
+    && app.slice(node.arguments[0]?.start, node.arguments[0]?.end).includes("accountThemeNavigationReady"));
+  let calls = 0;
+  const rootScope = { web:false, authReady:false, session:null, resetToken:null, ownerApprovalToken:null,
+    accountThemeSyncRef:{current:null},navigationRef:{current:{stack:[{}]}},accountThemeNavigationReady,syncAccountTheme:()=>calls++ };
+  const effect = runInNewContext(`(${app.slice(effectNode.arguments[0].start,effectNode.arguments[0].end)})`,rootScope);
+  effect();assert.equal(calls,0);rootScope.authReady=true;effect();assert.equal(calls,1,"settled sign-out applies guest appearance");
+  const store=readFileSync(new URL("../store.js",import.meta.url),"utf8"),node=findNode(store,node=>node.type==="VariableDeclarator"&&node.id.name==="syncAccountTheme");
+  const identities=[],scope={authReadyRef:{current:true},sessionRef:{current:{id:"a",theme:"daylight"}},syncNativeAccountTheme:account=>{identities.push(account);return true;},api:()=>assert.fail("native reconciliation must never PATCH")};
+  const sync=runInNewContext(`(${store.slice(node.init.start,node.init.end)})`,scope);
+  sync();scope.sessionRef.current={id:"b",theme:"forest"};sync();scope.sessionRef.current=null;sync();assert.deepEqual(identities,[{id:"a",theme:"daylight"},{id:"b",theme:"forest"},null]);
 });

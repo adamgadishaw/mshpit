@@ -1034,7 +1034,10 @@ function Root() {
   // this same effect flush, before its loading frame has rendered.
   const accountThemeSyncRef = useRef(null);
   useEffect(() => {
-    if (authReady && !session?.id) accountThemeSyncRef.current = null;
+    if (authReady && !session?.id) {
+      accountThemeSyncRef.current = null;
+      if (!web) syncAccountTheme();
+    }
     if (!accountThemeNavigationReady({
       authReady, accountId: session?.id,
       frame: navigationRef.current.stack.at(-1),

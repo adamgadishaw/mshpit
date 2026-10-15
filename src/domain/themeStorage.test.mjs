@@ -113,7 +113,7 @@ test("account theme sync cannot reload when verified persistence fails", () => {
   const end = source.indexOf("// Official positions", start);
   assert.ok(start >= 0 && end > start);
   const sync = source.slice(start, end);
-  assert.match(sync, /if \(persistTheme\(next, ownerId\) && next !== key\) window\.location\.reload\(\);/);
+  assert.match(sync, /if \(persistTheme\(next, ownerId\) && next !== key\) reloadTheme\(\);/);
   assert.doesNotMatch(sync, /if \(next !== key\)/, "reload must not be independent of persistence success");
 });
 
