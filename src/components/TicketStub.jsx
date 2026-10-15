@@ -15,6 +15,7 @@ import PostMediaGrid from "./PostMediaGrid";
 import ConvertingClipNotice from "./ConvertingClipNotice";
 import SongAttachment from "./SongAttachment";
 import { useStore } from "../store";
+import PostSwipeActions from "./PostSwipeActions";
 import { RepostButton, RepostAttribution } from "./SocialReactionButtons";
 import { BadgeRow } from "./Badge";
 import { formatDate, relativeTime } from "../domain/dates.mjs";
@@ -185,7 +186,7 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
-export default function TicketStub({ log, mediaViewable = null, compactContent = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+export default function TicketStub({ log, mediaViewable = null, compactContent = false, swipeActions = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const onOpenCity = useContext(CityNavigationContext);
   const cityIdentity = cityIdentityForLocation(log);
   const cityHref = cityIdentity ? cityPath(cityIdentity) : null;
@@ -441,7 +442,8 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 
         <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />
 
-        <View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
+        <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth}>
+<View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
           <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
           <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} palette={campaignTreatment} />
           <Pressable style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={pressLike} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
@@ -459,6 +461,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
             model={shareModel}
           />
         </View>
+</PostSwipeActions>
 
         {showComments && <CommentPreview log={log} onOpen={openComments} palette={campaignTreatment} />}
         <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
@@ -671,7 +674,8 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
       <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
 
       {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
-      <View style={styles.footer}>
+      <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth}>
+<View style={styles.footer}>
         <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
         <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
         <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={pressLike} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
@@ -702,6 +706,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           </Pressable>
         )}
       </View>
+</PostSwipeActions>
 
       {showComments && <CommentPreview log={log} onOpen={openComments} />}
     </View>

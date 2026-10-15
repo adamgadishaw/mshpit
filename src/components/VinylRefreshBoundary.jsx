@@ -15,7 +15,7 @@ export default function VinylRefreshBoundary({ children, refreshing = false, onR
       Promise.resolve(onRefresh()).then(() => { pending.current = false; }, () => { pending.current = false; });
     } catch { pending.current = false; }
   };
-  const refreshControl = <RefreshControl refreshing={!!refreshing} onRefresh={requestRefresh} enabled={canRefresh} progressViewOffset={progressViewOffset} tintColor={colors.amber} colors={[colors.amber]} progressBackgroundColor={colors.bgElev} accessibilityLabel={accessibilityLabel} />;
+  const refreshControl = <RefreshControl refreshing={!!refreshing} onRefresh={requestRefresh} enabled={canRefresh} progressViewOffset={progressViewOffset} tintColor={colors.amber} colors={[colors.amber]} progressBackgroundColor={colors.bgElev} accessibilityLabel={accessibilityLabel} accessibilityHint="At the top, pull down past the indicator and release to refresh." title={refreshing ? "Refreshing…" : "Pull down and release to refresh"} />;
   const scrollChild = cloneElement(child, { refreshControl });
   return <View style={[styles.boundary, style]} testID={testID}>{scrollChild}</View>;
 }

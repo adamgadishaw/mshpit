@@ -12,6 +12,8 @@ import { NewsInteractionContext } from "./src/components/news/NewsInteractionCon
 import { PostNavigationContext } from "./src/components/PostNavigationContext";
 import { newsFeedSurfaceVisible } from "./src/domain/newsReaderState.mjs";
 import Icon from "./src/components/Icon";
+import NativeGestureRoot from "./src/components/NativeGestureRoot";
+import NativeTabRail from "./src/components/NativeTabRail";
 import ErrorBoundary from "./src/components/ErrorBoundary";
 import RuntimeErrorMonitor from "./src/components/RuntimeErrorMonitor";
 import useAppActive from "./src/lib/useAppActive";
@@ -205,7 +207,7 @@ export default function App() {
   }, []);
 
   return (
-    <SafeAreaProvider>
+    <NativeGestureRoot><SafeAreaProvider>
       <ErrorBoundary>
         <>
           <RuntimeErrorMonitor />
@@ -214,7 +216,7 @@ export default function App() {
           </StoreProvider>
         </>
       </ErrorBoundary>
-    </SafeAreaProvider>
+    </SafeAreaProvider></NativeGestureRoot>
   );
 }
 
@@ -1617,7 +1619,8 @@ function Root() {
   );
 
   const mobileTabBar = (
-                      <View style={styles.tabbar}>
+                      <NativeTabRail key={activeTab} active={activeTab} onChange={switchTab}>
+<View style={styles.tabbar}>
                         {LEFT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
                         <View style={styles.fabCol}>
                           <Pressable
@@ -1634,6 +1637,7 @@ function Root() {
                         </View>
                         {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
                       </View>
+</NativeTabRail>
   );
 
   // Desktop: the player owns a persistent left column (outside this routed

@@ -62,6 +62,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   return (
     <TicketStub
       log={item}
+      swipeActions={Platform.OS !== "web"}
       compactContent
       mediaViewable={mediaViewable}
       onOpen={open}

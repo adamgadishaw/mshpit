@@ -1,10 +1,12 @@
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, Platform } from "react-native";
 import { colors, mono, radius, roleColor, space } from "../theme";
 import { useStore } from "../store";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import TicketStub from "../components/TicketStub";
+import NativeDeleteRow from "../components/NativeDeleteRow";
+import { confirmOwnPostDelete } from "../lib/confirmOwnPostDelete";
 import { BadgeRow } from "../components/Badge";
 import { ACHIEVEMENTS } from "../domain/badges.mjs";
 import { showDateMs } from "../lib/showTime";
@@ -103,6 +105,13 @@ const ProfileMediaTile = memo(function ProfileMediaTile({ item, index, viewerIte
 });
 
 const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capabilities, accountId = null }) {
+  const [deleteFeedback, setDeleteFeedback] = useState("");
+  const deleteScope = `${accountId || "guest"}:${log.id}`;
+  const deleteScopeRef = useRef(deleteScope); deleteScopeRef.current = deleteScope;
+  const requestSlideDelete = () => confirmOwnPostDelete(async () => {
+    const result = await deletePost(log.id);
+    if (deleteScopeRef.current === deleteScope && !result?.ok) setDeleteFeedback("This post could not be deleted. Try again.");
+  });
   const openShow = useCallback((...args) => actionsRef.current.onOpenShow?.(...args), [actionsRef]);
   const openPost = useCallback((...args) => actionsRef.current.onOpenPost?.(...args), [actionsRef]);
   const requireAuth = useCallback(() => actionsRef.current.onRequireAuth?.(), [actionsRef]);
@@ -134,6 +143,7 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
     return <NewsStoryCard story={log.news} post={log} accountId={accountId} onOpen={capabilities.openPost ? () => openPost(log) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onDelete={deletePost} onRequireAuth={requireAuth} />;
   }
   return (
+    <>
     <TicketStub
       log={log}
       onOpen={capabilities.openShow ? openShow : undefined}
@@ -152,6 +162,15 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
       onOpenPhotos={capabilities.openPhotos ? openPhotos : undefined}
       compactContent
     />
+    {Platform.OS !== "web" && accountId && accountId === log.userId && !!log.id && !log.attendanceTicket ? <>
+      <NativeDeleteRow testID={`own-post-delete-${log.id}`} enabled onDelete={requestSlideDelete}>
+        <View style={{ minHeight: 48, justifyContent: "center", paddingHorizontal: 16, backgroundColor: colors.bgElev }}>
+          <Text style={{ color: colors.textDim, fontSize: 14 }}>Slide left to delete your post</Text>
+        </View>
+      </NativeDeleteRow>
+      {!!deleteFeedback && <Text accessibilityLiveRegion="polite" style={{ color: colors.danger, fontSize: 14, padding: 12 }}>{deleteFeedback}</Text>}
+    </> : null}
+    </>
   );
 });
 

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Linking, View, Text, StyleSheet, Pressable, PanResponder, Platform, Modal } from "react-native";
 import { colors, focusRing, mono, radius } from "../theme";
 import Icon from "./Icon";
+import NativePhotoSwipe from "./NativePhotoSwipe";
+import NativeGestureRoot from "./NativeGestureRoot";
 import MshpitVideoPlayer from "./media-player/MshpitVideoPlayer";
 import SmartImage from "./SmartImage";
 import { mediaDisplayKind, mediaDisplayUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
@@ -261,6 +263,7 @@ export default function PhotoViewer({
       hardwareAccelerated
       onRequestClose={onClose}
     >
+    <NativeGestureRoot>
     <View ref={viewerRef} style={[styles.wrap, !web && { paddingTop: insets.top, paddingBottom: insets.bottom }]} accessibilityViewIsModal>
       {/* Backdrop closes, like every photo lightbox people already know. */}
       <Pressable
@@ -309,9 +312,11 @@ export default function PhotoViewer({
         {video
           ? <ClipStage key={uri} uri={uri} posterUri={posterUri} postId={currentPostId} onTrack={track} altText={altText} width={mediaWidth} height={mediaHeight} />
           : (
-            <Animated.View style={[styles.swipeLayer, { transform: swipeDrag.getTranslateTransform() }]} {...swipe.panHandlers}>
+            web ? <Animated.View style={[styles.swipeLayer, { transform: swipeDrag.getTranslateTransform() }]} {...swipe.panHandlers}>
               <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />
-            </Animated.View>
+            </Animated.View> : <NativePhotoSwipe count={photos.length} onNext={next} onPrevious={prev} onClose={onClose}>
+              <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />
+            </NativePhotoSwipe>
           )}
         {photos.length > 1 && (
           <>
@@ -391,6 +396,7 @@ export default function PhotoViewer({
         )}
       </View>
     </View>
+    </NativeGestureRoot>
     </Modal>
   );
 }
