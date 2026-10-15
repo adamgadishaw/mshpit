@@ -1,5 +1,7 @@
 # SDK 57 patches and Windows resource review — 2026-10-15
 
+**Latest validation:** [offline recovery, longer reuse, native share cancellation and the Android fullscreen fix](NETWORK_FULLSCREEN_REVIEW_2026-10-15.md); [exact two-advisory ledger](ADVISORY_LEDGER_2026-10-15.md).
+
 This continues the isolated Android review in `D:\Development\Apps\mshpit`, branch `codex/nearby-show-finder-20261015`. The main web checkout and its unrelated audit file remain untouched. No production deployment, paid build, account enrollment or signing credential operation was performed.
 
 ## Compatible dependency updates

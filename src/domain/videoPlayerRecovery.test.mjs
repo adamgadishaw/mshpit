@@ -13,7 +13,7 @@ const code = transformSync(readFileSync(file, 'utf8'), {
 const nodes = n => !n || typeof n !== 'object' ? [] : Array.isArray(n) ? n.flatMap(nodes) : [n, ...nodes(n.props?.children)];
 const text = tree => nodes(tree).filter(n => n.type === 'Text').map(n => n.props.children).flat().join(' ');
 function fixture(platform = 'android') {
-  let status = 'readyToPlay', error = null, active = true, cursor = 0, pending = [];
+  let status = 'readyToPlay', error = null, active = true, cursor = 0, pending = [], playerInitialized = false;
   const slots = [], listeners = new Map(), calls = { pause: 0, play: 0, retry: 0 };
   const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const player = { status, currentTime: 0, duration: 25, playing: false, videoTrack: { size: { width: 1080, height: 1920 } },
@@ -32,7 +32,7 @@ function fixture(platform = 'android') {
     if (name === 'react/jsx-runtime') return { jsx, jsxs: jsx, Fragment: 'Fragment' };
     if (name === 'react-native') return { Platform: { OS: platform }, StyleSheet: { create: v => v, absoluteFillObject: {} }, View: 'View', Text: 'Text', Pressable: 'Pressable', Linking: { openURL: async () => {} } };
     if (name === 'expo') return { useEvent: () => ({ status, error }) };
-    if (name === 'expo-video') return { VideoView: 'VideoView', useVideoPlayer: () => player };
+    if (name === 'expo-video') return { VideoView: 'VideoView', useVideoPlayer: (_uri, setup) => { if (!playerInitialized) { setup?.(player); playerInitialized = true; } return player; } };
     if (name.endsWith('/theme')) return { colors: {}, radius: {} };
     if (name.endsWith('/Icon')) return 'Icon';
     if (name.endsWith('/ClipPoster')) return 'ClipPoster';
@@ -67,9 +67,21 @@ test('a native error supersedes buffering and offers retry with appropriate devi
   const retry = nodes(tree).find(n => n.type === 'Pressable' && text(n).includes('Try again')); retry.props.onPress(); assert.equal(f.calls.retry, 1);
   f.unmount();
 });
-test('backgrounding pauses the current player and does not automatically restart on return', () => {
-  const f = fixture(); f.render(); f.player.play(); f.active(false); f.render();
-  assert.equal(f.player.playing, false); assert.equal(f.calls.pause, 1);
+test('iOS and web inactivity still pause without automatically restarting on return', () => {
+  for (const platform of ['ios', 'web']) {
+    const f = fixture(platform); f.render(); f.player.play(); f.active(false); f.render();
+    assert.equal(f.player.playing, false); assert.equal(f.calls.pause, 1);
+    f.active(true); f.render(); assert.equal(f.calls.play, 1); f.unmount();
+  }
+});
+
+test('Android delegates background pausing to the fullscreen-aware SDK instead of interrupting its activity', () => {
+  const f = fixture('android'); const tree = f.render();
+  assert.equal(f.player.staysActiveInBackground, false, 'real background playback remains disabled in the native player');
+  assert.equal(nodes(tree).find(n => n.type === 'VideoView').props.fullscreenOptions.enable, true);
+  f.player.play(); f.active(false); f.render();
+  assert.equal(f.calls.pause, 0, 'an internal fullscreen AppState edge must not add a JS pause');
+  assert.equal(f.player.playing, true);
   f.active(true); f.render(); assert.equal(f.calls.play, 1); f.unmount();
 });
 test('a pending web play interrupted by backgrounding does not leave a false playback error', async t => {

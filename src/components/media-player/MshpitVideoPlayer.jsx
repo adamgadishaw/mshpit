@@ -27,7 +27,11 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
   const [playbackRate, setPlaybackRate] = useState(1);
   const [controlError, setControlError] = useState("");
   useEffect(() => {
-    if (!appActive) {
+    // Android SDK 57 pauses real background playback natively and exempts its
+    // fullscreen activity. AppState also marks that internal transition inactive;
+    // a second JS pause would stop fullscreen playback. Keep the other platforms
+    // on their existing explicit pause path.
+    if (!appActive && Platform.OS !== "android") {
       try { player.pause(); } catch { /* Player may already have been released. */ }
     }
   }, [appActive, player]);

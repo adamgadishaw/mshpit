@@ -1,5 +1,7 @@
 # MSHPIT: free Windows Android development
 
+**Latest validation:** [offline recovery, longer reuse, native share cancellation and the Android fullscreen fix](NETWORK_FULLSCREEN_REVIEW_2026-10-15.md); [exact two-advisory ledger](ADVISORY_LEDGER_2026-10-15.md).
+
 **Latest native runtime evidence:** [Feed/media retention, measured scrolling/navigation and resource reuse](NATIVE_FEED_MEDIA_REVIEW_2026-10-15.md).
 
 **Latest SDK patch review:** [compatible updates, 21/21 Expo Doctor, rebuilt Android APK, advisory exposure and successful Library saves](SDK_PATCH_RESOURCE_REVIEW_2026-10-15.md) supersede the earlier patch/Library status below. Native iOS validation remains pending.
