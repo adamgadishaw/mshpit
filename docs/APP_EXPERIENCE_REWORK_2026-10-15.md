@@ -132,3 +132,55 @@ Task-workspace evidence:`native-daylight-library-receipt.json`, `native-daylight
 Reproduce with the existing guarded localhost8081 Metro, then force-stop/reopen the existing development client without clearing data. `/api/me` supplies the unchanged account choice; its first application can reload once, then a subsequent process launch reads it durably. Fresh signed-out installations default to Stage. Targeted automated command:`node --test src/lib/nativeThemeRuntime.test.mjs src/domain/themeStorage.test.mjs src/domain/accountThemeNavigation.test.mjs`. Normal regression/syntax/architecture commands remain unchanged.
 
 References verified against SDK57: https://docs.expo.dev/versions/v57.0.0/sdk/sqlite/ (synchronous KV APIs), https://docs.expo.dev/versions/v57.0.0/sdk/expo/ (reloadAppAsync uses the current bundle in debug/release). No OS/security setting, account preference, signing credential, paid service, deployment or production content write changed. Website checkout remains read-only with its original untracked audit file, and the performance fixture remains clean/stopped. The earlier substantial jank finding is unchanged and remains a separate open investigation.
+
+## Bounded responsiveness attribution — 2026-10-15
+
+Outcome: no performance improvement is claimed and no speculative product optimization was applied. The release comparison exposes a substantial common graphics/buffer cost even with the app unmounted, plus additional Feed draw-command work. This separates initial touch handling from slow rendering/navigation, but does not certify visible input latency. The remaining gate is a physical Android release trace with real frame-presentation timestamps, followed by an isolated drawing ablation if that device also exhibits the extra cost.
+
+### Controlled release workload
+
+Source `bb9b469bd5cadb7955cd05a6473055df9110aeb1`, including the verified Daylight fix. One existing-tool x86_64 release APK, SHA256 `3029729ccc15e0b4b95ecc23a5c0a37c4676c549097520a510052ecde20a9977`; offline Gradle build passed in1m23s,875 tasks(39 executed). Fixture package only:`com.mshpit.app.dev.perfreview`, no INTERNET permission; all API calls intercepted and all writes blocked. Owner APK/data/preferences were untouched.
+
+Four scenes in the same release APK,three trials each,rotating order:blank native ScrollView over a20000dp spacer;40 native text/stripe rows;20-post text-only Feed;the same Feed with one cached1080×2400 PNG used on alternating posts. That PNG is a previously captured review screenshot used as a large-bitmap workload, not20 unique source photos, a production content fixture, a video decode test or a production-network measurement. The synthetic catalogue remains1000 events. Same API36 emulator,1080×2400,density420,font1,60Hz host-GPU settings. No display,driver,security or virtualization setting changed.
+
+Each scene is verified before timing,then settles2s. Workload:eight alternating400ms vertical swipes with200ms gaps. No inspector/accessibility/screenshots,compiles or tests inside timed scrolling. Twelve compressed atrace files plus HWUI frame records are retained. Frame-stage attribution filters retained records to the actual trace interval; blank third trial retained67 rows but only62 fell inside that interval. All other retained populations are documented in `responsiveness-summary.json`. Later touch/navigation checks run outside the scroll interval. Two harness-only visibility/duplicate-label assertions were corrected; completed native trials were retained and the incomplete text trial rerun. Final cohort is complete12/12,not selected best runs.
+
+| Scene | Median HWUI jank | HWUI p90 range across3 trials | Median of timed UI-work p90 | Median of timed render-before-swap p90 |
+| --- | ---: | ---: | ---: | ---: |
+| Blank native scroll |66.67%|150–350ms|9.91ms|21.08ms|
+| Native rows |68.18%|150–500ms|9.57ms|25.53ms|
+| Text-only Feed |66.67%|150–200ms|15.63ms|80.28ms|
+| Cached-bitmap Feed |70.69%|150–450ms|16.53ms|78.54ms|
+
+Every scene's median whole-run HWUI p90 is150ms. Wide later-trial outliers show environment variance; this is not proof of equivalent app performance or zero bitmap cost. Whole-run HWUI histograms and timed stage endpoints are different measurements and must not be substituted for one another or summed as independent percentiles. Results are not comparable to earlier differently shaped owner/debug workloads.
+
+### Attributable costs and limits
+
+Native-only scenes already show median timed sync-wait p90 around83–85ms and swap-to-completion p90 around87–90ms. Actual `dequeueBuffer` trace slices have p90 elapsed79–86ms in the first two native trials,while scheduler running time is only about0.74–0.82ms:pacing/buffer waiting is present before Feed,images,gesture rails or account/bootstrap effects are mounted. The later native outliers grow further. Feed has its own additional draw-submission cost:`flush commands` p90 is about63–79ms for text Feed and61–115ms for bitmap Feed,versus12–29ms for native rows. This is concrete drawing work worth profiling; these experiments do not isolate a particular SVG,shadow,text component or renderer command as the cause. Changing those product features without an ablation would be generic tuning.
+
+The graphics path is Android Emulator OpenGL ES Translator on NVIDIA GeForce RTX3070,OpenGL ES3.1/NVIDIA591.74,with60Hz peak refresh. A post-cohort read-only snapshot reports31.95GiB RAM total and about9GiB free. A Citrix display adapter is installed too; there is no evidence here assigning causality to it. No driver,hardware,thermal or host-compositor root cause is certified from these Android traces alone. The old emulator GPU histogram sentinel is still not a real4.95s GPU frame.
+
+### Touch feedback versus navigation/content
+
+Seventy-two physical ADB tap samples exercised the same small feedback control across the four scenes. Native event timestamps and JavaScript performance timestamps share the observed uptime basis;all measured ages were positive and below24ms. Each tap changed a visible orange/dark indicator's width and produced a native layout notification. The final actual release screenshot shows Feedback7 and its orange indicator. Screenshot presence proves that feedback rendered;it does not time its presentation.
+
+| Scene | Native touch→JS receipt median/p90 | Receipt→native-layout notification median/p90 | Native touch→layout-notification p90 |
+| --- | ---: | ---: | ---: |
+| Blank |15.06/20.10ms|17.85/19.34ms|37.82ms|
+| Rows |9.53/17.45ms|16.61/18.34ms|37.91ms|
+| Text Feed |13.51/19.65ms|17.48/19.36ms|35.90ms|
+| Bitmap Feed |13.13/17.06ms|17.22/19.63ms|36.20ms|
+
+Six actual Feed→Search→Feed round trips also reached their expected React effect markers. From tab touch receipt,the navigation effect median is242ms(text) and252ms(bitmap);Search's first post-commit effect median is453ms(text) and421ms(bitmap),with maxima826ms and588ms. These are passive React effect timestamps,not exact commit,full-data-ready or visible-pixel times. The synthetic API has50ms configured latency;this does not measure production content/network completion. There is no arbitrary delay found in the inspected native switchTab/writeNavigation path,and composer-close protection remains untouched.
+
+All timed frame records expose DisplayPresentTime=0 and InputEventId=0. Therefore this emulator cannot establish native-touch-to-visible-pixel latency using these counters. The layout measurements are explicitly proxies;they must not be advertised as sub40ms visible response or as proof that every swipe is smooth. Scrolling remains visibly/render-statistically janky in the test runtime. No live-video seek/decode latency or iOS result is claimed by this comparison.
+
+Next validation requirement:use an existing physical Android device with the same release fixture and representative media,retain its actual60/90/120Hz refresh context,and capture Perfetto/FrameTimeline/SurfaceFlinger presentation plus input timestamps or a synchronized visual recording. Repeat the native/text/media comparison,then ablate one drawing source at a time if the Feed-specific flush cost persists. This is required to distinguish product drawing cost from the emulator translation/presentation bottleneck and to justify a real code fix. It is not a request to buy a device,alter OS security settings or enroll with Apple.
+
+### Evidence,reproduction and cleanup
+
+Library:`libfile_c9baafa1cb9c81919e63591fcb8bb723` (`responsiveness-summary.json`),and `libfile_a2b622f688208191bea2551dd04933a5` (`responsiveness-feedback.png`). Raw cohort,12 traces,frame dumps,timed analysis,build log and host context remain under `D:/Development/Apps/mshpit-perf/.tmp/performance/responsiveness-*`. Upload receipt is `responsiveness-library-receipt.json` in the task workspace;Windows extended-attribute tagging is unavailable.
+
+Reproduction uses the existing fixture's `prepare.cjs prepare` with the existing debug keystore/source clip/android checkout,then task-workspace scripts `prepare-current-ux-fixture.cjs`, `install-diagnostic-fixture.cjs`,the offline `:app:assemblePerfRelease` command and installation into the isolated package. `measure-responsiveness.cjs` runs the bounded cohort,`analyze-responsiveness-window.cjs` filters timed frames,and `summarize-responsiveness.cjs` creates the report. The measurement script resumes completed trials;archive the previous cohort or choose a new output label for an intentional fresh run. `prepare.cjs restore` must close every temporary overlay,not git reset/clean.
+
+All fixture overlays were hash-restored;fixture tree clean at558382f and both fixture packages stopped. No8082 server/reverse was introduced in this release-only pass. The owner development client was cleanly reopened after a disconnected inspector stub;Daylight/account choice match,auth ready/session present,no temporary globals,Like/Post/Report blocked,exact read-only feed revalidation allowed,and Feed returned to offset0. Owner source is unchanged from the theme fix;the last full source suite remains6382 passed,zero failed,one skipped. This closeout adds evidence only,so no duplicate full-suite run is claimed or needed. Canonical website remains untouched with its existing untracked audit file. No production content write,deployment,new credential,paid service or purchase occurred.
