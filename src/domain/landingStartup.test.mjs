@@ -176,3 +176,21 @@ test("actual password reset completion consumes its token before opening Feed in
   assert.match(source, /<ResetPasswordScreen token=\{resetToken\} onDone=\{finishPasswordReset\} onCancel=\{clearResetUrl\}/,
     "cancellation must only consume the reset token, never imply successful authentication");
 });
+
+test("confirmed login replaces the News gate with its safe destination and preserves Back", async () => {
+  const construct = new Function("web", "browserHistoryRef", "writeNavigation", "navigationRef", "MAIN_TAB_PATHS", "back", "return (" + await actualAppFunction("finishAuthentication") + ");");
+  for (const liveSlug of [undefined, "tour-update", "../settings"]) {
+    const parent = { artistName: "Drake" }, calls = [];
+    const current = { stack: [{}, parent, { auth: true, authReturn: { news: true, liveSlug, logging: true } }], tab: "discover", landing: false, accountId: null };
+    const finish = construct(false, {}, (next, path, mode) => calls.push({ next, path, mode }), { current }, {}, () => calls.push("back"));
+    finish("login", { accountId: "confirmed-fixture" });
+    const expected = liveSlug === "tour-update" ? { news: true, liveSlug } : { news: true };
+    assert.deepEqual(calls[0].next.stack, [{}, parent, expected]);
+    assert.equal(calls[0].next.accountId, "confirmed-fixture");
+    assert.equal(calls[0].path, liveSlug === "tour-update" ? "/news/live/tour-update" : "/news");
+    assert.equal(calls[0].mode, "replace");
+    calls.length = 0;
+    finish("login");
+    assert.deepEqual(calls, ["back"], "a gate cannot confirm its own account");
+  }
+});

@@ -771,6 +771,13 @@ function Root() {
       writeNavigation({ ...navigationRef.current, accountId, stack: [{}, { reqArtist: true }], tab: "feed", landing: false }, MAIN_TAB_PATHS.feed, "replace");
       return;
     }
+    const authReturn = navigationRef.current.stack.at(-1)?.authReturn;
+    if (accountId && authReturn?.news === true) {
+      const liveSlug = typeof authReturn.liveSlug === "string" && /^[a-z0-9-]{1,80}$/u.test(authReturn.liveSlug) ? authReturn.liveSlug : null;
+      const frame = { news: true, ...(liveSlug ? { liveSlug } : {}) };
+      writeNavigation({ ...navigationRef.current, accountId, stack: [...navigationRef.current.stack.slice(0, -1), frame], landing: false }, liveSlug ? "/news/live/" + liveSlug : "/news", "replace");
+      return;
+    }
     if (navigationRef.current.stack.at(-1)?.authFromLanding === true
       || (web && !browserHistoryRef.current?.canGoBack())) {
       writeNavigation({ ...navigationRef.current, stack: [{}], tab: "feed", landing: false }, MAIN_TAB_PATHS.feed, "replace");

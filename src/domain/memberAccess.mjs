@@ -24,5 +24,11 @@ export function memberFrameRequiresAccount(frame, platform = "web") {
 }
 
 export function navigationFrameForAccount(frame, accountId, platform = "web") {
-  return !accountId && memberFrameRequiresAccount(frame, platform) ? { auth: true } : frame;
+  if (accountId || !memberFrameRequiresAccount(frame, platform)) return frame;
+  // Resume only read-only News after confirmed login; never replay mutations.
+  if (platform !== "web" && frame.news === true) {
+    const liveSlug = typeof frame.liveSlug === "string" && /^[a-z0-9-]{1,80}$/u.test(frame.liveSlug) ? frame.liveSlug : null;
+    return { auth: true, authReturn: { news: true, ...(liveSlug ? { liveSlug } : {}) } };
+  }
+  return { auth: true };
 }
