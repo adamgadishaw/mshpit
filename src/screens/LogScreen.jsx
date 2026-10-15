@@ -2244,7 +2244,7 @@ export default function LogScreen({
                   autoCorrect={false}
                   accessibilityLabel="Search friends to tag"
                 />
-                <View accessibilityRole="status" accessibilityLiveRegion="polite">
+                <View accessibilityRole={Platform.OS === "web" ? "status" : undefined} accessibilityLiveRegion="polite">
                   {peopleLoading && <Text style={styles.peopleState}>Searching friends...</Text>}
                   {!!peopleError && <Text style={styles.songError}>{peopleError}</Text>}
                   {!peopleLoading && !peopleError && peopleQuery.trim().length >= 2 && peopleHits.length === 0 && <Text style={styles.peopleState}>No matching friends found.</Text>}
@@ -2277,7 +2277,7 @@ export default function LogScreen({
           </View>
         )}
         {!memoryTextOnly && !!mediaAvailabilityCopy && (
-          <View style={styles.mediaCapabilityNotice} accessibilityRole="note">
+          <View style={styles.mediaCapabilityNotice} accessibilityRole={Platform.OS === "web" ? "note" : undefined}>
             <Icon name="camera" size={16} color={colors.amber} />
             <View style={styles.mediaCapabilityNoticeBody}>
               <Text style={styles.mediaCapabilityNoticeText}>{mediaAvailabilityCopy}</Text>

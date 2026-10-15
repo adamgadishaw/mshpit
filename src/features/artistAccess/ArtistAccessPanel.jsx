@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Platform, ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Button from "../../components/Button";
 import SheetHeader from "../../components/SheetHeader";
 import { colors, focusRing, radius, space, CONTENT_COLUMN_MAX_WIDTH } from "../../theme";
@@ -157,7 +157,7 @@ export default function ArtistAccessPanel({ accountId, onClose, onOpenJobs }) {
         </> : <Text style={styles.hint}>No retained snapshot for this page.</Text>}
       </View> : null}
       {error ? <Text style={styles.error} accessibilityRole="alert">{error} Your reason is retained. If the assignment changed, search again before retrying.</Text> : null}
-      {notice ? <Text style={styles.text} accessibilityRole="status" accessibilityLiveRegion="polite">{notice}</Text> : null}
+      {notice ? <Text style={styles.text} accessibilityRole={Platform.OS === "web" ? "status" : undefined} accessibilityLiveRegion="polite">{notice}</Text> : null}
     </ScrollView>
   </View>;
 }
