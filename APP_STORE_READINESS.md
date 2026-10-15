@@ -1,5 +1,8 @@
 # Pit iOS App Store readiness
 
+**2026-10-15 Windows review:** the latest [guest/member and store-readiness report](docs/GUEST_MEMBER_STORE_REVIEW_2026-10-15.md) supersedes historical check results below: both platform JavaScript exports pass, Expo Doctor is 20/21 with four patch suggestions, and the full mobile/build dependency audit has two unresolved upstream advisories. Native iOS runtime and signed release validation remain pending.
+
+
 Reviewed: **2026-08-21** against Expo SDK **56**. This document describes the
 repository state only. No EAS cloud build, Apple credential operation,
 TestFlight upload, App Store Connect mutation, or store-readiness claim was made

@@ -6,12 +6,13 @@ Local app checkout: `D:\Development\Apps\mshpit`, branch `codex/nearby-show-find
 
 - `7471b79` preserves a bounded, read-only native News destination across confirmed login. Previously the guest gate discarded the destination, so completing login returned to the previous screen. News and validated live-coverage slugs can resume; composer/moderation payloads cannot. Cancel/Back retains the public parent. Ordinary web News access is unchanged.
 - `8dcf133` makes Discover's visible Retry use the coordinated refresh. A controlled native test found that retrying only the overview restored data while leaving the page-level failure warning visible. The corrected retry clears both warnings after successful recovery and continues to report a failed retry honestly.
+- `e2af14d` prevents mid-word section labels at 360 dp and 130% text. Native compact tabs scroll on narrow screens or with larger text, preserve whole labels and keep selected/restored sections visible. Normal native sizing and web keyboard relationships retain their existing row. Actual before/after Android captures were checked.
 
 ## Isolated guest installation
 
 The second debug APK uses `com.mshpit.app.guestreview` with its own Android storage. The owner app remains `com.mshpit.app.dev`; its session was never signed out or copied. The guest APK was built **offline in 2m 58s**, with 501 Gradle tasks (36 executed, 465 up-to-date), using the existing debug key. No native project source was changed: a local Gradle initialization script temporarily overrides the application ID through `androidComponents.finalizeDsl`.
 
-Artifacts under `.tmp/overnight/guest/` include `guest-review.apk`, `guest-review.init.gradle`, `build.log` and `owner-dev-original.apk`. The normal `android/app/build/outputs/apk/debug/app-debug.apk` was restored after the build; both original copies have SHA-256 `66eedc89d2eb35329f08e2115cfa4f2323adee81cbbb4be9baa66ad1f955befc`. The guest APK was installed alongside it. Both launcher labels say Mshpit Dev; use explicit package commands to distinguish them.
+Artifacts under `.tmp/overnight/guest/` include `guest-review.apk`, `guest-review.init.gradle`, `build.log` and `owner-dev-original.apk`. The normal `android/app/build/outputs/apk/debug/app-debug.apk` was restored after the build; both original copies have SHA-256 `66eedc89d2eb35329f08e2115cfa4f2323adee81cbbb4be9baa66ad1f955befc`. The guest APK was installed alongside it, then the disposable guest installation was removed after the checks. Its APK remains available for reinstall. Both launcher labels say Mshpit Dev; use explicit package commands to distinguish them.
 
 ```powershell
 . D:\Development\Tools\Use-Android.ps1
@@ -41,6 +42,7 @@ Public navigation callbacks were exercised against mounted production components
 | Error/retry | Guest-only transport rejection of `/api/discover/overview` retained real last results and displayed an error. Transport was restored; the actual Retry handler recovered. The runtime fixture was removed. |
 | Member News | The owner's retained session opened NewsScreen directly; content rendered without the guest gate. No reactions, report, repost or share were submitted. |
 | Member Settings | Settings and deletion warning rendered; inspection stopped before Continue/password confirmation. Theme, preferences and account remained unchanged. |
+| Smaller phone / larger text | 360 dp width with 130% text exposed mid-word Discover labels; after correction, labels stayed whole in a horizontal row. Feed text/actions remained readable. Physical size 1080×2400, density 420 and text scale 1.0 were restored in finally blocks. |
 
 The final owner runtime again returned `{ readOnly: true, postAllowed: false, loginAllowed: true }`. The visible emulator window remained open on the signed-in Feed. The local server is started through `scripts/mobile-dev.mjs`, with the approved canonical API, analytics disabled and the real native read-only guard enabled. See the earlier review for reproducible run commands. Do not use a release-mode bundle as the live read-only review runtime: that review guard is development-only.
 
@@ -48,9 +50,10 @@ The final owner runtime again returned `{ readOnly: true, postAllowed: false, lo
 
 | Check | Result |
 | --- | --- |
-| Full suite after both fixes | **6,325 tests: 6,324 passed, 0 failed, 1 skipped**, 98.281 s; `.tmp/overnight/full-tests-navigation.log`. |
+| Full suite after final layout fix | **6,328 tests: 6,327 passed, 0 failed, 1 skipped**, 85.712 s; `.tmp/overnight/full-tests-layout.log`. Earlier passing runs remain separately logged. |
 | Focused navigation tests | 34 passed. |
 | Discover retry/pull-refresh tests | 7 passed, including real callback failure → success → failure. |
+| Native section-layout tests | 3 new production-component tests cover Android/iOS layout decisions, larger text, selection visibility, restored distant sections and preserved web keyboard behavior. |
 | Syntax | Passed, 854 Node files. No TypeScript project check is claimed. |
 | Architecture | Passed at unchanged 144/144 legacy Store hooks. |
 | Android JS export | Passed; 9.3 MB Hermes bundle in `.tmp/overnight/export-android/`. |
@@ -60,6 +63,8 @@ The final owner runtime again returned `{ readOnly: true, postAllowed: false, lo
 | Existing debug APK ELF alignment | 26/26 x86_64 shared libraries passed 16 KiB load-segment alignment inspection. |
 
 Exports were sequential with Metro stopped to avoid Windows cache contention; the guarded development server was restarted afterward. The APK remains an x86_64 emulator debug APK. Alignment inspection does not establish ARM release compatibility or successful execution on a 16 KiB device. No signed release binary was built.
+
+A stricter native recovery probe exceeded its 45-second budget while checking the complete failure/retry cycle. A later independent read observed the actual retry promise completed with `true`, the fixture absent and both warnings cleared; settled pixels were captured. This is completion evidence, not a latency pass. See `guest/discover-recovery-late-completion.json` and `guest/discover-recovered-settled.json`.
 
 ### Dependency assessment
 
@@ -89,6 +94,8 @@ Actual pixels were inspected locally. Selected public UI evidence under `.tmp/de
 - `mshpit-guest-festival-detail.png`
 - `mshpit-guest-search-drake-results.png` (keyboard visible)
 - `mshpit-guest-discover-error.png`
+- `mshpit-discover-recovered-final.png` (settled successful recovery)
+- `mshpit-small-discover-large-text.png` and `mshpit-small-discover-large-text-fixed.png` (actual before/after at 360 dp, 130% text)
 - `mshpit-native-fullscreen-final.png`, `mshpit-player-slow.png`, `mshpit-player-retry-recovered.png` from the preceding phase
 
-The requested Library batch was unavailable before upload. **No new Library attachment is claimed.** The images remain local for attachment from a working Library context. The `mshpit-discover-retry-fixed.png` capture contains a transient development refresh banner; use its runtime JSON plus a later settled capture for final recovery evidence. Internal Settings/deletion screenshots are not selected for Library. Expo's floating gear visible in some guest captures belongs to the development client.
+The requested Library batch was unavailable before upload. **No new Library attachment is claimed.** The images remain local for attachment from a working Library context. The older `mshpit-discover-retry-fixed.png` capture contains a transient development refresh banner; use `mshpit-discover-recovered-final.png` for settled recovery pixels. Internal Settings/deletion screenshots are not selected for Library. Expo's floating gear visible in some guest captures belongs to the development client.
