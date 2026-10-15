@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-const source=readFileSync(new URL("./nativeReviewMode.js",import.meta.url),"utf8").replace(/^import .*;\n/,'').replaceAll('export ','');
+const source=readFileSync(new URL("./nativeReviewMode.js",import.meta.url),"utf8").replace(/\r\n/g,"\n").replace(/^import .*;\n/,'').replaceAll('export ','');
 function policy(platform,development,flag){return new Function('Platform','__DEV__','process',source+';return reviewAllowsRequest;')({OS:platform},development,{env:{EXPO_PUBLIC_NATIVE_READ_ONLY_REVIEW:flag}});}
 test('opted-in native development review blocks writes but permits owner login and reads',()=>{
  const allows=policy('android',true,'1');
