@@ -12,10 +12,12 @@ const clean = (value, maximum = 240) => typeof value === "string" || typeof valu
   ? String(value).replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim().slice(0, maximum)
   : "";
 
+// English case conversion has no locale-specific rules. Unicode lowercasing
+// preserves these keys without constructing native locale machinery per token.
 const normalized = (value) => clean(value, 1000)
   .normalize("NFKD")
   .replace(/[\u0300-\u036f]/g, "")
-  .toLocaleLowerCase("en")
+  .toLowerCase()
   .replace(/\s+/g, " ")
   .trim();
 
@@ -139,6 +141,9 @@ export function createUnifiedVenueSearchIndex({
   const maximum = boundedInteger(limit, UNIFIED_VENUE_SEARCH_INDEX_LIMIT, UNIFIED_VENUE_SEARCH_INDEX_LIMIT);
   if (!maximum) return [];
   const at = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  // Reuse one locale-aware comparator per build instead of constructing ICU
+  // comparison work for every pair on native Hermes.
+  const compare = new Intl.Collator().compare;
   const venues = new Map();
   const anchorTargets = new Map();
 
@@ -169,7 +174,7 @@ export function createUnifiedVenueSearchIndex({
       if (event && eventId) existing.eventIds.add(eventId);
       // Prefer the reviewed primary listing when both are present, without
       // inventing a provider id when only its partner inventory was loaded.
-      if (providerScoped && identity === `provider:${source.toLocaleLowerCase("en")}:${providerVenueId.toLocaleLowerCase("en")}`) {
+      if (providerScoped && identity === `provider:${source.toLowerCase()}:${providerVenueId.toLowerCase()}`) {
         existing.row.source = source;
         existing.row.providerVenueId = providerVenueId;
       }
@@ -188,7 +193,7 @@ export function createUnifiedVenueSearchIndex({
         providerVenueId: source && providerVenueId ? providerVenueId : null,
         venueCity: location.city || null,
         venueRegion: location.region || null,
-        venueCountryCode: clean(row.venueCountryCode ?? row.venue_country_code, 8).toLocaleUpperCase("en") || null,
+        venueCountryCode: clean(row.venueCountryCode ?? row.venue_country_code, 8).toUpperCase() || null,
         venueCountry: location.country || clean(row.venueCountry ?? row.venue_country, 80) || null,
         capacity: Number(row?.capacity) > 0 ? Number(row.capacity) : null,
         upcoming: event && visibleUpcoming(row, at) ? 1 : 0,
@@ -210,8 +215,8 @@ export function createUnifiedVenueSearchIndex({
   return [...venues.values()]
     .map(({ row, searchParts }) => ({ row, searchText: normalized([...searchParts].join(" ")) }))
     .sort((left, right) => right.row.upcoming - left.row.upcoming
-      || left.row.name.localeCompare(right.row.name)
-      || left.row.identity.localeCompare(right.row.identity));
+      || compare(left.row.name, right.row.name)
+      || compare(left.row.identity, right.row.identity));
 }
 
 const venueIndexByTourDateSnapshot = new WeakMap();

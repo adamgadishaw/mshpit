@@ -1,4 +1,5 @@
-const clean = value => typeof value === "string" ? value.trim().toLocaleLowerCase("en") : "";
+// Provider identity uses English casing, which matches Unicode lowercasing.
+const clean = value => typeof value === "string" ? value.trim().toLowerCase() : "";
 
 // Presentation-only, reviewed provider aliases. Never use name similarity or
 // nearby pins to merge rooms, and never rewrite stored events, media or reviews.

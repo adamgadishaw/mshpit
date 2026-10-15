@@ -1,5 +1,7 @@
 # MSHPIT: free Windows Android development
 
+**Latest startup CPU check:** [measured venue-index stall, equivalent locale optimization, comparable profiles and navigation](STARTUP_CPU_REVIEW_2026-10-15.md).
+
 **Latest image/navigation check:** [native stale-error recovery, hosted City photo retry, and measured City/Artist navigation](IMAGE_CITY_NAVIGATION_REVIEW_2026-10-15.md).
 
 **Latest News/session check:** [Android Back cancellation, late-response protection, startup and session-restoration timings](NEWS_SESSION_REVIEW_2026-10-15.md).
