@@ -775,6 +775,7 @@ export default function DiscoverScreen({
             compact={compact}
             active
             onOpenEvent={onOpen}
+            onOpenPhoto={(media) => openPhotos?.([media], 0, media.postId || null)}
           />}
           {eventRecovery ? (
             <View style={[styles.liveEmpty, styles.eventRecovery]} accessibilityLiveRegion="polite">

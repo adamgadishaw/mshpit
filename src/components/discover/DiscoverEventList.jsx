@@ -44,8 +44,8 @@ export default function DiscoverEventList({ events, weekKey, onWeekChange, loadi
             style={({ pressed, hovered, focused }) => [styles.row, row > 0 && styles.rowDivider, (hovered || pressed) && styles.rowActive, focused && focusRing]}
             accessibilityLabel={`Open ${title} at ${event.venue || "the venue"}, ${day.label}`}>
             <View style={styles.rowCopy}>
-              <Text style={styles.title} numberOfLines={1}>{title}</Text>
-              <Text style={styles.place} numberOfLines={1}>{place}</Text>
+              <Text style={styles.title} numberOfLines={2}>{title}</Text>
+              <Text style={styles.place} numberOfLines={2}>{place}</Text>
             </View>
             {event?.soldOut ? <Text style={styles.tag}>Sold out</Text> : null}
             <Icon name="chevron-right" size={16} color={colors.textFaint} />
@@ -77,7 +77,7 @@ export default function DiscoverEventList({ events, weekKey, onWeekChange, loadi
 const styles = StyleSheet.create({
   root: { gap: 16, minWidth: 0 },
   weeks: { gap: 8, paddingVertical: 2 },
-  weekTab: { flexDirection: "row", alignItems: "center", gap: 7, minHeight: 38, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: 13 },
+  weekTab: { flexDirection: "row", alignItems: "center", gap: 7, minHeight: 44, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: 13 },
   weekTabOn: { backgroundColor: colors.amber, borderColor: colors.amber },
   weekText: { color: colors.text, fontFamily: font, fontSize: 13, fontWeight: "800" },
   weekCount: { color: colors.textFaint, fontFamily: font, fontSize: 12, fontWeight: "900" },
@@ -91,8 +91,8 @@ const styles = StyleSheet.create({
   rowDivider: { borderTopWidth: 1, borderTopColor: colors.lineSoft },
   rowActive: { backgroundColor: colors.surfaceAlt },
   rowCopy: { flex: 1, minWidth: 0, gap: 2 },
-  title: { color: colors.text, fontFamily: font, fontSize: 14.5, fontWeight: "900" },
-  place: { color: colors.textDim, fontFamily: font, fontSize: 12.5 },
+  title: { color: colors.text, fontFamily: font, fontSize: 14.5, lineHeight: 20, fontWeight: "900" },
+  place: { color: colors.textDim, fontFamily: font, fontSize: 12.5, lineHeight: 18 },
   tag: { color: colors.danger, fontFamily: font, fontSize: 11.5, fontWeight: "900" },
   loading: { flexDirection: "row", alignItems: "center", gap: 8 },
   loadingText: { color: colors.textDim, fontFamily: font, fontSize: 12.5 },

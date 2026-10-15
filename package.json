@@ -56,6 +56,8 @@
     "verify:catalog-maintenance-browser": "node scripts/verify-catalog-maintenance-browser.mjs",
     "verify:quick-log-browser": "node scripts/verify-quick-log-browser.mjs",
     "verify:festivals-browser": "node scripts/verify-festivals-browser.mjs",
+    "verify:discover-cards-browser": "node scripts/verify-discover-cards-browser.mjs",
+    "verify:discover-card-followup-browser": "node scripts/verify-discover-card-followup-browser.mjs",
     "verify:discover-events-browser": "node scripts/verify-discover-events-browser.mjs",
     "verify:media-upload-browser": "node scripts/verify-media-upload-browser.mjs",
     "verify:player-browser": "node scripts/verify-player-browser.mjs",

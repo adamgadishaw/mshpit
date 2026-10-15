@@ -1,46 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
-import { AccessibilityInfo, AppState, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { AccessibilityInfo, AppState, Pressable, StyleSheet, Text, View } from "react-native";
 import { Image } from "expo-image";
 import { colors, displayFont, focusRing, font, glow, mono, radius, shadow } from "../../theme";
 import useReducedMotion from "../../hooks/useReducedMotion";
 import { calendarDateKey } from "../../domain/dataPolicy.mjs";
 import Icon from "../Icon";
+import { LICENSED_SOURCES, discoverPhotoAttribution } from "../../domain/discoverPhotoCredits.mjs";
 
 // Long enough to read a title, a date and a venue before the next slide.
 const AUTO_ADVANCE_MS = 9_000;
-const LICENSED_SOURCES = new Set(["licensed", "commons", "openverse"]);
-const PROVIDER_SOURCES = new Set(["ticketmaster"]);
-
-const safeAttributionUrl = (value) => {
-  if (typeof value !== "string" || !value.trim() || value.length > 2_000) return null;
-  try {
-    const url = new URL(value.trim());
-    if (url.protocol !== "https:" || url.username || url.password || url.port) return null;
-    return url.toString();
-  } catch {
-    return null;
-  }
-};
-
-const licensedMediaAttribution = (media) => {
-  const source = String(media?.source || "").trim().toLocaleLowerCase();
-  if (!LICENSED_SOURCES.has(source)) return null;
-  const creator = typeof media?.by === "string" ? media.by.trim() : "";
-  const license = typeof media?.license === "string" ? media.license.trim() : "";
-  const sourcePage = safeAttributionUrl(media?.sourcePage);
-  const licenseUrl = safeAttributionUrl(media?.licenseUrl);
-  return creator && license && sourcePage && licenseUrl ? { creator, license, sourcePage, licenseUrl } : null;
-};
-
-const providerMediaAttribution = (media) => {
-  const source = String(media?.source || "").trim().toLocaleLowerCase();
-  const provider = String(media?.provider || "").trim().toLocaleLowerCase();
-  if (source !== "provider" || !PROVIDER_SOURCES.has(provider)) return null;
-  const creator = typeof media?.by === "string" ? media.by.trim() : "";
-  const sourcePage = safeAttributionUrl(media?.sourcePage);
-  return creator && sourcePage ? { creator, sourcePage, provider } : null;
-};
-
 const dateLabel = (start, end) => {
   const format = (value) => {
     const key = calendarDateKey(value);
@@ -62,6 +30,7 @@ export default function DiscoverEventBanner({
   active = true,
   autoAdvanceMs = AUTO_ADVANCE_MS,
   onOpenEvent,
+  onOpenPhoto,
 }) {
   const reduceMotion = useReducedMotion();
   const safeSlides = useMemo(() => (Array.isArray(slides) ? slides.slice(0, 8) : []), [slides]);
@@ -79,11 +48,10 @@ export default function DiscoverEventBanner({
   const candidateMedia = current?.media && !failed.has(current.id) ? current.media : null;
   const licensedSource = LICENSED_SOURCES.has(String(candidateMedia?.source || "").trim().toLocaleLowerCase());
   const providerSource = String(candidateMedia?.source || "").trim().toLocaleLowerCase() === "provider";
-  const attribution = licensedMediaAttribution(candidateMedia) || providerMediaAttribution(candidateMedia);
-  // Attribution is part of the display contract, not optional decoration. If a
-  // licensed row somehow bypasses the domain normalizer without a usable source
-  // link, fail closed to the branded event card instead of publishing the image.
-  const media = (licensedSource || providerSource) && !attribution ? null : candidateMedia;
+  const attribution = discoverPhotoAttribution(candidateMedia);
+  // Keep supplied credits reachable in the existing photo viewer. Reject media
+  // with incomplete provenance or no route to its credits.
+  const media = (licensedSource || providerSource) && (!attribution || !onOpenPhoto) ? null : candidateMedia;
 
   useEffect(() => {
     // A new country is a new reel, not a continuation at the old slide number.
@@ -121,11 +89,6 @@ export default function DiscoverEventBanner({
   // blurred copy of itself. The phone banner is close enough to square to crop.
   const portrait = media?.source === "catalog" && !compact;
   const detail = [dateLabel(current.date, current.endDate), current.venue, current.place].filter(Boolean).join(" · ");
-  const openAttribution = (url) => {
-    if (Platform.OS === "web" || !url) return;
-    void Linking.openURL(url).catch(() => undefined);
-  };
-
   return (
     <View style={[styles.shell, compact && styles.shellCompact]} accessible={false}
       onMouseEnter={() => setHolding(true)} onMouseLeave={() => setHolding(false)}
@@ -177,10 +140,8 @@ export default function DiscoverEventBanner({
           ) : null}
           <View pointerEvents="none" style={[styles.copy, portrait && styles.copyBesidePortrait]}>
             <Text style={styles.kicker}>{current.phase === "active" ? "HAPPENING NOW" : current.endDate && current.endDate !== current.date ? "MULTI-DAY EVENT" : "UPCOMING EVENT"}</Text>
-            <Text style={[styles.title, compact && styles.titleCompact]} numberOfLines={2}>{current.title}</Text>
-            <Text style={styles.detail} numberOfLines={compact ? 2 : 1}>{detail}</Text>
-            {media?.by && media.source === "fan" ? <Text style={styles.credit} numberOfLines={1}>{`Fan photo by ${media.by}`}</Text> : null}
-            {media?.by && media.source === "catalog" ? <Text style={styles.credit} numberOfLines={1}>{`Artist photo · ${media.by}`}</Text> : null}
+            <Text style={[styles.title, compact && styles.titleCompact]} numberOfLines={compact ? 3 : 2}>{current.title}</Text>
+            <Text style={styles.detail} numberOfLines={2}>{detail}</Text>
           </View>
           {onOpenEvent ? (
             <View pointerEvents="none" style={styles.openPill}>
@@ -189,32 +150,13 @@ export default function DiscoverEventBanner({
             </View>
           ) : null}
         </Pressable>
-        {attribution && media ? (
-          <View style={styles.attributionGroup} accessible={false}>
-            <Pressable
-              href={Platform.OS === "web" ? attribution.sourcePage : undefined}
-              onPress={() => openAttribution(attribution.sourcePage)}
-              style={({ pressed, focused }) => [styles.attributionLink, styles.attributionSource, pressed && styles.attributionPressed, focused && focusRing]}
-              accessibilityRole="link"
-              accessibilityLabel={`Photo by ${attribution.creator}. Open original source.`}
-            >
-              <Text style={styles.attributionText} numberOfLines={2}>{attribution.creator} · Source</Text>
-              <Icon name="external" size={12} color="rgba(255,255,255,0.82)" />
-            </Pressable>
-            {attribution.licenseUrl ? (
-              <Pressable
-                href={Platform.OS === "web" ? attribution.licenseUrl : undefined}
-                onPress={() => openAttribution(attribution.licenseUrl)}
-                style={({ pressed, focused }) => [styles.attributionLink, pressed && styles.attributionPressed, focused && focusRing]}
-                accessibilityRole="link"
-                accessibilityLabel={`Open ${attribution.license} license terms`}
-              >
-                <Text style={styles.attributionText} numberOfLines={1}>{attribution.license}</Text>
-              </Pressable>
-            ) : null}
-          </View>
-        ) : null}
       </View>
+      {media && onOpenPhoto ? (
+        <Pressable onPress={() => onOpenPhoto(media)} accessibilityRole="button" accessibilityLabel="Photo credits"
+          style={({ pressed, focused }) => [styles.photoCredits, pressed && styles.controlPressed, focused && focusRing]}>
+          <Text style={styles.photoCreditsText}>Photo credits</Text>
+        </Pressable>
+      ) : null}
 
       {safeSlides.length > 1 ? (
         <View style={styles.controls} accessibilityLabel="Event slideshow controls">
@@ -237,27 +179,23 @@ const styles = StyleSheet.create({
   shell: { gap: 9 },
   shellCompact: { gap: 7 },
   hero: { minHeight: 300, overflow: "hidden", borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surfaceAlt, ...shadow.card },
-  heroCompact: { minHeight: 250 },
+  heroCompact: { minHeight: 300 },
   eventAction: { ...StyleSheet.absoluteFillObject, overflow: "hidden" },
   heroPressed: { opacity: 0.94, transform: [{ scale: 0.995 }] },
   fallback: { alignItems: "center", justifyContent: "center", overflow: "hidden", backgroundColor: colors.bgElev },
   fallbackGlowOne: { position: "absolute", width: 380, height: 380, borderRadius: 190, top: -210, right: -80, backgroundColor: colors.amberStrong, opacity: 0.34, ...glow },
   fallbackGlowTwo: { position: "absolute", width: 300, height: 300, borderRadius: 150, bottom: -180, left: -90, backgroundColor: colors.magenta, opacity: 0.22, ...glow },
   scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(3,5,9,0.48)" },
-  copy: { position: "absolute", left: 20, right: 20, bottom: 22, maxWidth: 700 },
+  copy: { position: "absolute", left: 20, right: 20, bottom: 76, maxWidth: 700 },
   copyBesidePortrait: { right: 250 },
   portraitBackdrop: { transform: [{ scale: 1.15 }] },
   portrait: { position: "absolute", top: 22, right: 22, width: 196, height: 196, overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: "rgba(255,255,255,0.18)", backgroundColor: colors.bgElev, ...shadow.card },
   kicker: { color: "#FFB56B", fontFamily: mono, fontSize: 9.5, fontWeight: "900", letterSpacing: 1.8 },
   title: { color: "#FFFFFF", fontFamily: displayFont, fontSize: 31, lineHeight: 36, fontWeight: "900", letterSpacing: -0.8, marginTop: 6 },
   titleCompact: { fontSize: 25, lineHeight: 30 },
-  detail: { color: "rgba(255,255,255,0.88)", fontFamily: font, fontSize: 12.5, lineHeight: 18, fontWeight: "700", marginTop: 7, paddingRight: 92 },
-  credit: { color: "rgba(255,255,255,0.68)", fontFamily: font, fontSize: 10.5, marginTop: 6, paddingRight: 92 },
-  attributionGroup: { position: "absolute", top: 12, left: 12, right: 12, flexDirection: "row", alignItems: "flex-start", gap: 7 },
-  attributionLink: { minHeight: 44, maxWidth: "48%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 11, paddingVertical: 7, borderRadius: radius.sm, borderWidth: 1, borderColor: "rgba(255,255,255,0.28)", backgroundColor: "rgba(3,5,9,0.76)" },
-  attributionSource: { flexShrink: 1, maxWidth: "68%" },
-  attributionPressed: { opacity: 0.78 },
-  attributionText: { flexShrink: 1, color: "rgba(255,255,255,0.84)", fontFamily: font, fontSize: 9.5, lineHeight: 13, fontWeight: "700", textDecorationLine: "underline" },
+  detail: { color: "rgba(255,255,255,0.88)", fontFamily: font, fontSize: 12.5, lineHeight: 18, fontWeight: "700", marginTop: 7 },
+  photoCredits: { alignSelf: "flex-start", minHeight: 44, justifyContent: "center", paddingHorizontal: 2, borderRadius: radius.sm },
+  photoCreditsText: { color: colors.textDim, fontFamily: font, fontSize: 11, lineHeight: 16, textDecorationLine: "underline" },
   openPill: { position: "absolute", right: 16, bottom: 18, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 3, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: "rgba(255,255,255,0.34)", backgroundColor: "rgba(3,5,9,0.7)" },
   openText: { color: "#FFFFFF", fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 0.8 },
   controls: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 7 },

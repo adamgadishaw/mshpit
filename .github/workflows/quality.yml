@@ -86,6 +86,8 @@ jobs:
       - run: npm run verify:quick-log-browser
       - run: npm run verify:festivals-browser
       - run: npm run verify:discover-events-browser
+      - run: npm run verify:discover-cards-browser
+      - run: npm run verify:discover-card-followup-browser
       - run: npm run verify:media-upload-browser
       - run: npm run verify:player-browser
       - run: npm run verify:connections-browser

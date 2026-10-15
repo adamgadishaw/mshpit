@@ -1,7 +1,10 @@
-import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { useState } from "react";
+import { Platform, StyleSheet, Text, View } from "react-native";
 import { Image as ExpoImage } from "expo-image";
-import { colors, displayFont, font, mono, radius, space } from "../../theme";
+import { colors, displayFont, focusRing, font, mono, radius, space } from "../../theme";
 import Icon from "../../components/Icon";
+import { PublicPressableLink } from "../../components/PublicWebLinks";
+import { festivalPath } from "../../domain/urls.mjs";
 import FestivalBackdrop from "./FestivalBackdrop";
 import { festivalAccent, festivalCountdown, festivalDateRange, festivalLength, festivalPlace, goingLine, lineupIsNew } from "./festivalFormat.mjs";
 
@@ -11,6 +14,8 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 // own colours, a calendar tile with the first day, how soon it starts, then
 // the name, dates, place, the top of the lineup and who's going.
 export default function FestivalCard({ edition, onOpen, size = "large" }) {
+  const [failedImage, setFailedImage] = useState(null);
+  const imageUri = edition.imageUrl && failedImage !== edition.imageUrl ? edition.imageUrl : null;
   const headliners = Array.isArray(edition.headliners) ? edition.headliners : [];
   const more = Math.max(0, (Number(edition.lineupCount) || 0) - headliners.length);
   const fresh = lineupIsNew(edition);
@@ -19,14 +24,16 @@ export default function FestivalCard({ edition, onOpen, size = "large" }) {
   const length = festivalLength(edition);
   const month = MONTHS[Number(edition.startDate?.slice(5, 7)) - 1];
   const day = Number(edition.startDate?.slice(8, 10));
-  return <Pressable onPress={() => onOpen?.(edition)}
-    style={({ pressed, hovered }) => [styles.card, hovered && styles.hovered, pressed && styles.pressed]}
-    accessibilityRole="link" accessibilityLabel={`${edition.name}, ${festivalDateRange(edition.startDate, edition.endDate)}, ${festivalPlace(edition)}`}>
+  return <PublicPressableLink href={festivalPath(edition.festivalSlug)} onNavigate={() => onOpen?.(edition)}
+    style={({ pressed, hovered, focused }) => [styles.card, hovered && styles.hovered, pressed && styles.pressed, focused && focusRing]}
+    accessibilityLabel={`${edition.name}, ${festivalDateRange(edition.startDate, edition.endDate)}, ${festivalPlace(edition)}`}>
     <View style={[styles.art, size === "small" && styles.artSmall]}>
-      {edition.imageUrl ? <>
-        <ExpoImage source={{ uri: edition.imageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} accessibilityIgnoresInvertColors />
+      <FestivalBackdrop accent={festivalAccent(edition.festivalSlug || edition.name)} still />
+      {imageUri ? <>
+        <ExpoImage source={{ uri: imageUri }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150}
+          recyclingKey={imageUri} accessible={false} onError={() => setFailedImage(edition.imageUrl)} accessibilityIgnoresInvertColors />
         <View style={styles.shade} />
-      </> : <FestivalBackdrop accent={festivalAccent(edition.festivalSlug || edition.name)} still />}
+      </> : null}
       <View style={styles.badges}>
         {countdown ? <View style={[styles.badge, countdown.live && styles.badgeLive]}><Text style={[styles.badgeText, countdown.live && styles.badgeLiveText]}>{countdown.label}</Text></View> : null}
         {fresh ? <View style={[styles.badge, styles.badgeHot]}><Text style={styles.badgeHotText}>Lineup out</Text></View> : null}
@@ -45,7 +52,7 @@ export default function FestivalCard({ edition, onOpen, size = "large" }) {
         : <Text style={styles.pending}>Lineup not announced yet</Text>}
       {going ? <View style={styles.goingRow}><Icon name="you" size={12} color={colors.amber} /><Text style={styles.going}>{going}</Text></View> : null}
     </View>
-  </Pressable>;
+  </PublicPressableLink>;
 }
 
 const styles = StyleSheet.create({

@@ -35,21 +35,16 @@ test("Discover event banner leaves nested controls reachable", () => {
   assert.doesNotMatch(source, /accessibilityState=\{\{[^}]*checked:/);
 });
 
-test("licensed banner photos fail closed without actionable HTTPS attribution", () => {
-  assert.match(source, /const LICENSED_SOURCES = new Set\(\["licensed", "commons", "openverse"\]\)/);
-  assert.match(source, /url\.protocol !== "https:" \|\| url\.username \|\| url\.password \|\| url\.port/);
-  assert.match(source, /const media = \(licensedSource \|\| providerSource\) && !attribution \? null : candidateMedia/);
-  assert.match(source, /href=\{Platform\.OS === "web" \? attribution\.sourcePage : undefined\}/);
-  assert.match(source, /href=\{Platform\.OS === "web" \? attribution\.licenseUrl : undefined\}/);
-  assert.match(source, /Linking\.openURL\(url\)/);
-  assert.match(source, /accessibilityRole="link"/);
-  assert.match(source, /attribution\.creator\} · Source/);
-  assert.match(source, /Open \$\{attribution\.license\} license terms/);
-});
-
-test("provider event artwork gets a visible source link without inventing a license", () => {
-  assert.match(source, /const PROVIDER_SOURCES = new Set\(\["ticketmaster"\]\)/);
-  assert.match(source, /providerMediaAttribution\(candidateMedia\)/);
-  assert.match(source, /\(licensedSource \|\| providerSource\) && !attribution \? null : candidateMedia/);
-  assert.match(source, /attribution\.licenseUrl \? \(/);
+test("banner credits open the existing photo viewer without printing provider or creator names", () => {
+  assert.match(source, /discoverPhotoAttribution\(candidateMedia\)/);
+  assert.match(source, /const media = \(licensedSource \|\| providerSource\) && \(!attribution \|\| !onOpenPhoto\) \? null : candidateMedia/);
+  assert.match(source, /onOpenPhoto\(media\)/);
+  assert.match(source, /accessibilityLabel="Photo credits"/);
+  assert.doesNotMatch(source, /Fan photo by|Artist photo|attribution\.creator|attribution\.license/);
+  const screen = fs.readFileSync(new URL("../screens/DiscoverScreen.jsx", import.meta.url), "utf8");
+  assert.match(screen, /onOpenPhoto=\{\(media\) => openPhotos\?\.\(\[media\], 0, media.postId \|\| null\)\}/);
+  const viewer = fs.readFileSync(new URL("../components/PhotoViewer.jsx", import.meta.url), "utf8");
+  assert.match(viewer, /venuePhotoAttribution\(p\) \|\| discoverPhotoAttribution\(p\)/);
+  assert.match(viewer, /webAttributionLinkProps\(venueAttribution.sourcePage\)/);
+  assert.match(viewer, /venueAttribution.licenseUrl \? <Pressable/);
 });

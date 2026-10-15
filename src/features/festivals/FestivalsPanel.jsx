@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
-import { colors, displayFont, font, mono, radius, space } from "../../theme";
+import { colors, displayFont, focusRing, font, mono, radius, space } from "../../theme";
 import Button from "../../components/Button";
 import FestivalBackdrop from "./FestivalBackdrop";
 import FestivalCard from "./FestivalCard";
+import { PublicPressableLink } from "../../components/PublicWebLinks";
+import { festivalPath } from "../../domain/urls.mjs";
 import Rise from "./Rise";
 import { readFestivals } from "./festivalApi.mjs";
 import { festivalAccent, festivalCountdown, festivalDateRange, festivalMonths, festivalPlace, festivalSummary, lineupIsNew } from "./festivalFormat.mjs";
@@ -87,14 +89,14 @@ function Marquee({ region, summary, onOpen }) {
       </Rise> : null}
     </View>
     {next && countdown ? <Rise index={4} style={styles.nextWrap}>
-      <Pressable onPress={() => onOpen(next)} style={({ hovered, pressed }) => [styles.next, hovered && styles.nextHover, pressed && styles.pressed]}
-        accessibilityRole="link" accessibilityLabel={`${countdown.live ? "Happening now" : "Next up"}: ${next.name}, ${festivalDateRange(next.startDate, next.endDate)}, ${countdown.label}`}>
+      <PublicPressableLink href={festivalPath(next.festivalSlug)} onNavigate={() => onOpen(next)} style={({ hovered, pressed, focused }) => [styles.next, hovered && styles.nextHover, pressed && styles.pressed, focused && focusRing]}
+        accessibilityLabel={`${countdown.live ? "Happening now" : "Next up"}: ${next.name}, ${festivalDateRange(next.startDate, next.endDate)}, ${countdown.label}`}>
         <Text style={styles.nextKicker}>{countdown.live ? "Happening now" : "Next up"}</Text>
         <Text style={styles.nextName} numberOfLines={2}>{next.name}</Text>
         <Text style={styles.nextWhen}>{festivalDateRange(next.startDate, next.endDate)}</Text>
         {festivalPlace(next) ? <Text style={styles.nextWhere} numberOfLines={1}>{festivalPlace(next)}</Text> : null}
         {!countdown.live ? <View style={styles.nextCount}><Text style={styles.nextCountText}>{countdown.label}</Text></View> : null}
-      </Pressable>
+      </PublicPressableLink>
     </Rise> : null}
   </View>;
 }
@@ -144,7 +146,7 @@ const styles = StyleSheet.create({
   nextCount: { alignSelf: "flex-start", marginTop: space(2), borderRadius: radius.pill, backgroundColor: "#FFFFFF", paddingHorizontal: 10, paddingVertical: 4 },
   nextCountText: { color: "#111114", fontFamily: font, fontSize: 12, fontWeight: "900" },
   monthChips: { gap: space(2), paddingVertical: 2 },
-  monthChip: { flexDirection: "row", alignItems: "center", gap: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: 13, paddingVertical: 8 },
+  monthChip: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: 13, paddingVertical: 8 },
   monthChipOn: { backgroundColor: colors.amber, borderColor: colors.amber },
   monthChipText: { color: colors.text, fontFamily: font, fontSize: 13, fontWeight: "800" },
   monthChipCount: { color: colors.textFaint, fontFamily: mono, fontSize: 11.5, fontWeight: "900" },

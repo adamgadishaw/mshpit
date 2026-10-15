@@ -34,7 +34,7 @@ export function VenueDiscoveryCard({ venue, onPress, compact = false }) {
         <Icon name="pin" size={compact ? 16 : 19} color={colors.cool} />
       </View>
       <View style={styles.cardCopy}>
-        <Text style={[styles.venueName, compact && styles.venueNameCompact]} numberOfLines={1}>{venue?.name || "Unknown venue"}</Text>
+        <Text style={[styles.venueName, compact && styles.venueNameCompact]} numberOfLines={2}>{venue?.name || "Unknown venue"}</Text>
         <Text style={styles.place} numberOfLines={1}>{city}{region ? ` · ${region}` : ""}</Text>
         {!compact && details.length > 0 ? <Text style={styles.detail} numberOfLines={1}>{details.join("  ·  ")}</Text> : null}
       </View>
@@ -81,10 +81,10 @@ export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEven
         </View>
         {onOpenArtist && titleIsArtist ? (
           <Pressable onPress={onOpenArtist} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Open ${artist}`}>
-            <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={1}>{title}</Text>
+            <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={2}>{title}</Text>
           </Pressable>
         ) : (
-          <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={1}>{title}</Text>
+          <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={2}>{title}</Text>
         )}
         {!compact && !titleIsArtist && lineup ? <Text style={styles.lineup} numberOfLines={1}>Lineup: {lineup}</Text> : null}
         {onOpenVenue ? (
@@ -138,17 +138,17 @@ const styles = StyleSheet.create({
   eventCard: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch", minHeight: 94, flexDirection: "row", alignItems: "center", gap: 13, padding: 14, backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card },
   eventCardCompact: { minHeight: 74, padding: 10, gap: 10, backgroundColor: colors.bgElev, boxShadow: "none" },
   dateBadge: { width: 58, minHeight: 64, alignItems: "center", justifyContent: "center", borderRadius: 16, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.amber },
-  dateBadgeCompact: { width: 46, minHeight: 52, borderRadius: 13 },
+  dateBadgeCompact: { width: 46, flexShrink: 0, minHeight: 52, borderRadius: 13 },
   dateMonth: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
   dateDay: { color: colors.text, fontFamily: mono, fontSize: 24, fontWeight: "900", lineHeight: 28, fontVariant: ["tabular-nums"] },
   dateDayCompact: { fontSize: 19, lineHeight: 22 },
-  eventTopline: { minHeight: 15, flexDirection: "row", alignItems: "center", gap: 6 },
+  eventTopline: { minHeight: 15, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 },
   timing: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 0.6, textTransform: "uppercase" },
   timingActive: { color: colors.good },
   soldOutTag: { color: colors.danger, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.7 },
   scheduledTag: { color: colors.cool, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.7 },
   artist: { color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "900", letterSpacing: -0.25, marginTop: 2 },
-  artistCompact: { fontSize: 14 },
+  artistCompact: { fontSize: 15, lineHeight: 20 },
   lineup: { color: colors.textFaint, fontSize: 10, lineHeight: 15, marginTop: 2 },
   eventPlace: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 2 },
   genre: { alignSelf: "flex-start", color: colors.cool, fontSize: 10, fontWeight: "700", marginTop: 4 },
