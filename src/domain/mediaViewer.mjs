@@ -13,6 +13,10 @@ export function videoViewerPhase({ status, hasFirstFrame = false, error = null }
 // The poster protects the decoder surface only until VideoView confirms that a
 // real frame painted. Keeping it mounted until playback begins hides a healthy
 // paused frame behind a failed legacy-poster fallback.
+export function videoViewerBuffering({ status, hasFirstFrame = false, error = null } = {}) {
+  return status === "loading" && hasFirstFrame && !error;
+}
+
 export function videoViewerPosterVisible({ phase } = {}) {
   return phase === "loading";
 }
