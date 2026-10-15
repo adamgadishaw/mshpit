@@ -1,5 +1,7 @@
 # MSHPIT: free Windows Android development
 
+**Latest image/navigation check:** [native stale-error recovery, hosted City photo retry, and measured City/Artist navigation](IMAGE_CITY_NAVIGATION_REVIEW_2026-10-15.md).
+
 **Latest News/session check:** [Android Back cancellation, late-response protection, startup and session-restoration timings](NEWS_SESSION_REVIEW_2026-10-15.md).
 
 **Latest validation:** [offline recovery, longer reuse, native share cancellation and the Android fullscreen fix](NETWORK_FULLSCREEN_REVIEW_2026-10-15.md); [exact two-advisory ledger](ADVISORY_LEDGER_2026-10-15.md).
