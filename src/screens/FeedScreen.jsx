@@ -399,8 +399,9 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       viewabilityConfigCallbackPairs={viewabilityConfigCallbackPairs}
       ListHeaderComponent={
         <View style={styles.head}>
-          <View style={styles.wordmarkRow}>
-            <Text style={styles.wordmark}>MSHPIT</Text>
+          <View style={[styles.wordmarkRow, Platform.OS !== "web" && styles.nativeHeaderRow]}>
+            {/* The native shell already owns the brand; this title identifies the page. */}
+            <Text style={Platform.OS === "web" ? styles.wordmark : styles.nativeFeedTitle}>{Platform.OS === "web" ? "MSHPIT" : "Your feed"}</Text>
             {!hideHeaderActions && <View style={styles.headerBtns}>
               {onOpenClips && (
                 <Pressable style={styles.clipsBtn} onPress={onOpenClips} hitSlop={8} accessibilityRole="button" accessibilityLabel="Clips">
@@ -421,7 +422,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
               </Pressable>
             </View>}
           </View>
-          <Text style={styles.tag}>{JOURNEY_TAGLINE}</Text>
+          {Platform.OS === "web" && <Text style={styles.tag}>{JOURNEY_TAGLINE}</Text>}
 
           {(Platform.OS === "web" && refreshing) || refreshError ? (
             <Text
@@ -660,6 +661,8 @@ const styles = StyleSheet.create({
   caughtSub: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 2 },
   head: { marginBottom: 18, marginTop: 4 },
   wordmarkRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  nativeHeaderRow: { minHeight: 48 },
+  nativeFeedTitle: { color: colors.text, fontSize: 22, lineHeight: 28, fontWeight: "700" },
   headerBtns: { flexDirection: "row", gap: 8, alignItems: "center" },
   clipsBtn: { flexDirection: "row", alignItems: "center", gap: 5, height: 40, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
   clipsTxt: { color: colors.amber, fontSize: 13, fontWeight: "800" },
