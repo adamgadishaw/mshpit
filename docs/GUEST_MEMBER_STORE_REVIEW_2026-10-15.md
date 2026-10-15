@@ -1,5 +1,7 @@
 # Guest, member and store-readiness review — October 15, 2026
 
+**Latest SDK patch review:** [compatible updates, 21/21 Expo Doctor, rebuilt Android APK, advisory exposure and successful Library saves](SDK_PATCH_RESOURCE_REVIEW_2026-10-15.md) supersede the earlier patch/Library status below. Native iOS validation remains pending.
+
 Local app checkout: `D:\Development\Apps\mshpit`, branch `codex/nearby-show-finder-20261015`. This continues the [player review](PLAYER_RECOVERY_REVIEW_2026-10-15.md) and [Nearby review](NEARBY_SHOW_FINDER_REVIEW_2026-10-15.md). No push, production deployment, store submission, production post, new account, enrollment, purchase or credential creation occurred. The original web application and separate font-CSP worktree were preserved.
 
 ## Changes made

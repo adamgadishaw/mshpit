@@ -1,5 +1,7 @@
 # Pit iOS App Store readiness
 
+**Latest SDK patch review:** [compatible updates, 21/21 Expo Doctor, rebuilt Android APK, advisory exposure and successful Library saves](docs/SDK_PATCH_RESOURCE_REVIEW_2026-10-15.md) supersede the earlier patch/Library status below. Native iOS validation remains pending.
+
 **2026-10-15 Windows review:** the latest [guest/member and store-readiness report](docs/GUEST_MEMBER_STORE_REVIEW_2026-10-15.md) supersedes historical check results below: both platform JavaScript exports pass, Expo Doctor is 20/21 with four patch suggestions, and the full mobile/build dependency audit has two unresolved upstream advisories. Native iOS runtime and signed release validation remain pending.
 
 
