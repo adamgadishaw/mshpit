@@ -72,6 +72,16 @@ export function NewsCard({ item, onOpenArtist, showArtist = true }) {
   );
 }
 
+function NewsLoadError({ retained = false, more = false, onRetry }) {
+  const message = more ? "Couldn't load more news. Your earlier updates are still here."
+    : retained ? "Couldn't refresh news. Showing your last loaded updates."
+      : "News didn't load. Check your connection and try again.";
+  return <View style={styles.panel} accessibilityLiveRegion="polite">
+    <Text style={styles.panelText}>{message}</Text>
+    <Button small variant="secondary" title="Try again" onPress={onRetry} style={{ marginTop: space(3) }} />
+  </View>;
+}
+
 // The full News screen: confirmed music news, or updates from your artists.
 // `liveSlug` (from /news/live/<slug>) opens with that event's full coverage.
 export function NewsScreen({ session = null, liveSlug = null, onClose, onOpenArtist, onOpenProfile, onReport, onOpenStory, onRequireAuth }) {
@@ -79,22 +89,50 @@ export function NewsScreen({ session = null, liveSlug = null, onClose, onOpenArt
   const news = useNewsDeskStories({ enabled: scope === "news", limit: 20 });
   const [state, setState] = useState({ status: "loading", items: [], cursor: null });
   const request = useRef(0);
+  const followingController = useRef(null);
+  const followingPending = useRef(false);
+  const followingRetryMore = useRef(false);
 
   const load = useCallback(async ({ more = false } = {}) => {
     if (scope !== "following") return;
+    if (more && (followingPending.current || !state.cursor)) return;
+    followingController.current?.abort();
+    const controller = new AbortController();
+    followingController.current = controller;
+    followingPending.current = true;
+    followingRetryMore.current = false;
     const ticket = ++request.current;
-    setState((current) => ({ ...current, status: more ? "more" : "loading", ...(more ? {} : { items: [] }) }));
+    setState((current) => ({ ...current, status: more ? "more" : "loading" }));
     try {
-      const result = await fetchNews({ scope, cursor: more ? state.cursor : null });
-      if (ticket !== request.current) return;
-      setState((current) => ({ status: "ready", items: more ? [...current.items, ...(result?.items || [])] : result?.items || [], cursor: result?.nextCursor || null }));
+      const result = await fetchNews({ scope, cursor: more ? state.cursor : null, signal: controller.signal });
+      if (controller.signal.aborted || ticket !== request.current) return;
+      setState((current) => {
+        const seen = new Set(more ? current.items.map((item) => item.id) : []);
+        const incoming = (result?.items || []).filter((item) => {
+          if (seen.has(item.id)) return false;
+          seen.add(item.id); return true;
+        });
+        return { status: "ready", items: more ? [...current.items, ...incoming] : incoming, cursor: result?.nextCursor || null };
+      });
     } catch {
-      if (ticket === request.current) setState((current) => ({ ...current, status: "error" }));
+      if (!controller.signal.aborted && ticket === request.current) {
+        followingRetryMore.current = more;
+        setState((current) => ({ ...current, status: "error" }));
+      }
+    } finally {
+      if (ticket === request.current) followingPending.current = false;
     }
   }, [scope, state.cursor]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { void load(); }, [scope, session?.id]);
+  useEffect(() => {
+    void load();
+    return () => {
+      request.current++;
+      followingController.current?.abort();
+      followingPending.current = false;
+    };
+  }, [scope, session?.id]);
 
   return (
     <View style={styles.screen} testID="news-content-shell">
@@ -112,32 +150,23 @@ export function NewsScreen({ session = null, liveSlug = null, onClose, onOpenArt
           <NewsRegionBar accountId={session?.id || null} onChanged={news.reload} />
           {liveSlug ? <LiveEventPanel slug={liveSlug} /> : <View style={{ marginBottom: space(3) }}><LiveCoverageCard /></View>}
           {news.status === "loading" && !news.stories.length ? <ActivityIndicator color={colors.amber} style={{ marginTop: space(10) }} /> : null}
-          {news.status === "error" ? (
-            <View style={styles.panel}>
-              <Text style={styles.panelText}>News didn't load. Check your connection and try again.</Text>
-              <Button small variant="secondary" title="Try again" onPress={news.reload} style={{ marginTop: space(3) }} />
-            </View>
-          ) : null}
+          {news.status === "error" && !news.failedMore ? <NewsLoadError retained={!!news.stories.length} onRetry={news.retry} /> : null}
           {news.status === "ready" && !news.stories.length ? (
             <View style={styles.panel}>
               <Text style={styles.panelTitle}>No stories yet</Text>
-              <Text style={styles.panelText}>Stories are scheduled after three independent publisher groups corroborate them, with a limited two-source fallback on quiet days.</Text>
+              <Text style={styles.panelText}>New music and tour stories will appear here. Check back soon.</Text>
             </View>
           ) : null}
           {news.stories.map((story) => <NewsStoryCard key={story.id} story={story} accountId={session?.id || null} onOpen={onOpenStory} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onRequireAuth={onRequireAuth} />)}
-          {news.nextCursor ? (
+          {news.status === "error" && news.failedMore ? <NewsLoadError more onRetry={news.retry} /> : null}
+          {news.nextCursor && !(news.status === "error" && news.failedMore) ? (
             <Button small variant="secondary" title="Show more" loading={news.status === "loading"} onPress={news.loadMore} style={{ alignSelf: "center", marginTop: space(2) }} />
           ) : null}
         </ScrollView>
       ) : (
       <ScrollView contentContainerStyle={styles.content}>
         {state.status === "loading" ? <ActivityIndicator color={colors.amber} style={{ marginTop: space(10) }} /> : null}
-        {state.status === "error" ? (
-          <View style={styles.panel}>
-            <Text style={styles.panelText}>News didn't load. Check your connection and try again.</Text>
-            <Button small variant="secondary" title="Try again" onPress={() => load()} style={{ marginTop: space(3) }} />
-          </View>
-        ) : null}
+        {state.status === "error" && !followingRetryMore.current ? <NewsLoadError retained={!!state.items.length} onRetry={() => load()} /> : null}
         {state.status === "ready" && !state.items.length && !state.cursor ? (
           <View style={styles.panel}>
             <Text style={styles.panelTitle}>Nothing new from your artists yet</Text>
@@ -145,7 +174,8 @@ export function NewsScreen({ session = null, liveSlug = null, onClose, onOpenArt
           </View>
         ) : null}
         {state.items.map((item) => <NewsCard key={item.id} item={item} onOpenArtist={onOpenArtist} />)}
-        {state.cursor && state.status !== "loading" ? (
+        {state.status === "error" && followingRetryMore.current ? <NewsLoadError more onRetry={() => load({ more: true })} /> : null}
+        {state.cursor && state.status !== "loading" && !(state.status === "error" && followingRetryMore.current) ? (
           <Button small variant="secondary" title="Show more" loading={state.status === "more"} onPress={() => load({ more: true })} style={{ alignSelf: "center", marginTop: space(2) }} />
         ) : null}
       </ScrollView>

@@ -129,3 +129,5 @@ react-native-share is loaded dynamically only when needed and is not bundled in 
 Android testing does not certify iOS. Windows cannot run Xcode or Apple's local simulator. An unsigned simulator compile on a suitable Mac could later check native compilation. EAS Simulator access was not assumed and no paid/cloud build was used. Real signed iPhone/TestFlight tests remain for later Apple Developer enrollment.
 
 Latest bounded navigation review: [Native usability audit](NATIVE_USABILITY_AUDIT_2026-10-15.md).
+
+[Normal-audio cold-start recovery and News continuity](PLAYER_COLD_START_NEWS_RECOVERY_2026-10-15.md) records the matched minimal/current-player results and preserved-data restart procedure.
