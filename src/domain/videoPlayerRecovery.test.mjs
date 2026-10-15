@@ -41,7 +41,7 @@ function fixture(platform = 'android') {
   };
   const module = { exports: {} }; new Function('require', 'module', 'exports', code)(componentRequire, module, module.exports);
   const props = { uri: 'https://media.example.test/clip.mp4', onRetry: () => calls.retry++ };
-  return { player, calls, render() { cursor = 0; pending = []; const tree = module.exports.default(props); pending.forEach(run => run()); return tree; },
+  return { player, calls, emit(name, value) { for (const listener of listeners.get(name) || []) listener(value); }, render() { cursor = 0; pending = []; const tree = module.exports.default(props); pending.forEach(run => run()); return tree; },
     status(next, nextError = null) { status = next; error = nextError; }, active(next) { active = next; },
     unmount() { slots.forEach(s => s?.cleanup?.()); }, listenerCount() { return [...listeners.values()].reduce((n, s) => n + s.size, 0); },
   };
@@ -117,4 +117,14 @@ test('native starts with one play action and hands control to the player after p
 test('web retains its existing native control policy before playback', t => {
   const f = fixture('web'); t.after(() => f.unmount());
   assert.equal(nodes(f.render()).find(n => n.type === 'VideoView').props.nativeControls, true);
+});
+
+test('completed Android clips rewind paused for a painted fullscreen frame and replay', () => {
+  for (const platform of ['android', 'ios', 'web']) {
+    const f = fixture(platform); f.render(); f.player.play(); f.player.currentTime = 25;
+    f.emit('playToEnd');
+    assert.equal(f.player.currentTime, platform === 'android' ? 0 : 25);
+    assert.equal(f.player.playing, platform !== 'android');
+    f.unmount();
+  }
 });

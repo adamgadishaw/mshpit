@@ -126,6 +126,17 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
   }, [player, postId]);
 
   useEffect(() => {
+    if (Platform.OS !== "android") return undefined;
+    const subscription = player.addListener?.("playToEnd", () => {
+      // A new fullscreen surface cannot paint an already-ended decoder.
+      // Keep completed clips paused on a real first frame, ready for replay.
+      player.pause();
+      player.currentTime = 0;
+    });
+    return () => subscription?.remove?.();
+  }, [player]);
+
+  useEffect(() => {
     if (phase !== "error" || trackedError.current) return;
     trackedError.current = true;
     trackRef.current?.("product_error", { code: "video_load_failed", surface: "media_viewer", retryable: true });

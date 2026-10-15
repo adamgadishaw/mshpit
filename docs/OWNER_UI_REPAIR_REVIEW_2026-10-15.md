@@ -29,3 +29,5 @@ Original owner before screenshots: libfile_1432891da24881919111de37c54cd7f9 (pla
 ## Development environment
 
 Existing free local Android dev client, API 36 AOSP emulator, Metro 8081 and adb reverse are retained. No native dependency change/APK rebuild was required for these JS repairs. Existing SDK 57 / react-native-share assessment and Windows setup remain applicable. Android results do not certify iOS. No Apple enrollment, signing, EAS Simulator access, paid services or production deployment used.
+
+Fullscreen/replay follow-up: the remaining player gap is superseded by ANDROID_FULLSCREEN_REPAIR_2026-10-15.md, including three complete actual owner clip cycles and a rebuilt native APK.

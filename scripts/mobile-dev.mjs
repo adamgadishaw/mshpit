@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { readFileSync, writeFileSync } from "node:fs";
 
+import { patchExpoVideoAndroid } from "./patch-expo-video-android.mjs";
+
 const commands = {
   android: ["run:android"],
   prebuild: ["prebuild", "--platform", "android", "--no-install"],
@@ -21,6 +23,7 @@ if ((!['localhost', '127.0.0.1'].includes(url.hostname) && !approvedLive)
   throw new Error("Use localhost by default. The owner-approved live review requires MSHPIT_APPROVED_LIVE_API=1 and https://www.mshpit.com.");
 }
 console.log(`Local mobile ${mode}: API ${url.origin}; app com.mshpit.app.dev`);
+if (mode === "android" || mode === "prebuild") patchExpoVideoAndroid();
 const cli = fileURLToPath(new URL("../node_modules/expo/bin/cli", import.meta.url));
 const manifestPath = fileURLToPath(new URL("../package.json", import.meta.url));
 const manifest = readFileSync(manifestPath, "utf8");
