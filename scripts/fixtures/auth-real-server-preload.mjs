@@ -44,6 +44,8 @@ const members = [
   { id: "real_auth_b", name: "Real Fixture Bob", handle: "realfixturebob", email: "linked@example.test" },
   { id: "real_auth_reset", name: "Reset Fixture", handle: "realfixturereset", email: "reset@example.test" },
   { id: "real_auth_change", name: "Change Fixture", handle: "realfixturechange", email: "change@example.test" },
+  { id: "real_auth_lost_reset", name: "Lost Response Fixture", handle: "reallostreset", email: "lost-reset@example.test" },
+  { id: "real_auth_other_reset", name: "Other Account Fixture", handle: "realotherreset", email: "other-reset@example.test" },
   ...Array.from({ length: 100 }, (_, index) => ({ id: `real_read_${index}`, name: `Read Fixture ${index}`, handle: `realread${index}`, email: `read-${index}@example.test` })),
 ];
 for (const user of members) {
@@ -55,8 +57,15 @@ const cookie = (id) => `${COOKIE}=${createSession(id).token}`;
 const resetToken = randomBytes(32).toString("base64url");
 db.prepare("UPDATE users SET reset_hash=?,reset_expires=? WHERE id=?")
   .run(createHash("sha256").update(resetToken).digest("hex"), Date.now() + 3_600_000, members[2].id);
+const extraReset = (member) => {
+  const token = randomBytes(32).toString("base64url");
+  db.prepare("UPDATE users SET reset_hash=?,reset_expires=? WHERE id=?")
+    .run(createHash("sha256").update(token).digest("hex"), Date.now() + 3_600_000, member.id);
+  return { ...member, token, oldCookie: cookie(member.id) };
+};
 process.send({ kind: "fixture", password, cookieName: COOKIE, alice: members[0], bob: members[1],
   reset: { ...members[2], token: resetToken, oldCookies: [cookie(members[2].id), cookie(members[2].id)] },
   change: { ...members[3], oldCookies: [cookie(members[3].id), cookie(members[3].id)] },
-  readers: members.slice(4).map(user => ({ id: user.id, cookie: cookie(user.id) })),
+  lostReset: extraReset(members[4]), otherReset: extraReset(members[5]),
+  readers: members.slice(6).map(user => ({ id: user.id, cookie: cookie(user.id) })),
 });

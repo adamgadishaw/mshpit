@@ -75,6 +75,10 @@ const cases = [
   { name: "forms-owner-explicit-decision", kind: "forms-owner", width: 390 },
 ];
 
+cases.push(...[390, 1280].flatMap(width => ['forgot', 'reset-invalid', 'reset-uncertain', 'reset-account', 'reset-fragment', 'reset-cross-tab', 'link-malformed', 'link-ambiguous'].map(flow => ({
+  name: 'recovery-'+flow+'-'+width, kind: 'recovery-'+flow, width,
+  ...(flow !== 'forgot' ? { entryPath: '/#reset='+fixtureResetToken } : {}),
+}))));
 function loadChromium() {
   if (process.env.PIT_PLAYWRIGHT_MODULE) return require(process.env.PIT_PLAYWRIGHT_MODULE).chromium;
   for (const name of ["playwright", "playwright-core"]) {
@@ -316,9 +320,7 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.equal(count("/api/reset"), 0, "Reset Cancel submitted the password.");
     await page.goto(`${origin}/#reset=${fixtureResetToken}`, { waitUntil: "networkidle" });
-    // Adding a fragment to the current page is same-document navigation; load
-    // the fixture link as a new document so the root consumes its token again.
-    await page.reload({ waitUntil: "networkidle" });
+    // Same-document email links are consumed without a reload.
     await credentialFields(page, [["New password", "new-password"], ["Confirm new password", "new-password"]]);
     await page.getByLabel("New password", { exact: true }).fill(replacementPassword);
     await page.getByLabel("Confirm new password", { exact: true }).fill(replacementPassword);
@@ -381,11 +383,12 @@ async function runCase(browser, origin, item) {
   });
   const page = await context.newPage();
   page.setDefaultTimeout(timeoutMs);
+  const recoveryCase = item.kind.startsWith("recovery-");
   const guestCase = item.kind.startsWith("guest-");
   const diagnosticsCase = item.kind === "admin-errors";
   const locationCase = item.kind === "composer-location";
   const fixtureMember = item.accountTheme ? { ...alice, theme: item.accountTheme } : alice;
-  const guestStart = guestCase || item.kind.startsWith("login") || ["startup-401", "forms-login", "forms-signup", "forms-reset"].includes(item.kind);
+  const guestStart = (recoveryCase && item.kind !== "recovery-reset-account") || guestCase || item.kind.startsWith("login") || ["startup-401", "forms-login", "forms-signup", "forms-reset"].includes(item.kind);
   const publicPost = {
     id: "p_guest_browser", userId: "public-author", user: { id: "public-author", name: "Public Author", handle: "public-author", role: "fan" },
     kind: ["status", "going"].includes(item.postKind) ? "status" : "review",
@@ -544,6 +547,16 @@ async function runCase(browser, origin, item) {
         assert.equal(body.password, fixturePassword); assert.equal(body.decision, "approved");
         return await json({ ok: true, decision: "approved", receipt: { id: "fixture-owner-receipt", stamp: "fixture-not-a-real-receipt" }, emailSent: false });
       }
+      if (recoveryCase && url.pathname === '/api/forgot') return await json({ ok: true });
+      if (recoveryCase && url.pathname === '/api/reset') {
+        assert.equal(body.password, replacementPassword);
+        if (item.kind === 'recovery-reset-invalid') return await json({ error: 'That reset link is invalid, expired, or replaced. Request another reset email.', code: 'VALIDATION_FAILED' }, 400);
+        if (item.kind === 'recovery-reset-uncertain') { state.user = alice; return await route.abort('failed'); }
+        if (item.kind === 'recovery-reset-cross-tab') await new Promise(resolve => { state.releaseReset = resolve; });
+        if (item.kind === 'recovery-reset-fragment') assert.equal(body.token, fixtureResetToken+'-next');
+        state.user = item.kind === 'recovery-reset-account' ? bob : alice;
+        return await json({ user: state.user });
+      }
       if (url.pathname === "/api/reset") {
         assert.equal(request.method(), "POST"); assert.equal(body.password, replacementPassword); assert.equal(body.token, fixtureResetToken);
         state.user = alice;
@@ -662,7 +675,75 @@ async function runCase(browser, origin, item) {
       // session-dependent meaning for the same root document.
       : guestStart ? origin : `${origin}/feed`;
     await page.goto(entry, { waitUntil: item.kind === "login-canceled" ? "domcontentloaded" : "networkidle", timeout: timeoutMs });
-    if (item.kind === "member-auth-route") {
+    if (recoveryCase) {
+      const posts = path => state.calls.filter(call => call.path === path && call.method === 'POST').length;
+      if (item.kind === 'recovery-forgot') {
+        await landing();
+        await page.getByRole('link', { name: 'Log in', exact: true }).last().click();
+        await page.getByText('Forgot password?', { exact: true }).click();
+        await page.getByLabel('Account email', { exact: true }).fill(alice.email);
+        await page.getByRole('button', { name: 'Send reset link', exact: true }).click();
+        await page.getByText(/Delivery is not confirmed/).waitFor();
+        assert.equal((await page.locator('body').innerText()).includes("we've emailed"), false);
+        assert.equal(posts('/api/forgot'), 1);
+        await page.getByRole('button', { name: 'Try a different email', exact: true }).click();
+        await page.getByLabel('Account email', { exact: true }).waitFor();
+      } else if (item.kind === 'recovery-link-malformed' || item.kind === 'recovery-link-ambiguous') {
+        await page.getByLabel('New password', { exact: true }).waitFor();
+        await page.evaluate(hash => { window.location.hash = hash; }, item.kind === 'recovery-link-malformed' ? 'reset=short' : 'reset='+fixtureResetToken+'&verify='+fixtureResetToken);
+        await page.getByText(/This account link is incomplete/).waitFor();
+        await page.getByLabel('New password', { exact: true }).waitFor({ state: 'hidden' });
+        assert.equal(posts('/api/reset'), 0);
+        assert.equal(posts('/api/verify-email'), 0);
+        assert.equal(new URL(page.url()).hash, '');
+        await page.getByText('Request a new reset link', { exact: true }).click();
+        await page.getByLabel('Account email', { exact: true }).waitFor();
+      } else {
+        await page.getByLabel('New password', { exact: true }).waitFor();
+        if (item.kind === 'recovery-reset-account') await page.getByText(/currently signed in as @fixturealice/).waitFor();
+        if (item.kind === 'recovery-reset-fragment') {
+          await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+          await page.getByLabel('New password', { exact: true }).waitFor({ state: 'hidden' });
+          await page.evaluate(token => { window.location.hash = 'reset='+token; }, fixtureResetToken+'-next');
+          await page.getByLabel('New password', { exact: true }).waitFor();
+        }
+        const resetButton = () => page.getByRole('button', { name: item.kind === 'recovery-reset-account' ? 'Reset linked account and sign in' : 'RESET PASSWORD', exact: true });
+        if (item.kind === 'recovery-reset-invalid') {
+          await page.getByLabel('New password', { exact: true }).fill('abcdefgh');
+          await page.getByLabel('Confirm new password', { exact: true }).fill('abcdefgh');
+          await resetButton().click();
+          await page.getByText('Use 8 or more characters, including a letter and a number.', { exact: true }).waitFor();
+          assert.equal(posts('/api/reset'),0);
+        }
+        await page.getByLabel('New password', { exact: true }).fill(replacementPassword);
+        await page.getByLabel('Confirm new password', { exact: true }).fill(replacementPassword);
+        await resetButton().click();
+        if (item.kind === 'recovery-reset-cross-tab') {
+          await waitFor(() => typeof state.releaseReset === 'function', 'Reset request was not held');
+          const otherTab = await context.newPage();
+          await otherTab.goto(origin, { waitUntil: 'networkidle' });
+          await otherTab.evaluate(() => localStorage.setItem('pit.auth.intent.v1', JSON.stringify({ revision: 'fixture-other-tab-signout', phase: 'signed-out', order: Date.now()+1 })));
+          state.releaseReset();
+          await page.getByRole('button', { name: 'Go to log in', exact: true }).waitFor();
+          await waitFor(() => state.user === null, 'Uncertain cookie was not revoked after cross-tab signout');
+          assert.equal((await page.locator('body').innerText()).includes(alice.name), false);
+          await otherTab.close();
+        } else if (item.kind === 'recovery-reset-invalid') {
+          await page.getByRole('button', { name: 'Request a new reset link', exact: true }).click();
+          await page.getByLabel('Account email', { exact: true }).waitFor();
+        } else if (item.kind === 'recovery-reset-uncertain') {
+          await page.getByText(/password may already have changed/).waitFor();
+          await page.getByRole('button', { name: 'Log in with the new password', exact: true }).click();
+          await page.getByLabel('Email', { exact: true }).fill(alice.email);
+          await page.getByLabel('Password', { exact: true }).fill(replacementPassword);
+          await page.getByRole('button', { name: 'Log in', exact: true }).last().click();
+          await feed();
+          assert.equal(posts('/api/login'),1);
+        } else { await feed(); if (item.kind === 'recovery-reset-account') await you(bob); }
+        assert.equal(posts('/api/reset'),1);
+        assert.equal(new URL(page.url()).hash.includes('reset='),false);
+      }
+    } else if (item.kind === "member-auth-route") {
       await feed();
       assert.equal(new URL(page.url()).pathname, "/feed", "An already confirmed member must not reopen an authentication form.");
       assert.equal(await page.getByLabel("Password", { exact: true }).count(), 0);

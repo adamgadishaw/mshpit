@@ -80,6 +80,7 @@ const PlayerBar = lazyWithRetry(() => import("./src/components/PlayerBar"), "Pla
 const PlaylistPickerScreen = lazyWithRetry(() => import("./src/screens/PlaylistPickerScreen"), "PlaylistPickerScreen");
 const PostScreen = lazyWithRetry(() => import("./src/screens/PostScreen"), "PostScreen");
 const ResetPasswordScreen = lazyWithRetry(() => import("./src/screens/ResetPasswordScreen"), "ResetPasswordScreen");
+const InvalidAccountLinkScreen = lazyWithRetry(() => import("./src/screens/InvalidAccountLinkScreen"), "InvalidAccountLinkScreen");
 const UnsubscribeScreen = lazyWithRetry(() => import("./src/screens/UnsubscribeScreen"), "UnsubscribeScreen");
 const VerifyEmailScreen = lazyWithRetry(() => import("./src/screens/VerifyEmailScreen"), "VerifyEmailScreen");
 const OwnerApprovalScreen = lazyWithRetry(() => import("./src/screens/OwnerApprovalScreen"), "OwnerApprovalScreen");
@@ -147,6 +148,7 @@ import { profileManagementAction, publicIdentityTarget } from "./src/domain/arti
 import { isCityOnlyReview, prepareShowNavigation } from "./src/domain/showNavigation.mjs";
 import { isOnlineReview } from "./src/domain/onlineReview.mjs";
 import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
+import { authLinkIntent } from "./src/domain/authLinkIntent.mjs";
 import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
 import { needsSignupOnboarding } from "./src/domain/signupOnboarding.mjs";
 import { replaceNavigationFrame } from "./src/domain/navigationStack.mjs";
@@ -532,30 +534,52 @@ function Root() {
       window.location.replace(nextUrl);
     }
   };
-  const [resetToken, setResetToken] = useState(() => { try { return web ? readSensitiveLinkToken(window.location, "reset") : null; } catch { return null; } });
+  const [initialAuthLink] = useState(() => web ? authLinkIntent(window.location) : null);
+  const [authLinkError, setAuthLinkError] = useState(initialAuthLink?.kind === "invalid");
+  const [resetToken, setResetToken] = useState(() => { try { return initialAuthLink?.kind === "reset" ? initialAuthLink.token : null; } catch { return null; } });
   const scrubResetUrl = () => scrubSensitiveUrl("reset");
   const clearResetUrl = () => { scrubResetUrl(); setResetToken(null); };
   useEffect(() => { if (resetToken) scrubResetUrl(); }, [resetToken]);
   // Unsubscribe: the emailed link only carries the token here. Opting out is the
   // explicit tap below, so a mail scanner following the link cannot silently
   // unsubscribe someone.
-  const [unsubToken, setUnsubToken] = useState(() => { try { return web ? readSensitiveLinkToken(window.location, "unsubscribe") : null; } catch { return null; } });
+  const [unsubToken, setUnsubToken] = useState(() => { try { return web && !initialAuthLink ? readSensitiveLinkToken(window.location, "unsubscribe") : null; } catch { return null; } });
   const scrubUnsubUrl = () => scrubSensitiveUrl("unsubscribe");
   const clearUnsubUrl = () => { scrubUnsubUrl(); setUnsubToken(null); };
   useEffect(() => { if (unsubToken) scrubUnsubUrl(); }, [unsubToken]);
   // Email verification: same shape as unsubscribe, and for the same reason. The
   // emailed link only delivers the token; confirming is the explicit tap, so a
   // scanner that follows the link cannot verify an address for its owner.
-  const [verifyToken, setVerifyToken] = useState(() => { try { return web ? readSensitiveLinkToken(window.location, "verify") : null; } catch { return null; } });
+  const [verifyToken, setVerifyToken] = useState(() => { try { return initialAuthLink?.kind === "verify" ? initialAuthLink.token : null; } catch { return null; } });
   const scrubVerifyUrl = () => scrubSensitiveUrl("verify");
   const clearVerifyUrl = () => { scrubVerifyUrl(); setVerifyToken(null); };
   useEffect(() => { if (verifyToken) scrubVerifyUrl(); }, [verifyToken]);
   // Founder approvals use the same fragment-only bearer pattern. Capture it in
   // memory, remove it from browser history immediately, and never place it in a
   // navigation frame or analytics event.
-  const [ownerApprovalToken, setOwnerApprovalToken] = useState(() => { try { return web ? readSensitiveFragmentToken(window.location, "ownerApproval") : null; } catch { return null; } });
+  const [ownerApprovalToken, setOwnerApprovalToken] = useState(() => { try { return web && !initialAuthLink ? readSensitiveFragmentToken(window.location, "ownerApproval") : null; } catch { return null; } });
   const scrubOwnerApprovalUrl = () => scrubSensitiveUrl("ownerApproval");
   const clearOwnerApprovalUrl = () => { scrubOwnerApprovalUrl(); setOwnerApprovalToken(null); };
+  useEffect(() => {
+    if (!web) return undefined;
+    const receiveAccountLink = () => {
+      const next = authLinkIntent(window.location);
+      if (!next) return;
+      authNavigationAbortRef.current?.();
+      setResetToken(next.kind === "reset" ? next.token : null);
+      setVerifyToken(next.kind === "verify" ? next.token : null);
+      setAuthLinkError(next.kind === "invalid");
+      setUnsubToken(null); setOwnerApprovalToken(null);
+      for (const key of ["reset", "verify", "unsubscribe", "ownerApproval"]) scrubSensitiveUrl(key);
+    };
+    window.addEventListener("hashchange", receiveAccountLink);
+    window.addEventListener("popstate", receiveAccountLink);
+    return () => {
+      window.removeEventListener("hashchange", receiveAccountLink);
+      window.removeEventListener("popstate", receiveAccountLink);
+    };
+  }, []);
+  useEffect(() => { if (authLinkError) for (const key of ["reset", "verify", "unsubscribe", "ownerApproval"]) scrubSensitiveUrl(key); }, [authLinkError]);
   useEffect(() => { if (ownerApprovalToken) scrubOwnerApprovalUrl(); }, [ownerApprovalToken]);
   // A full web load of canonical `/` always begins at the opening screen until
   // the cookie handshake confirms an account. Explicit public entity URLs still
@@ -1873,9 +1897,16 @@ function Root() {
           ]}
         />
 
+        {authLinkError && <View style={styles.welcomeModal}>
+          <InvalidAccountLinkScreen onClose={() => setAuthLinkError(false)}
+            onLogin={() => { setAuthLinkError(false); enter(); go({ auth: true, authMode: "login" }); }}
+            onRequestReset={() => { setAuthLinkError(false); enter(); go({ auth: true, authMode: "forgot" }); }} />
+        </View>}
         {resetToken && (
           <View style={styles.welcomeModal}>
-            <ResetPasswordScreen token={resetToken} onDone={finishPasswordReset} onCancel={clearResetUrl} />
+            <ResetPasswordScreen token={resetToken} key={resetToken} onDone={finishPasswordReset} onCancel={clearResetUrl}
+              onLogin={() => { clearResetUrl(); enter(); go({ auth: true, authMode: "login" }); }}
+              onRequestReset={() => { clearResetUrl(); enter(); go({ auth: true, authMode: "forgot" }); }} />
           </View>
         )}
 
@@ -1887,7 +1918,7 @@ function Root() {
 
         {verifyToken && (
           <View style={styles.welcomeModal}>
-            <VerifyEmailScreen token={verifyToken} onConsumed={scrubVerifyUrl} onDone={clearVerifyUrl} onLogin={() => { clearVerifyUrl(); enter(); go({ auth: true, authMode: "login" }); }} />
+            <VerifyEmailScreen token={verifyToken} key={verifyToken} onConsumed={scrubVerifyUrl} onDone={clearVerifyUrl} onLogin={() => { clearVerifyUrl(); enter(); go({ auth: true, authMode: "login" }); }} />
           </View>
         )}
 

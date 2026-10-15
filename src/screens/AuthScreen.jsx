@@ -318,8 +318,9 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
             {accounts.map((account) => <View key={account.id}>{primary(`${account.name} · @${account.handle}`, null, false, { name: "account", value: account.id })}</View>)}
             {primary("Use a different password", () => { setAccounts(null); setPassword(""); })}
           </> : mode === "forgot" ? sentTo ? <>
-            <View style={styles.note}><Icon name="mail" size={19} color={colors.amber} /><Text style={styles.noteText} accessibilityLiveRegion="polite" role="status">If an account exists for {sentTo}, we’ve emailed a link to reset your password. It’s valid for 1 hour. Check spam if you don’t see it.</Text></View>
+            <View style={styles.note}><Icon name="mail" size={19} color={colors.amber} /><Text style={styles.noteText} accessibilityLiveRegion="polite" role="status">If an account is eligible for {sentTo}, a reset email will be attempted. Delivery is not confirmed. Use the most recent reset email; links last 1 hour. Requests close together may not send another email for 15 minutes. Check spam too.</Text></View>
             {primary("Back to log in", () => changeMode("login"))}
+            {primary("Try a different email", () => { setSentTo(null); clearError(); })}
           </> : <>
             {field("email", "Account email", email, setEmail, { autoComplete: "username", textContentType: "emailAddress", returnKeyType: "send" })}
             {primary(resetBusy ? "Sending…" : "Send reset link", sendReset, resetBusy, { name: "reset" })}

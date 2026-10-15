@@ -165,22 +165,23 @@ test("an admin can confirm an address, and that also releases the welcome once",
   assert.equal(forceVerify("u_does_not_exist"), null);
 });
 
-test("resend issues a fresh token and retires the old one", () => {
+test("resend issues a fresh token and retires the old one", async () => {
   const user = addUser();
   const first = mintVerifyToken(user.id);
-  const result = resendVerification(q.userById.get(user.id));
-  assert.equal(result.sent, true);
+  const result = await resendVerification(q.userById.get(user.id));
+  assert.equal(result.sent, false, "unconfigured delivery must not report sent");
+  assert.equal(result.deliveryStatus, "failed");
   assert.equal(completeVerification(first), null, "the superseded token must be dead");
 });
 
-test("resend is a no-op once verified, and while the kill switch is off", () => {
+test("resend is a no-op once verified, and while the kill switch is off", async () => {
   const user = addUser();
   forceVerify(user.id);
-  assert.deepEqual(resendVerification(q.userById.get(user.id)), { sent: false, reason: "already-verified" });
+  assert.deepEqual(await resendVerification(q.userById.get(user.id)), { sent: false, reason: "already-verified" });
 
   process.env.EMAIL_VERIFICATION_ENABLED = "off";
   const other = addUser();
-  assert.deepEqual(resendVerification(other), { sent: false, reason: "verification-disabled" });
+  assert.deepEqual(await resendVerification(other), { sent: false, reason: "verification-disabled" });
 });
 
 test("sendWelcomeOnce is the single guard against a duplicate welcome", async () => {
@@ -259,11 +260,11 @@ test("legacy verification GET moves the bearer token into a no-store fragment", 
   assert.equal(headers.get("Cache-Control"), "no-store");
 });
 
-test("already-verified resend self-heals with a fresh no-store self projection", () => {
+test("already-verified resend self-heals with a fresh no-store self projection", async () => {
   const user = addUser();
   forceVerify(user.id);
   const headers = new Map();
-  const result = routes["POST /api/verify-email/resend"]({
+  const result = await routes["POST /api/verify-email/resend"]({
     user: q.userById.get(user.id),
     body: {},
     ip: `verify-resend-${user.id}`,
