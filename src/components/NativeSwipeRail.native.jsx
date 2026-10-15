@@ -10,7 +10,7 @@ import { releasedSwipe, swipeAxis, swipeThreshold } from "../domain/nativeGestur
 
 // Only the visible action/tab rail owns this gesture. Media and post text are
 // siblings outside its detector; platform back edges are reserved explicitly.
-export default function NativeSwipeRail({ children, onCommit, positive = "Like", negative = "Repost", hint, enabled = true, testID }) {
+export default function NativeSwipeRail({ children, onCommit, positive = "Like", negative = "Repost", hint, enabled = true, testID, surfaceColor = colors.surface }) {
   const { width: screenWidth } = useWindowDimensions();
   const reduced = useReducedMotion(), screenReader = useScreenReaderEnabled();
   const [armed, setArmed] = useState(null);
@@ -39,7 +39,7 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
   [enabled, screenReader, screenWidth, startX, startY, width, x, commit]);
   useAnimatedReaction(
     () => Math.abs(x.get()) >= swipeThreshold(width.get()) ? (x.get() > 0 ? "positive" : "negative") : null,
-    (next, previous) => { if (next !== previous) scheduleOnRN(setArmed, next); },
+    (next, previous) => { if (hint && next !== previous) scheduleOnRN(setArmed, next); },
   );
   const contentStyle = useAnimatedStyle(() => ({ transform: [{ translateX: reduced ? 0 : x.get() }] }));
   const positiveStyle = useAnimatedStyle(() => ({ opacity: x.get() >= swipeThreshold(width.get()) ? 1 : 0 }));
@@ -51,13 +51,13 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
         <Animated.Text style={[styles.arm, positiveStyle]}>Release to {positive.toLowerCase()}</Animated.Text>
         <Animated.Text style={[styles.arm, styles.right, negativeStyle]}>Release to {negative.toLowerCase()}</Animated.Text>
       </View>
-      <GestureDetector gesture={pan}><Animated.View style={[styles.content, contentStyle]}>{children}</Animated.View></GestureDetector>
+      <GestureDetector gesture={pan}><Animated.View style={[styles.content, { backgroundColor: surfaceColor }, contentStyle]}>{children}</Animated.View></GestureDetector>
     </View>
   </View>;
 }
 const styles = StyleSheet.create({
   rail: { minWidth: 0 }, track: { overflow: "hidden", minHeight: 48, justifyContent: "center" },
-  content: { backgroundColor: colors.bgElev, minHeight: 48 },
+  content: { minHeight: 48 },
   feedback: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 12 },
   hint: { color: colors.textDim, fontSize: 13, lineHeight: 20, paddingVertical: 5 },
   arm: { color: colors.amber, fontSize: 14, fontWeight: "600", maxWidth: 108 }, right: { textAlign: "right", color: colors.good },

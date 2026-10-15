@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { AccessibilityInfo, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors } from "../theme";
 import NativeSwipeRail from "./NativeSwipeRail";
 
-export default function PostSwipeActions({ post, children, onRequireAuth, enabled = false, accountId, likeInfo, toggleLike, setPostRepost }) {
+export default function PostSwipeActions({ post, children, onRequireAuth, enabled = false, accountId, likeInfo, toggleLike, setPostRepost, surfaceColor }) {
   const scope = `${accountId || "guest"}:${post.id}`;
   const current = useRef(scope); current.current = scope;
   const pending = useRef(null), mounted = useRef(true);
@@ -20,7 +20,7 @@ export default function PostSwipeActions({ post, children, onRequireAuth, enable
     if (pending.current === scope) return;
     const like = direction === "positive", undo = direction === "undo";
     if (like && likeInfo(post.id, post.likes || 0).liked) {
-      setFeedback({ scope, text: "Already liked.", undo: false }); return;
+      AccessibilityInfo?.announceForAccessibility?.("Already liked."); setFeedback({ scope, text: "", undo: false }); return;
     }
     if (!like && !undo && confirmed.current.reposted) {
       setFeedback({ scope, text: "Already reposted.", undo: true }); return;
@@ -31,14 +31,15 @@ export default function PostSwipeActions({ post, children, onRequireAuth, enable
       const result = like ? await toggleLike(post.id, post.likes || 0) : await setPostRepost(post.id, !undo);
       if (!mounted.current || current.current !== scope) return;
       if (result?.ok && !like) confirmed.current.reposted = !undo;
-      setFeedback({ scope, text: result?.ok ? (like ? "Liked." : undo ? "Repost removed." : "Reposted.") : "Not saved. Try again.", undo: !!result?.ok && !like && !undo });
+      if (result?.ok && like) AccessibilityInfo?.announceForAccessibility?.("Liked.");
+      setFeedback({ scope, text: result?.ok ? (like ? "" : undo ? "Repost removed." : "Reposted.") : "Not saved. Try again.", undo: !!result?.ok && !like && !undo });
     } catch {
       if (mounted.current && current.current === scope) setFeedback({ scope, text: "Not saved. Try again.", undo: false });
     } finally { if (pending.current === scope) pending.current = null; }
   };
   if (!enabled) return children;
   return <View>
-    <NativeSwipeRail enabled={scoped.text !== "Saving…"} onCommit={commit} hint="← Repost · Swipe actions · Like →" testID={`post-swipe-${post.id}`}>
+    <NativeSwipeRail enabled={scoped.text !== "Saving…"} onCommit={commit} surfaceColor={surfaceColor} testID={`post-swipe-${post.id}`}>
       <View pointerEvents={scoped.text === "Saving…" ? "none" : "auto"}>{children}</View>
     </NativeSwipeRail>
     {scoped.text ? <View style={styles.status}>

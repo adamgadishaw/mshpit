@@ -1,0 +1,9 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {createRequire} from 'node:module';
+import {transformSync} from '@babel/core';
+const require=createRequire(import.meta.url),code=transformSync(readFileSync(new URL('./MediaUploadProgress.native.jsx',import.meta.url),'utf8'),{filename:'MediaUploadProgress.native.jsx',babelrc:false,configFile:false,plugins:[[require('@babel/plugin-transform-react-jsx'),{runtime:'automatic'}],require('@babel/plugin-transform-modules-commonjs')]}).code;
+const jsx=(type,props)=>({type,props}),deps={'react/jsx-runtime':{jsx,jsxs:jsx},'react-native':{ActivityIndicator:'Spinner',Text:'Text',View:'View',StyleSheet:{create:s=>s}},'../theme':{colors:{}}},module={exports:{}};new Function('require','module','exports',code)(name=>deps[name]||require(name),module,module.exports);const render=progress=>module.exports.default({progress});
+test('finishing a byte transfer does not become a fake zero-percent conversion',()=>{const upload=render({stage:'uploading-source',totalBytes:100,bytesSent:100,fraction:1});assert.equal(upload.props.accessibilityValue.now,100);const processing=render({stage:'processing-source',fraction:0});assert.equal(processing.props.accessibilityValue.now,undefined);assert.match(processing.props.accessibilityValue.text,/Processing original/);assert.equal(processing.props.accessibilityState.busy,true);});
+test('unknown transfer length stays indeterminate and measured percentages are bounded',()=>{assert.equal(render({stage:'uploading-source',totalBytes:0,fraction:0}).props.accessibilityValue.now,undefined);assert.equal(render({stage:'uploading-source',totalBytes:100,fraction:2}).props.accessibilityValue.now,100);assert.equal(render({stage:'uploading-source',totalBytes:100,fraction:-2}).props.accessibilityValue.now,0);});

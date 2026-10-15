@@ -53,3 +53,54 @@ This result is a performance concern, not a responsiveness pass. Before broader 
 Gesture commit: `21b34dd2c06a44491d5bf9a6ebf2a2fe780bc80d`.33 synthetic device checks passed across actions, tab navigation, gallery, Delete, refresh and video scrubber cleanup. All fixture overlays restored; fixture tree clean at `558382f`, localhost8082 server/reverse removed. Owner post-integration checks cover paused/playing fullscreen and Home-return pausing; an additional known-start check passed replay advance, completion rewind, ended fullscreen zero and final player release (`gesture-owner-player-final-check.json`,4 checks). The earlier full three-cycle player evidence is retained unchanged; a superseded short-remaining-time smoke timeout remains recorded rather than being presented as a pass.
 
 No app-wide redesign, converter-quality change or colour correction is claimed. The next material input is the location/example of the owner's colour issue; the current palette and functional meanings remain the baseline.
+
+## Scoped native refinement verification — 2026-10-15
+
+Native concert cards now keep their action rail on the card's own surface, omit the permanent swipe instruction, use compact icon/count actions with full accessibility labels and 48dp target heights, and place the view tally beside the date. Native card padding is 12dp and its extra shadow is removed. Website markup/sizing is retained through explicit platform branches. Repost Undo, direct action buttons, failures and account fencing remain. Like success uses the existing heart/count plus an accessibility announcement. The own-post management strip says “Manage post”; its text fades before it can clip during Delete reveal, and returns after cancellation.
+
+Native upload progress distinguishes measured byte transfer from indeterminate processing/finishing. Conversion notices check immediately on native mount/foreground, stop in background, serialize checks and abort/ignore retired results. Web keeps its existing interval-first check timing. This is client progress/recovery verification; no real upload, post, FFmpeg conversion or production converter-health check was executed.
+
+Validation: full regression suite 6374 tests, 6373 passed, zero failed, one skipped. The six new executable conversion tests cover immediate/serialized checks, retirement/abort, foreground recovery, unchanged web cadence, measured transfer versus processing and bounded/unknown progress. Source contracts were updated for the already intended native Feed title and extracted progress components; branding, upload retry/cancel and actual interaction assertions remain. Syntax:855 Node files passed. Architecture:Store hooks144/144, state47/47, routes156/156; baseline allowances unchanged. No TypeScript project check is claimed. Final isolated x86_64 release build passed offline in1m42s,875 tasks(24 executed); APK SHA256 `40fa40d6dc4045e54b43aeb31675c8b054d6344de8ba2f0f6fc3b8d68df31f09`,81211681 bytes. Earlier baseline release/debug build passed after one missing official AndroidX AAR was retrieved; no new app dependency, SDK tool, signing credential or licence acceptance was added.
+
+### Matched responsiveness measurements
+
+Fixed clock,20 synthetic posts/1000 events, same API36 emulator/density/font/render settings, two warm seconds after verified Feed readiness, eight alternating400ms swipes with200ms gaps. Three release/debug pairs per source, order alternating. No inspector/accessibility capture, builds or tests inside timing. Release uses embedded Hermes/no INTERNET permission; debug uses localhost8082. Baseline is0511523 with the same hash-tracked fixture overlays; refined is that source plus these changes. Later visual-only fixture preview changes were made after all timing finished.
+
+| Median across three trials | Baseline release | Refined release | Baseline debug | Refined debug |
+| --- | ---: | ---: | ---: | ---: |
+| Whole-run HWUI janky frames |62.24%|60.19%|67.95%|69.70%|
+| Whole-run HWUI p90 |101ms|105ms|109ms|109ms|
+| Frame-stage UI-work p90 |11.06ms|14.48ms|18.13ms|17.01ms|
+| Frame-stage sync-wait p90 |45.06ms|44.79ms|40.32ms|45.13ms|
+| Frame-stage render-before-swap p90 |32.42ms|34.82ms|33.44ms|35.24ms|
+| Frame-stage swap-to-complete p90 |41.95ms|41.88ms|41.08ms|42.99ms|
+
+This does not establish a meaningful performance improvement. Jank remains substantial. Actual compressed atrace scheduler/slice analysis shows both extra debug JS CPU cost and graphics submission/buffer costs shared with release:baseline eglSwapBuffersWithDamageKHR p90 about40–41ms and dequeueBuffer about35–40ms. Slice times overlap and cannot be summed. Stage quantiles use the retained frame-stat ring buffer, whereas the whole-run histogram covers a different population. The emulator GPU histogram sentinel is not a real4.95s frame measurement. No single code culprit, physical-device smoothness or iOS performance conclusion is certified. Further isolated profiling/ablation and physical-device measurement remain necessary.
+
+Evidence in `D:/Development/Apps/mshpit-perf/.tmp/performance/`: `ux-baseline-cohort.json`, `ux-refined-cohort.json`, both `*-trace-analysis.json`,12 raw `.atrace` files and corresponding `*-frames.txt`. The bounded orchestration/analysis scripts remain in the task workspace as `measure-ux-cohort.cjs` and `analyze-ux-traces.cjs`; preparing the same hash-tracked overlays is required before rerunning them.
+
+### Actual screenshots and limits
+
+Inspected actual native screenshots show the compact footer and Delete reveal with no clipped instructional remnant. Opening the synthetic Delete confirmation and pressing its fresh CANCEL control left the post present and restored the label. All fixture transport writes remained blocked. Initial screenshots taken before render settlement and a screenshot/accessibility timeout are superseded, not counted as passes. The final settled progress screenshot explicitly says LOCAL SIMULATED UPLOAD STATES — NO UPLOAD; its65% transfer, processing spinner and finishing spinner were inspected.
+
+Library evidence:
+
+- Simulated progress: `libfile_3b7a45437f60819198839dbeb1e08453` (`ux-progress-settled-final.png`).
+- Synthetic Delete reveal: `libfile_7dcee8e4f3dc8191845945deb24aa4a6` (`ux-delete-reveal-final.png`).
+- Synthetic Cancel return: `libfile_9a0770ad01f08191a28acf1651605169` (`ux-delete-cancel-verified.png`).
+
+### Colour comparison correction
+
+Token equality alone does not establish perceived or selected-theme equality. Independent cloud browser evidence from the parent shows the hydrated signed-out `/events` and Steve Lacy artist wrappers using warm-paper `#FBF7F0`, selected-tab `#F3ECE1` and heading `#1C140C`; the document body `#09090B` and dark concert hero are separate surfaces. That observation does not identify the owner's chosen website theme. The independent artist/video screenshots are desktop1180×757 only; mobile viewport was unavailable, and Community/review access required login. The Steve Lacy gallery's21.078333s portrait clip played in cloud Chrome; it is not the owner's Android20.633s clip or an iPhone test.
+
+Source inspection finds `src/theme.native.js` re-exports `theme.js`, whose initial key isStage and whose saved preference/account synchronization uses web `window.localStorage` plus page reload. Website Daylight defines `#FBF7F0`. Native persistence/account-theme parity warrants a dedicated follow-up; no theme preference or palette is changed here. Do not infer the owner's desired theme from an anonymous browser, document body or matching Stage tokens. Same-account/same-theme rendered comparison remains outstanding.
+
+### Cleanup
+
+Every temporary fixture source/native overlay was restored using the hash-guarded restoration manifest; the fixture working tree is clean at558382f. Fixture packages were force-stopped, verified Metro8082 PID29184 stopped and only its reverse removed. APKs, local media and trace evidence were retained in ignored paths. Owner app data was never cleared and its APK never reinstalled in this phase. The canonical website checkout remains untouched. No deployment, production content mutation, paid service or Apple enrollment occurred. Android evidence remains separate from iOS certification.
+
+Owner runtime confirms a concrete theme mismatch:accountTheme=daylight,activeTheme=stage,localStorageAvailable=false,background=#09090B,surface=#141418 (.tmp/overnight/ux-owner-theme-state.json). This explains a selected-theme discrepancy, though it does not certify encoded media colour. No account preference was changed.
+
+Owner final clean reload recovered after restarting the verified stalled Metro process with the existing Windows EXPO_NO_METRO_LAZY=1 setting. Current guarded localhost8081 Metro PID9560, logs .tmp/overnight/metro-ux-final.log. Auth ready/session present, no temporary globals, Like/Post/Report blocked, exact feed-revalidation POST allowed; actual Feed screenshot inspected. No data clear or owner reinstall.
+
+Final actual-owner screenshots inspected and saved:Feed libfile_8100be8c3b7081918127f9781cec7f42; Steve Lacy review/footer libfile_ae6378c2499881918f7427f74e12e24c. The real footer fits one row without the old permanent swipe hint or a forced raised-background action rectangle. It remains a Stage capture, not a Daylight match. Final Feed offset0, viewer false,players empty,session present. Upload receipts are retained in the task workspace; Windows extended-attribute tagging is unavailable.

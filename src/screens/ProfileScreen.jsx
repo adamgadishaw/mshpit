@@ -164,8 +164,8 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
     />
     {Platform.OS !== "web" && accountId && accountId === log.userId && !!log.id && !log.attendanceTicket ? <>
       <NativeDeleteRow testID={`own-post-delete-${log.id}`} enabled onDelete={requestSlideDelete}>
-        <View style={{ minHeight: 48, justifyContent: "center", paddingHorizontal: 16, backgroundColor: colors.bgElev }}>
-          <Text style={{ color: colors.textDim, fontSize: 14 }}>Slide left to delete your post</Text>
+        <View style={{ minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, backgroundColor: colors.bgElev }}>
+          <Text style={{ color: colors.textDim, fontSize: 14 }}>Manage post</Text><Icon name="chevron-left" size={18} color={colors.textDim} />
         </View>
       </NativeDeleteRow>
       {!!deleteFeedback && <Text accessibilityLiveRegion="polite" style={{ color: colors.danger, fontSize: 14, padding: 12 }}>{deleteFeedback}</Text>}

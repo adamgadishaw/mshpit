@@ -1,3 +1,4 @@
+import MediaUploadProgress from "../components/MediaUploadProgress";
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Alert, AppState } from "react-native";
 import * as ImagePicker from "expo-image-picker";
@@ -52,7 +53,7 @@ import {
   mediaPublishingPreflightMessage,
   mediaPublishingPreflightSelection,
 } from "../domain/mediaPublishingPreflight.mjs";
-import { createMediaTransferProgressPublisher, mediaUploadProgressCopy } from "../domain/mediaTransferProgress.mjs";
+import { createMediaTransferProgressPublisher } from "../domain/mediaTransferProgress.mjs";
 import { hasLandingCompatibleImage } from "../domain/landingShowcase.mjs";
 import {
   FEATURED_RETRY_READY_MESSAGE,
@@ -2422,22 +2423,7 @@ export default function LogScreen({
 
         {uploadProgress && (
           <View style={styles.uploadStatus}>
-            <View
-              style={styles.uploadStatusCopy}
-              accessibilityRole="progressbar"
-              accessibilityLabel={mediaUploadProgressCopy(uploadProgress)}
-              accessibilityValue={{
-                min: 0,
-                max: 100,
-                now: Math.round(Math.min(1, Math.max(0, Number(uploadProgress.fraction) || 0)) * 100),
-                text: mediaUploadProgressCopy(uploadProgress),
-              }}
-            >
-              <Text style={styles.uploadStatusTxt}>{mediaUploadProgressCopy(uploadProgress)}</Text>
-              <View style={styles.uploadProgressTrack}>
-                <View style={[styles.uploadProgressFill, { width: `${Math.min(1, Math.max(0, Number(uploadProgress.fraction) || 0)) * 100}%` }]} />
-              </View>
-            </View>
+            <MediaUploadProgress progress={uploadProgress} />
             <Pressable style={styles.uploadCancelButton} onPress={cancelUpload} accessibilityRole="button" accessibilityLabel="Cancel media upload">
               <Text style={styles.uploadCancel}>Cancel</Text>
             </Pressable>
@@ -2704,11 +2690,7 @@ const styles = StyleSheet.create({
   addThumb: { width: 76, height: 76, borderRadius: 10, borderWidth: 1, borderColor: colors.line, borderStyle: "dashed", alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: colors.surface },
   addThumbTxt: { color: colors.amber, fontSize: 12 },
   uploadStatus: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 10 },
-  uploadStatusCopy: { flex: 1, gap: 6 },
-  uploadStatusTxt: { color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
-  uploadProgressTrack: { height: 4, overflow: "hidden", borderRadius: 2, backgroundColor: colors.lineSoft },
   convertingNote: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 8 },
-  uploadProgressFill: { height: "100%", borderRadius: 2, backgroundColor: colors.amber },
   uploadCancelButton: { minWidth: 58, minHeight: 44, paddingHorizontal: 8, alignItems: "center", justifyContent: "center", borderRadius: radius.sm },
   uploadCancel: { color: colors.danger, fontSize: 12.5, fontWeight: "800" },
   consent: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginTop: 12 },

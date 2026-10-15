@@ -14,7 +14,7 @@ function fixture(kind="repost",accountId="viewer") {
   const calls=[],slots=[];let cursor=0,auth=0;
   const react={useRef:initial=>{const i=cursor++;return slots[i] ||= {current:initial};},useState(initial){const i=cursor++;if(!(i in slots))slots[i]=initial;return[slots[i],v=>{slots[i]=typeof v==="function"?v(slots[i]):v;}];}};
   const jsx=(type,props)=>({type,props});
-  const deps={react,"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":{Pressable:"Pressable",Text:"Text",View:"View",StyleSheet:{create:v=>v}},"../theme":{colors:{}},"./Icon":"Icon"};
+  const deps={react,"react/jsx-runtime":{jsx,jsxs:jsx},"react-native":{Platform:{OS:"web"},Pressable:"Pressable",Text:"Text",View:"View",StyleSheet:{create:v=>v}},"../theme":{colors:{}},"./Icon":"Icon"};
   const module={exports:{}};new Function("require","module","exports",compiled)(name=>deps[name],module,module.exports);
   let props={accountId,post:{id:"p",reposts:2,reposted:false},comment:{id:"c",likes:2,liked:false},postId:"p",onRequireAuth:()=>auth++,
     onRepost:(...args)=>new Promise((resolve,reject)=>calls.push({args,resolve,reject})),onLike:(...args)=>new Promise((resolve,reject)=>calls.push({args,resolve,reject}))};

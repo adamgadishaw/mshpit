@@ -1,9 +1,10 @@
 import { useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, font } from "../theme";
 import Icon from "./Icon";
 
 function ReactionButton({ scope, selected, count, label, activeLabel, icon, action, onRequireAuth, accountId }) {
+  const compact = Platform.OS !== "web" && label === "Repost";
   const [state,setState]=useState({scope,pending:false,error:"",result:null});
   const current=useRef(scope); current.current=scope;
   const pending=useRef(null);
@@ -22,12 +23,12 @@ function ReactionButton({ scope, selected, count, label, activeLabel, icon, acti
     } finally { if (pending.current===scope) pending.current=null; }
   };
   return <View style={styles.wrap}>
-    <Pressable onPress={press} disabled={scoped.pending || (!!accountId && !action)} accessibilityRole="button"
+    <Pressable onPress={press} hitSlop={compact ? 2 : undefined} disabled={scoped.pending || (!!accountId && !action)} accessibilityRole="button"
       accessibilityLabel={`${displayed.selected ? activeLabel : label}, ${displayed.count}`}
       accessibilityState={{selected:displayed.selected,disabled:scoped.pending,busy:scoped.pending}}
-      style={({pressed})=>[styles.button,pressed && {opacity:0.7}]}>
+      style={({pressed})=>[styles.button,compact && styles.compactButton,pressed && {opacity:0.7}]}>
       <Icon name={icon} size={17} color={displayed.selected ? colors.good : colors.textDim} filled={icon==="heart" && displayed.selected} />
-      <Text style={[styles.text,displayed.selected && {color:colors.good}]}>{label === "Repost" ? (displayed.selected ? "Reposted" : "Repost") : "Like"} {displayed.count}</Text>
+      <Text style={[styles.text,displayed.selected && {color:colors.good}]}>{compact ? "" : label === "Repost" ? (displayed.selected ? "Reposted" : "Repost") : "Like"}{compact ? "" : " "}{displayed.count}</Text>
     </Pressable>
     {scoped.error ? <Text style={styles.error} accessibilityLiveRegion="polite">{scoped.error}</Text> : null}
   </View>;
@@ -58,6 +59,7 @@ export function RepostAttribution({ post, accountId, onOpenProfile }) {
 }
 const styles=StyleSheet.create({
   wrap:{maxWidth:"100%"}, button:{minHeight:44,flexDirection:"row",alignItems:"center",gap:5,paddingHorizontal:6},
+  compactButton:{minWidth:44,minHeight:48,justifyContent:"center",paddingHorizontal:4},
   text:{fontFamily:font,fontSize:12,color:colors.textDim,fontVariant:["tabular-nums"]},
   error:{fontFamily:font,fontSize:11,color:colors.danger},
   attribution:{minHeight:36,flexDirection:"row",alignItems:"center",gap:6,paddingHorizontal:12},
