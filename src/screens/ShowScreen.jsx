@@ -1,9 +1,10 @@
+import EventPhotoCredit from "../components/EventPhotoCredit";
 import CatalogText from "../features/catalogEditor/CatalogText";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import LineupDetails from "../components/LineupDetails";
 import { postHeadline } from "../domain/lineup.mjs";
 import { ordinalWord } from "../domain/supportingActs.mjs";
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from "react-native";
+import { Platform, View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from "react-native";
 import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
 import RatingSplit from "../components/RatingSplit";
@@ -716,6 +717,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           </View>
         ) : null}
           </View>
+
+        {Platform.OS !== "web" && <EventPhotoCredit credit={log.discoverPhotoCredit} />}
 
         {/* A night that happened gets its community score. An upcoming night
             gets tickets instead: never a fabricated 0.0. */}

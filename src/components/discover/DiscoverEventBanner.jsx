@@ -5,6 +5,7 @@ import { colors, displayFont, focusRing, font, glow, mono, radius, shadow } from
 import useReducedMotion from "../../hooks/useReducedMotion";
 import { calendarDateKey } from "../../domain/dataPolicy.mjs";
 import Icon from "../Icon";
+import DiscoverEventCard from "./DiscoverEventCard";
 
 // Long enough to read a title, a date and a venue before the next slide.
 const AUTO_ADVANCE_MS = 9_000;
@@ -126,6 +127,11 @@ export default function DiscoverEventBanner({
     void Linking.openURL(url).catch(() => undefined);
   };
 
+  if (Platform.OS !== "web") return <DiscoverEventCard current={current} media={media}
+    date={dateLabel(current.date,current.endDate)} onOpen={onOpenEvent ? ()=>onOpenEvent({ ...current.event, discoverPhotoCredit: media?.by ? { creator: attribution?.creator || media.by, sourcePage: attribution?.sourcePage || media.sourcePage, license: attribution?.license || media.license, licenseUrl: attribution?.licenseUrl || media.licenseUrl } : null }) : undefined}
+    onImageError={()=>setFailed(value=>new Set(value).add(current.id))}
+    onPrevious={()=>move(-1)} onNext={()=>move(1)} index={index} count={safeSlides.length} />;
+
   return (
     <View style={[styles.shell, compact && styles.shellCompact]} accessible={false}
       onMouseEnter={() => setHolding(true)} onMouseLeave={() => setHolding(false)}
@@ -238,12 +244,12 @@ const styles = StyleSheet.create({
   shellCompact: { gap: 7 },
   hero: { minHeight: 300, overflow: "hidden", borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surfaceAlt, ...shadow.card },
   heroCompact: { minHeight: 250 },
-  eventAction: { ...StyleSheet.absoluteFillObject, overflow: "hidden" },
+  eventAction: { ...(StyleSheet.absoluteFillObject || StyleSheet.absoluteFill), overflow: "hidden" },
   heroPressed: { opacity: 0.94, transform: [{ scale: 0.995 }] },
   fallback: { alignItems: "center", justifyContent: "center", overflow: "hidden", backgroundColor: colors.bgElev },
   fallbackGlowOne: { position: "absolute", width: 380, height: 380, borderRadius: 190, top: -210, right: -80, backgroundColor: colors.amberStrong, opacity: 0.34, ...glow },
   fallbackGlowTwo: { position: "absolute", width: 300, height: 300, borderRadius: 150, bottom: -180, left: -90, backgroundColor: colors.magenta, opacity: 0.22, ...glow },
-  scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(3,5,9,0.48)" },
+  scrim: { ...(StyleSheet.absoluteFillObject || StyleSheet.absoluteFill), backgroundColor: "rgba(3,5,9,0.48)" },
   copy: { position: "absolute", left: 20, right: 20, bottom: 22, maxWidth: 700 },
   copyBesidePortrait: { right: 250 },
   portraitBackdrop: { transform: [{ scale: 1.15 }] },

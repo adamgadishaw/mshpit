@@ -15,23 +15,18 @@ const WASHES = ["#3B2A1E", "#1E2B3B", "#2F1E3B", "#1E3B2E", "#3B1E27", "#2B2F1E"
 const washFor = (name) => WASHES[[...String(name || "")].reduce((sum, char) => sum + char.charCodeAt(0), 0) % WASHES.length];
 
 function ArtistPhoto({ row, size }) {
-  const [failed, setFailed] = useState(false);
-  const uri = !failed && row?.photo ? (isHttp(row.photo) ? proxied(row.photo, size * 2) : row.photo) : null;
-  if (uri) {
-    return (
-      <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk"
-        recyclingKey={uri} accessible={false} onError={() => setFailed(true)} />
-    );
-  }
-  return (
-    <View style={[StyleSheet.absoluteFill, styles.wash, { backgroundColor: washFor(row?.name) }]}>
-      <Text style={styles.washInitials} numberOfLines={1}>{artistInitials(row?.name)}</Text>
-    </View>
-  );
+  const [failedUri, setFailedUri] = useState(null);
+  const uri = row?.photo ? (isHttp(row.photo) ? proxied(row.photo, size * 2) : row.photo) : null;
+  return <View style={[StyleSheet.absoluteFill, styles.wash, { backgroundColor: washFor(row?.name) }]}>
+    <Text style={styles.washInitials} numberOfLines={1}>{artistInitials(row?.name)}</Text>
+    {uri && failedUri !== uri ? <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk"
+      recyclingKey={uri} accessible={false} onError={() => setFailedUri(uri)} /> : null}
+  </View>;
 }
 
 // Photo-first artist card for Discover grids.
 export const DiscoverArtistCard = memo(function DiscoverArtistCard({ row, rank = null, detail = null, width, onOpen }) {
+  const { fontScale } = useWindowDimensions();
   const genre = discoverGenreLabel(row?.genre);
   const line = detail ?? [genre, row?.topTrack?.title].filter(Boolean).join(" · ");
   return (
@@ -43,8 +38,8 @@ export const DiscoverArtistCard = memo(function DiscoverArtistCard({ row, rank =
         {rank != null ? <View style={styles.rank}><Text style={styles.rankText}>{rank}</Text></View> : null}
       </View>
       <View style={styles.copy}>
-        <Text style={styles.name} numberOfLines={1}>{row.name}</Text>
-        {line ? <Text style={styles.detail} numberOfLines={1}>{line}</Text> : null}
+        <Text style={styles.name} numberOfLines={Platform.OS === "web" ? 1 : fontScale > 1.25 ? undefined : 2}>{row.name}</Text>
+        {line ? <Text style={styles.detail} numberOfLines={Platform.OS === "web" ? 1 : 2}>{line}</Text> : null}
       </View>
     </PublicPressableLink>
   );
@@ -52,10 +47,10 @@ export const DiscoverArtistCard = memo(function DiscoverArtistCard({ row, rank =
 
 // Lays cards out in 2 to 4 columns depending on the space available.
 export function DiscoverArtistGrid({ rows, ranked = false, detailFor = null, onOpen, maxColumns = 4 }) {
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, fontScale } = useWindowDimensions();
   const [width, setWidth] = useState(0);
   const available = width || Math.min(windowWidth - 60, 900);
-  const columns = Math.max(2, Math.min(maxColumns, Math.floor(available / 190) || 2));
+  const columns = Platform.OS !== "web" && fontScale > 1.25 ? 1 : Math.max(2, Math.min(maxColumns, Math.floor(available / 190) || 2));
   const gap = 12;
   const cardWidth = Math.floor((available - gap * (columns - 1)) / columns);
   return (
@@ -78,8 +73,8 @@ const styles = StyleSheet.create({
   wash: { alignItems: "center", justifyContent: "center" },
   washInitials: { color: "rgba(255,255,255,0.78)", fontFamily: displayFont, fontSize: 38, fontWeight: "800", letterSpacing: -1 },
   rank: { position: "absolute", top: 8, left: 8, minWidth: 26, height: 26, paddingHorizontal: 7, borderRadius: 13, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(9,9,11,0.72)" },
-  rankText: { color: colors.text, fontFamily: font, fontSize: 12, fontWeight: "800", fontVariant: ["tabular-nums"] },
-  copy: { paddingHorizontal: 11, paddingTop: 9, paddingBottom: 11, gap: 2 },
+  rankText: { color: Platform.OS === "web" ? colors.text : "#FFFFFF", fontFamily: font, fontSize: 12, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  copy: { paddingHorizontal: Platform.OS === "web" ? 11 : 12, paddingTop: Platform.OS === "web" ? 9 : 10, paddingBottom: Platform.OS === "web" ? 11 : 12, gap: Platform.OS === "web" ? 2 : 4 },
   name: { color: colors.text, fontFamily: displayFont, fontSize: 15, fontWeight: "800" },
   detail: { color: colors.textDim, fontFamily: font, fontSize: 12 },
 });
