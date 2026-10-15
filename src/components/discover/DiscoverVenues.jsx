@@ -131,7 +131,7 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
           return <View key={venue.id} ref={node => { if (node) venueRows.current.set(venue.id, node); else venueRows.current.delete(venue.id); }} onLayout={() => revealVenue(venue.id)} style={[styles.venueCard, expanded && styles.venueSelected]} accessibilityLabel={`Venue: ${venue.name}`}>
             <Pressable onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open venue ${venue.name}`} accessibilityHint="Opens the full venue page." style={state => [styles.venueRow, ...feedback(state)]}>
               {mapOpen && <Text style={styles.rowNumber}>{index + 1}</Text>}
-              <View style={styles.flex}><Text style={styles.venueName}>{venue.name}</Text><Text style={styles.small}>{nextShow ? `Next: ${eventDateMeta(nextShow.date).timing} · ${nextShow.eventName || nextShow.artist || "Live show"}` : "No upcoming shows listed"}</Text></View><Icon name="chevron-right" size={18} color={colors.amber} />
+              <View style={styles.flex}><Text style={styles.venueName} numberOfLines={2}>{venue.name}</Text><Text style={styles.small} numberOfLines={2}>{nextShow ? `Next: ${eventDateMeta(nextShow.date).timing} · ${nextShow.eventName || nextShow.artist || "Live show"}` : "No upcoming shows listed"}</Text></View><Icon name="chevron-right" size={18} color={colors.amber} />
             </Pressable>
             {!!venue.shows.length && <Pressable onPress={() => { setChosenVenue(expanded ? null : venue.id); setExpandedShowsFor(null); pendingReveal.current = null; }} accessibilityRole="button" accessibilityState={{ expanded }} aria-expanded={expanded} accessibilityLabel={`${expanded ? "Hide" : "Show"} ${venue.shows.length} upcoming show${venue.shows.length === 1 ? "" : "s"} at ${venue.name}`} style={state => [styles.showsToggle, ...feedback(state)]}>
               <Text style={styles.link}>{expanded ? "Hide shows" : `${venue.shows.length} upcoming show${venue.shows.length === 1 ? "" : "s"}`}</Text><Icon name={expanded ? "chevron-up" : "chevron-down"} size={15} color={colors.amber} />
@@ -154,7 +154,7 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
 function ShowRow({ event, onOpen }) {
   const date = eventDateMeta(event.date);
   return <Pressable onPress={() => onOpen?.(event)} accessibilityRole="button" accessibilityLabel={`View ${event.artist || event.eventName} at ${event.venue}, ${event.date}`} style={state => [styles.showRow, ...feedback(state)]}>
-    <View style={styles.date}><Text style={styles.dateMonth}>{date.month}</Text><Text style={styles.dateDay}>{date.day}</Text></View><View style={styles.flex}><Text style={styles.venueName}>{event.eventName || event.artist || "Live show"}</Text><Text style={styles.small}>{date.label || event.date}</Text></View><Icon name="chevron-right" size={17} color={colors.textFaint} />
+    <View style={styles.date}><Text style={styles.dateMonth}>{date.month}</Text><Text style={styles.dateDay}>{date.day}</Text></View><View style={styles.flex}><Text style={styles.venueName} numberOfLines={2}>{event.eventName || event.artist || "Live show"}</Text><Text style={styles.small}>{date.label || event.date}</Text></View><Icon name="chevron-right" size={17} color={colors.textFaint} />
   </Pressable>;
 }
 

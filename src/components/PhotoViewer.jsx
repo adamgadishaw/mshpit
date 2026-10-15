@@ -23,6 +23,7 @@ import {
 import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
 import { pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
 import { venuePhotoAttribution, verifiedHttpsUrl } from "../domain/venuePhotoProvenance.mjs";
+import { discoverPhotoAttribution } from "../domain/discoverPhotoCredits.mjs";
 
 const web = Platform.OS === "web";
 
@@ -277,7 +278,7 @@ export default function PhotoViewer({
   const mediaHeight = typeof p === "object" && p ? Number(p.height) || 0 : 0;
   const altText = typeof p === "object" && p ? p.altText || "" : "";
   const by = typeof p === "object" && p ? p.by : null;
-  const venueAttribution = venuePhotoAttribution(p);
+  const venueAttribution = venuePhotoAttribution(p) || discoverPhotoAttribution(p);
   const [attributionError, setAttributionError] = useState("");
   const currentPostId = galleryItemPostId(p, postId);
   const reactionItems = photos.map((item) => ({
@@ -509,7 +510,7 @@ export default function PhotoViewer({
       <View style={styles.footer} pointerEvents="box-none">
         {venueAttribution ? (
           <View style={styles.venueAttribution} accessible={false}>
-            <Text style={styles.by} selectable>{`Photo by ${venueAttribution.creator} · ${venueAttribution.license}`}</Text>
+            <Text style={styles.by} selectable>{`Photo by ${venueAttribution.creator}${venueAttribution.license ? ` · ${venueAttribution.license}` : ""}`}</Text>
             <View style={styles.venueAttributionActions}>
               <Pressable
                 {...webAttributionLinkProps(venueAttribution.sourcePage)}
@@ -521,7 +522,7 @@ export default function PhotoViewer({
                 <Text style={styles.venueAttributionLinkText}>SOURCE</Text>
                 <Icon name="external" size={12} color="rgba(255,255,255,0.72)" />
               </Pressable>
-              <Pressable
+              {venueAttribution.licenseUrl ? <Pressable
                 {...webAttributionLinkProps(venueAttribution.licenseUrl)}
                 onPress={() => openAttributionLink(venueAttribution.licenseUrl, "License terms")}
                 style={({ pressed, focused }) => [styles.venueAttributionLink, pressed && styles.venueAttributionLinkPressed, focused && focusRing]}
@@ -530,7 +531,7 @@ export default function PhotoViewer({
               >
                 <Text style={styles.venueAttributionLinkText}>LICENSE</Text>
                 <Icon name="external" size={12} color="rgba(255,255,255,0.72)" />
-              </Pressable>
+              </Pressable> : null}
             </View>
             {venueAttribution.modificationNotice ? (
               <Text style={styles.venueModificationNotice} selectable>{venueAttribution.modificationNotice}</Text>

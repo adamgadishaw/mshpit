@@ -2,7 +2,7 @@ import { memo, useState } from "react";
 import { Platform, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Image } from "expo-image";
 
-import { colors, displayFont, font, radius } from "../../theme";
+import { colors, displayFont, focusRing, font, radius } from "../../theme";
 import { proxied, isHttp } from "../../lib/img";
 import { artistInitials } from "../../domain/artistInitials.mjs";
 import { discoverGenreLabel } from "../../domain/discoverView.mjs";
@@ -15,17 +15,13 @@ const WASHES = ["#3B2A1E", "#1E2B3B", "#2F1E3B", "#1E3B2E", "#3B1E27", "#2B2F1E"
 const washFor = (name) => WASHES[[...String(name || "")].reduce((sum, char) => sum + char.charCodeAt(0), 0) % WASHES.length];
 
 function ArtistPhoto({ row, size }) {
-  const [failed, setFailed] = useState(false);
-  const uri = !failed && row?.photo ? (isHttp(row.photo) ? proxied(row.photo, size * 2) : row.photo) : null;
-  if (uri) {
-    return (
-      <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk"
-        recyclingKey={uri} accessible={false} onError={() => setFailed(true)} />
-    );
-  }
+  const [failedPhoto, setFailedPhoto] = useState(null);
+  const uri = row?.photo && failedPhoto !== row.photo ? (isHttp(row.photo) ? proxied(row.photo, size * 2) : row.photo) : null;
   return (
     <View style={[StyleSheet.absoluteFill, styles.wash, { backgroundColor: washFor(row?.name) }]}>
       <Text style={styles.washInitials} numberOfLines={1}>{artistInitials(row?.name)}</Text>
+      {uri ? <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk"
+        recyclingKey={uri} accessible={false} onError={() => setFailedPhoto(row.photo)} /> : null}
     </View>
   );
 }
@@ -36,14 +32,14 @@ export const DiscoverArtistCard = memo(function DiscoverArtistCard({ row, rank =
   const line = detail ?? [genre, row?.topTrack?.title].filter(Boolean).join(" · ");
   return (
     <PublicPressableLink href={artistPath(row)} onNavigate={() => onOpen?.(row)}
-      style={({ hovered, pressed }) => [styles.card, { width }, hovered && styles.cardHover, pressed && styles.cardPressed]}
+      style={({ hovered, pressed, focused }) => [styles.card, { width }, hovered && styles.cardHover, pressed && styles.cardPressed, focused && focusRing]}
       accessibilityLabel={`Open ${row.name}${genre ? `, ${genre}` : ""}`}>
       <View style={styles.photo}>
         <ArtistPhoto row={row} size={Math.round(width)} />
         {rank != null ? <View style={styles.rank}><Text style={styles.rankText}>{rank}</Text></View> : null}
       </View>
       <View style={styles.copy}>
-        <Text style={styles.name} numberOfLines={1}>{row.name}</Text>
+        <Text style={styles.name} numberOfLines={2}>{row.name}</Text>
         {line ? <Text style={styles.detail} numberOfLines={1}>{line}</Text> : null}
       </View>
     </PublicPressableLink>
@@ -78,8 +74,8 @@ const styles = StyleSheet.create({
   wash: { alignItems: "center", justifyContent: "center" },
   washInitials: { color: "rgba(255,255,255,0.78)", fontFamily: displayFont, fontSize: 38, fontWeight: "800", letterSpacing: -1 },
   rank: { position: "absolute", top: 8, left: 8, minWidth: 26, height: 26, paddingHorizontal: 7, borderRadius: 13, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(9,9,11,0.72)" },
-  rankText: { color: colors.text, fontFamily: font, fontSize: 12, fontWeight: "800", fontVariant: ["tabular-nums"] },
-  copy: { paddingHorizontal: 11, paddingTop: 9, paddingBottom: 11, gap: 2 },
-  name: { color: colors.text, fontFamily: displayFont, fontSize: 15, fontWeight: "800" },
-  detail: { color: colors.textDim, fontFamily: font, fontSize: 12 },
+  rankText: { color: "#FFFFFF", fontFamily: font, fontSize: 12, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  copy: { minHeight: 88, padding: 12, gap: 5 },
+  name: { minHeight: 40, lineHeight: 20, color: colors.text, fontFamily: displayFont, fontSize: 15, fontWeight: "800" },
+  detail: { lineHeight: 17, color: colors.textDim, fontFamily: font, fontSize: 12 },
 });
