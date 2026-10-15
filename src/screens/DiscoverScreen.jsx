@@ -876,7 +876,7 @@ export default function DiscoverScreen({
       {programme === "artists" && overviewStatus === "error" && showOverviewContent && (
         <View style={styles.refreshError} accessibilityLiveRegion="assertive">
           <Text style={styles.refreshErrorText} selectable>Could not update. Showing the last results.</Text>
-          <Pressable style={styles.refreshRetryButton} onPress={() => requestOverview({ force: true })} accessibilityRole="button" accessibilityLabel="Retry updating Discover"><Text style={styles.refreshRetry}>Retry</Text></Pressable>
+          <Pressable style={styles.refreshRetryButton} onPress={refreshDiscover} accessibilityRole="button" accessibilityLabel="Retry updating Discover"><Text style={styles.refreshRetry}>Retry</Text></Pressable>
         </View>
       )}
 
