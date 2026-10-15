@@ -274,7 +274,7 @@ export default function PhotoViewer({
       />
 
       <View style={styles.top} pointerEvents="box-none">
-        <Text style={styles.count}>{i + 1} / {photos.length}</Text>
+        <Text style={[styles.count, !web && styles.nativeCount]} accessibilityLabel={`Media ${i + 1} of ${photos.length}`}>{`${i + 1} / ${photos.length}`}</Text>
         <View style={styles.topActions}>
           {canReport ? (
             <Pressable
@@ -399,6 +399,7 @@ const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: web ? "rgba(6,7,11,0.98)" : "#06070b" },
   top: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 },
   count: { color: "#fff", fontFamily: mono, fontSize: 13, opacity: 0.85 },
+  nativeCount: { minWidth: 64, minHeight: 24, lineHeight: 24, paddingHorizontal: 4, includeFontPadding: true, fontVariant: ["tabular-nums"] },
   topActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   reportBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.1)", alignItems: "center", justifyContent: "center" },
   closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.1)", alignItems: "center", justifyContent: "center" },

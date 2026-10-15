@@ -17,7 +17,7 @@ function fixture(platform = 'android') {
   const slots = [], listeners = new Map(), calls = { pause: 0, play: 0, retry: 0 };
   const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const player = { status, currentTime: 0, duration: 25, playing: false, videoTrack: { size: { width: 1080, height: 1920 } },
-    pause() { calls.pause++; this.playing = false; }, play() { calls.play++; this.playing = true; },
+    pause() { calls.pause++; this.playing = false; }, play() { calls.play++; this.playing = true; for (const listener of listeners.get("playingChange") || []) listener({ isPlaying: true }); },
     addListener(name, callback) { const set = listeners.get(name) || new Set(); set.add(callback); listeners.set(name, set); return { remove() { set.delete(callback); } }; },
   };
   const react = {
@@ -51,6 +51,7 @@ test('rebuffering retains the painted frame and native controls, then clears wit
   assert.ok(nodes(tree).some(n => n.type === 'ClipPoster'));
   nodes(tree).find(n => n.type === 'VideoView').props.onFirstFrameRender();
   tree = f.render(); assert.ok(!nodes(tree).some(n => n.type === 'ClipPoster'));
+  f.player.play(); f.render();
   f.status('loading'); tree = f.render();
   assert.match(text(tree), /Buffering video/);
   assert.equal(nodes(tree).find(n => n.type === 'VideoView').props.nativeControls, true);
@@ -98,4 +99,22 @@ test('an active web playback rejection remains visible and retryable', async t =
   nodes(tree).find(n => n.type === 'VideoView').props.ref.current = { nativeRef: { current: { play: () => Promise.reject(new Error('unsupported source')) } } };
   nodes(tree).find(n => n.type === 'Pressable' && n.props.accessibilityLabel?.startsWith('Play video')).props.onPress();
   await new Promise(setImmediate); tree = f.render(); assert.match(text(tree), /Playback could not start.*Try again/); f.unmount();
+});
+
+test('native starts with one play action and hands control to the player after playback begins', async t => {
+  const f = fixture('android'); t.after(() => f.unmount()); let tree = f.render();
+  assert.equal(nodes(tree).find(n => n.type === 'VideoView').props.nativeControls, false);
+  const actions = nodes(tree).filter(n => n.type === 'Pressable' && n.props.accessibilityLabel?.startsWith('Play video'));
+  assert.equal(actions.length, 1); actions[0].props.onPress(); await new Promise(setImmediate);
+  tree = f.render(); assert.equal(f.player.playing, true);
+  assert.equal(nodes(tree).find(n => n.type === 'VideoView').props.nativeControls, true);
+  assert.equal(nodes(tree).filter(n => n.type === 'Pressable' && n.props.accessibilityLabel?.startsWith('Play video')).length, 0);
+  assert.doesNotMatch(text(tree), /MSHPIT PLAYER/);
+  f.player.pause(); tree = f.render();
+  assert.equal(nodes(tree).find(n => n.type === 'VideoView').props.nativeControls, true);
+  assert.equal(nodes(tree).filter(n => n.type === 'Pressable' && n.props.accessibilityLabel?.startsWith('Play video')).length, 0);
+});
+test('web retains its existing native control policy before playback', t => {
+  const f = fixture('web'); t.after(() => f.unmount());
+  assert.equal(nodes(f.render()).find(n => n.type === 'VideoView').props.nativeControls, true);
 });

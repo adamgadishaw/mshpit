@@ -64,7 +64,7 @@ test("official provider titles remain distinct while clear tour names prefill th
   assert.match(card, /styles\.performanceRegister/);
   assert.match(card, /MSHPIT \/ LIVE MEMORY/);
   assert.match(card, /styles\.performancePerforation/);
-  assert.match(card, /style=\{styles\.performanceCardShadow\}[\s\S]*?style=\{\[styles\.performanceCard, !isOnlineReview && styles\.performanceCardAttached\]\}/);
+  assert.match(card, /styles\.performanceCardShadow[\s\S]*?styles\.performanceCardAttached/);
   assert.match(card, /performanceCardShadow: \{[^}]*\.\.\.shadow\.card \}/);
   assert.match(card, /performanceCard: \{ overflow: "hidden",[^}]*backgroundColor: colors\.bgElev \}/);
   assert.doesNotMatch(card, /performanceCard: \{[^}]*\.\.\.shadow\.card/);

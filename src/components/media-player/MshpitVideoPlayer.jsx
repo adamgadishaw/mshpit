@@ -180,7 +180,7 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
         player={player}
         style={web ? styles.webVideo : styles.img}
         contentFit="contain"
-        nativeControls
+        nativeControls={web || hasStarted}
         fullscreenOptions={{ enable: true }}
         allowsPictureInPicture={web}
         startsPictureInPictureAutomatically={false}
@@ -206,7 +206,7 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
           <Text style={styles.videoStartText}>Play video</Text>
         </Pressable>
       ) : null}
-      {hasStarted && phase !== "error" && (
+      {web && hasStarted && phase !== "error" && (
         <View style={styles.playerToolbar} pointerEvents="box-none">
           <Text style={styles.playerBrand}>MSHPIT PLAYER</Text>
           <Pressable accessibilityRole="button" accessibilityLabel={"Playback speed " + playbackRate + " times. Change speed"}

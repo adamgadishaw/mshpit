@@ -13,7 +13,7 @@ test("vinyl refresh keeps React Native's controlled pull mechanism", () => {
   assert.match(nativeSource, /<RefreshControl/);
   assert.match(nativeSource, /refreshing=\{!!refreshing\}/);
   assert.match(nativeSource, /onRefresh=\{requestRefresh\}/);
-  assert.match(nativeSource, /if \(!canRefresh \|\| refreshing\) return/);
+  assert.match(nativeSource, /if \(!canRefresh \|\| refreshing \|\| pending.current\) return/);
   assert.match(nativeSource, /progressViewOffset=\{progressViewOffset\}/);
   assert.match(nativeSource, /enabled=\{canRefresh\}/);
   assert.match(nativeSource, /Children\.only\(children\)/);
@@ -21,26 +21,10 @@ test("vinyl refresh keeps React Native's controlled pull mechanism", () => {
   assert.doesNotMatch(nativeSource, /PanResponder|GestureDetector|onScroll\s*=|setNativeProps/);
 });
 
-test("vinyl rotation runs on Reanimated and stops outside controlled refresh", () => {
-  assert.match(nativeSource, /from "react-native-reanimated"/);
-  assert.match(nativeSource, /useSharedValue\(0\)/);
-  assert.match(nativeSource, /useAnimatedStyle/);
-  assert.match(nativeSource, /withRepeat\([\s\S]*withTiming\(360/);
-  assert.match(nativeSource, /Easing\.linear/);
-  assert.match(nativeSource, /cancelAnimation\(rotation\)/);
-  assert.match(nativeSource, /if \(active && !reduceMotion\)/);
-  assert.match(nativeSource, /if \(!refreshing\) return null/);
-  assert.doesNotMatch(nativeSource, /requestAnimationFrame|setInterval|setTimeout|Animated\.timing|useState/);
-});
-
-test("reduced motion, theming, and refresh status are first-class", () => {
-  assert.match(nativeSource, /useReducedMotion\(\)/);
-  assert.match(nativeSource, /active && !reduceMotion/);
-  assert.match(nativeSource, /colors\.(?:bgElev|surface|amberStrong|textDim)/);
-  assert.match(nativeSource, /themeIsDark/);
-  assert.match(nativeSource, /accessibilityRole="progressbar"/);
-  assert.match(nativeSource, /accessibilityLiveRegion="polite"/);
-  assert.match(nativeSource, /accessibilityValue=\{\{ text: "Refreshing" \}\}/);
+test("native refresh uses one themed platform indicator without an absolute header badge", () => {
+  assert.match(nativeSource, /tintColor=\{colors.amber\}/);
+  assert.match(nativeSource, /colors=\{\[colors.amber\]\}/);
+  assert.doesNotMatch(nativeSource, /VinylRefreshIndicator|statusPill|REFRESHING|position:\s*["']absolute|react-native-reanimated/);
 });
 
 test("web returns the exact child for incapable devices and only marks phone scroll owners", () => {

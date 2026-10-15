@@ -144,6 +144,7 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
     <View
       style={[
         styles.ticketActionRail,
+        Platform.OS !== "web" && styles.nativeTicketActionRail,
         palette && {
           backgroundColor: palette.contentSurfaceColor,
           borderColor: palette.accentColor + "72",
@@ -155,24 +156,24 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
         <PublicPressableLink
           href={showHref}
           onNavigate={onOpenShow}
-          style={({ pressed }) => [styles.ticketAction, pressed && styles.ticketActionPressed]}
+          style={({ pressed }) => [styles.ticketAction, Platform.OS !== "web" && styles.nativeTicketAction, pressed && styles.ticketActionPressed]}
           accessibilityLabel={reviewOnly ? `Open ${artist || "concert"} review` : `View ${artist || "this"} show`}
         >
           <Icon name="ticket" size={15} color={accent} />
-          <Text style={[styles.ticketActionText, { color: textColor }]} numberOfLines={2}>{reviewOnly ? "Open review" : "View this show"}</Text>
+          <Text style={[styles.ticketActionText, Platform.OS !== "web" && styles.nativeTicketActionText, { color: textColor }]} numberOfLines={2}>{reviewOnly ? "Open review" : "View this show"}</Text>
           <Icon name="chevron-right" size={13} color={accent} />
         </PublicPressableLink>
       ) : null}
-      {showHref && compareHref ? <View style={[styles.ticketActionDivider, palette && { backgroundColor: palette.accentColor + "52" }]} /> : null}
+      {showHref && compareHref ? <View style={[styles.ticketActionDivider, Platform.OS !== "web" && styles.nativeTicketActionDivider, palette && { backgroundColor: palette.accentColor + "52" }]} /> : null}
       {compareHref ? (
         <PublicPressableLink
           href={compareHref}
           onNavigate={onCompare}
-          style={({ pressed }) => [styles.ticketAction, pressed && styles.ticketActionPressed]}
+          style={({ pressed }) => [styles.ticketAction, Platform.OS !== "web" && styles.nativeTicketAction, pressed && styles.ticketActionPressed]}
           accessibilityLabel={`Compare scores across ${artist} concerts`}
         >
           <Icon name="archive" size={15} color={secondary} />
-          <Text style={[styles.ticketActionText, { color: textColor }]} numberOfLines={2}>Compare {artist} shows</Text>
+          <Text style={[styles.ticketActionText, Platform.OS !== "web" && styles.nativeTicketActionText, { color: textColor }]} numberOfLines={2}>Compare {artist} shows</Text>
           <Icon name="chevron-right" size={13} color={secondary} />
         </PublicPressableLink>
       ) : null}
@@ -498,36 +499,36 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         </View>
       )}
 
-      <View style={styles.performanceCardShadow}>
-        <View style={[styles.performanceCard, !isOnlineReview && styles.performanceCardAttached]}>
-          <View style={styles.performanceRegister} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+      <View style={[styles.performanceCardShadow, Platform.OS !== "web" && styles.nativePerformanceShadow]}>
+        <View style={[styles.performanceCard, !isOnlineReview && styles.performanceCardAttached, Platform.OS !== "web" && styles.nativePerformanceCard]}>
+          {Platform.OS === "web" && <View style={styles.performanceRegister} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
             <View style={styles.performanceRegisterAmber} />
             <View style={styles.performanceRegisterMagenta} />
             <View style={styles.performanceRegisterCool} />
-          </View>
-          <View style={styles.performanceCardBody}>
-            <View style={styles.performanceTopline}>
+          </View>}
+          <View style={[styles.performanceCardBody, Platform.OS !== "web" && styles.nativePerformanceBody]}>
+            {Platform.OS === "web" && <View style={styles.performanceTopline}>
               <Text style={styles.performanceEyebrow}>{isOnlineReview ? "ONLINE CONCERT" : performance.festival ? "FESTIVAL" : titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
               <Text style={styles.performanceArchiveMark}>{isOnlineReview ? "MSHPIT / ONLINE REVIEW" : "MSHPIT / LIVE MEMORY"}</Text>
-            </View>
-            <Text style={styles.performanceTitle} numberOfLines={3}>
+            </View>}
+            <Text style={[styles.performanceTitle, Platform.OS !== "web" && styles.nativePerformanceTitle]} numberOfLines={3}>
               {performance.primaryIsArtist
                 ? <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceTitle}>{performanceTitle}</PublicTextLink>
                 : performanceTitle}
             </Text>
             {!!performance.secondary && <Text style={styles.performanceSubtitle} numberOfLines={2}>{performance.secondary}</Text>}
-            <View style={styles.performancePerforation} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+            {Platform.OS === "web" && <View style={styles.performancePerforation} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
               <View style={styles.performancePerforationLine} />
               <View style={styles.performancePerforationDot} />
               <View style={styles.performancePerforationLine} />
-            </View>
+            </View>}
             {isOnlineReview ? (
-              <Text style={styles.performanceMeta}>
+              <Text style={[styles.performanceMeta, Platform.OS !== "web" && styles.nativePerformanceMeta]}>
                 <Text style={styles.performanceDate}>WATCHED ONLINE</Text>
               </Text>
             ) : (
               <>
-                <Text style={styles.performanceMeta}>
+                <Text style={[styles.performanceMeta, Platform.OS !== "web" && styles.nativePerformanceMeta]}>
                   {titledPerformance ? (
                     <><PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink><Text style={styles.dim}> · </Text></>
                   ) : null}
@@ -612,7 +613,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           text={log.review}
           limit={POST_CONTENT_PREVIEW_LIMIT}
           compact={compactContent}
-          containerStyle={styles.reviewWrap}
+          containerStyle={[styles.reviewWrap, Platform.OS !== "web" && styles.nativeReviewWrap]}
           renderText={({ text, accessibilityLabel }) => (
             <PublicPressableLink href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`${accessibilityLabel}. Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}.`}>
               <Text accessibilityLabel={accessibilityLabel} style={styles.review}>{text}</Text>
@@ -751,6 +752,16 @@ const styles = StyleSheet.create({
   taggedPersonText: { flexShrink: 1, fontSize: 11.5, fontWeight: "800" },
   taggedPersonRemove: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderLeftWidth: 1, borderLeftColor: colors.lineSoft },
 
+  nativePerformanceShadow: { boxShadow: "none" },
+  nativePerformanceCard: { borderWidth: 0, borderRadius: 0, backgroundColor: "transparent" },
+  nativePerformanceBody: { paddingHorizontal: 0, paddingTop: 0, paddingBottom: 0 },
+  nativePerformanceTitle: { fontSize: 20, lineHeight: 26, marginTop: 0, fontWeight: "800" },
+  nativePerformanceMeta: { fontSize: 14, lineHeight: 22, marginTop: 6 },
+  nativeReviewWrap: { borderLeftWidth: 0, paddingLeft: 0 },
+  nativeTicketActionRail: { flexDirection: "column", backgroundColor: "transparent", borderWidth: 0, borderTopWidth: 1, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, marginTop: 10 },
+  nativeTicketAction: { flex: 0, justifyContent: "flex-start", minHeight: 48, paddingHorizontal: 0, gap: 9 },
+  nativeTicketActionText: { flex: 1, fontSize: 14, lineHeight: 20, textAlign: "left", fontWeight: "600" },
+  nativeTicketActionDivider: { width: "100%", height: 1, marginVertical: 0 },
   performanceCardShadow: { marginTop: 12, borderRadius: radius.md, borderCurve: "continuous", ...shadow.card },
   performanceCard: { overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
   performanceCardAttached: { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },

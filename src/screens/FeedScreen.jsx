@@ -422,7 +422,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
           </View>
           <Text style={styles.tag}>{JOURNEY_TAGLINE}</Text>
 
-          {refreshing || refreshError ? (
+          {(Platform.OS === "web" && refreshing) || refreshError ? (
             <Text
               style={[styles.refreshStatus, refreshError && styles.refreshStatusError]}
               accessibilityLiveRegion={refreshError ? "assertive" : "polite"}

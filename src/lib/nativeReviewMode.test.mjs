@@ -13,3 +13,8 @@ test('opted-in native development review blocks writes but permits owner login a
 test('web, release and ordinary local development keep existing request behavior',()=>{
  for(const args of [['web',true,'1'],['android',false,'1'],['android',true,'0']])assert.equal(policy(...args)('/api/posts','POST'),true);
 });
+
+test('native review permits only the exact read-only feed revalidation POST, never nearby mutation routes',()=>{
+ const allows=policy('android',true,'1');assert.equal(allows('/api/feed/revalidate','POST'),true);
+ for(const [path,method] of [['/api/feed/revalidate/publish','POST'],['/api/feed/revalidate','PUT'],['/api/feed/revalidate','DELETE'],['/api/posts','POST'],['/api/posts/p_example/like','POST'],['/api/reports','POST'],['/api/me/blocked','POST'],['/api/me','DELETE']])assert.equal(allows(path,method),false,path+' '+method);
+});
