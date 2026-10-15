@@ -23,6 +23,7 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
   const openPostById = useContext(PostNavigationContext);
   const { width } = useWindowDimensions();
   const wide = width >= 900;
+  const EditionSelector = Platform.OS === "web" ? View : ScrollView;
   const load = useCallback((signal) => readFestival(slug, { signal }), [slug]);
   const resource = useFestivalResource(`festival:${slug}:${signedIn ? "member" : "guest"}`, load);
   const page = resource.data;
@@ -68,12 +69,15 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
   return <View style={styles.screen}>
     <Header title={festival.name} onClose={onClose} />
     <ScrollView contentContainerStyle={[styles.content, wide && styles.contentWide]} keyboardShouldPersistTaps="handled">
-      {page.upcoming.length > 1 ? <View style={styles.editionChips} accessibilityRole="tablist">
+      {page.upcoming.length > 1 ? <EditionSelector horizontal={Platform.OS !== "web"} showsHorizontalScrollIndicator={false}
+        style={Platform.OS !== "web" && styles.nativeEditionSelector}
+        contentContainerStyle={Platform.OS !== "web" ? styles.nativeEditionChips : undefined}
+        {...(Platform.OS === "web" ? { style: styles.editionChips } : {})} accessibilityRole="tablist" accessibilityLabel="Festival editions">
         {page.upcoming.map((item) => <Pressable key={item.id} onPress={() => { setSelectedId(item.id); setDay(null); setEditing(false); }}
           style={[styles.chip, item.id === edition?.id && styles.chipOn]} accessibilityRole="tab" accessibilityState={{ selected: item.id === edition?.id }} aria-selected={item.id === edition?.id}>
           <Text style={[styles.chipText, item.id === edition?.id && styles.chipTextOn]}>{`${item.city || item.name} · ${festivalDateRange(item.startDate, item.endDate)}`}</Text>
         </Pressable>)}
-      </View> : null}
+      </EditionSelector> : null}
 
       {edition ? <View style={[styles.hero, wide && styles.heroWide, Platform.OS !== "web" && styles.nativeHero]}>
         {edition.imageUrl ? <>
@@ -292,6 +296,8 @@ const styles = StyleSheet.create({
   content: { padding: space(4), gap: space(5), paddingBottom: space(10) },
   contentWide: { maxWidth: 980, width: "100%", alignSelf: "center" },
   editionChips: { flexDirection: "row", flexWrap: "wrap", gap: space(2) },
+  nativeEditionSelector: { flexGrow: 0 },
+  nativeEditionChips: { flexDirection: "row", gap: space(2), paddingVertical: 4 },
   chip: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 12, paddingVertical: 7 },
   chipOn: { backgroundColor: colors.amber, borderColor: colors.amber },
   chipText: { color: colors.textDim, fontFamily: font, fontSize: 13, fontWeight: "800" },
