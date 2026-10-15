@@ -1,7 +1,7 @@
 import { nativeVenueCoordinates } from "./domain/nativeVenueCoordinates.mjs";
 import { nativeNearbyVenues } from "./domain/nativeNearbyVenues.mjs";
-import { createNativeVenueCatalogResolver } from "./domain/nativeVenueCatalogIndex.mjs";
-import { createContext, useContext, useState, useEffect, useRef, useMemo } from "react";
+import { nativeVenueLookupCache } from "./domain/nativeVenueLookupCache.mjs";
+import { createContext, useContext, useState, useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
 import { seedFeed, ratedShows, haversineKm, installDemoCatalogShows } from "./data";
 import { memberBadgeTypes } from "./domain/memberBadges.mjs";
@@ -6108,7 +6108,7 @@ export function StoreProvider({ children }) {
   const venueTopPhotos = (venueName, n = 20) => venueReviewsFor(venueName)
     .flatMap((r) => r.photos.map((p) => ({ uri: p, by: r.name, venueReviewId: r.id, ownerId: r.userId })))
     .slice(0, n);
-  const nativeVenueKeyCacheRef = useRef(new Map());
+  const { keyCacheRef: nativeVenueKeyCacheRef, coordinatesRef: nativeVenueCoordinatesRef, resolveCatalog: nativeVenueCatalogResolver } = nativeVenueLookupCache(catalogVenues, arenaVenues);
   const nativeVenueKey = value => {
     if (Platform.OS === "web") return canonicalVenueKey(value);
     const raw = String(value ?? "");
@@ -6118,9 +6118,6 @@ export function StoreProvider({ children }) {
     if (cache.size >= 8192) cache.delete(cache.keys().next().value);
     cache.set(raw, key); return key;
   };
-  const nativeVenueCatalogResolver = useMemo(() => createNativeVenueCatalogResolver([
-    ...Object.keys(arenaVenues), ...Object.keys(catalogVenues),
-  ]), [catalogVenues]);
   const venueCatalogEntry = (venueName, indexed = false) => {
     const key = (Platform.OS !== "web" || indexed) ? nativeVenueCatalogResolver(venueName) : resolveVenueCatalogKey(venueName, [
       ...Object.keys(arenaVenues),
@@ -6612,7 +6609,6 @@ export function StoreProvider({ children }) {
     return verifiedArtistGenre(remoteArtists[k], catalogArtists[k], artistMeta(name));
   };
 
-  const nativeVenueCoordinatesRef = useRef(null);
   const venueCoord = (name, indexed = false) => {
     const k = nativeVenueKey(name) || norm(name);
     const sameVenue = (value) => (nativeVenueKey(value) || norm(value)) === k;
