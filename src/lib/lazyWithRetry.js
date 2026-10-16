@@ -15,7 +15,7 @@ import { createElement, lazy } from "react";
 //
 // It is separated from lazy() and takes its side effects (reload, storage,
 // delay) as arguments purely so it can be tested without a browser.
-export function isStaleChunkError(error) {
+function isExplicitStaleChunkError(error) {
   const name = String(error?.name || "");
   const code = String(error?.code || "");
   const message = String(error?.message || error || "");
@@ -27,8 +27,11 @@ export function isStaleChunkError(error) {
     // stale-deploy class as a missing hashed asset, and one guarded reload is
     // the only safe repair. The sessionStorage guard below prevents a loop if
     // a current build is genuinely broken.
-    || /^Requiring unknown module "\d{1,9}"\.$/i.test(message)
-    || /\b404\b/i.test(message);
+    || /^Requiring unknown module "\d{1,9}"\.$/i.test(message);
+}
+
+export function isStaleChunkError(error) {
+  return isExplicitStaleChunkError(error) || /\b404\b/i.test(String(error?.message || error || ""));
 }
 
 export function dynamicChunkUrl(error, baseUrl = null) {
@@ -46,6 +49,22 @@ export function dynamicChunkUrl(error, baseUrl = null) {
   }
 }
 
+function isDynamicChunkError(error) {
+  const name = String(error?.name || "");
+  const message = String(error?.message || error || "");
+  return name === "AsyncRequireError"
+    || /failed to fetch dynamically imported module/i.test(message)
+    || /importing a module script failed/i.test(message)
+    || /error loading dynamically imported module/i.test(message)
+    || /loading module .+ failed/i.test(message);
+}
+
+// The app boundary also catches ordinary render errors, so a bare 404 alone
+// must not turn its explicit retry into a document reload.
+export function isChunkLoadError(error) {
+  return isExplicitStaleChunkError(error) || isDynamicChunkError(error);
+}
+
 export async function confirmMissingDynamicChunk(error, {
   online = (typeof navigator === "undefined" ? true : navigator.onLine !== false),
   baseUrl = (typeof window !== "undefined" ? window.location?.href : null),
@@ -53,14 +72,7 @@ export async function confirmMissingDynamicChunk(error, {
     ? (url) => fetch(url, { method: "HEAD", cache: "no-store", credentials: "same-origin" })
     : null),
 } = {}) {
-  const name = String(error?.name || "");
-  const message = String(error?.message || error || "");
-  const looksDynamic = name === "AsyncRequireError"
-    || /failed to fetch dynamically imported module/i.test(message)
-    || /importing a module script failed/i.test(message)
-    || /error loading dynamically imported module/i.test(message)
-    || /loading module .+ failed/i.test(message);
-  if (!looksDynamic || !online || !probe) return false;
+  if (!isDynamicChunkError(error) || !online || !probe) return false;
   const url = dynamicChunkUrl(error, baseUrl);
   if (!url) return false;
   try {

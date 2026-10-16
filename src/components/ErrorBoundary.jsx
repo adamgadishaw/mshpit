@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable, Platform, ScrollView } from "react-n
 import { colors, focusRing, mono, radius } from "../theme";
 import { captureAppError } from "../lib/diagnostics";
 import { reportClientCrash } from "../lib/clientCrashReporter";
+import { isChunkLoadError } from "../lib/lazyWithRetry";
 
 // App-wide crash net. React unmounts a subtree when a render throws; without this
 // the user gets a blank/white screen and a refresh just re-runs the same crash
@@ -47,6 +48,12 @@ export default class ErrorBoundary extends Component {
 
   retry = () => {
     this.crashSequence += 1;
+    // React.lazy retains rejected imports. Only an explicit web retry replaces
+    // the stale document; clearing this boundary would throw the same error.
+    if (Platform.OS === "web" && typeof window !== "undefined" && isChunkLoadError(this.state.error)) {
+      this.reload();
+      return;
+    }
     this.setState({ error: null, appError: null, resetArmed: false });
   };
 
