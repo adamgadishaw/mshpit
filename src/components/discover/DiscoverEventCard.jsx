@@ -5,11 +5,11 @@ import Icon from "../Icon";
 
 // Native card content stays in normal flow: neither a slow image nor larger
 // text can leave the event name outside a zero-height absolute parent.
-export default function DiscoverEventCard({ current, media, date, onOpen, onImageError, onPrevious, onNext, index, count }) {
+export default function DiscoverEventCard({ current, media, date, onOpen, onImageError, onPressIn, onPressOut, onPrevious, onNext, index, count }) {
   const { fontScale } = useWindowDimensions();
   return <View style={styles.shell}>
     <View style={styles.card}>
-      <Pressable onPress={onOpen} disabled={!onOpen} accessibilityRole="button"
+      <Pressable onPress={onOpen} onPressIn={onPressIn} onPressOut={onPressOut} disabled={!onOpen} accessibilityRole="button"
         accessibilityLabel={`Open ${current.title}. ${date}. ${[current.venue,current.place].filter(Boolean).join(", ")}`}
         style={({ pressed }) => [styles.action, pressed && styles.pressed]}>
         <View style={styles.art}>
@@ -27,9 +27,9 @@ export default function DiscoverEventCard({ current, media, date, onOpen, onImag
 
     </View>
     {count>1 ? <View style={styles.controls} accessibilityLabel="Event slideshow controls">
-      <Pressable onPress={onPrevious} accessibilityRole="button" accessibilityLabel="Previous event" style={styles.control}><Icon name="chevron-left" size={18} color={colors.text}/></Pressable>
+      <Pressable onPress={onPrevious} onPressIn={onPressIn} onPressOut={onPressOut} accessibilityRole="button" accessibilityLabel="Previous event" style={styles.control}><Icon name="chevron-left" size={18} color={colors.text}/></Pressable>
       <Text style={styles.counter}>{index+1} / {count}</Text>
-      <Pressable onPress={onNext} accessibilityRole="button" accessibilityLabel="Next event" style={styles.control}><Icon name="chevron-right" size={18} color={colors.text}/></Pressable>
+      <Pressable onPress={onNext} onPressIn={onPressIn} onPressOut={onPressOut} accessibilityRole="button" accessibilityLabel="Next event" style={styles.control}><Icon name="chevron-right" size={18} color={colors.text}/></Pressable>
     </View> : null}
   </View>;
 }

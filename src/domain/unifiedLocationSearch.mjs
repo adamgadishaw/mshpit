@@ -245,6 +245,7 @@ export function memoizedUnifiedVenueSearchIndex({
 
 export function searchUnifiedVenueIndex(index, query, {
   limit = UNIFIED_LOCATION_SEARCH_RESULT_LIMIT,
+  filter,
 } = {}) {
   const needle = normalized(query);
   const maximum = boundedInteger(limit, UNIFIED_LOCATION_SEARCH_RESULT_LIMIT, UNIFIED_LOCATION_SEARCH_RESULT_LIMIT);
@@ -252,6 +253,9 @@ export function searchUnifiedVenueIndex(index, query, {
   const matches = [];
   for (const entry of Array.isArray(index) ? index : []) {
     if (!entry?.searchText?.includes(needle) || !entry.row) continue;
+    // Qualified location filters must run before the result cap: another city
+    // with the same name must not consume the selected city's result slots.
+    if (typeof filter === "function" && !filter(entry.row)) continue;
     matches.push({ ...entry.row });
     if (matches.length >= maximum) break;
   }

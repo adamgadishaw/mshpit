@@ -130,6 +130,7 @@ export default function DiscoverEventBanner({
   if (Platform.OS !== "web") return <DiscoverEventCard current={current} media={media}
     date={dateLabel(current.date,current.endDate)} onOpen={onOpenEvent ? ()=>onOpenEvent({ ...current.event, discoverPhotoCredit: media?.by ? { creator: attribution?.creator || media.by, sourcePage: attribution?.sourcePage || media.sourcePage, license: attribution?.license || media.license, licenseUrl: attribution?.licenseUrl || media.licenseUrl } : null }) : undefined}
     onImageError={()=>setFailed(value=>new Set(value).add(current.id))}
+    onPressIn={() => setHolding(true)} onPressOut={() => setHolding(false)}
     onPrevious={()=>move(-1)} onNext={()=>move(1)} index={index} count={safeSlides.length} />;
 
   return (

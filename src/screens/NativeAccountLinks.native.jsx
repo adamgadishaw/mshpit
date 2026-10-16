@@ -23,8 +23,12 @@ export default function NativeAccountLinks({ onActiveChange, onEnter }) {
       onInvalidate: event => {
         abort.current?.();
         if (event.reason === 'validation') return;
-        setFlow(event.reason === 'identity' && event.kind === 'reset'
-          ? { kind: 'interrupted', accountId: event.accountId, revision: -1 } : null);
+        const nextFlow = event.reason === 'identity' && event.kind === 'reset'
+          ? { kind: 'interrupted', accountId: event.accountId, revision: -1 } : null;
+        // An intent can be retired before its first visible render. Publish
+        // activity here too; a false-to-false visibility effect will not rerun.
+        callbacks.current.onActiveChange?.(!!nextFlow);
+        setFlow(nextFlow);
       },
       onUnavailable: () => console.warn('Incoming account link could not be read. Open the email link again.'),
     });

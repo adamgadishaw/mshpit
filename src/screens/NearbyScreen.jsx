@@ -96,7 +96,7 @@ export default function NearbyScreen({
       shows: regionShows(km, center)
     };
     return {
-      venues: searchVenues(center.city, 500).filter(v => nearbyPlaceMatches(v, center)),
+      venues: searchVenues(center.city, 50, { filter: v => nearbyPlaceMatches(v, center) }),
       shows: tourDates.filter(e => nearbyPlaceMatches(e, center))
     };
   }, [center, km, hasCity, hasCoords, localVenues, regionShows, searchVenues, tourDates]);

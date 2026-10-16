@@ -1,5 +1,7 @@
 # MSHPIT: free Windows Android development
 
+**Latest independent review (2026-10-16):** [six reviewed fixes, complete local checks, actual Android screenshots, current Metro commands and unresolved theme/reload limits](ASTRA_NATIVE_REVIEW_2026-10-16.md). The app is currently running on the Windows Android emulator; the initial virtualization blocker below is historical.
+
 **Latest startup CPU check:** [measured venue-index stall, equivalent locale optimization, comparable profiles and navigation](STARTUP_CPU_REVIEW_2026-10-15.md).
 
 **Latest image/navigation check:** [native stale-error recovery, hosted City photo retry, and measured City/Artist navigation](IMAGE_CITY_NAVIGATION_REVIEW_2026-10-15.md).

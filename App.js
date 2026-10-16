@@ -512,6 +512,17 @@ function Root() {
   }, [authReady, player, playerAccountId, playerStateIsScoped, web]);
   const [acctOpen, setAcctOpen] = useState(false);
   const [nativeAccountLinkActive, setNativeAccountLinkActive] = useState(false);
+  const nativeAccountLinkActiveRef = useRef(false);
+  const updateNativeAccountLinkActive = (active) => {
+    nativeAccountLinkActiveRef.current = active;
+    setNativeAccountLinkActive(active);
+  };
+  const enterNativeAccountLink = () => {
+    // Link delivery can precede the render that exposes the overlay. Protect
+    // the current passive-effect flush from an appearance reload too.
+    updateNativeAccountLinkActive(true);
+    authNavigationAbortRef.current?.();
+  };
   // The reusable product guide remains available from the menu. New-account
   // setup is separate and keyed to private server state below, so it works on
   // web and native and can safely resume after an interrupted first sign-in.
@@ -680,7 +691,17 @@ function Root() {
   const commitGo = (candidate) => {
     let frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id, Platform.OS);
     if (!frame) return;
-    if (frame.auth && stackRef.current[stackRef.current.length - 1]?.auth) return;
+    if (frame.auth && stackRef.current[stackRef.current.length - 1]?.auth) {
+      // A newer read-only News intent updates the destination without adding
+      // another sign-in screen or resetting the form already being filled in.
+      if (!web && frame.authReturn?.news === true) {
+        const previous = stackRef.current;
+        const current = previous[previous.length - 1];
+        const next = [...previous.slice(0, -1), { ...current, authReturn: frame.authReturn }];
+        writeNavigation({ ...navigationRef.current, stack: next }, pathForFrame(next[next.length - 1]), "replace");
+      }
+      return;
+    }
     if (frame.auth && navigationRef.current.landing) frame = { ...frame, authFromLanding: true };
     const previous = stackRef.current;
     const next = previous.length >= 64 ? [{}, ...previous.slice(-62), frame] : [...previous, frame];
@@ -1082,6 +1103,9 @@ function Root() {
   // this same effect flush, before its loading frame has rendered.
   const accountThemeSyncRef = useRef(null);
   useEffect(() => {
+    // Guest reconciliation can reload just like account reconciliation. Keep
+    // reset/verification recovery mounted until the sensitive flow is closed.
+    if (resetToken || ownerApprovalToken || nativeAccountLinkActive || nativeAccountLinkActiveRef.current) return;
     if (authReady && !session?.id) {
       accountThemeSyncRef.current = null;
       if (!web) syncAccountTheme();
@@ -1962,7 +1986,7 @@ function Root() {
           </View>
         )}
 
-        {!web && <NativeAccountLinks onActiveChange={setNativeAccountLinkActive} onEnter={() => { authNavigationAbortRef.current?.(); }} />}
+        {!web && <NativeAccountLinks onActiveChange={updateNativeAccountLinkActive} onEnter={enterNativeAccountLink} />}
       </SafeAreaView>
     </View>
     </NewsInteractionContext.Provider>

@@ -23,9 +23,16 @@ export function connectNativeAccountLinks({ linking, onIntent, onInvalidate, onU
   const publish = () => { if (live && ready && pending && delivered !== revision) { delivered = revision; onIntent({ ...pending, revision, accountId: identity }); } };
   const receive = (value, initial = false) => {
     if (!live || (initial && warm)) return;
-    const next = nativeAccountLinkIntent(value, origin);
-    if (!next) return;
+    // A newer native URL supersedes the launch URL even when another
+    // gateway owns it. Never let a delayed account launch cover that route.
     if (!initial) warm = true;
+    const next = nativeAccountLinkIntent(value, origin);
+    if (!next) {
+      // A queued capability has no visible form yet. Forget its duplicate
+      // marker too, so a later explicit account-link gesture remains usable.
+      if (!initial && pending && delivered !== revision) { pending = null; last = null; }
+      return;
+    }
     if (last?.kind === next.kind && last?.token === next.token) return;
     invalidate("replace"); last = next; pending = next; revision += 1; publish();
   };

@@ -6925,8 +6925,8 @@ export function StoreProvider({ children }) {
 
   // Free-text venue search across the WHOLE catalog (not just venues that happen
   // to have a logged show). This is what makes "Toronto" surface all 22 rooms.
-  const searchVenues = (query, limit = 50) => {
-    return searchUnifiedVenueIndex(venueSearchIndex, query, { limit });
+  const searchVenues = (query, limit = 50, { filter } = {}) => {
+    return searchUnifiedVenueIndex(venueSearchIndex, query, { limit, filter });
   };
 
   // Every known venue grouped by city, with venue + upcoming counts. Powers the

@@ -303,7 +303,7 @@ const styles = StyleSheet.create({
   chipText: { color: colors.textDim, fontFamily: font, fontSize: 13, fontWeight: "800" },
   chipTextOn: { color: colors.bg },
   // The hero is a poster: always a dark stage with white type, in every theme.
-  nativeHero: { minHeight: 0, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md },
+  nativeHero: { minHeight: 0, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md },
   nativePoster: { width: "100%", aspectRatio: 2, backgroundColor: colors.bg },
   nativeHeroBody: { padding: 16, gap: 10 },
   nativeHeroTitle: { fontSize: 25, lineHeight: 30, textShadowRadius: 0 },

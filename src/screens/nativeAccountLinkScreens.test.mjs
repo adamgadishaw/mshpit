@@ -87,3 +87,39 @@ test('authoritative reset retires gateway before B is published; recovery login 
  listener({url:'https://www.mshpit.com/#reset=synthetic_recover_123456789012345'});tree=f.render();form=tree.find(n=>n.type==='./ResetPasswordScreen');form.props.onLogin();tree=f.render();assert.ok(tree.find(n=>n.type==='./AuthScreen'));
  store.session={id:'C'};f.render();tree=f.render();assert.doesNotMatch(words(tree),/may already have been saved/);assert.ok(!tree.some(n=>n.props?.token));f.unmount();
 });
+
+
+function gatewayActivityFixture() {
+ const initial=deferred(),store={authReady:true,session:null};let listener,active=false;
+ const activeRef={current:false},publish=value=>{active=value;activeRef.current=value;};
+ const rn={View:'View',Text:'Text',Pressable:'Pressable',ActivityIndicator:'ActivityIndicator',StyleSheet:{create:v=>v,absoluteFill:{}},Linking:{getInitialURL:()=>initial.promise,addEventListener:(_t,fn)=>{listener=fn;return{remove(){}};}},BackHandler:{addEventListener:()=>({remove(){}})}};
+ const f=fixture('./NativeAccountLinks.native.jsx',store,{onEnter:()=>publish(true),onActiveChange:publish},{'react-native':rn});
+ f.render();
+ return{...f,store,activeRef,get active(){return active;},deliver:url=>listener({url})};
+}
+
+for(const [kind,fragment] of [['verify','verify=synthetic_token_123456789012345'],['invalid','verify=short']]) {
+ test('retiring '+kind+' before its first visible render clears synchronous account-link activity',()=>{
+  const f=gatewayActivityFixture();
+  f.deliver('https://www.mshpit.com/#'+fragment);assert.equal(f.active,true);assert.equal(f.activeRef.current,true);
+  // A login/session result and link delivery can be batched before React paints.
+  f.store.session={id:'new-account'};f.render();
+  assert.equal(f.active,false,'identity invalidation must clear activity even when visibility stays false');
+  assert.equal(f.activeRef.current,false);assert.equal(f.render().length,0);
+  f.unmount();
+ });
+}
+
+test('reset interruption and revalidation retain activity until explicit close or disposal',()=>{
+ const f=gatewayActivityFixture();
+ f.deliver('https://www.mshpit.com/#reset=synthetic_token_123456789012345');
+ f.store.session={id:'new-account'};f.render();let tree=f.render();
+ assert.equal(f.active,true);assert.equal(f.activeRef.current,true);
+ assert.match(words(tree),/If you submitted a new password, it may already have been saved/);
+ f.store.authReady=false;f.render();assert.equal(f.active,true);assert.equal(f.activeRef.current,true);
+ f.store.authReady=true;tree=f.render();
+ tree.find(n=>n.type==='Pressable'&&words(n)==='Close').props.onPress();
+ assert.equal(f.active,false);assert.equal(f.activeRef.current,false);assert.equal(f.render().length,0);
+ f.deliver('https://www.mshpit.com/#verify=synthetic_dispose_123456789012345');assert.equal(f.active,true);
+ f.unmount();assert.equal(f.active,false);assert.equal(f.activeRef.current,false);
+});
