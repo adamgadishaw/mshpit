@@ -20,7 +20,8 @@ const day = (offset) => new Date(Date.now() + offset * DAY_MS).toISOString().sli
 const shows = Array.from({ length: 40 }, (_, index) => ({
   id: `tm_list_fixture_${index + 1}`, artist: `Fixture Act ${index + 1}`, venue: `Fixture Hall ${(index % 5) + 1}`,
   city: "Toronto", place: "Toronto, Ontario, Canada", venueCountry: "Canada", venueCountryCode: "CA",
-  source: "ticketmaster", providerActive: true, date: day(1 + Math.floor(index * 26 / 40)), releaseAt: 0, eventKind: "concert",
+  source: "ticketmaster", providerActive: true,
+  date: index === 0 ? day(1).replaceAll("-", " · ") : day(1 + Math.floor(index * 26 / 40)), releaseAt: 0, eventKind: "concert",
 }));
 const festival = { id: "tm_list_fixture_festival", artist: "Fixture Headliner", eventName: "Fixture Fest", eventKind: "festival",
   venue: "Fixture Park", city: "Toronto", place: "Toronto, Ontario, Canada", venueCountry: "Canada", venueCountryCode: "CA",
@@ -94,6 +95,10 @@ async function scenario(browser, origin, width, { failureMode = null } = {}) {
     await seeAll.click();
     await page.getByRole("radio", { name: "Show events as list", exact: true }).waitFor();
     assert.equal(await page.getByRole("radio", { name: "Show events as list", exact: true }).getAttribute("aria-checked"), "true");
+    await page.locator("#discover-panel-shows").getByRole("link", {
+      name: /^Open Fixture Act 1 at Fixture Hall 1,/u,
+    }).waitFor({ state: "visible" });
+    const addingDates = page.getByText("Adding later dates...", { exact: true });
     if (failureMode) {
       const retry = page.getByRole("button", { name: "Try loading this event range again", exact: true });
       await retry.waitFor({ state: "visible" });
@@ -105,6 +110,12 @@ async function scenario(browser, origin, width, { failureMode = null } = {}) {
       assert.ok(retainedRows > 0, "the failed later page retains visible first-page shows");
       assert.deepEqual(state.pages.slice(before), ["fixture-page-2"], "the list reaches the failing later page exactly once");
       assert.equal(await page.getByText(/^No events are listed .+ over the next 30 days\.$/u).count(), 0, "failure must not masquerade as an empty range");
+      // The loading label is only rendered on the last available week. Inspect
+      // that week so this assertion catches the retained-cursor spinner defect.
+      const lastWeek = page.getByRole("tablist", { name: "Weeks", exact: true }).getByRole("tab").last();
+      await lastWeek.click();
+      assert.equal(await lastWeek.getAttribute("aria-selected"), "true");
+      assert.equal(await addingDates.count(), 0, "a failed later page stops announcing that dates are loading");
       await retry.scrollIntoViewIfNeeded();
       await page.screenshot({ path: join(shots, `${name}-error.png`), fullPage: true });
 
@@ -118,6 +129,7 @@ async function scenario(browser, origin, width, { failureMode = null } = {}) {
       await page.getByRole("button", { name: "Look for events over the next 60 days", exact: true }).waitFor({ state: "visible" });
       assert.equal(await retry.count(), 0, "the visible retry error clears after an authoritative empty response");
       assert.equal(await page.getByText("Couldn't load more dates. Try again.", { exact: true }).count(), 0);
+      assert.equal(await addingDates.count(), 0, "the loading label stays absent after successful empty recovery");
       assert.equal(await rows.count(), 0, "the accepted empty range removes previously retained shows");
       assert.deepEqual(state.pages.slice(beforeRetry), ["first"], "recovery requests a replacement first page, without replaying the failed cursor");
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
@@ -149,6 +161,9 @@ async function scenario(browser, origin, width, { failureMode = null } = {}) {
     assert.equal(await tabs.first().getAttribute("aria-selected"), "false", `moved on from ${firstTab}`);
     assert.equal(await tabs.nth(1).getAttribute("aria-selected"), "true");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    await tabs.last().click();
+    assert.equal(await tabs.last().getAttribute("aria-selected"), "true");
+    assert.equal(await addingDates.count(), 0, "completed pagination does not leave a loading label on the final week");
 
     // Back to cards keeps the page tidy.
     await page.getByRole("radio", { name: "Show events as cards", exact: true }).click();

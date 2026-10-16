@@ -5,9 +5,10 @@ import tls from 'node:tls';
 import { syncBuiltinESMExports } from 'node:module';
 import { mkdtempSync, mkdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const appRoot = resolve('D:/Development/Apps/mshpit');
-if (resolve(process.cwd()) !== appRoot) throw new Error('Mobile smoke must run from its isolated D: checkout');
+const appRoot = resolve(fileURLToPath(new URL('../', import.meta.url)));
+if (resolve(process.cwd()) !== appRoot) throw new Error('Mobile smoke must run from its own checkout');
 const keep = new Set(['PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP']);
 for (const key of Object.keys(process.env)) if (!keep.has(key.toUpperCase())) delete process.env[key];
 mkdirSync(join(appRoot, '.tmp'), { recursive: true });

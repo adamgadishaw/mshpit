@@ -2,6 +2,7 @@
 // days, so people can page through a month week by week instead of pressing
 // "load more" over and over. Festivals have their own tab and stay out.
 
+import { calendarDateKey } from "./dataPolicy.mjs";
 import { isFestivalListing } from "./liveDiscovery.mjs";
 
 export { isFestivalListing };
@@ -9,7 +10,6 @@ export { isFestivalListing };
 const DAY_MS = 86_400_000;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const DATE = /^\d{4}-\d{2}-\d{2}$/u;
 
 const toUtc = (key) => Date.UTC(Number(key.slice(0, 4)), Number(key.slice(5, 7)) - 1, Number(key.slice(8, 10)));
 const toKey = (ms) => new Date(ms).toISOString().slice(0, 10);
@@ -46,8 +46,11 @@ export function discoverEventWeeks(events, { now = Date.now() } = {}) {
   const thisMonday = mondayOf(today);
   const weeks = new Map();
   for (const event of Array.isArray(events) ? events : []) {
-    const date = typeof event?.date === "string" && DATE.test(event.date) ? event.date : null;
-    if (!date) continue;
+    // Match the range filter, including retained display-formatted dates.
+    const calendarKey = calendarDateKey(event?.date);
+    if (calendarKey == null) continue;
+    const digits = String(calendarKey);
+    const date = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
     const day = date < today ? today : date;
     const monday = mondayOf(day);
     if (!weeks.has(monday)) weeks.set(monday, new Map());

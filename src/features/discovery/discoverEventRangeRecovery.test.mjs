@@ -11,8 +11,9 @@ import { discoverEventRecovery } from "../../components/discover/discovery-recov
 const screen = readFileSync(new URL("../../screens/DiscoverScreen.jsx", import.meta.url), "utf8");
 const store = readFileSync(new URL("../../store.js", import.meta.url), "utf8");
 const service = readFileSync(new URL("./tourDateRangeApi.mjs", import.meta.url), "utf8");
+const list = readFileSync(new URL("../../components/discover/DiscoverEventList.jsx", import.meta.url), "utf8");
 function extract(source) {
-  const named = new Map(); let errorCondition;
+  const named = new Map(); let errorCondition, loadingCondition;
   const visit = (node) => {
     if (!node || typeof node !== "object") return;
     if (node.type === "VariableDeclarator" && node.id?.type === "Identifier") {
@@ -21,6 +22,9 @@ function extract(source) {
     if (node.type === "FunctionDeclaration" && node.id) named.set(node.id.name, node);
     if (node.type === "ConditionalExpression" && source.slice(node.consequent.start, node.consequent.end).includes("Couldn't load more dates. Try again.")) {
       errorCondition = node.test;
+    }
+    if (node.type === "ConditionalExpression" && source.slice(node.consequent.start, node.consequent.end).includes("Adding later dates...")) {
+      loadingCondition = node.test;
     }
     for (const value of Object.values(node)) {
       if (Array.isArray(value)) value.forEach(visit);
@@ -31,9 +35,10 @@ function extract(source) {
   return {
     named: (name) => { const node = named.get(name); assert.ok(node, name); return source.slice(node.start, node.end); },
     errorCondition: errorCondition && source.slice(errorCondition.start, errorCondition.end),
+    loadingCondition: loadingCondition && source.slice(loadingCondition.start, loadingCondition.end),
   };
 }
-const screenCode = extract(screen), storeCode = extract(store), serviceCode = extract(service);
+const screenCode = extract(screen), storeCode = extract(store), serviceCode = extract(service), listCode = extract(list);
 const evaluate = (code, bindings) => new Function(...Object.keys(bindings), `return (${code});`)(...Object.values(bindings));
 const apiWith = (api) => ({
   range: evaluate(serviceCode.named("fetchDiscoverTourDateRange"), { api, ...rangeDomain }),
@@ -43,7 +48,7 @@ const event = { id: "retained", date: "2026-10-17", artist: "Fixture", venue: "R
 const populated = { upcomingEvents: [event] };
 const empty = { upcomingEvents: [] };
 
-function harness() {
+function harness({ local = true } = {}) {
   const responses = [], calls = [];
   const { range } = apiWith(async (path, options) => {
     calls.push({ path, options });
@@ -60,11 +65,18 @@ function harness() {
   const request = evaluate(screenCode.named("requestEventRange"), {
     rangeRequestRef: { current: { sequence: 0, controller: null } }, requestedCursorRef: { current: null },
     eventRangeRef: state, rangeScopeKey, setEventRange: value => { state.current = value; },
-    liveScope: LIVE_EVENT_SCOPE.LOCAL, region: "Canada", LIVE_EVENT_SCOPE, discoverCountryIdentity,
+    liveScope: local ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE, region: "Canada", LIVE_EVENT_SCOPE, discoverCountryIdentity,
     rangeLoaderRef: { current: load }, ...rangeDomain,
   });
   return {
     responses, calls, request, state: () => state.current,
+    addingLaterDates: () => {
+      const eventRange = state.current;
+      const rangeMatchesScene = evaluate(screenCode.named("rangeMatchesScene"), { eventRange, rangeScopeKey });
+      const loadingMore = evaluate(screenCode.named("rangeLoadingMore"), { eventRange, rangeMatchesScene, ...rangeDomain });
+      // Evaluate the actual list JSX condition on its last available week.
+      return evaluate(listCode.loadingCondition, { loadingMore, next: null });
+    },
     showError: () => evaluate(screenCode.errorCondition, {
       eventRange: state.current, rangeScopeKey, visibleLiveEvents: state.current.rows,
     }),
@@ -135,6 +147,33 @@ test("empty final pages retain prior shows and clear the pagination cursor", asy
   assert.deepEqual(f.state().rows.map(row => row.id), ["retained"]);
   assert.equal(f.state().nextCursor, null);
   assert.equal(f.showError(), false);
+});
+
+test("a failed later page stops the list spinner, retains shows and recovers through retry", async () => {
+  const f = harness({ local: false });
+  const first = { tourDates: [event], nextCursor: "page-two" };
+  const later = { ...event, id: "later-show", date: "2026-10-24" };
+  let failPage;
+  const pendingFailure = new Promise((resolve, reject) => { failPage = reject; });
+  f.responses.push(first, pendingFailure, first, { tourDates: [later], nextCursor: null });
+  assert.equal(await f.request(30), true);
+  const append = f.request(30, { after: "page-two", append: true });
+  assert.equal(f.addingLaterDates(), true, "the actual list spinner is shown while an append is pending");
+  failPage(new Error("fixture second-page offline"));
+  assert.equal(await append, false);
+  assert.equal(f.showError(), true);
+  assert.deepEqual(f.state().rows.map(row => row.id), ["retained"]);
+  assert.equal(f.state().nextCursor, "page-two", "the failed continuation remains available for recovery");
+  assert.equal(f.addingLaterDates(), false, "a completed failure cannot continue announcing that later dates are loading");
+  const retry = f.request(30);
+  assert.deepEqual(f.state().rows.map(row => row.id), ["retained"]);
+  assert.equal(f.addingLaterDates(), false, "first-page refresh has its own updating-dates state");
+  assert.equal(await retry, true);
+  assert.equal(f.showError(), false);
+  assert.equal(await f.request(30, { after: "page-two", append: true }), true);
+  assert.deepEqual(f.state().rows.map(row => row.id), ["retained", "later-show"]);
+  assert.equal(f.addingLaterDates(), false);
+  assert.deepEqual(f.calls.map(({ path }) => new URL(path, "https://example.test").searchParams.get("after")), [null, "page-two", null, "page-two"]);
 });
 
 test("startup preserves each valid lane when the other response is malformed", async () => {

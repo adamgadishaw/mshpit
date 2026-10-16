@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform, FlatList, ScrollView, useWindowDimensions } from "react-native";
-import { useEvent } from "expo";
 import { useVideoPlayer, VideoView } from "expo-video";
 import { colors, mono, radius, shadow } from "../theme";
 import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
@@ -39,12 +38,27 @@ function ClipPage({ post, uri, posterUri, altText, height, active: selected, pos
     p.loop = true;
     p.muted = muted;
   });
-  const { status, error } = useEvent(player, "statusChange", {
-    status: player.status,
-    error: null,
-  });
+  // Expo's useEvent retains its last payload when the emitter changes. Keep
+  // status attached to its player so retry/foreground cannot inherit an error
+  // from the instance being released, even before the next native event.
+  const [playerState, setPlayerState] = useState(null);
+  const { status, error } = playerState?.player === player
+    ? playerState : { status: player.status, error: null };
+  useEffect(() => {
+    let cancelled = false;
+    const updateStatus = ({ status, error = null }) => {
+      if (!cancelled) setPlayerState({ player, status, error });
+    };
+    updateStatus({ status: player.status });
+    const subscription = player.addListener("statusChange", updateStatus);
+    return () => {
+      cancelled = true;
+      subscription.remove();
+    };
+  }, [player]);
   const [paused, setPaused] = useState(false);
-  const [playRejected, setPlayRejected] = useState(false);
+  const [rejectedPlayer, setRejectedPlayer] = useState(null);
+  const playRejected = rejectedPlayer === player;
   const [firstFrameSession, setFirstFrameSession] = useState(null);
   const videoViewRef = useRef(null);
   const activationRef = useRef({ active: false, count: 0 });
@@ -65,7 +79,7 @@ function ClipPage({ post, uri, posterUri, altText, height, active: selected, pos
   useEffect(() => {
     if (!active) return;
     setPaused(false);
-    setPlayRejected(false);
+    setRejectedPlayer(null);
     mountedAtRef.current = Date.now();
     trackedFirstFrameRef.current = false;
   }, [active, attempt, uri]);
@@ -118,7 +132,7 @@ function ClipPage({ post, uri, posterUri, altText, height, active: selected, pos
     let cancelled = false;
     if (active && !paused) {
       startVideoPlayback({ player, web, element: videoViewRef.current?.nativeRef?.current })
-        .catch(() => { if (!cancelled) setPlayRejected(true); });
+        .catch(() => { if (!cancelled) setRejectedPlayer(player); });
     } else {
       try { player.pause(); } catch { /* Player may already be released. */ }
     }
@@ -134,8 +148,9 @@ function ClipPage({ post, uri, posterUri, altText, height, active: selected, pos
     // A decoded-frame callback from the player generation being replaced must
     // not mark the new clip ready or consume its first-frame metric.
     if (!activeRef.current || playbackSessionRef.current !== session) return;
+    // A decoded frame can arrive before native play/pause commands settle.
+    // Readiness must preserve the existing user intent, not infer it from playing.
     setFirstFrameSession(playbackSession);
-    setPaused(!player.playing);
     if (trackedFirstFrameRef.current) return;
     trackedFirstFrameRef.current = true;
     trackRef.current?.("performance", {
@@ -144,7 +159,7 @@ function ClipPage({ post, uri, posterUri, altText, height, active: selected, pos
       surface: "clips",
       outcome: "ok",
     });
-  }, [playbackSession, player]);
+  }, [playbackSession]);
 
   // Expo 56 web can miss VideoView's first-frame callback even though its
   // underlying HTMLVideoElement already has a decoded current frame. Reuse the
@@ -164,7 +179,7 @@ function ClipPage({ post, uri, posterUri, altText, height, active: selected, pos
 
   const retry = (event) => {
     event?.stopPropagation?.();
-    setPlayRejected(false);
+    setRejectedPlayer(null);
     setPaused(false);
     setAttempt((value) => value + 1);
   };
@@ -177,7 +192,7 @@ function ClipPage({ post, uri, posterUri, altText, height, active: selected, pos
     } else {
       const session = playbackSessionRef.current;
       startVideoPlayback({ player, web, element: videoViewRef.current?.nativeRef?.current })
-        .catch(() => { if (activeRef.current && playbackSessionRef.current === session) setPlayRejected(true); });
+        .catch(() => { if (activeRef.current && playbackSessionRef.current === session) setRejectedPlayer(player); });
     }
   };
 
@@ -695,7 +710,7 @@ const styles = StyleSheet.create({
   stageIdle: { backgroundColor: "#07080e" },
   video: { width: "100%", height: "100%", backgroundColor: "#000" },
   pausedGlyph: { position: "absolute", width: 72, height: 72, borderRadius: 36, backgroundColor: "rgba(0,0,0,0.4)", alignItems: "center", justifyContent: "center" },
-  playbackError: { ...StyleSheet.absoluteFillObject, zIndex: 3, alignItems: "center", justifyContent: "center", gap: 9, paddingHorizontal: 28, backgroundColor: "rgba(5,7,12,0.9)" },
+  playbackError: { ...StyleSheet.absoluteFill, zIndex: 3, alignItems: "center", justifyContent: "center", gap: 9, paddingHorizontal: 28, backgroundColor: "rgba(5,7,12,0.9)" },
   playbackErrorTitle: { color: "#fff", fontSize: 17, fontWeight: "800", textAlign: "center" },
   playbackErrorCopy: { maxWidth: 360, color: "rgba(255,255,255,0.7)", fontSize: 13, lineHeight: 19, textAlign: "center" },
   retryBtn: { minHeight: 44, justifyContent: "center", marginTop: 3, paddingHorizontal: 18, borderRadius: 22, borderCurve: "continuous", borderWidth: 1, borderColor: "rgba(242,166,90,0.65)", backgroundColor: "rgba(242,166,90,0.12)" },

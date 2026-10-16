@@ -65,7 +65,7 @@ function fixture(platform = "android") {
           const listeners = new Map();
           const emit = (name, payload) => { for (const listener of listeners.get(name) || []) listener(payload); };
           const player = {
-            status: "readyToPlay", playing: false, currentTime: 0, duration: 30, playbackRate: 1,
+            emit, status: "readyToPlay", playing: false, currentTime: 0, duration: 30, playbackRate: 1,
             play() { this.playing = true; emit("playingChange", { isPlaying: true }); },
             pause() { this.playing = false; emit("playingChange", { isPlaying: false }); },
             addListener(name, listener) {
@@ -154,6 +154,7 @@ test("retry keeps the new poster until the replacement player's own first-frame 
   const f = fixture(); t.after(() => f.unmount());
   const oldFrame = frameCallback(f.render());
   f.player.status = "error";
+  f.player.emit("statusChange", { status: "error", error: null });
   const errorTree = f.render();
   const retry = nodes(errorTree).find((node) => node.props?.accessibilityLabel === "Try loading this clip again");
   assert.ok(retry); retry.props.onPress({ stopPropagation() {} });

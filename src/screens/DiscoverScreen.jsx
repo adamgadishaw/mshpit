@@ -263,7 +263,7 @@ export default function DiscoverScreen({
     : DISCOVER_RANGE_DAYS[0];
   // Cards show the first few; the list shows every show in range a week at a time.
   const rangeHasMore = !rangeMatchesScene || rangeEvents.length > visibleLiveEvents.length;
-  const rangeLoadingMore = rangeMatchesScene && !!eventRange.nextCursor && eventRange.rows.length < DISCOVER_RANGE_MAX_EVENTS;
+  const rangeLoadingMore = rangeMatchesScene && eventRange.status === "loading" && !!eventRange.nextCursor && eventRange.rows.length < DISCOVER_RANGE_MAX_EVENTS;
   const listView = eventView === "list" && rangeMatchesScene && rangeEvents.length > 0;
   const eventRecovery = discoverEventRecovery({
     status: eventRange.scopeKey === rangeScopeKey ? eventRange.status : "idle",

@@ -14,12 +14,15 @@ export function sessionValidationOutcome({ confirmed, accountId, user, error } =
       ? { kind: "authoritative-guest", departingAccountId }
       : { kind: "transient-failure", preserveConfirmedUi: !!confirmed };
   }
-  if (!user) return {
+  // Only the explicit guest response may retire a confirmed account. Missing
+  // or malformed successful payloads are recoverable validation failures.
+  if (user === null) return {
     kind: confirmed ? "authoritative-guest" : "initial-guest",
     departingAccountId,
   };
 
-  const arrivingAccountId = accountIdOf(user.id);
+  const arrivingAccountId = user && typeof user === "object" && !Array.isArray(user)
+    && typeof user.id === "string" ? accountIdOf(user.id) : null;
   if (!arrivingAccountId) {
     return { kind: "invalid-response", preserveConfirmedUi: !!confirmed };
   }
