@@ -609,11 +609,11 @@ async function runCase(browser, origin, item) {
         assert.equal(await page.getByRole("button", { name: "Open Fixture Venue's venue page", exact: true }).first().isEnabled(), true);
         assert.equal(await page.getByRole("link", { name: "Get tickets for Imran Khan at Fixture Venue", exact: true }).isEnabled(), true);
         await snapshot("identity collision retains event and venue/ticket links");
-        await page.getByRole("button", { name: "Refresh event details and artist availability", exact: true }).click();
+        await page.getByRole("button", { name: "Refresh event details", exact: true }).click();
         await notice.waitFor();
         assert.equal(state.lookupAttempts, 0, "Refresh cannot bypass an unchanged pending identity restriction.");
         state.identityConfirmed = true;
-        await page.getByRole("button", { name: "Refresh event details and artist availability", exact: true }).click();
+        await page.getByRole("button", { name: "Refresh event details", exact: true }).click();
         await notice.waitFor({ state: "hidden" });
       }
       await openArtist.waitFor();

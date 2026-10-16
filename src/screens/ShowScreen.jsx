@@ -58,8 +58,23 @@ const CROWD_FILTER_LABELS = Object.freeze({
 // Public listings are useful even when a club-night/event name is not a
 // catalogue artist. This intentionally receives only the validated server
 // snapshot: no local post data or artist-only interaction callbacks.
-function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue, artistIdentityPending = false }) {
+function PublicEventSnapshotPanel({
+  event, status, onRetry, onOpenVenue, artistIdentityPending = false,
+  artistStatus = null, artistError = null, artistMissing = false,
+  onRetryArtist, artistRetryDisabled = false,
+}) {
   const loading = status === "loading" || status === "refreshing";
+  const artistChecking = !artistIdentityPending && artistStatus === "checking";
+  const artistUnavailable = !artistIdentityPending && !artistMissing
+    && (artistStatus === "unavailable" || !!artistError);
+  const artistRetryBlocked = artistChecking || artistRetryDisabled;
+  const artistRetryControl = !artistIdentityPending && typeof onRetryArtist === "function" ? <Pressable
+    style={styles.reviewUnavailableRetry} onPress={onRetryArtist} disabled={artistRetryBlocked}
+    accessibilityRole="button" accessibilityState={{ busy: artistChecking, disabled: artistRetryBlocked }}
+    accessibilityLabel="Retry checking artist availability"
+  >
+    <Text style={styles.reviewUnavailableRetryText}>{artistChecking ? "Checking artist…" : artistRetryBlocked ? "Try again later" : "Retry artist check"}</Text>
+  </Pressable> : null;
   if (!event) return (
     <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
@@ -70,6 +85,9 @@ function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue, artistI
           {!loading ? <Pressable style={styles.reviewUnavailableRetry} onPress={onRetry} accessibilityRole="button" accessibilityLabel="Retry loading event details">
             <Text style={styles.reviewUnavailableRetryText}>Try again</Text>
           </Pressable> : null}
+          {artistUnavailable ? <Text style={styles.reviewUnavailableText}>Artist information is temporarily unavailable.</Text> : null}
+          {artistChecking ? <Text style={styles.reviewUnavailableText}>Checking artist availability.</Text> : null}
+          {artistRetryControl}
         </View>
       </View>
     </ScrollView>
@@ -102,12 +120,21 @@ function PublicEventSnapshotPanel({ event, status, onRetry, onOpenVenue, artistI
       </Pressable> : null}
       {!cancelled && <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
         <View style={styles.reviewUnavailableCopy}>
-          <Text style={styles.reviewUnavailableTitle}>{artistIdentityPending ? "Artist profile not linked yet" : "The event is here. Artist features are separate."}</Text>
+          <Text style={styles.reviewUnavailableTitle}>{artistIdentityPending || artistMissing
+            ? "Artist profile not linked yet"
+            : artistChecking ? "Checking artist availability"
+              : artistUnavailable ? "Artist information is temporarily unavailable"
+                : "The event is here. Artist features are separate."}</Text>
           <Text style={styles.reviewUnavailableText}>{artistIdentityPending
             ? "This show is available, but its artist identity still needs a confirmed match. To avoid opening a different artist with the same name, profile, ratings and archive links are paused. You can still view the date, venue and available tickets."
-            : "This listing's date and venue are available. Artist profiles and live ratings need a verified artist match; an event name is not always an artist."}</Text>
+            : artistChecking
+              ? "Confirming this artist's profile and status. You can still view the event details and available tickets."
+              : artistUnavailable
+                ? "We couldn't check this artist right now. The event details and available tickets are still here. Try the artist check again shortly."
+                : "This listing's date and venue are available. Artist profiles and live ratings need a verified artist match; an event name is not always an artist."}</Text>
+          {artistRetryControl}
           {status === "error" ? <Text style={styles.reviewUnavailableText}>The latest refresh failed. Showing the event details already loaded.</Text> : null}
-          <Pressable style={styles.reviewUnavailableRetry} onPress={onRetry} disabled={loading} accessibilityRole="button" accessibilityState={{ busy: loading, disabled: loading }} accessibilityLabel="Refresh event details and artist availability">
+          <Pressable style={styles.reviewUnavailableRetry} onPress={onRetry} disabled={loading} accessibilityRole="button" accessibilityState={{ busy: loading, disabled: loading }} accessibilityLabel="Refresh event details">
             <Text style={styles.reviewUnavailableRetryText}>{loading ? "Refreshing…" : "Refresh details"}</Text>
           </Pressable>
         </View>
@@ -235,6 +262,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     retry: retryArtistIdentity,
     retryDisabled: artistIdentityRetryDisabled,
     missing: artistIdentityMissing,
+    error: artistIdentityError,
   } = useCanonicalArtistIdentity({
     artistName: artist,
     artistKey: norm.artistKey || null,
@@ -262,7 +290,6 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
       ? "checking"
       : "unavailable";
   const retryProfileStatus = artistIdentityStatus === "unavailable" ? retryArtistIdentity : retryMemorial;
-  const retryPublicEvent = () => { reloadPublicEvent(); retryProfileStatus(); };
   const ticketEvent = useMemo(() => ({
     ...norm,
     artistName: artist,
@@ -578,7 +605,12 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           event={publicEventSnapshot}
           status={publicEventResource.status}
           artistIdentityPending={artistIdentityPending}
-          onRetry={retryPublicEvent}
+          artistStatus={profileGateState}
+          artistError={artistIdentityError || memorialResource.error}
+          artistMissing={artistIdentityMissing}
+          artistRetryDisabled={artistIdentityStatus === "unavailable" && artistIdentityRetryDisabled}
+          onRetry={reloadPublicEvent}
+          onRetryArtist={retryProfileStatus}
           onOpenVenue={onOpenVenue}
         /> : <LegacyArtistArchiveGate
           artistName={artist}
