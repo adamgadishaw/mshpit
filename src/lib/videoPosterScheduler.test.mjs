@@ -141,3 +141,165 @@ test("rapid running aborts retain permits until non-cancellable poster work sett
   assert.deepEqual(started, [0, 1, 2, 3, 4, 5]);
   assert.deepEqual(scheduler.snapshot(), { active: 0, queued: 0, limit: 2 });
 });
+
+test("editor cover cancellation shares the feed limit until native decoder cleanup settles", async () => {
+  const { registerHooks } = await import("node:module");
+  const { scheduleVideoPosterGeneration } = await import("./videoPosterScheduler.mjs");
+  const nativePosterUrl = new URL("./videoPoster.native.js", import.meta.url).href;
+  const nativeCoverUrl = new URL("./mediaEditVideoCover.native.js", import.meta.url).href;
+  const fixtureKey = "__pitNativeCoverSchedulerFixture";
+  const native = { alive: 0, peak: 0, released: 0, filesDeleted: 0, gates: [] };
+  const settleTurns = async () => { for (let turn = 0; turn < 30; turn += 1) await Promise.resolve(); };
+  globalThis[fixtureKey] = native;
+  native.createVideoPlayer = () => {
+    native.alive += 1;
+    native.peak = Math.max(native.peak, native.alive);
+    let released = false;
+    return {
+      status: "readyToPlay", duration: 10, muted: false,
+      generateThumbnailsAsync() {
+        const gate = deferred();
+        native.gates.push(gate);
+        return gate.promise;
+      },
+      release() {
+        assert.equal(released, false, "a player is released once");
+        released = true;
+        native.alive -= 1;
+        native.released += 1;
+      },
+    };
+  };
+  const fixture = `globalThis.${fixtureKey}`;
+  const stubs = {
+    "expo-video": `export const createVideoPlayer = (...args) => ${fixture}.createVideoPlayer(...args);`,
+    "expo-file-system": `export class File { constructor(uri) { this.uri = uri; } get exists() { return true; } get size() { return 64; } delete() { ${fixture}.filesDeleted++; } }`,
+    "expo-image-manipulator": `export const SaveFormat = { JPEG: 'jpeg' }; export const ImageManipulator = { manipulate() { return { resize() {}, release() {}, async renderAsync() { return { release() {}, async saveAsync() { return { uri: 'file:///synthetic-cover.jpg', width: 320, height: 320 }; } }; } }; } };`,
+    "@shopify/react-native-skia": "export const Skia = {};",
+  };
+  const hooks = registerHooks({
+    resolve(specifier, context, nextResolve) {
+      if (context.parentURL === nativeCoverUrl && specifier === "./videoPoster") {
+        return { shortCircuit: true, url: nativePosterUrl };
+      }
+      if (context.parentURL === nativePosterUrl && Object.hasOwn(stubs, specifier)) {
+        return { shortCircuit: true, url: `data:text/javascript,${encodeURIComponent(stubs[specifier])}` };
+      }
+      return nextResolve(specifier, context);
+    },
+  });
+  const controllers = [];
+  const jobs = [];
+  const feedGate = deferred();
+  let feedStarted = false;
+  try {
+    // Actual cover + native poster modules; only native platform operations are
+    // inert substitutes. No decoder, media file, or network request is opened.
+    const { generateVideoCover } = await import(nativeCoverUrl);
+    for (let index = 0; index < 6; index += 1) {
+      const controller = new AbortController();
+      controllers.push(controller);
+      const job = generateVideoCover({ uri: `file:///synthetic-${index}.mp4`, durationMs: 10_000 }, {
+        coverMode: "auto", signal: controller.signal,
+      });
+      const outcome = job.catch((error) => error);
+      jobs.push(outcome);
+      await settleTurns();
+      controller.abort();
+      assert.equal((await outcome).code, "PIT_POSTER_ABORTED");
+    }
+    assert.equal(native.alive, 2, "queued cancellations cannot create additional players");
+    assert.equal(native.peak, 2);
+    assert.equal(native.gates.length, 2);
+
+    const feed = scheduleVideoPosterGeneration(() => {
+      feedStarted = true;
+      return feedGate.promise;
+    });
+    jobs.push(feed);
+    await settleTurns();
+    assert.equal(feedStarted, false, "feed and editor must share the same two permits");
+    native.gates[0].resolve([]);
+    await settleTurns();
+    assert.equal(feedStarted, true);
+    assert.equal(native.alive, 1);
+    native.gates[1].resolve([]);
+    feedGate.resolve();
+    await feed;
+    await settleTurns();
+    assert.equal(native.alive, 0);
+    assert.equal(native.released, 2);
+
+    const asset = { uri: "file:///synthetic-retry.mp4", durationMs: 10_000 };
+    const failed = generateVideoCover(asset, { coverMode: "manual", coverMs: 500 });
+    const failure = failed.catch((error) => error);
+    jobs.push(failure);
+    await settleTurns();
+    native.gates[2].resolve([]);
+    assert.equal((await failure).code, "PIT_POSTER_FRAME_FAILED");
+    await settleTurns();
+    assert.equal(native.alive, 0);
+
+    const retried = generateVideoCover(asset, { coverMode: "manual", coverMs: 500 });
+    jobs.push(retried.catch(() => {}));
+    await settleTurns();
+    native.gates[3].resolve([{ width: 320, height: 320, actualTime: 0.5, release() {} }]);
+    const cover = await retried;
+    assert.equal(cover.actualTimeMs, 500);
+    assert.equal(cover.release(), true);
+    assert.equal(cover.release(), false);
+    await settleTurns();
+    assert.equal(native.alive, 0);
+    assert.equal(native.released, 4);
+    assert.equal(native.filesDeleted, 1);
+  } finally {
+    controllers.forEach((controller) => controller.abort());
+    native.gates.forEach((gate) => gate.resolve([]));
+    feedGate.resolve();
+    await Promise.allSettled(jobs);
+    await settleTurns();
+    hooks.deregister();
+    delete globalThis[fixtureKey];
+  }
+});
+
+test("web editor covers join the shared poster scheduler before creating media work", async () => {
+  const { registerHooks } = await import("node:module");
+  const { scheduleVideoPosterGeneration } = await import("./videoPosterScheduler.mjs");
+  const coverUrl = new URL("./mediaEditVideoCover.web.js", import.meta.url).href;
+  let calls = 0;
+  const fixtureKey = "__pitWebCoverSchedulerFixture";
+  globalThis[fixtureKey] = () => {
+    calls += 1;
+    return Promise.resolve({ asset: { uri: "blob:synthetic-cover" }, timeMs: 300, durationMs: 10_000 });
+  };
+  const stub = `export const generateVideoPosterAsset = (...args) => globalThis.${fixtureKey}(...args); export const releaseVideoPosterAsset = () => true;`;
+  const hooks = registerHooks({ resolve(specifier, context, nextResolve) {
+    if (context.parentURL === coverUrl && specifier === "./videoPoster") {
+      return { shortCircuit: true, url: `data:text/javascript,${encodeURIComponent(stub)}` };
+    }
+    return nextResolve(specifier, context);
+  } });
+  const gates = [deferred(), deferred()];
+  const feed = gates.map((gate) => scheduleVideoPosterGeneration(() => gate.promise));
+  try {
+    const { generateVideoCover } = await import(coverUrl);
+    const controller = new AbortController();
+    const cancelled = generateVideoCover({ uri: "blob:synthetic-video" }, { signal: controller.signal });
+    await flush();
+    assert.equal(calls, 0);
+    controller.abort();
+    await assert.rejects(cancelled, { code: "PIT_POSTER_ABORTED" });
+    const retry = generateVideoCover({ uri: "blob:synthetic-video" });
+    gates[0].resolve();
+    const cover = await retry;
+    assert.equal(calls, 1);
+    assert.equal(cover.release(), true);
+  } finally {
+    gates.forEach((gate) => gate.resolve());
+    await Promise.all(feed);
+    await flush();
+    hooks.deregister();
+    delete globalThis[fixtureKey];
+  }
+});

@@ -4765,31 +4765,39 @@ export function StoreProvider({ children }) {
     const mutationKey = recommendationPreferenceMutationKey(accountId, postId);
     recommendationPreferenceRevisionRef.current += 1;
     setRecommendationHiddenIds((current) => {
+      if (!isCurrent()) return current;
       const next = new Set([...current, postId]);
       save(recommendationPreferenceStorageKey(accountId), [...next]);
       return next;
     });
-    const operation = recommendationPreferenceMutationsRef.current.hide(mutationKey, () => api(
-      `/api/feed/preferences/${encodeURIComponent(postId)}`,
-      {
-        method: "POST",
-        body: { action: "not_interested" },
-        context: "Tuning your recommendations",
-        silent: true,
-        expectedAccountId: accountId,
-      },
-    ));
+    const operation = recommendationPreferenceMutationsRef.current.hide(mutationKey, () => {
+      // Queued taps belong to their original login, including A -> B -> A.
+      if (!isCurrent()) return { ok: false, stale: true };
+      return api(
+        `/api/feed/preferences/${encodeURIComponent(postId)}`,
+        {
+          method: "POST",
+          body: { action: "not_interested" },
+          context: "Tuning your recommendations",
+          silent: true,
+          expectedAccountId: accountId,
+        },
+      );
+    });
     return operation.promise.then((result) => {
       if (!isCurrent()) return { ok: false, stale: true };
       track("recommendation_feedback", { postId, action: "not_interested", surface: "everyone" }, { expectedAccountId: accountId });
       return result;
     }).catch((error) => {
+      // Logout purges this account cache; stale failures must not recreate it.
+      if (!isCurrent()) return { ok: false, stale: true };
       if (!recommendationPreferenceMutationsRef.current.isCurrent(operation)) throw error;
       const persisted = loadRecommendationHiddenIds(accountId);
       persisted.delete(postId);
       save(recommendationPreferenceStorageKey(accountId), [...persisted]);
       if (isCurrent()) {
         setRecommendationHiddenIds((current) => {
+          if (!isCurrent()) return current;
           const next = new Set(current);
           next.delete(postId);
           save(recommendationPreferenceStorageKey(accountId), [...next]);
@@ -4809,27 +4817,35 @@ export function StoreProvider({ children }) {
     const mutationKey = recommendationPreferenceMutationKey(accountId, postId);
     recommendationPreferenceRevisionRef.current += 1;
     setRecommendationHiddenIds((current) => {
+      if (!isCurrent()) return current;
       const next = new Set(current);
       next.delete(postId);
       save(recommendationPreferenceStorageKey(accountId), [...next]);
       return next;
     });
-    const operation = recommendationPreferenceMutationsRef.current.undo(mutationKey, () => api(
-      `/api/feed/preferences/${encodeURIComponent(postId)}`,
-      {
-        method: "DELETE",
-        context: "Restoring this recommendation",
-        silent: true,
-        expectedAccountId: accountId,
-      },
-    ));
+    const operation = recommendationPreferenceMutationsRef.current.undo(mutationKey, () => {
+      // Queued taps belong to their original login, including A -> B -> A.
+      if (!isCurrent()) return { ok: false, stale: true };
+      return api(
+        `/api/feed/preferences/${encodeURIComponent(postId)}`,
+        {
+          method: "DELETE",
+          context: "Restoring this recommendation",
+          silent: true,
+          expectedAccountId: accountId,
+        },
+      );
+    });
     return operation.promise.then((result) => isCurrent() ? result : { ok: false, stale: true }).catch((error) => {
+      // Logout purges this account cache; stale failures must not recreate it.
+      if (!isCurrent()) return { ok: false, stale: true };
       if (!recommendationPreferenceMutationsRef.current.isCurrent(operation)) throw error;
       const persisted = loadRecommendationHiddenIds(accountId);
       persisted.add(postId);
       save(recommendationPreferenceStorageKey(accountId), [...persisted]);
       if (isCurrent()) {
         setRecommendationHiddenIds((current) => {
+          if (!isCurrent()) return current;
           const next = new Set([...current, postId]);
           save(recommendationPreferenceStorageKey(accountId), [...next]);
           return next;
