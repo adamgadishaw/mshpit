@@ -15,6 +15,7 @@ import { confirmSignupProfile, signupHandleLocked, signupProfilePatch, signupPro
 import { profileImagePickerOptions } from "../domain/profileImagePolicy.mjs";
 import { reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
 import { useStore } from "../store";
+import { useWebRecoveryDraft } from "../hooks/useWebRecoveryDraft";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 
 const TOTAL_STEPS = 2;
@@ -47,6 +48,9 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
   const [touched, setTouched] = useState(false);
   const busy = !!operation;
   const dirty = Object.keys(signupProfilePatch(draft, saved)).length > 0;
+  useWebRecoveryDraft(session.id, () => dirty || busy || active.current
+    ? { status: "blocked", message: "Your profile has unsaved changes or an active operation. Finish or copy your work, or open a new tab." }
+    : { status: "clean", verify: () => true });
   closeState.current = { dirty };
   const handleInvalid = touched && !isHandle(draft.handle);
   const firstName = String(session.name || "there").trim().split(/\s+/)[0];

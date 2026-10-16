@@ -5,6 +5,8 @@ import * as ImagePicker from "expo-image-picker";
 import { colors, mono, radius, font, displayFont, shadow, space } from "../theme";
 import { useStore } from "../store";
 import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
+import { useWebRecoveryDraft } from "../hooks/useWebRecoveryDraft";
+import { verifyDurableJson } from "../lib/webRecovery.mjs";
 import { RATING_DIMS, computeReview } from "../data";
 
 // Tour presets: pick one to attach the show to the artist without an album/tour.
@@ -1387,6 +1389,19 @@ export default function LogScreen({
   };
   const flushDraftRef = useRef(null);
   flushDraftRef.current = () => persistDraftSnapshot(currentDraft);
+
+  useWebRecoveryDraft(session?.id, () => {
+    // Web picker handles (including blob/file URIs) cannot survive a document.
+    if (submitBusy || (editing && effectiveComposerDirty) || pendingMediaAssets.some(asset => !asset.assetId && !isDurableMediaUrl(asset.sourceUrl))) {
+      return { status: "blocked", message: "This post has unfinished edits, an active operation, or selected files that cannot survive a reload. Finish or copy your work, or open a new tab." };
+    }
+    if (editing || !effectiveHasContent) return { status: "clean", verify: () => true };
+    const expected = draftFingerprint;
+    const id = persistDraftSnapshot(currentDraft);
+    const verify = () => verifyDurableJson("pit.drafts", values => Array.isArray(values) && values.some(draft =>
+      draft.id === id && String(draft.ownerId) === String(session?.id) && composerDraftFingerprint(draft) === expected));
+    return { status: "saved", verify };
+  });
 
   // Autosave both composer modes after a short quiet period. The initial prefill
   // alone does not create a draft; the first user-visible change does.

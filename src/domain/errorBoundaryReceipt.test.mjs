@@ -4,6 +4,9 @@ import { createRequire } from "node:module";
 import vm from "node:vm";
 import test from "node:test";
 import * as lazyRecovery from "../lib/lazyWithRetry.js";
+import WebChunkRecovery from "../lib/webChunkRecovery.js";
+import * as webRecovery from "../lib/webRecovery.mjs";
+import { lazy } from "react";
 
 const require = createRequire(import.meta.url);
 const { transformSync } = require("@babel/core");
@@ -13,7 +16,7 @@ const compiled = transformSync(readFileSync(filename, "utf8"), {
   plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
 }).code;
 
-function fixture({ platform = "web" } = {}) {
+function fixture({ platform = "web", confirm = () => true } = {}) {
   const calls = [], pending = [], removedKeys = [];
   const storage = new Map();
   let reloads = 0;
@@ -24,7 +27,8 @@ function fixture({ platform = "web" } = {}) {
       setItem: (key, value) => storage.set(key, String(value)),
       removeItem: key => storage.delete(key),
     },
-    localStorage: { removeItem: key => removedKeys.push(key) },
+    confirm,
+    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)), removeItem: key => { if (!key.startsWith("pit.recovery.check.")) removedKeys.push(key); storage.delete(key); } },
   };
   class Component {
     setState(update) {
@@ -39,13 +43,15 @@ function fixture({ platform = "web" } = {}) {
       if (name === "react") return { Component };
       if (name === "react-native") return { StyleSheet: { create: value => value }, Platform: { OS: platform } };
       if (name === "../lib/lazyWithRetry") return lazyRecovery;
+      if (name === "../lib/webChunkRecovery") return { default: WebChunkRecovery, __esModule: true };
+      if (name === "../lib/webRecovery.mjs") return webRecovery;
       if (name === "../theme") return { colors: {}, radius: {} };
       if (name === "../lib/diagnostics") return { captureAppError: () => ({ code: "PIT-APP-001", requestId: "local-reference" }) };
       if (name === "../lib/clientCrashReporter") return { reportClientCrash: (value) => {
         calls.push(value);
         return new Promise(resolve => pending.push(resolve));
       } };
-      if (name === "react/jsx-runtime") return {};
+      if (name === "react/jsx-runtime") return { jsx: (type, props) => ({ type, props }), jsxs: (type, props) => ({ type, props }) };
       throw new Error("Unexpected test import: " + name);
     },
   });
@@ -109,7 +115,7 @@ async function resolveLazyScreen(Screen) {
   }
 }
 
-test("web Try again reloads the document after React caches a rejected dynamic chunk", async () => {
+test("web boundary requires explicit preservation confirmation after React caches a rejected dynamic chunk", async () => {
   const f = fixture();
   const previousWindow = globalThis.window, previousFetch = globalThis.fetch;
   const failure = Object.assign(new Error("Loading module http://localhost/_expo/static/js/web/SyntheticNewsRail-old.js failed.\n(error: http://localhost/_expo/static/js/web/SyntheticNewsRail-old.js)"), { name: "AsyncRequireError" });
@@ -123,7 +129,7 @@ test("web Try again reloads the document after React caches a rejected dynamic c
   globalThis.window = f.browserWindow;
   globalThis.fetch = async () => { throw new TypeError("synthetic probe offline"); };
   try {
-    const Panel = lazyRecovery.lazyWithRetry(factory, "SyntheticNewsRail");
+    const Panel = lazy(() => lazyRecovery.loadChunk(factory, { reload: null, delay: async () => {} }));
     await assert.rejects(() => resolveLazyScreen(Panel), error => error === failure);
     assert.equal(imports, 2);
     f.crash(failure);
@@ -187,4 +193,13 @@ test("native chunk failures retain the existing boundary retry behavior", () => 
     assert.equal(f.boundary.state.error, null);
     assert.deepEqual(f.removedKeys, []);
   }
+});
+
+test('web chunk boundary hides reset and unsupported safety assurance; cancel never reloads', () => {
+  const f = fixture({ confirm: message => { assert.match(message, /Unsaved edits and selected files may be lost/); return false; } });
+  f.crash(Object.assign(Error('old module'), { name: 'AsyncRequireError' }));
+  const view = f.boundary.render();
+  assert.equal(view.type, WebChunkRecovery); assert.equal(view.props.unmounted, true);
+  f.boundary.retry(); f.boundary.reload(); f.boundary.reset();
+  assert.equal(f.reloadCount(), 0); assert.deepEqual(f.removedKeys, []);
 });
