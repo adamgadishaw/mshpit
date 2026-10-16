@@ -389,6 +389,9 @@ export async function apiBinary(path, {
     && acceptedContentTypes.some((value) => String(value || "").trim().toLowerCase() === contentType);
   const declaredLength = Number(res.headers?.get?.("content-length"));
   if (!allowed || (Number.isFinite(declaredLength) && declaredLength > maxBytes)) {
+    // Rejected headers leave the body unread. Stop its transfer before removing
+    // the caller cancellation listener and deadline that still own it.
+    control.abort();
     control.cleanup();
     const err = new AppError(undefined, {
       kind: "invalid_response", status: res.status, requestId, context: operation, source: "api",
