@@ -37,7 +37,7 @@ const ClipsScreen = lazyWithRetry(() => import("./src/screens/ClipsScreen"), "Cl
 const ThreadScreen = lazyWithRetry(() => import("./src/screens/ThreadScreen"), "ThreadScreen");
 const VenueReviewScreen = lazyWithRetry(() => import("./src/screens/VenueReviewScreen"), "VenueReviewScreen");
 const FanClubScreen = lazyWithRetry(() => import("./src/screens/FanClubScreen"), "FanClubScreen");
-import AccountGate from "./src/screens/AccountGate";
+const AccountGate = lazyWithRetry(() => import("./src/screens/AccountGate"), "AccountGate");
 const MenuScreen = lazyWithRetry(() => import("./src/screens/MenuScreen"), "MenuScreen");
 import NativeFeedMediaLayer from "./src/components/NativeFeedMediaLayer";
 import { retainNativeFeedForMedia } from "./src/domain/nativeFeedMediaRetention.mjs";
@@ -75,7 +75,7 @@ const DeleteAccountScreen = lazyWithRetry(() => import("./src/screens/DeleteAcco
 const DiagnosticsScreen = lazyWithRetry(() => import("./src/screens/DiagnosticsScreen"), "DiagnosticsScreen");
 const PrivacyScreen = lazyWithRetry(() => import("./src/screens/PrivacyScreen"), "PrivacyScreen");
 const TermsScreen = lazyWithRetry(() => import("./src/screens/TermsScreen"), "TermsScreen");
-import AccountMenu from "./src/components/AccountMenu";
+const AccountMenu = lazyWithRetry(() => import("./src/components/AccountMenu"), "AccountMenu");
 const PlayerBar = lazyWithRetry(() => import("./src/components/PlayerBar"), "PlayerBar");
 const PlaylistPickerScreen = lazyWithRetry(() => import("./src/screens/PlaylistPickerScreen"), "PlaylistPickerScreen");
 const PostScreen = lazyWithRetry(() => import("./src/screens/PostScreen"), "PostScreen");
@@ -1850,7 +1850,7 @@ function Root() {
             }}
           />
         ) : status !== "ok" ? (
-          nav.deleteAccount ? overlay : <AccountGate username={session?.email} status={status} until={session?.suspendedUntil} onLogout={signOut} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />
+          <Suspense fallback={<ScreenLoading />}>{nav.deleteAccount ? overlay : <AccountGate username={session?.email} status={status} until={session?.suspendedUntil} onLogout={signOut} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />}</Suspense>
         ) : (
           <View style={[styles.appFrame, wide && styles.appFrameWide]}>
             {MUSIC_PLAYER_ENABLED && (wide || (player && !(ENABLE_CLIPS && nav.clips))) && (
@@ -1930,7 +1930,7 @@ function Root() {
         )}
 
 
-        <AccountMenu
+        {acctOpen && <Suspense fallback={null}><AccountMenu
           visible={acctOpen}
           user={session}
           onClose={() => setAcctOpen(false)}
@@ -1942,7 +1942,7 @@ function Root() {
             { divider: true },
             { icon: "logout", label: "Log out", danger: true, onPress: () => { setAcctOpen(false); signOut(); } },
           ]}
-        />
+        /></Suspense>}
 
         {authLinkError && <View style={styles.welcomeModal}>
           <InvalidAccountLinkScreen onClose={() => setAuthLinkError(false)}

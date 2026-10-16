@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { createServer } from "node:net";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -40,7 +40,9 @@ async function main() {
     EMAIL_VERIFICATION_ENABLED: "true", EMAIL_CAMPAIGN_RECOVERY_ENABLED: "false", BACKUP_ENABLED: "false",
     TOURDATE_REFRESH_ENABLED: "false", TOURDATE_DEMAND_REFRESH_ENABLED: "false", ARTIST_GENRE_REFRESH_ENABLED: "false",
     ARTIST_PHOTO_SEED_ENABLED: "false", ARTIST_DEATH_WATCH_SCHEDULER_ENABLED: "false", CACHE_WARM_ENABLED: "false" });
-  let fixture, listenerAddress, outboundBlocked = 0, browser, serverOutput = "", failure = null;
+  let fixture, listenerAddress, outboundBlocked = 0, browser, serverOutput = "", failure = null, releaseMenuChunk;
+  const output = process.env.PIT_AUTH_BROWSER_OUTPUT;
+  if (output) mkdirSync(output, { recursive: true });
   const child = fork(join(root, "server/index.js"), [], {
     cwd: root, env: environment, execArgv: ["--import", pathToFileURL(join(root, "scripts/fixtures/auth-real-server-preload.mjs")).href],
     stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true,
@@ -81,13 +83,17 @@ async function main() {
     const context = await browser.newContext({ viewport: { width: 1280, height: 844 }, serviceWorkers: "block" });
     const page = await context.newPage(); page.setDefaultTimeout(timeoutMs);
     const pageErrors = [], consoleErrors = [], receipts = [], urlLeaks = [];
-    let browserLoginRequests = 0;
+    let browserLoginRequests = 0, menuChunks = 0, holdMenuChunk = false;
     page.on("pageerror", error => pageErrors.push(error.message));
     page.on("console", message => { if (message.type() === "error") consoleErrors.push(message.text()); });
     await context.route("**/*", async route => {
       const url = new URL(route.request().url());
       if (url.origin !== origin) return route.abort();
       if (url.pathname === "/api/login") browserLoginRequests++;
+      if (/\/AccountMenu-[a-f0-9]+\.js$/.test(url.pathname)) {
+        menuChunks++;
+        if (holdMenuChunk) await new Promise(resolve => { releaseMenuChunk = resolve; });
+      }
       if (url.pathname === "/api/client-errors") receipts.push(true);
       if (decodeURIComponent(url.href).includes(fixture.password)) urlLeaks.push(true);
       return route.continue();
@@ -111,6 +117,21 @@ async function main() {
       await feed(); loginCookie = await browserCookie();
       assert.equal((await request("/api/me", { cookie: loginCookie })).data.user.id, fixture.alice.id);
       await page.reload({ waitUntil: "networkidle" }); await feed(); await you(fixture.alice);
+    });
+    await check("account-menu-loads-on-intent-without-replacing-feed", async () => {
+      assert.equal(menuChunks, 0, "A closed account menu must not consume a startup request.");
+      await page.getByRole("tab", { name: "Feed", exact: true }).click(); await feed();
+      holdMenuChunk = true;
+      await page.getByRole("button", { name: `Account menu for ${fixture.alice.name}`, exact: true }).click();
+      await waitUntil(() => typeof releaseMenuChunk === "function", "Account menu chunk was not requested on intent.");
+      assert.equal(await page.getByText("Your life's musical journey", { exact: true }).isVisible(), true);
+      releaseMenuChunk(); releaseMenuChunk = null; holdMenuChunk = false;
+      await page.getByRole("menu", { name: "Account menu", exact: true }).waitFor();
+      if (output) await page.screenshot({ path: join(output, "account-menu.png") });
+      await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
+      await page.getByText("Switch account", { exact: true }).waitFor();
+      await you(fixture.alice);
+      assert.equal(menuChunks, 1);
     });
     await check("real-browser-linked-switch-rotates-cookie-and-reloads", async () => {
       await page.getByText("Settings", { exact: true }).click();
@@ -312,6 +333,62 @@ async function main() {
       assert.equal((await request("/api/me",{cookie:current.cookie})).data.user.id,current.id,"An unrelated current account keeps its own session");
       await handoffContext.close();
     });
+    await check("real-cookie-cold-start-recovers-after-one-identity-503-without-login", async () => {
+      const recoveryContext = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
+      const reader = fixture.readers[5];
+      await recoveryContext.addCookies([{ name: fixture.cookieName, value: reader.cookie.slice(fixture.cookieName.length + 1), url: origin, httpOnly: true, sameSite: "Lax" }]);
+      let identityReads = 0, logins = 0;
+      await recoveryContext.route("**/*", async route => {
+        const url = new URL(route.request().url());
+        if (url.origin !== origin) return route.abort();
+        if (url.pathname === "/api/login") logins++;
+        if (url.pathname === "/api/me" && route.request().method() === "GET" && ++identityReads === 1) {
+          return route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ code: "TEMPORARY_FIXTURE_OUTAGE" }) });
+        }
+        return route.continue();
+      });
+      try {
+        const recoveryPage = await recoveryContext.newPage(); recoveryPage.setDefaultTimeout(timeoutMs);
+        recoveryPage.on("pageerror", error => pageErrors.push(error.message));
+        await recoveryPage.goto(origin + "/feed", { waitUntil: "networkidle" });
+        assert.equal((await recoveryPage.locator("body").innerText()).includes("Read Fixture 5"), false, "Failed cold validation must not publish private identity.");
+        await recoveryPage.getByText("Your life's musical journey", { exact: true }).waitFor();
+        await recoveryPage.getByRole("tab", { name: "You", exact: true }).click();
+        await recoveryPage.getByText("Read Fixture 5", { exact: true }).first().waitFor();
+        assert.equal(logins, 0, "The existing real HttpOnly cookie recovers without credential replay.");
+        assert.equal(identityReads, 2, "One failed read and one bounded retry.");
+        if (output) await recoveryPage.screenshot({ path: join(output, "real-cookie-session-recovered.png") });
+      } finally { await recoveryContext.close(); }
+    });
+    await check("synthetic-restriction-stays-gated-while-panel-loads", async () => {
+      const restrictedContext = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
+      const reader = fixture.readers[6];
+      await restrictedContext.addCookies([{ name: fixture.cookieName, value: reader.cookie.slice(fixture.cookieName.length + 1), url: origin, httpOnly: true, sameSite: "Lax" }]);
+      let releasePanel;
+      await restrictedContext.route("**/*", async route => {
+        const url = new URL(route.request().url());
+        if (url.origin !== origin) return route.abort();
+        if (url.pathname === "/api/me" && route.request().method() === "GET") {
+          const response = await route.fetch(), data = await response.json();
+          return route.fulfill({ response, json: { ...data, user: { ...data.user, isBanned: true } } });
+        }
+        if (/\/AccountGate-[a-f0-9]+\.js$/.test(url.pathname)) await new Promise(resolve => { releasePanel = resolve; });
+        return route.continue();
+      });
+      try {
+        const restrictedPage = await restrictedContext.newPage(); restrictedPage.setDefaultTimeout(timeoutMs);
+        restrictedPage.on("pageerror", error => pageErrors.push(error.message));
+        await restrictedPage.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
+        await waitUntil(() => typeof releasePanel === "function", "Restricted panel chunk was not requested.");
+        assert.equal(await restrictedPage.getByRole("tab", { name: "Feed", exact: true }).count(), 0);
+        releasePanel(); releasePanel = null;
+        await restrictedPage.getByText("Account banned", { exact: true }).waitFor();
+        await restrictedPage.getByText("Download my data", { exact: true }).waitFor();
+        await restrictedPage.getByText("Delete account", { exact: true }).waitFor();
+        assert.equal(await restrictedPage.getByRole("tab", { name: "Feed", exact: true }).count(), 0);
+        if (output) await restrictedPage.screenshot({ path: join(output, "restricted-panel.png") });
+      } finally { releasePanel?.(); await restrictedContext.close(); }
+    });
     const concurrency = [];
     for (const count of [5, 10, 50, 100]) await check(`real-authenticated-me-parallel-${count}`, async () => {
       const started = performance.now();
@@ -339,6 +416,7 @@ async function main() {
       ...(process.env.PIT_AUTH_FIXTURE_DEBUG === "1" ? { fixtureStartup: redact(serverOutput).slice(-3000) } : {}),
       serverErrorClasses: [...new Set(serverOutput.match(/(?:TypeError|ReferenceError|SyntaxError|SQLITE_[A-Z_]+)/g) || [])] }));
   } finally {
+    releaseMenuChunk?.();
     await browser?.close();
     if (!exited) child.kill("SIGTERM");
     await waitUntil(() => exited, "Isolated server did not exit.");

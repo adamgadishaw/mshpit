@@ -75,6 +75,8 @@ jobs:
       - name: Old-tab recovery and bounded release assets
         run: node scripts/verify-web-release-recovery.mjs
       - run: npm run verify:auth-browser
+      - name: Real server cookies and recovery (disposable loopback database)
+        run: npm run verify:auth-real-server
       - run: npm run verify:artist-account-browser
       - run: npm run verify:artist-identity-moderation-browser
       - run: npm run verify:navigation-browser
