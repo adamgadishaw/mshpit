@@ -48,12 +48,16 @@ test("current incident and security docs retain measured release caveats", async
   assert.match(audit, /x-render-routing: no-server/);
   assert.match(status, /staging service was retired/i);
   assert.match(status, /Releases are direct from `master`/i);
-  // STATUS describes the last deployed release; SECURITY describes the current
-  // uncommitted remediation worktree and must say explicitly that it is not live.
+  // STATUS describes the last deployed release; SECURITY describes the
+  // current scoped security review and must distinguish code from live controls.
   assert.match(status, /17 advisories/);
   assert.match(status, /9 moderate and 8\s+high/);
   assert.match(status, /do not (?:use|run)\s+`npm audit fix --force`/i);
-  assert.match(security, /production dependency audit currently has no known advisories/i);
+  assert.match(security, /October 16 production-server dependency audit reports zero vulnerabilities/i);
+  assert.match(security, /full development\/mobile graph reports 19 high findings inherited through\s+two underlying braces\/node-forge advisories; neither lists a patched release/i);
+  assert.match(security, /Current installed Expo is 57\.0\.29\. A fresh \x60expo install --check\x60 now expects\s+~57\.0\.30, so the SDK patch update and native revalidation remain outstanding/i);
+  assert.match(security, /earlier Expo Doctor run passed 21\/21 checks on Expo 57\.0\.19 \/ React Native\s+0\.86\.3; that historical result is not a fresh check of this tree/i);
+  assert.match(security, /Real\s+iOS and Android device acceptance is still required before a native-store\s+release/i);
   assert.match(security, /not\s+production controls until/i);
   assert.match(security, /historical database from Git history/i);
   assert.match(audit, /19 advisories/);

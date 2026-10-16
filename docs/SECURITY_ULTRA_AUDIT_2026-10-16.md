@@ -61,7 +61,7 @@ The fresh `expo install --check` did not pass: the current compatibility metadat
 
 ## Validation and boundaries
 
-Final full suite: **6,515 passed, zero failed, one skipped (6,516 total)** in 605.7 seconds, with `--test-concurrency=1`. This is 21 additional passing regressions relative to the audit baseline. No aggregate rerun was needed. Logs are under `.tmp/overnight/security-*.log` in the isolated checkout.
+The local full suite for the runtime patches passed **6,515 tests, zero failed, one skipped (6,516 total)** in 605.7 seconds, with `--test-concurrency=1`: 21 added passing regressions relative to the baseline. The final SECURITY.md wording edit happened after its documentation test had already run locally. Exact-head CI then caught one stale documentation assertion (6,515 passed, one failed on Linux). The assertion was updated to preserve the production/development distinction, SDK patch gap, and historical-device caveats; all three focused documentation tests passed. Runtime code did not change in that follow-up. The final exact-head CI result is recorded in the task handoff. Logs are under `.tmp/overnight/security-*.log` in the isolated checkout.
 
 Android Hermes export passed: 2,207 modules, 9.5 MB. Web export and initial-JavaScript budget passed: 511.6/512.0 KiB gzip. Both exports used at most two workers. Isolated browser fixtures passed 27/27 account-flow cases (four linked-switch, five logout, 18 recovery) and 2/2 media-upload cases. Browser fixtures intercepted all external requests and used installed Playwright 1.62.1/Chrome in fresh temporary profiles.
 
