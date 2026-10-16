@@ -425,6 +425,11 @@ test("SQLite itself blocks Owner identity replacement, restriction, demotion, an
     .run(BOOTSTRAP_ADMIN_IDENTITY_KEY), /Owner identity is locked/u);
   assert.throws(() => db.prepare("DELETE FROM app_meta WHERE key=?")
     .run(BOOTSTRAP_ADMIN_IDENTITY_KEY), /Owner identity is locked/u);
+  for (const key of ["moved-owner-marker", "", null]) {
+    assert.throws(() => db.prepare("UPDATE app_meta SET key=? WHERE key=?")
+      .run(key, BOOTSTRAP_ADMIN_IDENTITY_KEY), /Owner identity is locked/u);
+  }
+  assert.throws(() => db.prepare("UPDATE users SET id=NULL WHERE id=?").run(owner.id), /Owner account security boundary/u);
   assert.throws(() => db.prepare("UPDATE users SET role='fan' WHERE id=?").run(owner.id), /Owner account security boundary/u);
   assert.throws(() => db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(owner.id), /Owner account security boundary/u);
   assert.throws(() => db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 60_000, owner.id), /Owner account security boundary/u);

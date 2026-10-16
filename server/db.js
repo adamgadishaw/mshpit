@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { ensureJobSchema } from "./features/jobs/jobRepository.js";
 import { ensureArtistAccessRetentionSchema } from "./features/artistAccounts/artistAccessRetention.js";
 import { assertDatabaseRecoveryReady } from "./databaseRecovery.js";
+import { ensureOwnerIdentitySchema } from "./ownerIdentitySchema.js";
 import { createHash } from "node:crypto";
 import { toIsoDate } from "../src/domain/dates.mjs";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
@@ -999,7 +1000,7 @@ CREATE TRIGGER IF NOT EXISTS owner_identity_no_update
 BEFORE UPDATE ON app_meta
 WHEN OLD.key='security.bootstrap_admin_identity.v1'
   AND json_extract(OLD.value,'$.version')=2
-  AND NEW.value<>OLD.value
+  AND (NEW.key IS NOT OLD.key OR NEW.value IS NOT OLD.value)
 BEGIN
   SELECT RAISE(ABORT, 'the Owner identity is locked');
 END;
@@ -1017,7 +1018,7 @@ BEFORE UPDATE ON users
 WHEN OLD.id=(SELECT json_extract(value,'$.userId') FROM app_meta
   WHERE key='security.bootstrap_admin_identity.v1' AND json_extract(value,'$.version')=2)
   AND (
-    NEW.id<>OLD.id
+    NEW.id IS NOT OLD.id
     OR lower(NEW.email)<>(SELECT lower(json_extract(value,'$.email')) FROM app_meta
       WHERE key='security.bootstrap_admin_identity.v1')
     OR NEW.role<>'admin'
@@ -1983,6 +1984,9 @@ try {
       newlyAddedColumns.add(`${table}.${column}`.toLowerCase());
     }
   }
+  // CREATE IF NOT EXISTS cannot repair older guard definitions. Replace both
+  // under this cross-process migration lock before any startup work can run.
+  ensureOwnerIdentitySchema(db);
   // Bind an admin confirmation to the exact address state it reviewed without
   // exposing addresses or address hashes to the staff directory. Even a future
   // address writer that forgets the revision cannot reuse a stale confirmation.
