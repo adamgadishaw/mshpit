@@ -1,6 +1,6 @@
 # App request cleanup review — 16 October 2026
 
-Baseline: PR 50, `a2437494e35aef87316394e7ce2595bc020b3af6`. Work is isolated on `codex/app-session-cleanup-20261016`. Sol handled diagnosis, implementation and tests; one bounded Astra ultra review inspected the final changed paths. Existing app checkouts, the canonical website and the owner emulator were preserved.
+Baseline: PR 50, `a2437494e35aef87316394e7ce2595bc020b3af6`. Work is isolated on `codex/app-session-cleanup-20261016`. Sol workers performed the bounded reproductions and focused tests; one bounded Astra ultra review inspected the final changed paths. Existing app checkouts, the canonical website and the owner emulator were preserved.
 
 ## Reproduced defect
 
