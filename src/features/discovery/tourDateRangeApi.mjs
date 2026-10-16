@@ -28,16 +28,16 @@ export async function fetchStartupTourDates({ signal, expectedAccountId, homeCou
   });
   const paths = homePath === globalPath ? [globalPath] : [globalPath, homePath];
   // Country inventory is additive and fail-soft. A provider/network failure in
-  // either request must not erase the other usable snapshot.
+  // either request, including an invalid response, must not erase the other usable snapshot.
   const settled = await Promise.allSettled(paths.map((path, index) => api(path, {
     signal,
     silent: true,
     context: index === 0 ? "Loading tour dates" : "Loading concerts near home",
     expectedAccountId,
-  })));
+  }).then(parseTourDateRangeResponse)));
   const successful = settled
     .filter((result) => result.status === "fulfilled")
-    .map((result) => parseTourDateRangeResponse(result.value));
+    .map((result) => result.value);
   if (!successful.length) throw settled[0].reason;
   return {
     tourDates: mergeStartupTourDatePages(successful.map((page) => page.tourDates)),

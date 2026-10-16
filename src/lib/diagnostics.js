@@ -72,6 +72,17 @@ function safeMeta(meta = {}) {
   return output;
 }
 
+// A service can wrap a retired request while adding context. Carry its
+// diagnostic fence through that cause chain, including ordinary Error wrappers.
+function hasSuppressedDiagnostics(error) {
+  const seen = new Set();
+  for (let current = error; current && typeof current === "object" && !seen.has(current); current = current.cause) {
+    if (current.diagnosticSuppressed === true) return true;
+    seen.add(current);
+  }
+  return false;
+}
+
 export class AppError extends Error {
   constructor(message, {
     code,
@@ -90,6 +101,7 @@ export class AppError extends Error {
     const catalog = catalogEntry(stableCode);
     super(cleanText(message, 240) || catalog.message, cause ? { cause } : undefined);
     this.name = "AppError";
+    if (hasSuppressedDiagnostics(cause)) this.diagnosticSuppressed = true;
     this.code = stableCode;
     this.serverCode = serverCode ? cleanText(serverCode, 60) : undefined;
     this.status = Number(status) || 0;
@@ -158,7 +170,7 @@ export function captureAppError(error, {
   const appError = toAppError(error, {
     code, serverCode, status, requestId, retryable, category, severity, context, source, kind,
   });
-  if (appError.diagnosticId && !force) return appError;
+  if (appError.diagnosticSuppressed || (appError.diagnosticId && !force)) return appError;
 
   const catalog = catalogEntry(appError.code);
   const entry = Object.freeze({

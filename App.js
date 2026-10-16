@@ -1715,11 +1715,11 @@ function Root() {
 </NativeTabRail>
   );
 
-  // Desktop: the player owns a persistent left column (outside this routed
-  // surface), while navigation sits across the content that actually changes.
-  const desktop = (
-    <View style={styles.deskOuter}>
-      <DesktopTopNav
+  // Keep the web route mounted across the desktop breakpoint. Resizing changes
+  // chrome and layout, not the editor, pagination, or other active screen state.
+  const responsiveWeb = (
+    <View style={[styles.appContent, wide && styles.deskOuter]}>
+      {wide ? <Suspense fallback={null}><DesktopTopNav
         tab={activeTab}
         setTab={switchTab}
         session={session}
@@ -1737,11 +1737,11 @@ function Root() {
         onIntro={exitToLanding}
         onLogin={() => go({ auth: true, authMode: "login" })}
         onSignup={() => go({ auth: true, authMode: "signup" })}
-      />
-      <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} />
-      <View style={styles.deskWrap}>
-        {showSponsorPlaceholders ? <View testID="desktop-sponsor-rail" style={[styles.sponsorRail, { width: sponsorWidth }]}><Suspense fallback={null}><SponsorPlaceholder /></Suspense></View> : null}
-        <View testID="desktop-content-column" style={styles.deskCenter}>
+      /></Suspense> : null}
+      {wide || showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
+      <View style={wide ? styles.deskWrap : styles.appContent}>
+        {wide && showSponsorPlaceholders ? <View testID="desktop-sponsor-rail" style={[styles.sponsorRail, { width: sponsorWidth }]}><Suspense fallback={null}><SponsorPlaceholder /></Suspense></View> : null}
+        <View testID={wide ? "desktop-content-column" : undefined} style={wide ? styles.deskCenter : styles.appContent}>
           <PublicDirectoryPanel
             directory={nav.directory}
             region={nav.discoverRegion}
@@ -1753,8 +1753,9 @@ function Root() {
           <Suspense fallback={<ScreenLoading />}>
             <ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay || tabScreens}</ScreenTransition>
           </Suspense>
+          {!wide && !overlay ? mobileTabBar : null}
         </View>
-        {showRightRail && <RightRail showSponsorPlaceholder={showSponsorPlaceholders} showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} />}
+        {wide && showRightRail && <Suspense fallback={null}><RightRail showSponsorPlaceholder={showSponsorPlaceholders} showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} /></Suspense>}
       </View>
     </View>
   );
@@ -1886,7 +1887,7 @@ function Root() {
             )}
             <View style={styles.appContent}>
               {Platform.OS !== "web" && !overlay && !retainNativeFeed && <NativeAppHeader onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
-              {wide ? <Suspense fallback={<ScreenLoading />}>{desktop}</Suspense> : (
+              {web ? responsiveWeb : (
                 <>
                   {showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
                   <PublicDirectoryPanel

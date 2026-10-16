@@ -52,8 +52,8 @@ test("Discover range parses legacy and paged server responses defensively", () =
     parseTourDateRangeResponse([{ id: "legacy" }]),
     { tourDates: [{ id: "legacy" }], nextCursor: null, through: null },
   );
-  assert.equal(parseTourDateRangeResponse({ range: { through: "2026-02-30" } }).through, null);
-  assert.equal(parseTourDateRangeResponse({ range: { through: "2026-11-26-extra" } }).through, null);
+  assert.equal(parseTourDateRangeResponse({ tourDates: [], range: { through: "2026-02-30" } }).through, null);
+  assert.equal(parseTourDateRangeResponse({ tourDates: [], range: { through: "2026-11-26-extra" } }).through, null);
   assert.deepEqual(mergeDiscoverRangePages(first.tourDates, second.tourDates).map(({ id }) => id), ["one", "two"]);
   const path = tourDateRangeRequestPath({ days: 90, limit: 250, after: "next cursor/+", city: "Toronto", country: "Canada" });
   assert.match(path, /^\/api\/tourdates\?days=90&limit=250&after=next\+cursor%2F%2B&country=CA$/);
@@ -115,4 +115,35 @@ test("Discover range honors a valid server-authoritative through date", () => {
     selectDiscoverRangeEvents(rows, { days: 90, through: "2026-09-05", now: NOW }).map(({ id }) => id),
     ["inside-server-range"],
   );
+});
+
+test("Discover distinguishes recognized empty responses from malformed success payloads", () => {
+  for (const payload of [[], { tourDates: [] }, { items: [] }, { upcomingEvents: [] }]) {
+    assert.deepEqual(parseTourDateRangeResponse(payload), { tourDates: [], nextCursor: null, through: null });
+  }
+  for (const payload of [undefined, null, {}, "", false, { error: "unexpected JSON" }, { tourDates: {} }, { items: "wrong" }, { upcomingEvents: null }]) {
+    assert.throws(() => parseTourDateRangeResponse(payload), TypeError);
+  }
+});
+
+test("Discover response rows require an event identity without requiring full metadata", () => {
+  const identified = { id: "id-only" };
+  const legacy = { artist: "Fixture", venue: "Room", date: "2026-11-01" };
+  for (const rows of [[identified], [legacy], [identified, legacy]]) {
+    assert.deepEqual(parseTourDateRangeResponse({ tourDates: rows }).tourDates, rows);
+  }
+  for (const invalid of [null, 7, "event", false, [], {}, { id: " " }, { artist: "Incomplete" }]) {
+    for (const rows of [[invalid], [identified, invalid]]) {
+      for (const payload of [rows, { tourDates: rows }, { items: rows }, { upcomingEvents: rows }]) {
+        assert.throws(() => parseTourDateRangeResponse(payload), TypeError);
+      }
+    }
+  }
+  for (const payload of [
+    { tourDates: "broken", items: [] }, { tourDates: null, upcomingEvents: [] },
+    { items: {}, upcomingEvents: [] },
+  ]) {
+    assert.throws(() => parseTourDateRangeResponse(payload), TypeError,
+      "a malformed preferred field cannot fall through to an authoritative empty alias");
+  }
 });

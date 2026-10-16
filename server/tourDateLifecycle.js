@@ -21,8 +21,19 @@ const safeBilledArtistsSql = (table) =>
 
 // Provider imports use ISO dates, while a small set of retained legacy rows use
 // the former display separator. Normalize both to the same strict SQL date key.
-const normalizedTourDateStartSql = (table) =>
-  `REPLACE(REPLACE(TRIM(COALESCE(${table}.date,'')),'·','-'),' ','')`;
+export function normalizedTourDateStartSql(alias = "td") {
+  const table = sqlAlias(alias);
+  return `REPLACE(REPLACE(TRIM(COALESCE(${table}.date,'')),'·','-'),' ','')`;
+}
+
+// Cursor input accepts the same retained date separators as the SQL lifecycle
+// predicate, then validates the actual calendar day. It never accepts a prefix
+// of a timestamp, another separator, or an overlong untrusted value.
+export function normalizedTourDateStart(value) {
+  if (typeof value !== "string" || value.length > 40) return null;
+  const date = value.replaceAll("·", "-").replaceAll(" ", "");
+  return /^\d{4}-\d{2}-\d{2}$/u.test(date) && calendarDateKey(date) != null ? date : null;
+}
 
 const providerRangeEndEvidenceSql = (table) => {
   const kind = `LOWER(TRIM(COALESCE(${table}.event_kind,'')))`;

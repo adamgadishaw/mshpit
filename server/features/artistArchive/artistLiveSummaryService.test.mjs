@@ -6,6 +6,8 @@ import { registerPitSqliteFunctions } from "../../sqliteFunctions.js";
 import { artistScheduleFilters, createArtistLiveSummaryService } from "./artistLiveSummaryService.js";
 import { artistScheduleCandidateIndex, ensureArtistScheduleRevisionSchema } from "./artistScheduleCandidateIndex.js";
 import { storedBillingMatchesArtist } from "../../artistBillingIdentity.js";
+import { createArtistOverviewController } from "../../../src/features/artistOverview/artistOverviewController.mjs";
+import { artistOverviewFromResponse, artistOverviewRequest } from "../../../src/features/artistOverview/artistOverviewRequest.mjs";
 
 const NOW = Date.parse("2026-09-07T02:00:00Z");
 function fixture() {
@@ -353,5 +355,102 @@ test("provider failures retain stored dates with honest coverage and no private 
     assert.equal(f.read().schedule.coverage.status, "unavailable");
     f.database.exec("DROP TABLE tour_dates");
     assert.throws(() => f.read(), /no such table/u);
+  } finally { f.database.close(); }
+});
+
+const scheduleCursor = (date, id, v = 1, scope = JSON.stringify(["alpha", null, null, false])) =>
+  Buffer.from(JSON.stringify({ v, scope, date, id })).toString("base64url");
+const readScheduleCursor = (value) => JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+
+test("new artist schedule pages order mixed date formats chronologically with stable same-day IDs", () => {
+  const f = fixture();
+  try {
+    const events = [
+      ["legacy-second", "2026 · 10 · 02"], ["iso-first", "2026-10-01"],
+      ["c-same-legacy", "2026 · 10 · 03"], ["b-same-iso", "2026-10-03"],
+      ["a-same-legacy", "2026 · 10 · 03"], ["iso-last", "2026-10-04"],
+    ];
+    for (const [id, date] of events) f.addDate(id, { date });
+    const ids = []; let after = null;
+    do {
+      const page = f.read({ limit: 1, after }).schedule;
+      assert.equal(page.total, events.length);
+      assert.equal(page.items.length, 1);
+      const row = page.items[0]; ids.push(row.id);
+      assert.equal(row.date, events.find(([id]) => id === row.id)[1], "display dates are preserved");
+      assert.equal(Object.hasOwn(row, "cursor_date"), false);
+      after = page.nextCursor;
+      if (after) {
+        const cursor = readScheduleCursor(after);
+        assert.equal(cursor.v, 2);
+        assert.match(cursor.date, /^\d{4}-\d{2}-\d{2}$/u);
+      }
+      assert.ok(ids.length <= events.length, "pagination must terminate");
+    } while (after);
+    assert.deepEqual(ids, ["iso-first", "legacy-second", "a-same-legacy", "b-same-iso", "c-same-legacy", "iso-last"]);
+    assert.equal(new Set(ids).size, events.length);
+  } finally { f.database.close(); }
+});
+
+test("already-issued v1 legacy and ISO cursors finish their original ordering without skipping or replaying dates", () => {
+  const f = fixture();
+  try {
+    const events = [["legacy-one", "2026 · 10 · 02"], ["legacy-two", "2026 · 10 · 03"],
+      ["iso-one", "2026-10-01"], ["iso-two", "2026-10-02"], ["iso-three", "2026-10-04"]];
+    for (const [id, date] of events) f.addDate(id, { date });
+    for (const [start, expected] of [
+      [0, ["legacy-two", "iso-one", "iso-two", "iso-three"]],
+      [2, ["iso-two", "iso-three"]],
+    ]) {
+      const [id, date] = events[start]; let after = scheduleCursor(date, id); const ids = [];
+      do {
+        const page = f.read({ limit: 1, after }).schedule;
+        ids.push(...page.items.map(row => row.id)); after = page.nextCursor;
+        if (after) assert.equal(readScheduleCursor(after).v, 1, "the entire old chain retains its ordering");
+        assert.ok(ids.length <= expected.length, "old pagination must terminate");
+      } while (after);
+      assert.deepEqual(ids, expected);
+    }
+  } finally { f.database.close(); }
+});
+
+test("artist pagination validates versions, actual calendar dates, bounds and scope before reading a page", () => {
+  const f = fixture();
+  try {
+    f.addDate("later", { date: "2028-03-01" });
+    for (const version of [1, 2]) {
+      assert.equal(f.read({ after: scheduleCursor("2028-02-29", "earlier", version) }).schedule.items[0].id, "later");
+      for (const date of ["2026-02-29", "2026-04-31", "2026-13-01", "1969-12-31", "2026/10/01", "2026-10-01T00:00:00Z", "2026-10-01\n", "2026-10-01" + " ".repeat(31), null, 20261001, {}]) {
+        assert.throws(() => f.read({ after: scheduleCursor(date, "earlier", version) }), { code: "VALIDATION_FAILED" }, JSON.stringify(date));
+      }
+    }
+    assert.equal(f.read({ after: scheduleCursor("2028 · 02 · 29", "earlier") }).schedule.items[0].id, "later");
+    assert.throws(() => f.read({ after: scheduleCursor("2028 · 02 · 29", "earlier", 2) }), { code: "VALIDATION_FAILED" });
+    for (const v of [0, 3, "2", null]) assert.throws(() => f.read({ after: scheduleCursor("2028-02-29", "earlier", v) }), { code: "VALIDATION_FAILED" });
+    for (const id of ["", "x".repeat(241), null, 1]) assert.throws(() => f.read({ after: scheduleCursor("2028-02-29", id) }), { code: "VALIDATION_FAILED" });
+    assert.throws(() => f.read({ after: scheduleCursor("2028-02-29", "earlier", 2, "wrong scope") }), { code: "VALIDATION_FAILED" });
+  } finally { f.database.close(); }
+});
+
+test("actual artist client request, response and controller load all mixed-format server pages", async () => {
+  const f = fixture();
+  try {
+    f.addDate("legacy", { date: "2026 · 10 · 01" }); f.addDate("iso", { date: "2026-10-02" });
+    const requests = [];
+    const controller = createArtistOverviewController({ artistKey: "alpha", pageSize: 1, asError: error => error,
+      read: async options => {
+        const request = artistOverviewRequest(options); requests.push(request);
+        return artistOverviewFromResponse(f.read(Object.fromEntries(new URL(request.path, "https://example.test").searchParams)));
+      },
+    });
+    assert.equal((await controller.reload()).ok, true);
+    assert.equal((await controller.loadMore()).ok, true);
+    const state = controller.getSnapshot();
+    assert.equal(state.moreError, null);
+    assert.equal(state.resource.data.schedule.hasMore, false);
+    assert.deepEqual(state.resource.data.schedule.items.map(row => row.id), ["legacy", "iso"]);
+    assert.equal(requests.length, 2);
+    assert.match(requests[1].path, /&after=/u);
+    controller.dispose();
   } finally { f.database.close(); }
 });

@@ -156,7 +156,12 @@ export default function DiscoverScreen({
   const liveScope = discoverAreaIsLocal(resolvedArea)
     ? LIVE_EVENT_SCOPE.LOCAL
     : LIVE_EVENT_SCOPE.WORLDWIDE;
-  const rangeScopeKey = `${liveScope}|${region}|${homeCity}|${homeCountry || ""}`;
+  const homeCoordinates = [session?.home?.lat, session?.home?.lng].map((value) =>
+    value == null || value === "" ? null : (Number.isFinite(Number(value)) ? Number(value) : null));
+  const rangeScopeKey = JSON.stringify([
+    liveScope, region, homeCity, homeCountry || "",
+    ...(liveScope === LIVE_EVENT_SCOPE.LOCAL ? homeCoordinates : []),
+  ]);
   const overviewScopeKey = discoverCountryIdentity(region) || "worldwide";
   const [query, setQuery] = useState("");
   const [overviewResults, setOverviewResults] = useState(() => ({}));
@@ -399,12 +404,6 @@ export default function DiscoverScreen({
       const normalized = append && currentMatches
         ? mergeDiscoverRangePages(current.rows, rows)
         : mergeDiscoverRangePages([], rows);
-      if (!append && currentMatches && current.rows.length && !normalized.length) {
-        const errorState = { ...current, status: "error" };
-        eventRangeRef.current = errorState;
-        setEventRange(errorState);
-        return false;
-      }
       const readyState = {
         scopeKey: rangeScopeKey,
         days,

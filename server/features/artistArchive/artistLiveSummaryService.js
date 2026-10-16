@@ -6,7 +6,7 @@ import {
   storedBillingAllowsArtistBinding,
   storedBillingMatchesArtist,
 } from "../../artistBillingIdentity.js";
-import { currentOrUpcomingTourDateSql } from "../../tourDateLifecycle.js";
+import { currentOrUpcomingTourDateSql, normalizedTourDateStart, normalizedTourDateStartSql } from "../../tourDateLifecycle.js";
 import { tourDateArtistBindingAllowedSql } from "../../providerArtistBinding.js";
 import { ApiError } from "../../errors.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
@@ -40,8 +40,13 @@ function decodeCursor(value, scope) {
   if (typeof value !== "string" || value.length > 1500 || !/^[A-Za-z0-9_-]+$/u.test(value)) invalid();
   let parsed;
   try { parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")); } catch { invalid(); }
-  if (!parsed || parsed.v !== 1 || parsed.scope !== scope || typeof parsed.id !== "string"
-    || !parsed.id || parsed.id.length > 240 || !/^\d{4}-\d{2}-\d{2}$/u.test(parsed.date || "")) invalid();
+  if (!parsed || (parsed.v !== 1 && parsed.v !== 2) || parsed.scope !== scope || typeof parsed.id !== "string"
+    || !parsed.id || parsed.id.length > 240) invalid();
+  const date = normalizedTourDateStart(parsed.date);
+  if (!date || (parsed.v === 2 && parsed.date !== date)) invalid();
+  // Existing v1 pages used the stored date's ordering. Preserve that whole
+  // chain, including legacy separators, so changing sort order cannot skip
+  // unseen ISO rows or return legacy rows the client has already received.
   return parsed;
 }
 
@@ -145,9 +150,11 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
   // All request values are bound; named placeholders keep count/page predicates identical.
   const upcomingSql = eventWhere;
   const countDates = database.prepare(`${candidateSql} SELECT COUNT(*) total ${upcomingSql}`);
-  const pageDates = database.prepare(`${candidateSql} SELECT td.* ${upcomingSql}
-    AND (@afterDate IS NULL OR td.date>@afterDate OR (td.date=@afterDate AND td.id>@afterId))
-    ORDER BY td.date ASC,td.id ASC LIMIT @limit`);
+  const preparePage = (date) => database.prepare(`${candidateSql} SELECT td.*,${date} AS cursor_date ${upcomingSql}
+    AND (@afterDate IS NULL OR ${date}>@afterDate OR (${date}=@afterDate AND td.id>@afterId))
+    ORDER BY ${date} ASC,td.id ASC LIMIT @limit`);
+  const pageDates = preparePage(normalizedTourDateStartSql("td"));
+  const legacyPageDates = preparePage("td.date");
   const queue = database.prepare("SELECT status,attempted_at,succeeded_at,ticketmaster_coverage_limited,last_error_code FROM artist_tourdate_refresh_queue WHERE artist_key=?");
 
   function readReputation({ artist, viewer = null, at = clock() } = {}) {
@@ -182,14 +189,15 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
           admin: viewer?.role === "admin" && !viewer?.is_banned && !(viewer?.suspended_until > at) ? 1 : 0,
           country: filters.countryCode, city: filters.city, publicPreview: filters.publicPreview ? 1 : 0 };
         total = Number(countDates.get(args).total);
-        rows = pageDates.all({ ...args, afterDate: cursor?.date || null, afterId: cursor?.id || null, limit: filters.limit + 1 });
+        const pageQuery = cursor?.v === 1 ? legacyPageDates : pageDates;
+        rows = pageQuery.all({ ...args, afterDate: cursor?.date || null, afterId: cursor?.id || null, limit: filters.limit + 1 });
       }
       const hasMore = rows.length > filters.limit;
       const page = rows.slice(0, filters.limit);
       const last = page.at(-1);
-      const nextCursor = hasMore ? Buffer.from(JSON.stringify({ v: 1, scope, date: last.date, id: last.id })).toString("base64url") : null;
+      const nextCursor = hasMore ? Buffer.from(JSON.stringify({ v: cursor?.v === 1 ? 1 : 2, scope, date: last.cursor_date, id: last.id })).toString("base64url") : null;
       return { artist: { key: artist.norm, name: artist.name }, reputation: score,
-        schedule: { items: page.map(projectDate), total, hasMore, nextCursor, legacy,
+        schedule: { items: page.map(({ cursor_date, ...row }) => projectDate(row)), total, hasMore, nextCursor, legacy,
           filters: { countryCode: filters.countryCode, city: filters.city, publicPreview: filters.publicPreview }, generatedAt: at,
           coverage: coverageProjection(queue.get(artist.norm), { at, disabled, configured: providersConfigured(), count: total }) } };
     },

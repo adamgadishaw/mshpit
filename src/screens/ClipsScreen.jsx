@@ -202,7 +202,7 @@ function ClipPage({ post, uri, posterUri, altText, height, active: selected, pos
             nativeControls={false}
             playsInline
             useExoShutter={false}
-            onFirstFrameRender={recordFirstFrame}
+            onFirstFrameRender={() => recordFirstFrame()}
             accessible={false}
           />
           {phase !== "ready" ? (

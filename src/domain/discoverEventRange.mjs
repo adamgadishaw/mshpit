@@ -75,17 +75,19 @@ export function discoverySidebarRangeRequestPath({ days = 30, limit = DISCOVER_R
 export function parseTourDateRangeResponse(payload) {
   const rows = Array.isArray(payload)
     ? payload
-    : Array.isArray(payload?.tourDates)
-      ? payload.tourDates
-      : Array.isArray(payload?.items)
-        ? payload.items
-        : Array.isArray(payload?.upcomingEvents)
-          ? payload.upcomingEvents
-          : [];
+    : payload && typeof payload === "object"
+      ? ("tourDates" in payload ? payload.tourDates : "items" in payload ? payload.items : payload.upcomingEvents)
+      : null;
+  // An explicitly empty array is authoritative. A missing or malformed
+  // response shape must fail so callers can retain their last usable dates.
+  if (!Array.isArray(rows) || rows.some((row) => !row || typeof row !== "object" || Array.isArray(row)
+    || !(clean(row.id, 240) || [row.artist, row.venue, row.date].every((value) => clean(value))))) {
+    throw new TypeError("Upcoming event response is invalid.");
+  }
   const nextCursor = clean(payload?.nextCursor, 1000) || null;
   const through = canonicalCalendarDate(payload?.range?.through);
   return {
-    tourDates: rows.filter((row) => row && typeof row === "object"),
+    tourDates: rows,
     nextCursor,
     through,
   };
