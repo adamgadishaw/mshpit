@@ -85,6 +85,13 @@ export function configureApiIdentity(accountId, { ready = true } = {}) {
   return apiIdentity.generation;
 }
 
+// Synchronous draft recovery must never save across an account/validation epoch.
+export function captureApiIdentityCheck(expectedAccountId) {
+  const captured = apiIdentity;
+  return () => captured === apiIdentity && captured.ready && !!expectedAccountId
+    && captured.accountId === String(expectedAccountId);
+}
+
 // Absolute URL for routes that leave the app shell. Web production intentionally
 // stays same-origin; native uses EXPO_PUBLIC_API_URL or the production origin.
 export const apiUrl = (path) => BASE + path;

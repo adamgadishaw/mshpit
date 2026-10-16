@@ -4,6 +4,8 @@ import { colors, focusRing, mono, radius } from "../theme";
 import { captureAppError } from "../lib/diagnostics";
 import { reportClientCrash } from "../lib/clientCrashReporter";
 import { isChunkLoadError } from "../lib/lazyWithRetry";
+import WebChunkRecovery from "../lib/webChunkRecovery";
+import { requestWebRecovery } from "../lib/webRecovery.mjs";
 
 // App-wide crash net. React unmounts a subtree when a render throws; without this
 // the user gets a blank/white screen and a refresh just re-runs the same crash
@@ -58,7 +60,10 @@ export default class ErrorBoundary extends Component {
   };
 
   reload = () => {
-    if (Platform.OS === "web" && typeof window !== "undefined") window.location.reload();
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      if (isChunkLoadError(this.state.error)) return requestWebRecovery({ browser: window, unmounted: true });
+      window.location.reload();
+    }
     else this.retry();
   };
 
@@ -66,6 +71,7 @@ export default class ErrorBoundary extends Component {
   // hydrated store), keeping nothing that can re-trigger it. Session included so a
   // corrupt user object can't wedge the app, worst case the user logs back in.
   reset = () => {
+    if (Platform.OS === "web" && isChunkLoadError(this.state.error)) return this.reload();
     if (!this.state.resetArmed) {
       this.setState({ resetArmed: true });
       this.resetTimer = setTimeout(() => this.setState({ resetArmed: false }), 8000);
@@ -82,6 +88,7 @@ export default class ErrorBoundary extends Component {
 
   render() {
     if (!this.state.error) return this.props.children;
+    if (Platform.OS === "web" && isChunkLoadError(this.state.error)) return <WebChunkRecovery unmounted reference={`${this.state.appError?.code || "PIT-APP-001"}${this.state.appError?.requestId ? ` / ${this.state.appError.requestId}` : ""}`} />;
     return (
       <View style={styles.wrap} accessibilityRole="alert" accessibilityLiveRegion="assertive">
         <ScrollView contentContainerStyle={styles.content}>
