@@ -48,6 +48,24 @@ const staffCtx = (user, extra = {}) => ({
   ...extra,
 });
 
+test("moderation preconditions preserve content on rejection", async () => {
+  const { applyModerationAction } = await import("./moderation.js");
+  const id = "moderation_contract_precondition";
+  insertPost(id);
+  db.prepare("UPDATE posts SET photos='[]' WHERE id=?").run(id);
+  const before = db.prepare("SELECT * FROM posts WHERE id=?").get(id);
+  assert.throws(() => applyModerationAction(staffCtx(moderator), {
+    action: "remove", targetType: "post", targetId: id,
+    assertAuthorized: () => {
+      assert.equal(db.isTransaction, true);
+      throw new Error("Synthetic moderation precondition rejection");
+    },
+  }), /Synthetic moderation precondition rejection/u);
+  assert.deepEqual(db.prepare("SELECT * FROM posts WHERE id=?").get(id), before);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM moderation_actions WHERE target_id=?").get(id).c, 0);
+  assert.equal(db.isTransaction, false);
+});
+
 test("staff overview returns bounded summaries, camelCase queue rows, and privacy-safe content context", () => {
   insertPost("moderation_overview_post", "A public excerpt for the queue");
   insertReport("moderation_overview_report", "post", "moderation_overview_post", "harassment");

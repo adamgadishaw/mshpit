@@ -105,6 +105,21 @@ function roleInput(overrides = {}) {
   };
 }
 
+test("Owner request preconditions preserve the current request on rejection", () => {
+  const value = database();
+  createOwnerApprovalRequest(value, roleInput());
+  const before = value.prepare("SELECT * FROM owner_approval_requests ORDER BY id").all();
+  assert.throws(() => createOwnerApprovalRequest(value, roleInput({
+    at: 2_000,
+    assertAuthorized: () => {
+      assert.equal(value.isTransaction, true);
+      throw new Error("Synthetic precondition rejection");
+    },
+  })), /Synthetic precondition rejection/u);
+  assert.deepEqual(value.prepare("SELECT * FROM owner_approval_requests ORDER BY id").all(), before);
+  assert.equal(value.isTransaction, false);
+});
+
 test("approval tokens are one-time bearer secrets and only their digest is stored", () => {
   const db = database();
   const created = createOwnerApprovalRequest(db, roleInput());

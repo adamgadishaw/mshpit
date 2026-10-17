@@ -8868,7 +8868,7 @@ export const routes = {
 
   "POST /api/admin/reports/:id/action": (ctx) => {
     requireModerator(ctx);
-    const result = applyModerationAction(ctx, { action: "remove", reportId: clean(ctx.params.id, { max: 60 }) });
+    const result = applyModerationAction(ctx, { action: "remove", reportId: clean(ctx.params.id, { max: 60 }), assertAuthorized: () => requireModerator(ctx) });
     return { ok: true, targetType: result.targetType, targetId: result.targetId };
   },
 
@@ -8903,7 +8903,7 @@ export const routes = {
     } else if (!targetType || !targetId || action === "dismiss") {
       throw new ApiError(400, "Direct content actions require targetType, targetId, and remove or restore.", "VALIDATION_FAILED");
     }
-    return applyModerationAction(ctx, { action, reportId, targetType, targetId, reason });
+    return applyModerationAction(ctx, { action, reportId, targetType, targetId, reason, assertAuthorized: () => requireModerator(ctx) });
   },
 
   // ---- Email management -------------------------------------------------
@@ -9240,7 +9240,7 @@ export const routes = {
 
   "POST /api/admin/reports/:id/dismiss": (ctx) => {
     requireModerator(ctx);
-    applyModerationAction(ctx, { action: "dismiss", reportId: clean(ctx.params.id, { max: 60 }) });
+    applyModerationAction(ctx, { action: "dismiss", reportId: clean(ctx.params.id, { max: 60 }), assertAuthorized: () => requireModerator(ctx) });
     return { ok: true };
   },
 
@@ -9252,17 +9252,19 @@ export const routes = {
       targetType: clean(ctx.params.type, { max: 40 }),
       targetId: clean(ctx.params.id, { max: 60 }),
       reason: clean(ctx.body?.reason, { max: LIMITS.note }),
+      assertAuthorized: () => requireModerator(ctx),
     });
     return { ok: true, removed: result.removed };
   },
 
   "POST /api/admin/users/:id/ban": (ctx) => {
-    const actor = requireAdmin(ctx);
-    if (ctx.params.id === ctx.user.id) throw new ApiError(400, "You can't ban yourself.");
-    const target = q.userById.get(ctx.params.id);
-    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
-    if (target.role === "admin") throw new ApiError(403, "Administrator accounts require owner review.", "FORBIDDEN");
+    requireAdmin(ctx);
     atomicWrite(() => {
+      const actor = requireAdmin(ctx);
+      if (ctx.params.id === actor.id) throw new ApiError(400, "You can't ban yourself.");
+      const target = q.userById.get(ctx.params.id);
+      if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
+      assertModerationRank(actor, target);
       const changed = db.prepare("UPDATE users SET is_banned=1 WHERE id=? AND is_banned=0").run(ctx.params.id).changes === 1;
       // Kill sessions on both the initial action and a retry. This also repairs
       // any legacy banned row that somehow retained a session, without adding a
@@ -9327,11 +9329,12 @@ export const routes = {
 
   "POST /api/admin/users/:id/verified": (ctx) => {
     requireAdmin(ctx);
-    const target = q.userById.get(ctx.params.id);
-    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
     const verified = ctx.body?.verified ? 1 : 0;
-    if (verified) assertArtistPublicationAllowed(target);
-    if (Number(target.verified) !== verified) atomicWrite(() => {
+    atomicWrite(() => {
+      requireAdmin(ctx);
+      const target = q.userById.get(ctx.params.id);
+      if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
+      if (verified) assertArtistPublicationAllowed(target);
       const changed = db.prepare("UPDATE users SET verified=? WHERE id=? AND verified<>?").run(verified, ctx.params.id, verified).changes === 1;
       if (changed) moderationRecord(ctx, verified ? "grant_verification" : "remove_verification", "user", target.id, ctx.body?.reason || "", { verified: !!target.verified }, { verified: !!verified });
     });
@@ -9339,10 +9342,11 @@ export const routes = {
   },
   "POST /api/admin/users/:id/sponsor": (ctx) => {
     requireAdmin(ctx);
-    const target = q.userById.get(ctx.params.id);
-    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
     const sponsor = ctx.body?.sponsor ? 1 : 0;
-    if (Number(target.sponsor) !== sponsor) atomicWrite(() => {
+    atomicWrite(() => {
+      requireAdmin(ctx);
+      const target = q.userById.get(ctx.params.id);
+      if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
       const changed = db.prepare("UPDATE users SET sponsor=? WHERE id=? AND sponsor<>?").run(sponsor, ctx.params.id, sponsor).changes === 1;
       if (changed) moderationRecord(ctx, sponsor ? "grant_sponsor" : "remove_sponsor", "user", target.id, ctx.body?.reason || "", { sponsor: !!target.sponsor }, { sponsor: !!sponsor });
     });
@@ -9412,7 +9416,7 @@ export const routes = {
   },
 
   "POST /api/admin/badges": (ctx) => {
-    const actor = requireAdmin(ctx);
+    requireAdmin(ctx);
     const draft = {
       slug: String(ctx.body?.slug || "").trim().toLowerCase(),
       label: clean(ctx.body?.label, { max: 40 }),
@@ -9424,49 +9428,58 @@ export const routes = {
     };
     const problems = validateBadge(draft);
     if (problems.length) throw new ApiError(400, problems[0], "VALIDATION_FAILED");
-    if (badgeStmts.bySlug.get(draft.slug)) throw new ApiError(409, "A badge with that slug already exists.", "CONFLICT");
     const id = uid("bdg");
-    badgeStmts.insert.run({
-      id, slug: draft.slug, label: draft.label, description: draft.description, kind: draft.kind,
-      color: draft.color, glyph: draft.glyph, glyph_char: draft.glyphChar || null,
-      created_by: actor.id, created_at: now(),
+    return atomicWrite(() => {
+      const actor = requireAdmin(ctx);
+      if (badgeStmts.bySlug.get(draft.slug)) throw new ApiError(409, "A badge with that slug already exists.", "CONFLICT");
+      badgeStmts.insert.run({
+        id, slug: draft.slug, label: draft.label, description: draft.description, kind: draft.kind,
+        color: draft.color, glyph: draft.glyph, glyph_char: draft.glyphChar || null,
+        created_by: actor.id, created_at: now(),
+      });
+      moderationRecord(ctx, "badge-create", "badge", id, draft.label, {}, { slug: draft.slug });
+      return { badge: badgeStmts.byId.get(id) };
     });
-    moderationRecord(ctx, "badge-create", "badge", id, draft.label, {}, { slug: draft.slug });
-    return { badge: badgeStmts.byId.get(id) };
   },
 
   "PUT /api/admin/badges/:id": (ctx) => {
     requireAdmin(ctx);
-    const existing = badgeStmts.byId.get(ctx.params.id);
-    if (!existing) throw new ApiError(404, "No such badge.", "NOT_FOUND");
-    // The slug is identity and is deliberately not editable: changing it would
-    // rename a badge out from under everyone already holding it.
-    const draft = {
-      slug: existing.slug,
-      label: clean(ctx.body?.label, { max: 40 }),
-      description: clean(ctx.body?.description, { max: 200 }) || "",
-      kind: String(ctx.body?.kind || existing.kind),
-      color: String(ctx.body?.color || existing.color),
-      glyph: String(ctx.body?.glyph || existing.glyph),
-      glyphChar: String(ctx.body?.glyphChar ?? existing.glyph_char ?? "").trim().slice(0, 1),
-    };
-    const problems = validateBadge(draft);
-    if (problems.length) throw new ApiError(400, problems[0], "VALIDATION_FAILED");
-    badgeStmts.update.run({
-      id: existing.id, label: draft.label, description: draft.description, kind: draft.kind,
-      color: draft.color, glyph: draft.glyph, glyph_char: draft.glyphChar || null, updated_at: now(),
+    return atomicWrite(() => {
+      requireAdmin(ctx);
+      const existing = badgeStmts.byId.get(ctx.params.id);
+      if (!existing) throw new ApiError(404, "No such badge.", "NOT_FOUND");
+      // The slug remains identity. Missing art fields use the current row after
+      // any preceding catalog writer commits, never a pre-lock snapshot.
+      const draft = {
+        slug: existing.slug,
+        label: clean(ctx.body?.label, { max: 40 }),
+        description: clean(ctx.body?.description, { max: 200 }) || "",
+        kind: String(ctx.body?.kind || existing.kind),
+        color: String(ctx.body?.color || existing.color),
+        glyph: String(ctx.body?.glyph || existing.glyph),
+        glyphChar: String(ctx.body?.glyphChar ?? existing.glyph_char ?? "").trim().slice(0, 1),
+      };
+      const problems = validateBadge(draft);
+      if (problems.length) throw new ApiError(400, problems[0], "VALIDATION_FAILED");
+      badgeStmts.update.run({
+        id: existing.id, label: draft.label, description: draft.description, kind: draft.kind,
+        color: draft.color, glyph: draft.glyph, glyph_char: draft.glyphChar || null, updated_at: now(),
+      });
+      return { badge: badgeStmts.byId.get(existing.id) };
     });
-    return { badge: badgeStmts.byId.get(existing.id) };
   },
 
   // Retire, never delete. People keep badges they were granted.
   "POST /api/admin/badges/:id/archive": (ctx) => {
     requireAdmin(ctx);
-    const existing = badgeStmts.byId.get(ctx.params.id);
-    if (!existing) throw new ApiError(404, "No such badge.", "NOT_FOUND");
-    const archived = ctx.body?.archived === false ? 0 : now();
-    badgeStmts.setArchived.run(archived, now(), existing.id);
-    return { badge: badgeStmts.byId.get(existing.id) };
+    return atomicWrite(() => {
+      requireAdmin(ctx);
+      const existing = badgeStmts.byId.get(ctx.params.id);
+      if (!existing) throw new ApiError(404, "No such badge.", "NOT_FOUND");
+      const archived = ctx.body?.archived === false ? 0 : now();
+      badgeStmts.setArchived.run(archived, now(), existing.id);
+      return { badge: badgeStmts.byId.get(existing.id) };
+    });
   },
 
   "GET /api/admin/badges/:id/holders": (ctx) => {
@@ -9476,29 +9489,31 @@ export const routes = {
   },
 
   "POST /api/admin/users/:id/badges": (ctx) => {
-    const actor = requireAdmin(ctx);
-    const target = q.userById.get(ctx.params.id);
-    if (!target) throw new ApiError(404, "No such member.", "NOT_FOUND");
-    const badge = badgeStmts.bySlug.get(String(ctx.body?.slug || "").trim().toLowerCase());
-    if (!badge) throw new ApiError(404, "No such badge.", "NOT_FOUND");
-    const held = !!db.prepare("SELECT 1 FROM user_badges WHERE user_id=? AND badge_id=?").get(target.id, badge.id);
-    if (ctx.body?.revoke === true) {
-      if (held) atomicWrite(() => {
-        const changed = badgeStmts.revoke.run(target.id, badge.id).changes === 1;
-        if (changed) moderationRecord(ctx, "badge-revoke", "user", target.id, badge.slug, { had: true }, { had: false, by: actor.id });
-      });
-    } else {
-      // A retry after a successful grant is a no-op even if the badge was
-      // retired between attempts. New grants of a retired badge remain blocked.
-      if (!held) {
-        if (badge.archived_at) throw new ApiError(400, "That badge is retired. Restore it before granting.", "VALIDATION_FAILED");
-        atomicWrite(() => {
+    requireAdmin(ctx);
+    const slug = String(ctx.body?.slug || "").trim().toLowerCase();
+    atomicWrite(() => {
+      const actor = requireAdmin(ctx);
+      const target = q.userById.get(ctx.params.id);
+      if (!target) throw new ApiError(404, "No such member.", "NOT_FOUND");
+      const badge = badgeStmts.bySlug.get(slug);
+      if (!badge) throw new ApiError(404, "No such badge.", "NOT_FOUND");
+      const held = !!db.prepare("SELECT 1 FROM user_badges WHERE user_id=? AND badge_id=?").get(target.id, badge.id);
+      if (ctx.body?.revoke === true) {
+        if (held) {
+          const changed = badgeStmts.revoke.run(target.id, badge.id).changes === 1;
+          if (changed) moderationRecord(ctx, "badge-revoke", "user", target.id, badge.slug, { had: true }, { had: false, by: actor.id });
+        }
+      } else {
+        // A retry after a successful grant is a no-op even if the badge was
+        // retired between attempts. New grants of a retired badge remain blocked.
+        if (!held) {
+          if (badge.archived_at) throw new ApiError(400, "That badge is retired. Restore it before granting.", "VALIDATION_FAILED");
           const changed = badgeStmts.grant.run(target.id, badge.id, actor.id, now(), clean(ctx.body?.note, { max: 140 }) || "").changes === 1;
           if (changed) moderationRecord(ctx, "badge-grant", "user", target.id, badge.slug, { had: false }, { had: true, by: actor.id });
-        });
+        }
       }
-    }
-    return { badges: customBadgesFor(target.id) };
+    });
+    return { badges: customBadgesFor(ctx.params.id) };
   },
 
   "GET /api/admin/members": (ctx) => {
@@ -9590,12 +9605,26 @@ export const routes = {
     // Resolve a no-op without sending mail. The helper also validates a supplied
     // handle against the complete directory, not merely the loaded UI page.
     const selectedHandle = selectedRoleHandle(target, role, handle);
+    const currentTarget = () => {
+      const currentActor = requireAdmin(ctx);
+      if (target.id === currentActor.id) throw new ApiError(400, "You can't change your own role.");
+      const fresh = q.userById.get(target.id);
+      if (!fresh) throw new ApiError(404, "No such user.", "NOT_FOUND");
+      if (isOwnerId(db, fresh.id)) throw new ApiError(403, "The Owner role cannot be changed.", "FORBIDDEN");
+      if (fresh.role !== target.role || fresh.handle !== target.handle) {
+        throw new ApiError(409, "That member changed while the role was being reviewed. Start a new approval.", "CONFLICT");
+      }
+      return fresh;
+    };
     if (target.role === role && target.handle === selectedHandle) {
-      return { ok: true, role, handle: selectedHandle };
+      return atomicWrite(() => {
+        currentTarget();
+        return { ok: true, role, handle: selectedHandle };
+      });
     }
 
     if (!roleChangeTouchesHead(target.role, role)) {
-      const result = atomicWrite(() => applyRoleChange(ctx, target, role, handle, {
+      const result = atomicWrite(() => applyRoleChange(ctx, currentTarget(), role, handle, {
         reason: clean(ctx.body?.reason, { max: LIMITS.note }),
       }));
       return { ok: true, role: result.role, handle: result.handle };
@@ -9621,6 +9650,18 @@ export const routes = {
       },
       requestId: ctx.requestId || null,
       at: now(),
+      assertAuthorized: () => {
+        const fresh = currentTarget();
+        if (fresh.is_banned || Number(fresh.suspended_until || 0) > now()) {
+          throw new ApiError(409, "Restore this account before requesting a privileged role change.", "CONFLICT");
+        }
+        if ((role === "admin" || role === "moderator") && !fresh.email_verified_at) {
+          throw new ApiError(409, "Confirm this member's email before requesting a privileged role.", "CONFLICT");
+        }
+        if (selectedRoleHandle(fresh, role, handle) !== selectedHandle) {
+          throw new ApiError(409, "That staff username is no longer available. Start a new request.", "CONFLICT");
+        }
+      },
     });
     return emailOwnerApprovalRequest(db, created.request, created.token).then((delivery) => ({
       ok: true,
@@ -9808,9 +9849,10 @@ export const routes = {
 
   "POST /api/admin/users/:id/unban": (ctx) => {
     requireAdmin(ctx);
-    const target = q.userById.get(ctx.params.id);
-    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
-    if (target.is_banned || target.suspended_until != null) atomicWrite(() => {
+    atomicWrite(() => {
+      requireAdmin(ctx);
+      const target = q.userById.get(ctx.params.id);
+      if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
       const changed = db.prepare(`UPDATE users SET is_banned=0, suspended_until=NULL
         WHERE id=? AND (is_banned<>0 OR suspended_until IS NOT NULL)`).run(ctx.params.id).changes === 1;
       if (changed) moderationRecord(ctx, "unban", "user", target.id, ctx.body?.reason || "", { banned: !!target.is_banned, suspendedUntil: target.suspended_until || null }, { banned: false, suspendedUntil: null });
@@ -9819,12 +9861,13 @@ export const routes = {
   },
 
   "POST /api/admin/users/:id/unsuspend": (ctx) => {
-    const actor = requireModerator(ctx);
-    const target = q.userById.get(ctx.params.id);
-    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
-    assertModerationRank(actor, target);
-    if (target.is_banned) throw new ApiError(409, "This account is banned; an administrator must unban it.", "CONFLICT");
-    if (target.suspended_until != null) atomicWrite(() => {
+    requireModerator(ctx);
+    atomicWrite(() => {
+      const actor = requireModerator(ctx);
+      const target = q.userById.get(ctx.params.id);
+      if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
+      assertModerationRank(actor, target);
+      if (target.is_banned) throw new ApiError(409, "This account is banned; an administrator must unban it.", "CONFLICT");
       const changed = db.prepare("UPDATE users SET suspended_until=NULL WHERE id=? AND suspended_until IS NOT NULL").run(target.id).changes === 1;
       if (changed) moderationRecord(ctx, "lift_suspension", "user", target.id, ctx.body?.reason || "", { suspendedUntil: target.suspended_until || null }, { suspendedUntil: null });
     });
@@ -9832,20 +9875,21 @@ export const routes = {
   },
 
   "POST /api/admin/users/:id/suspend": (ctx) => {
-    const actor = requireModerator(ctx);
-    if (ctx.params.id === ctx.user.id) throw new ApiError(400, "You can't suspend yourself.");
+    requireModerator(ctx);
     const days = Math.max(1, Math.min(365, Number(ctx.body?.days) || 7));
-    const target = q.userById.get(ctx.params.id);
-    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
-    assertModerationRank(actor, target);
-    const actionAt = now();
     // Desired-state semantics: an already-live timeout is success, not an
     // extension. This makes a retry after a lost response return the exact same
     // deadline and avoids duplicate audit history. Staff can lift it first if a
     // genuinely different timeout is required.
-    if (Number(target.suspended_until || 0) > actionAt) return { ok: true, suspendedUntil: target.suspended_until };
-    const requestedUntil = actionAt + days * 86400000;
     const suspendedUntil = atomicWrite(() => {
+      const actor = requireModerator(ctx);
+      if (ctx.params.id === actor.id) throw new ApiError(400, "You can't suspend yourself.");
+      const target = q.userById.get(ctx.params.id);
+      if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
+      assertModerationRank(actor, target);
+      const actionAt = now();
+      if (Number(target.suspended_until || 0) > actionAt) return target.suspended_until;
+      const requestedUntil = actionAt + days * 86400000;
       const changed = db.prepare(`UPDATE users SET suspended_until=?
         WHERE id=? AND (suspended_until IS NULL OR suspended_until<=?)`).run(requestedUntil, ctx.params.id, actionAt).changes === 1;
       if (!changed) return q.userById.get(ctx.params.id)?.suspended_until || requestedUntil;
