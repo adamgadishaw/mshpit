@@ -9,6 +9,9 @@ process.env.PIT_DATA_DIR = dataDir;
 
 const { db, q } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
+const { createSession } = await import("./auth.js");
+const { readAuthorizedRequest } = await import("./requestAuthorization.js");
+const { isSuccessfulInteractiveMutation } = await import("./features/accountLifecycle/interactiveActivity.js");
 
 after(() => {
   db.close();
@@ -50,6 +53,43 @@ function attachReadyImage(owner, postId) {
   db.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,?)").run(postId, assetId, at);
   return url;
 }
+
+test("restricted signed-in readers receive visible reaction metadata without writes or privacy bypass", async () => {
+  const owner = addUser("reactionreadowner");
+  const pending = addUser("reactionreadpending");
+  const dormant = addUser("reactionreaddormant");
+  const tokens = new Map([pending, dormant].map(user => [user.id, createSession(user.id).token]));
+  db.prepare("UPDATE users SET email_verified_at=1,dormant_at=123 WHERE id=?").run(dormant.id);
+  db.prepare("INSERT INTO posts(id,user_id,artist,venue,overall,photos,photos_public,created_at) VALUES(?,?, 'Artist','Venue',4,'[]',1,?)")
+    .run("p_reaction_boundary", owner.id, Date.now());
+  const photo = attachReadyImage(owner, "p_reaction_boundary");
+  db.prepare("INSERT INTO media_reactions(media_url,user_id,post_id,created_at) VALUES(?,?,?,?)")
+    .run(photo, owner.id, "p_reaction_boundary", Date.now());
+  const body = { items: [{ url: photo, postId: "p_reaction_boundary" }] };
+  const read = async user => {
+    const authorization = await readAuthorizedRequest({ token: tokens.get(user.id),
+      expectedAccount: user.id, method: "POST", pathname: "/api/media/reactions", readBody: async () => body });
+    return routes["POST /api/media/reactions"]({ ...authorization, ip: user.id });
+  };
+
+  for (const user of [pending, dormant]) {
+    const before = db.prepare("SELECT total_changes() n").get().n;
+    assert.deepEqual(await read(user), { reactions: { [photo]: { count: 1, mine: false } } });
+    assert.equal(db.prepare("SELECT total_changes() n").get().n, before, "metadata read must not write or reactivate dormancy");
+    assert.equal(isSuccessfulInteractiveMutation({ method: "POST", routePattern: "/api/media/reactions", user, result: {} }), false);
+    await assert.rejects(readAuthorizedRequest({ token: tokens.get(user.id), method: "POST",
+      pathname: "/api/media/react", readBody: async () => ({ url: photo, postId: "p_reaction_boundary" }) }),
+    error => error.status === 403);
+  }
+  assert.equal(q.userById.get(dormant.id).dormant_at, 123);
+  db.prepare("UPDATE posts SET photos_public=0 WHERE id='p_reaction_boundary'").run();
+  for (const user of [pending, dormant]) assert.deepEqual(await read(user), { reactions: {} });
+  db.prepare("UPDATE posts SET photos_public=1 WHERE id='p_reaction_boundary'").run();
+  db.prepare("INSERT INTO blocks(blocker_id,blocked_id,created_at) VALUES(?,?,?)").run(owner.id, pending.id, Date.now());
+  assert.deepEqual(await read(pending), { reactions: {} });
+  db.prepare("UPDATE posts SET removed=1 WHERE id='p_reaction_boundary'").run();
+  assert.deepEqual(await read(dormant), { reactions: {} });
+});
 
 test("photo likes toggle per URL, count per photo, and read back in batch", () => {
   const alice = addUser("mediaalice");

@@ -150,7 +150,7 @@ test("every registered write route is verification-gated unless it is an explici
     "DELETE /api/media/assets/:id",
   ]);
   const user = { id: "route-coverage-only", email_verified_at: 0, role: "fan" };
-  const readOnly = new Set(["POST /api/feed/revalidate"]);
+  const readOnly = new Set(["POST /api/feed/revalidate", "POST /api/media/reactions"]);
   let checked = 0;
   for (const route of Object.keys(routes)) {
     const [method, pathname] = route.split(" ");
