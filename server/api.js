@@ -10224,14 +10224,14 @@ export const routes = {
       }] : []),
     ].filter((entry) => entry.ownerId && entry.url);
     const saved = atomicWrite(() => {
-      ctx.assertCurrentSession?.();
+      const currentActor = requireUser(ctx);
       const current = artistProfileSnapshotByKey.get(key);
       if (!sameArtistProfileSnapshot(existing, current)) {
         throw new ApiError(409,
           "That artist page changed while your update was being saved. Refresh it and try again.",
           "CONFLICT");
       }
-      claimArtistManagement(u, key);
+      claimArtistManagement(currentActor, key);
       if (!existing && u.role === "admin") {
         db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,updated_at) VALUES (?,?,?)").run(key, null, now());
       }
@@ -10284,9 +10284,10 @@ export const routes = {
     assertSafeAuthoredText(text, { field: "artist update" });
     const id = uid("ap");
     atomicWrite(() => {
-      claimArtistManagement(u, key);
-      assertArtistPublicationAllowed(u);
-      db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, now());
+      const currentActor = requireUser(ctx);
+      claimArtistManagement(currentActor, key);
+      assertArtistPublicationAllowed(currentActor);
+      db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, currentActor.id, text, now());
     });
     return { id };
   },
@@ -10295,13 +10296,15 @@ export const routes = {
     const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
     assertArtistPostCleanupCandidate(u, key);
     atomicWrite(() => {
-      if (u.role === "admin") {
+      const currentActor = requireUser(ctx);
+      assertArtistPostCleanupCandidate(currentActor, key);
+      if (currentActor.role === "admin") {
         db.prepare("DELETE FROM artist_posts WHERE id=? AND artist_key=?").run(ctx.params.id, key);
       } else {
         // A former page owner may clean up only their own historical updates.
         // Staff-curated educational notes belong to the protected archive.
         db.prepare("DELETE FROM artist_posts WHERE id=? AND artist_key=? AND user_id=?")
-          .run(ctx.params.id, key, u.id);
+          .run(ctx.params.id, key, currentActor.id);
       }
     });
     return { ok: true };
