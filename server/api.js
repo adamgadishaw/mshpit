@@ -6434,13 +6434,15 @@ export const routes = {
       sets.push("profile_updated_at = ?");
       args.push(now());
     }
-    const replacedProfileMedia = [
-      ...(v.banner !== undefined && v.banner !== u.banner ? [u.banner] : []),
-      ...(v.avatarUri !== undefined && v.avatarUri !== u.avatar_uri ? [u.avatar_uri] : []),
-    ].filter(Boolean);
     atomicWrite(() => {
       ctx.assertCurrentSession?.();
       const identityMember = q.userById.get(u.id);
+      // Another request may replace these slots while this writer waits. Use
+      // the locked row for both finalized-media authority and old-object cleanup.
+      const replacedProfileMedia = [
+        ...(v.banner !== undefined && v.banner !== identityMember.banner ? [identityMember.banner] : []),
+        ...(v.avatarUri !== undefined && v.avatarUri !== identityMember.avatar_uri ? [identityMember.avatar_uri] : []),
+      ].filter(Boolean);
       assertMemberIdentityAllowed(db, {
         ownerId: u.id,
         name: v.name && v.name !== identityMember?.name ? v.name : undefined,
@@ -6481,7 +6483,7 @@ export const routes = {
       associateNewFinalizedImageUrls(
         u.id,
         [v.banner, v.avatarUri],
-        [u.banner, u.avatar_uri],
+        [identityMember.banner, identityMember.avatar_uri],
         ["banner", "avatar"],
       );
       if (sets.length) {
