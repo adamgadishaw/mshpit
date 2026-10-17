@@ -33,6 +33,21 @@ function addBadge(over = {}) {
 
 const valid = { slug: "early-access", label: "Early Access", color: "gold", glyph: "char", glyphChar: "E", kind: "tier" };
 
+test("badge creation commits together with its moderation record", async () => {
+  const { routes } = await import("./api.js");
+  const actor = addUser();
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(actor.id);
+  const ctx = { user: q.userById.get(actor.id), params: {}, body: { slug: "contract-atomic-badge", label: "Contract badge" }, requestId: "badge-contract-create" };
+  db.exec("CREATE TEMP TRIGGER reject_contract_badge_record BEFORE INSERT ON moderation_actions WHEN NEW.request_id='badge-contract-create' BEGIN SELECT RAISE(ABORT,'SYNTHETIC_RECORD_FAILURE'); END;");
+  try { assert.throws(() => routes["POST /api/admin/badges"](ctx), /SYNTHETIC_RECORD_FAILURE/u); }
+  finally { db.exec("DROP TRIGGER reject_contract_badge_record"); }
+  assert.equal(badgeStmts.bySlug.get(ctx.body.slug), undefined);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM moderation_actions WHERE request_id=?").get(ctx.requestId).c, 0);
+  assert.equal(db.isTransaction, false);
+  assert.equal(routes["POST /api/admin/badges"](ctx).badge.slug, ctx.body.slug);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM moderation_actions WHERE request_id=?").get(ctx.requestId).c, 1);
+});
+
 test("a valid badge passes validation", () => {
   assert.deepEqual(validateBadge(valid), []);
 });

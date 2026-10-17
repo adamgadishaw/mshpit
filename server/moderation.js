@@ -516,8 +516,9 @@ function staleReport() {
   throw new ApiError(409, "That report was already handled differently. Refresh the moderation queue.", "CONFLICT");
 }
 
-function moderateReport(ctx, reportId, action, reason) {
+function moderateReport(ctx, reportId, action, reason, assertAuthorized) {
   return transaction(() => {
+    assertAuthorized();
     const report = reportById.get(reportId);
     if (!report) throw new ApiError(404, "No such report.", "NOT_FOUND");
 
@@ -561,11 +562,12 @@ function moderateReport(ctx, reportId, action, reason) {
   });
 }
 
-function moderateContent(ctx, targetType, targetId, action, reason) {
+function moderateContent(ctx, targetType, targetId, action, reason, assertAuthorized) {
   if (action !== "remove" && action !== "restore") {
     throw new ApiError(400, "Content actions must be remove or restore.", "VALIDATION_FAILED");
   }
   return transaction(() => {
+    assertAuthorized();
     if (action === "restore" && ["post", "artist_post"].includes(targetType)) {
       const table = targetType === "post" ? "posts" : "artist_posts";
       const held = db.prepare(`SELECT 1 FROM ${table} content JOIN artist_profiles profile
@@ -586,8 +588,8 @@ function moderateContent(ctx, targetType, targetId, action, reason) {
   });
 }
 
-export function applyModerationAction(ctx, { action, reportId = "", targetType = "", targetId = "", reason = "" } = {}) {
-  if (reportId) return moderateReport(ctx, reportId, action, reason);
+export function applyModerationAction(ctx, { action, reportId = "", targetType = "", targetId = "", reason = "", assertAuthorized = () => {} } = {}) {
+  if (reportId) return moderateReport(ctx, reportId, action, reason, assertAuthorized);
   if (!targetType || !targetId) throw new ApiError(400, "Choose a report or content target.", "VALIDATION_FAILED");
-  return moderateContent(ctx, targetType, targetId, action, reason);
+  return moderateContent(ctx, targetType, targetId, action, reason, assertAuthorized);
 }

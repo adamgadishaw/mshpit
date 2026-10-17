@@ -163,6 +163,7 @@ export function ownerApprovalRoutes({
         payload: { category, checks, commit },
         requestId: ctx.requestId || null,
         at: now(),
+        assertAuthorized: () => requireAdmin(ctx),
       });
       const delivery = await emailOwnerApprovalRequest(database, created.request, created.token);
       return {

@@ -102,6 +102,7 @@ export function createOwnerApprovalRequest(database, {
   payload,
   requestId = null,
   at = Date.now(),
+  assertAuthorized = () => {},
 } = {}) {
   if (!ALLOWED_KINDS.has(kind)) throw new TypeError("Unsupported Owner approval kind");
   const normalizedSummary = safeSummary(summary);
@@ -113,6 +114,9 @@ export function createOwnerApprovalRequest(database, {
   const expiresAt = at + APPROVAL_TTL_MS;
 
   const row = transaction(database, () => {
+    // Authorization precedes every expiry, token rotation and supersession.
+    // A caller may have waited behind another account/role writer.
+    assertAuthorized();
     expireOwnerApprovalRequests(database, at);
     const existing = database.prepare(`SELECT * FROM owner_approval_requests
       WHERE kind=? AND status='pending' AND requested_by=?
