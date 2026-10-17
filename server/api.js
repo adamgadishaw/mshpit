@@ -7780,15 +7780,17 @@ export const routes = {
   // indistinguishable from a missing row, so deletion is not a probe for who
   // posted what.
   "DELETE /api/posts/:id": (ctx) => {
-    const u = requireUser(ctx);
+    requireUser(ctx);
     limit(ctx, "post-delete", 60, 60 * 60 * 1000);
-    const post = db.prepare("SELECT id,user_id,photos,removed FROM posts WHERE id=?").get(ctx.params.id);
-    if (!post || post.user_id !== u.id) throw new ApiError(404, "That post is no longer available.", "NOT_FOUND");
-    const attached = parseJsonArray(post.photos);
-    const stableAssetIds = postMediaAssetIds(db, post.id);
-    const stableAssetObjects = assetObjectRecords(db, stableAssetIds);
-    const stableAssetUrls = stableAssetObjects.map((object) => object.publicUrl);
-    atomicWrite(() => {
+    const deletion = atomicWrite(() => {
+        // Recheck the current session and ownership while holding the writer transaction.
+        const u = requireUser(ctx);
+        const post = db.prepare("SELECT id,user_id,photos,removed FROM posts WHERE id=?").get(ctx.params.id);
+        if (!post || post.user_id !== u.id) throw new ApiError(404, "That post is no longer available.", "NOT_FOUND");
+        const attached = parseJsonArray(post.photos);
+        const stableAssetIds = postMediaAssetIds(db, post.id);
+        const stableAssetObjects = assetObjectRecords(db, stableAssetIds);
+        const stableAssetUrls = stableAssetObjects.map((object) => object.publicUrl);
         // Author deletion is irreversible content deletion, unlike a moderator's
         // reversible soft hide. Keep only the row identity/ownership/timestamps
         // required for foreign keys and the audit trail; authored copy, entity
@@ -7821,9 +7823,10 @@ export const routes = {
         const deleteReaction = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
         for (const mediaUrl of new Set([...deletable, ...deletableAssetUrls])) deleteReaction.run(mediaUrl);
         if (!post.removed) moderationRecord(ctx, "delete", "post", post.id, "author deleted", { removed: false }, { removed: true });
+        return { id: post.id, ownerId: u.id, stableAssetIds };
     });
-    for (const assetId of stableAssetIds) cancelVideoFinalizeJob({ ownerId: u.id, assetId, at: now() });
-    return { ok: true, id: post.id };
+    for (const assetId of deletion.stableAssetIds) cancelVideoFinalizeJob({ ownerId: deletion.ownerId, assetId, at: now() });
+    return { ok: true, id: deletion.id };
   },
 
   "GET /api/posts/:id/comments": (ctx) => {
