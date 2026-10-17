@@ -1,18 +1,25 @@
 // Confirmation step for an emailed verification link. The link only carries the
 // token here; confirming happens on the tap below, so a mail scanner prefetching
 // the URL cannot mark an address verified on the owner's behalf.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { colors, radius, space } from "../theme";
 import { useStore } from "../store";
 import VerifyEmailBanner from "../components/VerifyEmailBanner";
 
-export default function VerifyEmailScreen({ token, onConsumed, onDone, onLogin }) {
+export default function VerifyEmailScreen({ navigationAbortRef, token, onConsumed, onDone, onLogin }) {
   const { confirmEmailVerification, resendEmailVerification, session } = useStore();
   const [state, setState] = useState("asking");
   const requestRef = useRef(null);
 
   useEffect(() => () => requestRef.current?.abort(), []);
+
+  useLayoutEffect(() => {
+    if (!navigationAbortRef) return undefined;
+    const cancel = () => { const current = requestRef.current; if (!current) return; current.abort(); requestRef.current = null; setState("failed"); };
+    navigationAbortRef.current = cancel;
+    return () => { if (navigationAbortRef.current === cancel) navigationAbortRef.current = null; };
+  }, [navigationAbortRef]);
 
   const submit = async () => {
     if (requestRef.current) return;

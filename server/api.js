@@ -6178,12 +6178,17 @@ export const routes = {
       // Keep the database operation write-shaped for eligible and ineligible
       // identities. A real-row update and mail scheduling still have different
       // costs, so every path also settles behind the response floor in `finally`.
-      db.prepare("UPDATE users SET reset_hash=?, reset_expires=? WHERE id=?").run(
+      // The earlier snapshot is only a candidate. Claim the live cooldown in
+      // this same write so a second process cannot replace the first link or
+      // schedule another message after both observed an eligible account.
+      const resetClaimed = db.prepare(`UPDATE users SET reset_hash=?, reset_expires=?
+        WHERE id=? AND COALESCE(reset_expires,0)<=?`).run(
         hash,
         requestedAt + 60 * 60 * 1000,
         resetEligible ? u.id : -1,
-      );
-      if (!resetEligible) continue;
+        requestedAt + 45 * 60 * 1000,
+      ).changes === 1;
+      if (!resetClaimed) continue;
       const configuredOrigin = (process.env.PUBLIC_ORIGIN || "").replace(/\/+$/, "");
       const publicOrigin = configuredOrigin || (process.env.NODE_ENV === "production" ? "https://www.mshpit.com" : ctx.origin);
       // Keep bearer credentials in the URL fragment: browsers do not send a
@@ -6603,8 +6608,16 @@ export const routes = {
     if (!visibleProfileOrNull(ctx.params.id, u)) throw new ApiError(404, "No such user.");
     if (blockedEitherWay(u.id, ctx.params.id)) throw new ApiError(403, "You can't follow this account.");
     if (!has) atomicWrite(() => {
-      db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(u.id, ctx.params.id);
-      addNotif(ctx.params.id, u.id, "follow");
+      // Another connection can revoke the session, restrict either account, or
+      // block this relationship while BEGIN IMMEDIATE waits for its writer lock.
+      const current = requireUser(ctx);
+      if (!visibleProfileOrNull(ctx.params.id, current)) throw new ApiError(404, "No such user.");
+      if (blockedEitherWay(current.id, ctx.params.id)) throw new ApiError(403, "You can't follow this account.");
+      // A concurrent valid request may already have created this relationship.
+      // Preserve the requested state without inserting or notifying twice.
+      if (db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(current.id, ctx.params.id)) return;
+      db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(current.id, ctx.params.id);
+      addNotif(ctx.params.id, current.id, "follow");
     });
     return { following };
   },

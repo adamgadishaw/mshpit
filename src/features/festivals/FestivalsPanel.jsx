@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, displayFont, font, mono, radius, space } from "../../theme";
 import Button from "../../components/Button";
 import FestivalBackdrop from "./FestivalBackdrop";
@@ -74,9 +74,9 @@ function Marquee({ region, summary, onOpen }) {
   const narrow = useWindowDimensions().width < 620;
   const next = summary.next;
   const countdown = next ? festivalCountdown(next) : null;
-  return <View style={[styles.marquee, narrow && styles.marqueeNarrow]}>
+  return <View style={[styles.marquee, narrow && styles.marqueeNarrow, Platform.OS !== "web" && narrow && styles.marqueeNativeColumn]}>
     <FestivalBackdrop accent={festivalAccent(next?.festivalSlug || "festivals")} beams />
-    <View style={styles.marqueeBody}>
+    <View style={[styles.marqueeBody, Platform.OS !== "web" && narrow && styles.marqueeBodyNative]}>
       <Rise index={0}><Text style={styles.marqueeKicker}>{region ? `Festival season in ${region}` : "Festival season"}</Text></Rise>
       <Rise index={1}><Text style={[styles.marqueeTitle, narrow && styles.marqueeTitleNarrow]} accessibilityRole="header">Festivals</Text></Rise>
       <Rise index={2}><Text style={styles.marqueeCopy}>Dates, lineups by day and who's going. New editions show up here as soon as tickets go on sale.</Text></Rise>
@@ -86,7 +86,7 @@ function Marquee({ region, summary, onOpen }) {
         {summary.countries > 1 ? <BigStat value={summary.countries} label="countries" /> : null}
       </Rise> : null}
     </View>
-    {next && countdown ? <Rise index={4} style={styles.nextWrap}>
+    {next && countdown ? <Rise index={4} style={[styles.nextWrap, Platform.OS !== "web" && narrow && styles.nextWrapNative]}>
       <Pressable onPress={() => onOpen(next)} style={({ hovered, pressed }) => [styles.next, hovered && styles.nextHover, pressed && styles.pressed]}
         accessibilityRole="link" accessibilityLabel={`${countdown.live ? "Happening now" : "Next up"}: ${next.name}, ${festivalDateRange(next.startDate, next.endDate)}, ${countdown.label}`}>
         <Text style={styles.nextKicker}>{countdown.live ? "Happening now" : "Next up"}</Text>
@@ -124,6 +124,9 @@ const styles = StyleSheet.create({
   detail: { color: colors.textDim, fontFamily: font, fontSize: 13, lineHeight: 19 },
   marquee: { minHeight: 250, borderRadius: radius.lg, overflow: "hidden", flexDirection: "row", flexWrap: "wrap", alignItems: "flex-end", gap: space(4), padding: space(5), backgroundColor: "#0B0A10" },
   marqueeNarrow: { minHeight: 0, padding: space(4), gap: space(3) },
+  marqueeNativeColumn: { flexDirection: "column", flexWrap: "nowrap", alignItems: "stretch" },
+  marqueeBodyNative: { width: "100%", flexBasis: "auto", flexGrow: 0, flexShrink: 0 },
+  nextWrapNative: { width: "100%", maxWidth: "100%", flexBasis: "auto", flexGrow: 0, flexShrink: 0 },
   marqueeTitleNarrow: { fontSize: 36, lineHeight: 40 },
   marqueeBody: { flexGrow: 1, flexShrink: 1, flexBasis: 300, minWidth: 0, gap: space(2) },
   marqueeKicker: { color: "rgba(255,255,255,0.86)", fontFamily: mono, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },

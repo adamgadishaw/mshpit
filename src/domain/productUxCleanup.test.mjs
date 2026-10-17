@@ -22,6 +22,7 @@ const menu = read("../screens/MenuScreen.jsx");
 const nearby = read("../screens/NearbyScreen.jsx");
 const pickArtists = read("../screens/PickArtistsScreen.jsx");
 const rails = read("../components/Rails.jsx");
+const nativeHeader = read("../components/NativeAppHeader.native.jsx");
 const resetPassword = read("../screens/ResetPasswordScreen.jsx");
 const search = read("../screens/SearchScreen.jsx");
 const settings = read("../screens/SettingsScreen.jsx");
@@ -110,7 +111,9 @@ test("high-frequency fallback and provenance copy stays literal", () => {
 });
 
 test("the feed uses the Mshpit brand and separates For You from Discover", () => {
-  assert.match(feed, /<Text style=\{styles\.wordmark\}>MSHPIT<\/Text>/);
+  assert.ok(feed.includes('Platform.OS === "web" ? "MSHPIT" : "Your feed"'));
+  assert.match(app, /<NativeAppHeader/);
+  assert.match(nativeHeader, /MSHPIT/);
   assert.match(feed, /<Seg label="For You"/);
   assert.doesNotMatch(feed, /<Seg label="Discover"/);
   assert.match(feed, /homeGuideStorageKey\(accountId\)/);
@@ -137,7 +140,8 @@ test("universal search offers typed result filters without member-count marketin
 test("primary branding is Mshpit across entry, navigation, and recovery surfaces", () => {
   assert.match(landing, />MSHPIT<\/Text>/);
   assert.match(landing, /accessibilityLabel="Mshpit, live music remembered"/);
-  assert.match(feed, />MSHPIT<\/Text>/);
+  assert.ok(feed.includes('Platform.OS === "web" ? "MSHPIT" : "Your feed"'));
+  assert.match(nativeHeader, /MSHPIT/);
   for (const [name, source] of Object.entries({ auth, errorBoundary, rails, resetPassword })) {
     assert.match(source, />MSHPIT<\/Text>/, `${name} carries the Mshpit wordmark`);
     assert.doesNotMatch(source, />PIT<\/Text>/, `${name} has no legacy standalone wordmark`);

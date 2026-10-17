@@ -1,5 +1,6 @@
 import { AppState, Platform } from "react-native";
 import { api } from "./api";
+import { nativeReadOnlyReview } from "./nativeReviewMode";
 import { load, remove, save } from "./persist";
 import { ANALYTICS_BATCH_LIMIT, ANALYTICS_QUEUE_LIMIT, sanitizeAnalyticsEvent } from "../domain/analyticsPolicy.mjs";
 import {
@@ -71,7 +72,7 @@ function schedule(ms = retryMs) {
 export function configureProductAnalytics(user) {
   const next = {
     id: user?.id || null,
-    enabled: !!user?.id && !!(user?.analyticsConsentAt || user?.consentAt) && !user?.analyticsOptOut,
+    enabled: !nativeReadOnlyReview && !!user?.id && !!(user?.analyticsConsentAt || user?.consentAt) && !user?.analyticsOptOut,
   };
   const changedAccount = next.id !== account.id;
   if (changedAccount && account.id) {

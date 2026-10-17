@@ -1,3 +1,4 @@
+import { nativeFeedCanWork } from "../domain/nativeFeedMediaRetention.mjs";
 import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, FlatList, Platform, Pressable, ScrollView, useWindowDimensions } from "react-native";
 import { colors, mono, radius, shadow, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
@@ -61,6 +62,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   return (
     <TicketStub
       log={item}
+      swipeActions={Platform.OS !== "web"}
       compactContent
       mediaViewable={mediaViewable}
       onOpen={open}
@@ -86,6 +88,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
 export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
   const { width } = useWindowDimensions();
   const appActive = useAppActive();
+  const feedActive = nativeFeedCanWork({ platform: Platform.OS, appActive, visible });
   const phone = width < 700;
   const filterScope = feedFilterStorageKey(accountId);
   const [filterState, setFilterState] = useState(() => ({
@@ -111,7 +114,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   const guideDismissed = guideState.scope === guideScope ? guideState.dismissed : load(guideScope, false);
   const visibleSince = useRef(new Map());
   const seenImpressions = useRef(new Set());
-  const activityRef = useRef(appActive);
+  const activityRef = useRef(feedActive);
   const dismissGuide = () => {
     setGuideState({ scope: guideScope, dismissed: true });
     save(guideScope, true);
@@ -135,7 +138,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   const surface = filter === "following" ? "following" : filter === "local" ? "local" : filter === "news" ? "news" : "everyone";
   const analyticsRef = useRef({ surface, onImpression, onDwell });
   analyticsRef.current = { surface, onImpression, onDwell };
-  activityRef.current = appActive;
+  activityRef.current = feedActive;
 
   useEffect(() => {
     refreshControllerRef.current?.abort();
@@ -199,14 +202,14 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   ]).current;
 
   useEffect(() => {
-    if (appActive) return;
+    if (feedActive) return;
     const at = Date.now();
     for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
       analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
     }
     visibleSince.current.clear();
     setVisibleMediaPostIds(new Set());
-  }, [appActive]);
+  }, [feedActive]);
 
   useEffect(() => () => {
     const at = Date.now();
@@ -364,13 +367,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     <FeedTicketRow
       item={item}
       itemIndex={itemIndex}
-      mediaViewable={visibleMediaPostIds.has(String(item.id)) ? true : null}
+      mediaViewable={feedActive ? (visibleMediaPostIds.has(String(item.id)) ? true : null) : false}
       surface={surface}
       actionsRef={rowActionsRef}
       capabilities={rowCapabilities}
       accountId={accountId}
     />
-  )), [accountId, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
+  )), [accountId, feedActive, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
@@ -396,8 +399,9 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       viewabilityConfigCallbackPairs={viewabilityConfigCallbackPairs}
       ListHeaderComponent={
         <View style={styles.head}>
-          <View style={styles.wordmarkRow}>
-            <Text style={styles.wordmark}>MSHPIT</Text>
+          <View style={[styles.wordmarkRow, Platform.OS !== "web" && styles.nativeHeaderRow]}>
+            {/* The native shell already owns the brand; this title identifies the page. */}
+            <Text style={Platform.OS === "web" ? styles.wordmark : styles.nativeFeedTitle}>{Platform.OS === "web" ? "MSHPIT" : "Your feed"}</Text>
             {!hideHeaderActions && <View style={styles.headerBtns}>
               {onOpenClips && (
                 <Pressable style={styles.clipsBtn} onPress={onOpenClips} hitSlop={8} accessibilityRole="button" accessibilityLabel="Clips">
@@ -418,9 +422,9 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
               </Pressable>
             </View>}
           </View>
-          <Text style={styles.tag}>{JOURNEY_TAGLINE}</Text>
+          {Platform.OS === "web" && <Text style={styles.tag}>{JOURNEY_TAGLINE}</Text>}
 
-          {refreshing || refreshError ? (
+          {(Platform.OS === "web" && refreshing) || refreshError ? (
             <Text
               style={[styles.refreshStatus, refreshError && styles.refreshStatusError]}
               accessibilityLiveRegion={refreshError ? "assertive" : "polite"}
@@ -657,6 +661,8 @@ const styles = StyleSheet.create({
   caughtSub: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 2 },
   head: { marginBottom: 18, marginTop: 4 },
   wordmarkRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  nativeHeaderRow: { minHeight: 48 },
+  nativeFeedTitle: { color: colors.text, fontSize: 22, lineHeight: 28, fontWeight: "700" },
   headerBtns: { flexDirection: "row", gap: 8, alignItems: "center" },
   clipsBtn: { flexDirection: "row", alignItems: "center", gap: 5, height: 40, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
   clipsTxt: { color: colors.amber, fontSize: 13, fontWeight: "800" },

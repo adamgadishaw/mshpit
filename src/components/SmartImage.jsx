@@ -31,6 +31,8 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
     if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel === "Open image" ? "Play video clip" : accessibilityLabel}>{clip}</Pressable>;
     return <View style={[styles.base, style]}>{clip}</View>;
   }
+  // Native errors do not identify their source. A separate view per rendition
+  // keeps queued primary errors bound to the primary callback after fallback.
   const inner = !src || !uri ? (
     <View
       style={[StyleSheet.absoluteFill, styles.fallback]}
@@ -46,6 +48,7 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
       {contain && <View style={[StyleSheet.absoluteFill, styles.containBackdrop]} />}
       {contain && <View style={[StyleSheet.absoluteFill, styles.scrim]} />}
       <ExpoImage
+        key={src}
         source={source}
         style={StyleSheet.absoluteFill}
         contentFit={contain ? "contain" : "cover"}

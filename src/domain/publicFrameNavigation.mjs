@@ -31,6 +31,7 @@ export function publicFramePath(frame, { resolveArtistMeta, resolveUser } = {}) 
   if (frame.privacy) return "/privacy";
   if (frame.terms) return "/terms";
   if (frame.cityGuide) return frame.cityGuide.directory ? "/cities" : cityPath(frame.cityGuide);
+  if (frame.nearby) return "/nearby";
   if (frame.venues) return "/venues";
   if (CREW_ENABLED && frame.crew) return "/crew";
   if (frame.news) return frame.liveSlug && /^[a-z0-9-]{1,80}$/u.test(frame.liveSlug) ? `/news/live/${frame.liveSlug}` : "/news";
@@ -66,6 +67,7 @@ export function publicFramePath(frame, { resolveArtistMeta, resolveUser } = {}) 
 // These public entry pages need no entity lookup. Keep reload, new-tab links,
 // and in-app navigation on the same destination rather than the default feed.
 export function publicEntryFrame(pathname) {
+  if (pathname === "/nearby") return { nearby: true };
   if (pathname === "/venues") return { venues: true };
   if (CREW_ENABLED && pathname === "/crew") return { crew: true };
   if (pathname === "/news") return { news: true };

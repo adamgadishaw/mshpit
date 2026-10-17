@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
@@ -11,7 +11,7 @@ const readableError = (error, fallback) => String(typeof error === "string" ? er
 
 // Set a new password from an emailed reset link (?reset=TOKEN). On success the
 // account is signed straight in and every other session is invalidated.
-export default function ResetPasswordScreen({ token, onDone, onCancel, onLogin, onRequestReset }) {
+export default function ResetPasswordScreen({ navigationAbortRef, token, onDone, onCancel, onLogin, onRequestReset, onAccepted }) {
   const { resetPassword, session } = useStore();
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -21,6 +21,13 @@ export default function ResetPasswordScreen({ token, onDone, onCancel, onLogin, 
   const attempt = useRef(null);
   const confirmationInput = useRef(null);
   useEffect(() => () => { attempt.current?.abort(); }, []);
+
+  useLayoutEffect(() => {
+    if (!navigationAbortRef) return undefined;
+    const cancel = () => { const current = attempt.current; if (!current) return; current.abort(); attempt.current = null; setPassword(""); setConfirm(""); setBusy(false); setRecovery("uncertain"); setError("The reset was interrupted. If you submitted a new password, try logging in with it before requesting another link."); };
+    navigationAbortRef.current = cancel;
+    return () => { if (navigationAbortRef.current === cancel) navigationAbortRef.current = null; };
+  }, [navigationAbortRef]);
 
   const submit = async () => {
     if (busy || attempt.current) return;
@@ -32,7 +39,7 @@ export default function ResetPasswordScreen({ token, onDone, onCancel, onLogin, 
     const controller = new AbortController();
     attempt.current = controller;
     try {
-      const res = await resetPassword(token, password, { signal: controller.signal });
+      const res = await resetPassword(token, password, { signal: controller.signal, onAccepted });
       if (controller.signal.aborted) return;
       if (res?.ok) onDone?.();
       else { setError(readableError(res?.error, "Couldn't reset. Request a new link.")); setRecovery(res?.outcome || "rejected"); }

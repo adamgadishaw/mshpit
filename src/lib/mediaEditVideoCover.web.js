@@ -1,4 +1,5 @@
 import { generateVideoPosterAsset, releaseVideoPosterAsset } from "./videoPoster";
+import { scheduleVideoPosterGeneration } from "./videoPosterScheduler.mjs";
 import { createMediaEditCapabilities } from "./mediaEditCapabilities.mjs";
 
 const available = typeof document !== "undefined" && typeof URL !== "undefined";
@@ -20,10 +21,12 @@ export async function generateVideoCover(asset, options = {}) {
     signal: options.signal,
   };
   if (requestedTimeMs != null) posterOptions.timeMs = requestedTimeMs;
-  const result = await generateVideoPosterAsset(
+  // Return the raw tagged promise so cancellation keeps the shared permit
+  // until any non-cancellable decoder work and its cleanup have settled.
+  const result = await scheduleVideoPosterGeneration(() => generateVideoPosterAsset(
     { ...asset, type: "video", duration: asset?.durationMs, file: asset?.runtimeFile || asset?.file },
     posterOptions,
-  );
+  ), { signal: options.signal });
   let released = false;
   const release = () => {
     if (released) return false;

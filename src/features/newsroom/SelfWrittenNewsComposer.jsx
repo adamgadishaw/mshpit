@@ -4,6 +4,8 @@ import { Image as ExpoImage } from "expo-image";
 import Button from "../../components/Button";
 import { colors, radius } from "../../theme";
 import { load, save as saveLocal } from "../../lib/persist";
+import { useWebRecoveryDraft } from "../../hooks/useWebRecoveryDraft";
+import { verifyDurableJson } from "../../lib/webRecovery.mjs";
 import { emptyNewsroomForm, MAX_NEWSROOM_ARTICLE_SOURCES, newsroomArticlePayload, newsroomDraftEnvelope, newsroomDraftStorageKey, newsroomSaveAttempt, restoreNewsroomDraft } from "../../domain/newsroomComposition.mjs";
 import { loadSelfWrittenPhoto, uploadSelfWrittenPhoto } from "./newsDeskEditorMediaService";
 
@@ -46,6 +48,19 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
   const hasContent = !!(headline.trim() || summary.trim() || body.trim() || form.photo || photoName.trim() || photoUrl.trim()
     || photoCredit.trim() || sources.some((source) => source.name.trim() || source.url.trim()) || category !== "tour");
   const dirty = hasContent && snapshot !== savedPayload;
+
+  useWebRecoveryDraft(accountId, () => {
+    if (uploading || saving || busy || submission.current) return { status: "blocked", message: "An article operation is still active. Keep this tab open until it finishes, or open a new tab." };
+    if (!hasContent) return { status: "clean", verify: () => true };
+    const key = newsroomDraftStorageKey(accountId);
+    const envelope = newsroomDraftEnvelope(accountId, form, attempt.current, savedPayload);
+    // Refuse any normalization that would omit current authored content.
+    if (JSON.stringify(envelope.form) !== JSON.stringify(form)) return { status: "blocked" };
+    const serialized = JSON.stringify(envelope);
+    saveLocal(key, envelope);
+    return { status: "saved", verify: () => verifyDurableJson(key, stored =>
+      stored?.accountId === String(accountId) && JSON.stringify(stored) === serialized && !!restoreNewsroomDraft(accountId, stored)) };
+  });
 
   useEffect(() => { callback.current = onCompositionStateChange; }, [onCompositionStateChange]);
   useEffect(() => {

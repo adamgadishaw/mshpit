@@ -54,8 +54,8 @@ test("remote directory pulls await their real loaders and retain current views o
   assert.match(store, /expectedAccountId: accountId,[\s\S]{0,240}?signal\?\.aborted/);
 
   for (const source of [nearby, venues]) {
-    assert.match(source, /return refreshTourDates\(\{ signal \}\)/);
-    assert.match(source, /results are unchanged|results are unchanged\./);
+    assert.match(source, /return refreshTourDates\(\{\s*signal\s*\}\)/);
+    assert.match(source, /results are unchanged|Showing available results/);
   }
   assert.match(store, /fetchStartupTourDates\(\{[\s\S]{0,160}?expectedAccountId: accountId/);
 

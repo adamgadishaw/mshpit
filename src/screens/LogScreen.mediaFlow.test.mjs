@@ -30,7 +30,7 @@ test("composer queues picker selections synchronously and uploads originals with
   excludes(source, "PITStudio");
 });
 
-test("original upload leaves admission to the authenticated route and keeps progress, retry, and cancellation", () => {
+test("original upload leaves admission to the authenticated route and keeps progress, retry, and cancellation", async () => {
   const upload = source.slice(source.indexOf("async function uploadOriginalMedia"), source.indexOf("async function stageSelectedAssets"));
   includes(upload, ".map((asset, index) => originalMediaProjectAsset(asset, index))");
   excludes(upload, "refreshMediaPublishingCapabilities");
@@ -57,8 +57,12 @@ test("original upload leaves admission to the authenticated route and keeps prog
   includes(retirement, "normalizeMediaProjectAsset({ ...asset, assetId: null }, index)");
   includes(source, "const retryPendingMedia = async () =>");
   includes(source, "await uploadOriginalMedia(originals)");
-  includes(source, 'accessibilityRole="progressbar"');
-  includes(source, "mediaUploadProgressCopy(uploadProgress)");
+  includes(source, "<MediaUploadProgress progress={uploadProgress} />");
+  for (const name of ["MediaUploadProgress.jsx", "MediaUploadProgress.native.jsx"]) {
+    const progressSource = await readFile(new URL(`../components/${name}`, import.meta.url), "utf8");
+    includes(progressSource, 'accessibilityRole="progressbar"');
+    includes(progressSource, "mediaUploadProgressCopy(progress)");
+  }
 });
 
 test("an invalid album item is retired while systemic failures still stop the upload batch", () => {

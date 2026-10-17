@@ -1,4 +1,4 @@
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, font, mono, radius, shadow } from "../../theme";
 import Icon from "../Icon";
 import { compactDiscoverNumber } from "../../domain/discoverView.mjs";

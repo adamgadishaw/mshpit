@@ -6,7 +6,7 @@ import { colors, radius } from "../../theme";
 import Icon from "../Icon";
 import ClipPoster from "../ClipPoster";
 import useAppActive from "../../lib/useAppActive";
-import { videoViewerDecodedSize, videoViewerPhase, videoViewerPosterVisible, videoViewerWebFrameReady } from "../../domain/mediaViewer.mjs";
+import { videoViewerBuffering, videoViewerDecodedSize, videoViewerPhase, videoViewerPosterVisible, videoViewerWebFrameReady } from "../../domain/mediaViewer.mjs";
 import { analyticsDurationBucket } from "../../domain/analyticsPolicy.mjs";
 import { createPlaybackMeasurement } from "../../domain/playbackMeasurement.mjs";
 import { startVideoPlayback } from "../../domain/startVideoPlayback.mjs";
@@ -27,7 +27,11 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
   const [playbackRate, setPlaybackRate] = useState(1);
   const [controlError, setControlError] = useState("");
   useEffect(() => {
-    if (!appActive) {
+    // Android SDK 57 pauses real background playback natively and exempts its
+    // fullscreen activity. AppState also marks that internal transition inactive;
+    // a second JS pause would stop fullscreen playback. Keep the other platforms
+    // on their existing explicit pause path.
+    if (!appActive && Platform.OS !== "android") {
       try { player.pause(); } catch { /* Player may already have been released. */ }
     }
   }, [appActive, player]);
@@ -45,6 +49,7 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
   trackRef.current = onTrack;
   const phase = videoViewerPhase({ status, error, hasFirstFrame });
   const posterVisible = videoViewerPosterVisible({ phase });
+  const buffering = videoViewerBuffering({ status, hasFirstFrame, error });
   const publishedVideoSizeRef = useRef("");
   const publishVideoSize = useCallback((size) => {
     const decoded = videoViewerDecodedSize(size);
@@ -121,6 +126,17 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
   }, [player, postId]);
 
   useEffect(() => {
+    if (Platform.OS !== "android") return undefined;
+    const subscription = player.addListener?.("playToEnd", () => {
+      // A new fullscreen surface cannot paint an already-ended decoder.
+      // Keep completed clips paused on a real first frame, ready for replay.
+      player.pause();
+      player.currentTime = 0;
+    });
+    return () => subscription?.remove?.();
+  }, [player]);
+
+  useEffect(() => {
     if (phase !== "error" || trackedError.current) return;
     trackedError.current = true;
     trackRef.current?.("product_error", { code: "video_load_failed", surface: "media_viewer", retryable: true });
@@ -152,9 +168,10 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
   }, [hasFirstFrame, phase, recordFirstFrame]);
 
   const startPlayback = () => {
+    if (!activeRef.current) return;
     setControlError("");
     startVideoPlayback({ player, web, element: videoViewRef.current?.nativeRef?.current }).catch(() => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || !activeRef.current) return;
       setControlError("Playback could not start. Try again or reload this video.");
       trackRef.current?.("product_error", { code: "video_play_failed", surface: "media_viewer", retryable: true });
     });
@@ -164,7 +181,7 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
     const speeds = [0.75, 1, 1.25, 1.5, 2];
     const next = speeds[(speeds.indexOf(playbackRate) + 1) % speeds.length];
     try { player.playbackRate = next; setPlaybackRate(next); setControlError(""); }
-    catch { setControlError("Playback speed is not available in this browser."); }
+    catch { setControlError("Playback speed is not available. Try again."); }
   };
 
   return (
@@ -174,7 +191,7 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
         player={player}
         style={web ? styles.webVideo : styles.img}
         contentFit="contain"
-        nativeControls
+        nativeControls={web || hasStarted}
         fullscreenOptions={{ enable: true }}
         allowsPictureInPicture={web}
         startsPictureInPictureAutomatically={false}
@@ -200,7 +217,7 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
           <Text style={styles.videoStartText}>Play video</Text>
         </Pressable>
       ) : null}
-      {hasStarted && phase !== "error" && (
+      {web && hasStarted && phase !== "error" && (
         <View style={styles.playerToolbar} pointerEvents="box-none">
           <Text style={styles.playerBrand}>MSHPIT PLAYER</Text>
           <Pressable accessibilityRole="button" accessibilityLabel={"Playback speed " + playbackRate + " times. Change speed"}
@@ -209,11 +226,12 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
           </Pressable>
         </View>
       )}
+      {buffering && <View pointerEvents="none" style={styles.buffering} accessibilityLiveRegion="polite"><Text style={styles.bufferingText}>Buffering video…</Text></View>}
       {!!controlError && <Text selectable accessibilityLiveRegion="polite" style={styles.controlError}>{controlError}</Text>}
       {phase === "error" && (
         <View style={styles.videoError} accessibilityLiveRegion="assertive">
           <Text style={styles.videoErrorTitle}>This video could not play</Text>
-          <Text style={styles.videoErrorText}>The browser may not support its format, or the connection was interrupted.</Text>
+          <Text style={styles.videoErrorText}>The video format may not be supported, or the connection was interrupted.</Text>
           <View style={styles.videoErrorActions}>
             <Pressable style={styles.videoAction} onPress={onRetry} accessibilityRole="button">
               <Text style={styles.videoActionText}>Try again</Text>
@@ -235,20 +253,24 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
 // portrait video's intrinsic height otherwise expands React Native Web's flex
 // child beyond the modal viewport and pushes its picture/controls off-screen.
 // Remounting on retry also releases the failed player cleanly.
+// RN 0.86 removed the deprecated alias; preserve the existing web style.
+const absoluteFill = StyleSheet.absoluteFillObject || StyleSheet.absoluteFill;
 const styles = StyleSheet.create({
   img: { flex: 1, backgroundColor: "transparent" },
-  webVideo: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", backgroundColor: "transparent" },
-  videoStatus: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10 },
+  webVideo: { ...absoluteFill, width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", backgroundColor: "transparent" },
+  videoStatus: { ...absoluteFill, alignItems: "center", justifyContent: "center", gap: 10 },
   videoStart: { position: "absolute", left: "50%", top: "50%", zIndex: 4, minHeight: 46, transform: [{ translateX: -62 }, { translateY: -23 }], flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 17, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.amberStrong },
   videoStartPressed: { opacity: 0.82, transform: [{ translateX: -62 }, { translateY: -21 }] },
   videoStartFocused: { boxShadow: "0 0 0 3px rgba(242,166,90,0.42)" },
   videoStartText: { color: "#1A1206", fontSize: 13, fontWeight: "900" },
-  videoError: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10, paddingHorizontal: 24, backgroundColor: "rgba(6,7,11,0.9)" },
+  videoError: { ...absoluteFill, alignItems: "center", justifyContent: "center", gap: 10, paddingHorizontal: 24, backgroundColor: "rgba(6,7,11,0.9)" },
   videoErrorTitle: { color: "#fff", fontSize: 17, fontWeight: "800", textAlign: "center" },
   videoErrorText: { color: "rgba(255,255,255,0.72)", fontSize: 13, lineHeight: 19, textAlign: "center", maxWidth: 380 },
   videoErrorActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8, marginTop: 2 },
   videoAction: { minHeight: 44, justifyContent: "center", borderRadius: radius.pill, paddingHorizontal: 16, backgroundColor: "rgba(255,255,255,0.12)" },
   videoActionText: { color: "#fff", fontSize: 13, fontWeight: "800" },
+  buffering: { position: "absolute", top: 58, alignSelf: "center", backgroundColor: "rgba(6,7,11,0.85)", borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8 },
+  bufferingText: { color: "#fff", fontSize: 13 },
   playerToolbar: { position: "absolute", top: 10, left: 10, right: 10, flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   playerBrand: { color: "#fff", fontSize: 10, fontWeight: "800", letterSpacing: 1.5, backgroundColor: "rgba(6,7,11,0.7)", borderRadius: 8, padding: 8 },
   controlError: { position: "absolute", bottom: 60, left: 12, right: 12, color: "#fff", backgroundColor: "#401923", padding: 12, borderRadius: 8 },

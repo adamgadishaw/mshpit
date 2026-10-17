@@ -1,0 +1,251 @@
+# Native app experience: first pass and rework order
+
+The native app should keep the website's concert-memory identity and complete flows, while giving each phone screen a clear primary task. This is an incremental plan, not a completed redesign or performance certification.
+
+## Verified starting point
+
+- The canonical website checkout remains read-only at `D:\Websites\Concert Website\pit`, HEAD `f7fda62`; its pre-existing untracked audit file is preserved.
+- Both repositories declare the same Stage palette in `src/theme.js`: background `#09090B`, raised background `#0F0F12`, surface `#141418`, warm accent `#F2A65A`, strong accent `#FF8C42`, text `#F4EFE7`.
+- Actual Android screenshot pixels include those exact colours, rather than a global shifted version. In the synthetic Delete screenshot there are743537 background pixels,573267 raised-background pixels,645377 surface pixels, and12164 strong-accent pixels. These counts describe that frame only.
+- Read-only Android colour diagnostics show no per-app saturation overrides, colour mode NATIVE/COLORIMETRIC, and unsupported Night Display/white-balance/reduced-brightness controls. Inversion/daltonizer/Night Display settings return null (unset, not proof about the Windows monitor). No display, security, virtualization or accessibility setting was changed.
+- Shadows, scrims and borders intentionally produce additional colours. The native Media3 controls shade the picture while controls are visible. That is separate from changing encoded video colour. A specific owner example is still needed to identify whether the reported issue is UI, media, or the host emulator window. No hue/contrast/converter change was guessed.
+
+## First local improvement
+
+The native shell already shows the MSHPIT logo and profile link. Feed repeated another large MSHPIT wordmark and tagline directly below it. Native Feed now has a smaller `Your feed` title and no repeated tagline; Activity, Inbox, Menu, local discovery, onboarding, filters and content keep their behavior. The website branch keeps its original wordmark and tagline. This changes no palette values or stored preferences.
+
+Actual screenshots were inspected after a clean development-client reload, not just Fast Refresh. The fresh Android hierarchy contains exactly one MSHPIT text label, the Your feed title, and all three header actions. Owner session is present and production Like/Post/Report remain blocked. Relevant interaction tests:14 passed; Android/Hermes export passed,9.5MB. The previous gesture commit's full regression suite passed6367/6368 with one skip and zero failures.
+
+Library evidence:
+
+- Before: `libfile_56376cca7f2c8191bf17e1cf1c230207` (`owner-feed-layout-before.png`).
+- After: `libfile_b1fdfa67cf588191bd2c235b161b2075` (`owner-feed-layout-after.png`).
+
+## Screen-by-screen next passes
+
+| Screen/flow | Evidence and issue to address | Purposeful change and verification |
+| --- | --- | --- |
+| Feed | Actual first-visit frame spends much of the viewport on the repeated header, onboarding and suggested people before concert memories. Header duplication fixed in this pass. | Next, compact the first-visit guide without losing Find/Log actions and keep discovery/context secondary to the chosen feed. Compare first-content position, large text, empty/error states, and return-to-scroll behavior. Do not silently change the default feed or recommendation meaning. |
+| Review cards | Native View/Compare rows and player repairs are already verified. Repeated swipe hints and multiple outlined containers compete with concert content. | Keep artist, show, review, media and score hierarchy; keep View/Compare explicit. Reduce repeated instructional chrome only after testing discoverability. Like/Repost stay on the action rail; media remains isolated. |
+| Search | `SearchScreen.jsx` already separates immediate input from a250ms settled-query debounce and scoped remote results. | Keep one obvious search field, clear category/result hierarchy, stable retained results during loading and failure. Measure typing-to-results separately from networking and debounce; do not remove supported categories. |
+| Discover | `DiscoverScreen.jsx` combines charts, genres, venues, photos, festivals, recommendations and local event discovery. | Lead with nearby upcoming shows and location context; make other programmes an explicit secondary choice. Preserve all programmes and location semantics. Test horizontal content rails against tab swipes and vertical scroll. |
+| You/Profile | `YouScreen.jsx` deliberately reuses the public Profile with private tools/memories. The synthetic profile exposed a very short gallery tile and rollback changes scroll extent; these need actual-owner reproduction before a source fix. | Give identity, concert history, media and posts clear sections; keep private tools distinct. Verify real gallery dimensions, own/other permissions, history load/error states, deleted-row rollback position and large text. Do not change public/private meaning. |
+| Compose/upload | `LogScreen.jsx:887` uses `uploadOriginalMediaAsset`, `postWhileConverting:true`, immediate stage updates and bounded byte-progress publication. | Make Preparing, Uploading, Converting, Ready, Retry and Cancel understandable and accessible. Preserve resumable originals and existing account fencing. Test with local fixtures first; no production test post. |
+| Video viewer/player | Actual native playback, fullscreen, Home/return, completion and replay have passed. Native video controls are siblings outside photo/post/page pan detectors. | Keep one clear play action and real native controls. Measure first frame, seek response and transition consistency on the same clip. Compare colour with controls hidden and with the source's HDR/range metadata before changing treatment. |
+| Converter | A converter already exists; see below. | Exercise its existing bounded test matrix locally before proposing quality/latency changes. Preserve source ownership, retry, poster, rotation and colour guarantees. No new paid pipeline. |
+
+## Existing converter, not a new service proposal
+
+Native picker: `src/lib/composerMediaPicker.js` uses SDK57 ImagePicker originals. `LogScreen.jsx` calls `src/lib/mediaAssetUpload.js`, which uploads stable originals with account-scoped requests and source IDs. `mediaAssetFinalize.mjs` reconciles detached conversion through owner-only reads, polls every5s and preserves saved uploads for resume. Client-side cover generation is poster extraction, not video transcoding.
+
+The server's media-assets/control plane invokes the existing `server/videoVerifierService.js` FFmpeg/ffprobe worker through its signed protocol. Compatible sources can take a remux path; others transcode to H.264/yuv420p MP4 with AAC audio and faststart, bounded dimensions/frame rate/bitrate, and validated poster output. HDR handling already uses zscale and Hable tone mapping toward BT.709 SDR; SDR range and HDR highlight fixtures exist. Policy currently admits video sources up to500MiB,10minutes and4096x2160, with delivery capped at60fps and1920x1080 bounds. These are code facts; no production converter health or new real transcode run is claimed here. Nothing was deployed or enrolled.
+
+Highest-value converter matrix: portrait/landscape, rotation, SDR full/limited range, HEVC HDR/PQ/HLG, silent and audio clips, compatible remux versus transcode, near-limit sizes, failure/cancel/retry/resume, poster correctness and completion-to-visible-ready delay. Use the existing self-test (`server/videoVerifierService.js --self-test`) only with its verified installed FFmpeg prerequisites and local storage adapters; never point it at production objects for test writes.
+
+## Responsiveness evidence and next gate
+
+Actual warm Feed/Search rail swipes all reached the intended screen with the owner session and guard intact. A bounded Android `gfxinfo` sample recorded293 frames,272 janky frames(92.83%), frame p50=57ms, p90=125ms, p95=250ms and35 high-input-latency events. Evidence: `.tmp/overnight/native-warm-tabs-rendering.json`. The reset sample includes ADB/accessibility/inspector instrumentation on an SDK57 debug emulator; it is not a release benchmark or input-to-photon measurement. The observer's6–8s wall times include slow snapshot and inspector operations and must not be reported as app gesture latency. The emulator's GPU histogram sentinel must not be interpreted as real4.95s GPU work.
+
+This result is a performance concern, not a responsiveness pass. Before broader animation/layout work, compare the same warmed navigation/scroll workload in the existing release fixture and then profile UI-thread drawing, bitmap uploads, shadows/overdraw, JS commits and host/emulator load separately. Retain transformations on the UI thread and avoid per-frame React updates. Do not change virtualization/security settings, turn off accessibility, or change product behavior to hide the measurement. Physical Android and real iPhone validation remain outstanding.
+
+## Gesture closeout
+
+Gesture commit: `21b34dd2c06a44491d5bf9a6ebf2a2fe780bc80d`.33 synthetic device checks passed across actions, tab navigation, gallery, Delete, refresh and video scrubber cleanup. All fixture overlays restored; fixture tree clean at `558382f`, localhost8082 server/reverse removed. Owner post-integration checks cover paused/playing fullscreen and Home-return pausing; an additional known-start check passed replay advance, completion rewind, ended fullscreen zero and final player release (`gesture-owner-player-final-check.json`,4 checks). The earlier full three-cycle player evidence is retained unchanged; a superseded short-remaining-time smoke timeout remains recorded rather than being presented as a pass.
+
+No app-wide redesign, converter-quality change or colour correction is claimed. The next material input is the location/example of the owner's colour issue; the current palette and functional meanings remain the baseline.
+
+## Scoped native refinement verification — 2026-10-15
+
+Native concert cards now keep their action rail on the card's own surface, omit the permanent swipe instruction, use compact icon/count actions with full accessibility labels and 48dp target heights, and place the view tally beside the date. Native card padding is 12dp and its extra shadow is removed. Website markup/sizing is retained through explicit platform branches. Repost Undo, direct action buttons, failures and account fencing remain. Like success uses the existing heart/count plus an accessibility announcement. The own-post management strip says “Manage post”; its text fades before it can clip during Delete reveal, and returns after cancellation.
+
+Native upload progress distinguishes measured byte transfer from indeterminate processing/finishing. Conversion notices check immediately on native mount/foreground, stop in background, serialize checks and abort/ignore retired results. Web keeps its existing interval-first check timing. This is client progress/recovery verification; no real upload, post, FFmpeg conversion or production converter-health check was executed.
+
+Validation: full regression suite 6374 tests, 6373 passed, zero failed, one skipped. The six new executable conversion tests cover immediate/serialized checks, retirement/abort, foreground recovery, unchanged web cadence, measured transfer versus processing and bounded/unknown progress. Source contracts were updated for the already intended native Feed title and extracted progress components; branding, upload retry/cancel and actual interaction assertions remain. Syntax:855 Node files passed. Architecture:Store hooks144/144, state47/47, routes156/156; baseline allowances unchanged. No TypeScript project check is claimed. Final isolated x86_64 release build passed offline in1m42s,875 tasks(24 executed); APK SHA256 `40fa40d6dc4045e54b43aeb31675c8b054d6344de8ba2f0f6fc3b8d68df31f09`,81211681 bytes. Earlier baseline release/debug build passed after one missing official AndroidX AAR was retrieved; no new app dependency, SDK tool, signing credential or licence acceptance was added.
+
+### Matched responsiveness measurements
+
+Fixed clock,20 synthetic posts/1000 events, same API36 emulator/density/font/render settings, two warm seconds after verified Feed readiness, eight alternating400ms swipes with200ms gaps. Three release/debug pairs per source, order alternating. No inspector/accessibility capture, builds or tests inside timing. Release uses embedded Hermes/no INTERNET permission; debug uses localhost8082. Baseline is0511523 with the same hash-tracked fixture overlays; refined is that source plus these changes. Later visual-only fixture preview changes were made after all timing finished.
+
+| Median across three trials | Baseline release | Refined release | Baseline debug | Refined debug |
+| --- | ---: | ---: | ---: | ---: |
+| Whole-run HWUI janky frames |62.24%|60.19%|67.95%|69.70%|
+| Whole-run HWUI p90 |101ms|105ms|109ms|109ms|
+| Frame-stage UI-work p90 |11.06ms|14.48ms|18.13ms|17.01ms|
+| Frame-stage sync-wait p90 |45.06ms|44.79ms|40.32ms|45.13ms|
+| Frame-stage render-before-swap p90 |32.42ms|34.82ms|33.44ms|35.24ms|
+| Frame-stage swap-to-complete p90 |41.95ms|41.88ms|41.08ms|42.99ms|
+
+This does not establish a meaningful performance improvement. Jank remains substantial. Actual compressed atrace scheduler/slice analysis shows both extra debug JS CPU cost and graphics submission/buffer costs shared with release:baseline eglSwapBuffersWithDamageKHR p90 about40–41ms and dequeueBuffer about35–40ms. Slice times overlap and cannot be summed. Stage quantiles use the retained frame-stat ring buffer, whereas the whole-run histogram covers a different population. The emulator GPU histogram sentinel is not a real4.95s frame measurement. No single code culprit, physical-device smoothness or iOS performance conclusion is certified. Further isolated profiling/ablation and physical-device measurement remain necessary.
+
+Evidence in `D:/Development/Apps/mshpit-perf/.tmp/performance/`: `ux-baseline-cohort.json`, `ux-refined-cohort.json`, both `*-trace-analysis.json`,12 raw `.atrace` files and corresponding `*-frames.txt`. The bounded orchestration/analysis scripts remain in the task workspace as `measure-ux-cohort.cjs` and `analyze-ux-traces.cjs`; preparing the same hash-tracked overlays is required before rerunning them.
+
+### Actual screenshots and limits
+
+Inspected actual native screenshots show the compact footer and Delete reveal with no clipped instructional remnant. Opening the synthetic Delete confirmation and pressing its fresh CANCEL control left the post present and restored the label. All fixture transport writes remained blocked. Initial screenshots taken before render settlement and a screenshot/accessibility timeout are superseded, not counted as passes. The final settled progress screenshot explicitly says LOCAL SIMULATED UPLOAD STATES — NO UPLOAD; its65% transfer, processing spinner and finishing spinner were inspected.
+
+Library evidence:
+
+- Simulated progress: `libfile_3b7a45437f60819198839dbeb1e08453` (`ux-progress-settled-final.png`).
+- Synthetic Delete reveal: `libfile_7dcee8e4f3dc8191845945deb24aa4a6` (`ux-delete-reveal-final.png`).
+- Synthetic Cancel return: `libfile_9a0770ad01f08191a28acf1651605169` (`ux-delete-cancel-verified.png`).
+
+### Colour comparison correction
+
+Token equality alone does not establish perceived or selected-theme equality. Independent cloud browser evidence from the parent shows the hydrated signed-out `/events` and Steve Lacy artist wrappers using warm-paper `#FBF7F0`, selected-tab `#F3ECE1` and heading `#1C140C`; the document body `#09090B` and dark concert hero are separate surfaces. That observation does not identify the owner's chosen website theme. The independent artist/video screenshots are desktop1180×757 only; mobile viewport was unavailable, and Community/review access required login. The Steve Lacy gallery's21.078333s portrait clip played in cloud Chrome; it is not the owner's Android20.633s clip or an iPhone test.
+
+Source inspection finds `src/theme.native.js` re-exports `theme.js`, whose initial key isStage and whose saved preference/account synchronization uses web `window.localStorage` plus page reload. Website Daylight defines `#FBF7F0`. Native persistence/account-theme parity warrants a dedicated follow-up; no theme preference or palette is changed here. Do not infer the owner's desired theme from an anonymous browser, document body or matching Stage tokens. Same-account/same-theme rendered comparison remains outstanding.
+
+### Cleanup
+
+Every temporary fixture source/native overlay was restored using the hash-guarded restoration manifest; the fixture working tree is clean at558382f. Fixture packages were force-stopped, verified Metro8082 PID29184 stopped and only its reverse removed. APKs, local media and trace evidence were retained in ignored paths. Owner app data was never cleared and its APK never reinstalled in this phase. The canonical website checkout remains untouched. No deployment, production content mutation, paid service or Apple enrollment occurred. Android evidence remains separate from iOS certification.
+
+Owner runtime confirms a concrete theme mismatch:accountTheme=daylight,activeTheme=stage,localStorageAvailable=false,background=#09090B,surface=#141418 (.tmp/overnight/ux-owner-theme-state.json). This explains a selected-theme discrepancy, though it does not certify encoded media colour. No account preference was changed.
+
+Owner final clean reload recovered after restarting the verified stalled Metro process with the existing Windows EXPO_NO_METRO_LAZY=1 setting. Current guarded localhost8081 Metro PID9560, logs .tmp/overnight/metro-ux-final.log. Auth ready/session present, no temporary globals, Like/Post/Report blocked, exact feed-revalidation POST allowed; actual Feed screenshot inspected. No data clear or owner reinstall.
+
+Final actual-owner screenshots inspected and saved:Feed libfile_8100be8c3b7081918127f9781cec7f42; Steve Lacy review/footer libfile_ae6378c2499881918f7427f74e12e24c. The real footer fits one row without the old permanent swipe hint or a forced raised-background action rectangle. It remains a Stage capture, not a Daylight match. Final Feed offset0, viewer false,players empty,session present. Upload receipts are retained in the task workspace; Windows extended-attribute tagging is unavailable.
+
+## Native account-theme parity fixed — 2026-10-15
+
+The confirmed account preferred Daylight while Android rendered Stage. This pass fixes that preference-loading bug; it does not change the account's selected theme or the website palette. `theme.js` now reads through a platform adapter before module-level StyleSheets resolve. The browser adapter retains the existing verified localStorage theme/owner pair and document reload. Native uses the already installed SDK57 SQLite key-value store, with theme and owner in one JSON value (`pit.native.theme.v1`), verified readback and Expo `reloadAppAsync` using the current bundle. No dependency or native APK change is required for these JavaScript changes.
+
+The website's intended same-account local-choice priority is retained. A different account receives its own valid account choice; an unrelated/guest local choice cannot override it. Sign-out clears the pair and settled guest reconciliation returns to Stage. A valid guest choice is retained while signed out. Invalid, corrupt and inherited-property keys fall back safely. Unavailable/unverified storage cannot trigger a reload loop; a failed reload is reported and the saved choice remains available on next launch. Repeated reconciliation of the same stored pair avoids another write or reload. Like the existing browser, an owned boot cache may render while identity is being established; confirmed identity reconciliation prevents it from being adopted by another account.
+
+Native theme reconciliation is local only and returns before Store's browser best-effort account PATCH branch. No theme-setting request was sent in this pass. The existing explicit choose-theme action retains its existing separate behavior; it was not invoked on the owner's production account. Both actual owner checks and synthetic transitions preserved that distinction.
+
+Verification:
+
+- 23 focused tests passed, executing the compiled theme module plus actual Root/Store reconciliation functions:initial guest/default, account adoption, account change, sign-out, same-account override, guest ownership, process-style relaunch, corrupt/unavailable storage, failed/unverified writes and contained reload rejection. Existing browser navigation/ownership tests remain intact with the new native dependency explicitly mocked as inactive for browser cases.
+- Full regressions:6383 tests,6382 passed,zero failed,one skipped (`.tmp/overnight/native-theme-regression.log`).
+- Syntax:855 Node files passed. Architecture:Store hooks144/144,state47/47,routes156/156,other allowances unchanged. Removed only the retired `src/theme.js` silent-catch allowance; legacy silent catches decreased87 to83.
+- Android/Hermes export passed,2201 modules,9.5MB bundle (`.tmp/native-theme-export`; log `.tmp/overnight/native-theme-export.log`). No new native dependency means the existing development APK remains usable. No TypeScript, new native APK, iPhone or TestFlight certification is claimed in this pass.
+- Actual owner runtime after account reconciliation and two clean process launches:accountTheme=daylight,activeTheme=daylight,bg=#FBF7F0,surface=#FFFFFF,localStorage unavailable. The durable native adapter works without installing a global browser-storage shim. Session/auth ready remain present; Like/Post/Report remain blocked, exact read-only feed revalidation remains allowed, no temporary globals. Owner left at Feed offset0 with no player/viewer mounted.
+- All17 Daylight palette tokens exactly match the untouched canonical website checkout. Actual clean-launch1080×2400 PNGs were inspected. Feed has827689 exact warm-paper pixels,1211681 white pixels,17567 selected-surface pixels,25449 dark-text pixels and77942 orange-accent pixels. Review has627560 warm-paper,1081976 white,22735 dark-text and12198 orange pixels. These describe those actual frames, not whole-display colour calibration or encoded media correctness. Independent website comparison remains desktop-only; no mobile website screenshot parity is claimed.
+
+Final Library screenshots:
+
+- Feed: `libfile_f1302a7106b881919a17132dc3751369`, `owner-daylight-feed-clean-launch.png`.
+- Steve Lacy review: `libfile_a78aa12eb9a4819186fe108731df1451`, `owner-daylight-review-clean-launch.png`.
+
+Task-workspace evidence:`native-daylight-library-receipt.json`, `native-daylight-pixel-proof.json`, `native-daylight-canonical-token-proof.json`. Earlier development-refresh overlay captures are superseded by these inspected clean-launch images. Windows extended-attribute tagging remains unavailable; Library receipts are retained.
+
+Reproduce with the existing guarded localhost8081 Metro, then force-stop/reopen the existing development client without clearing data. `/api/me` supplies the unchanged account choice; its first application can reload once, then a subsequent process launch reads it durably. Fresh signed-out installations default to Stage. Targeted automated command:`node --test src/lib/nativeThemeRuntime.test.mjs src/domain/themeStorage.test.mjs src/domain/accountThemeNavigation.test.mjs`. Normal regression/syntax/architecture commands remain unchanged.
+
+References verified against SDK57: https://docs.expo.dev/versions/v57.0.0/sdk/sqlite/ (synchronous KV APIs), https://docs.expo.dev/versions/v57.0.0/sdk/expo/ (reloadAppAsync uses the current bundle in debug/release). No OS/security setting, account preference, signing credential, paid service, deployment or production content write changed. Website checkout remains read-only with its original untracked audit file, and the performance fixture remains clean/stopped. The earlier substantial jank finding is unchanged and remains a separate open investigation.
+
+## Bounded responsiveness attribution — 2026-10-15
+
+Outcome: no performance improvement is claimed and no speculative product optimization was applied. The release comparison exposes a substantial common graphics/buffer cost even with the app unmounted, plus additional Feed draw-command work. This separates initial touch handling from slow rendering/navigation, but does not certify visible input latency. The remaining gate is a physical Android release trace with real frame-presentation timestamps, followed by an isolated drawing ablation if that device also exhibits the extra cost.
+
+### Controlled release workload
+
+Source `bb9b469bd5cadb7955cd05a6473055df9110aeb1`, including the verified Daylight fix. One existing-tool x86_64 release APK, SHA256 `3029729ccc15e0b4b95ecc23a5c0a37c4676c549097520a510052ecde20a9977`; offline Gradle build passed in1m23s,875 tasks(39 executed). Fixture package only:`com.mshpit.app.dev.perfreview`, no INTERNET permission; all API calls intercepted and all writes blocked. Owner APK/data/preferences were untouched.
+
+Four scenes in the same release APK,three trials each,rotating order:blank native ScrollView over a20000dp spacer;40 native text/stripe rows;20-post text-only Feed;the same Feed with one cached1080×2400 PNG used on alternating posts. That PNG is a previously captured review screenshot used as a large-bitmap workload, not20 unique source photos, a production content fixture, a video decode test or a production-network measurement. The synthetic catalogue remains1000 events. Same API36 emulator,1080×2400,density420,font1,60Hz host-GPU settings. No display,driver,security or virtualization setting changed.
+
+Each scene is verified before timing,then settles2s. Workload:eight alternating400ms vertical swipes with200ms gaps. No inspector/accessibility/screenshots,compiles or tests inside timed scrolling. Twelve compressed atrace files plus HWUI frame records are retained. Frame-stage attribution filters retained records to the actual trace interval; blank third trial retained67 rows but only62 fell inside that interval. All other retained populations are documented in `responsiveness-summary.json`. Later touch/navigation checks run outside the scroll interval. Two harness-only visibility/duplicate-label assertions were corrected; completed native trials were retained and the incomplete text trial rerun. Final cohort is complete12/12,not selected best runs.
+
+| Scene | Median HWUI jank | HWUI p90 range across3 trials | Median of timed UI-work p90 | Median of timed render-before-swap p90 |
+| --- | ---: | ---: | ---: | ---: |
+| Blank native scroll |66.67%|150–350ms|9.91ms|21.08ms|
+| Native rows |68.18%|150–500ms|9.57ms|25.53ms|
+| Text-only Feed |66.67%|150–200ms|15.63ms|80.28ms|
+| Cached-bitmap Feed |70.69%|150–450ms|16.53ms|78.54ms|
+
+Every scene's median whole-run HWUI p90 is150ms. Wide later-trial outliers show environment variance; this is not proof of equivalent app performance or zero bitmap cost. Whole-run HWUI histograms and timed stage endpoints are different measurements and must not be substituted for one another or summed as independent percentiles. Results are not comparable to earlier differently shaped owner/debug workloads.
+
+### Attributable costs and limits
+
+Native-only scenes already show median timed sync-wait p90 around83–85ms and swap-to-completion p90 around87–90ms. Actual `dequeueBuffer` trace slices have p90 elapsed79–86ms in the first two native trials,while scheduler running time is only about0.74–0.82ms:pacing/buffer waiting is present before Feed,images,gesture rails or account/bootstrap effects are mounted. The later native outliers grow further. Feed has its own additional draw-submission cost:`flush commands` p90 is about63–79ms for text Feed and61–115ms for bitmap Feed,versus12–29ms for native rows. This is concrete drawing work worth profiling; these experiments do not isolate a particular SVG,shadow,text component or renderer command as the cause. Changing those product features without an ablation would be generic tuning.
+
+The graphics path is Android Emulator OpenGL ES Translator on NVIDIA GeForce RTX3070,OpenGL ES3.1/NVIDIA591.74,with60Hz peak refresh. A post-cohort read-only snapshot reports31.95GiB RAM total and about9GiB free. A Citrix display adapter is installed too; there is no evidence here assigning causality to it. No driver,hardware,thermal or host-compositor root cause is certified from these Android traces alone. The old emulator GPU histogram sentinel is still not a real4.95s GPU frame.
+
+### Touch feedback versus navigation/content
+
+Seventy-two physical ADB tap samples exercised the same small feedback control across the four scenes. Native event timestamps and JavaScript performance timestamps share the observed uptime basis;all measured ages were positive and below24ms. Each tap changed a visible orange/dark indicator's width and produced a native layout notification. The final actual release screenshot shows Feedback7 and its orange indicator. Screenshot presence proves that feedback rendered;it does not time its presentation.
+
+| Scene | Native touch→JS receipt median/p90 | Receipt→native-layout notification median/p90 | Native touch→layout-notification p90 |
+| --- | ---: | ---: | ---: |
+| Blank |15.06/20.10ms|17.85/19.34ms|37.82ms|
+| Rows |9.53/17.45ms|16.61/18.34ms|37.91ms|
+| Text Feed |13.51/19.65ms|17.48/19.36ms|35.90ms|
+| Bitmap Feed |13.13/17.06ms|17.22/19.63ms|36.20ms|
+
+Six actual Feed→Search→Feed round trips also reached their expected React effect markers. From tab touch receipt,the navigation effect median is242ms(text) and252ms(bitmap);Search's first post-commit effect median is453ms(text) and421ms(bitmap),with maxima826ms and588ms. These are passive React effect timestamps,not exact commit,full-data-ready or visible-pixel times. The synthetic API has50ms configured latency;this does not measure production content/network completion. There is no arbitrary delay found in the inspected native switchTab/writeNavigation path,and composer-close protection remains untouched.
+
+All timed frame records expose DisplayPresentTime=0 and InputEventId=0. Therefore this emulator cannot establish native-touch-to-visible-pixel latency using these counters. The layout measurements are explicitly proxies;they must not be advertised as sub40ms visible response or as proof that every swipe is smooth. Scrolling remains visibly/render-statistically janky in the test runtime. No live-video seek/decode latency or iOS result is claimed by this comparison.
+
+Next validation requirement:use an existing physical Android device with the same release fixture and representative media,retain its actual60/90/120Hz refresh context,and capture Perfetto/FrameTimeline/SurfaceFlinger presentation plus input timestamps or a synchronized visual recording. Repeat the native/text/media comparison,then ablate one drawing source at a time if the Feed-specific flush cost persists. This is required to distinguish product drawing cost from the emulator translation/presentation bottleneck and to justify a real code fix. It is not a request to buy a device,alter OS security settings or enroll with Apple.
+
+### Evidence,reproduction and cleanup
+
+Library:`libfile_c9baafa1cb9c81919e63591fcb8bb723` (`responsiveness-summary.json`),and `libfile_a2b622f688208191bea2551dd04933a5` (`responsiveness-feedback.png`). Raw cohort,12 traces,frame dumps,timed analysis,build log and host context remain under `D:/Development/Apps/mshpit-perf/.tmp/performance/responsiveness-*`. Upload receipt is `responsiveness-library-receipt.json` in the task workspace;Windows extended-attribute tagging is unavailable.
+
+Reproduction uses the existing fixture's `prepare.cjs prepare` with the existing debug keystore/source clip/android checkout,then task-workspace scripts `prepare-current-ux-fixture.cjs`, `install-diagnostic-fixture.cjs`,the offline `:app:assemblePerfRelease` command and installation into the isolated package. `measure-responsiveness.cjs` runs the bounded cohort,`analyze-responsiveness-window.cjs` filters timed frames,and `summarize-responsiveness.cjs` creates the report. The measurement script resumes completed trials;archive the previous cohort or choose a new output label for an intentional fresh run. `prepare.cjs restore` must close every temporary overlay,not git reset/clean.
+
+All fixture overlays were hash-restored;fixture tree clean at558382f and both fixture packages stopped. No8082 server/reverse was introduced in this release-only pass. The owner development client was cleanly reopened after a disconnected inspector stub;Daylight/account choice match,auth ready/session present,no temporary globals,Like/Post/Report blocked,exact read-only feed revalidation allowed,and Feed returned to offset0. Owner source is unchanged from the theme fix;the last full source suite remains6382 passed,zero failed,one skipped. This closeout adds evidence only,so no duplicate full-suite run is claimed or needed. Canonical website remains untouched with its existing untracked audit file. No production content write,deployment,new credential,paid service or purchase occurred.
+
+
+## Discover native cards and source-label cleanup
+
+The native Shows hero previously used StyleSheet.absoluteFillObject for the event action. Installed React Native 0.86 exposes absoluteFill and omits that alias: the actual owner screenshot showed a large blank card, prominent photographer/source badge and missing event copy. Native now uses a dedicated normal-flow card: 16:9 art, date, title, venue/place and a 48dp View event row. Slideshow controls retain 48dp targets and the original event callback. The shared web branch is retained; the canonical website is handled independently.
+
+There are zero provider/source/creator names and zero Photo credits controls on this native event card. The selected image's existing creator/source/license metadata travels with its event into a details-only Discover photo credits section. Only supplied HTTPS links and supplied license metadata appear; a provider name is not treated as a license. Actual Black Keys navigation reached ShowScreen with Jeff Taylor and its supplied Ticketmaster source page, with no license or license URL. Its details screenshot shows the credit below the venue/directions surface. Ticket actions and event identity remain unchanged. This is a placement change, not a legal certification.
+
+Artist cards retain square photography and initials during loading/failure, allow two title lines and switch to a single column with unbounded title text above 1.25 font scale. Stale errors for an old image URI do not suppress a replacement image. Native festival cards use 16:9 art with the existing branded backdrop visible during loading/failure, more consistent body spacing, and large-text title flow. Native venue names/place and event titles can wrap; venue links also allow their detail text to flow. Existing compact metadata limits outside these changed fields remain. Native list week targets are 48dp. Selected theme tokens and navigation identity are preserved.
+
+### Validation
+
+- Final full suite: 6390 passed, zero failed, one skipped of 6391, 118.2s. Eight new executable component tests cover actual event callback/credit metadata, zero default card provenance controls, details links and missing-license behavior, long text, stale image errors and original artist/festival/venue/ticket callbacks. Existing venue hydration VM gained its missing Platform mock without weakening assertions. Focused cohort: 15 passed.
+- Android export passed: 2203 modules, 9.5MB Hermes bundle at .tmp/discover-cards-export. Architecture checks passed at the previous 144 store / 47 state / 156 route baseline; silent catches remain 83. git diff --check passed. No new native dependency or APK was required for this JavaScript refinement.
+- Existing isolated Android debug package ran the real components with local 8-second image responses and deliberate HTTP 404s. Seven device checks passed for no event-card provenance, image fallback/layout and artist/festival/venue callbacks. Global fetch in this fixture rejects API requests; no account or production content writes occurred.
+- A real emulator system font-scale change to 1.5 was observed through React Native Dimensions. The artist grid became full-width with its long title complete; event and venue text flowed without overlap in captured frames. The original system value 1.0 was restored and verified in finally. This is an Android accessibility-layout check, not an iOS result or latency measurement.
+- Actual owner app screenshot shows loaded Black Keys art, visible date/title/venue/action and no credit badge. Card tap reached the original event; Android Back returned to Discover. Owner session remains present with read-only guard and no temporary globals. Existing Ember local selection is preserved although accountTheme is daylight; this pass did not overwrite that local choice.
+
+### Evidence and reproduction
+
+Library screenshots: before libfile_2b17dad0530c8191bbf38b21e0efecf1; actual event after libfile_a2c754dfc2dc8191895535b8809b76ca; actual event details libfile_685f16063694819192022743196c4618; large-text isolated artist libfile_cd9826aecf908191bf0a566b60f4eb80; isolated festival libfile_45535b3b007481919ab400b3976c19a5; isolated venue libfile_3e2fc5ce8bfc81919f9f75f9509e73f7. These distinguish actual live content from explicitly labeled synthetic fixtures. Task-workspace discover-card-device-checks.json and discover-card-large-text-checks.json record checks and exact font restoration. Source test/build logs are .tmp/overnight/discover-cards-final-regression.log and discover-cards-export.log. Windows Library version xattrs are unavailable; Library creates succeeded.
+
+Run normal checks from the app checkout with npm test and npx expo export --platform android. The bounded visual fixture uses the existing local-performance prepare.cjs workflow, prepare-current-ux-fixture.cjs, prepare-card-preview.cjs, sync-card-preview.cjs and settle-card-preview.cjs in the task workspace, then check-card-preview.cjs and check-card-large-text.cjs. It needs the existing debug fixture APK and loopback Metro8082/image server8083; it creates no account or signing credentials. Both temporary servers and reverse ports were removed, fixture packages stopped, and all preparation overlays hash-restored. Owner Metro8081 is retained.
+
+Canonical website analog paths under D:/Websites/Concert Website/pit: src/components/discover/DiscoverEventBanner.jsx, DiscoverArtistCard.jsx, DiscoverEventList.jsx; src/components/VenueDiscoveryCards.jsx; src/features/festivals/FestivalCard.jsx; src/screens/DiscoverScreen.jsx and ShowScreen.jsx. Separate website task reports local commit 08298f90daec7585fa27e398c0ed38b2b69591b9, with a generic Photo credits action opening its PhotoViewer. App uses an appropriate details surface instead; no website files were edited here. No deployment, push, paid service, purchase, production post, new signing credential or Apple enrollment occurred. Physical Android presentation/input profiling remains the earlier responsiveness requirement, and signed iPhone/TestFlight validation remains deferred.
+
+### Theme provenance clarification
+
+The earlier verified owner Daylight screenshot was captured at 2026-10-15T16:48:38Z. This Discover pass's BEFORE screenshot was captured at 17:22:36Z and already shows Ember. The card-preview entry and preparation script were created later at 17:33:51Z/17:33:54Z. Before/after Discover images therefore depict the same observed Ember runtime; they are not evidence that the owner selected Ember, nor proof of continued account/active-theme parity with the preceding Daylight checkpoint. No recorded user theme action or writer trace explains the transition between those checkpoints. The author of that transition is unknown.
+
+A read-only owner inspection at 17:57:34Z returned accountTheme=daylight, activeTheme=ember, storedTheme=ember, storedOwnerMatchesSession=true, storedOwnerIsGuest=false and sessionPresent=true (task-workspace owner-theme-provenance.json). No identity value was printed. The card fixture writes only daylight/guest through its own package-local SQLite default store, runs in com.mshpit.app.dev.perfdebug on Metro8082, and blocks API fetch. Android run-as confirms distinct data roots /data/user/0/com.mshpit.app.dev and /data/user/0/com.mshpit.app.dev.perfdebug. Its code has no shared SQLite path or owner-package storage access, and its only explicit theme write is daylight rather than ember. Thus there is no evidence that the card fixture caused the owner's Ember value; Ember predates that fixture. This does not identify an earlier unknown writer. No preference was changed to resolve this discrepancy. Describe the screenshots as observed Ember, with accountTheme still daylight, rather than a verified new owner preference.
+
+
+## Native incoming account links - isolated authentication follow-up
+
+Implementation is isolated in D:/Development/Apps/mshpit-auth on codex/native-auth-links-20261015, based on5446c04. The owner checkout and its guarded Metro8081 were not edited. No server, deployment, OS association, native package, account credential or preference change is part of this patch.
+
+### Supported contract and boundaries
+
+The current native Root subscribed only to News; verify/reset state initializers read window.location only on web. New NativeAccountLinks.native.jsx is mounted as a native-only screen gateway. One in-memory controller subscribes before the initial URL promise and handles cold getInitialURL plus warm url callbacks. An adapter validates the exact configured HTTPS origin and canonical root path before invoking the shared authLinkIntent parser from website commit7288a00. Userinfo, explicit ports, lookalike hosts, alternate normalized paths, HTTP, arbitrary/custom schemes, whitespace/control characters and oversized URLs are rejected. Fragment capability is current; legacy query links remain supported. Exactly one valid reset/verify capability is permitted; duplicate or mixed reset/verify/unsubscribe/ownerApproval values become a recoverable invalid-link screen. Unrelated links are ignored. No bearer token mshpit:// redirect was introduced.
+
+Opening a link displays a form and never submits. A newer admitted link synchronously aborts the preceding screen request and creates a fresh form revision. Late initial results cannot replace newer warm links. Duplicate delivery cannot remount/replay an accepted or dismissed intent. Tokens remain only in mounted memory, outside persisted navigation, diagnostics, logs, analytics and clipboard. Closing/unmounting/handoff clears pending intent; the in-memory last-delivery tombstone suppresses duplicates for that mounted gateway lifetime. A subsequent process deliberately receiving a link still relies on server expiry/replay validation.
+
+Same-account identity revalidation blocks interaction behind a checking surface while retaining form/recovery state, and immediately cancels pending requests. Account A->B or A->guest discards the old capability. A reset interrupted by safety logout retains an account-neutral token-free recovery surface, with login/new-reset actions. Recovery navigation retires the capability before opening another form. The existing authentication fence still owns identity adoption and revocation. The optional reset onAccepted callback runs only inside its successful fenced accept, after valid returned user identity and BEFORE Store publishes the accepted account. This retires the form before the intentional account switch can be mistaken for interruption. Rejections never trigger it.
+
+Verification remains a deliberate confirmation and uses existing same-account reconciliation/adoption; confirming B's token while A is signed in cannot sign in B or replace A. The shared screen now explains external-account completion, invalid/expired/replaced links and current-account-only resend recovery. Reset warns that it applies to the account that received the email and intentionally signs that account in only after submitting a valid new password. Uncertain reset results explain that the password may already have changed and provide deliberate login/new-link recovery. AuthScreen accepts its existing forgot mode as an initial recovery destination. This patch selectively reuses client contracts/recovery from the web work; it does not cherry-pick unrelated web/server changes or claim to roll out all auth work.
+
+### Verification and independent review
+
+- Final targeted cohort:50 passed. These execute the real adapter/controller, actual compiled gateway and reset/verification screens, and extracted actual Store acceptance. Coverage includes hostile URLs, malformed/conflicting replacement, cold/warm promise race, pre-auth bootstrap, duplicate events, same-account validation, wrong account, logout/handoff, held request cancellation, late completion, rejected/uncertain recovery, retire-before-adopt ordering and recovery-login success without resurrecting old reset state. Existing account-theme effect fixtures now explicitly model native sensitive-flow state and assert that theme reload cannot interrupt an account link. Existing accessibility assertions retain request cancellation and explicitly include the new acceptance callback.
+- Full suite:6434 passed,zero failed,one skipped of6435 in91.4s (.tmp/native-auth-regression.log). Earlier runs exposed missing extracted-effect fixture inputs and old exact-copy assertions; these were corrected without weakening behavior assertions. Final Android export passed:2207 modules,9.5MB Hermes (.tmp/native-auth-export-final; log native-auth-export-final.log). Syntax passed855 server/script Node files. Frontend syntax is additionally exercised by export and compiled component tests. Architecture passed unchanged Store144/state47/routes156,83 silent catches; git diff --check passed.
+- Independent read-only agent review found reset uncertainty recovery and acceptance-order issues; both were repaired. Final re-review found no remaining blockers and independently ran10 actual Store/screen suites successfully. No real token, signup, password change or production authentication mutation was used.
+- Existing isolated Android debug APK ran actual gateway/screens with a fixture-only synthetic Store context and mocked Linking ingress; global fetch rejected network access. Cold mock delivery showed calls0. Nine device cases passed: expired/replaced recovery preserving A, malformed replacement without submission, fresh valid warm form, duplicate without submission, wrong-account completion preserving A, HOME/background-return equivalent without replay, explicit reset warning, uncertain-reset safety logout recovery, and opening forgot form without sending. Four mock confirmations/resets total were invoked by explicit UI actions. These are app contract/UI checks, NOT real email delivery, actual browser handoff or OS HTTPS association verification.
+
+### Evidence and remaining rollout requirements
+
+Inspected Library PNGs are synthetic fixture screens: cold confirmation libfile_51d2379f0bc48191a4c9028af53d915a; wrong-account result libfile_fd570d3a714081919813d14e166aa9fa; malformed recovery libfile_cfcd1c35f200819180063cf3d9ccf7fd; interrupted reset recovery libfile_770707934c30819196beba557ba09519; native forgot recovery libfile_f3f51baef1ec8191aa2ae039bc83dd00. Task workspace holds native-auth-device-checks.json and native-auth-library-receipt.json. Windows Library xattrs are unavailable; creates succeeded.
+
+Reproduce targeted checks with node --test src/domain/nativeAccountLink.test.mjs src/screens/nativeAccountLinkScreens.test.mjs src/domain/passwordResetRecovery.test.mjs src/domain/authLinkIntent.test.mjs src/domain/emailVerificationUx.integration.test.mjs. Full regression is npm test; Android gate is npx expo export --platform android --output-dir .tmp/native-auth-export-final --max-workers 2. The bounded fixture uses the existing prepare.cjs workflow, task-workspace prepare-native-auth-fixture.cjs and check-native-auth-device.cjs with the existing perfdebug APK and localhost8082. It never requires paid EAS, credentials or downloads. Temporary server/reverse8082 were removed, both fixture packages stopped and every overlay hash-restored; fixture clean at558382f.
+
+app.json has no associatedDomains or verified HTTPS intentFilters. Normal emailed HTTPS links therefore remain browser flows until separately approved domain-association setup and signed physical-device verification. Custom scheme ownership is not exclusive and is not accepted for bearer links. No new grants, associations, signing, Apple enrollment, deployment or push occurred. The patch remains local for coordinated integration with web auth work; Android mocked ingress is not physical iOS/Universal Link certification.
+
+References inspected: exact SDK57 https://docs.expo.dev/versions/v57.0.0/ and React Native Linking https://reactnative.dev/docs/linking (cold getInitialURL and warm url event contracts). No SDK upgrade or dependency installation was needed.
+
+Owner closeout readback at18:35:07UTC:authReady/session present, FeedScreen, no temporary globals, read-only guard enabled, Like/Post/Report blocked and exact feed revalidation allowed. accountTheme=daylight, activeTheme=ember, storedTheme=ember, stored owner matches the session and is not guest, unchanged from17:57:34UTC before this phase. No preference was altered. Returning from the long fixture session encountered a React Native development-inspector CxxInspectorPackagerConnection NullPointerException in the existing owner debug client; a clean force-stop/reopen of localhost8081 recovered it without clearing app data. This was not treated as evidence of an auth/product release failure or as a certified runtime fix. Owner checkout remains clean at5446c04 and has not yet received this isolated native-auth patch.

@@ -1,227 +1,37 @@
-import assert from "node:assert/strict";
-import test from "node:test";
-
-import { confirmMissingDynamicChunk, dynamicChunkUrl, lazyWithRetry, loadChunk } from "./lazyWithRetry.js";
-
-// A fake sessionStorage and reload spy, so the recovery path is testable without
-// a browser.
-function harness() {
-  const store = new Map();
-  const storage = {
-    getItem: (k) => (store.has(k) ? store.get(k) : null),
-    setItem: (k, v) => store.set(k, String(v)),
-    removeItem: (k) => store.delete(k),
-  };
-  let reloads = 0;
-  return { storage, reload: () => { reloads += 1; }, reloadCount: () => reloads, delay: () => Promise.resolve(), store };
-}
-
-function elementText(node) {
-  if (node == null || typeof node === "boolean") return "";
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  const children = node?.props?.children;
-  return (Array.isArray(children) ? children : [children]).map(elementText).join(" ");
-}
-
-function findElement(node, predicate) {
-  if (!node || typeof node !== "object") return null;
-  if (predicate(node)) return node;
-  const children = node?.props?.children;
-  for (const child of (Array.isArray(children) ? children : [children])) {
-    const found = findElement(child, predicate);
-    if (found) return found;
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { lazyWithRetry, loadChunk, isChunkLoadError, confirmMissingDynamicChunk, dynamicChunkUrl } from './lazyWithRetry.js';
+import WebChunkRecovery from './webChunkRecovery.js';
+function harness() { let reloads = 0; const store = new Map(); return { reload: () => reloads++, reloadCount: () => reloads, delay: async () => {}, store, storage: { getItem: key => store.get(key), setItem: (key,value) => store.set(key,value), removeItem: key => store.delete(key) } }; }
+test('successful imports and one transient retry return the module without navigation', async () => {
+  for (const failures of [0, 1]) { const h = harness(); let attempts = 0;
+    const result = await loadChunk(async () => { if (attempts++ < failures) throw Error('network'); return { default: 'Screen' }; }, h);
+    assert.equal(result.default, 'Screen'); assert.equal(attempts, failures + 1); assert.equal(h.reloadCount(), 0);
   }
-  return null;
-}
-
-test("a chunk that loads first try returns it and leaves no reload guard", async () => {
-  const h = harness();
-  const mod = await loadChunk(async () => ({ default: "Screen" }), { name: "Ok", ...h });
-  assert.equal(mod.default, "Screen");
-  assert.equal(h.reloadCount(), 0);
-  assert.equal(h.store.size, 0, "no guard left behind on success");
 });
-
-test("a transient blip is retried once and then succeeds without reloading", async () => {
-  const h = harness();
-  let attempts = 0;
-  const mod = await loadChunk(async () => {
-    attempts += 1;
-    if (attempts === 1) throw new Error("network blip");
-    return { default: "Screen" };
-  }, { name: "Blip", ...h });
-  assert.equal(attempts, 2, "should have retried exactly once");
-  assert.equal(mod.default, "Screen");
-  assert.equal(h.reloadCount(), 0, "a recovered blip must not reload the page");
+test('all recognized web chunk failures retain an in-place recovery view, with no automatic reload or storage access', async () => {
+  const errors = [Object.assign(Error('missing'), { name: 'ChunkLoadError' }), Error('Loading chunk failed: 404'), Error('Requiring unknown module "624".'), Object.assign(Error('Loading module https://fixture.invalid/Old.js failed.'), { name: 'AsyncRequireError' }), Error('Failed to fetch dynamically imported module')];
+  for (const error of errors) {
+    const h = harness(); let attempts = 0;
+    const options = { ...h, get storage() { assert.fail('no storage required to preserve the mounted tree'); }, probe: () => assert.fail('no network probe needed') };
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const mod = await loadChunk(async () => { attempts++; throw error; }, options);
+      assert.equal(mod.default().type, WebChunkRecovery); assert.equal(h.reloadCount(), 0);
+    }
+    assert.equal(attempts, 4);
+  }
 });
-
-test("a stale chunk after a deploy reloads exactly once", async () => {
-  const h = harness();
-  const alwaysFails = async () => { throw new Error("Loading chunk failed: 404"); };
-  const mod = await loadChunk(alwaysFails, { name: "Admin", ...h });
-  assert.equal(h.reloadCount(), 1, "reloads to get fresh HTML");
-  assert.equal(h.store.get("pit.chunkReload.Admin"), "1", "persists the guard before reloading");
-  assert.equal(typeof mod.default, "function");
-  const fallback = mod.default();
-  assert.equal(fallback.props.role, "status");
-  assert.equal(fallback.props["aria-live"], "polite");
-  assert.match(elementText(fallback), /Updating Mshpit…/);
+test('native/preload paths and ordinary generic network errors keep their rejection behavior', async () => {
+  for (const error of [Error('render failed'), TypeError('Failed to fetch'), Error('Requiring unknown module "624" while saving.')]) {
+    const h = harness(); await assert.rejects(loadChunk(async () => { throw error; }, h), value => value === error); assert.equal(h.reloadCount(), 0); assert.equal(isChunkLoadError(error), false);
+  }
+  await assert.rejects(loadChunk(async () => { throw Object.assign(Error('missing'), { name: 'AsyncRequireError' }); }, { reload: null, delay: async () => {} }), /missing/);
 });
-
-test("an Expo Metro module-graph mismatch reloads once and cannot loop", async () => {
-  const h = harness();
-  const metroMismatch = async () => { throw new Error('Requiring unknown module "624".'); };
-
-  const mod = await loadChunk(metroMismatch, { name: "ShowScreen", ...h });
-  assert.equal(h.reloadCount(), 1, "fresh HTML and runtime get one chance to repair the module graph");
-  assert.equal(h.store.get("pit.chunkReload.ShowScreen"), "1");
-  assert.equal(typeof mod.default, "function");
-
-  await assert.rejects(
-    () => loadChunk(metroMismatch, { name: "ShowScreen", ...h }),
-    /Requiring unknown module "624"/,
-  );
-  assert.equal(h.reloadCount(), 1, "a persistently broken current build must surface instead of reloading forever");
+test('retained chunk URL diagnostic verification stays same-origin and recognizes HTML fallback', async () => {
+ const error = Object.assign(Error('Loading module /_expo/static/js/web/Old.js failed. (error: /_expo/static/js/web/Old.js)'), { name: 'AsyncRequireError' });
+ assert.equal(dynamicChunkUrl(error, 'https://fixture.invalid/feed'), 'https://fixture.invalid/_expo/static/js/web/Old.js');
+ assert.equal(await confirmMissingDynamicChunk(error, { baseUrl: 'https://fixture.invalid/feed', probe: async () => ({ status: 200, contentType: 'text/html' }) }), true);
 });
-
-test("an unrelated error that merely mentions an unknown module does not reload", async () => {
-  const h = harness();
-  const unrelated = async () => { throw new Error('Requiring unknown module "624" while saving.'); };
-  await assert.rejects(() => loadChunk(unrelated, { name: "Composer", ...h }), /while saving/);
-  assert.equal(h.reloadCount(), 0);
-});
-
-test("a reload that returns normally leaves an accessible manual escape", async () => {
-  const h = harness();
-  const stale = async () => { throw new Error("Loading chunk failed: 404"); };
-  const mod = await loadChunk(stale, { name: "NoNavigation", ...h });
-  assert.equal(h.reloadCount(), 1, "the automatic path still runs only once");
-
-  const fallback = mod.default();
-  assert.equal(fallback.props["aria-atomic"], "true");
-  const button = findElement(fallback, (node) => node.type === "button");
-  assert.ok(button, "fallback has a keyboard-focusable native button");
-  assert.equal(button.props["aria-label"], "Reload Mshpit");
-  assert.equal(elementText(button), "Try again");
-  button.props.onClick();
-  assert.equal(h.reloadCount(), 2, "another reload happens only after explicit user action");
-  assert.equal(h.store.get("pit.chunkReload.NoNavigation"), "1", "manual escape does not clear the loop guard");
-});
-
-test("a stale chunk surfaces its error when session storage is unavailable", async () => {
-  const h = harness();
-  const stale = async () => { throw new Error("Loading chunk failed: 404"); };
-
-  await assert.rejects(() => loadChunk(stale, {
-    name: "NoStorage",
-    ...h,
-    storage: null,
-  }), /Loading chunk failed: 404/);
-  assert.equal(h.reloadCount(), 0, "cannot safely reload without a persistent guard");
-});
-
-test("a stale chunk surfaces its error when writing the reload guard throws", async () => {
-  const h = harness();
-  const stale = async () => { throw new Error("Loading chunk failed: 404"); };
-  const storage = {
-    getItem: () => null,
-    setItem: () => { throw new Error("storage denied"); },
-    removeItem: () => {},
-  };
-
-  await assert.rejects(() => loadChunk(stale, { name: "Denied", ...h, storage }), /Loading chunk failed: 404/);
-  assert.equal(h.reloadCount(), 0, "a failed guard write must not reload");
-});
-
-test("a stale chunk surfaces its error when the reload guard cannot be read back", async () => {
-  const h = harness();
-  const stale = async () => { throw new Error("Loading chunk failed: 404"); };
-  let stored = null;
-  const storage = {
-    getItem: () => stored === "1" ? "mismatch" : stored,
-    setItem: (_key, value) => { stored = String(value); },
-    removeItem: () => { stored = null; },
-  };
-
-  await assert.rejects(() => loadChunk(stale, { name: "Mismatch", ...h, storage }), /Loading chunk failed: 404/);
-  assert.equal(stored, "1", "the attempted write occurred");
-  assert.equal(h.reloadCount(), 0, "an unconfirmed guard must not reload");
-});
-
-test("repeated cellular fetch failures never hard-reload the app", async () => {
-  const h = harness();
-  const offline = async () => { throw new TypeError("Failed to fetch"); };
-  await assert.rejects(() => loadChunk(offline, { name: "Composer", ...h }), /Failed to fetch/);
-  assert.equal(h.reloadCount(), 0, "a network outage must preserve unsaved composer state");
-  assert.equal(h.store.size, 0);
-});
-
-test("Expo's real AsyncRequireError reloads only after the hashed asset is confirmed missing", async () => {
-  const h = harness();
-  const stale = new Error("Loading module https://www.mshpit.com/_expo/static/js/web/LogScreen-deadbeef.js failed.\n(error: https://www.mshpit.com/_expo/static/js/web/LogScreen-deadbeef.js)");
-  stale.name = "AsyncRequireError";
-  const factory = async () => { throw stale; };
-  await loadChunk(factory, {
-    name: "Composer",
-    ...h,
-    online: true,
-    baseUrl: "https://www.mshpit.com/feed",
-    probe: async () => ({ status: 404, headers: { get: () => "application/json" } }),
-  });
-  assert.equal(h.reloadCount(), 1);
-});
-
-test("a dynamic import failure during a network outage preserves the page", async () => {
-  const h = harness();
-  const transient = new Error("Failed to fetch dynamically imported module: https://www.mshpit.com/_expo/static/js/web/LogScreen-deadbeef.js");
-  await assert.rejects(() => loadChunk(async () => { throw transient; }, {
-    name: "Composer",
-    ...h,
-    online: true,
-    baseUrl: "https://www.mshpit.com/feed",
-    probe: async () => { throw new TypeError("Failed to fetch"); },
-  }), /dynamically imported module/);
-  assert.equal(h.reloadCount(), 0);
-});
-
-test("dynamic chunk verification is same-origin and recognizes an HTML SPA fallback", async () => {
-  const error = Object.assign(new Error("Loading module /_expo/static/js/web/Old.js failed. (error: /_expo/static/js/web/Old.js)"), { name: "AsyncRequireError" });
-  assert.equal(dynamicChunkUrl(error, "https://www.mshpit.com/feed"), "https://www.mshpit.com/_expo/static/js/web/Old.js");
-  assert.equal(await confirmMissingDynamicChunk(error, {
-    baseUrl: "https://www.mshpit.com/feed",
-    probe: async () => ({ status: 200, headers: { get: () => "text/html; charset=utf-8" } }),
-  }), true);
-});
-
-test("it never loops: a second failure after the reload throws instead", async () => {
-  const h = harness();
-  const alwaysFails = async () => { throw new Error("still 404"); };
-  // First load: reloads and returns the placeholder.
-  await loadChunk(alwaysFails, { name: "Loop", ...h });
-  assert.equal(h.reloadCount(), 1);
-  // Second load with the guard already set (as it would be after the reload):
-  // it must surface the error, not reload again.
-  await assert.rejects(() => loadChunk(alwaysFails, { name: "Loop", ...h }), /still 404/);
-  assert.equal(h.reloadCount(), 1, "must not reload a second time");
-});
-
-test("recovering one screen does not suppress a reload for a different screen", async () => {
-  const h = harness();
-  const fail = async () => { throw new Error("404"); };
-  await loadChunk(fail, { name: "ScreenA", ...h });
-  await loadChunk(fail, { name: "ScreenB", ...h });
-  assert.equal(h.reloadCount(), 2, "each chunk gets its own one-shot reload");
-});
-
-test("a later success clears the guard so a future failure can recover again", async () => {
-  const h = harness();
-  const fail = async () => { throw new Error("404"); };
-  await loadChunk(fail, { name: "Screen", ...h });     // reload #1, guard set
-  assert.equal(h.store.get("pit.chunkReload.Screen"), "1");
-  await loadChunk(async () => ({ default: "ok" }), { name: "Screen", ...h }); // recovers
-  assert.equal(h.store.has("pit.chunkReload.Screen"), false, "guard cleared on success");
-});
-
 test("preloading a lazy screen shares one import with React's later render", async () => {
   let imports = 0;
   const Screen = lazyWithRetry(async () => {
@@ -244,7 +54,7 @@ async function resolveLazyScreen(Screen) {
   }
 }
 
-test("optional stale-screen warmup cannot reload a working page but navigation can recover", async () => {
+test("optional warmup rejects; foreground navigation preserves the working page", async () => {
   const h = harness();
   const previousWindow = globalThis.window;
   globalThis.window = { sessionStorage: h.storage, location: { reload: h.reload } };
@@ -255,8 +65,8 @@ test("optional stale-screen warmup cannot reload a working page but navigation c
     assert.equal(h.store.size, 0, "warmup must not spend the later navigation recovery guard");
 
     const fallback = await resolveLazyScreen(Screen);
-    assert.equal(h.reloadCount(), 1, "opening the failed screen retains guarded recovery");
-    assert.match(elementText(fallback()), /Updating Mshpit/);
+    assert.equal(h.reloadCount(), 0, "opening the failed screen preserves the working tree");
+    assert.equal(fallback().type, WebChunkRecovery);
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;

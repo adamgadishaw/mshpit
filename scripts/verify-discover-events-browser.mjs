@@ -2,7 +2,8 @@
 // Current exported app, guest visitor, loopback-only mocked APIs. Discover's
 // Shows tab: four cards, then every show in range as a list a week at a time
 // (no endless "load more"), later pages fetched once each, and festival
-// listings kept out of Shows for the Festivals tab.
+// listings kept out of Shows for the Festivals tab. Failed later pages retain
+// visible rows; a valid empty first-page retry clears the error and old rows.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -19,7 +20,8 @@ const day = (offset) => new Date(Date.now() + offset * DAY_MS).toISOString().sli
 const shows = Array.from({ length: 40 }, (_, index) => ({
   id: `tm_list_fixture_${index + 1}`, artist: `Fixture Act ${index + 1}`, venue: `Fixture Hall ${(index % 5) + 1}`,
   city: "Toronto", place: "Toronto, Ontario, Canada", venueCountry: "Canada", venueCountryCode: "CA",
-  source: "ticketmaster", providerActive: true, date: day(1 + Math.floor(index * 26 / 40)), releaseAt: 0, eventKind: "concert",
+  source: "ticketmaster", providerActive: true,
+  date: index === 0 ? day(1).replaceAll("-", " · ") : day(1 + Math.floor(index * 26 / 40)), releaseAt: 0, eventKind: "concert",
 }));
 const festival = { id: "tm_list_fixture_festival", artist: "Fixture Headliner", eventName: "Fixture Fest", eventKind: "festival",
   venue: "Fixture Park", city: "Toronto", place: "Toronto, Ontario, Canada", venueCountry: "Canada", venueCountryCode: "CA",
@@ -44,9 +46,10 @@ async function serverForBuild() {
   return { server, origin: "http://127.0.0.1:" + server.address().port };
 }
 
-async function scenario(browser, origin, width) {
+async function scenario(browser, origin, width, { failureMode = null } = {}) {
+  const name = `discover-events-${width}${failureMode ? `-${failureMode}-recovery` : ""}`;
   const context = await browser.newContext({ viewport: { width, height: 1100 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
-  const state = { pages: [], errors: [], external: [], closing: false };
+  const state = { pages: [], errors: [], external: [], closing: false, recoverWithEmpty: false };
   await context.addInitScript(() => { localStorage.setItem("pit_theme", "stage"); });
   const page = await context.newPage();
   page.setDefaultTimeout(15_000);
@@ -63,7 +66,11 @@ async function scenario(browser, origin, width) {
         const after = url.searchParams.get("after");
         state.pages.push(after || "first");
         // Two pages: the festival rides on the first to prove Shows leaves it out.
+        if (!after && state.recoverWithEmpty) return await json({ tourDates: [], nextCursor: null, range: { days: 30, through: day(30) } });
         if (!after) return await json({ tourDates: [festival, ...shows.slice(0, 25)], nextCursor: "fixture-page-2", range: { days: 30, through: day(30) } });
+        if (after === "fixture-page-2" && failureMode === "malformed200") return await json({ tourDates: "invalid-array", nextCursor: null });
+        if (after === "fixture-page-2" && failureMode === "invalidrows200") return await json({ tourDates: [null], nextCursor: null });
+        if (after === "fixture-page-2" && failureMode === "503") return await json({ error: "Synthetic event provider unavailable", code: "SERVICE_UNAVAILABLE" }, 503);
         if (after === "fixture-page-2") return await json({ tourDates: shows.slice(25), nextCursor: null, range: { days: 30, through: day(30) } });
         return await json({ error: "unknown cursor" }, 400);
       }
@@ -88,6 +95,51 @@ async function scenario(browser, origin, width) {
     await seeAll.click();
     await page.getByRole("radio", { name: "Show events as list", exact: true }).waitFor();
     assert.equal(await page.getByRole("radio", { name: "Show events as list", exact: true }).getAttribute("aria-checked"), "true");
+    await page.locator("#discover-panel-shows").getByRole("link", {
+      name: /^Open Fixture Act 1 at Fixture Hall 1,/u,
+    }).waitFor({ state: "visible" });
+    const addingDates = page.getByText("Adding later dates...", { exact: true });
+    if (failureMode) {
+      const retry = page.getByRole("button", { name: "Try loading this event range again", exact: true });
+      await retry.waitFor({ state: "visible" });
+      await page.getByText("Couldn't load more dates. Try again.", { exact: true }).waitFor({ state: "visible" });
+      const rows = page.locator("#discover-panel-shows").getByRole("link", { name: /^Open Fixture Act \d+ at Fixture Hall/u });
+      await rows.first().waitFor({ state: "visible" });
+      await rows.getByText("Fixture Act 1", { exact: true }).waitFor({ state: "visible" });
+      const retainedRows = await rows.count();
+      assert.ok(retainedRows > 0, "the failed later page retains visible first-page shows");
+      assert.deepEqual(state.pages.slice(before), ["fixture-page-2"], "the list reaches the failing later page exactly once");
+      assert.equal(await page.getByText(/^No events are listed .+ over the next 30 days\.$/u).count(), 0, "failure must not masquerade as an empty range");
+      // The loading label is only rendered on the last available week. Inspect
+      // that week so this assertion catches the retained-cursor spinner defect.
+      const lastWeek = page.getByRole("tablist", { name: "Weeks", exact: true }).getByRole("tab").last();
+      await lastWeek.click();
+      assert.equal(await lastWeek.getAttribute("aria-selected"), "true");
+      assert.equal(await addingDates.count(), 0, "a failed later page stops announcing that dates are loading");
+      await retry.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(shots, `${name}-error.png`), fullPage: true });
+
+      // Retry reloads the first page. A valid empty answer replaces the old
+      // range rather than leaving a sticky error or appending to stale shows.
+      state.recoverWithEmpty = true;
+      const beforeRetry = state.pages.length;
+      await retry.click();
+      const empty = page.getByText(/^No events are listed .+ over the next 30 days\.$/u);
+      await empty.waitFor({ state: "visible" });
+      await page.getByRole("button", { name: "Look for events over the next 60 days", exact: true }).waitFor({ state: "visible" });
+      assert.equal(await retry.count(), 0, "the visible retry error clears after an authoritative empty response");
+      assert.equal(await page.getByText("Couldn't load more dates. Try again.", { exact: true }).count(), 0);
+      assert.equal(await addingDates.count(), 0, "the loading label stays absent after successful empty recovery");
+      assert.equal(await rows.count(), 0, "the accepted empty range removes previously retained shows");
+      assert.deepEqual(state.pages.slice(beforeRetry), ["first"], "recovery requests a replacement first page, without replaying the failed cursor");
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+      await empty.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(shots, `${name}-empty.png`), fullPage: true });
+      assert.deepEqual(state.errors, []);
+      assert.deepEqual(state.external, []);
+      console.log(JSON.stringify({ name, passed: true, failureMode, retainedRows, retryPages: state.pages.slice(beforeRetry), emptyRecovery: await empty.innerText() }));
+      return;
+    }
     // Page two arrives on its own, once.
     await page.getByText("40 shows over the next 30 days.", { exact: true }).waitFor();
     assert.deepEqual(state.pages.slice(before), ["fixture-page-2"], "opening the list fetches the later page once");
@@ -98,7 +150,7 @@ async function scenario(browser, origin, width) {
     assert.ok(tabCount >= 4, `weeks across the month (${tabCount})`);
     const firstTab = await tabs.first().getAttribute("aria-label");
     assert.equal(await tabs.first().getAttribute("aria-selected"), "true");
-    const rows = page.getByRole("link", { name: /^Open Fixture Act \d+ at Fixture Hall/u });
+    const rows = page.locator("#discover-panel-shows").getByRole("link", { name: /^Open Fixture Act \d+ at Fixture Hall/u });
     const firstWeekRows = await rows.count();
     assert.ok(firstWeekRows > 0 && firstWeekRows < 40, `one week at a time (${firstWeekRows})`);
     await page.screenshot({ path: join(shots, `list-${width}.png`), fullPage: true });
@@ -109,6 +161,9 @@ async function scenario(browser, origin, width) {
     assert.equal(await tabs.first().getAttribute("aria-selected"), "false", `moved on from ${firstTab}`);
     assert.equal(await tabs.nth(1).getAttribute("aria-selected"), "true");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    await tabs.last().click();
+    assert.equal(await tabs.last().getAttribute("aria-selected"), "true");
+    assert.equal(await addingDates.count(), 0, "completed pagination does not leave a loading label on the final week");
 
     // Back to cards keeps the page tidy.
     await page.getByRole("radio", { name: "Show events as cards", exact: true }).click();
@@ -116,10 +171,10 @@ async function scenario(browser, origin, width) {
     assert.deepEqual(state.pages.slice(before), ["fixture-page-2"], "switching views does not refetch");
     assert.deepEqual(state.errors, []);
     assert.deepEqual(state.external, []);
-    console.log(JSON.stringify({ name: `discover-events-${width}`, passed: true, weeks: tabCount, firstWeekRows }));
+    console.log(JSON.stringify({ name, passed: true, weeks: tabCount, firstWeekRows }));
   } catch (error) {
-    await page.screenshot({ path: join(shots, `failed-${width}.png`), fullPage: true }).catch(() => {});
-    console.error(JSON.stringify({ name: `discover-events-${width}`, error: error.message, errors: state.errors, pages: state.pages }));
+    await page.screenshot({ path: join(shots, `failed-${name}.png`), fullPage: true }).catch(() => {});
+    console.error(JSON.stringify({ name, error: error.message, errors: state.errors, pages: state.pages }));
     throw error;
   } finally { state.closing = true; await context.close(); }
 }
@@ -131,5 +186,8 @@ const { server, origin } = await serverForBuild();
 const browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
 try {
   for (const width of [390, 1280]) await scenario(browser, origin, width);
-  console.log(JSON.stringify({ passed: 2, failed: 0, network: "isolated fixtures only", screenshots: shots }));
+  for (const failureMode of ["malformed200", "invalidrows200", "503"]) {
+    for (const width of [390, 1280]) await scenario(browser, origin, width, { failureMode });
+  }
+  console.log(JSON.stringify({ passed: 8, failed: 0, network: "isolated fixtures only", screenshots: shots }));
 } finally { await browser.close(); await new Promise((done) => server.close(done)); }

@@ -13,6 +13,10 @@ export function videoViewerPhase({ status, hasFirstFrame = false, error = null }
 // The poster protects the decoder surface only until VideoView confirms that a
 // real frame painted. Keeping it mounted until playback begins hides a healthy
 // paused frame behind a failed legacy-poster fallback.
+export function videoViewerBuffering({ status, hasFirstFrame = false, error = null } = {}) {
+  return status === "loading" && hasFirstFrame && !error;
+}
+
 export function videoViewerPosterVisible({ phase } = {}) {
   return phase === "loading";
 }
@@ -108,6 +112,7 @@ export const GALLERY_DISMISS_DISTANCE = 120;
 const GALLERY_GESTURE_SLOP = 12;
 
 export function galleryGestureAxis({ dx = 0, dy = 0 } = {}) {
+  "worklet";
   const x = Math.abs(Number(dx) || 0);
   const y = Math.abs(Number(dy) || 0);
   if (Math.max(x, y) < GALLERY_GESTURE_SLOP) return null;
@@ -117,6 +122,7 @@ export function galleryGestureAxis({ dx = 0, dy = 0 } = {}) {
 }
 
 export function galleryGestureAction({ axis = null, dx = 0, dy = 0, count = 0 } = {}) {
+  "worklet";
   if (axis === "y") return Number(dy) >= GALLERY_DISMISS_DISTANCE ? "close" : null;
   if (axis !== "x" || !(Number(count) > 1)) return null;
   if (Number(dx) <= -GALLERY_SWIPE_DISTANCE) return "next";

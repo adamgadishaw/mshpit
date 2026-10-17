@@ -6,6 +6,8 @@ import {
   currentOrUpcomingTourDateRow,
   currentOrUpcomingTourDateSql,
   effectiveTourDateEndSql,
+  normalizedTourDateStart,
+  normalizedTourDateStartSql,
   providerMultiDayConcertEvidenceSql,
 } from "./tourDateLifecycle.js";
 
@@ -95,4 +97,21 @@ test("tour-date lifecycle SQL matches row policy and preserves numbered placehol
   assert.throws(() => effectiveTourDateEndSql("td;DROP TABLE users"), TypeError);
   assert.throws(() => currentOrUpcomingTourDateSql("td", "? OR 1=1"), TypeError);
   assert.throws(() => providerMultiDayConcertEvidenceSql("td;DROP TABLE users"), TypeError);
+});
+
+test("tour-date cursor normalization matches retained SQL separators and validates calendar days", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec("CREATE TABLE tour_dates (date TEXT)");
+    const insert = database.prepare("INSERT INTO tour_dates VALUES (?)");
+    const read = database.prepare(`SELECT ${normalizedTourDateStartSql("td")} AS date FROM tour_dates td`);
+    for (const value of ["2026-10-01", "2026 · 10 · 01", " 2026 · 10 · 01 ", "2028 · 02 · 29"]) {
+      database.exec("DELETE FROM tour_dates"); insert.run(value);
+      assert.equal(normalizedTourDateStart(value), read.get().date);
+    }
+  } finally { database.close(); }
+  for (const value of [null, 20261001, {}, "", "2026-02-29", "2026 · 02 · 30", "2026-13-01", "1969-12-31", "2026/10/01", "2026-10-01T00:00:00Z", "2026-10-01\n", "2026-10-01" + " ".repeat(31)]) {
+    assert.equal(normalizedTourDateStart(value), null, JSON.stringify(value));
+  }
+  assert.throws(() => normalizedTourDateStartSql("td;DROP TABLE users"), TypeError);
 });

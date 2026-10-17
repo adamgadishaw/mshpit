@@ -388,10 +388,6 @@
     "src/store.js": {
       "count": 14,
       "fingerprint": "e21ffc424bee03d9d74f"
-    },
-    "src/theme.js": {
-      "count": 4,
-      "fingerprint": "bc3afe0a33ce341a2fab"
     }
   },
   "legacyDirectApiCallsByFile": {

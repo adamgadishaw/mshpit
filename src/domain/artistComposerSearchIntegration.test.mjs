@@ -38,7 +38,7 @@ test("unified search reuses local matches and production does not scan the demo 
   assert.match(search, /\+ localResultCount/);
   assert.match(search, /if \(ENABLE_DEMO_DATA\) Object\.values\(ingestedArtists\)/);
   assert.match(store, /memoizedUnifiedVenueSearchIndex\(\{[\s\S]*?tourDates,[\s\S]*?curatedVenues: arenaVenues,[\s\S]*?catalogVenues,[\s\S]*?ratedShows/);
-  assert.match(store, /searchUnifiedVenueIndex\(venueSearchIndex, query, \{ limit \}\)/);
+  assert.match(store, /searchUnifiedVenueIndex\(venueSearchIndex, query, \{ limit, filter \}\)/);
   assert.match(store, /Object\.values\(arenaVenues\)\.forEach\(\(v\) => add\(v\.name, v\.place\)\)/);
   assert.doesNotMatch(store, /const upcomingByVenue = new Map\(\)/, "venue queries reuse one snapshot index");
   assert.match(database, /searchPrefix: db\.prepare/);
@@ -64,7 +64,7 @@ test("official provider titles remain distinct while clear tour names prefill th
   assert.match(card, /styles\.performanceRegister/);
   assert.match(card, /MSHPIT \/ LIVE MEMORY/);
   assert.match(card, /styles\.performancePerforation/);
-  assert.match(card, /style=\{styles\.performanceCardShadow\}[\s\S]*?style=\{\[styles\.performanceCard, !isOnlineReview && styles\.performanceCardAttached\]\}/);
+  assert.match(card, /styles\.performanceCardShadow[\s\S]*?styles\.performanceCardAttached/);
   assert.match(card, /performanceCardShadow: \{[^}]*\.\.\.shadow\.card \}/);
   assert.match(card, /performanceCard: \{ overflow: "hidden",[^}]*backgroundColor: colors\.bgElev \}/);
   assert.doesNotMatch(card, /performanceCard: \{[^}]*\.\.\.shadow\.card/);

@@ -84,3 +84,22 @@ test("interrupted introduction retries its same identity; account capacity never
   f.setContext({session:{id:"b"}});f.render(true);f.commit();assert.equal(f.calls.length,2);
   f.setContext({session:{id:"a"}});f.render(true);f.commit();assert.equal(f.calls.length,2);
 });
+
+test("failed append retries the same news cursor without dropping already read stories", async () => {
+  const f=fixture("./useNewsDeskStories.js");f.render({});f.commit();
+  f.calls[0].resolve({stories:[{id:"first"}],nextCursor:"page-two"});await settle();
+  const append=f.render({}).loadMore();f.calls[1].reject(Error("offline"));await append;
+  const failed=f.render({});assert.deepEqual(failed.stories.map(s=>s.id),["first"]);
+  const retry=(failed.retry||failed.reload)();
+  assert.equal(f.calls[2].cursor,"page-two","retry must resume the failed append, not restart page one");
+  f.calls[2].resolve({stories:[{id:"first"},{id:"second"}],nextCursor:null});await retry;
+  assert.deepEqual(f.render({}).stories.map(s=>s.id),["first","second"]);f.unmount();
+});
+
+test("same-turn Show more presses serialize one news request", async () => {
+  const f=fixture("./useNewsDeskStories.js");f.render({});f.commit();
+  f.calls[0].resolve({stories:[{id:"first"}],nextCursor:"page-two"});await settle();
+  const view=f.render({}),first=view.loadMore(),second=view.loadMore();
+  assert.equal(f.calls.length,2,"repeat press must reuse the pending append");
+  f.calls[1].resolve({stories:[{id:"second"}],nextCursor:null});await Promise.all([first,second]);f.unmount();
+});

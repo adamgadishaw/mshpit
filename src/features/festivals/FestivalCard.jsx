@@ -1,4 +1,5 @@
-import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { useState } from "react";
+import { Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, font, mono, radius, space } from "../../theme";
 import Icon from "../../components/Icon";
@@ -11,6 +12,8 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
 // own colours, a calendar tile with the first day, how soon it starts, then
 // the name, dates, place, the top of the lineup and who's going.
 export default function FestivalCard({ edition, onOpen, size = "large" }) {
+  const [failedImage, setFailedImage] = useState(null);
+  const {fontScale} = useWindowDimensions();
   const headliners = Array.isArray(edition.headliners) ? edition.headliners : [];
   const more = Math.max(0, (Number(edition.lineupCount) || 0) - headliners.length);
   const fresh = lineupIsNew(edition);
@@ -22,11 +25,12 @@ export default function FestivalCard({ edition, onOpen, size = "large" }) {
   return <Pressable onPress={() => onOpen?.(edition)}
     style={({ pressed, hovered }) => [styles.card, hovered && styles.hovered, pressed && styles.pressed]}
     accessibilityRole="link" accessibilityLabel={`${edition.name}, ${festivalDateRange(edition.startDate, edition.endDate)}, ${festivalPlace(edition)}`}>
-    <View style={[styles.art, size === "small" && styles.artSmall]}>
-      {edition.imageUrl ? <>
-        <ExpoImage source={{ uri: edition.imageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} accessibilityIgnoresInvertColors />
+    <View style={[styles.art, size === "small" && styles.artSmall, Platform.OS !== "web" && styles.nativeArt]}>
+      {Platform.OS !== "web" && <FestivalBackdrop accent={festivalAccent(edition.festivalSlug || edition.name)} still />}
+      {edition.imageUrl && failedImage !== edition.imageUrl ? <>
+        <ExpoImage source={{ uri: edition.imageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" transition={150} accessibilityIgnoresInvertColors onError={()=>setFailedImage(edition.imageUrl)} />
         <View style={styles.shade} />
-      </> : <FestivalBackdrop accent={festivalAccent(edition.festivalSlug || edition.name)} still />}
+      </> : Platform.OS === "web" ? <FestivalBackdrop accent={festivalAccent(edition.festivalSlug || edition.name)} still /> : null}
       <View style={styles.badges}>
         {countdown ? <View style={[styles.badge, countdown.live && styles.badgeLive]}><Text style={[styles.badgeText, countdown.live && styles.badgeLiveText]}>{countdown.label}</Text></View> : null}
         {fresh ? <View style={[styles.badge, styles.badgeHot]}><Text style={styles.badgeHotText}>Lineup out</Text></View> : null}
@@ -38,9 +42,9 @@ export default function FestivalCard({ edition, onOpen, size = "large" }) {
       {length ? <View style={styles.lengthTag}><Text style={styles.lengthText}>{length}</Text></View> : null}
     </View>
     <View style={styles.body}>
-      <Text style={styles.name} numberOfLines={2}>{edition.name}</Text>
+      <Text style={styles.name} numberOfLines={Platform.OS !== "web" && fontScale > 1.25 ? undefined : 2}>{edition.name}</Text>
       <Text style={styles.when}>{festivalDateRange(edition.startDate, edition.endDate)}</Text>
-      {festivalPlace(edition) ? <Text style={styles.where} numberOfLines={1}>{festivalPlace(edition)}</Text> : null}
+      {festivalPlace(edition) ? <Text style={styles.where} numberOfLines={Platform.OS === "web" ? 1 : 2}>{festivalPlace(edition)}</Text> : null}
       {headliners.length ? <Text style={styles.lineup} numberOfLines={2}>{headliners.join(" · ")}{more ? <Text style={styles.more}>{`  +${more} more`}</Text> : null}</Text>
         : <Text style={styles.pending}>Lineup not announced yet</Text>}
       {going ? <View style={styles.goingRow}><Icon name="you" size={12} color={colors.amber} /><Text style={styles.going}>{going}</Text></View> : null}
@@ -48,6 +52,7 @@ export default function FestivalCard({ edition, onOpen, size = "large" }) {
   </Pressable>;
 }
 
+const absoluteFill = StyleSheet.absoluteFillObject || StyleSheet.absoluteFill;
 const styles = StyleSheet.create({
   // Sizing belongs to the list around the card (grid or rail).
   card: {
@@ -58,7 +63,8 @@ const styles = StyleSheet.create({
   pressed: { opacity: 0.85 },
   art: { height: 150, backgroundColor: "#0B0A10" },
   artSmall: { height: 116 },
-  shade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.3)" },
+  nativeArt: { height: undefined, width: "100%", aspectRatio: 16 / 9 },
+  shade: { ...absoluteFill, backgroundColor: "rgba(0,0,0,0.3)" },
   badges: { position: "absolute", top: space(2), left: space(2), right: space(2), flexDirection: "row", flexWrap: "wrap", gap: space(1) },
   badge: { borderRadius: radius.pill, backgroundColor: "rgba(10,10,12,0.72)", paddingHorizontal: 9, paddingVertical: 4 },
   badgeText: { color: "#FFFFFF", fontFamily: font, fontSize: 11, fontWeight: "900" },
@@ -71,7 +77,7 @@ const styles = StyleSheet.create({
   calendarDay: { color: "#111114", fontFamily: displayFont, fontSize: 20, fontWeight: "900", lineHeight: 22 },
   lengthTag: { position: "absolute", right: space(2), bottom: space(2), borderRadius: radius.pill, backgroundColor: "rgba(10,10,12,0.72)", paddingHorizontal: 9, paddingVertical: 4 },
   lengthText: { color: "#FFFFFF", fontFamily: font, fontSize: 11, fontWeight: "900" },
-  body: { padding: space(3), gap: 4 },
+  body: { padding: Platform.OS === "web" ? space(3) : 14, gap: Platform.OS === "web" ? 4 : 6 },
   name: { color: colors.text, fontFamily: displayFont, fontSize: 19, fontWeight: "900" },
   when: { color: colors.amber, fontFamily: font, fontSize: 13, fontWeight: "800" },
   where: { color: colors.textDim, fontFamily: font, fontSize: 12.5 },

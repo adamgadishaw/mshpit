@@ -262,7 +262,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     : signupMode ? SIGNUP_STEP_COPY[step - 1][1] : "Your shows, photos and people are waiting.";
   const progress = { min: 1, max: SIGNUP_STEPS.length, now: step, text: `Step ${step} of ${SIGNUP_STEPS.length}: ${SIGNUP_STEPS[step - 1]}` };
 
-  return <KeyboardAvoidingView style={[styles.wrap, { paddingTop: insets.top }]} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+  return <KeyboardAvoidingView style={[styles.wrap, { paddingTop: insets.top }]} behavior={Platform.OS === "ios" ? "padding" : Platform.OS === "android" ? "height" : undefined}>
     <SheetHeader title={mode === "forgot" ? "Reset password" : signupMode ? addAccount ? "Add account" : "Sign up" : "Log in"} onClose={close} leadDisabled={busy} />
     <ScrollView ref={scroll} contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 16) + 24 }]} contentInsetAdjustmentBehavior="automatic" keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" automaticallyAdjustKeyboardInsets={Platform.OS === "ios"}>
       <View style={styles.ticket}>

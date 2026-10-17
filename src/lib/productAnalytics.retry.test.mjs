@@ -4,12 +4,13 @@ import { readFileSync } from "node:fs";
 import { parse } from "@babel/parser";
 import * as policy from "../domain/analyticsPolicy.mjs";
 import * as privacy from "../domain/accountLocalPrivacy.mjs";
-function harness(api) {
+function harness(api, nativeReadOnlyReview = false) {
   const source=readFileSync(new URL("./productAnalytics.js",import.meta.url),"utf8");
   const ast=parse(source,{sourceType:"module"});
   const body=ast.program.body.flatMap(n=>n.type==="ImportDeclaration"?[]:[source.slice((n.type==="ExportNamedDeclaration"?n.declaration:n).start,n.end)]).join("\n");
   let time=100000,serial=0; const timers=new Map(),storage=new Map();
   const modules={"react-native":{AppState:{addEventListener:()=>({remove(){}})},Platform:{OS:"web"}},"./api":{api},
+    "./nativeReviewMode":{nativeReadOnlyReview},
     "./persist":{load:(k,d)=>storage.get(k)||d,save:(k,v)=>storage.set(k,v),remove:k=>storage.delete(k)},
     "../domain/analyticsPolicy.mjs":policy,"../domain/accountLocalPrivacy.mjs":privacy};
   const bindings=Object.fromEntries(ast.program.body.filter(n=>n.type==="ImportDeclaration").flatMap(n=>n.specifiers.map(s=>[s.local.name,modules[n.source.value][s.imported.name]])));
@@ -43,4 +44,11 @@ test("a stale failed request does not impose its backoff on another account",asy
   const pending=h.flushProductAnalytics();h.configureProductAnalytics(member("two"));
   h.trackProductEvent("app_open",{platform:"web",entry:"launch"});rejectFirst(Error("old failure"));await pending;
   await h.flushProductAnalytics();assert.equal(requests,2);
+});
+
+test("local live review never queues or dispatches product analytics", async()=>{
+  let requests=0;const h=harness(async()=>{requests++;},true);
+  h.configureProductAnalytics(member("one"));
+  assert.equal(h.trackProductEvent("app_open",{platform:"android",entry:"launch"}),null);
+  await h.flushProductAnalytics();assert.equal(requests,0);assert.equal(h.timers.size,0);
 });

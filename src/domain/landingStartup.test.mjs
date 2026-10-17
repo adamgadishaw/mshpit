@@ -110,12 +110,12 @@ test("App delegates startup and auth rendering to the pure landing policy", asyn
 });
 
 test("actual commitGo marks only new Intro-origin auth frames and keeps the marker across mode changes", async () => {
-  const construct = new Function("navigationFrameForAccount", "prepareAvailableNavigationFrame", "session", "stackRef", "navigationRef", "pathForFrame", "web", "serverDocumentNavigationPath", "writeNavigation", `return (${await actualAppFunction("commitGo")});`);
+  const construct = new Function("Platform", "navigationFrameForAccount", "prepareAvailableNavigationFrame", "session", "stackRef", "navigationRef", "pathForFrame", "web", "serverDocumentNavigationPath", "writeNavigation", `return (${await actualAppFunction("commitGo")});`);
   for (const landing of [true, false]) {
     for (const candidate of [{ auth: true, authMode: "login" }, { auth: true, authMode: "signup" }, { directory: "events" }]) {
       const stack = landing ? [{}] : [{}, { show: { id: "context-event" } }];
       let committed;
-      construct(navigationFrameForAccount, (frame) => frame, null, { current: stack }, { current: { stack, landing } },
+      construct({ OS: "android" }, navigationFrameForAccount, (frame) => frame, null, { current: stack }, { current: { stack, landing } },
         () => null, false, () => null, (next) => { committed = next; })(candidate);
       const frame = committed.stack.at(-1);
       assert.equal(frame.authFromLanding, landing && candidate.auth ? true : undefined);
@@ -175,4 +175,22 @@ test("actual password reset completion consumes its token before opening Feed in
   const source = await readFile(new URL("../../App.js", import.meta.url), "utf8");
   assert.match(source, /<ResetPasswordScreen token=\{resetToken\} key=\{resetToken\} onDone=\{finishPasswordReset\} onCancel=\{clearResetUrl\}/,
     "cancellation must only consume the reset token, never imply successful authentication");
+});
+
+test("confirmed login replaces the News gate with its safe destination and preserves Back", async () => {
+  const construct = new Function("web", "browserHistoryRef", "writeNavigation", "navigationRef", "MAIN_TAB_PATHS", "back", "return (" + await actualAppFunction("finishAuthentication") + ");");
+  for (const liveSlug of [undefined, "tour-update", "../settings"]) {
+    const parent = { artistName: "Drake" }, calls = [];
+    const current = { stack: [{}, parent, { auth: true, authReturn: { news: true, liveSlug, logging: true } }], tab: "discover", landing: false, accountId: null };
+    const finish = construct(false, {}, (next, path, mode) => calls.push({ next, path, mode }), { current }, {}, () => calls.push("back"));
+    finish("login", { accountId: "confirmed-fixture" });
+    const expected = liveSlug === "tour-update" ? { news: true, liveSlug } : { news: true };
+    assert.deepEqual(calls[0].next.stack, [{}, parent, expected]);
+    assert.equal(calls[0].next.accountId, "confirmed-fixture");
+    assert.equal(calls[0].path, liveSlug === "tour-update" ? "/news/live/tour-update" : "/news");
+    assert.equal(calls[0].mode, "replace");
+    calls.length = 0;
+    finish("login");
+    assert.deepEqual(calls, ["back"], "a gate cannot confirm its own account");
+  }
 });

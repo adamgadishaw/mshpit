@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, focusRing, font, radius } from "../../theme";
 import Icon from "../Icon";
 import { PublicPressableLink } from "../PublicWebLinks";
@@ -44,8 +44,8 @@ export default function DiscoverEventList({ events, weekKey, onWeekChange, loadi
             style={({ pressed, hovered, focused }) => [styles.row, row > 0 && styles.rowDivider, (hovered || pressed) && styles.rowActive, focused && focusRing]}
             accessibilityLabel={`Open ${title} at ${event.venue || "the venue"}, ${day.label}`}>
             <View style={styles.rowCopy}>
-              <Text style={styles.title} numberOfLines={1}>{title}</Text>
-              <Text style={styles.place} numberOfLines={1}>{place}</Text>
+              <Text style={styles.title} numberOfLines={Platform.OS === "web" ? 1 : undefined}>{title}</Text>
+              <Text style={styles.place} numberOfLines={Platform.OS === "web" ? 1 : undefined}>{place}</Text>
             </View>
             {event?.soldOut ? <Text style={styles.tag}>Sold out</Text> : null}
             <Icon name="chevron-right" size={16} color={colors.textFaint} />
@@ -77,7 +77,7 @@ export default function DiscoverEventList({ events, weekKey, onWeekChange, loadi
 const styles = StyleSheet.create({
   root: { gap: 16, minWidth: 0 },
   weeks: { gap: 8, paddingVertical: 2 },
-  weekTab: { flexDirection: "row", alignItems: "center", gap: 7, minHeight: 38, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: 13 },
+  weekTab: { flexDirection: "row", alignItems: "center", gap: 7, minHeight: Platform.OS === "web" ? 38 : 48, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: 13 },
   weekTabOn: { backgroundColor: colors.amber, borderColor: colors.amber },
   weekText: { color: colors.text, fontFamily: font, fontSize: 13, fontWeight: "800" },
   weekCount: { color: colors.textFaint, fontFamily: font, fontSize: 12, fontWeight: "900" },

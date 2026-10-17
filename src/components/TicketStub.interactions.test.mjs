@@ -158,14 +158,15 @@ for (const [path, variable, itemProp] of [
     const body = compile(`const Row = ${screen.slice(component.start, component.end)}; export default Row;`);
     const module = { exports: {} };
     const actionsRef = { current: { onRequireAuth: () => assert.fail("stale handler") } };
-    new Function("require", "module", "exports", "useCallback", "TicketStub", body)
-      (require, module, module.exports, (callback) => callback, "TicketStub");
+    new Function("require", "module", "exports", "useCallback", "TicketStub", "useState", "useRef", "Platform", body)
+      (require, module, module.exports, (callback) => callback, "TicketStub", value => [value, () => {}], value => ({ current: value }), { OS: "web" });
     const row = module.exports.default({ [itemProp]: { id: "p_fixture" }, actionsRef,
       capabilities: { requireAuth: true }, surface: "everyone", itemIndex: 0 });
     let prompts = 0;
     actionsRef.current = { onRequireAuth: () => { prompts++; } };
-    assert.equal(typeof row.props.onRequireAuth, "function");
-    row.props.onRequireAuth();
+    const ticket = nodes(row).find(node => node.type === "TicketStub");
+    assert.equal(typeof ticket.props.onRequireAuth, "function");
+    ticket.props.onRequireAuth();
     assert.equal(prompts, 1);
     assert.match(screen, /const canRequireAuth = typeof onRequireAuth === "function"/);
     assert.match(screen, /requireAuth: canRequireAuth/);

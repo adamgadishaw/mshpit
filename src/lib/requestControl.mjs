@@ -35,6 +35,7 @@ export function createRequestControl({ method, timeoutMs, callerSignal } = {}) {
     signal: controller.signal,
     timeoutMs: duration,
     didTimeout: () => timedOut,
+    abort: () => controller.abort(),
     cleanup: () => {
       clearTimeout(timer);
       callerSignal?.removeEventListener?.("abort", abortFromCaller);

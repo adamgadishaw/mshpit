@@ -67,29 +67,36 @@
     "inventory:seo": "node scripts/seo-inventory.mjs",
     "check:deploy": "npm run split:catalog && npm run test && npm run check:syntax && npm run check:architecture && npm run build:web",
     "check": "npm run split:catalog && npm run test && npm run check:dependencies && npm run check:syntax && npm run check:architecture && npm run build:web",
-    "split:catalog": "node scripts/split-catalog.mjs"
+    "split:catalog": "node scripts/split-catalog.mjs",
+    "mobile:android": "node scripts/mobile-dev.mjs android",
+    "mobile:prebuild": "node scripts/mobile-dev.mjs prebuild",
+    "mobile:start": "node scripts/mobile-dev.mjs start",
+    "mobile:go": "node scripts/mobile-dev.mjs go",
+    "mobile:backend": "node --import ./scripts/mobile-smoke-preload.mjs server/index.js"
   },
   "devDependencies": {
-    "@expo/metro-runtime": "~57.0.15",
+    "@expo/metro-runtime": "~57.0.17",
+    "@formatjs/intl-displaynames": "^7.3.15",
     "@react-native-community/slider": "5.2.0",
     "@shopify/react-native-skia": "2.6.2",
     "ajv": "8.20.0",
-    "expo": "~57.0.20",
-    "expo-asset": "~57.0.16",
-    "expo-audio": "~57.0.4",
-    "expo-build-properties": "~57.0.17",
-    "expo-clipboard": "~57.0.1",
-    "expo-constants": "~57.0.17",
-    "expo-file-system": "~57.0.6",
-    "expo-image": "~57.0.4",
-    "expo-image-manipulator": "~57.0.16",
-    "expo-image-picker": "~57.0.16",
-    "expo-sharing": "~57.0.18",
-    "expo-splash-screen": "~57.0.8",
-    "expo-sqlite": "~57.0.2",
+    "expo": "~57.0.29",
+    "expo-asset": "~57.0.20",
+    "expo-audio": "~57.0.5",
+    "expo-build-properties": "~57.0.22",
+    "expo-clipboard": "~57.0.2",
+    "expo-constants": "~57.0.22",
+    "expo-dev-client": "~57.0.20",
+    "expo-file-system": "~57.0.7",
+    "expo-image": "~57.0.5",
+    "expo-image-manipulator": "~57.0.21",
+    "expo-image-picker": "~57.0.20",
+    "expo-sharing": "~57.0.23",
+    "expo-splash-screen": "~57.0.10",
+    "expo-sqlite": "~57.0.4",
     "expo-status-bar": "~57.0.1",
-    "expo-system-ui": "~57.0.3",
-    "expo-video": "~57.0.3",
+    "expo-system-ui": "~57.0.4",
+    "expo-video": "~57.0.5",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.3",
@@ -110,6 +117,16 @@
     "metro": "0.84.5",
     "metro-config": "0.84.5",
     "metro-transform-worker": "0.84.5",
-    "uuid": "11.1.1"
+    "uuid": "11.1.1",
+    "shell-quote": "1.11.0"
+  },
+  "expo": {
+    "autolinking": {
+      "android": {
+        "buildFromSource": [
+          "expo-video"
+        ]
+      }
+    }
   }
 }

@@ -21,7 +21,7 @@ test("online review cards use only a canonical external YouTube action", () => {
 test("online and festival cards make the artist the primary linked title without repeating it", () => {
   const card = source("../components/TicketStub.jsx");
   const titleBlock = card.slice(
-    card.indexOf("<Text style={styles.performanceTitle}"),
+    card.indexOf("{performance.primaryIsArtist"),
     card.indexOf("<View style={styles.performancePerforation}"),
   );
   const onlineMetaBlock = card.slice(

@@ -3,6 +3,7 @@
 // Every call sends the httpOnly session cookie. Failures become typed AppErrors,
 // enter the safe diagnostics history, and show feedback for mutating requests.
 import { Platform } from "react-native";
+import { reviewAllowsRequest } from "./nativeReviewMode";
 import { AppError, captureAppError } from "./diagnostics";
 import { createRequestControl } from "./requestControl.mjs";
 import { apiIdentityBarrierDecision } from "../domain/apiIdentityState.mjs";
@@ -85,6 +86,13 @@ export function configureApiIdentity(accountId, { ready = true } = {}) {
   return apiIdentity.generation;
 }
 
+// Synchronous draft recovery must never save across an account/validation epoch.
+export function captureApiIdentityCheck(expectedAccountId) {
+  const captured = apiIdentity;
+  return () => captured === apiIdentity && captured.ready && !!expectedAccountId
+    && captured.accountId === String(expectedAccountId);
+}
+
 // Absolute URL for routes that leave the app shell. Web production intentionally
 // stays same-origin; native uses EXPO_PUBLIC_API_URL or the production origin.
 export const apiUrl = (path) => BASE + path;
@@ -96,7 +104,7 @@ const operationContext = (method) => {
   return "Publishing a change";
 };
 
-function apiFailure(error, { path, method, context, silent, kind, status, requestId, serverCode } = {}) {
+function apiFailure(error, { path, method, context, silent, kind, status, requestId, serverCode, identityGeneration } = {}) {
   const appError = error instanceof AppError ? error : new AppError(error?.message, {
     kind,
     status,
@@ -106,6 +114,12 @@ function apiFailure(error, { path, method, context, silent, kind, status, reques
     source: "api",
     cause: error,
   });
+  // A retired request still rejects its caller, but its failure must not be
+  // saved or toasted under the account that replaced the requesting identity.
+  if (identityGeneration !== undefined && identityGeneration !== apiIdentity.generation) {
+    appError.diagnosticSuppressed = true;
+    return appError;
+  }
   const mutating = method !== "GET" && method !== "HEAD";
   return captureAppError(appError, {
     context,
@@ -120,6 +134,11 @@ function apiFailure(error, { path, method, context, silent, kind, status, reques
 // fully backward compatible.
 export async function api(path, { method = "GET", body, context, silent = false, signal, headers, timeoutMs, expectedAccountId, skipIdentityCheck = false, cache } = {}) {
   const verb = String(method || "GET").toUpperCase();
+  if (!reviewAllowsRequest(path, verb)) {
+    throw new AppError("Content changes are disabled in this live-data review build.", {
+      status: 403, serverCode: "LOCAL_REVIEW_READ_ONLY", context: "Reviewing live data", source: "api",
+    });
+  }
   const operation = context || operationContext(verb);
   const identityAtInvocation = apiIdentity;
   // Calls mounted during cold boot wait behind the authoritative `/api/me`
@@ -138,7 +157,7 @@ export async function api(path, { method = "GET", body, context, silent = false,
   if (barrierDecision === "wait") {
     // Check here, in the actual dispatch continuation, not just inside a helper.
     while (!apiIdentity.ready) {
-      await awaitValidatedIdentity(control, signal, { path, method: verb, context: operation, silent });
+      await awaitValidatedIdentity(control, signal, { path, method: verb, context: operation, silent, identityGeneration: identityAtInvocation.generation });
     }
   }
   let payload;
@@ -179,7 +198,7 @@ export async function api(path, { method = "GET", body, context, silent = false,
     }
     const kind = control.didTimeout() ? "timeout" : signal?.aborted || error?.name === "AbortError" ? "abort" : "network";
     control.cleanup();
-    throw apiFailure(error, { path, method: verb, context: operation, silent, kind });
+    throw apiFailure(error, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation, kind });
   }
 
   const retryReceivedAt = Date.now();
@@ -193,7 +212,7 @@ export async function api(path, { method = "GET", body, context, silent = false,
     }
     const kind = control.didTimeout() ? "timeout" : signal?.aborted || error?.name === "AbortError" ? "abort" : "network";
     control.cleanup();
-    throw apiFailure(error, { path, method: verb, context: operation, silent, kind, status: res.status });
+    throw apiFailure(error, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation, kind, status: res.status });
   }
   control.cleanup();
   let data = {};
@@ -219,7 +238,7 @@ export async function api(path, { method = "GET", body, context, silent = false,
         source: "api",
         cause: error,
       });
-      throw apiFailure(failure, { path, method: verb, context: operation, silent });
+      throw apiFailure(failure, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation });
     }
   }
 
@@ -239,7 +258,7 @@ export async function api(path, { method = "GET", body, context, silent = false,
     });
     const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable, code: err.serverCode, now: retryReceivedAt });
     if (retryAfterMs != null) { err.retryAfterMs = retryAfterMs; err.retryAt = retryReceivedAt + retryAfterMs; }
-    throw apiFailure(err, { path, method: verb, context: operation, silent });
+    throw apiFailure(err, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation });
   }
   // Even a correctly bound response can finish after this tab deliberately
   // adopted another account. Never hand that stale success to a Store callback
@@ -251,7 +270,7 @@ export async function api(path, { method = "GET", body, context, silent = false,
       context: operation,
       source: "api",
     });
-    throw apiFailure(err, { path, method: verb, context: operation, silent });
+    throw apiFailure(err, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation });
   }
   return data;
 }
@@ -276,6 +295,11 @@ export async function apiBinary(path, {
   maxBytes = 8 * 1024 * 1024,
 } = {}) {
   const verb = String(method || "GET").toUpperCase();
+  if (!reviewAllowsRequest(path, verb)) {
+    throw new AppError("Content changes are disabled in this live-data review build.", {
+      status: 403, serverCode: "LOCAL_REVIEW_READ_ONLY", context: "Reviewing live data", source: "api",
+    });
+  }
   const operation = context || operationContext(verb);
   const identityAtInvocation = apiIdentity;
   const barrierDecision = apiIdentityBarrierDecision(identityAtInvocation, { skipIdentityCheck, expectedAccountId });
@@ -288,7 +312,7 @@ export async function apiBinary(path, {
   const control = createRequestControl({ method: verb, timeoutMs, callerSignal: signal });
   if (barrierDecision === "wait") {
     while (!apiIdentity.ready) {
-      await awaitValidatedIdentity(control, signal, { path, method: verb, context: operation, silent });
+      await awaitValidatedIdentity(control, signal, { path, method: verb, context: operation, silent, identityGeneration: identityAtInvocation.generation });
     }
   }
 
@@ -325,7 +349,7 @@ export async function apiBinary(path, {
     const kind = control.didTimeout() ? "timeout" : signal?.aborted || error?.name === "AbortError" ? "abort" : "network";
     control.cleanup();
     if (signal?.aborted && kind === "abort") throw error;
-    throw apiFailure(error, { path, method: verb, context: operation, silent, kind });
+    throw apiFailure(error, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation, kind });
   }
 
   const retryReceivedAt = Date.now();
@@ -343,7 +367,7 @@ export async function apiBinary(path, {
       }
       const kind = control.didTimeout() ? "timeout" : signal?.aborted || error?.name === "AbortError" ? "abort" : "network";
       control.cleanup();
-      throw apiFailure(error, { path, method: verb, context: operation, silent, kind, status: res.status, requestId });
+      throw apiFailure(error, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation, kind, status: res.status, requestId });
     }
     let data = {};
     try {
@@ -364,7 +388,7 @@ export async function apiBinary(path, {
     });
     const retryAfterMs = retryAfterDelayMs(res.headers?.get?.("retry-after"), { status: res.status, retryable: err.retryable, code: err.serverCode, now: retryReceivedAt });
     if (retryAfterMs != null) { err.retryAfterMs = retryAfterMs; err.retryAt = retryReceivedAt + retryAfterMs; }
-    throw apiFailure(err, { path, method: verb, context: operation, silent });
+    throw apiFailure(err, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation });
   }
 
   const contentType = String(res.headers?.get?.("content-type") || "").split(";")[0].trim().toLowerCase();
@@ -372,11 +396,14 @@ export async function apiBinary(path, {
     && acceptedContentTypes.some((value) => String(value || "").trim().toLowerCase() === contentType);
   const declaredLength = Number(res.headers?.get?.("content-length"));
   if (!allowed || (Number.isFinite(declaredLength) && declaredLength > maxBytes)) {
+    // Rejected headers leave the body unread. Stop its transfer before removing
+    // the caller cancellation listener and deadline that still own it.
+    control.abort();
     control.cleanup();
     const err = new AppError(undefined, {
       kind: "invalid_response", status: res.status, requestId, context: operation, source: "api",
     });
-    throw apiFailure(err, { path, method: verb, context: operation, silent });
+    throw apiFailure(err, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation });
   }
 
   let buffer;
@@ -386,20 +413,20 @@ export async function apiBinary(path, {
     const kind = control.didTimeout() ? "timeout" : signal?.aborted || error?.name === "AbortError" ? "abort" : "network";
     control.cleanup();
     if (signal?.aborted && kind === "abort") throw error;
-    throw apiFailure(error, { path, method: verb, context: operation, silent, kind, status: res.status, requestId });
+    throw apiFailure(error, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation, kind, status: res.status, requestId });
   }
   control.cleanup();
   if (!buffer.byteLength || buffer.byteLength > maxBytes) {
     const err = new AppError(undefined, {
       kind: "invalid_response", status: res.status, requestId, context: operation, source: "api",
     });
-    throw apiFailure(err, { path, method: verb, context: operation, silent });
+    throw apiFailure(err, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation });
   }
   if (!skipIdentityCheck && identityAtStart.generation !== apiIdentity.generation) {
     const err = new AppError("Your account changed while that request was running. Try again.", {
       status: 409, serverCode: "IDENTITY_CHANGED", context: operation, source: "api",
     });
-    throw apiFailure(err, { path, method: verb, context: operation, silent });
+    throw apiFailure(err, { path, method: verb, context: operation, silent, identityGeneration: identityAtStart.generation });
   }
   const linkHeader = res.headers?.get?.("link") || null;
   return {

@@ -1,3 +1,6 @@
+import { nativeVenueCoordinates } from "./domain/nativeVenueCoordinates.mjs";
+import { nativeNearbyVenues } from "./domain/nativeNearbyVenues.mjs";
+import { nativeVenueLookupCache } from "./domain/nativeVenueLookupCache.mjs";
 import { createContext, useContext, useState, useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
 import { seedFeed, ratedShows, haversineKm, installDemoCatalogShows } from "./data";
@@ -11,7 +14,7 @@ import { MAX_FOLLOWED_ARTISTS, artistFollowReceipt } from "./domain/artistFollow
 import { authTransitions, AUTH_INTENT_KEY } from "./lib/authTransitions";
 import { classifyAccountAgeBand, requestAccountExport, updateAnnouncementEmailPreference, updateDirectMessagePreference, updateProfileAudience, updateProfileSearchIndexingPreference } from "./lib/accountPrivacyApi";
 import { requestFreshDeezerPreview } from "./lib/playbackApi";
-import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
+import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount, syncNativeAccountTheme } from "./theme";
 import { artistMeta, installIngestedCatalog } from "./seed/ingested";
 import { arenaVenues } from "./seed/arenas";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
@@ -1109,7 +1112,9 @@ export function StoreProvider({ children }) {
   // effect here can race asynchronous browser Back and reload `/login`.
   const syncAccountTheme = () => {
     const account = sessionRef.current;
-    if (!authReadyRef.current || !account?.theme) return;
+    if (!authReadyRef.current) return;
+    if (syncNativeAccountTheme(account)) return;
+    if (!account?.theme) return;
     const { theme: localTheme, ownerId } = storedThemeSelection();
     if (localTheme && ownerId === account.id) {
       if (account.theme !== localTheme) api("/api/me", { method: "PATCH", body: { theme: localTheme }, expectedAccountId: account.id }).catch(() => {
@@ -3024,10 +3029,12 @@ export function StoreProvider({ children }) {
     }
   };
   // Complete a reset from the emailed token; on success we're signed in.
-  const resetPassword = async (token, password, { signal } = {}) => {
+  const resetPassword = async (token, password, { signal, onAccepted } = {}) => {
     try {
       return await performAuthentication(() => api("/api/reset", { method: "POST", body: { token, password }, context: "Resetting your password", silent: true, skipIdentityCheck: true }), ({ user }) => {
         if (!user?.id) { void logout(); return { ok: false, error: "Your sign-in could not be confirmed. Please log in again." }; }
+        // Retire the native capability before publishing its deliberately accepted identity.
+        onAccepted?.();
         absorbServerUser(user, { announce: true });
         return { ok: true };
       }, signal);
@@ -4758,31 +4765,39 @@ export function StoreProvider({ children }) {
     const mutationKey = recommendationPreferenceMutationKey(accountId, postId);
     recommendationPreferenceRevisionRef.current += 1;
     setRecommendationHiddenIds((current) => {
+      if (!isCurrent()) return current;
       const next = new Set([...current, postId]);
       save(recommendationPreferenceStorageKey(accountId), [...next]);
       return next;
     });
-    const operation = recommendationPreferenceMutationsRef.current.hide(mutationKey, () => api(
-      `/api/feed/preferences/${encodeURIComponent(postId)}`,
-      {
-        method: "POST",
-        body: { action: "not_interested" },
-        context: "Tuning your recommendations",
-        silent: true,
-        expectedAccountId: accountId,
-      },
-    ));
+    const operation = recommendationPreferenceMutationsRef.current.hide(mutationKey, () => {
+      // Queued taps belong to their original login, including A -> B -> A.
+      if (!isCurrent()) return { ok: false, stale: true };
+      return api(
+        `/api/feed/preferences/${encodeURIComponent(postId)}`,
+        {
+          method: "POST",
+          body: { action: "not_interested" },
+          context: "Tuning your recommendations",
+          silent: true,
+          expectedAccountId: accountId,
+        },
+      );
+    });
     return operation.promise.then((result) => {
       if (!isCurrent()) return { ok: false, stale: true };
       track("recommendation_feedback", { postId, action: "not_interested", surface: "everyone" }, { expectedAccountId: accountId });
       return result;
     }).catch((error) => {
+      // Logout purges this account cache; stale failures must not recreate it.
+      if (!isCurrent()) return { ok: false, stale: true };
       if (!recommendationPreferenceMutationsRef.current.isCurrent(operation)) throw error;
       const persisted = loadRecommendationHiddenIds(accountId);
       persisted.delete(postId);
       save(recommendationPreferenceStorageKey(accountId), [...persisted]);
       if (isCurrent()) {
         setRecommendationHiddenIds((current) => {
+          if (!isCurrent()) return current;
           const next = new Set(current);
           next.delete(postId);
           save(recommendationPreferenceStorageKey(accountId), [...next]);
@@ -4802,27 +4817,35 @@ export function StoreProvider({ children }) {
     const mutationKey = recommendationPreferenceMutationKey(accountId, postId);
     recommendationPreferenceRevisionRef.current += 1;
     setRecommendationHiddenIds((current) => {
+      if (!isCurrent()) return current;
       const next = new Set(current);
       next.delete(postId);
       save(recommendationPreferenceStorageKey(accountId), [...next]);
       return next;
     });
-    const operation = recommendationPreferenceMutationsRef.current.undo(mutationKey, () => api(
-      `/api/feed/preferences/${encodeURIComponent(postId)}`,
-      {
-        method: "DELETE",
-        context: "Restoring this recommendation",
-        silent: true,
-        expectedAccountId: accountId,
-      },
-    ));
+    const operation = recommendationPreferenceMutationsRef.current.undo(mutationKey, () => {
+      // Queued taps belong to their original login, including A -> B -> A.
+      if (!isCurrent()) return { ok: false, stale: true };
+      return api(
+        `/api/feed/preferences/${encodeURIComponent(postId)}`,
+        {
+          method: "DELETE",
+          context: "Restoring this recommendation",
+          silent: true,
+          expectedAccountId: accountId,
+        },
+      );
+    });
     return operation.promise.then((result) => isCurrent() ? result : { ok: false, stale: true }).catch((error) => {
+      // Logout purges this account cache; stale failures must not recreate it.
+      if (!isCurrent()) return { ok: false, stale: true };
       if (!recommendationPreferenceMutationsRef.current.isCurrent(operation)) throw error;
       const persisted = loadRecommendationHiddenIds(accountId);
       persisted.add(postId);
       save(recommendationPreferenceStorageKey(accountId), [...persisted]);
       if (isCurrent()) {
         setRecommendationHiddenIds((current) => {
+          if (!isCurrent()) return current;
           const next = new Set([...current, postId]);
           save(recommendationPreferenceStorageKey(accountId), [...next]);
           return next;
@@ -6108,8 +6131,18 @@ export function StoreProvider({ children }) {
   const venueTopPhotos = (venueName, n = 20) => venueReviewsFor(venueName)
     .flatMap((r) => r.photos.map((p) => ({ uri: p, by: r.name, venueReviewId: r.id, ownerId: r.userId })))
     .slice(0, n);
-  const venueCatalogEntry = (venueName) => {
-    const key = resolveVenueCatalogKey(venueName, [
+  const { keyCacheRef: nativeVenueKeyCacheRef, coordinatesRef: nativeVenueCoordinatesRef, resolveCatalog: nativeVenueCatalogResolver } = nativeVenueLookupCache(catalogVenues, arenaVenues);
+  const nativeVenueKey = value => {
+    if (Platform.OS === "web") return canonicalVenueKey(value);
+    const raw = String(value ?? "");
+    const cache = nativeVenueKeyCacheRef.current;
+    if (cache.has(raw)) return cache.get(raw);
+    const key = canonicalVenueKey(value);
+    if (cache.size >= 8192) cache.delete(cache.keys().next().value);
+    cache.set(raw, key); return key;
+  };
+  const venueCatalogEntry = (venueName, indexed = false) => {
+    const key = (Platform.OS !== "web" || indexed) ? nativeVenueCatalogResolver(venueName) : resolveVenueCatalogKey(venueName, [
       ...Object.keys(arenaVenues),
       ...Object.keys(catalogVenues),
     ]);
@@ -6125,7 +6158,7 @@ export function StoreProvider({ children }) {
   const venueCatalogKey = (venueName) => {
     const canonical = canonicalVenueKey(venueName);
     if (!canonical) return null;
-    const catalogMatch = resolveVenueCatalogKey(canonical, [
+    const catalogMatch = Platform.OS !== "web" ? nativeVenueCatalogResolver(canonical) : resolveVenueCatalogKey(canonical, [
       ...Object.keys(arenaVenues),
       ...Object.keys(catalogVenues),
     ]);
@@ -6522,8 +6555,8 @@ export function StoreProvider({ children }) {
   // Venue page - the room's reputation across every show held there. Sound,
   // views, and crowd live with the building, not the touring band.
   const venueSummary = (name) => {
-    const key = canonicalVenueKey(name) || norm(name);
-    const sameVenue = (value) => (canonicalVenueKey(value) || norm(value)) === key;
+    const key = nativeVenueKey(name) || norm(name);
+    const sameVenue = (value) => (nativeVenueKey(value) || norm(value)) === key;
     const liveLogs = feed.filter((l) => !removedIds.includes(l.id) && sameVenue(l.venue));
     const covered = new Set(liveLogs.map((l) => norm(l.artist)));
     const aggregateNights = ratedShows
@@ -6599,28 +6632,36 @@ export function StoreProvider({ children }) {
     return verifiedArtistGenre(remoteArtists[k], catalogArtists[k], artistMeta(name));
   };
 
-  const venueCoord = (name) => {
-    const k = canonicalVenueKey(name) || norm(name);
-    const sameVenue = (value) => (canonicalVenueKey(value) || norm(value)) === k;
-    const cat = venueCatalogEntry(name);
+  const venueCoord = (name, indexed = false) => {
+    const k = nativeVenueKey(name) || norm(name);
+    const sameVenue = (value) => (nativeVenueKey(value) || norm(value)) === k;
+    const cat = venueCatalogEntry(name, indexed);
     const catalogCoord = mapCoordinate(cat);
     if (catalogCoord) return catalogCoord;
+    if (Platform.OS !== "web" || indexed) {
+      let cached = nativeVenueCoordinatesRef.current;
+      if (!cached || cached.rated !== ratedShows || cached.dates !== tourDates) {
+        cached = { rated: ratedShows, dates: tourDates, index: nativeVenueCoordinates(ratedShows, tourDates, value => nativeVenueKey(value) || norm(value)) };
+        nativeVenueCoordinatesRef.current = cached;
+      }
+      return cached.index.get(k) || null;
+    }
     const rs = ratedShows.find((r) => sameVenue(r.venue) && mapCoordinate(r));
     if (rs) return mapCoordinate(rs);
     const event = tourDates.find((date) => sameVenue(date.venue) && mapCoordinate(date));
     return mapCoordinate(event);
   };
 
-  const allVenues = () => {
+  const allVenues = (indexed = false) => {
     const map = {};
     const add = (name, place) => {
-      const k = canonicalVenueKey(name) || norm(name);
+      const k = nativeVenueKey(name) || norm(name);
       if (!k || map[k]) return;
-      const cat = venueCatalogEntry(name);
+      const cat = venueCatalogEntry(name, indexed);
       map[k] = {
         name: cat?.name || name,
         place: cat?.place || place || "",
-        coord: venueCoord(name),
+        coord: venueCoord(name, indexed),
         capacity: cat?.capacity || null,
       };
     };
@@ -6631,12 +6672,12 @@ export function StoreProvider({ children }) {
     return Object.values(map);
   };
 
-  const locationCenter = (place) => locationCenterFromVenues(place, allVenues());
+  const locationCenter = (place) => locationCenterFromVenues(place, allVenues(true));
 
   // # of public upcoming dates at a venue (released only).
   const venueUpcomingCount = (name) =>
     tourDates.filter((t) => isUpcomingEventDate(t)
-      && (canonicalVenueKey(t.venue) || norm(t.venue)) === (canonicalVenueKey(name) || norm(name))
+      && (nativeVenueKey(t.venue) || norm(t.venue)) === (nativeVenueKey(name) || norm(name))
       && t.releaseAt <= Date.now()).length;
 
   // --- Sidebar data (desktop rails) ------------------------------------------
@@ -6900,8 +6941,8 @@ export function StoreProvider({ children }) {
 
   // Free-text venue search across the WHOLE catalog (not just venues that happen
   // to have a logged show). This is what makes "Toronto" surface all 22 rooms.
-  const searchVenues = (query, limit = 50) => {
-    return searchUnifiedVenueIndex(venueSearchIndex, query, { limit });
+  const searchVenues = (query, limit = 50, { filter } = {}) => {
+    return searchUnifiedVenueIndex(venueSearchIndex, query, { limit, filter });
   };
 
   // Every known venue grouped by city, with venue + upcoming counts. Powers the
@@ -6927,29 +6968,22 @@ export function StoreProvider({ children }) {
   const localVenues = (maxKm = 75, center = home) => {
     center = mapCoordinate(center);
     if (!center) return [];
-    return allVenues()
-      .filter((v) => v.coord)
-      .map((v) => ({
-        ...v,
-        distanceKm: haversineKm(center, v.coord),
-        upcoming: tourDates.filter((t) => isUpcomingEventDate(t)
-          && (canonicalVenueKey(t.venue) || norm(t.venue)) === (canonicalVenueKey(v.name) || norm(v.name))
-          && t.releaseAt <= Date.now()).length,
-      }))
-      .filter((v) => v.distanceKm <= maxKm)
-      .sort((a, b) => a.distanceKm - b.distanceKm);
+    return nativeNearbyVenues(allVenues(true), tourDates, {
+      center, maxKm, distance: haversineKm, canonicalKey: name => nativeVenueKey(name) || norm(name),
+      isUpcoming: isUpcomingEventDate, now: Date.now(),
+    });
   };
 
-  // Upcoming shows in a region (within maxKm of center), nearest first, with soldOut.
+  // Shared Nearby uses the bounded index on web as well as native; other web lookups retain their resolver.
   const regionShows = (maxKm = 75, center = home) => {
     center = mapCoordinate(center);
     if (!center) return [];
     return tourDates
-      .filter((t) => isUpcomingEventDate(t) && t.releaseAt <= Date.now())
-      .map((t) => ({ ...t, coord: venueCoord(t.venue), genre: artistGenre(t.artist) }))
-      .filter((t) => t.coord && haversineKm(center, t.coord) <= maxKm)
-      .map((t) => ({ ...t, distanceKm: haversineKm(center, t.coord) }))
-      .sort((a, b) => a.distanceKm - b.distanceKm);
+      .filter(t => isUpcomingEventDate(t) && t.releaseAt <= Date.now())
+      .map(t => ({ ...t, coord: mapCoordinate(t) || venueCoord(t.venue, true) }))
+      .filter(t => t.coord && haversineKm(center, t.coord) <= maxKm)
+      .map(t => ({ ...t, genre: artistGenre(t.artist), distanceKm: haversineKm(center, t.coord) }))
+      .sort((a,b) => a.distanceKm - b.distanceKm);
   };
 
   // Feed of people in your city.

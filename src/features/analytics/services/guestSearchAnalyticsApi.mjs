@@ -1,4 +1,5 @@
 import { api } from "../../../lib/api";
+import { nativeReadOnlyReview } from "../../../lib/nativeReviewMode";
 import { sanitizeGuestSearchPayload } from "../../../domain/guestSearchAnalytics.mjs";
 
 export const GUEST_SEARCH_ANALYTICS_PATH = "/api/analytics/guest-search";
@@ -7,6 +8,7 @@ export const GUEST_SEARCH_ANALYTICS_PATH = "/api/analytics/guest-search";
 // queue, retries, or a visitor identifier, and its failure cannot block search.
 // `request` is injectable for a focused unit test without loading React Native.
 export async function recordGuestSearch(payload, { signal, request = api } = {}) {
+  if (nativeReadOnlyReview) return false;
   const body = sanitizeGuestSearchPayload(payload);
   if (!body) return false;
 

@@ -1,16 +1,20 @@
+import NativeAccountLinks from "./src/screens/NativeAccountLinks";
+import { nativeNewsLinkFrame } from "./src/domain/nativeNewsLink.mjs";
 import { publicDiscoveryRailAllowed } from "./src/domain/publicPlacementPolicy.mjs";
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, Suspense } from "react";
-import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler } from "react-native";
+import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler, Linking } from "react-native";
 import { StatusBar } from "expo-status-bar";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
-import { colors, mono, radius, themeIsDark } from "./src/theme";
+import { colors, font, mono, radius, themeIsDark } from "./src/theme";
 import { StoreProvider, useStore, isMod, isStaff } from "./src/store";
 import { NewsInteractionContext } from "./src/components/news/NewsInteractionContext";
 import { PostNavigationContext } from "./src/components/PostNavigationContext";
 import { newsFeedSurfaceVisible } from "./src/domain/newsReaderState.mjs";
 import Icon from "./src/components/Icon";
+import NativeGestureRoot from "./src/components/NativeGestureRoot";
+import NativeTabRail from "./src/components/NativeTabRail";
 import ErrorBoundary from "./src/components/ErrorBoundary";
 import RuntimeErrorMonitor from "./src/components/RuntimeErrorMonitor";
 import useAppActive from "./src/lib/useAppActive";
@@ -33,8 +37,11 @@ const ClipsScreen = lazyWithRetry(() => import("./src/screens/ClipsScreen"), "Cl
 const ThreadScreen = lazyWithRetry(() => import("./src/screens/ThreadScreen"), "ThreadScreen");
 const VenueReviewScreen = lazyWithRetry(() => import("./src/screens/VenueReviewScreen"), "VenueReviewScreen");
 const FanClubScreen = lazyWithRetry(() => import("./src/screens/FanClubScreen"), "FanClubScreen");
-import AccountGate from "./src/screens/AccountGate";
+const AccountGate = lazyWithRetry(() => import("./src/screens/AccountGate"), "AccountGate");
 const MenuScreen = lazyWithRetry(() => import("./src/screens/MenuScreen"), "MenuScreen");
+import NativeFeedMediaLayer from "./src/components/NativeFeedMediaLayer";
+import { retainNativeFeedForMedia } from "./src/domain/nativeFeedMediaRetention.mjs";
+
 const PhotoViewer = lazyWithRetry(() => import("./src/components/PhotoViewer"), "PhotoViewer");
 const LogScreen = lazyWithRetry(() => import("./src/screens/LogScreen"), "LogScreen");
 const TopRatedScreen = lazyWithRetry(() => import("./src/screens/TopRatedScreen"), "TopRatedScreen");
@@ -68,7 +75,7 @@ const DeleteAccountScreen = lazyWithRetry(() => import("./src/screens/DeleteAcco
 const DiagnosticsScreen = lazyWithRetry(() => import("./src/screens/DiagnosticsScreen"), "DiagnosticsScreen");
 const PrivacyScreen = lazyWithRetry(() => import("./src/screens/PrivacyScreen"), "PrivacyScreen");
 const TermsScreen = lazyWithRetry(() => import("./src/screens/TermsScreen"), "TermsScreen");
-import AccountMenu from "./src/components/AccountMenu";
+const AccountMenu = lazyWithRetry(() => import("./src/components/AccountMenu"), "AccountMenu");
 const PlayerBar = lazyWithRetry(() => import("./src/components/PlayerBar"), "PlayerBar");
 const PlaylistPickerScreen = lazyWithRetry(() => import("./src/screens/PlaylistPickerScreen"), "PlaylistPickerScreen");
 const PostScreen = lazyWithRetry(() => import("./src/screens/PostScreen"), "PostScreen");
@@ -155,6 +162,7 @@ import { countryForCity } from "./src/geo";
 import { accountThemeNavigationReady } from "./src/domain/accountThemeNavigation.mjs";
 import { screenTransitionDirection, screenTransitionKey } from "./src/domain/screenTransition.mjs";
 import ScreenTransition from "./src/components/ScreenTransition";
+import NativeAppHeader from "./src/components/NativeAppHeader";
 import {
   PLAYER_POSITION_STORAGE_KEY,
   PLAYER_STATE_STORAGE_KEY,
@@ -202,7 +210,7 @@ export default function App() {
   }, []);
 
   return (
-    <SafeAreaProvider>
+    <NativeGestureRoot><SafeAreaProvider>
       <ErrorBoundary>
         <>
           <RuntimeErrorMonitor />
@@ -211,7 +219,7 @@ export default function App() {
           </StoreProvider>
         </>
       </ErrorBoundary>
-    </SafeAreaProvider>
+    </SafeAreaProvider></NativeGestureRoot>
   );
 }
 
@@ -220,6 +228,7 @@ const loadPublicRecovery = () => publicRecoveryModule ||= import("./src/features
   .catch((error) => { publicRecoveryModule = null; throw error; });
 
 function Root() {
+  const safeAreaInsets = useSafeAreaInsets();
   const {
     session, authReady, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
     feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
@@ -257,9 +266,12 @@ function Root() {
   };
   const screenMotionRef = useRef({ key: null, depth: NaN, direction: "fade" });
 
+  // Native development imports require Metro work and JS evaluation. Keep the
+  // web warmup, but native screens load on navigation intent.
   // The pages people open most are fetched quietly once the first screen has
   // settled, so moving to them shows the page, not a loading spinner.
   useEffect(() => {
+    if (Platform.OS !== "web") return;
     const timer = setTimeout(() => {
       for (const screen of [ArtistScreen, ShowScreen, VenueScreen, ProfileScreen, PostScreen]) {
         screen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Warming is optional; Suspense owns visible loading and retry. */ });
@@ -273,7 +285,7 @@ function Root() {
   const activeTab = visibleMainTab(tab, session?.id);
   // Detail overlays unmount Discover. Keep only its public destination here,
   // scoped to this viewer, so Back does not unexpectedly switch to Shows.
-  const [discoverDestination, setDiscoverDestination] = useState(() => ({ accountId: session?.id || null, programme: "shows" }));
+  const [discoverDestination, setDiscoverDestination] = useState(() => ({ accountId: session?.id || null, programme: Platform.OS === "web" ? "shows" : "artists" }));
   const rememberedDiscoverProgramme = discoverDestination.accountId === (session?.id || null) ? discoverDestination.programme : "shows";
   // Navigation is a STACK of frames. Each frame is one overlay screen, e.g.
   // { artistName } or { profileId }; the top frame is what's showing. An empty
@@ -309,6 +321,7 @@ function Root() {
   });
   const nav = stack[stack.length - 1];
   const stackRef = useRef(stack);
+  const nearbySelectionRef = useRef(null);
   stackRef.current = stack;
   // The composer owns its dirty/busy close policy. Keeping the handler in a ref
   // lets browser and Android Back consult the latest form state without forcing
@@ -498,6 +511,18 @@ function Root() {
     else remove(PLAYER_STATE_STORAGE_KEY);
   }, [authReady, player, playerAccountId, playerStateIsScoped, web]);
   const [acctOpen, setAcctOpen] = useState(false);
+  const [nativeAccountLinkActive, setNativeAccountLinkActive] = useState(false);
+  const nativeAccountLinkActiveRef = useRef(false);
+  const updateNativeAccountLinkActive = (active) => {
+    nativeAccountLinkActiveRef.current = active;
+    setNativeAccountLinkActive(active);
+  };
+  const enterNativeAccountLink = () => {
+    // Link delivery can precede the render that exposes the overlay. Protect
+    // the current passive-effect flush from an appearance reload too.
+    updateNativeAccountLinkActive(true);
+    authNavigationAbortRef.current?.();
+  };
   // The reusable product guide remains available from the menu. New-account
   // setup is separate and keyed to private server state below, so it works on
   // web and native and can safely resume after an interrupted first sign-in.
@@ -601,6 +626,9 @@ function Root() {
     newsOpenRef.current += 1;
     setNewsStoryNotice(null);
   };
+  // The Android listener stays mounted; read the current notice on each Back.
+  const newsStoryBackRef = useRef(null);
+  newsStoryBackRef.current = newsStoryNotice ? cancelNewsStory : null;
   const cancelPublicRoute = () => {
     publicLookup.lookup?.cancel();
     publicNavigationPendingRef.current = null;
@@ -661,9 +689,19 @@ function Root() {
     proceed();
   };
   const commitGo = (candidate) => {
-    let frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id);
+    let frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id, Platform.OS);
     if (!frame) return;
-    if (frame.auth && stackRef.current[stackRef.current.length - 1]?.auth) return;
+    if (frame.auth && stackRef.current[stackRef.current.length - 1]?.auth) {
+      // A newer read-only News intent updates the destination without adding
+      // another sign-in screen or resetting the form already being filled in.
+      if (!web && frame.authReturn?.news === true) {
+        const previous = stackRef.current;
+        const current = previous[previous.length - 1];
+        const next = [...previous.slice(0, -1), { ...current, authReturn: frame.authReturn }];
+        writeNavigation({ ...navigationRef.current, stack: next }, pathForFrame(next[next.length - 1]), "replace");
+      }
+      return;
+    }
     if (frame.auth && navigationRef.current.landing) frame = { ...frame, authFromLanding: true };
     const previous = stackRef.current;
     const next = previous.length >= 64 ? [{}, ...previous.slice(-62), frame] : [...previous, frame];
@@ -674,7 +712,7 @@ function Root() {
   // Swap the top screen without growing the stack — for lateral moves where the
   // previous screen shouldn't come back (menu → target, signup → pick-artists).
   const commitReplace = (candidate) => {
-    const frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id);
+    const frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id, Platform.OS);
     if (!frame) return;
     const previous = stackRef.current;
     const next = replaceNavigationFrame(previous, frame);
@@ -786,6 +824,13 @@ function Root() {
       // Signup has confirmed this account; React may not have rendered its
       // session yet. Do not let the old guest closure send it back to login.
       writeNavigation({ ...navigationRef.current, accountId, stack: [{}, { reqArtist: true }], tab: "feed", landing: false }, MAIN_TAB_PATHS.feed, "replace");
+      return;
+    }
+    const authReturn = navigationRef.current.stack.at(-1)?.authReturn;
+    if (accountId && authReturn?.news === true) {
+      const liveSlug = typeof authReturn.liveSlug === "string" && /^[a-z0-9-]{1,80}$/u.test(authReturn.liveSlug) ? authReturn.liveSlug : null;
+      const frame = { news: true, ...(liveSlug ? { liveSlug } : {}) };
+      writeNavigation({ ...navigationRef.current, accountId, stack: [...navigationRef.current.stack.slice(0, -1), frame], landing: false }, liveSlug ? "/news/live/" + liveSlug : "/news", "replace");
       return;
     }
     if (navigationRef.current.stack.at(-1)?.authFromLanding === true
@@ -967,6 +1012,41 @@ function Root() {
     }
   };
   restoreBrowserPathRef.current = restoreBrowserPath;
+  const nativeNewsNavigateRef = useRef(null);
+  nativeNewsNavigateRef.current = go;
+  const nativeNewsIngressRef = useRef({ active: false, ready: false, initialRequested: false, warmSeen: false, pending: null });
+  const flushNativeNews = () => {
+    const ingress = nativeNewsIngressRef.current;
+    if (!ingress.active || !ingress.ready || !ingress.pending) return;
+    const frame = ingress.pending;
+    ingress.pending = null;
+    nativeNewsNavigateRef.current?.(frame);
+  };
+  useEffect(() => {
+    if (web) return undefined;
+    const ingress = nativeNewsIngressRef.current;
+    ingress.active = true;
+    const subscription = Linking.addEventListener("url", ({ url }) => {
+      // Any newer native intent supersedes a launch News link, including an
+      // account link handled by the separate account gateway.
+      ingress.warmSeen = true;
+      ingress.pending = nativeNewsLinkFrame(url);
+      flushNativeNews();
+    });
+    if (!ingress.initialRequested) {
+      ingress.initialRequested = true;
+      Linking.getInitialURL().then((url) => {
+        if (ingress.warmSeen) return;
+        ingress.pending = nativeNewsLinkFrame(url);
+        flushNativeNews();
+      }).catch(() => { /* architecture: allow-empty-catch -- Missing native entry URLs leave the current navigation intact. */ });
+    }
+    return () => { ingress.active = false; ingress.ready = false; subscription.remove(); };
+  }, [web]);
+  useEffect(() => {
+    nativeNewsIngressRef.current.ready = !web && authReady;
+    flushNativeNews();
+  }, [web, authReady]);
 
   useEffect(() => {
     if (!web) return undefined;
@@ -1023,11 +1103,17 @@ function Root() {
   // this same effect flush, before its loading frame has rendered.
   const accountThemeSyncRef = useRef(null);
   useEffect(() => {
-    if (authReady && !session?.id) accountThemeSyncRef.current = null;
+    // Guest reconciliation can reload just like account reconciliation. Keep
+    // reset/verification recovery mounted until the sensitive flow is closed.
+    if (resetToken || ownerApprovalToken || nativeAccountLinkActive || nativeAccountLinkActiveRef.current) return;
+    if (authReady && !session?.id) {
+      accountThemeSyncRef.current = null;
+      if (!web) syncAccountTheme();
+    }
     if (!accountThemeNavigationReady({
       authReady, accountId: session?.id,
       frame: navigationRef.current.stack.at(-1),
-      sensitiveFlow: !!(resetToken || ownerApprovalToken),
+      sensitiveFlow: !!(resetToken || ownerApprovalToken || nativeAccountLinkActive),
     })) return;
     const previous = accountThemeSyncRef.current;
     if (previous?.accountId === session.id && previous?.theme === session.theme) return;
@@ -1035,7 +1121,7 @@ function Root() {
     syncAccountTheme();
     // Account theme synchronization reads the authoritative Store refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authReady, session?.id, session?.theme, stack, resetToken, ownerApprovalToken]);
+  }, [authReady, session?.id, session?.theme, stack, resetToken, ownerApprovalToken, nativeAccountLinkActive]);
 
   useEffect(() => {
     if (web && !nav.routeLoading) browserHistoryRef.current?.capture(navigationRef.current);
@@ -1055,10 +1141,11 @@ function Root() {
     pageHeadRef.current?.sync(window.location.pathname + window.location.search);
   }, [web, stack, tab, landing, remoteArtistMeta, userById]);
 
-  // Android hardware back: pop the stack when we have somewhere to go.
+  // Android Back dismisses a pending story before leaving its source screen.
   useEffect(() => {
     if (Platform.OS !== "android") return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (newsStoryBackRef.current) { newsStoryBackRef.current(); return true; }
       if (stackRef.current.length > 1) { requestComposerPop(); return true; }
       return false;
     });
@@ -1145,6 +1232,7 @@ function Root() {
   };
   const openPost = (log, analytics = {}) => {
     if (!log) return;
+    if (Platform.OS !== "web" && !session && (log.news || String(log.id || "").startsWith("news_"))) { openSignIn(); return; }
     track("content_open", {
       postId: log.id,
       surface: analytics.surface || "direct",
@@ -1154,11 +1242,13 @@ function Root() {
   };
   // An opener's review linked from the main review: load it, then open it.
   const openPostById = async (postId) => {
+    if (Platform.OS !== "web" && !session && String(postId || "").startsWith("news_")) { openSignIn(); return; }
     const post = postId ? await loadPostForView(postId) : null;
     if (post) openPost(post, { surface: "linked-review" });
   };
   // A story from the news panel, strip or News tab opens its post and comments.
   const openNewsStory = async (story) => {
+    if (Platform.OS !== "web" && !session) { openSignIn(); return; }
     if (!story?.postId) return;
     const ticket = ++newsOpenRef.current;
     setNewsStoryNotice({ loading: true, story });
@@ -1387,7 +1477,7 @@ function Root() {
   else if (nav.artistTour) overlay = <TourArchiveScreen artistName={nav.artistTour.name} artistKey={nav.artistTour.artistKey} tourKey={nav.artistTour.tourKey} tourName={nav.artistTour.tourName} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
   else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenArtist={openArtist} onOpenPost={openPost} onOpenNewsStory={openNewsStory} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onShareMemory={(name, artistKey, options = {}) => requireVerifiedMutation("post", () => go({ logging: true, postMode: "memory", legacyArtistProfile: options.legacyProfile === true, prefill: { artist: name, artistKey } }))} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} venueIdentity={nav.venue || null} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} onRequireAuth={openSignIn} />;
-  else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} initialTab={nav.nearbyTab} />;
+  else if (nav.nearby) overlay = <NearbyScreen key={session?.id || "guest"} onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenEvent={openShow} initialTab={nav.nearbyTab} initialSelection={nearbySelectionRef.current?.accountId === (session?.id || null) ? nearbySelectionRef.current.value : null} onSelectionChange={value => { nearbySelectionRef.current = { accountId: session?.id || null, value }; }} />;
   else if (nav.cityGuide) overlay = <CityScreen city={nav.cityGuide} accountId={session?.id || null} onClose={back} onOpenCity={openCity} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenShow={openShow} onOpenPhotos={openPhotos} />;
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
@@ -1442,7 +1532,7 @@ function Root() {
 
   // Stored overlays are only navigation hints, never proof of authentication.
   // Replacing the element before reconciliation also prevents its load effects.
-  if (!session && memberFrameRequiresAccount(nav)) {
+  if (!session && memberFrameRequiresAccount(nav, Platform.OS)) {
     overlay = <AuthScreen navigationAbortRef={authNavigationAbortRef} onModeChange={(mode) => commitReplace({ auth: true, authMode: mode })} onDone={back} onCancel={back} />;
   }
 
@@ -1497,10 +1587,12 @@ function Root() {
   const status = session ? accountStatus(session) : "ok";
   const feedSurfaceVisible = newsFeedSurfaceVisible({
     tab: activeTab, hasOverlay: !!overlay, landing,
-    obscured: status !== "ok" || !!acctOpen || !!welcome || !!resetToken || !!unsubToken || !!verifyToken || !!ownerApprovalToken,
+    obscured: nativeAccountLinkActive || status !== "ok" || !!acctOpen || !!welcome || !!resetToken || !!unsubToken || !!verifyToken || !!ownerApprovalToken,
     pendingNavigation: !!publicNavigationNotice || !!newsStoryNotice,
     web, pathname: web ? window.location.pathname : null,
   });
+
+  const retainNativeFeed = retainNativeFeedForMedia({ platform: Platform.OS, wide, accountId: session?.id, tab: activeTab, frames: stack, hasOverlay: !!overlay });
 
   const tabScreens = (
             <View style={styles.screen}>
@@ -1601,11 +1693,33 @@ function Root() {
             </View>
   );
 
-  // Desktop: the player owns a persistent left column (outside this routed
-  // surface), while navigation sits across the content that actually changes.
-  const desktop = (
-    <View style={styles.deskOuter}>
-      <DesktopTopNav
+  const mobileTabBar = (
+                      <NativeTabRail key={activeTab} active={activeTab} onChange={switchTab}>
+<View style={styles.tabbar}>
+                        {LEFT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
+                        <View style={styles.fabCol}>
+                          <Pressable
+                            style={styles.fab}
+                            onPressIn={preloadComposer}
+                            onHoverIn={preloadComposer}
+                            onFocus={preloadComposer}
+                            onPress={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))}
+                            accessibilityLabel="Make a post"
+                          >
+                            <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
+                          </Pressable>
+                          <Text style={styles.fabLabel}>Post</Text>
+                        </View>
+                        {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
+                      </View>
+</NativeTabRail>
+  );
+
+  // Keep the web route mounted across the desktop breakpoint. Resizing changes
+  // chrome and layout, not the editor, pagination, or other active screen state.
+  const responsiveWeb = (
+    <View style={[styles.appContent, wide && styles.deskOuter]}>
+      {wide ? <Suspense fallback={null}><DesktopTopNav
         tab={activeTab}
         setTab={switchTab}
         session={session}
@@ -1623,11 +1737,11 @@ function Root() {
         onIntro={exitToLanding}
         onLogin={() => go({ auth: true, authMode: "login" })}
         onSignup={() => go({ auth: true, authMode: "signup" })}
-      />
-      <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} />
-      <View style={styles.deskWrap}>
-        {showSponsorPlaceholders ? <View testID="desktop-sponsor-rail" style={[styles.sponsorRail, { width: sponsorWidth }]}><Suspense fallback={null}><SponsorPlaceholder /></Suspense></View> : null}
-        <View testID="desktop-content-column" style={styles.deskCenter}>
+      /></Suspense> : null}
+      {wide || showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
+      <View style={wide ? styles.deskWrap : styles.appContent}>
+        {wide && showSponsorPlaceholders ? <View testID="desktop-sponsor-rail" style={[styles.sponsorRail, { width: sponsorWidth }]}><Suspense fallback={null}><SponsorPlaceholder /></Suspense></View> : null}
+        <View testID={wide ? "desktop-content-column" : undefined} style={wide ? styles.deskCenter : styles.appContent}>
           <PublicDirectoryPanel
             directory={nav.directory}
             region={nav.discoverRegion}
@@ -1637,10 +1751,11 @@ function Root() {
             onOpenEvent={openShow}
           />
           <Suspense fallback={<ScreenLoading />}>
-            <ScreenTransition key={screenKey} direction={screenDirection}>{overlay || tabScreens}</ScreenTransition>
+            <ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay || tabScreens}</ScreenTransition>
           </Suspense>
+          {!wide && !overlay ? mobileTabBar : null}
         </View>
-        {showRightRail && <RightRail showSponsorPlaceholder={showSponsorPlaceholders} showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} />}
+        {wide && showRightRail && <Suspense fallback={null}><RightRail showSponsorPlaceholder={showSponsorPlaceholders} showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} /></Suspense>}
       </View>
     </View>
   );
@@ -1676,7 +1791,7 @@ function Root() {
     }
     return result;
   };
-  const playerObscured = !!resetToken || !!ownerApprovalToken || !!welcome || signupOnboardingVisible || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
+  const playerObscured = nativeAccountLinkActive || !!resetToken || !!ownerApprovalToken || !!welcome || signupOnboardingVisible || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
   const landingSurface = landingRenderSurface({ authReady, session, landing });
 
   return (
@@ -1685,7 +1800,7 @@ function Root() {
     <NewsInteractionContext.Provider value={{ session, authReady, blockedIds, removedIds, mutedIds, followedArtists, likeInfo, toggleLike, deleteOwnPost, setPostRepost,
       openLiveCoverage: (slug) => go({ news: true, liveSlug: slug }) }}>
     <View style={styles.root}>
-      <SafeAreaView style={styles.safe}>
+      <SafeAreaView style={[styles.safe, Platform.OS === "android" && { paddingBottom: safeAreaInsets.bottom }]}>
         <StatusBar style={themeIsDark ? "light" : "dark"} />
         {publicNavigationNotice && (
           PublicNavigationNotice ?
@@ -1735,7 +1850,7 @@ function Root() {
             }}
           />
         ) : status !== "ok" ? (
-          nav.deleteAccount ? overlay : <AccountGate username={session?.email} status={status} until={session?.suspendedUntil} onLogout={signOut} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />
+          <Suspense fallback={<ScreenLoading />}>{nav.deleteAccount ? overlay : <AccountGate username={session?.email} status={status} until={session?.suspendedUntil} onLogout={signOut} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />}</Suspense>
         ) : (
           <View style={[styles.appFrame, wide && styles.appFrameWide]}>
             {MUSIC_PLAYER_ENABLED && (wide || (player && !(ENABLE_CLIPS && nav.clips))) && (
@@ -1771,7 +1886,8 @@ function Root() {
               </View>
             )}
             <View style={styles.appContent}>
-              {wide ? <Suspense fallback={<ScreenLoading />}>{desktop}</Suspense> : (
+              {Platform.OS !== "web" && !overlay && !retainNativeFeed && <NativeAppHeader onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
+              {web ? responsiveWeb : (
                 <>
                   {showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
                   <PublicDirectoryPanel
@@ -1782,26 +1898,15 @@ function Root() {
                     onOpenArtist={openArtist}
                     onOpenEvent={openShow}
                   />
-                  {overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense> : (
+                  {retainNativeFeed ? <NativeFeedMediaLayer key={session.id} obscured={!!overlay}
+                    header={<NativeAppHeader onHome={() => switchTab("discover")} loggedIn onAccount={() => openProfileManagement()} />}
+                    tabBar={mobileTabBar}
+                    media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense>}>
+                    <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey="main:feed">{tabScreens}</ScreenTransition></Suspense>
+                  </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense> : (
                     <>
-                      <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} direction={screenDirection}>{tabScreens}</ScreenTransition></Suspense>
-                      <View style={styles.tabbar}>
-                        {LEFT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
-                        <View style={styles.fabCol}>
-                          <Pressable
-                            style={styles.fab}
-                            onPressIn={preloadComposer}
-                            onHoverIn={preloadComposer}
-                            onFocus={preloadComposer}
-                            onPress={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))}
-                            accessibilityLabel="Make a post"
-                          >
-                            <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
-                          </Pressable>
-                          <Text style={styles.fabLabel}>Post</Text>
-                        </View>
-                        {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
-                      </View>
+                      <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{tabScreens}</ScreenTransition></Suspense>
+                      {mobileTabBar}
                     </>
                   )}
                 </>
@@ -1825,7 +1930,7 @@ function Root() {
         )}
 
 
-        <AccountMenu
+        {acctOpen && <Suspense fallback={null}><AccountMenu
           visible={acctOpen}
           user={session}
           onClose={() => setAcctOpen(false)}
@@ -1837,7 +1942,7 @@ function Root() {
             { divider: true },
             { icon: "logout", label: "Log out", danger: true, onPress: () => { setAcctOpen(false); signOut(); } },
           ]}
-        />
+        /></Suspense>}
 
         {authLinkError && <View style={styles.welcomeModal}>
           <InvalidAccountLinkScreen onClose={() => setAuthLinkError(false)}
@@ -1882,6 +1987,7 @@ function Root() {
           </View>
         )}
 
+        {!web && <NativeAccountLinks onActiveChange={updateNativeAccountLinkActive} onEnter={enterNativeAccountLink} />}
       </SafeAreaView>
     </View>
     </NewsInteractionContext.Provider>
@@ -1977,4 +2083,12 @@ const styles = StyleSheet.create({
   previewIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.amber, alignItems: "center", justifyContent: "center", paddingLeft: 2 },
   previewSong: { color: colors.text, fontSize: 14, fontWeight: "600" },
   previewMeta: { color: colors.textDim, fontFamily: mono, fontSize: 11, marginTop: 2 },
+  ...(Platform.OS !== 'web' ? {
+    tabbar: { flexDirection: 'row', alignItems: 'center', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line, backgroundColor: colors.bg, paddingTop: 4, paddingBottom: 4 },
+    tab: { flex: 1, minHeight: 54, alignItems: 'center', justifyContent: 'center', gap: 4 },
+    tabLabel: { color: colors.textDim, fontFamily: font, fontSize: 11, fontWeight: '500' },
+    fabCol: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 54, gap: 4 },
+    fab: { width: 44, height: 44, borderRadius: 8, backgroundColor: colors.amberStrong, alignItems: 'center', justifyContent: 'center' },
+    fabLabel: { color: colors.textDim, fontFamily: font, fontSize: 11, fontWeight: '500' },
+  } : {}),
 });

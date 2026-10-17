@@ -1,6 +1,11 @@
 # Pit security and privacy readiness
 
-Last scoped review: 2026-09-26
+Last scoped review: 2026-10-16
+
+The bounded app security/concurrency follow-up, locally corrected defects, and
+unresolved public Git history and capacity risks are recorded in
+[`docs/SECURITY_ULTRA_AUDIT_2026-10-16.md`](docs/SECURITY_ULTRA_AUDIT_2026-10-16.md).
+It does not certify production security or maximum concurrent users.
 
 The application/media/research follow-up is recorded in
 `APPLICATION_INTEGRITY_AUDIT_2026-09-26.md`. It supplements, rather than replaces,
@@ -53,9 +58,11 @@ to be completed.
 - New accounts must verify their email before social, publishing, profile,
   review, playlist, report, or artist-management mutations. Production cannot
   disable this gate through an environment flag.
-- Signup returns the same body and issues no session cookie whether an email is
-  new or already registered. Password hashing occurs before the existence check,
-  closing the previous account-enumeration response and cookie oracle.
+- Signup currently supports two accounts sharing an email and can authenticate
+  a newly created unverified account before mailbox proof. Synthetic requests
+  distinguish occupied email-account slots and can reserve the remaining slot.
+  Existing-account credentials remain protected, but signup is not enumeration
+  resistant. Mailbox-proof and sibling-account policy remain unresolved.
 - Password recovery uses the same response and cookie behavior for malformed,
   unknown, cooldown, and eligible requests. Every path waits behind a non-blocking,
   cryptographically jittered 220–300 ms minimum response floor; ineligible
@@ -157,10 +164,13 @@ to be completed.
 
 ### Supply chain and architecture
 
-- Production dependency audit currently has no known advisories. Expo SDK 57
-  dependencies are pinned to compatible patched versions and are checked with
-  `expo install --check`.
-- Expo Doctor passes 21/21 checks on Expo 57.0.19 / React Native 0.86.3. The
+- The October 16 production-server dependency audit reports zero vulnerabilities.
+  The full development/mobile graph reports 19 high findings inherited through
+  two underlying braces/node-forge advisories; neither lists a patched release.
+  Current installed Expo is 57.0.29. A fresh `expo install --check` now expects
+  ~57.0.30, so the SDK patch update and native revalidation remain outstanding.
+- The earlier Expo Doctor run passed 21/21 checks on Expo 57.0.19 / React Native
+  0.86.3; that historical result is not a fresh check of this tree. The
   earlier SDK 56 Hermes V1 memory-regression dependency has been removed. Real
   iOS and Android device acceptance is still required before a native-store
   release.
@@ -279,7 +289,7 @@ yet and require separate reconciliation. A live restore drill remains required.
 
 Run the syntax, architecture, complete test, dependency-audit, Expo dependency,
 and production web-build gates before release. Then perform a deployed smoke test
-for login, generic signup, verification, password reset, export, deletion,
+for login, shared-email signup policy, verification, password reset, export, deletion,
 blocked-resource reads, staff authorization, media upload/finalization, private
 bucket isolation, health limiting, backup creation, and campaign recovery state.
 

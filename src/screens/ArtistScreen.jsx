@@ -1,7 +1,7 @@
 import CatalogText from "../features/catalogEditor/CatalogText";
 import { Suspense, useState, useEffect, useRef } from "react";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
-import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, Linking, Alert } from "react-native";
+import { Platform, View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, Linking, Alert } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
@@ -1191,7 +1191,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
 
         {/* New releases and tour dates, and the reason to follow. Loaded on
             demand so artist pages add nothing to the first page load. */}
-        {profileServicesAvailable && sectionModel.active === "overview" && !legacyMode ? (
+        {profileServicesAvailable && sectionModel.active === "overview" && !legacyMode && (Platform.OS === "web" || !!session) ? (
           <Suspense fallback={null}>
             <ArtistNewsSection artistName={a.name} artistKey={a.profileKey || null} onOpenStory={onOpenNewsStory} following={!!session && followed}
               onFollow={followHidden ? undefined : session ? followUi.toggleFollow : onRequireAuth} />

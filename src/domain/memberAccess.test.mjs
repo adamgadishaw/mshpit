@@ -35,6 +35,24 @@ test("App never mounts member tabs for guests and applies the restored-overlay b
   assert.match(source, /activeTab === "feed" && !!session/);
   assert.match(source, /activeTab === "you" && !!session/);
   assert.match(source, /if \(!session && memberTabRequiresAccount\(key\)\) \{ openSignIn\(\); return; \}/);
-  assert.match(source, /if \(!session && memberFrameRequiresAccount\(nav\)\)/);
+  assert.match(source, /if \(!session && memberFrameRequiresAccount\(nav, Platform\.OS\)\)/);
   assert.match(source, /<VenueScreen[^\n]+onRequireAuth=\{openSignIn\}/);
+});
+
+test("native news entry and restored news posts require a free account; web stays public",()=>{
+ for(const frame of [{news:true},{news:true,liveSlug:"example"},{newsroom:true},{post:{id:"news_example"}},{post:{id:"post_example",news:{}}}]){
+  const expected = frame.news ? { auth: true, authReturn: { news: true, ...(frame.liveSlug ? { liveSlug: frame.liveSlug } : {}) } } : { auth: true };
+  assert.deepEqual(navigationFrameForAccount(frame,null,"android"),expected);
+  assert.deepEqual(navigationFrameForAccount(frame,null,"ios"),expected);
+  assert.equal(navigationFrameForAccount(frame,"member","android"),frame);
+  assert.equal(navigationFrameForAccount(frame,null,"web"),frame);
+ }
+});
+
+test("native News return retains only a bounded read-only route", () => {
+  assert.deepEqual(navigationFrameForAccount({ news: true, liveSlug: "tour-update", logging: true, reporting: { id: "private" } }, null, "android"), { auth: true, authReturn: { news: true, liveSlug: "tour-update" } });
+  for (const liveSlug of ["../settings", "", "x".repeat(81), { id: "unsafe" }]) {
+    assert.deepEqual(navigationFrameForAccount({ news: true, liveSlug }, null, "ios"), { auth: true, authReturn: { news: true } });
+  }
+  assert.deepEqual(navigationFrameForAccount({ newsroom: true }, null, "android"), { auth: true });
 });

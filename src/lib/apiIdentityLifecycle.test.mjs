@@ -21,9 +21,10 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-function fixture({ clock = Date.now } = {}) {
+function fixture({ clock = Date.now, reviewAllowsRequest = () => true } = {}) {
   const response = deferred(), requests = [], diagnostics = [];
   const bindings = {
+    reviewAllowsRequest,
     Platform: { OS: "test" }, apiBaseForRuntime: () => "http://fixture.invalid",
     AppError: class extends Error { constructor(message, options = {}) { super(message); Object.assign(this, options); } },
     captureAppError: (error) => { diagnostics.push(error); return error; },
@@ -214,3 +215,12 @@ for (const binary of [false, true]) {
     assert.equal(f.requests[0].options.headers["X-Pit-Expected-Account"], "b");
   });
 }
+
+test('both actual transports reject a read-only review mutation before dispatch', async () => {
+  for (const binary of [false, true]) {
+    const f = fixture({ reviewAllowsRequest: () => false });
+    await assert.rejects((binary ? f.apiBinary : f.api)('/api/posts', { method: 'POST' }), { status: 403, serverCode: 'LOCAL_REVIEW_READ_ONLY' });
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.waiting(), 0);
+  }
+});

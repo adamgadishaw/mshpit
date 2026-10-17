@@ -290,7 +290,7 @@ export default function ArtistArchiveScreen({ artistName, artistKey, onClose, on
   const initialError = resource.status === "error" && resource.updatedAt == null;
 
   const renderRow = ({ item }) => {
-    if (item.type === "section") return <SectionRow {...item} />;
+    if (item.type === "section") { const { key, ...section } = item; return <SectionRow key={key} {...section} />; }
     if (item.type === "empty") return <EmptyRow {...item} />;
     if (item.type === "top-show") return <ShowRow show={item.show} rank={item.rank} wide={wide} onOpenShow={onOpenShow} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
     if (item.type === "show") return <ShowRow show={item.show} wide={wide} onOpenShow={onOpenShow} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;

@@ -34,8 +34,8 @@ export function VenueDiscoveryCard({ venue, onPress, compact = false }) {
         <Icon name="pin" size={compact ? 16 : 19} color={colors.cool} />
       </View>
       <View style={styles.cardCopy}>
-        <Text style={[styles.venueName, compact && styles.venueNameCompact]} numberOfLines={1}>{venue?.name || "Unknown venue"}</Text>
-        <Text style={styles.place} numberOfLines={1}>{city}{region ? ` · ${region}` : ""}</Text>
+        <Text style={[styles.venueName, compact && styles.venueNameCompact]} numberOfLines={Platform.OS === "web" ? 1 : undefined}>{venue?.name || "Unknown venue"}</Text>
+        <Text style={styles.place} numberOfLines={Platform.OS === "web" ? 1 : undefined}>{city}{region ? ` · ${region}` : ""}</Text>
         {!compact && details.length > 0 ? <Text style={styles.detail} numberOfLines={1}>{details.join("  ·  ")}</Text> : null}
       </View>
       {upcoming > 0 ? (
@@ -81,15 +81,15 @@ export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEven
         </View>
         {onOpenArtist && titleIsArtist ? (
           <Pressable onPress={onOpenArtist} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Open ${artist}`}>
-            <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={1}>{title}</Text>
+            <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={Platform.OS === "web" ? 1 : undefined}>{title}</Text>
           </Pressable>
         ) : (
-          <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={1}>{title}</Text>
+          <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={Platform.OS === "web" ? 1 : undefined}>{title}</Text>
         )}
         {!compact && !titleIsArtist && lineup ? <Text style={styles.lineup} numberOfLines={1}>Lineup: {lineup}</Text> : null}
         {onOpenVenue ? (
           <Pressable onPress={onOpenVenue} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Open ${event?.venue}`}>
-            <Text style={styles.eventPlace} numberOfLines={compact ? 2 : 1}>{detail || "Venue to be announced"}</Text>
+            <Text style={styles.eventPlace} numberOfLines={Platform.OS === "web" ? (compact ? 2 : 1) : undefined}>{detail || "Venue to be announced"}</Text>
           </Pressable>
         ) : (
           <Text style={styles.eventPlace} numberOfLines={compact ? 2 : 1}>{detail || "Venue to be announced"}</Text>
@@ -122,7 +122,7 @@ export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEven
 }
 
 const styles = StyleSheet.create({
-  venueCard: { minHeight: 82, flexDirection: "row", alignItems: "center", gap: 12, padding: 14, backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card, ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "background-color, border-color, transform" } }) },
+  venueCard: { minHeight: 82, flexDirection: "row", alignItems: "center", gap: 12, padding: 14, backgroundColor: Platform.OS === "web" ? colors.surface : colors.bgElev, borderRadius: Platform.OS === "web" ? radius.md : 12, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, ...(Platform.OS === "web" ? shadow.card : {}), ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "background-color, border-color, transform" } }) },
   venueCardCompact: { minHeight: 64, padding: 10, gap: 9, boxShadow: "none" },
   venueMark: { width: 42, height: 42, borderRadius: 14, borderCurve: "continuous", alignItems: "center", justifyContent: "center", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
   cardCopy: { flex: 1, minWidth: 0 },

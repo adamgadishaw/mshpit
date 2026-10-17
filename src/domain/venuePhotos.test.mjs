@@ -89,7 +89,7 @@ test("venue map cards render only an exact, fully attributed licensed photo", ()
   const liveMapSource = readFileSync(new URL("../components/LiveMap.jsx", import.meta.url), "utf8");
   const storeSource = readFileSync(new URL("../store.js", import.meta.url), "utf8");
   assert.match(storeSource, /photoProvenance:\s*catalogPhoto\.photoProvenance/u);
-  assert.match(nearbySource, /photoProvenance:\s*summary\.photoProvenance/u);
+  assert.doesNotMatch(nearbySource, /LiveMap|NearbyVenueMap/u, "Nearby no longer renders a venue map; remaining map attribution stays enforced below");
   assert.match(liveMapSource, /venueMapPhotoPresentation\(p\.photoProvenance, p\.photo\)/u);
   assert.match(liveMapSource, /SafeAttributionLink label="Source"/u);
   assert.match(liveMapSource, /SafeAttributionLink label=\{attribution\.license\}/u);

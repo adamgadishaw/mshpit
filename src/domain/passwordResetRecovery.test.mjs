@@ -24,3 +24,11 @@ test('invalid links and rate limits preserve explicit rejection and successful r
   }
   assert.deepEqual(await makeReset(async(_request,accept)=>accept({user:{id:'synthetic-account'}}))('synthetic-token','Synthetic-password1'),{ok:true});
 });
+
+test('actual Store reset accept retires native link before account adoption and never on rejection',async()=>{
+ const order=[];
+ const reset=new Function('performAuthentication','api','logout','absorbServerUser',`return (${source.slice(callback.start,callback.end)});`)(async(_request,accept)=>accept({user:{id:'B'}}),()=>{},()=>{},()=>order.push('adopt-B'));
+ assert.deepEqual(await reset('synthetic-token','Synthetic-password1',{onAccepted:()=>order.push('retire-capability')}),{ok:true});
+ assert.deepEqual(order,['retire-capability','adopt-B']);
+ let retired=false;await makeReset(async()=>{throw Object.assign(Error('rejected'),{status:400});})('synthetic-token','Synthetic-password1',{onAccepted:()=>retired=true});assert.equal(retired,false);
+});

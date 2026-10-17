@@ -47,6 +47,7 @@ export default function Avatar({ user, size = 36, onPress, priority = "normal" }
       {fallback}
       {!!avatarUri && (
         <ExpoImage
+          key={cacheKey}
           accessible={false}
           source={source}
           style={StyleSheet.absoluteFill}

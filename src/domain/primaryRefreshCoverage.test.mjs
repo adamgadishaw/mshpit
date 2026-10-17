@@ -95,7 +95,11 @@ test("Discover keeps last-good results inside their exact region and genre scope
   assert.match(discover, /setGenreResults\(\(current\) => \(\{ \.\.\.current, \[requestScopeKey\]: normalized \}\)\)/);
   assert.match(discover, /const sameScope = previous\.scopeKey === rangeScopeKey && previous\.days === days/);
   assert.match(discover, /rows: sameScope \? previous\.rows : \[\]/);
-  assert.match(discover, /!append && currentMatches && current\.rows\.length && !normalized\.length/);
+  const rangeRequest = discover.slice(discover.indexOf("  const requestEventRange"), discover.indexOf("  const selectEventRange"));
+  assert.match(rangeRequest, /rows: normalized,[\s\S]*status: "ready"/,
+    "a successful refresh commits its result, including an authoritative empty array");
+  assert.match(rangeRequest, /\.catch\(\(\) => \{[\s\S]*current\.scopeKey === rangeScopeKey && current\.days === days[\s\S]*\{ \.\.\.current, status: "error" \}/,
+    "network and parser failures retain the current rows only inside their exact range scope");
   assert.match(discover, /Updating dates\. Your current events are still here\./);
   assert.doesNotMatch(discover, /setOverview\([^\n]*normalizeDiscoverOverview\(\{ countries:/,
     "starting a request must not erase a healthy chart");

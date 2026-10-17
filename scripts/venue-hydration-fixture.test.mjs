@@ -25,7 +25,7 @@ const jsx = (type, props) => ({ type, props });
 new vm.Script(compiled).runInNewContext({
   module, exports: module.exports, require: () => ({ jsx, jsxs: jsx }),
   View: "View", Text: "Text", Pressable: "Pressable", Icon: "Icon", PublicTextLink: "PublicTextLink",
-  styles: {}, colors: {}, focusRing: {},
+  styles: {}, colors: {}, focusRing: {}, Platform: { OS: "web" },
   eventDateMeta, optionalDistanceKm, splitVenuePlace, liveEventLineupLabel, liveEventTitle,
   LIVE_EVENT_PHASE, liveEventPhase, eventPath,
 });

@@ -1,5 +1,5 @@
 import { Platform } from "react-native";
-import { writeThemePair } from "./domain/themeStorage.mjs";
+import { nativeThemeRuntime, readThemeSelection, persistThemeSelection, clearThemeSelection, reloadTheme } from "./lib/themeRuntime";
 
 export const CONTENT_COLUMN_MAX_WIDTH = 900;
 
@@ -112,20 +112,17 @@ Object.assign(PRESETS, {
   lavender: { name: "Lavender", sub: "Album pastel / light", dark: false, colors: LAVENDER },
 });
 
-const THEME_STORAGE_KEY = "pit_theme";
-const THEME_OWNER_KEY = "pit_theme_owner";
 
-// Read the saved theme synchronously at load (web localStorage). Back-compat: the
+// Read the platform store before static StyleSheets resolve. Back-compat: the
 // old key stored "dark"/"light" - map those onto the new preset keys.
+const validTheme = next => typeof next === "string" && Object.hasOwn(PRESETS, next);
 let key = "stage";
 try {
-  if (typeof window !== "undefined" && window.localStorage) {
-    const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
-    if (saved === "light") key = "daylight";
-    else if (saved === "dark") key = "stage";
-    else if (saved && PRESETS[saved]) key = saved;
-  }
-} catch {}
+  const saved = readThemeSelection().theme;
+  if (saved === "light") key = "daylight";
+  else if (saved === "dark") key = "stage";
+  else if (validTheme(saved)) key = saved;
+} catch { /* the default remains usable when storage is unavailable */ }
 
 export const themeKey = key;
 const activeTheme = PRESETS[key] || PRESETS.stage;
@@ -154,47 +151,34 @@ export const THEMES = Object.entries(PRESETS).map(([k, v]) => ({
 }));
 
 function persistTheme(next, ownerId = null) {
-  if (!PRESETS[next]) return false;
-  if (typeof window === "undefined") return false;
-  // The atomic write lives in src/domain/themeStorage.mjs so the invariant
-  // ("never store a theme without its owner") is unit-tested. Checking that
-  // localStorage exists is not enough: Safari private mode provides the object
-  // and throws on setItem.
-  return writeThemePair(window.localStorage, { themeKey: THEME_STORAGE_KEY, ownerKey: THEME_OWNER_KEY }, next, ownerId);
+  return validTheme(next) && persistThemeSelection(next, ownerId);
 }
 
-export function storedThemeSelection() {
-  try {
-    if (typeof window === "undefined" || !window.localStorage) return { theme: null, ownerId: null };
-    return {
-      theme: window.localStorage.getItem(THEME_STORAGE_KEY),
-      ownerId: window.localStorage.getItem(THEME_OWNER_KEY),
-    };
-  } catch { return { theme: null, ownerId: null }; }
-}
-
+export const storedThemeSelection = readThemeSelection;
 export function clearStoredTheme() {
-  try {
-    if (typeof window !== "undefined" && window.localStorage) {
-      window.localStorage.removeItem(THEME_STORAGE_KEY);
-      window.localStorage.removeItem(THEME_OWNER_KEY);
-    }
-  } catch {}
+  try { clearThemeSelection(); } catch { /* next account reconciliation ignores another owner's choice */ }
 }
-
 export function setTheme(next, ownerId = null) {
-  if (!PRESETS[next]) return;
-  try { if (persistTheme(next, ownerId)) window.location.reload(); } catch {}
+  if (!validTheme(next)) return;
+  try { if (persistTheme(next, ownerId)) reloadTheme(); } catch { /* keep the current usable appearance */ }
+}
+export function syncThemeFromAccount(next, ownerId) {
+  if (!validTheme(next)) return;
+  try { if (persistTheme(next, ownerId) && next !== key) reloadTheme(); } catch { /* no reload without verified persistence */ }
 }
 
-// Apply a theme that came from the signed-in account (login / a new device).
-// No-op when it already matches what's rendered, so it never loops on the
-// reload it triggers: after the reload themeKey === next and this returns early.
-export function syncThemeFromAccount(next, ownerId) {
-  if (!next || !PRESETS[next]) return;
-  try {
-    if (persistTheme(next, ownerId) && next !== key) window.location.reload();
-  } catch {}
+// Native has no document/localStorage. Preserve the website's owner-scoped
+// local-choice priority, without its best-effort account PATCH during recovery.
+export function syncNativeAccountTheme(account) {
+  if (!nativeThemeRuntime) return false;
+  const ownerId = account?.id || "guest";
+  const local = storedThemeSelection();
+  // An unreadable store is not an empty one: never replace a choice we could not inspect.
+  if (local.unavailable) return true;
+  const next = local.ownerId === ownerId && validTheme(local.theme) ? local.theme
+    : account?.id && validTheme(account.theme) ? account.theme : "stage";
+  syncThemeFromAccount(next, ownerId);
+  return true;
 }
 
 // Official positions get a colored @handle so they're unmistakable (Discord-

@@ -1,5 +1,5 @@
 import { useCallback, useContext, useMemo, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Platform, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, font, mono, radius, space } from "../../theme";
 import Icon from "../../components/Icon";
@@ -23,6 +23,7 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
   const openPostById = useContext(PostNavigationContext);
   const { width } = useWindowDimensions();
   const wide = width >= 900;
+  const EditionSelector = Platform.OS === "web" ? View : ScrollView;
   const load = useCallback((signal) => readFestival(slug, { signal }), [slug]);
   const resource = useFestivalResource(`festival:${slug}:${signedIn ? "member" : "guest"}`, load);
   const page = resource.data;
@@ -68,26 +69,29 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
   return <View style={styles.screen}>
     <Header title={festival.name} onClose={onClose} />
     <ScrollView contentContainerStyle={[styles.content, wide && styles.contentWide]} keyboardShouldPersistTaps="handled">
-      {page.upcoming.length > 1 ? <View style={styles.editionChips} accessibilityRole="tablist">
+      {page.upcoming.length > 1 ? <EditionSelector horizontal={Platform.OS !== "web"} showsHorizontalScrollIndicator={false}
+        style={Platform.OS !== "web" && styles.nativeEditionSelector}
+        contentContainerStyle={Platform.OS !== "web" ? styles.nativeEditionChips : undefined}
+        {...(Platform.OS === "web" ? { style: styles.editionChips } : {})} accessibilityRole="tablist" accessibilityLabel="Festival editions">
         {page.upcoming.map((item) => <Pressable key={item.id} onPress={() => { setSelectedId(item.id); setDay(null); setEditing(false); }}
           style={[styles.chip, item.id === edition?.id && styles.chipOn]} accessibilityRole="tab" accessibilityState={{ selected: item.id === edition?.id }} aria-selected={item.id === edition?.id}>
           <Text style={[styles.chipText, item.id === edition?.id && styles.chipTextOn]}>{`${item.city || item.name} · ${festivalDateRange(item.startDate, item.endDate)}`}</Text>
         </Pressable>)}
-      </View> : null}
+      </EditionSelector> : null}
 
-      {edition ? <View style={[styles.hero, wide && styles.heroWide]}>
+      {edition ? <View style={[styles.hero, wide && styles.heroWide, Platform.OS !== "web" && styles.nativeHero]}>
         {edition.imageUrl ? <>
-          <ExpoImage source={{ uri: edition.imageUrl }} style={StyleSheet.absoluteFill} contentFit="cover" accessibilityIgnoresInvertColors />
-          <View style={styles.heroShade} />
+          <ExpoImage source={{ uri: edition.imageUrl }} style={Platform.OS === "web" ? StyleSheet.absoluteFill : styles.nativePoster} contentFit={Platform.OS === "web" ? "cover" : "contain"} accessibilityIgnoresInvertColors />
+          {Platform.OS === "web" ? <View style={styles.heroShade} /> : null}
         </> : <FestivalBackdrop accent={accent} beams />}
-        <View style={styles.heroBody}>
+        <View style={[styles.heroBody, Platform.OS !== "web" && styles.nativeHeroBody]}>
           <Rise index={0} style={styles.heroTop}>
             <Text style={styles.kicker}>Festival</Text>
             {countdown ? <View style={[styles.countPill, countdown.live && styles.countPillLive]}>
               <Text style={[styles.countText, countdown.live && styles.countTextLive]}>{countdown.label}</Text>
             </View> : null}
           </Rise>
-          <Rise index={1}><Text style={[styles.heroTitle, wide && styles.heroTitleWide]} accessibilityRole="header">{edition.name}</Text></Rise>
+          <Rise index={1}><Text style={[styles.heroTitle, wide && styles.heroTitleWide, Platform.OS !== "web" && styles.nativeHeroTitle]} accessibilityRole="header">{edition.name}</Text></Rise>
           <Rise index={2} style={styles.heroPlace}>
             <Text style={styles.heroWhen}>{festivalDateRange(edition.startDate, edition.endDate)}</Text>
             {festivalPlace(edition) ? <Text style={styles.heroWhere}>{festivalPlace(edition)}</Text> : null}
@@ -282,6 +286,7 @@ function PlanEditor({ slug, edition, plan, onSaved, onCancel }) {
   </View>;
 }
 
+const absoluteFill = StyleSheet.absoluteFillObject || StyleSheet.absoluteFill;
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
   header: { flexDirection: "row", alignItems: "center", gap: space(2), paddingHorizontal: space(3), paddingVertical: space(2), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
@@ -291,14 +296,20 @@ const styles = StyleSheet.create({
   content: { padding: space(4), gap: space(5), paddingBottom: space(10) },
   contentWide: { maxWidth: 980, width: "100%", alignSelf: "center" },
   editionChips: { flexDirection: "row", flexWrap: "wrap", gap: space(2) },
+  nativeEditionSelector: { flexGrow: 0 },
+  nativeEditionChips: { flexDirection: "row", gap: space(2), paddingVertical: 4 },
   chip: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 12, paddingVertical: 7 },
   chipOn: { backgroundColor: colors.amber, borderColor: colors.amber },
   chipText: { color: colors.textDim, fontFamily: font, fontSize: 13, fontWeight: "800" },
   chipTextOn: { color: colors.bg },
   // The hero is a poster: always a dark stage with white type, in every theme.
+  nativeHero: { minHeight: 0, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md },
+  nativePoster: { width: "100%", aspectRatio: 2, backgroundColor: colors.bg },
+  nativeHeroBody: { padding: 16, gap: 10 },
+  nativeHeroTitle: { fontSize: 25, lineHeight: 30, textShadowRadius: 0 },
   hero: { minHeight: 300, justifyContent: "flex-end", borderRadius: radius.lg, overflow: "hidden", backgroundColor: "#0B0A10" },
   heroWide: { minHeight: 360 },
-  heroShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(6,6,10,0.62)" },
+  heroShade: { ...absoluteFill, backgroundColor: "rgba(6,6,10,0.62)" },
   heroBody: { padding: space(5), gap: space(2) },
   heroTop: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(2) },
   kicker: { color: "rgba(255,255,255,0.86)", fontFamily: mono, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
+import useAppActive from "../lib/useAppActive";
 import Icon from "./Icon";
 import { checkConvertingClip, retryConvertingClip } from "../lib/convertingClipsApi";
 import { colors, radius } from "../theme";
@@ -14,14 +15,25 @@ const CHECK_EVERY_MS = 15_000;
 // that could not be converted says so and can be tried again; it is never
 // quietly dropped from the post.
 export default function ConvertingClipNotice({ clips, onReady }) {
+  const appActive = useAppActive();
+  const pollActive = Platform.OS === "web" || appActive;
   const [states, setStates] = useState(() => new Map(clips.map((clip) => [clip.id, clip.state])));
   const [retrying, setRetrying] = useState(false);
+  const retryGeneration = useRef(0);
+  const retryInFlight = useRef(false);
   const readyRef = useRef(onReady);
   readyRef.current = onReady;
   const clipKey = clips.map((clip) => `${clip.id}:${clip.state}`).join(",");
 
-  useEffect(() => {
+  // Retire retries during commit, before an old promise can settle ahead of passive effects.
+  useLayoutEffect(() => {
+    const generation = ++retryGeneration.current;
+    retryInFlight.current = false;
+    setRetrying(false);
     setStates(new Map(clips.map((clip) => [clip.id, clip.state])));
+    return () => {
+      if (retryGeneration.current === generation) retryGeneration.current++;
+    };
     // clipKey captures every id and state the server reported.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clipKey]);
@@ -30,22 +42,29 @@ export default function ConvertingClipNotice({ clips, onReady }) {
   const waitingKey = waiting.join(",");
 
   useEffect(() => {
-    if (!waiting.length) return undefined;
+    if (!waiting.length || !pollActive) return undefined;
     let cancelled = false;
     const controller = new AbortController();
+    let checking = false;
     const check = async () => {
-      const results = await Promise.all(waiting.map(async (id) => [id, await checkConvertingClip(id, { signal: controller.signal })]));
-      if (cancelled) return;
-      setStates((current) => {
-        const next = new Map(current);
-        for (const [id, state] of results) {
-          if (state === "ready") next.delete(id);
-          else if (state === "failed") next.set(id, "failed");
-        }
-        return next;
-      });
-      if (results.some(([, state]) => state === "ready")) readyRef.current?.();
+      if (cancelled || checking) return;
+      checking = true;
+      try {
+        const results = await Promise.all(waiting.map(async (id) => [id, await checkConvertingClip(id, { signal: controller.signal })]));
+        if (cancelled) return;
+        setStates((current) => {
+          const next = new Map(current);
+          for (const [id, state] of results) {
+            if (state === "ready") next.delete(id);
+            else if (state === "failed") next.set(id, "failed");
+          }
+          return next;
+        });
+        if (results.some(([, state]) => state === "ready")) readyRef.current?.();
+      } finally { checking = false; }
     };
+    // Native return/mount catches an already-finished clip immediately.
+    if (Platform.OS !== "web") void check();
     const timer = setInterval(() => { void check(); }, CHECK_EVERY_MS);
     return () => {
       cancelled = true;
@@ -54,16 +73,21 @@ export default function ConvertingClipNotice({ clips, onReady }) {
     };
     // waitingKey lists the clips being checked.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waitingKey]);
+  }, [waitingKey, pollActive]);
 
   const failed = [...states].filter(([, state]) => state === "failed").map(([id]) => id);
   const summary = convertingClipSummary({ converting: waiting.length, failed: failed.length });
   if (!summary) return null;
 
   const retry = async () => {
-    if (retrying) return;
+    if (retrying || retryInFlight.current) return;
+    retryInFlight.current = true;
+    const generation = retryGeneration.current;
     setRetrying(true);
     const outcomes = await Promise.allSettled(failed.map((id) => retryConvertingClip(id)));
+    // A replaced or unmounted notice cannot publish a retired retry result.
+    if (generation !== retryGeneration.current) return;
+    retryInFlight.current = false;
     setStates((current) => {
       const next = new Map(current);
       outcomes.forEach((outcome, index) => {
@@ -107,6 +131,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.lineSoft,
   },
   text: { flex: 1, color: colors.textDim, fontSize: 13, lineHeight: 18 },
-  retry: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.amber },
+  retry: { minHeight: Platform.OS === "web" ? 0 : 48, justifyContent: "center", paddingVertical: 6, paddingHorizontal: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.amber },
   retryText: { color: colors.amber, fontSize: 12, fontWeight: "700" },
 });

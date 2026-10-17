@@ -160,3 +160,25 @@ test("the Discover map never turns an index venue with null coordinates into an 
   assert.equal(cities[0].venues[0].coord, null);
   assert.equal(cities[0].venues[0].shows.length, 1, "an unmapped venue and its real show remain browsable");
 });
+
+
+test("qualified venue filters run before the bounded result limit", () => {
+  const index = createUnifiedVenueSearchIndex({ catalogVenues: [
+    ...Array.from({ length: 50 }, (_, i) => ({ name: `A UK Room ${i}`, place: "London, England, United Kingdom" })),
+    { name: "Z Canadian Room", place: "London, Ontario, Canada" },
+  ] });
+  const filter = row => row.place === "London, Ontario, Canada";
+  assert.equal(searchUnifiedVenueIndex(index, "London", { limit: 50 }).filter(filter).length, 0);
+  assert.deepEqual(searchUnifiedVenueIndex(index, "London", { limit: 50, filter }).map(row => row.name), ["Z Canadian Room"]);
+  assert.deepEqual(searchUnifiedVenueIndex(index, "London", { filter: () => false }), []);
+});
+
+test("filtered venue results preserve ordering and the ordinary search cap", () => {
+  const index = createUnifiedVenueSearchIndex({ catalogVenues: Array.from({ length: 70 }, (_, i) => ({
+    name: `Room ${String(i).padStart(2, "0")}`, place: "London, Ontario, Canada",
+  })) });
+  const filter = () => true;
+  assert.equal(searchUnifiedVenueIndex(index, "London", { limit: 500, filter }).length, 50);
+  assert.deepEqual(searchUnifiedVenueIndex(index, "London", { limit: 2, filter }).map(row => row.name), ["Room 00", "Room 01"]);
+  assert.deepEqual(searchUnifiedVenueIndex(index, "London", { limit: 0, filter }), []);
+});

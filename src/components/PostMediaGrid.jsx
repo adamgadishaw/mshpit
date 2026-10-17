@@ -127,6 +127,8 @@ export default function PostMediaGrid({ media = [], onOpen, openerScope = null, 
   }
 }
 
+// RN 0.86 removed the deprecated alias; preserve the existing web style.
+const absoluteFill = StyleSheet.absoluteFillObject || StyleSheet.absoluteFill;
 const styles = StyleSheet.create({
   grid: {
     width: "100%",
@@ -146,9 +148,9 @@ const styles = StyleSheet.create({
   stack: { flex: 1, gap: 2 },
   flex: { flex: 1 },
   hero: { flex: 2 },
-  fill: { ...StyleSheet.absoluteFillObject },
+  fill: { ...absoluteFill },
   tile: { minWidth: 0, minHeight: 0, overflow: "hidden", backgroundColor: colors.bgElev },
-  moreScrim: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(5,7,12,0.62)" },
+  moreScrim: { ...absoluteFill, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(5,7,12,0.62)" },
   moreLabel: { color: "#fff", fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.4 },
   moreText: { color: "#fff", fontFamily: mono, fontSize: 30, fontWeight: "900", textShadowColor: "rgba(0,0,0,0.45)", textShadowRadius: 8 },
 });

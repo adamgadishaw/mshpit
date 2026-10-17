@@ -96,7 +96,7 @@ export default function SocialShareStudio({ accountId = null, model, onClose }) 
 }
 
 const styles = StyleSheet.create({
-  shareTrigger: { minWidth: 44, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: radius.sm },
+  shareTrigger: { minWidth: 44, minHeight: Platform.OS === "web" ? 44 : 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: radius.sm },
   shareTriggerLabelled: { alignSelf: "flex-start", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: space(3) },
   shareTriggerText: { fontFamily: displayFont, fontSize: 13, fontWeight: "900" },
   pressed: { opacity: 0.76, transform: [{ scale: 0.98 }] },

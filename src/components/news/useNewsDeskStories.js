@@ -15,12 +15,19 @@ export default function useNewsDeskStories({ enabled = true, limit = 20, artist 
   const [state, setState] = useState(() => emptyNewsState(scope));
   const controllerRef = useRef(null);
   const cursorRef = useRef(null);
+  const pendingRef = useRef(null);
+  const retryRef = useRef(null);
 
   const load = useCallback(async ({ more = false } = {}) => {
     if (!ready || (more && (!cursorRef.current?.cursor || cursorRef.current.scope !== scope))) return false;
+    // A repeated append must not abort and redispatch the page already loading.
+    if (more && pendingRef.current?.scope === scope) return false;
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
+    const operation = { scope, more, controller };
+    pendingRef.current = operation;
+    retryRef.current = null;
     setState((current) => ({ ...newsStateForScope(current, scope), status: "loading" }));
     try {
       const result = await fetchNewsDeskStories({ cursor: more ? cursorRef.current.cursor : null, limit, artist, sort, signal: controller.signal });
@@ -35,8 +42,13 @@ export default function useNewsDeskStories({ enabled = true, limit = 20, artist 
       return true;
     } catch {
       // architecture: allow-ambiguous-result -- news is optional; the views show an in-place error with a retry
-      if (!controller.signal.aborted && scopeRef.current === scope && controllerRef.current === controller) setState((current) => ({ ...newsStateForScope(current, scope), status: "error" }));
+      if (!controller.signal.aborted && scopeRef.current === scope && controllerRef.current === controller) {
+        retryRef.current = { scope, more };
+        setState((current) => ({ ...newsStateForScope(current, scope), status: "error" }));
+      }
       return false;
+    } finally {
+      if (pendingRef.current === operation) pendingRef.current = null;
     }
   }, [artist, limit, sort, ready, scope]);
 
@@ -46,5 +58,5 @@ export default function useNewsDeskStories({ enabled = true, limit = 20, artist 
     return () => controllerRef.current?.abort();
   }, [ready, load]);
 
-  return { ...newsStateForScope(state, scope, ready), loadMore: () => load({ more: true }), reload: () => load() };
+  return { ...newsStateForScope(state, scope, ready), failedMore: state.status === "error" && retryRef.current?.scope === scope && retryRef.current.more === true, loadMore: () => load({ more: true }), reload: () => load(), retry: () => load({ more: retryRef.current?.scope === scope && retryRef.current.more === true }) };
 }

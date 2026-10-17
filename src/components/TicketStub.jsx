@@ -15,6 +15,7 @@ import PostMediaGrid from "./PostMediaGrid";
 import ConvertingClipNotice from "./ConvertingClipNotice";
 import SongAttachment from "./SongAttachment";
 import { useStore } from "../store";
+import PostSwipeActions from "./PostSwipeActions";
 import { RepostButton, RepostAttribution } from "./SocialReactionButtons";
 import { BadgeRow } from "./Badge";
 import { formatDate, relativeTime } from "../domain/dates.mjs";
@@ -112,9 +113,9 @@ function NotForMeButton({ onPress, palette = null }) {
   if (!onPress) return null;
   const color = palette?.mutedTextColor || colors.textDim;
   return (
-    <Pressable style={({ pressed }) => [styles.notForMe, palette && styles.campaignTouchTarget, pressed && (palette ? styles.campaignControlPressed : styles.controlPressed)]} hitSlop={8} onPress={onPress} accessibilityRole="button" accessibilityLabel="Not for me. Hide this recommendation.">
+    <Pressable style={({ pressed }) => [styles.notForMe, palette && styles.campaignTouchTarget, pressed && (palette ? styles.campaignControlPressed : styles.controlPressed)]} hitSlop={Platform.OS === "web" ? 8 : 2} onPress={onPress} accessibilityRole="button" accessibilityLabel="Not for me. Hide this recommendation.">
       <Icon name="minus" size={14} color={color} />
-      <Text style={[styles.notForMeTxt, { color }]}>Not for me</Text>
+      {Platform.OS === "web" && <Text style={[styles.notForMeTxt, { color }]}>Not for me</Text>}
     </Pressable>
   );
 }
@@ -144,6 +145,7 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
     <View
       style={[
         styles.ticketActionRail,
+        Platform.OS !== "web" && styles.nativeTicketActionRail,
         palette && {
           backgroundColor: palette.contentSurfaceColor,
           borderColor: palette.accentColor + "72",
@@ -155,24 +157,24 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
         <PublicPressableLink
           href={showHref}
           onNavigate={onOpenShow}
-          style={({ pressed }) => [styles.ticketAction, pressed && styles.ticketActionPressed]}
+          style={({ pressed }) => [styles.ticketAction, Platform.OS !== "web" && styles.nativeTicketAction, pressed && styles.ticketActionPressed]}
           accessibilityLabel={reviewOnly ? `Open ${artist || "concert"} review` : `View ${artist || "this"} show`}
         >
           <Icon name="ticket" size={15} color={accent} />
-          <Text style={[styles.ticketActionText, { color: textColor }]} numberOfLines={2}>{reviewOnly ? "Open review" : "View this show"}</Text>
+          <Text style={[styles.ticketActionText, Platform.OS !== "web" && styles.nativeTicketActionText, { color: textColor }]} numberOfLines={2}>{reviewOnly ? "Open review" : "View this show"}</Text>
           <Icon name="chevron-right" size={13} color={accent} />
         </PublicPressableLink>
       ) : null}
-      {showHref && compareHref ? <View style={[styles.ticketActionDivider, palette && { backgroundColor: palette.accentColor + "52" }]} /> : null}
+      {showHref && compareHref ? <View style={[styles.ticketActionDivider, Platform.OS !== "web" && styles.nativeTicketActionDivider, palette && { backgroundColor: palette.accentColor + "52" }]} /> : null}
       {compareHref ? (
         <PublicPressableLink
           href={compareHref}
           onNavigate={onCompare}
-          style={({ pressed }) => [styles.ticketAction, pressed && styles.ticketActionPressed]}
+          style={({ pressed }) => [styles.ticketAction, Platform.OS !== "web" && styles.nativeTicketAction, pressed && styles.ticketActionPressed]}
           accessibilityLabel={`Compare scores across ${artist} concerts`}
         >
           <Icon name="archive" size={15} color={secondary} />
-          <Text style={[styles.ticketActionText, { color: textColor }]} numberOfLines={2}>Compare {artist} shows</Text>
+          <Text style={[styles.ticketActionText, Platform.OS !== "web" && styles.nativeTicketActionText, { color: textColor }]} numberOfLines={2}>Compare {artist} shows</Text>
           <Icon name="chevron-right" size={13} color={secondary} />
         </PublicPressableLink>
       ) : null}
@@ -184,7 +186,7 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
-export default function TicketStub({ log, mediaViewable = null, compactContent = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+export default function TicketStub({ log, mediaViewable = null, compactContent = false, swipeActions = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const onOpenCity = useContext(CityNavigationContext);
   const cityIdentity = cityIdentityForLocation(log);
   const cityHref = cityIdentity ? cityPath(cityIdentity) : null;
@@ -375,17 +377,17 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
             <Text style={[styles.sub, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={campaignPresentation ? { color: campaignTreatment.accentColor, fontWeight: "800" } : roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</PublicTextLink> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
           </Pressable>
           {canEdit && (
-            <Pressable style={[styles.iconBtn, campaignPresentation && styles.campaignTouchTarget]} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
+            <Pressable style={[styles.iconBtn, campaignPresentation && styles.campaignTouchTarget]} hitSlop={Platform.OS === "web" ? 8 : 2} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
               <Icon name="edit" size={16} color={campaignPresentation ? campaignTreatment.accentColor : colors.amber} />
             </Pressable>
           )}
           {canDelete && (
-            <Pressable style={[styles.iconBtn, campaignPresentation && styles.campaignTouchTarget]} hitSlop={8} onPress={confirmDelete} accessibilityRole="button" accessibilityLabel="Delete post">
+            <Pressable style={[styles.iconBtn, campaignPresentation && styles.campaignTouchTarget]} hitSlop={Platform.OS === "web" ? 8 : 2} onPress={confirmDelete} accessibilityRole="button" accessibilityLabel="Delete post">
               <Icon name="trash" size={16} color={campaignPresentation ? "#FFB4AB" : colors.danger} />
             </Pressable>
           )}
           {canReport && (
-            <Pressable style={[styles.iconBtn, campaignPresentation && styles.campaignTouchTarget]} hitSlop={8} onPress={() => onReport(log)} accessibilityRole="button" accessibilityLabel="Report post">
+            <Pressable style={[styles.iconBtn, campaignPresentation && styles.campaignTouchTarget]} hitSlop={Platform.OS === "web" ? 8 : 2} onPress={() => onReport(log)} accessibilityRole="button" accessibilityLabel="Report post">
               <Icon name="flag" size={15} color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textFaint} />
             </Pressable>
           )}
@@ -440,14 +442,15 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 
         <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />
 
-        <View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
+        <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
+<View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
           <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
           <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} palette={campaignTreatment} />
-          <Pressable style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={pressLike} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
+          <Pressable style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={pressLike} hitSlop={Platform.OS === "web" ? 8 : 2} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
             <Icon name="heart" size={18} color={campaignPresentation ? (liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor) : liked ? colors.magenta : colors.textDim} filled={liked} />
             <Text style={[styles.fCount, campaignPresentation && { color: liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor }, !campaignPresentation && liked && { color: colors.magenta }]}>{likeCount}</Text>
           </Pressable>
-          <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} hitSlop={8} accessibilityLabel={`Comments, ${commentCount}`}>
+          <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} hitSlop={Platform.OS === "web" ? 8 : 2} accessibilityLabel={`Comments, ${commentCount}`}>
             <Icon name="comment" size={17} color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textDim} />
             <Text style={[styles.fCount, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}>{commentCount}</Text>
           </PublicPressableLink>
@@ -458,6 +461,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
             model={shareModel}
           />
         </View>
+</PostSwipeActions>
 
         {showComments && <CommentPreview log={log} onOpen={openComments} palette={campaignTreatment} />}
         <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
@@ -498,36 +502,36 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         </View>
       )}
 
-      <View style={styles.performanceCardShadow}>
-        <View style={[styles.performanceCard, !isOnlineReview && styles.performanceCardAttached]}>
-          <View style={styles.performanceRegister} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+      <View style={[styles.performanceCardShadow, Platform.OS !== "web" && styles.nativePerformanceShadow]}>
+        <View style={[styles.performanceCard, !isOnlineReview && styles.performanceCardAttached, Platform.OS !== "web" && styles.nativePerformanceCard]}>
+          {Platform.OS === "web" && <View style={styles.performanceRegister} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
             <View style={styles.performanceRegisterAmber} />
             <View style={styles.performanceRegisterMagenta} />
             <View style={styles.performanceRegisterCool} />
-          </View>
-          <View style={styles.performanceCardBody}>
-            <View style={styles.performanceTopline}>
+          </View>}
+          <View style={[styles.performanceCardBody, Platform.OS !== "web" && styles.nativePerformanceBody]}>
+            {Platform.OS === "web" && <View style={styles.performanceTopline}>
               <Text style={styles.performanceEyebrow}>{isOnlineReview ? "ONLINE CONCERT" : performance.festival ? "FESTIVAL" : titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
               <Text style={styles.performanceArchiveMark}>{isOnlineReview ? "MSHPIT / ONLINE REVIEW" : "MSHPIT / LIVE MEMORY"}</Text>
-            </View>
-            <Text style={styles.performanceTitle} numberOfLines={3}>
+            </View>}
+            <Text style={[styles.performanceTitle, Platform.OS !== "web" && styles.nativePerformanceTitle]} numberOfLines={3}>
               {performance.primaryIsArtist
                 ? <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceTitle}>{performanceTitle}</PublicTextLink>
                 : performanceTitle}
             </Text>
             {!!performance.secondary && <Text style={styles.performanceSubtitle} numberOfLines={2}>{performance.secondary}</Text>}
-            <View style={styles.performancePerforation} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+            {Platform.OS === "web" && <View style={styles.performancePerforation} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
               <View style={styles.performancePerforationLine} />
               <View style={styles.performancePerforationDot} />
               <View style={styles.performancePerforationLine} />
-            </View>
+            </View>}
             {isOnlineReview ? (
-              <Text style={styles.performanceMeta}>
+              <Text style={[styles.performanceMeta, Platform.OS !== "web" && styles.nativePerformanceMeta]}>
                 <Text style={styles.performanceDate}>WATCHED ONLINE</Text>
               </Text>
             ) : (
               <>
-                <Text style={styles.performanceMeta}>
+                <Text style={[styles.performanceMeta, Platform.OS !== "web" && styles.nativePerformanceMeta]}>
                   {titledPerformance ? (
                     <><PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink><Text style={styles.dim}> · </Text></>
                   ) : null}
@@ -612,7 +616,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           text={log.review}
           limit={POST_CONTENT_PREVIEW_LIMIT}
           compact={compactContent}
-          containerStyle={styles.reviewWrap}
+          containerStyle={[styles.reviewWrap, Platform.OS !== "web" && styles.nativeReviewWrap]}
           renderText={({ text, accessibilityLabel }) => (
             <PublicPressableLink href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`${accessibilityLabel}. Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}.`}>
               <Text accessibilityLabel={accessibilityLabel} style={styles.review}>{text}</Text>
@@ -649,7 +653,12 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
                 </Text>
                 {!!factors && <Text style={styles.factors}>{factors}</Text>}
               </View>
-              <Text style={styles.date}>{formatDate(log.date, log.date)}</Text>
+              {Platform.OS === "web" ? <Text style={styles.date}>{formatDate(log.date, log.date)}</Text> : (
+                <View style={{ alignItems: "flex-end", gap: 4 }}>
+                  <Text style={styles.date}>{formatDate(log.date, log.date)}</Text>
+                  <ViewTally count={viewCount} />
+                </View>
+              )}
             </View>
           </Pressable>
         </>
@@ -670,37 +679,39 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
       <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
 
       {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
-      <View style={styles.footer}>
+      <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
+<View style={styles.footer}>
         <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
         <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
-        <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={pressLike} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
+        <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={pressLike} hitSlop={Platform.OS === "web" ? 8 : 2} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
           <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
         </Pressable>
-        <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.commentAction, pressed && styles.controlPressed]} hitSlop={8} accessibilityLabel={`Comments, ${commentCount}`}>
+        <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.commentAction, pressed && styles.controlPressed]} hitSlop={Platform.OS === "web" ? 8 : 2} accessibilityLabel={`Comments, ${commentCount}`}>
           <Icon name="comment" size={17} color={colors.textDim} />
-          <Text style={styles.commentActionText}>Comments</Text>
+          {Platform.OS === "web" && <Text style={styles.commentActionText}>Comments</Text>}
           <Text style={styles.fCount}>{commentCount}</Text>
         </PublicPressableLink>
-        <ViewTally count={viewCount} />
-        <SocialShareButton accountId={session?.id || null} model={shareModel} />
+        {(Platform.OS === "web" || isOnlineReview) && <ViewTally count={viewCount} />}
+        <SocialShareButton accountId={session?.id || null} model={shareModel} style={Platform.OS !== "web" ? styles.nativeFooterButton : undefined} />
         <View style={{ flex: 1 }} />
         {canEdit && (
-          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
+          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={Platform.OS === "web" ? 8 : 2} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
             <Icon name="edit" size={16} color={colors.amber} />
           </Pressable>
         )}
         {canDelete && (
-          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={confirmDelete} accessibilityRole="button" accessibilityLabel="Delete post">
+          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={Platform.OS === "web" ? 8 : 2} onPress={confirmDelete} accessibilityRole="button" accessibilityLabel="Delete post">
             <Icon name="trash" size={16} color={colors.danger} />
           </Pressable>
         )}
         {canReport && (
-          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onReport(log)} accessibilityRole="button" accessibilityLabel="Report post">
+          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={Platform.OS === "web" ? 8 : 2} onPress={() => onReport(log)} accessibilityRole="button" accessibilityLabel="Report post">
             <Icon name="flag" size={15} color={colors.textFaint} />
           </Pressable>
         )}
       </View>
+</PostSwipeActions>
 
       {showComments && <CommentPreview log={log} onOpen={openComments} />}
     </View>
@@ -708,7 +719,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 }
 
 const styles = StyleSheet.create({
-  card: { backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, padding: 16, marginBottom: 16, ...shadow.card },
+  card: { backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, padding: 16, marginBottom: 16, ...shadow.card, ...(Platform.OS !== "web" ? { padding: 12, marginBottom: 12, boxShadow: "none" } : {}) },
   mediaStatusCard: { overflow: "hidden", borderColor: colors.lineSoft },
   mediaStatusRegister: { height: 4, flexDirection: "row", marginTop: -16, marginHorizontal: -16, marginBottom: 14 },
   mediaStatusRegisterAmber: { flex: 2, backgroundColor: colors.amberStrong },
@@ -751,6 +762,16 @@ const styles = StyleSheet.create({
   taggedPersonText: { flexShrink: 1, fontSize: 11.5, fontWeight: "800" },
   taggedPersonRemove: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderLeftWidth: 1, borderLeftColor: colors.lineSoft },
 
+  nativePerformanceShadow: { boxShadow: "none" },
+  nativePerformanceCard: { borderWidth: 0, borderRadius: 0, backgroundColor: "transparent" },
+  nativePerformanceBody: { paddingHorizontal: 0, paddingTop: 0, paddingBottom: 0 },
+  nativePerformanceTitle: { fontSize: 20, lineHeight: 26, marginTop: 0, fontWeight: "800" },
+  nativePerformanceMeta: { fontSize: 14, lineHeight: 22, marginTop: 6 },
+  nativeReviewWrap: { borderLeftWidth: 0, paddingLeft: 0 },
+  nativeTicketActionRail: { flexDirection: "column", backgroundColor: "transparent", borderWidth: 0, borderTopWidth: 1, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, marginTop: 10 },
+  nativeTicketAction: { flex: 0, justifyContent: "flex-start", minHeight: 48, paddingHorizontal: 0, gap: 9 },
+  nativeTicketActionText: { flex: 1, fontSize: 14, lineHeight: 20, textAlign: "left", fontWeight: "600" },
+  nativeTicketActionDivider: { width: "100%", height: 1, marginVertical: 0 },
   performanceCardShadow: { marginTop: 12, borderRadius: radius.md, borderCurve: "continuous", ...shadow.card },
   performanceCard: { overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
   performanceCardAttached: { borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
@@ -792,9 +813,9 @@ const styles = StyleSheet.create({
   noReview: { color: colors.textFaint, fontSize: 14, marginTop: 10, fontStyle: "italic" },
 
   // Status (Facebook/Twitter-style) card pieces.
-  iconBtn: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
+  iconBtn: { width: Platform.OS === "web" ? 34 : 44, height: Platform.OS === "web" ? 34 : 48, borderRadius: 17, alignItems: "center", justifyContent: "center" },
   statusText: { color: colors.text, fontFamily: font, fontSize: 16, lineHeight: 23, marginTop: 12 },
-  statusFooter: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, marginTop: 14, paddingTop: 4, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  statusFooter: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: Platform.OS === "web" ? 8 : 4, rowGap: 2, marginTop: 14, paddingTop: 4, borderTopWidth: 1, borderTopColor: colors.lineSoft },
   campaignFooter: { borderTopColor: "rgba(255,255,255,0.12)" },
   campaignTouchTarget: { minWidth: 44, minHeight: 44 },
   campaignWhyWrap: { borderColor: "rgba(255,255,255,0.14)", backgroundColor: "rgba(255,255,255,0.06)" },
@@ -816,14 +837,15 @@ const styles = StyleSheet.create({
   lock: { color: colors.textFaint, fontSize: 11, marginLeft: 4 },
   setBody: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginTop: 8 },
 
-  footer: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 8, rowGap: 2, marginTop: 16 },
-  fBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 32, minHeight: 32, paddingHorizontal: 4, borderRadius: radius.sm },
-  commentAction: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, borderRadius: radius.sm },
+  footer: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: Platform.OS === "web" ? 8 : 4, rowGap: 2, marginTop: 16 },
+  fBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, minWidth: Platform.OS === "web" ? 32 : 44, minHeight: Platform.OS === "web" ? 32 : 48, paddingHorizontal: 4, borderRadius: radius.sm },
+  nativeFooterButton: { minWidth: 44, minHeight: 48 },
+  commentAction: { minWidth: Platform.OS === "web" ? 0 : 44, minHeight: Platform.OS === "web" ? 44 : 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, borderRadius: radius.sm },
   commentActionText: { color: colors.textDim, fontSize: 12, fontWeight: "800" },
   fCount: { color: colors.textDim, fontSize: 13, fontFamily: mono },
   viewTally: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 4 },
   viewTallyText: { fontSize: 12, fontFamily: mono },
-  notForMe: { flexDirection: "row", alignItems: "center", gap: 4, minHeight: 32, paddingHorizontal: 6, borderRadius: radius.sm },
+  notForMe: { ...(Platform.OS !== "web" ? { minWidth: 44, minHeight: 48, justifyContent: "center" } : {}), flexDirection: "row", alignItems: "center", gap: 4, minHeight: Platform.OS === "web" ? 32 : 48, paddingHorizontal: 6, borderRadius: radius.sm },
   notForMeTxt: { color: colors.textDim, fontSize: 11, fontWeight: "700" },
   whyWrap: { marginTop: 14, padding: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
   whyButton: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: 7, borderRadius: radius.sm },

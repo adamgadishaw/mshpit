@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Linking, View, Text, StyleSheet, Pressable, PanResponder, Platform, Modal } from "react-native";
 import { colors, focusRing, mono, radius } from "../theme";
 import Icon from "./Icon";
+import NativePhotoSwipe from "./NativePhotoSwipe";
+import NativeGestureRoot from "./NativeGestureRoot";
 import MshpitVideoPlayer from "./media-player/MshpitVideoPlayer";
 import SmartImage from "./SmartImage";
 import { mediaDisplayKind, mediaDisplayUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
@@ -15,6 +17,8 @@ import {
   videoViewerViewportSize,
 } from "../domain/mediaViewer.mjs";
 import { venuePhotoAttribution, verifiedHttpsUrl } from "../domain/venuePhotoProvenance.mjs";
+
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const web = Platform.OS === "web";
 
@@ -85,6 +89,7 @@ export default function PhotoViewer({
   onRememberIndex,
   onClose,
 }) {
+  const insets = useSafeAreaInsets();
   const [i, setI] = useState(() => normalizedGalleryIndex(index, photos.length));
   const viewerRef = useRef(null);
   const p = photos[i] || photos[0];
@@ -251,14 +256,15 @@ export default function PhotoViewer({
   return (
     <Modal
       visible
-      transparent
+      transparent={web}
       animationType="fade"
-      presentationStyle="overFullScreen"
+      presentationStyle={web ? "overFullScreen" : "fullScreen"}
       statusBarTranslucent
       hardwareAccelerated
       onRequestClose={onClose}
     >
-    <View ref={viewerRef} style={styles.wrap} accessibilityViewIsModal>
+    <NativeGestureRoot>
+    <View ref={viewerRef} style={[styles.wrap, !web && { paddingTop: insets.top, paddingBottom: insets.bottom }]} accessibilityViewIsModal>
       {/* Backdrop closes, like every photo lightbox people already know. */}
       <Pressable
         style={StyleSheet.absoluteFill}
@@ -271,7 +277,7 @@ export default function PhotoViewer({
       />
 
       <View style={styles.top} pointerEvents="box-none">
-        <Text style={styles.count}>{i + 1} / {photos.length}</Text>
+        <Text style={[styles.count, !web && styles.nativeCount]} accessibilityLabel={`Media ${i + 1} of ${photos.length}`}>{`${i + 1} / ${photos.length}`}</Text>
         <View style={styles.topActions}>
           {canReport ? (
             <Pressable
@@ -306,9 +312,11 @@ export default function PhotoViewer({
         {video
           ? <ClipStage key={uri} uri={uri} posterUri={posterUri} postId={currentPostId} onTrack={track} altText={altText} width={mediaWidth} height={mediaHeight} />
           : (
-            <Animated.View style={[styles.swipeLayer, { transform: swipeDrag.getTranslateTransform() }]} {...swipe.panHandlers}>
+            web ? <Animated.View style={[styles.swipeLayer, { transform: swipeDrag.getTranslateTransform() }]} {...swipe.panHandlers}>
               <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />
-            </Animated.View>
+            </Animated.View> : <NativePhotoSwipe count={photos.length} onNext={next} onPrevious={prev} onClose={onClose}>
+              <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />
+            </NativePhotoSwipe>
           )}
         {photos.length > 1 && (
           <>
@@ -388,14 +396,16 @@ export default function PhotoViewer({
         )}
       </View>
     </View>
+    </NativeGestureRoot>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, backgroundColor: "rgba(6,7,11,0.98)" },
+  wrap: { flex: 1, backgroundColor: web ? "rgba(6,7,11,0.98)" : "#06070b" },
   top: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 },
   count: { color: "#fff", fontFamily: mono, fontSize: 13, opacity: 0.85 },
+  nativeCount: { minWidth: 64, minHeight: 24, lineHeight: 24, paddingHorizontal: 4, includeFontPadding: true, fontVariant: ["tabular-nums"] },
   topActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   reportBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.1)", alignItems: "center", justifyContent: "center" },
   closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.1)", alignItems: "center", justifyContent: "center" },

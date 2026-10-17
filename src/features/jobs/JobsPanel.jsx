@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Platform, ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import Button from "../../components/Button";
 import SheetHeader from "../../components/SheetHeader";
 import { colors, focusRing, radius, space, CONTENT_COLUMN_MAX_WIDTH } from "../../theme";
@@ -93,7 +93,7 @@ export default function JobsPanel({ accountId, onClose, onOpenArtistAccess }) {
         <TextInput accessibilityLabel={labels[field]} value={draft[field]} editable={!busy && !archived} multiline={field === "description"} maxLength={field === "description" ? 12000 : field === "application" ? 2048 : 160} autoCapitalize={field === "application" ? "none" : "sentences"} onFocus={() => setFocusedField(field)} onBlur={() => setFocusedField(null)} onChangeText={value => setDraft(current => ({ ...current, [field]: value }))} style={[styles.input, field === "description" && styles.description, focusedField === field && focusRing]} />
       </View>)}
       {error ? <Text style={styles.error} accessibilityRole="alert">{error} Your draft is still here.</Text> : null}
-      {notice ? <Text style={styles.text} accessibilityRole="status" accessibilityLiveRegion="polite">{notice}</Text> : null}
+      {notice ? <Text style={styles.text} accessibilityRole={Platform.OS === "web" ? "status" : undefined} accessibilityLiveRegion="polite">{notice}</Text> : null}
       {!archived ? <View style={styles.actions}>
         <Button small style={styles.button} title="Save draft" loading={busy} onPress={() => void save("save")} />
         <Button small style={styles.button} title={selected?.state === "closed" ? "Publish and reopen" : "Publish"} disabled={busy || !selected} onPress={() => void save("publish")} />

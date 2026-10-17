@@ -247,7 +247,7 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
   const nextCursor = reviewsResource.data?.nextCursor || null;
 
   const renderRow = ({ item }) => {
-    if (item.type === "section") return <SectionRow {...item} />;
+    if (item.type === "section") { const { key, ...section } = item; return <SectionRow key={key} {...section} />; }
     if (item.type === "show") return <TourShowRow show={item.show} wide={wide} onOpenShow={onOpenShow} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
     if (item.type === "review") return <ReviewRow review={item.review} shows={shows} wide={wide} onOpenShow={onOpenShow} onOpenPost={onOpenPost} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
     if (item.type === "loading") return <View style={styles.loadingRow} accessibilityLiveRegion="polite"><ActivityIndicator color={colors.amber} /><Text style={styles.stateText}>Loading every review…</Text></View>;
