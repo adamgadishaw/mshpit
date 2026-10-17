@@ -62,6 +62,17 @@ test("feed revalidation is a read, but nearby feed mutation paths retain verific
   }
 });
 
+test("batch reaction metadata is a bounded read while reaction and media mutations stay gated", () => {
+  for (const user of [unverified, dormant]) {
+    assert.equal(gate({ method: "POST", pathname: "/api/media/reactions", user }), true);
+    const code = user.dormant_at ? "FORBIDDEN" : "EMAIL_VERIFICATION_REQUIRED";
+    for (const [method, pathname] of [
+      ["PATCH", "/api/media/reactions"], ["POST", "/api/media/reactions/like"],
+      ["POST", "/api/media/react"], ["POST", "/api/media/assets/a/finalize"],
+    ]) denied({ method, pathname, user }, code);
+  }
+});
+
 test("unverified source and derivative uploads retain their specific verification error", () => {
   for (const pathname of ["/api/media/assets", "/api/media/presign", "/api/media/assets/asset_123/variants"]) {
     denied({ method: "POST", pathname, user: unverified }, "MEDIA_EMAIL_VERIFICATION_REQUIRED");

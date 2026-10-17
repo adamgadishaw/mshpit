@@ -7747,24 +7747,30 @@ export const routes = {
   },
 
   "POST /api/posts/:id/like": (ctx) => {
-    const u = requireUser(ctx);
+    requireUser(ctx);
     limit(ctx, "like", 120, 10 * 60 * 1000);
-    const has = !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(ctx.params.id, u.id);
-    const liked = desiredState(ctx.body, "liked", has);
-    // Content becoming unavailable must not trap the caller's own saved like.
-    // No content lookup or public metadata is needed to revoke that relation.
-    if (!liked) {
-      db.prepare("DELETE FROM likes WHERE post_id=? AND user_id=?").run(ctx.params.id, u.id);
-      return { liked: false };
-    }
-    const targetPost = db.prepare("SELECT user_id,artist FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
-    if (!targetPost || !publicAccountOrNull(targetPost.user_id)) throw new ApiError(404, "No such post.");
-    if (blockedEitherWay(u.id, targetPost.user_id)) throw new ApiError(403, "This interaction isn't available.", "FORBIDDEN");
-    if (!has) atomicWrite(() => {
-      db.prepare("INSERT INTO likes (post_id,user_id) VALUES (?,?)").run(ctx.params.id, u.id);
-      addNotif(targetPost.user_id, u.id, "like", { postId: ctx.params.id, artist: targetPost.artist });
+    return atomicWrite(() => {
+      // A different writer may revoke authority or finish this same transition
+      // while BEGIN IMMEDIATE waits. Resolve both only after owning that lock.
+      const current = requireUser(ctx);
+      const has = !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(ctx.params.id, current.id);
+      // Explicit booleans describe desired state; omission keeps the legacy
+      // toggle, serialized against the latest committed relationship state.
+      const liked = desiredState(ctx.body, "liked", has);
+      // Own-like removal must not reveal or require a still-visible target.
+      if (!liked) {
+        db.prepare("DELETE FROM likes WHERE post_id=? AND user_id=?").run(ctx.params.id, current.id);
+        return { liked: false };
+      }
+      const targetPost = db.prepare("SELECT user_id,artist FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
+      if (!targetPost || !publicAccountOrNull(targetPost.user_id)) throw new ApiError(404, "No such post.");
+      if (blockedEitherWay(current.id, targetPost.user_id)) throw new ApiError(403, "This interaction isn't available.", "FORBIDDEN");
+      if (!has) {
+        db.prepare("INSERT INTO likes (post_id,user_id) VALUES (?,?)").run(ctx.params.id, current.id);
+        addNotif(targetPost.user_id, current.id, "like", { postId: ctx.params.id, artist: targetPost.artist });
+      }
+      return { liked };
     });
-    return { liked };
   },
 
   // Delete your own post. Soft delete (removed=1), the same mechanism moderation

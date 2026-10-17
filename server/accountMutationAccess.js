@@ -51,10 +51,10 @@ export function assertAccountMutationAccess({ method, pathname, user, body } = {
   const verb = String(method || "GET").toUpperCase();
   const path = String(pathname || "");
   if (!user || SAFE_METHODS.has(verb)) return true;
-  // This POST is a bounded read of cached feed IDs, not a social interaction.
-  // Signed-in readers can remove stale cards while awaiting email confirmation;
-  // its handler still authenticates the current account and performs no writes.
-  if (verb === "POST" && path === "/api/feed/revalidate") return true;
+  // These POSTs are bounded reads. Revalidation authenticates its reader, and
+  // reaction metadata checks each attachment's visibility. Neither changes
+  // content/reactions or counts as interactive account activity.
+  if (verb === "POST" && (path === "/api/feed/revalidate" || path === "/api/media/reactions")) return true;
   const dormant = Number(user.dormant_at) > 0;
   if (!dormant && Number(user.email_verified_at) > 0) return true;
   if (preservesAccountRights(verb, path, body)) return true;
