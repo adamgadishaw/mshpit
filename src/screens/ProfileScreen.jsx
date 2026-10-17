@@ -1,6 +1,6 @@
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, Platform } from "react-native";
-import { colors, mono, radius, roleColor, space } from "../theme";
+import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, Platform, useWindowDimensions } from "react-native";
+import { colors, mono, radius, roleColor, space, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { useStore } from "../store";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
@@ -176,6 +176,9 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
 
 // Public member profile: musical identity, live history, media, plans, and posts.
 export default function ProfileScreen({ userId, initialSection = null, asTab = false, ownerTools = null, children = null, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
+  const { height: windowHeight } = useWindowDimensions();
+  const webBannerHeight = Math.min(780, Math.max(360, windowHeight * 0.68));
+  const webFallbackHeight = Math.min(300, Math.max(180, windowHeight * 0.28));
   const appActive = useAppActive();
   const { session, authReady, chatAuthEpoch, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
@@ -447,7 +450,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? user.verified ? "VERIFIED ARTIST" : "ARTIST" : "FAN";
   return (
     <View style={styles.wrap}>
-      <View style={styles.topbar}>
+      <View testID="profile-header" style={styles.topbar}>
         {asTab ? (
           <Text style={[styles.topTitle, styles.topTitleTab]} numberOfLines={1} accessibilityRole="header">@{user.handle}</Text>
         ) : (
@@ -519,10 +522,10 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           </View>
         )}
         {/* banner + avatar */}
-        <View style={styles.banner}>
+        <View testID="profile-banner" style={[styles.banner, Platform.OS === "web" && { height: user.banner ? webBannerHeight : webFallbackHeight }]}>
           {user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }]} />}
-          <View style={styles.bannerShade} />
-          {accentColor ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
+          <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, rgba(0,0,0,0.18) 0%, ${colors.bg}00 22%, ${colors.bg}08 45%, ${colors.bg}70 67%, ${colors.bg} 92%, ${colors.bg} 100%)` }]} />
+          {accentColor && Platform.OS !== "web" ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
         </View>
         <View style={styles.head}>
           <View style={styles.avatarWrap}><Avatar user={user} size={88} /></View>
@@ -741,6 +744,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         />
         </View>
 
+        <View style={styles.postsSection}>
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
         <Text style={styles.sectionLabel}>{isSelf ? "Your posts" : "Posts"} · {historyCount(logs.length)}</Text>
@@ -778,6 +782,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             <Text style={styles.historyButtonText}>{history.loadingMore ? "Loading earlier posts..." : "Load earlier posts"}</Text>
           </Pressable>
         )}
+        </View>
         </>}
 
       </ScrollView>
@@ -915,6 +920,7 @@ const styles = StyleSheet.create({
   showVenue: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   showSource: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 7, paddingVertical: 3 },
   showSourceTxt: { color: colors.amber, fontFamily: mono, fontSize: 8.5, fontWeight: "900", letterSpacing: 0.7 },
+  postsSection: Platform.OS === "web" ? { width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center" } : {},
   postsWrap: { paddingHorizontal: 16 },
   reviewRow: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8, marginHorizontal: 16 },
   reviewTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
