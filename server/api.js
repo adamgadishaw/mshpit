@@ -8767,53 +8767,57 @@ export const routes = {
     const key = trackOverrideKey(v.title, v.artist);
     const legacyKey = legacyTrackOverrideKey(v.title, v.artist);
     const moderationKey = source?.key || key;
-    if (source) {
-      const changedAt = now();
-      const existingSource = db.prepare(`SELECT title,artist FROM track_source_overrides
-        WHERE provider=? AND source_id=?`).get(source.provider, source.sourceId);
-      if (existingSource && !sameTrackOverrideIdentity(existingSource, v.title, v.artist)) {
-        throw new ApiError(409, "That provider recording is already bound to different song metadata.", "CONFLICT");
+    atomicWrite(() => {
+      const currentActor = requireModerator(ctx);
+      if (source) {
+        const changedAt = now();
+        const existingSource = db.prepare(`SELECT title,artist FROM track_source_overrides
+          WHERE provider=? AND source_id=?`).get(source.provider, source.sourceId);
+        if (existingSource && !sameTrackOverrideIdentity(existingSource, v.title, v.artist)) {
+          throw new ApiError(409, "That provider recording is already bound to different song metadata.", "CONFLICT");
+        }
+        db.prepare(`INSERT INTO track_source_overrides
+          (provider,source_id,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?,?)
+          ON CONFLICT(provider,source_id) DO UPDATE SET
+            title=excluded.title,artist=excluded.artist,video_id=excluded.video_id,
+            set_by=excluded.set_by,updated_at=excluded.updated_at`)
+          .run(source.provider, source.sourceId, v.title, v.artist || "", videoId, currentActor.id, changedAt);
+      } else {
+        const changedAt = now();
+        db.prepare(`INSERT INTO track_overrides (key,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?)
+          ON CONFLICT(key) DO UPDATE SET title=excluded.title,artist=excluded.artist,video_id=excluded.video_id,set_by=excluded.set_by,updated_at=excluded.updated_at`)
+          .run(key, v.title, v.artist || "", videoId, currentActor.id, changedAt);
+        // Register every v2 identity, including ones that collide under the old
+        // ASCII key. More than one link deliberately disables legacy triggers so
+        // an old UPSERT that cannot preserve Unicode identity fails closed rather
+        // than writing one song's video into another song.
+        db.prepare(`INSERT INTO track_override_compat_links (legacy_key,current_key,title,artist)
+          VALUES (?,?,?,?) ON CONFLICT(legacy_key,current_key) DO UPDATE SET
+            title=excluded.title,artist=excluded.artist`)
+          .run(legacyKey, key, v.title, v.artist || "");
+        const legacyRow = db.prepare("SELECT key,title,artist FROM track_overrides WHERE key=?").get(legacyKey);
+        if (!legacyRow) {
+          db.prepare("INSERT INTO track_overrides (key,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?)")
+            .run(legacyKey, v.title, v.artist || "", videoId, currentActor.id, changedAt);
+        } else if (sameTrackOverrideIdentity(legacyRow, v.title, v.artist)) {
+          db.prepare("UPDATE track_overrides SET title=?,artist=?,video_id=?,set_by=?,updated_at=? WHERE key=?")
+            .run(v.title, v.artist || "", videoId, currentActor.id, changedAt, legacyKey);
+        }
       }
-      db.prepare(`INSERT INTO track_source_overrides
-        (provider,source_id,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?,?)
-        ON CONFLICT(provider,source_id) DO UPDATE SET
-          title=excluded.title,artist=excluded.artist,video_id=excluded.video_id,
-          set_by=excluded.set_by,updated_at=excluded.updated_at`)
-        .run(source.provider, source.sourceId, v.title, v.artist || "", videoId, ctx.user.id, changedAt);
-    } else atomicWrite(() => {
-      const changedAt = now();
-      db.prepare(`INSERT INTO track_overrides (key,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?)
-        ON CONFLICT(key) DO UPDATE SET title=excluded.title,artist=excluded.artist,video_id=excluded.video_id,set_by=excluded.set_by,updated_at=excluded.updated_at`)
-        .run(key, v.title, v.artist || "", videoId, ctx.user.id, changedAt);
-      // Register every v2 identity, including ones that collide under the old
-      // ASCII key. More than one link deliberately disables legacy triggers so
-      // an old UPSERT that cannot preserve Unicode identity fails closed rather
-      // than writing one song's video into another song.
-      db.prepare(`INSERT INTO track_override_compat_links (legacy_key,current_key,title,artist)
-        VALUES (?,?,?,?) ON CONFLICT(legacy_key,current_key) DO UPDATE SET
-          title=excluded.title,artist=excluded.artist`)
-        .run(legacyKey, key, v.title, v.artist || "");
-      const legacyRow = db.prepare("SELECT key,title,artist FROM track_overrides WHERE key=?").get(legacyKey);
-      if (!legacyRow) {
-        db.prepare("INSERT INTO track_overrides (key,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?)")
-          .run(legacyKey, v.title, v.artist || "", videoId, ctx.user.id, changedAt);
-      } else if (sameTrackOverrideIdentity(legacyRow, v.title, v.artist)) {
-        db.prepare("UPDATE track_overrides SET title=?,artist=?,video_id=?,set_by=?,updated_at=? WHERE key=?")
-          .run(v.title, v.artist || "", videoId, ctx.user.id, changedAt, legacyKey);
+      if (source) {
+        db.prepare("UPDATE reports SET status='actioned' WHERE target_type='track' AND target_id=? AND status='open'")
+          .run(source.key);
+      } else {
+        db.prepare("UPDATE reports SET status='actioned' WHERE target_type='track' AND target_id IN (?,?) AND status='open'")
+          .run(key, legacyKey);
       }
+      moderationRecord(ctx, "track-override", "track", moderationKey, v.none ? "confirmed no correct video" : `pinned ${videoId}`);
+      // Cache invalidation is SQLite work on this same connection.
+      clearYouTubeTrackCache(v.title, v.artist || "", {
+        sourceProvider: source?.provider || "",
+        sourceId: source?.sourceId || "",
+      });
     });
-    clearYouTubeTrackCache(v.title, v.artist || "", {
-      sourceProvider: source?.provider || "",
-      sourceId: source?.sourceId || "",
-    });
-    if (source) {
-      db.prepare("UPDATE reports SET status='actioned' WHERE target_type='track' AND target_id=? AND status='open'")
-        .run(source.key);
-    } else {
-      db.prepare("UPDATE reports SET status='actioned' WHERE target_type='track' AND target_id IN (?,?) AND status='open'")
-        .run(key, legacyKey);
-    }
-    moderationRecord(ctx, "track-override", "track", moderationKey, v.none ? "confirmed no correct video" : `pinned ${videoId}`);
     return { ok: true, videoId, confirmedUnavailable: v.none, provider: source?.provider || null, sourceId: source?.sourceId || null };
   },
 
@@ -8846,26 +8850,30 @@ export const routes = {
     const key = trackOverrideKey(v.title, v.artist);
     const legacyKey = legacyTrackOverrideKey(v.title, v.artist);
     const moderationKey = source?.key || key;
-    if (source) {
-      const existingSource = db.prepare(`SELECT title,artist FROM track_source_overrides
-        WHERE provider=? AND source_id=?`).get(source.provider, source.sourceId);
-      if (existingSource && !sameTrackOverrideIdentity(existingSource, v.title, v.artist)) {
-        throw new ApiError(409, "That provider recording is bound to different song metadata.", "CONFLICT");
+    atomicWrite(() => {
+      requireModerator(ctx);
+      if (source) {
+        const existingSource = db.prepare(`SELECT title,artist FROM track_source_overrides
+          WHERE provider=? AND source_id=?`).get(source.provider, source.sourceId);
+        if (existingSource && !sameTrackOverrideIdentity(existingSource, v.title, v.artist)) {
+          throw new ApiError(409, "That provider recording is bound to different song metadata.", "CONFLICT");
+        }
+        db.prepare("DELETE FROM track_source_overrides WHERE provider=? AND source_id=?")
+          .run(source.provider, source.sourceId);
+      } else {
+        db.prepare("DELETE FROM track_overrides WHERE key=?").run(key);
+        const legacyRow = db.prepare("SELECT key,title,artist FROM track_overrides WHERE key=?").get(legacyKey);
+        if (legacyRow && sameTrackOverrideIdentity(legacyRow, v.title, v.artist)) {
+          db.prepare("DELETE FROM track_overrides WHERE key=?").run(legacyKey);
+        }
       }
-      db.prepare("DELETE FROM track_source_overrides WHERE provider=? AND source_id=?")
-        .run(source.provider, source.sourceId);
-    } else atomicWrite(() => {
-      db.prepare("DELETE FROM track_overrides WHERE key=?").run(key);
-      const legacyRow = db.prepare("SELECT key,title,artist FROM track_overrides WHERE key=?").get(legacyKey);
-      if (legacyRow && sameTrackOverrideIdentity(legacyRow, v.title, v.artist)) {
-        db.prepare("DELETE FROM track_overrides WHERE key=?").run(legacyKey);
-      }
+      moderationRecord(ctx, "track-unpin", "track", moderationKey, "pin removed, resolver takes over");
+      // Cache invalidation is SQLite work on this same connection.
+      clearYouTubeTrackCache(v.title, v.artist || "", {
+        sourceProvider: source?.provider || "",
+        sourceId: source?.sourceId || "",
+      });
     });
-    clearYouTubeTrackCache(v.title, v.artist || "", {
-      sourceProvider: source?.provider || "",
-      sourceId: source?.sourceId || "",
-    });
-    moderationRecord(ctx, "track-unpin", "track", moderationKey, "pin removed, resolver takes over");
     return { ok: true };
   },
 
