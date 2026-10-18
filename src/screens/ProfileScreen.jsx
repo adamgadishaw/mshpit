@@ -176,9 +176,8 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
 
 // Public member profile: musical identity, live history, media, plans, and posts.
 export default function ProfileScreen({ userId, initialSection = null, asTab = false, ownerTools = null, children = null, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
-  const { height: windowHeight } = useWindowDimensions();
-  const webBannerHeight = Math.min(780, Math.max(360, windowHeight * 0.68));
-  const webFallbackHeight = Math.min(300, Math.max(180, windowHeight * 0.28));
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+  const webBannerMinHeight = windowWidth >= 900 ? Math.min(420, Math.max(352, windowHeight * 0.38)) : 320;
   const appActive = useAppActive();
   const { session, authReady, chatAuthEpoch, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
@@ -522,18 +521,18 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           </View>
         )}
         {/* banner + avatar */}
-        <View testID="profile-banner" style={[styles.banner, Platform.OS === "web" && { height: user.banner ? webBannerHeight : webFallbackHeight }]}>
+        <View testID="profile-banner" style={[styles.banner, Platform.OS === "web" && { minHeight: user.banner ? webBannerMinHeight : 0 }]}>
           {user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }]} />}
-          <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, rgba(0,0,0,0.18) 0%, ${colors.bg}00 22%, ${colors.bg}08 45%, ${colors.bg}70 67%, ${colors.bg} 92%, ${colors.bg} 100%)` }]} />
+          <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, rgba(0,0,0,0.18) 0%, ${colors.bg}00 12%, ${colors.bg}00 86%, ${colors.bg}70 96%, ${colors.bg} 100%)` }]} />
           {accentColor && Platform.OS !== "web" ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
-        </View>
-        <View style={styles.head}>
-          <View style={styles.avatarWrap}><Avatar user={user} size={88} /></View>
+        <View style={[styles.identityWrap, !user.banner && styles.identityWrapCompact]}>
+        <View testID="profile-identity-tile" style={styles.head}>
+          <View testID="profile-identity-avatar" style={styles.avatarWrap}><Avatar user={user} size={72} /></View>
           <View style={styles.nameRow}>
-            <Text style={styles.name}>{user.name}</Text>
+            <Text testID="profile-identity-name" style={styles.name}>{user.name}</Text>
             <BadgeRow badges={userBadges(user)} size={20} />
           </View>
-          <Text style={[styles.handle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}{user.pronouns ? <Text style={styles.pronouns}>{` · ${user.pronouns}`}</Text> : null}</Text>
+          <Text testID="profile-identity-handle" style={[styles.handle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}{user.pronouns ? <Text style={styles.pronouns}>{` · ${user.pronouns}`}</Text> : null}</Text>
           <View style={styles.roleBadge}><Text style={styles.roleTxt}>{roleLabel}</Text></View>
           {!!user.bio && (
             <ExpandableText
@@ -583,6 +582,9 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
               </View>
             )
           )}
+        </View>
+
+        </View>
         </View>
 
         {/* The owner's private block (the You tab passes concert memories here). */}
@@ -821,7 +823,7 @@ const styles = StyleSheet.create({
   staleProfileText: { flex: 1, color: colors.textDim, fontSize: 12, lineHeight: 17 },
   staleProfileRetry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 12 },
   staleProfileRetryText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
-  banner: { height: 120, overflow: "hidden", backgroundColor: colors.surfaceAlt },
+  banner: { overflow: "hidden", backgroundColor: colors.surfaceAlt },
   bannerFallback: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.surfaceAlt },
   bannerShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(11,14,22,0.25)" },
   accentStripe: { position: "absolute", left: 0, right: 0, bottom: 0, height: 5 },
@@ -838,19 +840,21 @@ const styles = StyleSheet.create({
   favoriteScore: { color: colors.amber, fontFamily: mono, fontSize: 12.5, fontWeight: "900", marginTop: 2 },
   favoriteEmpty: { marginHorizontal: 16, marginTop: 16, flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: radius.md, borderWidth: 1, borderStyle: "dashed", borderColor: colors.line },
   favoriteEmptyText: { flex: 1, minWidth: 0, color: colors.textDim, fontSize: 13, lineHeight: 18 },
-  head: { alignItems: "center", paddingHorizontal: 16 },
-  avatarWrap: { marginTop: -44, borderWidth: 3, borderColor: colors.bg, borderRadius: 50 },
-  nameRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10 },
-  name: { color: colors.text, fontSize: 23, fontWeight: "900" },
-  handle: { color: colors.textDim, fontSize: 13, marginTop: 2 },
+  identityWrap: { width: "100%", paddingHorizontal: 24, paddingVertical: 24, alignItems: "center" },
+  identityWrapCompact: { paddingHorizontal: 16, paddingVertical: 16 },
+  head: { width: "100%", maxWidth: 620, alignItems: "center", padding: 16, borderRadius: 24, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, ...Platform.select({ web: { boxShadow: "0 8px 24px rgba(0,0,0,0.10)" }, default: { shadowColor: "#000000", shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.08, shadowRadius: 14, elevation: 3 } }) },
+  avatarWrap: { borderWidth: 3, borderColor: colors.surface, borderRadius: 50 },
+  nameRow: { width: "100%", minWidth: 0, flexDirection: "row", alignItems: "center", justifyContent: "center", flexWrap: "wrap", gap: 6, marginTop: 8 },
+  name: { maxWidth: "100%", flexShrink: 1, textAlign: "center", color: colors.text, fontSize: 26, fontWeight: "900" },
+  handle: { maxWidth: "100%", flexShrink: 1, textAlign: "center", color: colors.textDim, fontSize: 14, lineHeight: 20, marginTop: 2 },
   roleBadge: { marginTop: 10, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 4 },
   roleTxt: { color: colors.amber, fontSize: 10, letterSpacing: 1.5, fontWeight: "800" },
   bio: { color: colors.textDim, fontSize: 14, lineHeight: 20, textAlign: "center", marginTop: 12 },
   bioPreview: { width: "100%", alignItems: "center" },
   bioToggle: { alignSelf: "center" },
-  editBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 18, paddingVertical: 9, marginTop: 16 },
+  editBtn: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 18, paddingVertical: 9, marginTop: 16 },
   editTxt: { color: colors.amber, fontSize: 14, fontWeight: "600" },
-  actionRow: { flexDirection: "row", gap: 10, marginTop: 16 },
+  actionRow: { maxWidth: "100%", flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 10, marginTop: 16 },
   followBtn: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 22, paddingVertical: 10 },
   msgBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 18, paddingVertical: 10 },
   msgTxt: { color: colors.amber, fontSize: 14, fontWeight: "700" },
