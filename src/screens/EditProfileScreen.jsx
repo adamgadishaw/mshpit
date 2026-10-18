@@ -4,6 +4,7 @@ import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
 import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
+import { useProfileImageUpload } from "../hooks/useProfileImageUpload";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import LocationPicker from "../components/LocationPicker";
@@ -28,12 +29,17 @@ import { PROFILE_ACCENT_OPTIONS, PROFILE_FAVORITE_SHOWS_MAX, PROFILE_PRONOUNS_MA
 import { formatDate } from "../domain/dates.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 
-const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar");
-const BANNER_IMAGE_HINT = profileImageSelectionHint("banner");
+const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar", { platform:Platform.OS });
+const BANNER_IMAGE_HINT = profileImageSelectionHint("banner", { platform:Platform.OS });
 
 export default function EditProfileScreen({ onClose }) {
   const { session, updateProfile, locationCenter } = useStore();
   const accountTasks = useAccountTaskScope(session?.id);
+  const { uploadProfileImage, imageCropDialog } = useProfileImageUpload();
+  const uploadSelectedImage = (asset, purpose, task) => uploadProfileImage(asset, purpose, {
+    signal:task.controller.signal,
+    upload:(selected, { signal }) => uploadMediaAsset(selected, purpose, { expectedAccountId:task.accountId, signal }),
+  });
   const [name, setName] = useState(session?.name || "");
   const [handle, setHandle] = useState(session?.handle || "");
   const handleChanged = handle !== session?.handle;
@@ -97,8 +103,8 @@ export default function EditProfileScreen({ onClose }) {
     if (!task.isCurrent() || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
     setUploadingAvatar(true);
     try {
-      const uploaded = await uploadMediaAsset(res.assets[0], "avatar", { expectedAccountId: task.accountId, signal: task.controller.signal });
-      if (task.isCurrent()) setAvatarUri(uploaded);
+      const uploaded = await uploadSelectedImage(res.assets[0], "avatar", task);
+      if (task.isCurrent() && uploaded) setAvatarUri(uploaded);
     } catch {
       // The upload helper records the themed diagnostic and leaves the existing
       // durable photo untouched.
@@ -122,8 +128,8 @@ export default function EditProfileScreen({ onClose }) {
     if (!task.isCurrent() || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
     setUploadingBanner(true);
     try {
-      const uploaded = await uploadMediaAsset(res.assets[0], "banner", { expectedAccountId: task.accountId, signal: task.controller.signal });
-      if (task.isCurrent()) setBanner(uploaded);
+      const uploaded = await uploadSelectedImage(res.assets[0], "banner", task);
+      if (task.isCurrent() && uploaded) setBanner(uploaded);
     } catch {
       // Keep the editor open with its previous banner when upload fails.
     } finally {
@@ -186,7 +192,8 @@ export default function EditProfileScreen({ onClose }) {
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Edit your profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving || !genreSelection.valid || handleInvalid }} />
+      {imageCropDialog}
+      <SheetHeader title="Edit your profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : "Save", onPress: save, disabled: mediaBusy || saving || !genreSelection.valid || handleInvalid }} />
 
       <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.profileScope}>This is the profile people see for your personal account. Artist page, promotion, and show tools are in Artist HQ.</Text>
@@ -202,7 +209,7 @@ export default function EditProfileScreen({ onClose }) {
           <View style={styles.bannerOverlay}>
             <Icon name="camera" size={18} color={colors.text} />
             <View>
-              <Text style={styles.bannerEditTxt}>{uploadingBanner ? "Uploading..." : banner ? "Change banner" : "Add a banner"}</Text>
+              <Text style={styles.bannerEditTxt}>{uploadingBanner ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : banner ? "Change banner" : "Add a banner"}</Text>
               <Text style={styles.bannerFormat}>{BANNER_IMAGE_HINT}</Text>
             </View>
           </View>
@@ -228,7 +235,7 @@ export default function EditProfileScreen({ onClose }) {
           accessibilityLabel="Change profile photo"
           accessibilityHint={AVATAR_IMAGE_HINT}
         >
-          <Text style={styles.changePhoto}>{uploadingAvatar ? "Uploading photo..." : "Change photo"}</Text>
+          <Text style={styles.changePhoto}>{uploadingAvatar ? (Platform.OS === "web" ? "Preparing photo..." : "Uploading photo...") : "Change photo"}</Text>
         </Pressable>
         <Text style={styles.avatarFormat}>{AVATAR_IMAGE_HINT}</Text>
 

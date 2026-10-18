@@ -1,5 +1,12 @@
 # Pit current status
 
+## 2026-10-18 Profile layout and photo crop controls (local review)
+
+- Local branch `codex/profile-integrated-crop-web-20261018` starts at released PR62 merge `700c39697883617ca551736e5497864ae191f963`.
+- The owner selected B from the matched A/B previews. The web panel is removed, the identity is raised, and the reviewed B fade is now in the local combined candidate. Release approval remains pending.
+- Personal and artist avatar/banner editors use local drag/zoom previews with the existing image normalizer and private upload flow. No backend, package, service or native release change is included.
+- Validation and limitations are recorded in [the local review audit](docs/PROFILE_CROP_LOCAL_REVIEW_2026-10-18.md). Nothing is pushed, merged or deployed.
+
 ## 2026-10-13 Video converter review (local only)
 
 - Isolated branch `fix/video-converter-20261013` starts at `81e63f7`.

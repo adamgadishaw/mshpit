@@ -1,4 +1,4 @@
-import { profileImageContract } from "../domain/profileImagePolicy.mjs";
+import { profileImageContract, profileImageCropRectangle } from "../domain/profileImagePolicy.mjs";
 
 function aborted(signal) {
   if (!signal?.aborted) return;
@@ -28,7 +28,10 @@ function canvasBlob(canvas) {
 
 export async function normalizeProfileImageAsset(asset, purpose, { signal } = {}) {
   const contract = profileImageContract(purpose);
-  if (!contract || typeof document === "undefined" || typeof createImageBitmap !== "function") return asset;
+  if (!contract || typeof document === "undefined" || typeof createImageBitmap !== "function") {
+    if (asset?.profileCrop) throw new Error("This browser cannot apply photo adjustments.");
+    return asset;
+  }
   const source = asset?.file || (asset?.uri ? await (await fetch(asset.uri, { signal })).blob() : null);
   if (!source) return asset;
   aborted(signal);
@@ -37,7 +40,9 @@ export async function normalizeProfileImageAsset(asset, purpose, { signal } = {}
     try { bitmap = await createImageBitmap(source, { imageOrientation: "from-image" }); }
     catch { bitmap = await createImageBitmap(source); }
     aborted(signal);
-    const crop = centerCrop(bitmap.width, bitmap.height, contract.outputWidth, contract.outputHeight);
+    const crop = asset?.profileCrop
+      ? profileImageCropRectangle(asset.profileCrop, bitmap.width, bitmap.height, purpose)
+      : centerCrop(bitmap.width, bitmap.height, contract.outputWidth, contract.outputHeight);
     const canvas = document.createElement("canvas");
     canvas.width = contract.outputWidth;
     canvas.height = contract.outputHeight;

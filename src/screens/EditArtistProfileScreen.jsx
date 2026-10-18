@@ -4,6 +4,7 @@ import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
 import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
+import { useProfileImageUpload } from "../hooks/useProfileImageUpload";
 import { artistMeta } from "../seed/ingested";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
@@ -28,8 +29,8 @@ import {
 import { accountTargetScope } from "../domain/screenScope.mjs";
 import { artistInitials } from "../domain/artistInitials.mjs";
 
-const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar");
-const BANNER_IMAGE_HINT = profileImageSelectionHint("banner");
+const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar", { platform:Platform.OS });
+const BANNER_IMAGE_HINT = profileImageSelectionHint("banner", { platform:Platform.OS });
 
 function ArtistBiographyEditor({ artist, accountId, refreshMetadata }) {
   const [snapshot, setSnapshot] = useState(null);
@@ -111,6 +112,11 @@ function ConfirmedArtistProfileEditor({
 }) {
   const [bio, setBio] = useState(confirmedProfile.bio ?? meta?.bio ?? "");
   const accountTasks = useAccountTaskScope(accountId);
+  const { uploadProfileImage, imageCropDialog } = useProfileImageUpload();
+  const uploadSelectedImage = (asset, purpose, task) => uploadProfileImage(asset, purpose, {
+    signal:task.controller.signal,
+    upload:(selected, { signal }) => uploadMediaAsset(selected, purpose, { expectedAccountId:task.accountId, signal }),
+  });
   const initialAvatar = confirmedProfile.avatarUri ?? meta?.photo;
   const initialBanner = confirmedProfile.banner ?? meta?.photo;
   const [avatarUri, setAvatarUri] = useState(isDurableMediaUrl(initialAvatar) ? initialAvatar : null);
@@ -139,8 +145,8 @@ function ConfirmedArtistProfileEditor({
     if (!task.isCurrent() || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
     setUploadingAvatar(true);
     try {
-      const uploaded = await uploadMediaAsset(res.assets[0], "avatar", { expectedAccountId: task.accountId, signal: task.controller.signal });
-      if (!task.isCurrent()) return;
+      const uploaded = await uploadSelectedImage(res.assets[0], "avatar", task);
+      if (!task.isCurrent() || !uploaded) return;
       setAvatarUri(uploaded);
       setAvatarChanged(true);
     } catch {
@@ -167,8 +173,8 @@ function ConfirmedArtistProfileEditor({
     if (!task.isCurrent() || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
     setUploadingBanner(true);
     try {
-      const uploaded = await uploadMediaAsset(res.assets[0], "banner", { expectedAccountId: task.accountId, signal: task.controller.signal });
-      if (!task.isCurrent()) return;
+      const uploaded = await uploadSelectedImage(res.assets[0], "banner", task);
+      if (!task.isCurrent() || !uploaded) return;
       setBanner(uploaded);
       setBannerChanged(true);
     } catch {
@@ -219,11 +225,12 @@ function ConfirmedArtistProfileEditor({
 
   return (
     <View style={styles.wrap}>
+      {imageCropDialog}
       <SheetHeader
         title="Edit artist page"
         onClose={onClose}
         action={{
-          label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save",
+          label: saving ? "Saving..." : mediaBusy ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : "Save",
           onPress: save,
           disabled: !artistPageEditReady(resource) || mediaBusy || saving,
         }}
@@ -253,7 +260,7 @@ function ConfirmedArtistProfileEditor({
           <View style={styles.bannerOverlay}>
             <Icon name="camera" size={18} color={colors.text} />
             <View>
-              <Text style={styles.bannerEditTxt}>{uploadingBanner ? "Uploading..." : banner ? "Change banner" : "Add a banner"}</Text>
+              <Text style={styles.bannerEditTxt}>{uploadingBanner ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : banner ? "Change banner" : "Add a banner"}</Text>
               <Text style={styles.bannerFormat}>{BANNER_IMAGE_HINT}</Text>
             </View>
           </View>
@@ -281,7 +288,7 @@ function ConfirmedArtistProfileEditor({
           accessibilityLabel="Change artist profile photo"
           accessibilityHint={AVATAR_IMAGE_HINT}
         >
-          <Text style={styles.changePhoto}>{uploadingAvatar ? "Uploading photo..." : "Change profile photo"}</Text>
+          <Text style={styles.changePhoto}>{uploadingAvatar ? (Platform.OS === "web" ? "Preparing photo..." : "Uploading photo...") : "Change profile photo"}</Text>
         </Pressable>
         <Text style={styles.avatarFormat}>{AVATAR_IMAGE_HINT}</Text>
 

@@ -62,12 +62,12 @@ const photoCases = [
   ["VenueReviewScreen.jsx", "VenueReviewScreen", "addPhoto", "setPhotos"],
 ];
 
-function photoFixture(compile) {
+function photoFixture(compile, compileSelected, { cancelCrop = false } = {}) {
   const accountTasks = scope(), picker = deferred(), upload = deferred(), uploadStarted = deferred();
   const events = [], uploads = [];
   const setters = Object.fromEntries(["setAvatarUri", "setAvatarChanged", "setBanner", "setBannerChanged", "setPhotos", "setUploadingAvatar", "setUploadingBanner", "setUploadingPhotos", "setSaveError"]
     .map((name) => [name, (value) => events.push({ name, value })]));
-  const run = compile({
+  const bindings = {
     accountTasks, session: { id: "a" }, accountId: "a", uploadingAvatar: false, uploadingBanner: false,
     uploadingPhotos: false, posting: false, saving: false, photos: [], MEDIA_POST_MAX_ATTACHMENTS: 8,
     ImagePicker: { launchImageLibraryAsync: () => picker.promise }, Platform: { OS: "web" },
@@ -76,16 +76,22 @@ function photoFixture(compile) {
     isDurableMediaUrl: (value) => /^https:\/\//u.test(value || ""),
     uploadMediaAsset: (_asset, _purpose, options) => { uploads.push(options); uploadStarted.resolve(); return upload.promise; },
     ...setters,
+  };
+  if (compileSelected) bindings.uploadSelectedImage = compileSelected({
+    uploadMediaAsset:bindings.uploadMediaAsset,
+    uploadProfileImage:(asset, _purpose, {signal, upload}) => cancelCrop || signal.aborted ? Promise.resolve(null) : upload(asset,{signal}),
   });
+  const run = compile(bindings);
   return { accountTasks, picker, upload, uploadStarted, events, uploads, run };
 }
 
 for (const [file, component, name, resultSetter] of photoCases) {
   const compile = callback(file, component, name);
+  const compileSelected = component === "VenueReviewScreen" ? null : callback(file, component, "uploadSelectedImage");
   const label = `${component}.${name}`;
-  test(`${label} rejects picker results after logout, switch, round trip or unmount`, async () => {
+  test(`${label} rejects picker results after logout, switch, round trip or unmount`, {timeout:3000}, async () => {
     for (const boundary of ["logout", "switch", "round-trip", "unmount"]) {
-      const f = photoFixture(compile), run = f.run();
+      const f = photoFixture(compile, compileSelected), run = f.run();
       crossBoundary(f.accountTasks, boundary);
       const before = f.events.length;
       f.picker.resolve(pickerResult); await run;
@@ -94,9 +100,9 @@ for (const [file, component, name, resultSetter] of photoCases) {
     }
   });
 
-  test(`${label} aborts pending upload and rejects late media completion`, async () => {
+  test(`${label} aborts pending upload and rejects late media completion`, {timeout:3000}, async () => {
     for (const boundary of ["logout", "switch", "round-trip", "unmount"]) {
-      const f = photoFixture(compile), run = f.run(); f.picker.resolve(pickerResult);
+      const f = photoFixture(compile, compileSelected), run = f.run(); f.picker.resolve(pickerResult);
       await f.uploadStarted.promise;
       assert.equal(f.uploads[0].expectedAccountId, "a");
       crossBoundary(f.accountTasks, boundary);
@@ -107,8 +113,14 @@ for (const [file, component, name, resultSetter] of photoCases) {
     }
   });
 
-  test(`${label} still attaches a successful current-owner upload`, async () => {
-    const f = photoFixture(compile), run = f.run(); f.picker.resolve(pickerResult);
+  if (compileSelected) test(`${label} crop cancellation keeps the previous image and unlocks the editor`, {timeout:3000}, async () => {
+    const f=photoFixture(compile,compileSelected,{cancelCrop:true}),run=f.run();f.picker.resolve(pickerResult);await run;
+    assert.equal(f.uploads.length,0);assert.equal(f.events.some(e=>e.name===resultSetter||e.name==="setAvatarChanged"||e.name==="setBannerChanged"),false);
+    assert.equal(f.events.some(e=>e.name.startsWith("setUploading")&&e.value===false),true);
+  });
+
+  test(`${label} still attaches a successful current-owner upload`, {timeout:3000}, async () => {
+    const f = photoFixture(compile, compileSelected), run = f.run(); f.picker.resolve(pickerResult);
     await f.uploadStarted.promise; f.upload.resolve("https://media.example.org/a.jpg"); await run;
     assert.equal(f.uploads[0].expectedAccountId, "a");
     assert.equal(f.uploads[0].signal.aborted, false);
