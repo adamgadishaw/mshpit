@@ -2,11 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  profileImageCropRectangle,
   changedProfileImageFields,
   profileImageContract,
   profileImagePickerOptions,
   profileImageSelectionHint,
 } from "./profileImagePolicy.mjs";
+
+test("selected profile crops retain the exact source rectangle and reject empty edges or wrong shapes", () => {
+  assert.deepEqual(profileImageCropRectangle({x:0.5,y:0.25,width:0.25,height:0.5},1600,800,"avatar"),{x:800,y:200,width:400,height:400});
+  assert.deepEqual(profileImageCropRectangle({x:0,y:0.25,width:1,height:0.5},1800,1200,"banner"),{x:0,y:300,width:1800,height:600});
+  for (const crop of [{x:-0.1,y:0,width:1,height:1},{x:0.5,y:0,width:1,height:1},{x:0,y:0,width:0,height:1},{x:0,y:0,width:NaN,height:1}]) {
+    assert.throws(()=>profileImageCropRectangle(crop,800,800,"avatar"),/invalid/);
+  }
+  assert.throws(()=>profileImageCropRectangle({x:0,y:0,width:1,height:1},1600,800,"avatar"),/shape/);
+});
+test("web hints describe the interactive crop while native hints stay unchanged",()=>{
+  assert.match(profileImageSelectionHint("avatar",{platform:"web"}),/drag and zoom/);
+  assert.match(profileImageSelectionHint("banner",{platform:"web"}),/3:1/);
+  assert.match(profileImageSelectionHint("avatar",{platform:"ios"}),/centered crop/);
+});
 
 test("profile image contracts keep avatar and banner renditions bounded at their display aspect", () => {
   assert.deepEqual(profileImageContract("avatar"), {

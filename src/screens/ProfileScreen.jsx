@@ -523,16 +523,16 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         {/* banner + avatar */}
         <View testID="profile-banner" style={[styles.banner, Platform.OS === "web" && { minHeight: user.banner ? webBannerMinHeight : 0 }]}>
           {user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }]} />}
-          <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, rgba(0,0,0,0.18) 0%, ${colors.bg}00 12%, ${colors.bg}00 86%, ${colors.bg}70 96%, ${colors.bg} 100%)` }]} />
+          <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, ${colors.bg}00 0px, ${colors.bg}30 32px, ${colors.bg}CC 104px, ${colors.bg}F2 220px, ${colors.bg} 340px)` }]} />
           {accentColor && Platform.OS !== "web" ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
         <View style={[styles.identityWrap, !user.banner && styles.identityWrapCompact]}>
-        <View testID="profile-identity-tile" style={styles.head}>
-          <View testID="profile-identity-avatar" style={styles.avatarWrap}><Avatar user={user} size={72} /></View>
-          <View style={styles.nameRow}>
-            <Text testID="profile-identity-name" style={styles.name}>{user.name}</Text>
+        <View testID="profile-identity-tile" style={[styles.head, Platform.OS === "web" && styles.integratedHead]}>
+          <View testID="profile-identity-avatar" style={[styles.avatarWrap, Platform.OS === "web" && styles.integratedAvatar]}><Avatar user={user} size={Platform.OS === "web" ? 88 : 72} /></View>
+          <View style={[styles.nameRow, Platform.OS === "web" && styles.integratedNameRow]}>
+            <Text testID="profile-identity-name" style={[styles.name, Platform.OS === "web" && styles.integratedName]}>{user.name}</Text>
             <BadgeRow badges={userBadges(user)} size={20} />
           </View>
-          <Text testID="profile-identity-handle" style={[styles.handle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}{user.pronouns ? <Text style={styles.pronouns}>{` · ${user.pronouns}`}</Text> : null}</Text>
+          <Text testID="profile-identity-handle" style={[styles.handle, Platform.OS === "web" && styles.integratedHandle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}{user.pronouns ? <Text style={styles.pronouns}>{` · ${user.pronouns}`}</Text> : null}</Text>
           <View style={styles.roleBadge}><Text style={styles.roleTxt}>{roleLabel}</Text></View>
           {!!user.bio && (
             <ExpandableText
@@ -840,8 +840,13 @@ const styles = StyleSheet.create({
   favoriteScore: { color: colors.amber, fontFamily: mono, fontSize: 12.5, fontWeight: "900", marginTop: 2 },
   favoriteEmpty: { marginHorizontal: 16, marginTop: 16, flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: radius.md, borderWidth: 1, borderStyle: "dashed", borderColor: colors.line },
   favoriteEmptyText: { flex: 1, minWidth: 0, color: colors.textDim, fontSize: 13, lineHeight: 18 },
-  identityWrap: { width: "100%", paddingHorizontal: 24, paddingVertical: 24, alignItems: "center" },
+  identityWrap: { width: "100%", paddingHorizontal: 24, paddingVertical: 24, alignItems: "center", ...Platform.select({ web: { paddingHorizontal: 16 } }) },
   identityWrapCompact: { paddingHorizontal: 16, paddingVertical: 16 },
+  integratedHead: { alignItems: "center", paddingHorizontal: 16, paddingVertical: 0, borderWidth: 0, borderRadius: 0, backgroundColor: "transparent", boxShadow: "none" },
+  integratedAvatar: { borderWidth: 3, borderColor: colors.bg, borderRadius: 50 },
+  integratedNameRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10 },
+  integratedName: { color: colors.text, fontSize: 23, fontWeight: "900" },
+  integratedHandle: { color: colors.textDim, fontSize: 13, marginTop: 2 },
   head: { width: "100%", maxWidth: 620, alignItems: "center", padding: 16, borderRadius: 24, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, ...Platform.select({ web: { boxShadow: "0 8px 24px rgba(0,0,0,0.10)" }, default: { shadowColor: "#000000", shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.08, shadowRadius: 14, elevation: 3 } }) },
   avatarWrap: { borderWidth: 3, borderColor: colors.surface, borderRadius: 50 },
   nameRow: { width: "100%", minWidth: 0, flexDirection: "row", alignItems: "center", justifyContent: "center", flexWrap: "wrap", gap: 6, marginTop: 8 },

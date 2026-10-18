@@ -12,12 +12,12 @@ const declaration = ast.program.body.find((node) => node.type === "ExportNamedDe
 assert.ok(declaration, "The production upload helper must exist");
 const productionFunction = source.slice(declaration.start, declaration.end);
 const dependencyNames = ["normalizeProfileImageAsset", "prepareMediaUploadAsset", "api", "uploadPreparedMediaAsset",
-  "isDurableMediaUrl", "AppError", "captureAppError"];
+  "isDurableMediaUrl", "AppError", "captureAppError", "capturedUploadError"];
 
-function fixture({ atStage = async () => {}, rejectNormalization = false } = {}) {
+function fixture({ atStage = async () => {}, rejectNormalization = false, manualCrop = false } = {}) {
   const calls = [], mutations = [];
   const controller = new AbortController();
-  const original = { uri: "file:///private-camera.jpg" };
+  const original = { uri: "file:///private-camera.jpg", ...(manualCrop ? {profileCrop:{x:0,y:0,width:1,height:1}} : {}) };
   let released = 0, account = "account-a";
   const normalized = { uri: "blob:normalized-private-photo", release: () => { released += 1; } };
   const ticket = { storageScope: "private", finalizeToken: "private-finalize-token", descriptorId: "owned-a" };
@@ -47,6 +47,7 @@ function fixture({ atStage = async () => {}, rejectNormalization = false } = {})
     isDurableMediaUrl: (url) => /^https:\/\//u.test(url || ""),
     AppError: class AppError extends Error {},
     captureAppError: (error) => error,
+    capturedUploadError: (error) => error,
   };
   const upload = new Function(...dependencyNames, `return (${productionFunction});`)(...dependencyNames.map((key) => dependencies[key]));
   return { upload: (options = { signal: controller.signal, expectedAccountId: "account-a" }) => upload(original, "avatar", options),
@@ -69,6 +70,13 @@ test("legacy callers remain supported and optional normalization failures still 
   assert.equal(await f.upload({}), "https://media.example.org/sanitized.jpg");
   assert.ok(f.calls.filter(({ name }) => ["presign", "finalize"].includes(name)).every(({ options }) => options.expectedAccountId === undefined));
   assert.equal(f.released(), 0);
+});
+
+test("an explicit crop failure cannot upload a different centered or original photo", async () => {
+  const f=fixture({rejectNormalization:true,manualCrop:true});
+  await assert.rejects(f.upload(),/normalization failed/);
+  assert.deepEqual(f.calls.map(c=>c.name),["normalize"]);
+  assert.equal(f.mutations.length,0);
 });
 
 test("explicit invalid account bindings fail before preparation or mutation", async () => {

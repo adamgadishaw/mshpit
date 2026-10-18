@@ -267,6 +267,9 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs, expe
         uploadAsset = await normalizeProfileImageAsset(asset, purpose, { signal });
       } catch (error) {
         if (signal?.aborted || error?.name === "AbortError") throw error;
+        // A selected crop must never silently become a different centered photo.
+        // Unedited originals retain the existing optional-normalization fallback.
+        if (asset?.profileCrop) throw capturedUploadError(error, { context: "Preparing your profile photo" });
         uploadAsset = asset;
       }
     }
