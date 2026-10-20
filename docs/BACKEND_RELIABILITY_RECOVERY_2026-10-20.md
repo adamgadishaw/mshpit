@@ -139,4 +139,3 @@ steps require explicit authorization for:
   before committing cost; no price or spending commitment was made here.
 - Accessing live backups for an isolated download/restore drill, its private
   storage location and transfer budget. A real cutover is a separate action.
-
