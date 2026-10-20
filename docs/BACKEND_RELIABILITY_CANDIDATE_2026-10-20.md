@@ -1,7 +1,9 @@
 # Backend reliability release candidate
 
-Local verification only, 2026-10-20. No push, merge, deployment, live data
-operation, credential change or paid resource was performed.
+Local verification completed on 2026-10-20. At that checkpoint no push, merge,
+deployment, live data operation, credential change or paid resource had been
+performed. The owner subsequently approved publication as a draft PR and a
+read-only Render baseline check; merge and deployment remain unauthorized.
 
 This document extends the historical
 [admission report](BACKEND_RELIABILITY_SLICE_2026-10-20.md) and
@@ -12,8 +14,9 @@ covers that local acceptance boundary.
 ## Exact baseline and preserved work
 
 GitHub `adamgadishaw/mshpit` master was read again during this verification and
-resolved to `66a0604690d8f4aef435592321b7df1034d19172`. This is a source release
-baseline, not evidence of the revision currently serving production.
+resolved to `66a0604690d8f4aef435592321b7df1034d19172`. After the owner confirmed
+the workspace, Render service/deploy metadata independently confirmed that
+same revision is live on production `mshpit`.
 
 The original development checkout at `D:/Development/Apps/mshpit` was read
 only. The original isolated branch, `codex/backend-reliability-20261020`, and
@@ -155,19 +158,31 @@ Current official references were read for these operational constraints:
 [rollback behavior](https://render.com/docs/rollbacks), and
 [health checks](https://render.com/docs/health-checks).
 
-## Pending evidence and exact authorization
+## Confirmed live baseline and remaining authorization
 
-Production metadata is pending because no Render workspace was selected.
-Discovery returned `My Workspace`; the existing question asks the user to
-identify it as the intended workspace. No service,
-deploy, secret or live database read has been substituted for that answer.
-The Render monitor skill explicitly requires workspace identification when no
-workspace is selected. Local release reconciliation and tests completed
-independently. Source inspection confirms public health omits the commit;
-the revision is in staff health. No account access was used as a substitute.
+The owner confirmed Render `My Workspace` and approved pushing a draft PR for
+Linux/browser CI. Connection and workspace identity were checked before
+selecting that workspace and reading service/deploy metadata:
 
-Approval is still needed for push/merge/deployment, any live test data or
-restart, and any access to live backups for a restore drill. If off-host backup
+- Production `mshpit` is live on `66a0604690d8f4aef435592321b7df1034d19172`
+  (deploy completed 2026-10-18 13:26 UTC), matching current GitHub master.
+  Its configured branch is `master`, auto-deploy trigger is `checksPass`,
+  health path is `/api/health`, and persistent disk is 5 GiB mounted at `/data`.
+- `pit-video-verifier` is live on
+  `be88d21c8b27b3bf91437a0876474e0951660a88`. GitHub comparison confirms it is
+  an ancestor of current master and the intervening changes do not touch
+  verifier implementation, protocol or image files. This is source
+  compatibility evidence, not a live decoder test.
+- PR preview generation is off on the production API, staging and verifier
+  services. The draft branch is not a configured deployment branch.
+
+No secret, live database or authenticated application account was read.
+Actual runtime Node/SQLite versions and pragmas, off-host restore evidence and
+real provider acceptance remain unverified. CI results must be checked against
+the final pushed commit; local results above do not substitute for Linux CI.
+
+Approval is still needed for merge/deployment, any live test data or restart,
+and any access to live backups for a restore drill. If off-host backup
 storage or credentials are missing, separately approve the private destination,
 credential scope, retention and monthly spending cap after measuring snapshot
 size and current provider pricing. This patch requires no new paid service;
