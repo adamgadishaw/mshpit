@@ -24,7 +24,7 @@ const { db, q } = await import("./db.js");
 const { resetRateLimitsForTests } = await import("./auth.js");
 const { createMediaAsset } = await import("./mediaAssets.js");
 const { ApiError, reserveVideoPublishingDemand, resumeVideoProcessing, startDurableVideoFinalize } = await import("./api.js");
-const { resetVideoFinalizeJobsForTests, startVideoFinalizeJob } = await import("./videoFinalizeJobs.js");
+const { resetVideoFinalizeJobsForTests, startVideoFinalizeJob, videoFinalizeState } = await import("./videoFinalizeJobs.js");
 const { recordVideoProcessingRequest, recoverInterruptedVideoProcessing } = await import("./videoProcessingQueue.js");
 const { refreshVideoVerifierHealth, resetVideoVerifierStateForTests } = await import("./videoVerifier.js");
 const {
@@ -203,4 +203,26 @@ test("coordinator overload preserves durable retries and rejects new work before
   const recorded = db.prepare("SELECT state,attempts FROM media_processing_jobs WHERE asset_id=?").get(retry.asset_id);
   assert.equal(recorded.state, "retry");
   assert.equal(recorded.attempts, 1, "only the actual attempt consumes the durable retry budget");
+});
+
+test("a failed durable acceptance write cannot dispatch an orphan conversion or mutate an existing retry", async () => {
+  for (const existing of [false, true]) {
+    const job = queuedClip(existing ? "persist_retry" : "persist_new");
+    if (!existing) db.prepare("DELETE FROM media_processing_jobs WHERE asset_id=?").run(job.asset_id);
+    const previous = db.prepare("SELECT * FROM media_processing_jobs WHERE asset_id=?").get(job.asset_id);
+    db.exec(`CREATE TEMP TRIGGER reject_video_acceptance BEFORE INSERT ON media_processing_jobs
+      BEGIN SELECT RAISE(ABORT, 'synthetic durable acceptance failure'); END`);
+    try {
+      assert.throws(() => resumeVideoProcessing(job), /synthetic durable acceptance failure/);
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(fetches, [], "no storage or verifier work may start after persistence failed");
+      assert.deepEqual(db.prepare("SELECT * FROM media_processing_jobs WHERE asset_id=?").get(job.asset_id), previous);
+      assert.deepEqual(videoFinalizeState({ ownerId: job.owner_id, assetId: job.asset_id }), { state: "idle" });
+    } finally { db.exec("DROP TRIGGER reject_video_acceptance"); }
+    const accepted = resumeVideoProcessing(job);
+    assert.equal(accepted.joined, false);
+    await assert.rejects(accepted.completion, { status: 503 });
+    assert.equal(db.prepare("SELECT attempts FROM media_processing_jobs WHERE asset_id=?").get(job.asset_id).attempts, 1);
+    fetches = [];
+  }
 });

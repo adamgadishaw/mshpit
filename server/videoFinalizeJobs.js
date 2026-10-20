@@ -89,7 +89,7 @@ export function videoFinalizeState({ ownerId, assetId, asset = null, at = Date.n
   return publicState(jobs.get(key));
 }
 
-export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, at = Date.now() } = {}) {
+export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, accept = () => {}, at = Date.now() } = {}) {
   if (typeof run !== "function") {
     throw new ApiError(500, "Clip processing could not be started.", "INTERNAL_ERROR");
   }
@@ -114,6 +114,11 @@ export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, at =
   if (pendingJobs.size >= MAX_PENDING_JOBS || ownerPending >= MAX_PENDING_PER_OWNER) {
     throw new ApiError(503, "Clip processing is at capacity. Retry shortly.", "MEDIA_STORAGE_UNAVAILABLE");
   }
+
+  // SQLite acceptance is synchronous: it must commit before publishing an
+  // in-memory entry or dispatching work. A failed write owns no slot and no
+  // promise. Joins and overload refusals never rewrite durable state.
+  accept();
 
   const entry = {
     ownerKey,

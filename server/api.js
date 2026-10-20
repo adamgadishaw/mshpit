@@ -3834,6 +3834,7 @@ export function startDurableVideoFinalize({ ownerId, assetId, contentType, body,
     assetId,
     fingerprint,
     at: now(),
+    accept: () => recordVideoProcessingRequest(db, { ownerId, assetId, body, fingerprint, at: now() }),
     run: async ({ signal: jobSignal }) => {
       noteVideoProcessingAttemptStarted(db, { assetId, at: now() });
       try {
@@ -3872,7 +3873,6 @@ export function startDurableVideoFinalize({ ownerId, assetId, contentType, body,
     },
   });
   if (!started.joined) {
-    recordVideoProcessingRequest(db, { ownerId, assetId, body, fingerprint, at: now() });
     started.completion.then(
       () => noteVideoProcessingOutcome(db, { assetId, at: now() }),
       (error) => {
