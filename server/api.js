@@ -211,8 +211,9 @@ import { verifyVideoObject, videoVerifierRuntimeStatus } from "./videoVerifier.j
 import { VIDEO_VERIFIER_PIPELINE_VERSION } from "./videoVerifierProtocol.js";
 import {
   cancelVideoFinalizeJob,
+  observeVideoFinalizeCapacity,
   startVideoFinalizeJob,
-  videoFinalizeJobActive,
+  stopVideoFinalizeJobs,
   videoFinalizeState,
   waitForVideoFinalizeCompletion,
 } from "./videoFinalizeJobs.js";
@@ -3834,6 +3835,23 @@ export function startDurableVideoFinalize({ ownerId, assetId, contentType, body,
     assetId,
     fingerprint,
     at: now(),
+    accept: () => recordVideoProcessingRequest(db, { ownerId, assetId, body, fingerprint, at: now() }),
+    onSettled: ({ error, dispatched }) => {
+      // Shutdown cancelled queued work before it spent an attempt. Keep its
+      // accepted row untouched for startup recovery; do not subtract an older
+      // attempt from a job that never dispatched in this process.
+      if (!dispatched && error?.name === "AbortError") return;
+      try {
+        const outcome = noteVideoProcessingOutcome(db, { assetId, error, at: now() });
+        if (outcome.state === "retry") {
+          console.log(`[media] clip conversion will retry automatically: attempt=${outcome.attempts} code=${error?.code || "error"}`);
+        } else if (outcome.state === "failed") {
+          console.error(`[media] clip conversion stopped after ${outcome.attempts ?? "?"} attempt(s): code=${error?.code || "error"} status=${error?.status || 500}`);
+        }
+      } catch (failure) {
+        console.error(`[media] clip conversion bookkeeping failed safely: ${privateErrorLabel(failure)}`);
+      }
+    },
     run: async ({ signal: jobSignal }) => {
       noteVideoProcessingAttemptStarted(db, { assetId, at: now() });
       try {
@@ -3852,7 +3870,7 @@ export function startDurableVideoFinalize({ ownerId, assetId, contentType, body,
           },
           // Deliberately no caller signal: a browser disconnect or proxy
           // timeout must not cancel the shared process-local job. The job's
-          // own signal is cancelled only when this owner deletes the draft.
+          // own signal is cancelled by draft deletion or orderly shutdown.
           signal: jobSignal,
         });
       } catch (error) {
@@ -3871,22 +3889,6 @@ export function startDurableVideoFinalize({ ownerId, assetId, contentType, body,
       }
     },
   });
-  if (!started.joined) {
-    recordVideoProcessingRequest(db, { ownerId, assetId, body, fingerprint, at: now() });
-    started.completion.then(
-      () => noteVideoProcessingOutcome(db, { assetId, at: now() }),
-      (error) => {
-        const outcome = noteVideoProcessingOutcome(db, { assetId, error, at: now() });
-        if (outcome.state === "retry") {
-          console.log(`[media] clip conversion will retry automatically: attempt=${outcome.attempts} code=${error?.code || "error"}`);
-        } else if (outcome.state === "failed") {
-          console.error(`[media] clip conversion stopped after ${outcome.attempts ?? "?"} attempt(s): code=${error?.code || "error"} status=${error?.status || 500}`);
-        }
-      },
-    ).catch((error) => {
-      console.error(`[media] clip conversion bookkeeping failed safely: ${privateErrorLabel(error)}`);
-    });
-  }
   return started;
 }
 
@@ -4045,7 +4047,8 @@ export function startVideoProcessingRetries() {
   return startVideoProcessingScheduler({
     database: db,
     resume: resumeVideoProcessing,
-    isBusy: videoFinalizeJobActive,
+    subscribeCapacity: observeVideoFinalizeCapacity,
+    stopWork: stopVideoFinalizeJobs,
     now,
   });
 }

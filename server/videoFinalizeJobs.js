@@ -5,6 +5,11 @@ import { ApiError, ERROR_CATALOG } from "./errors.js";
 // URLs, verifier payloads, or exception causes are retained or projected.
 const TERMINAL_TTL_MS = 30 * 60 * 1000;
 const MAX_TERMINAL_OUTCOMES = 2_048;
+// Count active and queued closures, not source bytes (which stay in storage).
+// Match the small background-work ceiling while leaving space for another
+// account when one member submits a full 20-attachment album.
+const MAX_PENDING_JOBS = 32;
+const MAX_PENDING_PER_OWNER = 20;
 const FAILURE_MESSAGES = Object.freeze({
   400: "Clip verification details are invalid.",
   401: "Log in again before resuming this clip.",
@@ -21,10 +26,38 @@ const FAILURE_MESSAGES = Object.freeze({
 });
 
 const jobs = new Map();
+// Cancellation removes public state immediately but cannot remove a closure
+// from the promise chain or force a non-cooperative task to finish. Retain its
+// admission slot until settlement so cancel/retry cannot grow the queue.
+const pendingJobs = new Set();
 // The converter works on one clip at a time. Clips from an album, or from two
 // members at once, wait their turn here instead of reaching the converter
 // together and failing as "busy". The chain itself never rejects.
 let runQueue = Promise.resolve();
+let stopping = false;
+let stopPromise = null;
+let capacityListener = null;
+
+// One retry scheduler owns this callback. Offer a released slot synchronously,
+// before another request can fill it, while keeping the same admission limits.
+export function observeVideoFinalizeCapacity(listener) {
+  if (typeof listener !== "function" || capacityListener) {
+    throw new Error("Clip capacity already has an observer or the observer is invalid.");
+  }
+  capacityListener = listener;
+  return () => {
+    if (capacityListener === listener) capacityListener = null;
+  };
+}
+
+function notifyCapacity() {
+  if (stopping) return;
+  try { capacityListener?.(); }
+  catch {
+    // An observer must never change the outcome of the job that freed a slot.
+    console.error("[media] clip capacity observer failed safely");
+  }
+}
 
 const jobKey = (ownerId, assetId) => `${String(ownerId)}\u0000${String(assetId)}`;
 
@@ -80,12 +113,17 @@ export function videoFinalizeState({ ownerId, assetId, asset = null, at = Date.n
   return publicState(jobs.get(key));
 }
 
-export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, at = Date.now() } = {}) {
+export function startVideoFinalizeJob({
+  ownerId, assetId, fingerprint, run, accept = () => {}, onSettled = () => {}, at = Date.now(),
+} = {}) {
   if (typeof run !== "function") {
     throw new ApiError(500, "Clip processing could not be started.", "INTERNAL_ERROR");
   }
   if (typeof fingerprint !== "string" || !/^[a-f0-9]{64}$/u.test(fingerprint)) {
     throw new ApiError(500, "Clip processing identity is invalid.", "INTERNAL_ERROR");
+  }
+  if (stopping) {
+    throw new ApiError(503, "Clip processing is restarting. Retry shortly.", "MEDIA_STORAGE_UNAVAILABLE");
   }
   prune(at);
   const key = jobKey(ownerId, assetId);
@@ -97,15 +135,32 @@ export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, at =
     return { finalize: { state: "processing" }, joined: true, completion: current.promise };
   }
 
+  const ownerKey = String(ownerId);
+  let ownerPending = 0;
+  for (const entry of pendingJobs) {
+    if (entry.ownerKey === ownerKey) ownerPending += 1;
+  }
+  if (pendingJobs.size >= MAX_PENDING_JOBS || ownerPending >= MAX_PENDING_PER_OWNER) {
+    throw new ApiError(503, "Clip processing is at capacity. Retry shortly.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+
+  // SQLite acceptance is synchronous: it must commit before publishing an
+  // in-memory entry or dispatching work. A failed write owns no slot and no
+  // promise. Joins and overload refusals never rewrite durable state.
+  accept();
+
   const entry = {
+    ownerKey,
     state: "processing",
     startedAt: at,
     settledAt: null,
     error: null,
     fingerprint,
     controller: new AbortController(),
+    dispatched: false,
   };
   jobs.set(key, entry);
+  pendingJobs.add(entry);
 
   // Queue the work after the route has constructed its response. The job owns
   // its verifier lifecycle; an HTTP disconnect must not abort shared work.
@@ -113,31 +168,50 @@ export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, at =
     if (entry.controller.signal.aborted) {
       throw entry.controller.signal.reason || new DOMException("Media finalization was cancelled.", "AbortError");
     }
+    entry.dispatched = true;
     return run({ signal: entry.controller.signal });
   });
-  runQueue = turn.then(() => undefined, () => undefined);
-  const promise = turn.then((result) => {
+  const converted = turn.then((result) => {
     if (result?.asset?.status !== "ready") {
       throw new ApiError(503, "Clip processing did not produce a ready asset.", "MEDIA_STORAGE_UNAVAILABLE");
     }
     return result;
   });
+  // Completion includes durable bookkeeping. Both queue ownership and shutdown
+  // must outlive it, including when a cancelled transport settles late.
+  const promise = converted.then(
+    async (result) => {
+      await onSettled({ result, error: null, dispatched: entry.dispatched });
+      return result;
+    },
+    async (error) => {
+      await onSettled({ error, dispatched: entry.dispatched });
+      throw error;
+    },
+  );
+  runQueue = promise.then(() => undefined, () => undefined);
   entry.promise = promise;
   void promise.then(
     () => {
-      if (jobs.get(key) !== entry) return;
-      entry.state = "completed";
-      entry.settledAt = Date.now();
-      entry.promise = null;
-      prune(entry.settledAt);
+      const released = pendingJobs.delete(entry);
+      if (jobs.get(key) === entry) {
+        entry.state = "completed";
+        entry.settledAt = Date.now();
+        entry.promise = null;
+        prune(entry.settledAt);
+      }
+      if (released) notifyCapacity();
     },
     (error) => {
-      if (jobs.get(key) !== entry) return;
-      entry.state = "failed";
-      entry.error = safeFailure(error);
-      entry.settledAt = Date.now();
-      entry.promise = null;
-      prune(entry.settledAt);
+      const released = pendingJobs.delete(entry);
+      if (jobs.get(key) === entry) {
+        entry.state = "failed";
+        entry.error = safeFailure(error);
+        entry.settledAt = Date.now();
+        entry.promise = null;
+        prune(entry.settledAt);
+      }
+      if (released) notifyCapacity();
     },
   );
   return { finalize: { state: "processing" }, joined: false, completion: promise };
@@ -194,10 +268,22 @@ export function waitForVideoFinalizeCompletion(completion, {
 
 // True while any clip is converting or waiting its turn in this process.
 export function videoFinalizeJobActive() {
-  for (const entry of jobs.values()) {
-    if (entry.state === "processing") return true;
+  return pendingJobs.size > 0;
+}
+
+// The HTTP server's existing 25-second watchdog owns the hard exit deadline.
+// Never fake a successful drain on timeout: keep SQLite open until every
+// accepted job and its bookkeeping settles, or let that watchdog exit.
+export function stopVideoFinalizeJobs() {
+  if (stopPromise) return stopPromise;
+  stopping = true;
+  const entries = [...pendingJobs];
+  const reason = new DOMException("Video finalization is shutting down.", "AbortError");
+  for (const entry of entries) {
+    if (!entry.controller.signal.aborted) entry.controller.abort(reason);
   }
-  return false;
+  stopPromise = Promise.allSettled(entries.map(entry => entry.promise)).then(() => undefined);
+  return stopPromise;
 }
 
 export function resetVideoFinalizeJobsForTests() {
@@ -207,5 +293,9 @@ export function resetVideoFinalizeJobsForTests() {
     }
   }
   jobs.clear();
+  pendingJobs.clear();
   runQueue = Promise.resolve();
+  stopping = false;
+  stopPromise = null;
+  capacityListener = null;
 }

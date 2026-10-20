@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists, DATABASE_DIRECTORY, DATABASE_PATH } from "./db.js";
 import { artistDeathWatchService, eraseAccountForInactivity, replayPrivacyJournalOnRestore, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startFestivals, startNewsDesk, startPrivacyJournal, startVideoProcessingRetries, startWebProfiles, startSearchGrowth } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
+import { stopVideoFinalizeJobs } from "./videoFinalizeJobs.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
 import { pruneErrors, recordError, scheduleErrorAlert, stopErrorAlertScheduler } from "./errorLog.js";
 import { startMemoryMonitor } from "./memoryAdmission.js";
@@ -865,6 +866,9 @@ let storageMaintenance = null;
 function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
+  // Request-started video jobs exist independently of the optional retry
+  // scheduler. Own their full drain even if that scheduler failed to start.
+  const videoFinalizeStop = stopVideoFinalizeJobs();
   const alertStop = stopErrorAlertScheduler();
   memoryMonitor?.stop();
   storageMaintenance?.stop();
@@ -930,6 +934,7 @@ function shutdown(exitCode = 0) {
     try { await privateMediaIsolationStop; }
     catch (error) { console.error(`[media] privacy recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     await additionalStops;
+    await videoFinalizeStop;
     await alertStop;
     try { db.close(); }
     catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }

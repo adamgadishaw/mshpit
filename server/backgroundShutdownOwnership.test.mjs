@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { afterEach } from "node:test";
+import { startVideoFinalizeJob, stopVideoFinalizeJobs, resetVideoFinalizeJobsForTests } from "./videoFinalizeJobs.js";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { parse } from "@babel/parser";
 import { transformFromAstSync } from "@babel/core";
 
 const source = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+afterEach(() => resetVideoFinalizeJobsForTests());
 const ast = parse(source, { sourceType: "module" });
 const shutdown = ast.program.body.find(node => node.type === "FunctionDeclaration" && node.id?.name === "shutdown");
 const declaration = shutdown.body.body.find(node => node.type === "VariableDeclaration" && node.declarations.some(item => item.id.name === "additionalStops"));
@@ -17,7 +19,7 @@ const deadline = ast.program.body.find(node => node.type === "VariableDeclaratio
 // Execute the production shutdown function without starting the app, opening
 // SQLite, or contacting providers. HTTP drain and worker settlement are
 // independently controlled; the clock runs the actual registered fallback.
-function shutdownFixture({ workerStop = () => Promise.resolve(), alertStop = () => Promise.resolve() } = {}) {
+function shutdownFixture({ workerStop = () => Promise.resolve(), alertStop = () => Promise.resolve(), videoStop = () => Promise.resolve() } = {}) {
   const events = [], errors = [], stops = [], exits = [], timers = [];
   let closeCallback, elapsed = 0;
   const schedulerNames = [
@@ -34,6 +36,7 @@ function shutdownFixture({ workerStop = () => Promise.resolve(), alertStop = () 
     dependencies[name] = options => { stops.push({ name, options }); return Promise.resolve(); };
   }
   Object.assign(dependencies, {
+    stopVideoFinalizeJobs: videoStop,
     stopErrorAlertScheduler: () => { stops.push({ name: "stopErrorAlertScheduler" }); return alertStop(); },
     additionalSchedulers: new Map([["fixture-worker", {
       stop: options => { stops.push({ name: "fixture-worker", options }); return workerStop(); },
@@ -187,4 +190,68 @@ test("a stalled alert drain retains the bounded forced exit without closing its 
   assert.deepEqual(fixture.exits, [1]);
   assert.equal(fixture.events.includes("db:closed"), false);
   assert.deepEqual(fixture.errors, ["[pit] shutdown exceeded 25s; forcing process exit."]);
+});
+
+test("shutdown owns request-started video bookkeeping even without a retry scheduler handle", async () => {
+  let releaseBookkeeping, enteredBookkeeping, runs = 0;
+  const entered = new Promise(resolve => { enteredBookkeeping = resolve; });
+  const bookkeeping = new Promise(resolve => { releaseBookkeeping = resolve; });
+  const fixture = shutdownFixture({ videoStop: stopVideoFinalizeJobs });
+  const job = startVideoFinalizeJob({
+    ownerId: "owner", assetId: "asset", fingerprint: "a".repeat(64),
+    run: async () => { runs += 1; return { asset: { status: "ready" } }; },
+    onSettled: async () => {
+      enteredBookkeeping();
+      await bookkeeping;
+      assert.equal(fixture.events.includes("db:closed"), false, "bookkeeping must precede SQLite close");
+    },
+  });
+  const joined = startVideoFinalizeJob({
+    ownerId: "owner", assetId: "asset", fingerprint: "a".repeat(64),
+    run: () => assert.fail("joined work cannot produce duplicate output"),
+  });
+  assert.equal(joined.completion, job.completion);
+  await entered;
+  fixture.run();
+  const draining = fixture.finishHttp();
+  await flushShutdownPromises();
+  assert.deepEqual(fixture.events, ["http:draining", "http:drained"]);
+  assert.throws(() => startVideoFinalizeJob({
+    ownerId: "late", assetId: "late", fingerprint: "b".repeat(64), run: () => {},
+  }), { status: 503 });
+  releaseBookkeeping();
+  await draining;
+  await job.completion;
+  assert.equal(runs, 1);
+  assert.deepEqual(fixture.events, ["http:draining", "http:drained", "db:closed", "process:exit"]);
+  assert.equal(fixture.timers[0].fired, false);
+});
+
+test("an uncooperative video job reaches the existing 25-second exit without SQLite use-after-close", async () => {
+  let release, signal;
+  const gate = new Promise(resolve => { release = resolve; });
+  const fixture = shutdownFixture({ videoStop: stopVideoFinalizeJobs });
+  const job = startVideoFinalizeJob({
+    ownerId: "slow", assetId: "slow", fingerprint: "c".repeat(64),
+    run: async ({ signal: currentSignal }) => {
+      signal = currentSignal;
+      await gate;
+      assert.equal(fixture.events.includes("db:closed"), false);
+      return { asset: { status: "ready" } };
+    },
+  });
+  await Promise.resolve();
+  fixture.run();
+  const draining = fixture.finishHttp();
+  await flushShutdownPromises();
+  assert.equal(signal.aborted, true);
+  fixture.advance(24_999);
+  assert.deepEqual(fixture.exits, []);
+  fixture.advance(1);
+  assert.deepEqual(fixture.exits, [0]);
+  assert.equal(fixture.events.includes("db:closed"), false);
+  // The fixture's process.exit is a recorder, so release work only for cleanup.
+  release();
+  await job.completion;
+  await draining;
 });

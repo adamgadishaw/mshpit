@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { fork, spawnSync } from "node:child_process";
 import { copyFileSync, mkdtempSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { createServer as createHttpServer, request as httpRequest } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { backupSourceManifest, backupTableCounts, verifyBackupSnapshot } from "../scripts/backup-db-verification.mjs";
@@ -10,12 +13,140 @@ import { assertExistingProductionDatabase } from "./dataDirectory.js";
 import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
 import { assertDatabaseRecoveryReady, RESTORE_GATE_KEY } from "./databaseRecovery.js";
 import { prepareOfflineRestore } from "../scripts/prepare-db-restore.mjs";
+import { buildStatusCreateBody } from "../src/domain/post-payload.mjs";
 
 function runFixture(directory, script) {
   return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     cwd: process.cwd(), encoding: "utf8", windowsHide: true,
     env: { ...process.env, NODE_ENV: "test", PIT_DATA_DIR: directory, PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "false" },
   });
+}
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const waitUntil = async (read, ready, message) => {
+  const deadline = Date.now() + 12_000;
+  while (true) {
+    const value = await read();
+    if (ready(value)) return value;
+    assert.ok(Date.now() < deadline, message);
+    await new Promise(done => setTimeout(done, 25));
+  }
+};
+
+async function startHttpRecoveryFixture(directory, phase) {
+  const probe = createNetServer();
+  await new Promise(done => probe.listen(0, "127.0.0.1", done));
+  const port = probe.address().port;
+  await new Promise(done => probe.close(done));
+  const origin = `http://127.0.0.1:${port}`;
+  const env = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LOCALAPPDATA"]
+    .filter(key => process.env[key]).map(key => [key, process.env[key]]));
+  Object.assign(env, {
+    NODE_ENV: "test", PORT: String(port), PUBLIC_ORIGIN: origin, PIT_DATA_DIR: directory,
+    PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "true", PIT_RECOVERY_HTTP_FIXTURE: "1", PIT_RECOVERY_HTTP_PHASE: phase,
+    PIT_VIDEO_PUBLISHING_ENABLED: "true", PIT_VIDEO_VERIFIER_HOSTPORT: "pit-video-verifier:10001",
+    PIT_VIDEO_VERIFIER_SECRET: "synthetic-recovery-verifier-secret-at-least-32-bytes",
+    MEDIA_ENDPOINT: "https://objects.example.test/s3", MEDIA_BUCKET: "pit-media",
+    MEDIA_SOURCE_BUCKET: "pit-media-private", MEDIA_REGION: "auto",
+    MEDIA_ACCESS_KEY_ID: "synthetic-access", MEDIA_SECRET_ACCESS_KEY: "synthetic-secret",
+    MEDIA_PUBLIC_BASE_URL: "https://media.example.test/cdn",
+    ERROR_ALERTS_ENABLED: "false", NEWS_DESK_ENABLED: "false", PIT_MEDIA_API_ENABLED: "false",
+    BACKUP_ENABLED: "false", EMAIL_CAMPAIGN_RECOVERY_ENABLED: "false", CACHE_WARM_ENABLED: "false",
+    TOURDATE_REFRESH_ENABLED: "false", TOURDATE_DEMAND_REFRESH_ENABLED: "false",
+    ARTIST_GENRE_REFRESH_ENABLED: "false", ARTIST_PHOTO_SEED_ENABLED: "false",
+    ARTIST_DEATH_WATCH_SCHEDULER_ENABLED: "false",
+  });
+  const child = fork(join(root, "server/index.js"), [], {
+    cwd: root, env, execArgv: ["--max-old-space-size=192", "--import",
+      pathToFileURL(join(root, "scripts/fixtures/recovery-http-preload.mjs")).href],
+    stdio: ["ignore", "pipe", "pipe", "ipc"], windowsHide: true,
+  });
+  let fixture, address, output = "", exited = false, nextRequest = 0;
+  const append = data => { output = (output + data).slice(-16_000); };
+  child.stdout.on("data", append); child.stderr.on("data", append);
+  child.on("message", message => {
+    if (message.kind === "fixture") fixture = message;
+    if (message.kind === "listener") address = message.address;
+  });
+  const exit = new Promise(done => child.once("exit", () => { exited = true; done(); }));
+  const stop = async () => {
+    if (!exited) child.kill("SIGKILL");
+    await exit;
+  };
+  try {
+    await waitUntil(() => {
+      assert.equal(exited, false, `Recovery HTTP fixture exited during startup: ${output}`);
+      return fixture && address && output.includes(`up on http://localhost:${port}`);
+    }, Boolean, "Recovery HTTP fixture did not become ready");
+    assert.equal(address, "127.0.0.1");
+  } catch (error) { await stop(); throw error; }
+  return {
+    origin, fixture, stop,
+    release: () => child.send({ kind: "release-storage" }),
+    snapshot: () => new Promise((done, reject) => {
+      const requestId = ++nextRequest;
+      const timer = setTimeout(() => { child.off("message", receive); reject(new Error("Fixture snapshot timed out")); }, 3000);
+      const receive = message => {
+        if (message.kind !== "snapshot" || message.requestId !== requestId) return;
+        clearTimeout(timer); child.off("message", receive); done(message);
+      };
+      child.on("message", receive);
+      child.send({ kind: "snapshot", requestId });
+    }),
+  };
+}
+
+function requestJson(origin, path, { cookie, body, requestOrigin = origin } = {}) {
+  assert.equal(new URL(origin).hostname, "127.0.0.1");
+  return new Promise((done, reject) => {
+    const serialized = body === undefined ? null : JSON.stringify(body);
+    const request = httpRequest(origin + path, {
+      method: serialized ? "POST" : "GET",
+      headers: { ...(cookie ? { Cookie: cookie } : {}),
+        ...(serialized ? { Origin: requestOrigin, "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(serialized) } : {}) },
+    }, response => {
+      let text = "";
+      response.setEncoding("utf8");
+      response.on("data", chunk => { text += chunk; });
+      response.once("error", reject);
+      response.once("end", () => {
+        try { done({ status: response.statusCode, data: JSON.parse(text) }); }
+        catch (error) { reject(error); }
+      });
+    });
+    request.setTimeout(10_000, () => request.destroy(new Error("Loopback request timed out")));
+    request.once("error", reject);
+    request.end(serialized);
+  });
+}
+
+async function loseHttpResponse(origin, path, options) {
+  let committedResponse;
+  // A real loopback proxy receives the application's whole response, then
+  // resets its downstream socket before delivering any response to the client.
+  const proxy = createHttpServer((request, response) => {
+    const upstream = httpRequest(origin + path, { method: request.method,
+      headers: { ...request.headers, host: new URL(origin).host } }, incoming => {
+      let text = "";
+      incoming.setEncoding("utf8");
+      incoming.on("data", chunk => { text += chunk; });
+      incoming.once("end", () => {
+        committedResponse = { status: incoming.statusCode, data: JSON.parse(text) };
+        response.destroy();
+      });
+      incoming.once("error", () => response.destroy());
+    });
+    upstream.once("error", () => response.destroy());
+    request.pipe(upstream);
+  });
+  await new Promise(done => proxy.listen(0, "127.0.0.1", done));
+  try {
+    await assert.rejects(requestJson(`http://127.0.0.1:${proxy.address().port}`, path,
+      { ...options, requestOrigin: origin }), { code: "ECONNRESET" });
+    assert.equal(committedResponse?.status, 200, "the application completed before its response was lost");
+    return committedResponse.data;
+  } finally { await new Promise(done => proxy.close(done)); }
 }
 
 const seedMemberGraph = `
@@ -72,6 +203,149 @@ test("committed member data survives a killed WAL writer while unfinished writes
     } finally { database.close(); }
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("an accepted video request survives process death before dispatch and recovers once after cold reopen", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-video-acceptance-crash-"));
+  try {
+    const killed = runFixture(directory, seedMemberGraph + `
+      import { startVideoFinalizeJob } from './server/videoFinalizeJobs.js';
+      import { recordVideoProcessingRequest } from './server/videoProcessingQueue.js';
+      db.exec(\`INSERT INTO media_assets
+        (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,
+         source_storage_scope,original_name,mime_type,byte_size,created_at,updated_at)
+        VALUES ('durable_clip','durable_member','durable-client','fixture','post','video',
+          'fixture-source.webm','https://example.test/fixture-source.webm','private','fixture.webm','video/webm',2048,1000,1000)\`);
+      startVideoFinalizeJob({
+        ownerId: 'durable_member', assetId: 'durable_clip', fingerprint: 'a'.repeat(64),
+        accept: () => recordVideoProcessingRequest(db, {
+          ownerId: 'durable_member', assetId: 'durable_clip', body: { editRecipe: { coverMs: 0 } },
+          fingerprint: 'a'.repeat(64), at: 1000,
+        }),
+        run: () => { throw new Error('Killed process must not dispatch'); },
+      });
+      process.kill(process.pid, 'SIGKILL');
+    `);
+    assert.notEqual(killed.status, 0);
+    const recovered = runFixture(directory, `
+      import assert from 'node:assert/strict';
+      import { db } from './server/db.js';
+      import { startVideoFinalizeJob } from './server/videoFinalizeJobs.js';
+      import { recoverInterruptedVideoProcessing, dueVideoProcessingJob,
+        recordVideoProcessingRequest, noteVideoProcessingAttemptStarted, noteVideoProcessingOutcome
+      } from './server/videoProcessingQueue.js';
+      assert.equal(recoverInterruptedVideoProcessing(db, { at: 2000 }), 1);
+      const job = dueVideoProcessingJob(db, { at: 2000 });
+      assert.equal(job.asset_id, 'durable_clip');
+      assert.equal(job.attempts, 0);
+      assert.deepEqual(JSON.parse(job.body), { editRecipe: { coverMs: 0 } });
+      let outputs = 0, admissions = 0;
+      const options = {
+        ownerId: job.owner_id, assetId: job.asset_id, fingerprint: job.fingerprint,
+        accept: () => {
+          admissions += 1;
+          recordVideoProcessingRequest(db, { ownerId: job.owner_id, assetId: job.asset_id,
+            body: JSON.parse(job.body), fingerprint: job.fingerprint, at: 2000 });
+        },
+        run: async () => {
+          noteVideoProcessingAttemptStarted(db, { assetId: job.asset_id, at: 2000 });
+          outputs += 1;
+          return { asset: { status: 'ready' } };
+        },
+        onSettled: ({ error }) => noteVideoProcessingOutcome(db, { assetId: job.asset_id, error, at: 2000 }),
+      };
+      const first = startVideoFinalizeJob(options);
+      const duplicate = startVideoFinalizeJob(options);
+      assert.equal(duplicate.joined, true);
+      await Promise.all([first.completion, duplicate.completion]);
+      assert.equal(admissions, 1);
+      assert.equal(outputs, 1);
+      assert.equal(dueVideoProcessingJob(db, { at: 3000 }), null);
+      assert.equal(recoverInterruptedVideoProcessing(db, { at: 3000 }), 0);
+      assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+      db.close();
+    `);
+    assert.equal(recovered.status, 0, recovered.stderr || recovered.stdout);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("real HTTP lost responses survive process restart with one post, one video delivery and current-session checks",
+  { timeout: 60_000 }, async () => {
+    const directory = mkdtempSync(join(tmpdir(), "pit-durability-http-"));
+    let server;
+    try {
+      server = await startHttpRecoveryFixture(directory, "hold");
+      const cookie = server.fixture.cookie;
+      const createBody = { clientAssetId: "http-recovery-video", purpose: "post", contentType: "video/webm",
+        fileSize: 2048, name: "synthetic.webm" };
+      const created = await requestJson(server.origin, "/api/media/assets", { cookie, body: createBody });
+      assert.equal(created.status, 200);
+      const assetId = created.data.asset.id;
+      const finalizePath = `/api/media/assets/${assetId}/finalize`;
+      const finalizeBody = { async: true, editRecipe: { coverMs: 0 } };
+      const lostFinalize = await loseHttpResponse(server.origin, finalizePath, { cookie, body: finalizeBody });
+      assert.equal(lostFinalize.finalize.state, "processing");
+      await waitUntil(server.snapshot, value => value.counts.sourceHeads === 1, "Accepted video did not dispatch");
+      const postBody = buildStatusCreateBody({ id: "http-recovery-post", review: "A durable HTTP clip",
+        photos: [], mediaAssetIds: [assetId] });
+      const lostPost = await loseHttpResponse(server.origin, "/api/posts", { cookie, body: postBody });
+      const accepted = await server.snapshot();
+      assert.equal(accepted.jobs.length, 1);
+      assert.equal(accepted.jobs[0].state, "running");
+      assert.equal(accepted.counts.verifications, 0);
+      assert.equal(accepted.posts.length, 1);
+      assert.equal(accepted.counts.blocked, 0);
+      await server.stop(); // Hard process death: no coordinator reset or SQLite close.
+
+      server = await startHttpRecoveryFixture(directory, "recover");
+      await waitUntil(server.snapshot, value => value.counts.sourceHeads === 1, "Startup scheduler did not resume the accepted video");
+      const retryFinalize = await requestJson(server.origin, finalizePath, { cookie, body: finalizeBody });
+      assert.equal(retryFinalize.status, 200);
+      assert.equal(retryFinalize.data.asset.id, assetId);
+      const retryPost = await requestJson(server.origin, "/api/posts", { cookie, body: postBody });
+      assert.equal(retryPost.status, 200);
+      assert.equal(retryPost.data.duplicate, true);
+      assert.equal(retryPost.data.id, lostPost.id);
+      server.release();
+      const complete = await waitUntil(server.snapshot, value => value.assets[0]?.status === "ready",
+        "Recovered video did not commit a ready delivery");
+      assert.equal(complete.counts.verifications, 1);
+      assert.equal(complete.counts.posterPuts, 1);
+      assert.equal(complete.counts.blocked, 0);
+      assert.equal(complete.jobs.length, 0);
+      assert.deepEqual(complete.variants.map(({ role, status }) => ({ role, status })),
+        [{ role: "poster", status: "verified" }, { role: "render", status: "verified" }]);
+      assert.deepEqual(complete.links, [{ post_id: lostPost.id, asset_id: assetId }]);
+      assert.deepEqual(complete.receipts, [{ post_id: lostPost.id, state: "active" }]);
+      assert.deepEqual(complete.foreignKeys, []);
+      await server.stop();
+
+      server = await startHttpRecoveryFixture(directory, "finished");
+      const finalReplay = await requestJson(server.origin, finalizePath, { cookie, body: finalizeBody });
+      assert.equal(finalReplay.status, 200);
+      assert.equal(finalReplay.data.finalize.state, "completed");
+      const finalPost = await requestJson(server.origin, "/api/posts", { cookie, body: postBody });
+      assert.equal(finalPost.status, 200, finalPost.data.code);
+      assert.equal(finalPost.data.id, lostPost.id);
+      assert.equal(finalPost.data.duplicate, true);
+      assert.equal((await requestJson(server.origin, "/api/posts", { cookie,
+        body: { ...postBody, review: "Changed replay" } })).status, 409);
+      const persisted = await server.snapshot();
+      assert.deepEqual(persisted.assets, complete.assets);
+      assert.deepEqual(persisted.variants, complete.variants);
+      assert.equal(persisted.posts.length, 1);
+      assert.equal(persisted.counts.verifications, 0);
+      assert.equal(persisted.counts.posterPuts, 0);
+      assert.equal(persisted.counts.sourceHeads, 0);
+      assert.equal(persisted.counts.blocked, 0);
+      assert.equal((await requestJson(server.origin, "/api/logout", { cookie, body: {} })).status, 200);
+      assert.equal((await requestJson(server.origin, finalizePath, { cookie, body: finalizeBody })).status, 401);
+      assert.equal((await requestJson(server.origin, "/api/posts", { cookie, body: postBody })).status, 401);
+    } finally {
+      await server?.stop();
+      assert.ok(resolve(directory).startsWith(resolve(tmpdir()) + sep));
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
 test("a real-schema backup preserves the member graph across verification and reviewed cold reopen", () => {
   const root = mkdtempSync(join(tmpdir(), "pit-durability-restore-"));
