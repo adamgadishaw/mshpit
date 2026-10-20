@@ -24,7 +24,7 @@ const { db, q } = await import("./db.js");
 const { resetRateLimitsForTests } = await import("./auth.js");
 const { createMediaAsset } = await import("./mediaAssets.js");
 const { ApiError, reserveVideoPublishingDemand, resumeVideoProcessing, startDurableVideoFinalize } = await import("./api.js");
-const { resetVideoFinalizeJobsForTests } = await import("./videoFinalizeJobs.js");
+const { resetVideoFinalizeJobsForTests, startVideoFinalizeJob } = await import("./videoFinalizeJobs.js");
 const { recordVideoProcessingRequest, recoverInterruptedVideoProcessing } = await import("./videoProcessingQueue.js");
 const { refreshVideoVerifierHealth, resetVideoVerifierStateForTests } = await import("./videoVerifier.js");
 const {
@@ -162,4 +162,45 @@ test("a background conversion rechecks account state after asynchronous storage 
       globalThis.fetch = storageFetch;
     }
   }
+});
+
+test("coordinator overload preserves durable retries and rejects new work before recording or dispatch", async () => {
+  const retry = queuedClip("capacity_retry");
+  const fresh = queuedClip("capacity_new");
+  db.prepare("DELETE FROM media_processing_jobs WHERE asset_id=?").run(fresh.asset_id);
+  const previous = db.prepare("SELECT * FROM media_processing_jobs WHERE asset_id=?").get(retry.asset_id);
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const held = [];
+  try {
+    for (let index = 0; index < 32; index += 1) {
+      held.push(startVideoFinalizeJob({
+        ownerId: `synthetic-capacity-owner-${index}`, assetId: `synthetic-capacity-asset-${index}`,
+        fingerprint: "c".repeat(64),
+        run: async () => { await gate; return { asset: { status: "ready" } }; },
+      }));
+    }
+    assert.throws(() => resumeVideoProcessing(retry),
+      { status: 503, code: "MEDIA_STORAGE_UNAVAILABLE" });
+    assert.deepEqual(db.prepare("SELECT * FROM media_processing_jobs WHERE asset_id=?").get(retry.asset_id), previous,
+      "overload must not consume an attempt or strand a retry as running");
+    assert.throws(() => startDurableVideoFinalize({
+      ownerId: fresh.owner_id, assetId: fresh.asset_id, contentType: "video/webm",
+      body: JSON.parse(fresh.body), fingerprint: fresh.fingerprint,
+    }), { status: 503, code: "MEDIA_STORAGE_UNAVAILABLE" });
+    assert.equal(db.prepare("SELECT 1 FROM media_processing_jobs WHERE asset_id=?").get(fresh.asset_id), undefined);
+    assert.equal(db.prepare("SELECT status FROM media_assets WHERE id=?").get(fresh.asset_id).status, "upload_pending",
+      "the uploaded source remains available for an explicit retry");
+    assert.deepEqual(fetches, [], "rejected work must not reach storage or the converter");
+  } finally {
+    release();
+    await Promise.allSettled(held.map(job => job.completion));
+  }
+
+  const resumed = resumeVideoProcessing(retry);
+  assert.equal(resumed.joined, false, "the durable retry remains eligible after capacity returns");
+  await assert.rejects(resumed.completion, { status: 503 });
+  const recorded = db.prepare("SELECT state,attempts FROM media_processing_jobs WHERE asset_id=?").get(retry.asset_id);
+  assert.equal(recorded.state, "retry");
+  assert.equal(recorded.attempts, 1, "only the actual attempt consumes the durable retry budget");
 });
