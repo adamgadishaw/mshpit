@@ -73,6 +73,70 @@ test("committed member data survives a killed WAL writer while unfinished writes
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
+test("an accepted video request survives process death before dispatch and recovers once after cold reopen", () => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-video-acceptance-crash-"));
+  try {
+    const killed = runFixture(directory, seedMemberGraph + `
+      import { startVideoFinalizeJob } from './server/videoFinalizeJobs.js';
+      import { recordVideoProcessingRequest } from './server/videoProcessingQueue.js';
+      db.exec(\`INSERT INTO media_assets
+        (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,
+         source_storage_scope,original_name,mime_type,byte_size,created_at,updated_at)
+        VALUES ('durable_clip','durable_member','durable-client','fixture','post','video',
+          'fixture-source.webm','https://example.test/fixture-source.webm','private','fixture.webm','video/webm',2048,1000,1000)\`);
+      startVideoFinalizeJob({
+        ownerId: 'durable_member', assetId: 'durable_clip', fingerprint: 'a'.repeat(64),
+        accept: () => recordVideoProcessingRequest(db, {
+          ownerId: 'durable_member', assetId: 'durable_clip', body: { editRecipe: { coverMs: 0 } },
+          fingerprint: 'a'.repeat(64), at: 1000,
+        }),
+        run: () => { throw new Error('Killed process must not dispatch'); },
+      });
+      process.kill(process.pid, 'SIGKILL');
+    `);
+    assert.notEqual(killed.status, 0);
+    const recovered = runFixture(directory, `
+      import assert from 'node:assert/strict';
+      import { db } from './server/db.js';
+      import { startVideoFinalizeJob } from './server/videoFinalizeJobs.js';
+      import { recoverInterruptedVideoProcessing, dueVideoProcessingJob,
+        recordVideoProcessingRequest, noteVideoProcessingAttemptStarted, noteVideoProcessingOutcome
+      } from './server/videoProcessingQueue.js';
+      assert.equal(recoverInterruptedVideoProcessing(db, { at: 2000 }), 1);
+      const job = dueVideoProcessingJob(db, { at: 2000 });
+      assert.equal(job.asset_id, 'durable_clip');
+      assert.equal(job.attempts, 0);
+      assert.deepEqual(JSON.parse(job.body), { editRecipe: { coverMs: 0 } });
+      let outputs = 0, admissions = 0;
+      const options = {
+        ownerId: job.owner_id, assetId: job.asset_id, fingerprint: job.fingerprint,
+        accept: () => {
+          admissions += 1;
+          recordVideoProcessingRequest(db, { ownerId: job.owner_id, assetId: job.asset_id,
+            body: JSON.parse(job.body), fingerprint: job.fingerprint, at: 2000 });
+        },
+        run: async () => {
+          noteVideoProcessingAttemptStarted(db, { assetId: job.asset_id, at: 2000 });
+          outputs += 1;
+          return { asset: { status: 'ready' } };
+        },
+        onSettled: ({ error }) => noteVideoProcessingOutcome(db, { assetId: job.asset_id, error, at: 2000 }),
+      };
+      const first = startVideoFinalizeJob(options);
+      const duplicate = startVideoFinalizeJob(options);
+      assert.equal(duplicate.joined, true);
+      await Promise.all([first.completion, duplicate.completion]);
+      assert.equal(admissions, 1);
+      assert.equal(outputs, 1);
+      assert.equal(dueVideoProcessingJob(db, { at: 3000 }), null);
+      assert.equal(recoverInterruptedVideoProcessing(db, { at: 3000 }), 0);
+      assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+      db.close();
+    `);
+    assert.equal(recovered.status, 0, recovered.stderr || recovered.stdout);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
 test("a real-schema backup preserves the member graph across verification and reviewed cold reopen", () => {
   const root = mkdtempSync(join(tmpdir(), "pit-durability-restore-"));
   const dataDirectory = join(root, "data");

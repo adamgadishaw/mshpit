@@ -23,7 +23,7 @@ Object.assign(process.env, {
 const { db, q } = await import("./db.js");
 const { resetRateLimitsForTests } = await import("./auth.js");
 const { createMediaAsset } = await import("./mediaAssets.js");
-const { ApiError, reserveVideoPublishingDemand, resumeVideoProcessing, startDurableVideoFinalize } = await import("./api.js");
+const { ApiError, reserveVideoPublishingDemand, resumeVideoProcessing, startDurableVideoFinalize, startVideoProcessingRetries } = await import("./api.js");
 const { resetVideoFinalizeJobsForTests, startVideoFinalizeJob, videoFinalizeState } = await import("./videoFinalizeJobs.js");
 const { recordVideoProcessingRequest, recoverInterruptedVideoProcessing } = await import("./videoProcessingQueue.js");
 const { refreshVideoVerifierHealth, resetVideoVerifierStateForTests } = await import("./videoVerifier.js");
@@ -224,5 +224,62 @@ test("a failed durable acceptance write cannot dispatch an orphan conversion or 
     await assert.rejects(accepted.completion, { status: 503 });
     assert.equal(db.prepare("SELECT attempts FROM media_processing_jobs WHERE asset_id=?").get(job.asset_id).attempts, 1);
     fetches = [];
+  }
+});
+
+test("video shutdown aborts storage and settles bookkeeping while preserving interrupted accepted work", async () => {
+  const activeJob = queuedClip("shutdown_active");
+  const queuedJob = queuedClip("shutdown_queued");
+  db.prepare("UPDATE media_processing_jobs SET attempts=2 WHERE asset_id=?").run(queuedJob.asset_id);
+  const scheduler = startVideoProcessingRetries();
+  const storageFetch = globalThis.fetch;
+  let releaseHead, enteredHead, headSignal;
+  const headEntered = new Promise(resolve => { enteredHead = resolve; });
+  const headGate = new Promise(resolve => { releaseHead = resolve; });
+  globalThis.fetch = async (url, request) => {
+    if (request.method === "HEAD") {
+      headSignal = request.signal;
+      enteredHead();
+      await headGate; // Model a transport that takes time to acknowledge abort.
+    }
+    return storageFetch(url, request);
+  };
+  const active = resumeVideoProcessing(activeJob);
+  const queued = resumeVideoProcessing(queuedJob);
+  const completions = [active, queued].map(job => job.completion.catch(error => error));
+  try {
+    await headEntered;
+    const stopping = scheduler.stop({ abortActive: true });
+    assert.equal(typeof stopping?.then, "function", "stop must expose an owned drain");
+    assert.equal(headSignal.aborted, true);
+    assert.throws(() => startVideoFinalizeJob({
+      ownerId: "late-owner", assetId: "late-asset", fingerprint: "f".repeat(64),
+      run: () => assert.fail("shutdown must refuse new work"),
+    }), { status: 503 });
+    await stopping;
+    const outcomes = await Promise.all(completions);
+    assert.ok(outcomes.every(error => error.name === "AbortError"));
+    assert.equal(fetches.some(entry => entry.path === "/v2/verify"), false);
+    assert.equal(db.prepare("SELECT attempts FROM media_processing_jobs WHERE asset_id=?").get(activeJob.asset_id).attempts, 0);
+    assert.equal(db.prepare("SELECT attempts FROM media_processing_jobs WHERE asset_id=?").get(queuedJob.asset_id).attempts, 2,
+      "shutdown must not subtract an attempt from a job that never dispatched");
+    recoverInterruptedVideoProcessing(db);
+    for (const job of [activeJob, queuedJob]) {
+      assert.equal(db.prepare("SELECT state FROM media_processing_jobs WHERE asset_id=?").get(job.asset_id).state, "retry");
+      assert.equal(db.prepare("SELECT status FROM media_assets WHERE id=?").get(job.asset_id).status, "upload_pending");
+    }
+    assert.equal(scheduler.tick(), false);
+    assert.equal(scheduler.stop({ abortActive: true }), stopping, "stop is idempotent");
+    const beforeLateResponse = db.prepare("SELECT * FROM media_processing_jobs WHERE asset_id=?").get(activeJob.asset_id);
+    releaseHead();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(db.prepare("SELECT * FROM media_processing_jobs WHERE asset_id=?").get(activeJob.asset_id), beforeLateResponse,
+      "the existing storage adapter discards a late response without returning to database work");
+    assert.equal(fetches.some(entry => entry.path === "/v2/verify"), false);
+  } finally {
+    releaseHead();
+    await Promise.all(completions);
+    scheduler.stop();
+    globalThis.fetch = storageFetch;
   }
 });

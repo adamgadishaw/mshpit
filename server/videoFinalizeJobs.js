@@ -34,6 +34,8 @@ const pendingJobs = new Set();
 // members at once, wait their turn here instead of reaching the converter
 // together and failing as "busy". The chain itself never rejects.
 let runQueue = Promise.resolve();
+let stopping = false;
+let stopPromise = null;
 
 const jobKey = (ownerId, assetId) => `${String(ownerId)}\u0000${String(assetId)}`;
 
@@ -89,12 +91,17 @@ export function videoFinalizeState({ ownerId, assetId, asset = null, at = Date.n
   return publicState(jobs.get(key));
 }
 
-export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, accept = () => {}, at = Date.now() } = {}) {
+export function startVideoFinalizeJob({
+  ownerId, assetId, fingerprint, run, accept = () => {}, onSettled = () => {}, at = Date.now(),
+} = {}) {
   if (typeof run !== "function") {
     throw new ApiError(500, "Clip processing could not be started.", "INTERNAL_ERROR");
   }
   if (typeof fingerprint !== "string" || !/^[a-f0-9]{64}$/u.test(fingerprint)) {
     throw new ApiError(500, "Clip processing identity is invalid.", "INTERNAL_ERROR");
+  }
+  if (stopping) {
+    throw new ApiError(503, "Clip processing is restarting. Retry shortly.", "MEDIA_STORAGE_UNAVAILABLE");
   }
   prune(at);
   const key = jobKey(ownerId, assetId);
@@ -128,6 +135,7 @@ export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, acce
     error: null,
     fingerprint,
     controller: new AbortController(),
+    dispatched: false,
   };
   jobs.set(key, entry);
   pendingJobs.add(entry);
@@ -138,15 +146,28 @@ export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, acce
     if (entry.controller.signal.aborted) {
       throw entry.controller.signal.reason || new DOMException("Media finalization was cancelled.", "AbortError");
     }
+    entry.dispatched = true;
     return run({ signal: entry.controller.signal });
   });
-  runQueue = turn.then(() => undefined, () => undefined);
-  const promise = turn.then((result) => {
+  const converted = turn.then((result) => {
     if (result?.asset?.status !== "ready") {
       throw new ApiError(503, "Clip processing did not produce a ready asset.", "MEDIA_STORAGE_UNAVAILABLE");
     }
     return result;
   });
+  // Completion includes durable bookkeeping. Both queue ownership and shutdown
+  // must outlive it, including when a cancelled transport settles late.
+  const promise = converted.then(
+    async (result) => {
+      await onSettled({ result, error: null, dispatched: entry.dispatched });
+      return result;
+    },
+    async (error) => {
+      await onSettled({ error, dispatched: entry.dispatched });
+      throw error;
+    },
+  );
+  runQueue = promise.then(() => undefined, () => undefined);
   entry.promise = promise;
   void promise.then(
     () => {
@@ -224,6 +245,21 @@ export function videoFinalizeJobActive() {
   return pendingJobs.size > 0;
 }
 
+// The HTTP server's existing 25-second watchdog owns the hard exit deadline.
+// Never fake a successful drain on timeout: keep SQLite open until every
+// accepted job and its bookkeeping settles, or let that watchdog exit.
+export function stopVideoFinalizeJobs() {
+  if (stopPromise) return stopPromise;
+  stopping = true;
+  const entries = [...pendingJobs];
+  const reason = new DOMException("Video finalization is shutting down.", "AbortError");
+  for (const entry of entries) {
+    if (!entry.controller.signal.aborted) entry.controller.abort(reason);
+  }
+  stopPromise = Promise.allSettled(entries.map(entry => entry.promise)).then(() => undefined);
+  return stopPromise;
+}
+
 export function resetVideoFinalizeJobsForTests() {
   for (const entry of jobs.values()) {
     if (entry.state === "processing" && !entry.controller.signal.aborted) {
@@ -233,4 +269,6 @@ export function resetVideoFinalizeJobsForTests() {
   jobs.clear();
   pendingJobs.clear();
   runQueue = Promise.resolve();
+  stopping = false;
+  stopPromise = null;
 }

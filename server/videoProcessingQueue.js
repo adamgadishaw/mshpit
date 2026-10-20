@@ -75,8 +75,9 @@ export function noteVideoProcessingOutcome(database, { assetId, error = null, at
   let nextAttemptAt = null;
   let countedAttempts = attempts;
   if (error?.name === "AbortError") {
-    // Only an owner deleting the draft aborts a job; the row is normally
-    // already gone. If not, leave it for the next start to pick up.
+    // Draft deletion normally removed the row already. Orderly shutdown also
+    // aborts active work; leave that accepted job retryable without charging
+    // the interrupted attempt. Never-dispatched jobs skip this outcome path.
     state = "retry";
     nextAttemptAt = at + BUSY_RETRY_MS;
     countedAttempts = Math.max(0, attempts - 1);
@@ -165,6 +166,7 @@ export function startVideoProcessingScheduler({
   database,
   resume,
   isBusy = () => false,
+  stopWork = () => {},
   now = Date.now,
   intervalMs = 15_000,
   onError = (error) => console.error(`[media] clip retry scheduler failed safely: ${errorCode(error)}`),
@@ -173,6 +175,7 @@ export function startVideoProcessingScheduler({
   const recovered = recoverInterruptedVideoProcessing(database, { at: now() });
   if (recovered) console.log(`[media] resuming ${recovered} clip conversion(s) interrupted by a restart`);
   let stopped = false;
+  let stopPromise = null;
   const tick = () => {
     if (stopped) return false;
     try {
@@ -193,9 +196,12 @@ export function startVideoProcessingScheduler({
   return {
     tick,
     stop() {
+      if (stopPromise) return stopPromise;
       stopped = true;
       clearInterval(timer);
       clearTimeout(first);
+      stopPromise = Promise.resolve(stopWork());
+      return stopPromise;
     },
   };
 }
