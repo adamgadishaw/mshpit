@@ -211,9 +211,9 @@ import { verifyVideoObject, videoVerifierRuntimeStatus } from "./videoVerifier.j
 import { VIDEO_VERIFIER_PIPELINE_VERSION } from "./videoVerifierProtocol.js";
 import {
   cancelVideoFinalizeJob,
+  observeVideoFinalizeCapacity,
   startVideoFinalizeJob,
   stopVideoFinalizeJobs,
-  videoFinalizeJobActive,
   videoFinalizeState,
   waitForVideoFinalizeCompletion,
 } from "./videoFinalizeJobs.js";
@@ -4047,7 +4047,7 @@ export function startVideoProcessingRetries() {
   return startVideoProcessingScheduler({
     database: db,
     resume: resumeVideoProcessing,
-    isBusy: videoFinalizeJobActive,
+    subscribeCapacity: observeVideoFinalizeCapacity,
     stopWork: stopVideoFinalizeJobs,
     now,
   });

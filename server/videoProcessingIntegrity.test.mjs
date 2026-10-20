@@ -125,6 +125,36 @@ test("a deleted account's interrupted conversion cannot be resurrected", () => {
   assert.deepEqual(fetches, []);
 });
 
+test("the API retry scheduler admits an older retry behind active work without duplicate verifier calls", async () => {
+  db.prepare("DELETE FROM media_processing_jobs").run();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const active = startVideoFinalizeJob({
+    ownerId: "synthetic-active", assetId: "synthetic-active", fingerprint: "c".repeat(64),
+    run: async () => { await gate; return { asset: { status: "ready" } }; },
+  });
+  const job = queuedClip("fairness");
+  const scheduler = startVideoProcessingRetries();
+  let joined;
+  try {
+    assert.equal(scheduler.tick(), true, "active work must not exclude due retries from available queue slots");
+    assert.equal(db.prepare("SELECT state FROM media_processing_jobs WHERE asset_id=?").get(job.asset_id).state, "running");
+    joined = resumeVideoProcessing(job);
+    assert.equal(joined.joined, true);
+    const rejected = assert.rejects(joined.completion, { status: 503 });
+    release();
+    await active.completion;
+    await rejected;
+    assert.equal(fetches.filter(entry => entry.path === "/v2/verify").length, 1);
+    assert.deepEqual({ ...db.prepare("SELECT state,attempts FROM media_processing_jobs WHERE asset_id=?").get(job.asset_id) },
+      { state: "retry", attempts: 1 });
+  } finally {
+    release();
+    await scheduler.stop();
+    await Promise.allSettled([active.completion, joined?.completion]);
+  }
+});
+
 test("a member's network admission denial cannot become an automatic unmetered retry", async () => {
   const job = queuedClip("network");
   for (let count = 0; count < 480; count += 1) {

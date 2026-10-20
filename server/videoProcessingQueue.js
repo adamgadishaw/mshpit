@@ -166,6 +166,7 @@ export function startVideoProcessingScheduler({
   database,
   resume,
   isBusy = () => false,
+  subscribeCapacity = () => () => {},
   stopWork = () => {},
   now = Date.now,
   intervalMs = 15_000,
@@ -185,10 +186,14 @@ export function startVideoProcessingScheduler({
       resume(due);
       return true;
     } catch (error) {
+      // Saturation does not spend an attempt or rewrite the due row. Retry on
+      // the next release/timer tick, through the coordinator's usual limits.
+      if (error instanceof ApiError && error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE") return false;
       onError(error);
       return false;
     }
   };
+  const unsubscribeCapacity = subscribeCapacity(tick);
   const timer = setInterval(tick, intervalMs);
   timer.unref?.();
   const first = setTimeout(tick, 2_000);
@@ -200,6 +205,7 @@ export function startVideoProcessingScheduler({
       stopped = true;
       clearInterval(timer);
       clearTimeout(first);
+      unsubscribeCapacity();
       stopPromise = Promise.resolve(stopWork());
       return stopPromise;
     },

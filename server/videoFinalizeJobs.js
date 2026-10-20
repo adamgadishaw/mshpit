@@ -36,6 +36,28 @@ const pendingJobs = new Set();
 let runQueue = Promise.resolve();
 let stopping = false;
 let stopPromise = null;
+let capacityListener = null;
+
+// One retry scheduler owns this callback. Offer a released slot synchronously,
+// before another request can fill it, while keeping the same admission limits.
+export function observeVideoFinalizeCapacity(listener) {
+  if (typeof listener !== "function" || capacityListener) {
+    throw new Error("Clip capacity already has an observer or the observer is invalid.");
+  }
+  capacityListener = listener;
+  return () => {
+    if (capacityListener === listener) capacityListener = null;
+  };
+}
+
+function notifyCapacity() {
+  if (stopping) return;
+  try { capacityListener?.(); }
+  catch {
+    // An observer must never change the outcome of the job that freed a slot.
+    console.error("[media] clip capacity observer failed safely");
+  }
+}
 
 const jobKey = (ownerId, assetId) => `${String(ownerId)}\u0000${String(assetId)}`;
 
@@ -171,21 +193,25 @@ export function startVideoFinalizeJob({
   entry.promise = promise;
   void promise.then(
     () => {
-      pendingJobs.delete(entry);
-      if (jobs.get(key) !== entry) return;
-      entry.state = "completed";
-      entry.settledAt = Date.now();
-      entry.promise = null;
-      prune(entry.settledAt);
+      const released = pendingJobs.delete(entry);
+      if (jobs.get(key) === entry) {
+        entry.state = "completed";
+        entry.settledAt = Date.now();
+        entry.promise = null;
+        prune(entry.settledAt);
+      }
+      if (released) notifyCapacity();
     },
     (error) => {
-      pendingJobs.delete(entry);
-      if (jobs.get(key) !== entry) return;
-      entry.state = "failed";
-      entry.error = safeFailure(error);
-      entry.settledAt = Date.now();
-      entry.promise = null;
-      prune(entry.settledAt);
+      const released = pendingJobs.delete(entry);
+      if (jobs.get(key) === entry) {
+        entry.state = "failed";
+        entry.error = safeFailure(error);
+        entry.settledAt = Date.now();
+        entry.promise = null;
+        prune(entry.settledAt);
+      }
+      if (released) notifyCapacity();
     },
   );
   return { finalize: { state: "processing" }, joined: false, completion: promise };
@@ -271,4 +297,5 @@ export function resetVideoFinalizeJobsForTests() {
   runQueue = Promise.resolve();
   stopping = false;
   stopPromise = null;
+  capacityListener = null;
 }
