@@ -3,6 +3,10 @@
 Status: implemented and tested locally, not deployed. No production readiness or
 service-capacity claim follows from this acceptance run.
 
+This records the first admission slice. The durable-write, shutdown and retry
+items below are superseded by
+[the recovery follow-up](BACKEND_RELIABILITY_RECOVERY_2026-10-20.md).
+
 ## Provenance and isolation
 
 - Read-only source: `D:/Development/Apps/mshpit`, clean tracked state at

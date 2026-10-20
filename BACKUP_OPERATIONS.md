@@ -62,6 +62,23 @@ No bucket, credentials, uploads, public access settings or live database were
 changed by this implementation. A successful private upload and real restore
 must still be verified after the destination is configured.
 
+## Restore replay coverage
+
+`server/privacyJournal.js` currently signs and replays only `account_erased`
+and `marketing_opt_out` events. A successful journal replay does not reconcile
+post, comment or message deletions, blocks, account restrictions, password
+changes or role changes made after the snapshot.
+
+Before an actual cutover, reconcile those changes from authoritative evidence
+into the offline recovery copy and retain the operator's privacy and credential
+review references. Do not interpret a reference accepted by
+`scripts/prepare-db-restore.mjs` as proof that reconciliation happened:
+`server/databaseRecovery.js` explicitly relies on the operator's review.
+It invalidates restored sessions, outstanding tokens and queued mail, but does
+not reconstruct newer password hashes or access roles. If the required evidence
+is unavailable, keep the copy isolated and resolve the recovery decision before
+serving it. A synthetic restore test cannot establish this operational coverage.
+
 ## Disk and cost control
 
 Budget peak local storage for the live database, WAL, retained snapshots, one
