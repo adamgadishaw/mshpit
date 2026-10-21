@@ -1,0 +1,10 @@
+MapLibre GL JS worker, version 6.15.0, unmodified distribution file.
+Original member: package/dist/maplibre-gl-worker.mjs
+Source: npm registry package maplibre-gl@6.15.0 (npm pack --ignore-scripts)
+Package tarball integrity:
+sha512-kxFetbvUHDOVaAP1CYb226Mdk2QhzIPddqM0xJTFD35wu78Mpd6NM7+H68ALjc6Oa0kAOX5EAdMKyvD2u3qfcg==
+Package shasum: 58e9c7d4eb37baad6e78a1a689930ce2c50d26b7
+Worker raw bytes: 518806
+Complete original LICENSE.txt is retained alongside this file.
+Main runtime and CSS use the same exact 6.15.0 version from the officially
+documented UNPKG CDN. These files load on demand, not through app dependencies.

@@ -1,0 +1,101 @@
+// Small, independently retrieved venue registry. This is an explicit coordinate
+// allow-list, not permission to reuse the legacy catalogue's coordinates.
+// Original Toronto evidence: maplibre-preview/venues.json. Four US records add
+// pinned Wikidata P625 statements plus separately checked official identities.
+const checkedAt = "2026-10-21";
+const place = "Toronto, Ontario, Canada";
+
+export const independentMapVenueRegistry = Object.freeze([
+  {
+    id: "wikidata:Q1122776", name: "Massey Hall", place,
+    aliases: ["Massey Hall"],
+    musicbrainzId: "7fb2039c-5c15-47b8-a4b2-915bc1034eca", wikidataId: "Q1122776",
+    lat: 43.65396694444444, lng: -79.37898194444443,
+    source: "Wikidata", sourceId: "Q1122776",
+    sourceUrl: "https://www.wikidata.org/w/index.php?title=Q1122776&oldid=2535778648",
+    coordinateEncoding: "converted-from-published-DMS",
+    publishedCoordinate: "43°39′14.281″N, 79°22′44.335″W",
+    coordinateReference: "OpenStreetMap; Wikidata reference retrieved 2026-07-01",
+  },
+  {
+    id: "musicbrainz:6f522a41-4f10-48c0-8fb7-cbb015f38117", name: "Horseshoe Tavern", place,
+    aliases: ["Horseshoe Tavern", "The Horseshoe Tavern"],
+    musicbrainzId: "6f522a41-4f10-48c0-8fb7-cbb015f38117", wikidataId: "Q5906075",
+    lat: 43.64943, lng: -79.39592,
+    source: "MusicBrainz", sourceId: "6f522a41-4f10-48c0-8fb7-cbb015f38117",
+    sourceUrl: "https://musicbrainz.org/place/6f522a41-4f10-48c0-8fb7-cbb015f38117",
+    coordinateEncoding: "published-decimal", recordUpdatedAt: "2018-01-12",
+  },
+  {
+    id: "musicbrainz:eddcb73e-3a63-4d75-b905-d4d1c3fd68d1", name: "Roy Thomson Hall", place,
+    aliases: ["Roy Thomson Hall"],
+    musicbrainzId: "eddcb73e-3a63-4d75-b905-d4d1c3fd68d1", wikidataId: "Q1315374",
+    lat: 43.646615, lng: -79.386443,
+    source: "MusicBrainz", sourceId: "eddcb73e-3a63-4d75-b905-d4d1c3fd68d1",
+    sourceUrl: "https://musicbrainz.org/place/eddcb73e-3a63-4d75-b905-d4d1c3fd68d1",
+    coordinateEncoding: "published-decimal", recordUpdatedAt: "2014-09-01",
+  },
+  {
+    id: "wikidata:Q7752734", name: "Danforth Music Hall", place,
+    aliases: ["Danforth Music Hall", "The Danforth Music Hall", "Danforth Music Hall Theatre"],
+    musicbrainzId: "5a413d26-ac66-4b22-ab87-9f84bfd14066", wikidataId: "Q7752734",
+    lat: 43.67630555555555, lng: -79.357,
+    source: "Wikidata", sourceId: "Q7752734",
+    sourceUrl: "https://www.wikidata.org/w/index.php?title=Q7752734&oldid=2535726008",
+    coordinateEncoding: "converted-from-published-DMS",
+    publishedCoordinate: "43°40′34.7″N, 79°21′25.2″W",
+    coordinateReference: "English Wikipedia import",
+  },
+  {
+    id: "wikidata:Q2491086", name: "Orpheum Theatre", place: "Los Angeles, California, United States",
+    aliases: ["Orpheum Theatre", "The Orpheum Theatre"], wikidataId: "Q2491086",
+    lat: 34.04277777777778, lng: -118.25527777777778,
+    source: "Wikidata", sourceId: "Q2491086",
+    sourceUrl: "https://www.wikidata.org/w/index.php?title=Q2491086&oldid=2514892478#P625",
+    coordinateClaim: "P625", coordinateEncoding: "converted-from-published-DMS",
+    publishedCoordinate: "34\u00b02'34\"N, 118\u00b015'19\"W", publishedResolutionArcseconds: 1,
+    coordinateReference: "Imported from Wikimedia project (P143): English Wikipedia (Q328)",
+    identitySourceUrl: "https://laorpheum.com/directions/",
+  },
+  {
+    id: "wikidata:Q7161584", name: "The Wiltern", place: "Los Angeles, California, United States",
+    aliases: ["The Wiltern"], wikidataId: "Q7161584",
+    lat: 34.06111111111111, lng: -118.30805555555555,
+    source: "Wikidata", sourceId: "Q7161584",
+    sourceUrl: "https://www.wikidata.org/w/index.php?title=Q7161584&oldid=2541846999#P625",
+    coordinateClaim: "P625", coordinateEncoding: "converted-from-published-DMS",
+    publishedCoordinate: "34\u00b03'40\"N, 118\u00b018'29\"W", publishedResolutionArcseconds: 1,
+    coordinateReference: "Imported from Wikimedia project (P143): English Wikipedia (Q328)",
+    identitySourceUrl: "https://www.wiltern.com/visit",
+  },
+  {
+    id: "wikidata:Q7978928", name: "Webster Hall", place: "New York, New York, United States",
+    aliases: ["Webster Hall"], wikidataId: "Q7978928",
+    lat: 40.73169444444444, lng: -73.98919444444445,
+    source: "Wikidata", sourceId: "Q7978928",
+    sourceUrl: "https://www.wikidata.org/w/index.php?title=Q7978928&oldid=2541973245#P625",
+    coordinateClaim: "P625", coordinateEncoding: "converted-from-published-DMS",
+    publishedCoordinate: "40\u00b043'54.1\"N, 73\u00b059'21.1\"W", publishedResolutionArcseconds: 0.1,
+    coordinateReference: "Imported from Wikimedia project (P143): English Wikipedia (Q328)",
+    identitySourceUrl: "https://www.websterhall.com/",
+  },
+  {
+    id: "wikidata:Q1565972", name: "The Roxy Theatre", place: "West Hollywood, California, United States",
+    aliases: ["The Roxy Theatre"], wikidataId: "Q1565972",
+    lat: 34.090805555555555, lng: -118.388,
+    source: "Wikidata", sourceId: "Q1565972",
+    sourceUrl: "https://www.wikidata.org/w/index.php?title=Q1565972&oldid=2540538831#P625",
+    coordinateClaim: "P625", coordinateEncoding: "converted-from-published-DMS",
+    publishedCoordinate: "34\u00b05'26.9\"N, 118\u00b023'16.8\"W", publishedResolutionArcseconds: 0.1,
+    coordinateReference: "Imported from Wikimedia project (P143): English Wikipedia (Q328)",
+    identitySourceUrl: "https://www.theroxy.com/venue-info/",
+    // A reviewed bad provider tuple, not an identity binding or point override.
+    // A corrected future point for this provider ID does not match this issue.
+    providerCoordinateConflicts: [{ source: "ticketmaster", providerVenueId: "ZFr9jZeA6a",
+      lat: 34.0942, lng: -118.3815, checkedAt, reason: "conflicts-with-reviewed-venue-location",
+      distanceApproxMeters: 708,
+      reviewedCoordinateSourceUrl: "https://www.wikidata.org/w/index.php?title=Q1565972&oldid=2540538831#P625",
+      identitySourceUrl: "https://www.theroxy.com/venue-info/" }],
+  },
+].map((venue) => Object.freeze({ ...venue, checkedAt, aliases: Object.freeze(venue.aliases),
+  ...(venue.providerCoordinateConflicts ? { providerCoordinateConflicts: Object.freeze(venue.providerCoordinateConflicts.map(Object.freeze)) } : {}) })));
