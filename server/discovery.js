@@ -16,6 +16,9 @@ import { publicTourDateArtistProjection, publicTourDateProviderFields } from "./
 import { catalogTotals } from "./catalogTotals.js";
 import { eligiblePopularityArtists } from "./artistPopularityEligibility.js";
 import { artistHasLegacyMemorial } from "./artistMemorialTourDateVisibility.js";
+import { createTourDateArtistPhotoReader } from "./tourDateArtistPhotos.js";
+
+const discoveryArtistPhotos = createTourDateArtistPhotoReader(db);
 
 const norm = (value) => String(value || "").trim().toLowerCase();
 const radians = (degrees) => degrees * Math.PI / 180;
@@ -229,11 +232,11 @@ export function discoverySidebar(viewer, {
     || String(a.row.artist).localeCompare(String(b.row.artist))
   );
 
-  const events = eventRanked.slice(0, eventLimit).map(({ row, distance, locality }) => ({
+  const events = discoveryArtistPhotos(eventRanked.slice(0, eventLimit).map(({ row, distance, locality }) => ({
     ...publicEvent(row),
     distanceKm: distance == null ? null : Math.round(distance),
     local: locality >= 4,
-  }));
+  })));
 
   const venues = new Map();
   for (const item of ranked) {

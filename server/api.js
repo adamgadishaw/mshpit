@@ -1,4 +1,7 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { mapLibreServerEnabled } from "./mapLibreConfiguration.mjs";
+import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
+import { createVenueMapCatalogueResponse } from "./venueMapCatalogueResponse.mjs";
 import { LEGACY_ARTIST_DEATH_DATE_CUTOFF, isLegacyArtistMemorial } from "../src/domain/artistLegacy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
@@ -1058,6 +1061,7 @@ function tourDateRangePage(viewer, range, timestamp) {
       city: range.city,
       countryCode: range.countryCode,
       country: range.country,
+      providerOnly: range.providerOnly === true,
       after: cursor,
       limit: batchLimit,
     });
@@ -1136,6 +1140,17 @@ function tourDateJson(row) {
     } : {}),
   };
 }
+
+// Shared public-only projection. Nothing runs until an explicitly enabled map
+// request arrives. This reads the local database, never an outbound self-HTTP
+// request or an ingestion/provider refresh. Each scan has a fixed query clock.
+const venueMapCatalogue = createVenueMapCatalogueCache({
+  readPage: ({ after, timestamp }) => {
+    const request = tourDateAllUpcomingRequest({ query: { scope: "all-upcoming", limit: "500", ...(after ? { after } : {}) } });
+    const page = tourDateRangePage(null, { ...request, providerOnly: true }, timestamp);
+    return { rows: page.rows.map(tourDateJson), nextCursor: page.nextCursor };
+  },
+});
 
 function cleanTourTicketUrl(value) {
   if (value == null || value === "") return "";
@@ -6729,6 +6744,13 @@ export const routes = {
     // in the artist archive; letting expired provider rows consume this bounded
     // 5,000-row window would hide current worldwide dates as coverage grows.
     const timestamp = now();
+    if (ctx.query?.view === "venue-map" && mapLibreServerEnabled(process.env)) {
+      return venueMapCatalogue.get({ signal: ctx.signal }).then(createVenueMapCatalogueResponse).catch(cause => {
+        const error = new ApiError(503, "Venue map could not refresh. Try again shortly.", "DATABASE_UNAVAILABLE", cause);
+        if (Number.isFinite(cause?.retryAt)) error.retryAt = cause.retryAt;
+        throw error;
+      });
+    }
     const allUpcoming = tourDateAllUpcomingRequest(ctx);
     if (allUpcoming) {
       const result = tourDateRangePage(ctx.user, allUpcoming, timestamp);

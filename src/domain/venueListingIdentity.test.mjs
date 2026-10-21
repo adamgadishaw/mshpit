@@ -47,7 +47,13 @@ test("only the exact reviewed namespace, room, and location may combine", () => 
     const row = { ...partner, ...fields };
     assert.notEqual(venueListingProviderIdentity(row), venueListingProviderIdentity(primary));
   }
-  assert.equal(venueListingProviderIdentity({ ...partner, source: "Ticketmaster", providerVenueId: "RZ7HNEZAE-8" }), venueListingProviderIdentity(primary));
+  assert.equal(venueListingProviderIdentity({ ...partner, source: "Ticketmaster" }), venueListingProviderIdentity(primary));
+  for (const approved of [primary, partner]) {
+    for (const providerVenueId of [approved.providerVenueId.toLowerCase(), approved.providerVenueId.toUpperCase()]) {
+      assert.notEqual(venueListingProviderIdentity({ ...approved, providerVenueId }), venueListingProviderIdentity(primary),
+        "unreviewed case variants must not enter the reviewed alias group");
+    }
+  }
   assert.equal(venueListingProviderIdentity({ source: "ticketmaster", providerVenueId: "unreviewed", venue: "REBEL", place: partner.place }), "provider:ticketmaster:unreviewed");
   assert.equal(venueListingProviderIdentity({ venue: "REBEL", place: partner.place }), null);
 });
@@ -66,4 +72,36 @@ test("matching names and coordinates never combine unreviewed provider rooms", (
   const index = createUnifiedVenueSearchIndex({ tourDates: events, now });
   assert.equal(index.length, 2);
   assert.equal(buildDiscoverVenueCities(index, events, { now })[0].venues.length, 2);
+});
+
+test("case-distinct Ticketmaster venues retain separate coordinates, cities and shows", () => {
+  const rows = [
+    rebel("case-event-a", "FixtureCaseAb", { venue: "Fixture First Room", venueCity: "First City", place: "First City, Ontario, Canada", lat: 43, lng: -79 }),
+    rebel("case-event-b", "FixtureCaseaB", { venue: "Fixture Second Room", venueCity: "Second City", place: "Second City, Ontario, Canada", lat: 49, lng: -123 }),
+  ];
+  const before = structuredClone(rows);
+  const index = createUnifiedVenueSearchIndex({ tourDates: rows, now });
+  assert.equal(index.length, 2);
+  assert.deepEqual(new Set(index.map(({ row }) => row.identity)), new Set(rows.map(venueListingProviderIdentity)));
+  for (const event of rows) {
+    const entry = index.find(({ row }) => row.providerVenueId === event.providerVenueId).row;
+    assert.equal(entry.name, event.venue);
+    assert.deepEqual(entry.coord, { lat: event.lat, lng: event.lng });
+    assert.equal(entry.upcoming, 1);
+  }
+  const cities = buildDiscoverVenueCities(index, rows, { now });
+  assert.equal(cities.length, 2);
+  assert.deepEqual(new Set(cities.flatMap(city => city.shows.map(show => show.id))), new Set(rows.map(row => row.id)));
+  assert.equal(projectDiscoverScene(rows, { now }).venues.length, 2);
+  assert.deepEqual(rows, before);
+});
+
+test("provider source casing and legacy non-Ticketmaster identities retain their existing semantics", () => {
+  assert.equal(venueListingProviderIdentity({ source: " Ticketmaster ", venue_provider_id: " FixtureCaseAb " }),
+    "provider:ticketmaster:FixtureCaseAb");
+  assert.equal(venueListingProviderIdentity({ source: " Legacy-Provider ", providerVenueId: " FixtureCaseAb " }),
+    "provider:legacy-provider:fixturecaseab");
+  const rows = [rebel("event-case-A", "FixtureRoom"), rebel("event-case-a", "FixtureRoom")];
+  const [entry] = createUnifiedVenueSearchIndex({ tourDates: [...rows, rows[0]], now });
+  assert.equal(entry.row.upcoming, 2, "case-distinct event IDs stay distinct and exact duplicates count once");
 });

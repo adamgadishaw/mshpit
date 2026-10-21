@@ -1,4 +1,5 @@
-// Provider identity uses English casing, which matches Unicode lowercasing.
+// Names and provider namespaces keep their established case folding. External
+// Ticketmaster IDs are opaque and case-sensitive, including reviewed aliases.
 const clean = value => typeof value === "string" ? value.trim().toLowerCase() : "";
 
 // Presentation-only, reviewed provider aliases. Never use name similarity or
@@ -9,11 +10,13 @@ const clean = value => typeof value === "string" ? value.trim().toLowerCase() : 
 // https://www.ticketweb.com/venue/rebel-toronto-on/10320
 // https://rebeltoronto.com/info/ (verified 2026-09-16).
 // NOIR (inside REBEL) has a different id and is deliberately NOT an alias.
-const REBEL_IDS = new Set(["kovzpzadifaa", "rz7hnezae-8"]);
+const REBEL_PRIMARY_ID = "KovZpZAdIFaA";
+const REBEL_IDS = new Set([REBEL_PRIMARY_ID, "rZ7HnEZae-8"]);
 
 export function venueListingProviderIdentity(row) {
   const source = clean(row?.source);
-  const providerId = clean(row?.providerVenueId ?? row?.venue_provider_id);
+  const rawId = row?.providerVenueId ?? row?.venue_provider_id;
+  const providerId = source === "ticketmaster" && typeof rawId === "string" ? rawId.trim() : clean(rawId);
   if (!source || !providerId) return null;
   const identity = `provider:${source}:${providerId}`;
   if (source !== "ticketmaster" || !REBEL_IDS.has(providerId)) return identity;
@@ -25,5 +28,5 @@ export function venueListingProviderIdentity(row) {
   const region = clean(row?.venueRegion || row?.venue_region) || (place.length > 2 ? place.at(-2) : "");
   return name === "rebel" && city === "toronto" && ["ca", "canada"].includes(country)
     && (!region || ["on", "ontario"].includes(region))
-    ? "provider:ticketmaster:kovzpzadifaa" : identity;
+    ? `provider:ticketmaster:${REBEL_PRIMARY_ID}` : identity;
 }

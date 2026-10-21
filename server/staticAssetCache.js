@@ -9,6 +9,10 @@ const IMMUTABLE_EXPO_PUBLIC_ASSET = /^\/assets\/.*\.[a-f0-9]{16,}\.[a-z0-9]+$/i;
  */
 export function staticAssetCacheControl(pathname) {
   const path = String(pathname || "");
+  // These same-origin modules, stylesheet and catalogue share stable URLs.
+  // Revalidate on every use so a deploy or rollback cannot reuse a stale member
+  // of the map's module/data graph alongside the current application bundle.
+  if (path.startsWith("/mshpit-maplibre/")) return "no-cache";
   if (IMMUTABLE_EXPO_ASSET.test(path) || IMMUTABLE_EXPO_PUBLIC_ASSET.test(path)) {
     return "public, max-age=31536000, immutable";
   }

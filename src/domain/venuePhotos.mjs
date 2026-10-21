@@ -29,7 +29,8 @@ export function venuePhotoRequestIdentity(venueKey, providerIdentity = null) {
   if (!venue) return null;
   const provider = normalizeVenuePhotoProviderIdentity(providerIdentity);
   const providerPart = provider
-    ? `|provider:${encodeURIComponent(provider.source.toLocaleLowerCase("en"))}:${encodeURIComponent(provider.providerVenueId.toLocaleLowerCase("en"))}`
+    ? `|provider:${encodeURIComponent(provider.source.toLocaleLowerCase("en"))}:${encodeURIComponent(
+      provider.source.toLocaleLowerCase("en") === "ticketmaster" ? provider.providerVenueId : provider.providerVenueId.toLocaleLowerCase("en"))}`
     : "";
   return `venue:${encodeURIComponent(venue)}${providerPart}`;
 }

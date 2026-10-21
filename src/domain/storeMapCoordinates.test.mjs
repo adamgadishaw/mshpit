@@ -7,6 +7,7 @@ import { nativeNearbyVenues } from "./nativeNearbyVenues.mjs";
 import { nativeVenueCoordinates } from "./nativeVenueCoordinates.mjs";
 import { isUpcomingEventDate } from "./dataPolicy.mjs";
 import { mapCoordinate } from "./mapCoordinates.mjs";
+import { normalizeVenuePhotoProviderIdentity } from "./venuePhotos.mjs";
 
 const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
@@ -65,4 +66,18 @@ test("nearby queries normalize a real numeric-string center without dropping val
   });
   assert.equal(query(75, { city: "Fixture", lat: "0", lng: "0" }).length, 1);
   assert.deepEqual(coords, [{ lat: 0, lng: 0 }]);
+});
+
+test("venue summary does not choose one provider hint for case-distinct Ticketmaster rooms", () => {
+  const event = { venue: "Fixture Room", date: "2099-06-16", releaseAt: 0,
+    source: "Ticketmaster", providerVenueId: "FixtureCaseAb" };
+  const summary = (tourDates) => storeFunction("venueSummary", {
+    norm: value => String(value || "").trim().toLowerCase(), feed: [], removedIds: [], ratedShows: [],
+    session: null, isStaff: () => false, tourDates, normalizeVenuePhotoProviderIdentity,
+    venueCatalogEntry: () => null, venueCatalogPhotoFields: () => ({}),
+  })("Fixture Room");
+  assert.equal(summary([event, { ...event, providerVenueId: "FixtureCaseaB" }]).providerVenueId, undefined);
+  assert.equal(summary([event, { ...event, source: "ticketmaster" }]).providerVenueId, event.providerVenueId);
+  assert.equal(summary([{ ...event, source: "legacy", providerVenueId: "ROOM" },
+    { ...event, source: "LEGACY", providerVenueId: "room" }]).providerVenueId, "room");
 });

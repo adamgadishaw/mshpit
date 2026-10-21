@@ -20,3 +20,14 @@ test("only fingerprinted Expo assets receive immutable browser caching", () => {
     );
   }
 });
+
+test("stable map modules, worker, stylesheet and catalogue revalidate without changing neighboring assets", () => {
+  for (const path of [
+    "/mshpit-maplibre/renderer.mjs", "/mshpit-maplibre/cluster-model.mjs",
+    "/mshpit-maplibre/maplibre-gl-worker.mjs", "/mshpit-maplibre/card.css",
+    "/mshpit-maplibre/venue-catalogue.json",
+  ]) assert.equal(staticAssetCacheControl(path), "no-cache", path);
+  for (const path of ["/mshpit-maplibre-other/renderer.mjs", "/renderer.mjs", "/assets/maplibre/card.css"]) {
+    assert.equal(staticAssetCacheControl(path), "public, max-age=3600, stale-while-revalidate=86400", path);
+  }
+});

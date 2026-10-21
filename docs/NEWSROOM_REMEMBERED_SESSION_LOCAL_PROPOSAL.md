@@ -29,7 +29,7 @@ The server recognizes only these Newsroom routes for the separate cookie. Unknow
 | `GET /api/newsroom-session/media/:id` | Read only an actor-owned asset admitted through this scope. |
 | `POST /api/newsroom-session/media/:id/finalize` | Finalize only that bound photo using existing server derivative verification; no client variants, delivery-mode override, video or arbitrary object key/URL. |
 
-Sources are validated citation fields saved with the article; there is **no arbitrary source-fetch endpoint**. Preview is a read of the saved own draft, not a general staff overview or arbitrary URL renderer. Existing article expiry remains (currently one day); a seven-day login does not keep an old draft publishable forever. Reworking article fields saves another draft rather than mutating a published article.
+Sources are validated citation fields saved with the article; there is **no arbitrary source-fetch endpoint**. Preview is a read of the saved own draft, not a general staff overview or arbitrary URL renderer. Existing article expiry remains (currently one day); a thirty-day login does not keep an old draft publishable forever. Reworking article fields saves another draft rather than mutating a published article.
 
 Generated drafts, source discovery/fetching, generated-news limits/configuration, shared staff drafts, unrelated moderation, member data/export, account settings/password/permissions, API credential grants, live coverage, arbitrary uploads, avatar/banner assets, media variants, video, and published category/share-artwork changes are not in the scope. Public anonymous pages remain public; the cookie grants no identity there.
 
