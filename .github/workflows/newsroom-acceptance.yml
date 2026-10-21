@@ -1,0 +1,29 @@
+name: Disposable Newsroom acceptance
+on:
+  push:
+    branches: [codex/newsroom-browser-acceptance-20261021]
+permissions:
+  contents: read
+jobs:
+  remembered-newsroom:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm install --no-save --package-lock=false --ignore-scripts playwright@1.62.1
+      - run: node node_modules/playwright/cli.js install --with-deps chromium
+      - run: sudo apt-get update && sudo apt-get install -y libnss3-tools
+      - name: Actual remembered-login and Newsroom workflow on private runner loopback
+        run: node scripts/verify-newsroom-ci-browser.mjs
+        env:
+          PIT_ALLOW_EPHEMERAL_TEST_TRUST: '1'
+      - name: Print sanitized result
+        if: always()
+        run: if test -f artifacts/newsroom-ci/result.json; then cat artifacts/newsroom-ci/result.json; fi

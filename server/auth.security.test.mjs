@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test, { after } from "node:test";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 
@@ -77,6 +78,14 @@ function addUser({ role = "fan", password = "test-password", banned = false, sus
 }
 
 const silentLog = { info() {}, warn() {} };
+
+function addNewsroomSessionFixture(user) {
+  const tokenHash = createHash("sha256").update(`synthetic-bootstrap-newsroom:${user.id}`).digest("hex");
+  const at = Date.now();
+  db.prepare(`INSERT INTO newsroom_browser_sessions(token_hash,user_id,created_at,expires_at,auth_role)
+    VALUES (?,?,?,?,?)`).run(tokenHash, user.id, at, at + 60_000, user.role);
+  return tokenHash;
+}
 
 test("a session is invalid at its exact expiry time", () => {
   const user = addUser();
@@ -320,8 +329,13 @@ test("the production server process exits before listening when ADMIN_PASSWORD i
 test("first production root adoption stores its identity and revokes every admin session", () => {
   const selected = addUser({ role: "admin", password: "initial-root-password1" });
   const peerAdmin = addUser({ role: "admin", password: "peer-root-password2" });
+  const editor = addUser({ role: "editor" });
   const selectedSession = createSession(selected.id, "127.0.0.1", "selected");
   const peerSession = createSession(peerAdmin.id, "127.0.0.1", "peer");
+  const editorSession = createSession(editor.id);
+  const selectedNewsroom = addNewsroomSessionFixture(selected);
+  const peerNewsroom = addNewsroomSessionFixture(peerAdmin);
+  const editorNewsroom = addNewsroomSessionFixture(editor);
   resetBootstrapIdentityForTest();
 
   const result = reconcileAdminAccount({
@@ -339,7 +353,36 @@ test("first production root adoption stores its identity and revokes every admin
   );
   assert.equal(getSession(selectedSession.token), null);
   assert.equal(getSession(peerSession.token), null);
+  assert.equal(db.prepare("SELECT 1 FROM newsroom_browser_sessions WHERE token_hash=?").get(selectedNewsroom), undefined);
+  assert.equal(db.prepare("SELECT 1 FROM newsroom_browser_sessions WHERE token_hash=?").get(peerNewsroom), undefined,
+    "an unchanged peer admin must lose remembered publication authority too");
+  assert.ok(db.prepare("SELECT 1 FROM newsroom_browser_sessions WHERE token_hash=?").get(editorNewsroom));
+  assert.equal(getSession(editorSession.token)?.user_id, editor.id, "non-admin sessions remain outside the adoption boundary");
   assert.equal(q.userById.get(peerAdmin.id).role, "admin", "adoption must not demote another legitimate administrator");
+});
+
+test("Owner adoption supports an injected legacy database without Newsroom session storage", () => {
+  const fixture = new DatabaseSync(":memory:");
+  try {
+    fixture.exec(`CREATE TABLE users(id TEXT PRIMARY KEY,email TEXT,role TEXT,pass_hash TEXT,
+      is_banned INTEGER,suspended_until INTEGER,email_verified_at INTEGER);
+      CREATE TABLE sessions(token_hash TEXT PRIMARY KEY,user_id TEXT);
+      CREATE TABLE app_meta(key TEXT PRIMARY KEY,value TEXT);
+      INSERT INTO users VALUES('legacy-admin','legacy-admin@example.test','admin','fixture-hash',0,NULL,1);
+      INSERT INTO sessions VALUES('synthetic-legacy-session','legacy-admin');`);
+    const result = reconcileAdminAccount({
+      database: fixture,
+      queries: { userByEmail: fixture.prepare("SELECT * FROM users WHERE email=?") },
+      env: { ADMIN_EMAIL: "legacy-admin@example.test", ADMIN_PASSWORD: "synthetic-bootstrap-password1" },
+      production: true,
+      log: silentLog,
+    });
+    assert.equal(result.sessionsRevoked, true);
+    assert.equal(fixture.prepare("SELECT count(*) n FROM sessions").get().n, 0);
+    assert.equal(fixture.prepare("SELECT count(*) n FROM app_meta").get().n, 1);
+    assert.equal(fixture.prepare("SELECT 1 FROM sqlite_master WHERE name='newsroom_browser_sessions'").get(), undefined,
+      "bootstrap must not create or issue remembered access in a legacy fixture");
+  } finally { fixture.close(); }
 });
 
 test("a locked v2 Owner cannot be transferred by changing deployment configuration", () => {
@@ -446,11 +489,15 @@ test("switching the configured root retires only the prior root and preserves un
   const nextRoot = addUser({ role: "fan", password: "next-root-password2" });
   const unrelatedAdmin = addUser({ role: "admin", password: "unrelated-admin-password3" });
   const ordinary = addUser({ role: "fan", password: "ordinary-fan-password3" });
+  const editor = addUser({ role: "editor" });
   setBootstrapAdminIdentity(previousRoot, { version: 1 });
   const previousSession = createSession(previousRoot.id, "127.0.0.1", "previous");
   const nextSession = createSession(nextRoot.id, "127.0.0.1", "next");
   const unrelatedAdminSession = createSession(unrelatedAdmin.id, "127.0.0.1", "unrelated-admin");
   const ordinarySession = createSession(ordinary.id, "127.0.0.1", "ordinary");
+  const previousNewsroom = addNewsroomSessionFixture(previousRoot);
+  const unrelatedNewsroom = addNewsroomSessionFixture(unrelatedAdmin);
+  const editorNewsroom = addNewsroomSessionFixture(editor);
 
   const result = reconcileAdminAccount({
     database: db,
@@ -483,6 +530,11 @@ test("switching the configured root retires only the prior root and preserves un
   assert.equal(getSession(previousSession.token), null);
   assert.equal(getSession(nextSession.token), null);
   assert.equal(getSession(unrelatedAdminSession.token), null, "root transfer still revokes every currently privileged cookie");
+  assert.equal(db.prepare("SELECT 1 FROM newsroom_browser_sessions WHERE token_hash=?").get(previousNewsroom), undefined);
+  assert.equal(db.prepare("SELECT 1 FROM newsroom_browser_sessions WHERE token_hash=?").get(unrelatedNewsroom), undefined,
+    "an unchanged peer admin cannot retain remembered authority through root transfer");
+  assert.ok(db.prepare("SELECT 1 FROM newsroom_browser_sessions WHERE token_hash=?").get(editorNewsroom),
+    "root transfer preserves a non-admin editor's remembered session");
   assert.equal(getSession(ordinarySession.token)?.user_id, ordinary.id, "unprivileged sessions are outside the root-rotation boundary");
   assert.throws(
     () => routes["GET /api/admin/members"]({ user: retiredRoot, query: {} }),

@@ -48,6 +48,12 @@ function atomic(database, action) {
 
 function revokeAllAdminSessions(database) {
   database.prepare("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role='admin')").run();
+  // Scoped cookies carry publication authority even when the normal staff
+  // session has expired. Keep Owner adoption/transfer atomic across both stores.
+  // Injected legacy databases may not have the additive Newsroom schema yet.
+  if (database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='newsroom_browser_sessions'").get()) {
+    database.prepare("DELETE FROM newsroom_browser_sessions WHERE user_id IN (SELECT id FROM users WHERE role='admin')").run();
+  }
 }
 
 function retireBootstrapRoot(database, userId, retiredPasswordHash) {
