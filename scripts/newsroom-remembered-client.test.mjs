@@ -30,7 +30,7 @@ function surface({initiallyRemembered=false,backend=fixture({remembered:initiall
    if(backend.disabled){status=404;data=errorEnvelope(new ApiError(404,'Remembered Newsroom is not enabled.','NOT_FOUND'),'synthetic-request');}
    else if(!backend.remembered||backend.revoked){status=401;data=errorEnvelope(new ApiError(401,'Sign in again.','AUTH_REQUIRED'),'synthetic-request');}
    else if(options.headers['X-Pit-Expected-Account'] && options.headers['X-Pit-Expected-Account']!==backend.account.id){status=409;data=errorEnvelope(new ApiError(409,'Your active account changed. Confirm the current account.','IDENTITY_CHANGED'),'synthetic-request');}
-   else data={account:backend.account,expiresAt:Date.now()+48*3600000,absoluteExpiresAt:Date.now()+7*86400000};
+   else data={account:backend.account,expiresAt:Date.now()+7*86400000,absoluteExpiresAt:Date.now()+30*86400000};
   }else if(path==='/api/me')data={user:{id:'owner-a',role:'admin'}};
   else if(path==='/api/me/newsroom-session'){backend.remembered=true;data={enabled:true};}
   else if(path==='/api/newsroom-session/media'){
@@ -120,6 +120,22 @@ test('repeated edit-copy saves keep real combined article and photo sources sepa
 test('selecting a different File with identical metadata replaces the photo and save key',async()=>{
  const f=surface({initiallyRemembered:true});await settle();fill(f);await submit(f);const first=JSON.parse(posts(f,'/api/newsroom-session/drafts')[0].options.body);
  f.node('photo').files=[file()];await submit(f);const second=JSON.parse(posts(f,'/api/newsroom-session/drafts')[1].options.body);assert.notEqual(second.photo.assetId,first.photo.assetId);assert.notEqual(second.idempotencyKey,first.idempotencyKey);assert.equal(f.backend.assets.size,2);
+});
+
+test('an expired own draft reopens as a fresh copy without publishing or mutating the original',async()=>{
+ const initial=surface({initiallyRemembered:true});await settle();fill(initial);await submit(initial);
+ const backend=initial.backend,original=[...backend.drafts.values()][0];original.expired=true;const snapshot=clone(original);
+ const f=surface({backend});await settle();const card=f.node('drafts').children[0];
+ button(card,'Preview saved article').listeners.click();await settle();
+ assert.equal(card.children.some(item=>item.textContent==='Publish this article'),false,'stale original remains unpublishable');
+ button(card,'Edit a copy').listeners.click();await settle();assert.equal(f.node('error').textContent,'');
+ assert.equal(f.node('body').value,original.body);assert.equal(f.node('photo-credit').value,original.photo.source.credit);
+ f.node('body').value+=' Reviewed and updated.';await submit(f);
+ assert.equal(f.node('error').textContent,'');assert.equal(backend.drafts.size,2);
+ const copy=[...backend.drafts.values()].at(-1);assert.notEqual(copy.id,original.id);assert.equal(copy.expired,false);
+ assert.equal(copy.photo.assetId,original.photo.assetId);assert.deepEqual(copy.photo.source,original.photo.source);
+ assert.deepEqual(backend.drafts.get(original.id),snapshot);assert.equal(posts(f,'/api/newsroom-session/media').length,0);
+ assert.equal(f.requests.some(r=>r.path.endsWith('/publish')),false);
 });
 test('failed photo PUT retries the same source ticket and saves only after successful transfer',async()=>{
  const f=surface({backend:fixture({putFailures:1})});await settle();fill(f);await submit(f);assert.match(f.node('error').textContent,/photo transfer did not complete/);assert.equal(posts(f,'/api/newsroom-session/drafts').length,0);

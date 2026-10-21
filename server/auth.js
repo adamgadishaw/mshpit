@@ -18,9 +18,9 @@ import { recordInteractiveAccountActivity } from "./features/accountLifecycle/ac
 
 export const STANDARD_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 export const PRIVILEGED_SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
-export const NEWSROOM_SESSION_IDLE_MS = 48 * 60 * 60 * 1000;
-export const NEWSROOM_SESSION_MAX_MS = 7 * 24 * 60 * 60 * 1000;
-// Proposed duration is inactive unless separately approved and explicitly enabled.
+export const NEWSROOM_SESSION_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
+export const NEWSROOM_SESSION_MAX_MS = 30 * 24 * 60 * 60 * 1000;
+// Owner-approved Newsroom-only policy; issuance remains explicitly gated and opt-in.
 export const newsroomSessionsEnabled = () => process.env.NEWSROOM_BROWSER_SESSIONS_ENABLED === "true";
 const NEWSROOM_ROLES = new Set(["admin", "editor"]);
 // Keep scoped tokens outside the legacy session table. Old deployments must
@@ -185,7 +185,8 @@ export function renewNewsroomSession(token) {
   const row = getSession(token, { scope: "newsroom" });
   if (!row) return null;
   const at = Date.now(), expiresAt = Math.min(at + NEWSROOM_SESSION_IDLE_MS, row.created_at + NEWSROOM_SESSION_MAX_MS);
-  if (expiresAt - row.expires_at < 12 * 60 * 60 * 1000) return null;
+  // Every successful confirmation refreshes inactivity, never the original maximum.
+  if (expiresAt <= row.expires_at) return null;
   const changed = db.prepare("UPDATE newsroom_browser_sessions SET expires_at=? WHERE token_hash=? AND expires_at=? AND expires_at>?")
     .run(expiresAt, row.token_hash, row.expires_at, at).changes;
   return changed ? { token, expiresAt, persistent: true, scope: "newsroom" } : null;

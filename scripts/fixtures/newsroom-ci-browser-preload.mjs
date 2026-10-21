@@ -62,7 +62,7 @@ net.Server.prototype.listen=function(port) {
 syncBuiltinESMExports();
 
 const {db,q}=await import('../../server/db.js');
-const {hashPassword,sessionCookieName}=await import('../../server/auth.js');
+const {hashPassword,sessionCookieName,NEWSROOM_SESSION_IDLE_MS,NEWSROOM_SESSION_MAX_MS}=await import('../../server/auth.js');
 const {reconcileAdminAccount}=await import('../../server/adminBootstrap.js');
 reconcileAdminAccount({database:db,queries:q,env:process.env,production:true,log:{info(){},warn(){}}});
 await import('../../server/api.js');
@@ -107,4 +107,4 @@ process.on('message',async message=>{
     process.send({kind:'reply',id:message.id,result});
   } catch(error){process.send({kind:'reply',id:message.id,error:error.message});}
 });
-process.send({kind:'fixture',users,password,cookieName:sessionCookieName(true)});
+process.send({kind:'fixture',users,password,cookieName:sessionCookieName(true),policy:{idleMs:NEWSROOM_SESSION_IDLE_MS,maxMs:NEWSROOM_SESSION_MAX_MS}});

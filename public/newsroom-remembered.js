@@ -54,7 +54,7 @@ async function confirm() {
 }
 function text(tag,value){const item=document.createElement(tag);item.textContent=value;return item;}
 function editCopy(draft) {
-  if(draft.status!=='draft' || draft.expired)throw new Error('Only an unexpired saved draft can be reopened for a copy.');
+  if(draft.status!=='draft')throw new Error('Only a saved draft can be reopened for a copy.');
   for(const id of ['headline','summary','body','category'])node(id).value=draft[id] || '';
   node('sources').value=(draft.sources || []).filter(source=>source.kind==='article').map(source=>[source.name,source.url,source.title || ''].join(' | ')).join('\n');
   for(const [id,key] of [['photo-name','name'],['photo-url','url'],['photo-credit','credit']])node(id).value=draft.photo?.source?.[key] || '';
@@ -78,12 +78,12 @@ async function refresh() {
       const d=selected.draft;card.replaceChildren(text('h3',d.headline),text('p',d.summary),text('p',d.body));
       if(d.photo?.url){const image=document.createElement('img');image.src=d.photo.url;image.alt=d.photo.source?.credit || 'Article photo';card.append(image);}
       for(const source of d.sources || []){const link=document.createElement('a');link.href=source.url;link.textContent=source.name;link.rel='noopener noreferrer';link.target='_blank';card.append(link,document.createElement('br'));}
-      if(d.status==='draft'&&!d.expired){const reopen=document.createElement('button');reopen.type='button';reopen.textContent='Edit a copy';reopen.addEventListener('click',()=>act(async()=>{
+      if(d.status==='draft'){const reopen=document.createElement('button');reopen.type='button';reopen.textContent='Edit a copy';reopen.addEventListener('click',()=>act(async()=>{
         await confirm();const current=await request('/api/newsroom-session/drafts/'+encodeURIComponent(d.id));editCopy(current.draft);
       }));card.append(reopen);
-      const publish=document.createElement('button');publish.type='button';publish.textContent='Publish this article';publish.addEventListener('click',()=>act(async()=>{
+      if(!d.expired){const publish=document.createElement('button');publish.type='button';publish.textContent='Publish this article';publish.addEventListener('click',()=>act(async()=>{
         await confirm();await request('/api/newsroom-session/drafts/'+encodeURIComponent(d.id)+'/publish',{method:'POST',body:{expectedRevision:d.revision}});await refresh();
-      }));card.append(publish);}
+      }));card.append(publish);}}
     }));card.append(preview);node('drafts').append(card);
   }
 }

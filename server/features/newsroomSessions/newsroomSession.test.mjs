@@ -9,7 +9,7 @@ const directory=mkdtempSync(join(tmpdir(),'pit-newsroom-scope-'));
 process.env.NEWSROOM_BROWSER_SESSIONS_ENABLED="true";
 process.env.PIT_DATA_DIR=directory;process.env.PIT_ALLOW_EMPTY_DB_BOOTSTRAP='true';delete process.env.RESEND_API_KEY;delete process.env.MAIL_FROM;
 const {db,q}=await import('../../db.js');
-const {createSession,createNewsroomSession,getSession,destroySession,renewNewsroomSession,hashPassword,newsroomCookieHeaders,NEWSROOM_SESSION_MAX_MS,PRIVILEGED_SESSION_TTL_MS}=await import('../../auth.js');
+const {createSession,createNewsroomSession,getSession,destroySession,renewNewsroomSession,hashPassword,newsroomCookieHeaders,NEWSROOM_SESSION_MAX_MS,NEWSROOM_SESSION_IDLE_MS,PRIVILEGED_SESSION_TTL_MS}=await import('../../auth.js');
 const {readAuthorizedRequest}=await import('../../requestAuthorization.js');
 const {routes}=await import('../../api.js');
 const {newsroomSessionRoutes}=await import('./newsroomSessionRoutes.js');
@@ -27,16 +27,46 @@ test('separate hashed cookie cannot authorize full access even in the full cooki
  const row=getSession(scoped.token,{scope:'newsroom'});assert.equal(row.session_scope,'newsroom');assert.equal(row.auth_role,'admin');assert.equal(q.sessionByHash.get(digest(scoped.token)),undefined,'legacy full-session lookup cannot find this token');assert.equal(JSON.stringify(row).includes(scoped.token),false);
  const cookie=newsroomCookieHeaders(scoped,true)[0];assert.match(cookie,/^__Host-pit_newsroom=/);assert.match(cookie,/HttpOnly; SameSite=Lax/);assert.match(cookie,/; Secure/);assert.ok(!cookie.includes('Domain='));
 });
-test('full staff ends at twelve hours; Newsroom renews only within seven days',()=>{
+test('full staff ends at twelve hours; Newsroom renews only within thirty days',()=>{
  const actor=user(),full=createSession(actor.id),scoped=createNewsroomSession(actor.id),start=getSession(scoped.token,{scope:'newsroom'}).created_at;
  try{Date.now=()=>start+PRIVILEGED_SESSION_TTL_MS+100;assert.equal(getSession(full.token),null);assert.ok(getSession(scoped.token,{scope:'newsroom'}));
- for(let day=1;day<7;day++){Date.now=()=>start+day*86400000;renewNewsroomSession(scoped.token);const row=getSession(scoped.token,{scope:'newsroom'});assert.ok(row);assert.equal(row.created_at,start);assert.ok(row.expires_at<=start+NEWSROOM_SESSION_MAX_MS);}
+ for(let day=1;day<30;day++){Date.now=()=>start+day*86400000;renewNewsroomSession(scoped.token);const row=getSession(scoped.token,{scope:'newsroom'});assert.ok(row);assert.equal(row.created_at,start);assert.ok(row.expires_at<=start+NEWSROOM_SESSION_MAX_MS);}
  Date.now=()=>start+NEWSROOM_SESSION_MAX_MS;assert.equal(renewNewsroomSession(scoped.token),null);
  }finally{Date.now=realNow;}
 });
 test('idle expiry, absent tokens and explicit deletion cannot renew',()=>{
  const actor=user(),scoped=createNewsroomSession(actor.id);try{Date.now=()=>scoped.expiresAt;assert.equal(renewNewsroomSession(scoped.token),null);}finally{Date.now=realNow;}
  const revoked=createNewsroomSession(actor.id);destroySession(revoked.token);assert.equal(renewNewsroomSession(revoked.token),null);assert.equal(renewNewsroomSession(undefined),null);
+});
+
+test('approved thirty-day maximum and seven-day idle renew even before twelve hours',()=>{
+ assert.equal(NEWSROOM_SESSION_MAX_MS,30*86400000);assert.equal(NEWSROOM_SESSION_IDLE_MS,7*86400000);
+ const actor=user(),start=realNow();
+ try {
+  Date.now=()=>start;const scoped=createNewsroomSession(actor.id);assert.equal(scoped.expiresAt,start+NEWSROOM_SESSION_IDLE_MS);
+  assert.equal(renewNewsroomSession(scoped.token),null,'same-time confirmation makes no unnecessary write');
+  for(const elapsed of [1,60000,3600000]){
+   Date.now=()=>start+elapsed;const renewed=renewNewsroomSession(scoped.token);assert.ok(renewed);
+   assert.equal(renewed.expiresAt,start+elapsed+NEWSROOM_SESSION_IDLE_MS);assert.equal(renewed.token,scoped.token);
+   assert.equal(getSession(scoped.token,{scope:'newsroom'}).created_at,start);
+  }
+  Date.now=()=>start+3600000+NEWSROOM_SESSION_IDLE_MS-1;assert.ok(getSession(scoped.token,{scope:'newsroom'}));
+  Date.now=()=>start+3600000+NEWSROOM_SESSION_IDLE_MS;assert.equal(renewNewsroomSession(scoped.token),null);
+  Date.now=()=>start;assert.equal(getSession(scoped.token,{scope:'newsroom'}),null,'expiry cannot revive after clock changes');
+ }finally{Date.now=realNow;}
+});
+
+test('frequent confirmation reaches but cannot move the original absolute deadline',()=>{
+ const actor=user(),start=realNow();
+ try {
+  Date.now=()=>start;const scoped=createNewsroomSession(actor.id);
+  for(let day=6;day<=24;day+=6){Date.now=()=>start+day*86400000;assert.ok(renewNewsroomSession(scoped.token));}
+  Date.now=()=>start+NEWSROOM_SESSION_MAX_MS-1;
+  assert.equal(renewNewsroomSession(scoped.token),null);
+  const row=getSession(scoped.token,{scope:'newsroom'});assert.equal(row.expires_at,start+NEWSROOM_SESSION_MAX_MS);assert.equal(row.created_at,start);
+  Date.now=()=>start+NEWSROOM_SESSION_MAX_MS;assert.equal(getSession(scoped.token,{scope:'newsroom'}),null);
+  Date.now=()=>start;assert.equal(renewNewsroomSession(scoped.token),null);
+ }finally{Date.now=realNow;}
 });
 test('authorization rejects unrelated routes and encoded or unknown extensions',async()=>{
  const actor=user(),scoped=createNewsroomSession(actor.id);
