@@ -1,9 +1,25 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { buildMapLibreVenueCatalogue, readCatalogueProjectionInputs, AUDITED_IMPORT_TUPLE_SHA256 } from "./build-maplibre-venue-catalogue.mjs";
 
 const inputs = readCatalogueProjectionInputs();
 const projection = buildMapLibreVenueCatalogue(inputs);
+
+test("pinned catalogue inputs remain usable without a Git executable or repository history", () => {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
+  env.PATH = "";
+  const moduleUrl = new URL("./build-maplibre-venue-catalogue.mjs", import.meta.url).href;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `import { readCatalogueProjectionInputs, buildMapLibreVenueCatalogue } from ${JSON.stringify(moduleUrl)};
+     console.log(JSON.stringify(buildMapLibreVenueCatalogue(readCatalogueProjectionInputs())));`],
+  { env, encoding: "utf8", maxBuffer: 2_000_000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), projection);
+  const checked = spawnSync(process.execPath, [fileURLToPath(moduleUrl), "--check"], { env, encoding: "utf8" });
+  assert.equal(checked.status, 0, checked.stderr);
+});
 
 test("all catalogue identities survive while imported, curated and missing coordinate gaps remain distinct", () => {
   assert.equal(projection.venues.length, 1060);

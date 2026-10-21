@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -46,7 +45,12 @@ export function importTupleHash(venues) {
 }
 
 export function readCatalogueProjectionInputs() {
-  const snapshot = JSON.parse(execFileSync("git", ["show", `${AUDITED_IMPORT_COMMIT}:src/seed/catalog.generated.json`], { cwd: ROOT, encoding: "utf8", maxBuffer: 30_000_000 }));
+  // Keep the original public tuples reproducible in shallow build checkouts.
+  // The fixed tuple hash below still prevents new or edited source assertions.
+  const snapshot = JSON.parse(readFileSync(resolve(ROOT, "scripts/fixtures/maplibre-import-tuples.json"), "utf8"));
+  if (snapshot.sourceCommit !== AUDITED_IMPORT_COMMIT || snapshot.tupleSha256 !== AUDITED_IMPORT_TUPLE_SHA256) {
+    throw new Error("The pinned import source changed; coordinate lineage needs a new review.");
+  }
   const core = JSON.parse(readFileSync(resolve(ROOT, "src/seed/catalog.core.json"), "utf8"));
   // This bounded, isolated evaluation reads only the existing literal anchor
   // object. Do not import the app module or execute its runtime/side effects.
@@ -126,7 +130,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const projection = buildMapLibreVenueCatalogue(readCatalogueProjectionInputs());
   const content = `${JSON.stringify(projection)}\n`;
   if (process.argv.includes("--check")) {
-    if (!existsSync(OUTPUT) || readFileSync(OUTPUT, "utf8") !== content) {
+    if (!existsSync(OUTPUT) || readFileSync(OUTPUT, "utf8").replace(/\r\n/gu, "\n") !== content) {
       console.error("MapLibre catalogue projection is stale. Run node scripts/build-maplibre-venue-catalogue.mjs");
       process.exitCode = 1;
     }
