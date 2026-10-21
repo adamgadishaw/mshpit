@@ -1,11 +1,12 @@
+import { assertNewsroomRoute } from "./features/newsroomSessions/newsroomSessionPolicy.js";
 import { getSession } from "./auth.js";
 import { q } from "./db.js";
 import { ApiError } from "./errors.js";
 import { assertExpectedAccount } from "./identityBinding.js";
 import { assertAccountMutationAccess } from "./accountMutationAccess.js";
 
-function currentUser(token) {
-  const session = getSession(token);
+function currentUser(token, scope) {
+  const session = getSession(token, { scope });
   return session ? q.userById.get(session.user_id) || null : null;
 }
 
@@ -13,16 +14,19 @@ function currentUser(token) {
 // account restriction. Resolve identity after that await, never from the socket's
 // earlier snapshot. Long-running media work also receives a synchronous guard
 // to run under its final SQLite write transaction.
-export async function readAuthorizedRequest({ token, expectedAccount, method, pathname, readBody }) {
+export async function readAuthorizedRequest({ token, expectedAccount, method, pathname, readBody, sessionScope = "full" }) {
   const body = await readBody();
-  const user = currentUser(token);
+  if (sessionScope === "newsroom") assertNewsroomRoute(method, pathname);
+  const user = currentUser(token, sessionScope);
   assertExpectedAccount(expectedAccount, user);
   assertAccountMutationAccess({ method, pathname, user, body });
   return {
     body,
     user,
+    sessionScope,
     assertCurrentSession({ allowRestrictedAccount = false } = {}) {
-      const current = currentUser(token);
+      if (sessionScope === "newsroom") assertNewsroomRoute(method, pathname);
+      const current = currentUser(token, sessionScope);
       if (!current) throw new ApiError(401, "Log in first.", "AUTH_REQUIRED");
       assertExpectedAccount(user?.id || "guest", current);
       assertExpectedAccount(expectedAccount, current);
