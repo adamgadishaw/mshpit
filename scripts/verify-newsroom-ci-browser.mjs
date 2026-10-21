@@ -22,7 +22,7 @@ assert.equal(existsSync(nss),false,'Refuse any preexisting runner certificate da
 const directory=mkdtempSync(join(tmpdir(),'pit-newsroom-https-browser-'));
 const profile=join(directory,'profile'),photoPath=join(directory,'synthetic.png'),key=join(directory,'leaf.key'),cert=join(directory,'leaf.crt');
 const result={startedAt:new Date().toISOString(),checks:[],syntheticOnly:true,production:false,trust:'single ephemeral leaf; disposable runner NSS DB',policy:'Owner-approved 30-day absolute and 7-day inactivity; refreshed on each confirmation without moving original maximum'};
-let child,context,server,fixture,bound,origin,nssCreated=false,clockHours=0,sequence=0,serverOutput='',failedLogout=false,expireNextScopeCookie=false,proxyFailures=0,externalBrowserRequests=0,cleanupPromise;
+let child,context,server,fixture,bound,origin,nssCreated=false,clockHours=0,sequence=0,serverOutput='',failedLogout=false,shortenScopeCookies=false,proxyFailures=0,externalBrowserRequests=0,cleanupPromise;
 const runtimeSecrets=Array.from({length:3},()=>randomBytes(32).toString('base64url'));
 const pending=new Map(),checks=result.checks;
 const timeout=setTimeout(()=>{console.error('Bounded Newsroom CI deadline exceeded');void cleanup().finally(()=>process.exit(1));},8*60_000);
@@ -68,7 +68,8 @@ try{
       if(url.pathname.startsWith('/fixture-storage/')){assert.equal(req.method,'PUT');const chunks=[];let size=0;for await(const c of req){size+=c.length;assert.ok(size<=100*1024);chunks.push(c);}const r=await ipc('storage-put',{url:url.href,headers:req.headers,bytes:Buffer.concat(chunks).toString('base64')});res.writeHead(r.status,r.headers);res.end();return;}
       if(url.pathname.startsWith('/fixture-media/')){const r=await ipc('storage-get',{path:url.pathname});res.writeHead(r.status,{'Content-Type':r.type||'image/png'});res.end(r.bytes?Buffer.from(r.bytes,'base64'):undefined);return;}
       const proxy=httpRequest({hostname:'127.0.0.1',port:backendPort,path:req.url,method:req.method,headers:{...req.headers,host:new URL(origin).host,'x-forwarded-proto':'https'}},up=>{
-        const headers={...up.headers};if(expireNextScopeCookie&&url.pathname==='/api/me/newsroom-session'&&headers['set-cookie']){headers['set-cookie']=headers['set-cookie'].map(c=>c.startsWith('__Host-pit_newsroom=')?c+'; Max-Age=2':c);expireNextScopeCookie=false;}
+        // Keep the expiry fixture short through all confirmation renewals in this check.
+        const headers={...up.headers};if(shortenScopeCookies&&headers['set-cookie']){headers['set-cookie']=headers['set-cookie'].map(c=>c.startsWith('__Host-pit_newsroom=')?c.replace(/;\s*Max-Age=[^;]*/giu,'')+'; Max-Age=2':c);}
         res.writeHead(up.statusCode,headers);up.pipe(res);
       });proxy.on('error',()=>{proxyFailures++;res.writeHead(502);res.end();});req.pipe(proxy);
     }catch{proxyFailures++;res.writeHead(500);res.end();}
@@ -98,8 +99,8 @@ try{
   await check('Closed browser process restarts with valid remembered access',async()=>{await context.close();context=null;main=await launch();await nav(main);assert.equal(await hidden(main),false);});
   await check('Authenticated private context disposal removes its browser identity',async()=>{let privateContext=await context.browser().newContext();await restrict(privateContext);let p=await privateContext.newPage();await nav(p);assert.equal(await hidden(p),true);await login(p,fixture.users.peer);await enable(p);assert.ok((await privateContext.cookies(origin)).some(c=>c.name==='__Host-pit_newsroom'));await privateContext.close();privateContext=await context.browser().newContext();await restrict(privateContext);p=await privateContext.newPage();await nav(p);assert.equal(await hidden(p),true);assert.equal((await privateContext.cookies(origin)).length,0);await privateContext.close();});
   await check('Site-cookie clearing cannot resurrect account or article text',async()=>{await main.locator('#body').fill('Synthetic private text');await context.clearCookies({domain:'127.0.0.1'});await click(main,'refresh');assert.equal(await hidden(main),true);assert.equal(await main.locator('#body').inputValue(),'');await nav(main);assert.equal(await hidden(main),true);assert.equal((await context.cookies(origin)).length,0);});
-  await login(main,fixture.users.owner);expireNextScopeCookie=true;await enable(main);
-  await check('Real browser cookie expiry signs out without recovery',async()=>{await delay(2500);await nav(main);assert.equal(await hidden(main),true);assert.equal((await context.cookies(origin)).some(c=>c.name==='__Host-pit_newsroom'),false);result.browserExpiry='Fixture shortened this one cookie with Max-Age=2; actual browser expiry, not proof of elapsed production thirty-day policy';});
+  await login(main,fixture.users.owner);shortenScopeCookies=true;await enable(main);
+  await check('Real browser cookie expiry signs out without recovery',async()=>{const c=(await context.cookies(origin)).find(c=>c.name==='__Host-pit_newsroom');assert.ok(c&&c.expires*1000<=Date.now()+2100,'Fixture must shorten confirmation renewals too');await delay(2500);await nav(main);assert.equal(await hidden(main),true);assert.equal((await context.cookies(origin)).some(c=>c.name==='__Host-pit_newsroom'),false);result.browserExpiry='Fixture shortened this check’s cookie and confirmation renewals with Max-Age=2; actual browser expiry, not proof of elapsed production thirty-day policy';});shortenScopeCookies=false;
   await login(main,fixture.users.owner);await enable(main);
   await check('Server inactivity expiry rejects still-retained browser cookie',async()=>{clockHours+=fixture.policy.idleMs/3600000+1;await ipc('advance',{hours:clockHours});await click(main,'refresh');assert.equal(await hidden(main),true);assert.equal((await api(main,'/api/newsroom-session/status')).status,401);});
   await login(main,fixture.users.owner);await enable(main);
