@@ -30,7 +30,7 @@ const delay=ms=>new Promise(r=>setTimeout(r,ms));
 async function wait(work,label){const end=Date.now()+20000;while(!await work()){assert.ok(Date.now()<end,label);await delay(30);}}
 async function port(){const s=netServer();await new Promise(r=>s.listen(0,'127.0.0.1',r));const p=s.address().port;await new Promise(r=>s.close(r));return p;}
 function ipc(operation,extra={}){return new Promise((resolve,reject)=>{const id=++sequence;const timer=setTimeout(()=>{pending.delete(id);reject(Error('Fixture IPC timeout: '+operation));},15000);pending.set(id,{resolve:v=>{clearTimeout(timer);resolve(v);},reject:e=>{clearTimeout(timer);reject(e);}});child.send({id,operation,...extra});});}
-async function launch(){context=await chromium.launchPersistentContext(profile,{headless:true,chromiumSandbox:true,timeout:20000,ignoreDefaultArgs:['--disable-back-forward-cache','--disable-client-side-phishing-detection','--disable-ipc-flooding-protection','--unsafely-disable-devtools-self-xss-warnings','--enable-unsafe-swiftshader']});await restrict(context);return context.newPage();}
+async function launch(){context=await chromium.launchPersistentContext(profile,{channel:'chrome',headless:true,chromiumSandbox:true,timeout:20000,ignoreDefaultArgs:['--disable-back-forward-cache','--disable-client-side-phishing-detection','--disable-ipc-flooding-protection','--unsafely-disable-devtools-self-xss-warnings','--enable-unsafe-swiftshader']});await restrict(context);return context.newPage();}
 async function restrict(ctx){ctx.setDefaultTimeout(15000);await ctx.route('**/*',route=>{if(new URL(route.request().url()).origin===origin)return route.continue();externalBrowserRequests++;return route.abort();});}
 async function ready(p){await wait(()=>p.evaluate(()=>!!document.querySelector('#refresh')&&!document.querySelector('#refresh').disabled&&document.readyState==='complete'),'Newsroom UI did not settle');}
 async function nav(p){await p.goto(origin+'/newsroom-remembered.html');await ready(p);}
@@ -51,6 +51,8 @@ function cleanup(){return cleanupPromise??=(async()=>{
   result.cleanup={browserClosed:clean,backendExited:!child||child.exitCode!==null,listenerClosed:!server?.listening,fixtureRemoved:!existsSync(directory),temporaryTrustRemoved:!existsSync(nss)};
 })();}
 try{
+  assert.ok(existsSync('/opt/google/chrome/chrome'),'Use runner-installed Chrome with its existing sandbox policy');
+  result.browser=execFileSync('/opt/google/chrome/chrome',['--version'],{encoding:'utf8'}).trim();
   writeFileSync(photoPath,image().bytes);leaf(join(directory,'leaf'));
   mkdirSync(nss,{recursive:true});nssCreated=true;
   execFileSync('certutil',['-N','-d','sql:'+nss,'--empty-password'],{stdio:'ignore'});
