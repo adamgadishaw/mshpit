@@ -16,6 +16,7 @@ import { artistDeathWatchService, eraseAccountForInactivity, replayPrivacyJourna
 import { ApiError, errorEnvelope } from "./errors.js";
 import { stopVideoFinalizeJobs } from "./videoFinalizeJobs.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
+import { mapLibrePreviewCspSources } from "./mapLibrePreviewCsp.js";
 import { pruneErrors, recordError, scheduleErrorAlert, stopErrorAlertScheduler } from "./errorLog.js";
 import { startMemoryMonitor } from "./memoryAdmission.js";
 import { observeRequestResponse } from "./requestMetrics.js";
@@ -93,6 +94,7 @@ import { randomUUID } from "node:crypto";
 import { apiRetryAfterHeaders, createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
 import { CAPACITY_CHALLENGE_HEADER } from "./capacityHandshake.js";
 import { binaryApiResponsePayload } from "./binaryApiResponse.js";
+import { venueMapCatalogueResponsePayload } from "./venueMapCatalogueResponse.mjs";
 import { reconcileAdminAccount } from "./adminBootstrap.js";
 import { applyHttpServerLimits } from "./httpServerPolicy.js";
 import { createOwnedRequestListener } from "./httpRequestBoundary.js";
@@ -179,6 +181,7 @@ if (legacyPosterRelease.active && (legacyPosterRelease.registered || legacyPoste
 // its loader script, its tile/data fetches, and its vector-map web workers -
 // without these the browser blocks the script and the map silently falls back to
 // the static image.
+const MAPLIBRE_PREVIEW_CSP = mapLibrePreviewCspSources();
 const HEADERS = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
@@ -194,11 +197,11 @@ const HEADERS = {
     // Expo SDK 57's export uses external bundles; its inline shell content is
     // CSS. User-shared YouTube links are validated server-side, so the browser
     // needs provider script origins only when the built-in player is enabled.
-    `script-src 'self' https://*.googleapis.com https://*.gstatic.com${MUSIC_PLAYER_ENABLED ? " https://www.youtube.com https://s.ytimg.com" : ""}`,
-    "style-src 'self' 'unsafe-inline'",
+    `script-src 'self' https://*.googleapis.com https://*.gstatic.com${MUSIC_PLAYER_ENABLED ? " https://www.youtube.com https://s.ytimg.com" : ""}${MAPLIBRE_PREVIEW_CSP.script.map(source => ` ${source}`).join("")}`,
+    "style-src 'self' 'unsafe-inline'" + MAPLIBRE_PREVIEW_CSP.style.map(source => ` ${source}`).join(""),
     // Google Maps XHR and durable uploaded media remain available while the
     // built-in music player is paused.
-    `connect-src 'self' https://*.googleapis.com https://*.gstatic.com${MUSIC_PLAYER_ENABLED ? " https://www.youtube.com https://*.googlevideo.com" : ""}${MEDIA_CONNECT_ORIGIN ? ` ${MEDIA_CONNECT_ORIGIN}` : ""}`,
+    `connect-src 'self' https://*.googleapis.com https://*.gstatic.com${MUSIC_PLAYER_ENABLED ? " https://www.youtube.com https://*.googlevideo.com" : ""}${MEDIA_CONNECT_ORIGIN ? ` ${MEDIA_CONNECT_ORIGIN}` : ""}${MAPLIBRE_PREVIEW_CSP.connect.map(source => ` ${source}`).join("")}`,
     "worker-src 'self' blob:", // vector maps run in blob web workers
     "font-src 'self' data: https://*.gstatic.com",
     `frame-src 'self'${MUSIC_PLAYER_ENABLED ? " https://www.youtube.com https://www.youtube-nocookie.com" : ""}`,
@@ -215,7 +218,7 @@ const HEADERS = {
 const DEV_ORIGINS = new Set(["http://localhost:8081", "http://127.0.0.1:8081"]);
 
 const MIME = {
-  ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css",
+  ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css",
   ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg", ".ico": "image/x-icon",
   ".svg": "image/svg+xml", ".woff2": "font/woff2", ".map": "application/json", ".txt": "text/plain",
 };
@@ -703,6 +706,11 @@ async function handleRequest(req, res) {
           "Referrer-Policy": "no-referrer",
         });
         return res.end();
+      }
+      const venueMap = venueMapCatalogueResponsePayload(result, req.headers["accept-encoding"]);
+      if (venueMap) {
+        if (requestAbort.signal.aborted || res.destroyed) return;
+        return send(res, venueMap.status, venueMap.bytes, { ...extra, ...venueMap.headers });
       }
       const binary = binaryApiResponsePayload(result);
       if (binary) {

@@ -6590,8 +6590,10 @@ export function StoreProvider({ children }) {
     for (const event of upcoming) {
       const identity = normalizeVenuePhotoProviderIdentity(event);
       if (!identity) continue;
+      const source = identity.source.toLocaleLowerCase("en");
+      const providerVenueId = source === "ticketmaster" ? identity.providerVenueId : identity.providerVenueId.toLocaleLowerCase("en");
       providerVenues.set(
-        `${identity.source.toLocaleLowerCase("en")}\u0000${identity.providerVenueId.toLocaleLowerCase("en")}`,
+        `${source}\u0000${providerVenueId}`,
         identity,
       );
     }

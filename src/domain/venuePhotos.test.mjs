@@ -232,9 +232,17 @@ test("provider-scoped venue photo caches cannot cross same-named buildings", () 
   );
   assert.equal(
     venuePhotoRequestIdentity(" THE ARENA ", toronto),
-    venuePhotoRequestIdentity("the arena", { source: "ticketmaster", providerVenueId: "toronto-hall" }),
-    "provider cache identities normalize without collapsing distinct provider ids",
+    venuePhotoRequestIdentity("the arena", { source: "ticketmaster", providerVenueId: "Toronto-Hall" }),
+    "app-owned venue keys and provider source casing retain their normalization",
   );
+  const firstKey = venuePhotoScopedCacheKey("The Arena", viewer, toronto);
+  const caseDistinctKey = venuePhotoScopedCacheKey("The Arena", viewer,
+    { source: "ticketmaster", providerVenueId: "toronto-hall" });
+  assert.notEqual(firstKey, caseDistinctKey, "Ticketmaster provider IDs are exact cache boundaries");
+  const cache = new Map([[firstKey, { photos: ["first-room-photo"] }]]);
+  assert.equal(cache.get(caseDistinctKey), undefined);
+  assert.equal(venuePhotoRequestIdentity("The Arena", { source: "legacy", providerVenueId: "Room-A" }),
+    venuePhotoRequestIdentity("THE ARENA", { source: "LEGACY", providerVenueId: "room-a" }));
 });
 
 test("personalized venue-photo JSON bypasses browser caches", () => {

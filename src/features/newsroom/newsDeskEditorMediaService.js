@@ -4,7 +4,8 @@ const clientAssetId = (asset) => `news-photo:${String(asset?.id || "photo")
   .replace(/[^A-Za-z0-9._:-]/g, "-")}`.slice(0, 120);
 
 export async function uploadSelfWrittenPhoto({ accountId, asset, signal }) {
-  const { prepareMediaUploadAsset, uploadPreparedMediaAsset } = await import("../../lib/mediaUpload.js");
+  // Let Metro select the platform transport; native still resolves the existing file.
+  const { prepareMediaUploadAsset, uploadPreparedMediaAsset } = await import("../../lib/mediaUpload");
   const prepared = await prepareMediaUploadAsset(asset, { optimizeWeb: false, context: "Preparing your article photo", signal });
   const created = await api("/api/media/assets", {
     method: "POST", context: "Preparing your Mshpit article photo", silent: true, expectedAccountId: accountId, signal,

@@ -174,7 +174,8 @@ export function createUnifiedVenueSearchIndex({
       if (event && eventId) existing.eventIds.add(eventId);
       // Prefer the reviewed primary listing when both are present, without
       // inventing a provider id when only its partner inventory was loaded.
-      if (providerScoped && identity === `provider:${source.toLowerCase()}:${providerVenueId.toLowerCase()}`) {
+      const providerIdKey = source?.toLowerCase() === "ticketmaster" ? providerVenueId : providerVenueId?.toLowerCase();
+      if (providerScoped && identity === `provider:${source.toLowerCase()}:${providerIdKey}`) {
         existing.row.source = source;
         existing.row.providerVenueId = providerVenueId;
       }
