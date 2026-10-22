@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { readPublicPost, resolveNavigationArtist, resolvePublicEntity } from "./publicNavigationApi.mjs";
 
-test("artist navigation forwards cancellation and retains provider eligibility", async () => {
+test("artist navigation requests stored identity and forwards cancellation", async () => {
   const controller = new AbortController();
   const calls = [];
   const result = await resolveNavigationArtist(" A$AP Rocky ", { signal: controller.signal }, {
@@ -12,7 +12,7 @@ test("artist navigation forwards cancellation and retains provider eligibility",
       return { artist: { id: "rocky", name: "A$AP Rocky" }, transient: true };
     },
   });
-  assert.equal(calls[0].path, "/api/artists/resolve?name=A%24AP%20Rocky");
+  assert.equal(calls[0].path, "/api/artists/resolve?name=A%24AP%20Rocky&scope=stored");
   assert.equal(calls[0].options.signal, controller.signal);
   assert.equal(calls[0].options.silent, true);
   assert.equal(result.transient, true);
@@ -26,6 +26,18 @@ test("artist navigation refuses missing and oversized names without requests", a
     assert.equal(await resolveNavigationArtist(name, {}, { apiCall }), null);
   }
   assert.equal(await resolveNavigationArtist("Unknown", {}, { apiCall: async () => ({ artist: null }) }), null);
+});
+
+test("navigation preserves unavailable, network and cancellation errors for recovery", async () => {
+  for (const error of [
+    Object.assign(new Error("Catalogue unavailable"), { serverCode: "DATABASE_UNAVAILABLE", status: 503 }),
+    Object.assign(new Error("Provider deadline"), { serverCode: "PROVIDER_UNAVAILABLE", status: 502, retryAfterMs: 1000 }),
+    new TypeError("Failed to fetch"),
+    Object.assign(new Error("Cancelled"), { name: "AbortError" }),
+  ]) {
+    await assert.rejects(resolveNavigationArtist("Known", {}, { apiCall: async () => { throw error; } }),
+      actual => actual === error);
+  }
 });
 
 test("public entity resolution encodes the complete canonical pathname", async () => {

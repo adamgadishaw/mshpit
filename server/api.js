@@ -5467,6 +5467,10 @@ export const routes = {
     try {
       const name = clean(ctx.query.name, { max: 120 });
       if (!name) throw new ApiError(400, "Missing name.");
+      const storedOnly = ctx.query.scope === "stored";
+      if (ctx.query.scope != null && !storedOnly) {
+        throw new ApiError(400, "Unsupported artist lookup scope.", "VALIDATION_FAILED");
+      }
       const existing = resolveCatalogArtistReference(name);
       if (existing && !artistCatalogVisibleTo(db, existing, ctx.user)) {
         diagnostics.source("catalog_hidden");
@@ -5486,6 +5490,13 @@ export const routes = {
           },
           created: false,
         };
+      }
+      // Public navigation needs a durable page. Provider/cache previews cannot
+      // supply that identity, even when their lookup succeeds. Keep this miss
+      // distinct from a failed database read, which still propagates normally.
+      if (storedOnly) {
+        diagnostics.result("no_match");
+        return { artist: null, created: false };
       }
       const remembered = cachedMusicBrainzResolution(name);
       // A stale exact identity is still a safer immediate answer than waiting on
