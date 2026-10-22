@@ -63,6 +63,7 @@ export function createArtistDeathWatchRepository(database) {
     ORDER BY COALESCE(popularity,0) DESC,COALESCE(rank_score,0) DESC,norm ASC LIMIT 2`);
   const byKey = database.prepare(`SELECT ${CANDIDATE_COLUMNS} FROM artist_death_candidates WHERE artist_key=?`);
   const byMbid = database.prepare(`SELECT ${CANDIDATE_COLUMNS} FROM artist_death_candidates WHERE lower(artist_mbid)=?`);
+  const byWikidata = database.prepare(`SELECT ${CANDIDATE_COLUMNS} FROM artist_death_candidates WHERE wikidata_id=?`);
   const insertCandidate = database.prepare(`INSERT INTO artist_death_candidates
     (artist_key,artist_mbid,wikidata_id,artist_name,death_date,status,first_detected_at,
       last_confirmed_at,reviewed_by,reviewed_at,created_at,updated_at)
@@ -159,6 +160,13 @@ export function createArtistDeathWatchRepository(database) {
     },
 
     saveConfirmedCandidate({ artistKey, artistMbid, wikidataId, artistName, deathDate, at }) {
+      // Check ownership before inserts AND evidence updates. A corroborated
+      // signal must not transfer another candidate's identity or moderation.
+      const wikidataOwner = byWikidata.get(wikidataId);
+      if (wikidataOwner && (wikidataOwner.artist_key !== artistKey
+        || String(wikidataOwner.artist_mbid).toLowerCase() !== artistMbid)) {
+        return { conflict: true, row: wikidataOwner };
+      }
       const existing = byKey.get(artistKey) || byMbid.get(artistMbid) || null;
       if (existing) {
         if (existing.artist_key !== artistKey || String(existing.artist_mbid).toLowerCase() !== artistMbid) {
