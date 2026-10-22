@@ -19,6 +19,9 @@ function fixture(path = ":memory:") {
     INSERT INTO users VALUES('member','password-record','old-reset',9000,'old-verify',9000,'old-cancel');
     CREATE TABLE sessions (token_hash TEXT PRIMARY KEY,user_id TEXT REFERENCES users(id));
     INSERT INTO sessions VALUES('old-session','member');
+    CREATE TABLE newsroom_browser_sessions (token_hash TEXT PRIMARY KEY,user_id TEXT REFERENCES users(id),
+      created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,auth_role TEXT NOT NULL);
+    INSERT INTO newsroom_browser_sessions VALUES('old-newsroom-session','member',2000,9000,'admin');
     CREATE TABLE linked_account_session_grants (token_hash TEXT REFERENCES sessions(token_hash));
     INSERT INTO linked_account_session_grants VALUES('old-session');
     CREATE TABLE email_verification_receipts (token_hash TEXT); INSERT INTO email_verification_receipts VALUES('old-verify');
@@ -52,7 +55,8 @@ test("restore preparation invalidates all old bearer capabilities without deleti
     fenceBackupSnapshot(db);
     const counts = prepareRecoveryDatabase(db, reviews);
     assert.equal(counts.sessions, 1);
-    for (const table of ["sessions", "linked_account_session_grants", "email_verification_receipts", "email_queue"]) {
+    assert.equal(counts.newsroom_browser_sessions, 1);
+    for (const table of ["sessions", "newsroom_browser_sessions", "linked_account_session_grants", "email_verification_receipts", "email_queue"]) {
       assert.equal(db.prepare(`SELECT count(*) AS c FROM ${table}`).get().c, 0);
     }
     const user = db.prepare("SELECT * FROM users").get();
@@ -66,6 +70,18 @@ test("restore preparation invalidates all old bearer capabilities without deleti
     assert.equal(db.prepare("SELECT id FROM owner_approval_receipts").get().id, "immutable-history");
     assert.equal(db.prepare("SELECT count(*) AS c FROM posts").get().c, 1);
     assert.deepEqual(prepareRecoveryDatabase(db, reviews).sessions, 0, "safe to repeat preparation");
+  } finally { db.close(); }
+});
+
+test("legacy recovery without a remembered Newsroom table still revokes ordinary sessions", () => {
+  const db = fixture();
+  try {
+    db.exec("DROP TABLE newsroom_browser_sessions");
+    fenceBackupSnapshot(db);
+    const counts = prepareRecoveryDatabase(db, reviews);
+    assert.equal(counts.sessions, 1);
+    assert.equal(counts.newsroom_browser_sessions, undefined);
+    assert.doesNotThrow(() => assertDatabaseRecoveryReady(db));
   } finally { db.close(); }
 });
 
@@ -93,6 +109,7 @@ test("failed preparation rolls back invalidation and does not approve the copy",
     db.exec("CREATE TRIGGER fail_mail_cleanup BEFORE DELETE ON email_queue BEGIN SELECT RAISE(ABORT,'fixture cleanup failure'); END;");
     assert.throws(() => prepareRecoveryDatabase(db, reviews), /fixture cleanup failure/);
     assert.equal(db.prepare("SELECT count(*) AS c FROM sessions").get().c, 1);
+    assert.equal(db.prepare("SELECT count(*) AS c FROM newsroom_browser_sessions").get().c, 1);
     assert.throws(() => assertDatabaseRecoveryReady(db), /quarantined/);
   } finally { db.close(); }
 });
@@ -120,6 +137,8 @@ test("offline restore creates only a new sanitized copy and preserves source", (
     try {
       assert.equal(original.prepare("SELECT count(*) AS c FROM sessions").get().c, 1);
       assert.equal(prepared.prepare("SELECT count(*) AS c FROM sessions").get().c, 0);
+      assert.equal(original.prepare("SELECT count(*) AS c FROM newsroom_browser_sessions").get().c, 1);
+      assert.equal(prepared.prepare("SELECT count(*) AS c FROM newsroom_browser_sessions").get().c, 0);
       assert.throws(() => assertDatabaseRecoveryReady(original), /quarantined/);
       assert.doesNotThrow(() => assertDatabaseRecoveryReady(prepared));
     } finally { original.close(); prepared.close(); }
