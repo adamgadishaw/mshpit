@@ -31,11 +31,12 @@ function createdImage({ width = 64, height = 48, format = "jpeg" } = {}) {
   return pipeline[format]().toBuffer();
 }
 
-function gifFixture({ width = 1, height = 1, frames = 1 } = {}) {
+function gifFixture({ width = 1, height = 1, frames = 1, delayCentiseconds = 10 } = {}) {
   const header = Buffer.from("47494638396101000100800000000000ffffff", "hex");
   header.writeUInt16LE(width, 6);
   header.writeUInt16LE(height, 8);
   const graphicControl = Buffer.from("21f904000a000000", "hex");
+  graphicControl.writeUInt16LE(delayCentiseconds, 4);
   const images = Array.from({ length: frames }, (_, index) => Buffer.from(
     `2c0000000001000100000201${index % 2 ? "44" : "4c"}00`,
     "hex",
@@ -391,6 +392,21 @@ test("static GIFs remain safe still WebP renditions", async () => {
   });
   assert.equal(inspection.frames, 1);
   assert.equal(inspection.animated, false);
+});
+
+test("600-square, 100-frame four-second GIF codec vector fits existing bounds without losing animation", { timeout: 65_000 }, async () => {
+  // Dimension/timing envelope only: this repository codec vector is not the
+  // owner's approved logo and does not claim exact-artwork acceptance.
+  const source = gifFixture({ width: 600, height: 600, frames: 100, delayCentiseconds: 4 });
+  const before = inspectImageBytes(source, { expectedType: "image/gif" });
+  assert.equal(before.totalPixels, 36_000_000);
+  const sanitized = await sanitizeDecodedImage(source, { expectedType: "image/gif", outputType: "image/webp", timeoutMs: 60_000 });
+  const after = inspectImageBytes(sanitized.bytes, { expectedType: "image/webp", sanitized: true });
+  assert.deepEqual([after.width, after.height, after.frames, after.metadataPresent], [600, 600, 100, false]);
+  const metadata = await sharp(sanitized.bytes, { animated: true }).metadata();
+  assert.equal(metadata.pages, 100);
+  assert.deepEqual(metadata.delay, Array(100).fill(40));
+  assert.equal(metadata.delay.reduce((sum, delay) => sum + delay, 0), 4000);
 });
 
 test("animation frame bombs, metadata flags, and trailing payloads fail closed", async () => {

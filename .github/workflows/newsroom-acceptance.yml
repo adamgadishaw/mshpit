@@ -1,7 +1,7 @@
 name: Disposable Newsroom acceptance
 on:
   push:
-    branches: [master, codex/newsroom-browser-acceptance-20261021, codex/newsroom-code-only-release-20261021]
+    branches: [master, codex/newsroom-browser-acceptance-20261021, codex/newsroom-code-only-release-20261021, codex/newsroom-gif-20261022]
 permissions:
   contents: read
 jobs:

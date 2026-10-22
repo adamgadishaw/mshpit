@@ -161,6 +161,7 @@ export default function SelfWrittenNewsComposer({ accountId, busy, saving = fals
     </View>
     <View style={styles.categoryBlock}>
       <Text style={styles.fieldLabel}>Selected article photo</Text>
+      <Text style={styles.help}>Animated GIFs are supported. Animation is preserved in the verified image; oversized animations are rejected.</Text>
       {photo?.uri ? <ExpoImage source={{ uri: photo.uri }} style={styles.editorPhoto} contentFit="cover" accessible={false} /> : null}
       <Button small title={uploading ? "Verifying photo" : "Choose photo"} variant="secondary" disabled={uploading || busy || disabled} onPress={choosePhoto} accessibilityLabel="Choose and upload an article photo" />
       <TextInput accessibilityLabel="Photo source name" style={styles.input} maxLength={160} value={photoName} onChangeText={update("photoName")} placeholder="Photo source or creator" placeholderTextColor={colors.textFaint} />

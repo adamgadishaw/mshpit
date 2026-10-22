@@ -94,6 +94,24 @@ process.on('message',async message=>{
       assert.equal(metadata.width,1200);assert.equal(metadata.height,900);assert.ok(!metadata.exif&&!metadata.xmp&&!metadata.iptc&&!metadata.icc);assert.equal(entry.bytes.includes(Buffer.from(MARKER)),false);
       for(const p of expected.manifest.samples){const at=(p.y*decoded.info.width+p.x)*decoded.info.channels;assert.deepEqual([...decoded.data.subarray(at,at+4)],p.rgba);}
       result={dimensions:[1200,900],pixelSamplesMatched:4,metadataRemoved:true,sourcePrivate:true,derivativeDistinct:true};
+    } else if(message.operation==='gif-proof') {
+      const rows=db.prepare("SELECT a.id,a.source_key,a.source_storage_scope,v.object_key,v.verification_origin FROM media_assets a JOIN media_variants v ON v.id=a.render_variant_id WHERE a.owner_id=? AND a.status='ready'").all(users.owner.id);
+      const row=rows.find(r=>objects.get('/fixture-storage/pit-browser-private/'+r.source_key)?.type==='image/gif');
+      assert.ok(row);assert.equal(row.source_storage_scope,'private');assert.equal(row.verification_origin,'private_derivative_v1');assert.notEqual(row.source_key,row.object_key);
+      const entry=objects.get('/fixture-storage/pit-browser-public/'+row.object_key);assert.equal(entry.type,'image/webp');
+      const sharp=createRequire(import.meta.url)('sharp'),metadata=await sharp(entry.bytes,{animated:true}).metadata();
+      assert.equal(metadata.width,1);assert.equal(metadata.pageHeight,1);assert.equal(metadata.pages,2);assert.deepEqual(metadata.delay,[400,400]);assert.equal(metadata.loop,0);
+      assert.ok(!metadata.exif&&!metadata.xmp&&!metadata.iptc&&!metadata.icc);
+      result={assetId:row.id,url:origin+'/fixture-media/'+row.object_key,frames:2,delay:metadata.delay,loop:0,metadataRemoved:true,sourcePrivate:true};
+    } else if(message.operation==='gif-document') {
+      const row=db.prepare("SELECT story_post_id FROM news_drafts WHERE json_extract(result,'$.headline')=? AND created_by=? AND status='published'").get(message.headline,users.owner.id);assert.ok(row);
+      const {createNewsDeskReader}=await import('../../server/features/newsDesk/newsDeskService.js');
+      const {newsStoryPostDocument}=await import('../../server/features/seo/publicDocumentProjection.js');
+      const {renderPublicDocumentMain,renderPublicDocumentHead}=await import('../../server/features/seo/publicDocumentRenderer.js');
+      const story=createNewsDeskReader(db).forPost(row.story_post_id);assert.ok(story);
+      const doc=newsStoryPostDocument({story,card:{comments:0},comments:[],path:'/post/'+row.story_post_id,origin,paths:{}});
+      assert.equal(doc.imageMimeType,'image/webp');
+      result='<!doctype html><html><head>'+renderPublicDocumentHead(doc)+'</head><body>'+renderPublicDocumentMain(doc)+'</body></html>';
     } else if(message.operation==='teardown'){db.prepare('DELETE FROM newsroom_browser_sessions').run();db.prepare('DELETE FROM sessions').run();objects.clear();result={scoped:0,full:0,objects:0};}
     else if(message.operation==='snapshot') result={
       scoped:db.prepare('SELECT count(*) n FROM newsroom_browser_sessions').get().n,
