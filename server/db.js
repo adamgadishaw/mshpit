@@ -2210,6 +2210,8 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_visibility ON tour_dates(relea
 db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_sitemap_cursor
   ON tour_dates(date, id, release_at, provider_active)`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_owner ON tour_dates(owner_id, date)");
+// Complete provider catalogue scans seek through same-day events by exact ID.
+db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_owner_date_id ON tour_dates(owner_id, date, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_date ON tour_dates(lower(artist), date, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_trim_date ON tour_dates(lower(trim(artist)), date, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_visibility ON tour_dates(artist_key, release_at, date, provider_active, id) WHERE artist_key IS NOT NULL");

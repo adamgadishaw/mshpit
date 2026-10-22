@@ -315,6 +315,7 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
     DROP INDEX idx_tourdates_visibility;
     DROP INDEX idx_tourdates_sitemap_cursor;
     DROP INDEX idx_tourdates_owner;
+    DROP INDEX idx_tourdates_owner_date_id;
     DROP INDEX idx_tourdates_provider_identity;
     DROP INDEX idx_tourdates_provider_venue;
     DROP INDEX idx_tourdates_provider_venue_public_slug;
@@ -404,6 +405,7 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
   assert.ok(tourColumns.has("owner_id"));
   assert.ok(tourColumns.has("artist_key"));
   assert.ok(tourColumns.has("release_at"));
+  assert.ok(tourIndexes.has("idx_tourdates_owner_date_id"));
   const scheduleTriggers = upgraded.db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name LIKE 'trg_artist_schedule_%'").all();
   assert.equal(scheduleTriggers.length, 6, "upgrade reinstalls event and artist identity invalidation after additive columns exist");
   for (const trigger of scheduleTriggers) assert.doesNotMatch(trigger.sql, /\bpit_\w+\s*\(/u,
