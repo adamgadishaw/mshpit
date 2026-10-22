@@ -1,6 +1,7 @@
 import { ARTIST_DEATH_WATCH_INTERVAL_MS } from "../../../src/domain/artistDeathWatch.mjs";
 import { backgroundJobEnabled } from "../../backgroundJobs.js";
 import { ARTIST_DEATH_WATCH_MAX_COOLDOWN_MS } from "./artistDeathWatchRetry.js";
+import { formatArtistDeathWatchScanFailure } from "./artistDeathWatchDiagnostics.js";
 
 const START_DELAY_MS = 30_000;
 
@@ -14,7 +15,7 @@ export function startArtistDeathWatchScheduler({
   now = Date.now,
   setTimeoutImpl = setTimeout,
   clearTimeoutImpl = clearTimeout,
-  onError = (error) => console.error(`[memorial-watch] bounded scan failed safely: code=${String(error?.code || "provider_error").replace(/[^a-z0-9_]/giu, "").slice(0, 60)} status=${Number(error?.status) || 0}`),
+  onError = (error) => console.error(formatArtistDeathWatchScanFailure(error)),
 } = {}) {
   if (!service?.scan || typeof now !== "function" || typeof setTimeoutImpl !== "function"
     || typeof clearTimeoutImpl !== "function" || typeof onError !== "function") {

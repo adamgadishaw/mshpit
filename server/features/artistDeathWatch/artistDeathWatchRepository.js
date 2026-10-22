@@ -1,3 +1,5 @@
+import { withArtistDeathWatchDiagnostics } from "./artistDeathWatchDiagnostics.js";
+
 const CANDIDATE_COLUMNS = `artist_key,artist_mbid,wikidata_id,artist_name,death_date,status,
   first_detected_at,last_confirmed_at,reviewed_by,reviewed_at,review_history,created_at,updated_at`;
 
@@ -107,7 +109,7 @@ export function createArtistDeathWatchRepository(database) {
     return statement;
   }
 
-  return Object.freeze({
+  return withArtistDeathWatchDiagnostics({
     readSettings() {
       return settings.get() || null;
     },
