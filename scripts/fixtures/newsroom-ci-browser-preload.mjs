@@ -104,7 +104,7 @@ process.on('message',async message=>{
       assert.ok(!metadata.exif&&!metadata.xmp&&!metadata.iptc&&!metadata.icc);
       result={assetId:row.id,url:origin+'/fixture-media/'+row.object_key,frames:2,delay:metadata.delay,loop:0,metadataRemoved:true,sourcePrivate:true};
     } else if(message.operation==='gif-document') {
-      const row=db.prepare("SELECT story_post_id FROM news_drafts WHERE headline=? AND created_by=? AND status='published'").get(message.headline,users.owner.id);assert.ok(row);
+      const row=db.prepare("SELECT story_post_id FROM news_drafts WHERE json_extract(result,'$.headline')=? AND created_by=? AND status='published'").get(message.headline,users.owner.id);assert.ok(row);
       const {createNewsDeskReader}=await import('../../server/features/newsDesk/newsDeskService.js');
       const {newsStoryPostDocument}=await import('../../server/features/seo/publicDocumentProjection.js');
       const {renderPublicDocumentMain,renderPublicDocumentHead}=await import('../../server/features/seo/publicDocumentRenderer.js');
