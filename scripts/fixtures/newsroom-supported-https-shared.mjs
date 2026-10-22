@@ -4,6 +4,16 @@ import { deflateSync } from 'node:zlib';
 export const LIMITS = Object.freeze({ milliseconds: 1800000, requests: 200, logins: 2, enables: 2, saves: 2, uploads: 1, mediaCreates: 1, finalizes: 1, publications: 0 });
 export const MARKER = 'SYNTHETIC_NEWSROOM_ACCEPTANCE_ONLY';
 export const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+// A synthetic codec vector, not user artwork: alternating white/black pixels,
+// 400ms per frame, looping forever. The browser must display both frames.
+export function animatedImage() {
+  return Buffer.concat([
+    Buffer.from('47494638396101000100800000000000ffffff', 'hex'),
+    Buffer.from('21ff0b4e45545343415045322e300301000000', 'hex'),
+    ...['4c', '44'].map(pixel => Buffer.from(`21f90400280000002c0000000001000100000201${pixel}00`, 'hex')),
+    Buffer.from([0x3b]),
+  ]);
+}
 export function image() {
   const crc32 = bytes => { let crc=0xffffffff;for(const byte of bytes){crc^=byte;for(let bit=0;bit<8;bit++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}return(crc^0xffffffff)>>>0; };
   const chunk = (name,payload) => {const type=Buffer.from(name),length=Buffer.alloc(4),crc=Buffer.alloc(4);length.writeUInt32BE(payload.length);crc.writeUInt32BE(crc32(Buffer.concat([type,payload])));return Buffer.concat([length,type,payload,crc]);};

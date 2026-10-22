@@ -70,6 +70,30 @@ const posts=(f,path)=>f.requests.filter(r=>r.path===path&&r.options.method==='PO
 function button(card,label){const found=card.children.find(item=>item.textContent===label);assert.ok(found,'missing '+label);return found;}
 async function reopen(f,index=0){const card=f.node('drafts').children[index];button(card,'Preview saved article').listeners.click();await settle();button(card,'Edit a copy').listeners.click();await settle();}
 
+test('GIF selection uploads the original File and survives save, preview and two edit-copy rounds',async()=>{
+ const f=surface({initiallyRemembered:true});await settle();fill(f);
+ const gif={name:'codec-fixture.gif',size:1000,type:'image/gif',lastModified:1};f.node('photo').files=[gif];await submit(f);
+ assert.equal(f.node('error').textContent,'');
+ const ticket=JSON.parse(posts(f,'/api/newsroom-session/media')[0].options.body);
+ assert.equal(ticket.contentType,'image/gif');assert.equal(ticket.name,'codec-fixture.gif');
+ assert.equal(f.requests.find(item=>item.path.startsWith('https://upload.example.test/')).options.body,gif,'no canvas conversion or first-frame extraction');
+ const original=clone([...f.backend.drafts.values()][0]);
+ for(let copy=1;copy<=2;copy++){
+  const next=surface({backend:f.backend});await settle();await reopen(next,f.backend.drafts.size-1);
+  next.node('body').value+=' Copy '+copy;await submit(next);assert.equal(next.node('error').textContent,'');
+  const saved=[...f.backend.drafts.values()].at(-1);assert.equal(saved.photo.assetId,original.photo.assetId);assert.deepEqual(saved.photo.source,original.photo.source);
+  assert.equal(saved.sources.length,2);assert.equal(posts(next,'/api/newsroom-session/media').length,0);
+ }
+ assert.equal(f.backend.assets.size,1);assert.deepEqual(f.backend.drafts.get(original.id),original);
+});
+
+test('GIF size and unsupported MIME still fail before upload reservation',async()=>{
+ for(const selected of [{type:'image/gif',size:0},{type:'image/gif',size:10*1024*1024+1},{type:'image/svg+xml',size:1000}]){
+  const f=surface({initiallyRemembered:true});await settle();fill(f);f.node('photo').files=[{...file(),...selected}];await submit(f);
+  assert.match(f.node('error').textContent,/at most 10 MiB/);assert.equal(posts(f,'/api/newsroom-session/media').length,0);
+ }
+});
+
 test('disabled policy stops before offering password enable or recovering an account',async()=>{
  const f=surface({backend:fixture({disabled:true})});await settle();assert.equal(f.node('status').textContent,'Remembered Newsroom is not enabled.');assert.equal(f.node('enable').hidden,true);assert.equal(f.node('work').hidden,true);assert.deepEqual(f.requests.map(r=>r.path),['/api/newsroom-session/status']);
 });

@@ -131,9 +131,9 @@ export function newsroomSessionRoutes({ database, editor, ApiError, requireEdito
     }),
     'POST /api/newsroom-session/media': async ctx => {
       const user=actor(ctx), input=body(ctx,['clientAssetId','contentType','fileSize','name']);
-      if (!['image/jpeg','image/png','image/webp'].includes(input.contentType) || !Number.isSafeInteger(input.fileSize)
+      if (!['image/jpeg','image/png','image/webp','image/gif'].includes(input.contentType) || !Number.isSafeInteger(input.fileSize)
         || input.fileSize<1 || input.fileSize>10*1024*1024 || typeof input.clientAssetId!=='string'
-        || !/^[A-Za-z0-9._:-]{1,64}$/u.test(input.clientAssetId)) throw new ApiError(400,'Choose a JPEG, PNG or WebP photo of at most 10 MiB.','VALIDATION_FAILED');
+        || !/^[A-Za-z0-9._:-]{1,64}$/u.test(input.clientAssetId)) throw new ApiError(400,'Choose a JPEG, PNG, WebP or GIF image of at most 10 MiB.','VALIDATION_FAILED');
       rateLimit(ctx,'newsroom-browser-photo',6,3_600_000);
       // Serialize the bound ticket reservation. Existing media quotas/circuit
       // breakers also apply; no user-supplied purpose, URL, object key or variant.
