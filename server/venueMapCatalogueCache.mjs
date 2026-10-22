@@ -13,6 +13,7 @@ export const VENUE_MAP_CATALOGUE_CACHE_DEFAULTS = Object.freeze({
   maxSerializedBytes: 12 * 1024 * 1024,
 });
 const DEFAULT = VENUE_MAP_CATALOGUE_CACHE_DEFAULTS;
+const FAILURE_CODES = new Set(["ABORTED", "CLOCK", "CURSOR", "EVENT_LIMIT", "INPUT_LIMIT", "NO_PROGRESS", "OUTPUT_LIMIT", "PAGE_LIMIT", "SCHEMA", "TIMEOUT", "WITNESS_CONFLICT"].map(code => `VENUE_MAP_CACHE_${code}`));
 const text = value => typeof value === "string" ? value.trim() : "";
 const yieldToEventLoop = () => new Promise(resolve => setImmediate(resolve));
 
@@ -74,6 +75,9 @@ export function createVenueMapCatalogueCache({ readPage, now = Date.now, yieldCo
   const unavailable = at => {
     const error = failure("The complete venue catalogue is temporarily unavailable. Please retry later.", "VENUE_MAP_CACHE_UNAVAILABLE");
     error.status = 503; error.statusCode = 503; error.failureCode = lastFailureCode;
+    // Preserve only the bounded internal category for founder diagnostics.
+    // Never retain a database error's SQL, parameters or arbitrary message.
+    if (lastFailureCode) error.cause = failure("The bounded venue catalogue scan did not complete.", lastFailureCode);
     error.retryAt = Math.max(at, retryAt()); error.retryAfterMs = Math.max(0, retryAt() - at);
     return error;
   };
@@ -158,7 +162,7 @@ export function createVenueMapCatalogueCache({ readPage, now = Date.now, yieldCo
         if (inflight === operation && generation === operation.generation) {
           const failedAt = clock();
           failureUntil = failedAt + limits.failureBackoffMs; fallback = null;
-          lastFailureCode = typeof error?.code === "string" && error.code.startsWith("VENUE_MAP_CACHE_") ? error.code : "VENUE_MAP_CACHE_READ_FAILED";
+          lastFailureCode = FAILURE_CODES.has(error?.code) ? error.code : "VENUE_MAP_CACHE_READ_FAILED";
         }
         throw error;
       } finally { clearTimeout(timer); if (inflight === operation) inflight = null; }

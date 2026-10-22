@@ -157,6 +157,22 @@ test("large discarded metadata does not count against the allowlisted input budg
   assert.equal((await cache.get()).eventCount, 1);
 });
 
+test("cold failure preserves its bounded diagnostic category without retaining raw database detail", async () => {
+  const raw = new Error("SELECT private_columns FROM private_table WHERE secret='fixture'");
+  const { cache } = setup({ readPage: () => { throw raw; } });
+  await assert.rejects(cache.get(), error => {
+    assert.equal(error.code, "VENUE_MAP_CACHE_UNAVAILABLE");
+    assert.equal(error.cause.code, "VENUE_MAP_CACHE_READ_FAILED");
+    assert.equal(error.cause.cause, undefined);
+    assert.equal(error.cause.message.includes("private"), false);
+    return true;
+  });
+  const timed = setup({ readPage: () => { timed.advance(8000); return page(); } });
+  await assert.rejects(timed.cache.get(), error => error.cause.code === "VENUE_MAP_CACHE_TIMEOUT");
+  const forged = setup({ readPage: () => { throw Object.assign(raw, { code: "VENUE_MAP_CACHE_private_sql_detail" }); } });
+  await assert.rejects(forged.cache.get(), error => error.cause.code === "VENUE_MAP_CACHE_READ_FAILED");
+});
+
 test("malformed pages, cursor loops, changing witnesses and stalled duplicates fail explicitly", async () => {
   for (const [readPage, expected] of [
     [() => ({ rows: [], nextCursor: 5 }), "VENUE_MAP_CACHE_SCHEMA"],
