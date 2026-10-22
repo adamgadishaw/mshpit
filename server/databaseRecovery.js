@@ -63,7 +63,7 @@ export function prepareRecoveryDatabase(database, { privacyReplayReference, cred
   const changes = {};
   database.exec("PRAGMA foreign_keys=ON; BEGIN IMMEDIATE");
   try {
-    for (const table of ["linked_account_session_grants", "email_verification_receipts", "sessions"]) {
+    for (const table of ["linked_account_session_grants", "email_verification_receipts", "newsroom_browser_sessions", "sessions"]) {
       if (present.has(table)) changes[table] = database.prepare(`DELETE FROM ${table}`).run().changes;
     }
     // A restore can resurrect links that were already decided after the

@@ -18,6 +18,24 @@ import { recordInteractiveAccountActivity } from "./features/accountLifecycle/ac
 
 export const STANDARD_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 export const PRIVILEGED_SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+export const NEWSROOM_SESSION_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
+export const NEWSROOM_SESSION_MAX_MS = 30 * 24 * 60 * 60 * 1000;
+// Owner-approved Newsroom-only policy; issuance remains explicitly gated and opt-in.
+export const newsroomSessionsEnabled = () => process.env.NEWSROOM_BROWSER_SESSIONS_ENABLED === "true";
+const NEWSROOM_ROLES = new Set(["admin", "editor"]);
+// Keep scoped tokens outside the legacy session table. Old deployments must
+// never resolve one as full staff authority during a rolling deploy/rollback.
+db.exec("CREATE TABLE IF NOT EXISTS newsroom_browser_sessions (token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,created_at INTEGER NOT NULL,expires_at INTEGER NOT NULL,auth_role TEXT NOT NULL); CREATE INDEX IF NOT EXISTS idx_newsroom_browser_sessions_user ON newsroom_browser_sessions(user_id)");
+// Every credential/authority change invalidates remembered Newsroom rows,
+// including a role loss followed by restoration before the next browser read.
+db.exec(`CREATE TRIGGER IF NOT EXISTS revoke_newsroom_browser_sessions
+  AFTER UPDATE OF role,pass_hash,is_banned,suspended_until,email_verified_at,dormant_at ON users
+  WHEN OLD.role IS NOT NEW.role OR OLD.pass_hash IS NOT NEW.pass_hash
+    OR NEW.is_banned<>0 OR OLD.suspended_until IS NOT NEW.suspended_until
+    OR NOT (NEW.email_verified_at>0) OR NEW.dormant_at>0
+  BEGIN DELETE FROM newsroom_browser_sessions WHERE user_id=NEW.id; END`);
+// Starting with the feature disabled also invalidates any previously issued rows.
+if (!newsroomSessionsEnabled()) db.prepare("DELETE FROM newsroom_browser_sessions").run();
 const PRIVILEGED_ROLES = new Set(["admin", "moderator"]);
 
 export function sessionTtlForRole(role) {
@@ -115,10 +133,22 @@ export function createSession(userId, _ip, _ua) {
   return { token, expiresAt: now + ttl };
 }
 
-export function getSession(token) {
+export function getSession(token, { scope = "full" } = {}) {
   if (!token) return null;
-  const row = q.sessionByHash.get(sha256(token));
+  if (scope !== "full" && scope !== "newsroom") return null;
+  if (scope === "newsroom" && !newsroomSessionsEnabled()) return null;
+  const row = scope === "newsroom"
+    ? db.prepare("SELECT * FROM newsroom_browser_sessions WHERE token_hash=?").get(sha256(token))
+    : q.sessionByHash.get(sha256(token));
   if (!row) return null;
+  if (scope === "newsroom") {
+    const actor = q.userById.get(row.user_id);
+    const expiry = Math.min(row.expires_at, row.created_at + NEWSROOM_SESSION_MAX_MS);
+    if (!actor || !NEWSROOM_ROLES.has(actor.role) || actor.role !== row.auth_role
+      || !actor.email_verified_at || actor.is_banned || actor.dormant_at>0 || actor.suspended_until > Date.now()
+      || expiry <= Date.now()) { db.prepare("DELETE FROM newsroom_browser_sessions WHERE token_hash=?").run(row.token_hash); return null; }
+    return { ...row, session_scope: "newsroom", expires_at: expiry };
+  }
   // Re-evaluate the cap from the live role so an old 30-day member session
   // cannot become a 30-day staff session after a later promotion.
   const effectiveExpiry = Math.min(
@@ -132,12 +162,50 @@ export function getSession(token) {
   return effectiveExpiry === row.expires_at ? row : { ...row, expires_at: effectiveExpiry };
 }
 
+export function createNewsroomSession(userId) {
+  if (!newsroomSessionsEnabled()) throw new Error("Remembered Newsroom is not enabled.");
+  const actor = q.userById.get(userId);
+  if (!actor || !NEWSROOM_ROLES.has(actor.role) || !actor.email_verified_at
+    || actor.is_banned || actor.dormant_at>0 || actor.suspended_until > Date.now()) throw new Error("Newsroom session requires an active verified editor.");
+  db.exec("SAVEPOINT newsroom_browser_issuance");
+  try {
+    const token = randomBytes(32).toString("base64url"), at = Date.now();
+    const expiresAt = at + NEWSROOM_SESSION_IDLE_MS;
+    recordInteractiveAccountActivity(db, { userId, at, kind: "login", reactivate: true });
+    db.prepare("INSERT INTO newsroom_browser_sessions(token_hash,user_id,created_at,expires_at,auth_role) VALUES (?,?,?,?,?)")
+      .run(sha256(token), userId, at, expiresAt, actor.role);
+    db.exec("RELEASE newsroom_browser_issuance");
+    return { token, expiresAt, persistent: true, scope: "newsroom" };
+  } catch (error) {
+    db.exec("ROLLBACK TO newsroom_browser_issuance; RELEASE newsroom_browser_issuance"); throw error;
+  }
+}
+
+export function renewNewsroomSession(token) {
+  const row = getSession(token, { scope: "newsroom" });
+  if (!row) return null;
+  const at = Date.now(), expiresAt = Math.min(at + NEWSROOM_SESSION_IDLE_MS, row.created_at + NEWSROOM_SESSION_MAX_MS);
+  // Every successful confirmation refreshes inactivity, never the original maximum.
+  if (expiresAt <= row.expires_at) return null;
+  const changed = db.prepare("UPDATE newsroom_browser_sessions SET expires_at=? WHERE token_hash=? AND expires_at=? AND expires_at>?")
+    .run(expiresAt, row.token_hash, row.expires_at, at).changes;
+  return changed ? { token, expiresAt, persistent: true, scope: "newsroom" } : null;
+}
+
+export function revokeNewsroomSessionsForUser(userId) {
+  return db.prepare("DELETE FROM newsroom_browser_sessions WHERE user_id=?").run(userId).changes;
+}
+
 export function destroySession(token) {
-  if (token) q.deleteSession.run(sha256(token));
+  if (token) {
+    q.deleteSession.run(sha256(token));
+    db.prepare("DELETE FROM newsroom_browser_sessions WHERE token_hash=?").run(sha256(token));
+  }
 }
 
 export function sweepExpiredSessions() {
   q.deleteExpiredSessions.run(Date.now());
+  db.prepare("DELETE FROM newsroom_browser_sessions WHERE token_hash IN (SELECT token_hash FROM newsroom_browser_sessions WHERE expires_at<=? ORDER BY expires_at,token_hash LIMIT 500)").run(Date.now());
 }
 
 // --- rate limiting -----------------------------------------------------------
@@ -314,6 +382,12 @@ export function sessionCookieHeaders(token, expiresAt, secure) {
   if (secure) headers.push(expiredCookie(COOKIE, true));
   return headers;
 }
+
+export function newsroomCookieName(secure) { return secure ? "__Host-pit_newsroom" : "pit_newsroom"; }
+export function newsroomCookieHeaders(session, secure) {
+  return [`${newsroomCookieName(secure)}=${session.token}; ${cookieSuffix(session.expiresAt, secure)}`];
+}
+export function clearNewsroomCookies(secure) { return [expiredCookie(newsroomCookieName(secure), secure)]; }
 
 export function clearCookie(secure) {
   return expiredCookie(sessionCookieName(secure), secure);

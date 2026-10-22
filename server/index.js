@@ -40,6 +40,7 @@ import {
 import { htmlRobotsDirective, isProduction } from "./environment.js";
 import {
   clearSessionCookies,
+  clearNewsroomCookies, newsroomCookieName, newsroomCookieHeaders, renewNewsroomSession, destroySession,
   getSession,
   parseCookies,
   rateLimit,
@@ -648,7 +649,9 @@ async function handleRequest(req, res) {
       if (!match) return sendApiError(res, new ApiError(404, "Not found.", "NOT_FOUND"), requestId, cors);
       routePattern = match.route || "";
 
-      const token = parseCookies(req.headers.cookie)[ACTIVE_SESSION_COOKIE];
+      const parsedSessionCookies = parseCookies(req.headers.cookie);
+      const sessionScope = pathname.startsWith("/api/newsroom-session/") ? "newsroom" : "full";
+      const token = parsedSessionCookies[sessionScope === "newsroom" ? newsroomCookieName(PROD) : ACTIVE_SESSION_COOKIE];
       const expectedAccountHeader = req.headers["x-pit-expected-account"];
       const expectedAccount = Array.isArray(expectedAccountHeader) ? expectedAccountHeader[0] : expectedAccountHeader;
       const capacityChallengeHeader = req.headers["x-pit-capacity-challenge"];
@@ -666,7 +669,7 @@ async function handleRequest(req, res) {
       const responseHeaders = createApiResponseHeaders();
       const proto = (req.headers["x-forwarded-proto"] || "").split(",")[0] || (req.socket.encrypted ? "https" : "http");
       const authorized = await readAuthorizedRequest({
-        token, expectedAccount, method: req.method, pathname,
+        token, expectedAccount, method: req.method, pathname, sessionScope,
         // DELETE /api/me requires the current password too.
         readBody: () => ["POST", "PATCH", "PUT", "DELETE"].includes(req.method)
           ? readJsonBody(req, { limit: BODY_LIMIT }) : {},
@@ -684,11 +687,30 @@ async function handleRequest(req, res) {
           ? artistResolverEntryPoint(req.headers.referer, process.env.PUBLIC_ORIGIN) : "unknown",
         captureArtistResolverDiagnostics: (detail) => { artistResolverDiagnostic = sanitizeArtistResolverDiagnostic(detail); },
         setCookie: (c) => setCookies.push(c),
-        setSession: (s) => setCookies.push(...sessionCookieHeaders(s.token, s.expiresAt, PROD)),
-        clearSession: () => setCookies.push(...clearSessionCookies(PROD)),
+        setNewsroomSession: (s) => {
+          const previous = parsedSessionCookies[newsroomCookieName(PROD)];
+          if (previous && previous !== s.token) destroySession(previous);
+          setCookies.push(...newsroomCookieHeaders(s, PROD));
+        },
+        clearNewsroomSession: () => setCookies.push(...clearNewsroomCookies(PROD)),
+        setSession: (s) => {
+          if (req.method === "POST") {
+            destroySession(parsedSessionCookies[newsroomCookieName(PROD)]);
+            setCookies.push(...clearNewsroomCookies(PROD));
+          }
+          setCookies.push(...sessionCookieHeaders(s.token, s.expiresAt, PROD));
+        },
+        clearSession: () => {
+          destroySession(parsedSessionCookies[newsroomCookieName(PROD)]);
+          setCookies.push(...clearSessionCookies(PROD), ...clearNewsroomCookies(PROD));
+        },
         setHeader: createApiResponseHeaderSetter(responseHeaders),
       };
       const result = await match.handler(ctx);
+      if (req.method === "GET" && pathname === "/api/newsroom-session/status" && user) {
+        const renewed = renewNewsroomSession(token);
+        if (renewed) { ctx.setNewsroomSession(renewed); result.expiresAt = renewed.expiresAt; }
+      }
       recordSuccessfulInteractiveMutation({
         method: req.method, routePattern, user, result,
         recordActivity: () => recordInteractiveAccountActivity(db, { userId: user.id, kind: "mutation", at: Date.now() }),

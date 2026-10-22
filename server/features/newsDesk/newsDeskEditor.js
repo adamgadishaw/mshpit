@@ -179,6 +179,11 @@ export function readGrantedNewsDraft(database, { draftId, ownerId, grantId, at =
   };
 }
 
+export function readBrowserNewsDraft(database, { ownerId, draftId, at = Date.now() }) {
+  const row = database.prepare("SELECT * FROM news_drafts WHERE id=? AND created_by=? AND origin='self_written' AND created_actor_type='newsroom_browser' AND created_grant_id IS NULL").get(draftId, ownerId);
+  return row ? draftJson(database, row, at) : null;
+}
+
 export function createNewsDeskEditor({ database, env = process.env, now = Date.now, newId = randomUUID,
   summarize = newsDeskConfigured(env) ? createNewsSummarizer({ apiKey: String(env.ANTHROPIC_API_KEY).trim() }) : null,
   fetchArticle = fetchArticleText, draftsPerDay = DRAFTS_PER_DAY } = {}) {

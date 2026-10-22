@@ -1,4 +1,4 @@
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useEffect, useRef, useState } from "react";
 import { colors, font, radius, space } from "../../theme";
 import Button from "../../components/Button";
@@ -56,6 +56,7 @@ export default function NewsroomScreen({ accountId, role, active = true, onClose
       <View style={styles.back} />
     </View>
     <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      {Platform.OS === "web" && canUseNewsroom(role) ? <Pressable accessibilityRole="link" onPress={() => Linking.openURL("/newsroom-remembered.html")}><Text style={styles.denied}>Open Newsroom-only remembering for this trusted browser</Text></Pressable> : null}
       {canUseNewsroom(role) ? <NewsDeskEditor accountId={accountId} role={role} active={active}
         onCompositionStateChange={(state) => { composition.current = state; setProtectedForm(state.dirty || state.busy); }} />
         : <Text style={styles.denied}>The newsroom is for the news team. Ask an admin for editor access.</Text>}

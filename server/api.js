@@ -49,7 +49,7 @@ import {
 } from "./directMessageSafety.js";
 import { deezerEnrichmentGenreFields } from "./deezerGenre.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
-import { hashPasswordAsync as hashPassword, verifyPasswordAsync as verifyPassword, verifyPasswordForUserAsync as verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits, sessionTtlForRole } from "./auth.js";
+import { hashPasswordAsync as hashPassword, verifyPasswordAsync as verifyPassword, verifyPasswordForUserAsync as verifyPasswordForUser, createSession, destroySession, revokeNewsroomSessionsForUser, rateLimit, reserveRateLimits, sessionTtlForRole } from "./auth.js";
 import { enforceRateLimit, enforceRateLimitGroup } from "./rateLimitEnforcement.js";
 import { opaqueId } from "./ids.js";
 import { createRecoveryResponseFloor } from "./authResponseFloor.js";
@@ -102,6 +102,7 @@ import { artistLiveSummaryRoutes } from "./features/artistArchive/artistLiveSumm
 import { catalogEditorRoutes } from "./features/catalogEditor/catalogEditorRoutes.js";
 import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearchRoutes.js";
 import { createNewsDeskEditor } from "./features/newsDesk/newsDeskEditor.js";
+import { newsroomSessionRoutes } from "./features/newsroomSessions/newsroomSessionRoutes.js";
 import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
 import { createMediaApiService } from "./features/mediaApi/mediaApiService.js";
 import { mediaApiRoutes } from "./features/mediaApi/mediaApiRoutes.js";
@@ -1503,6 +1504,7 @@ function applyRoleChange(ctx, target, role, requestedHandle, { reason = "", requ
     WHERE id=? AND role=? AND handle=?`).run(role, selectedHandle, target.id, target.role, target.handle).changes === 1;
   if (!changed) throw new ApiError(409, "That member changed while the role was being reviewed. Start a new approval.", "CONFLICT");
   db.prepare("DELETE FROM sessions WHERE user_id=?").run(target.id);
+  revokeNewsroomSessionsForUser(target.id);
   moderationRecord(ctx, "change_role", "user", target.id, reason,
     { role: target.role, handle: target.handle },
     { role, handle: selectedHandle, ...(requestedBy ? { requestedBy } : {}) });
@@ -6250,7 +6252,8 @@ export const routes = {
         WHERE id=? AND reset_hash=? AND reset_expires>?`)
         .run(replacementPasswordHash, u.id, hash, now()).changes === 1;
       if (!consumed) throw new ApiError(400, "This reset link is invalid or has expired. Request a new one.");
-      db.prepare("DELETE FROM sessions WHERE user_id=?").run(u.id); // sign out everywhere else
+      db.prepare("DELETE FROM sessions WHERE user_id=?").run(u.id);
+      revokeNewsroomSessionsForUser(u.id); // sign out everywhere else
       const issued = createSession(u.id, ctx.ip, ctx.ua);
       const current = q.userById.get(u.id);
       linkedAccounts.grantVerifiedAccounts({ userId: u.id, users: [current, ...matching.filter((entry) => entry.id !== u.id)], token: issued.token });
@@ -9314,6 +9317,7 @@ export const routes = {
       // any legacy banned row that somehow retained a session, without adding a
       // duplicate audit event for an already-achieved desired state.
       db.prepare("DELETE FROM sessions WHERE user_id=?").run(ctx.params.id);
+      revokeNewsroomSessionsForUser(ctx.params.id);
       if (changed) moderationRecord(ctx, "ban", "user", target.id, ctx.body?.reason || "", { banned: false }, { banned: true, by: actor.id });
     });
     return { ok: true };
@@ -9938,6 +9942,7 @@ export const routes = {
         WHERE id=? AND (suspended_until IS NULL OR suspended_until<=?)`).run(requestedUntil, ctx.params.id, actionAt).changes === 1;
       if (!changed) return q.userById.get(ctx.params.id)?.suspended_until || requestedUntil;
       db.prepare("DELETE FROM sessions WHERE user_id=?").run(ctx.params.id);
+      revokeNewsroomSessionsForUser(ctx.params.id);
       moderationRecord(ctx, "suspend", "user", target.id, ctx.body?.reason || "", { suspendedUntil: target.suspended_until || null }, { suspendedUntil: requestedUntil, days });
       return requestedUntil;
     });
@@ -10118,6 +10123,8 @@ export const routes = {
   // Owner-chosen news stories: free to browse, one metered Claude call per draft.
   ...newsDeskEditorRoutes({ editor: newsDeskEditor, database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now,
     photoResolver: resolveNewsArtwork, readStory: (postId) => newsDeskReader.forLivePost(postId), listStories: () => newsDeskReader.list({ limit: 10 }).stories || [] }),
+  ...newsroomSessionRoutes({ database: db, editor: newsDeskEditor, ApiError, requireEditor: requireNewsEditor,
+    verifyPassword, atomicWrite, rateLimit: limit, mediaRoutes: () => routes, now }),
   ...mediaApiRoutes({ service: mediaApiService, requireOwner, rateLimit: limit, ApiError }),
   // Live coverage for big nights: outlet headlines plus owner updates, no Claude.
   ...newsLiveRoutes({ database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now }),
