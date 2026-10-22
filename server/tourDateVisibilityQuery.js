@@ -64,8 +64,16 @@ export function visibleTourDateRowsFrom(database, viewer, {
     prefix.push(country);
   }
   if (after?.date && after?.id) {
-    filters.push("(td.date>? OR (td.date=? AND td.id>?))");
-    prefix.push(after.date, after.date, after.id);
+    if (providerOnly === true) {
+      // The complete map scans every page. A row-value cursor lets SQLite seek
+      // past the previous pair instead of rescanning/sorting both OR branches.
+      // Keep the same BINARY (date,id) ordering and all public-scope predicates.
+      filters.push("(td.date,td.id)>(?,?)");
+      prefix.push(after.date, after.id);
+    } else {
+      filters.push("(td.date>? OR (td.date=? AND td.id>?))");
+      prefix.push(after.date, after.date, after.id);
+    }
   }
   const filterSql = filters.length ? `${filters.join(" AND ")} AND ` : "";
   if (viewer?.role === "admin" && accountIsPublic(viewer, at)) {
