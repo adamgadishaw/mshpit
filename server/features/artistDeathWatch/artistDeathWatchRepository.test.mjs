@@ -3,9 +3,15 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
 import { createArtistDeathWatchRepository } from "./artistDeathWatchRepository.js";
+import { createArtistDeathWatchService } from "./artistDeathWatchService.js";
 
 const MBID = "11111111-1111-4111-8111-111111111111";
 const DUPLICATE_MBID = "22222222-2222-4222-8222-222222222222";
+
+const candidate = (artistKey, artistMbid, wikidataId, at = 10) => ({
+  artistKey, artistMbid, wikidataId, artistName: artistKey,
+  deathDate: "2026-08-29", at,
+});
 
 function database() {
   const db = new DatabaseSync(":memory:");
@@ -122,6 +128,76 @@ test("published memorial identities are reconciled out of the actionable queue",
     assert.equal(repository.findCandidateByKey("alpha").status, "memorialized");
     assert.equal(repository.candidateCounts().memorialized, 1);
     assert.equal(repository.eligibleArtistCount(), 0);
+  } finally {
+    db.close();
+  }
+});
+
+for (const state of ["new", "pending", "dismissed", "memorialized"]) {
+  test(`Wikidata ownership conflict preserves both records when incoming candidate is ${state}`, () => {
+    const db = database();
+    try {
+      const repository = createArtistDeathWatchRepository(db);
+      repository.saveConfirmedCandidate(candidate("owner", MBID, "Q42"));
+      if (state !== "new") {
+        repository.saveConfirmedCandidate(candidate("incoming", DUPLICATE_MBID, "Q43"));
+        if (state === "dismissed") repository.review({ artistKey: "incoming", status: state, reviewerId: "mod", at: 11 });
+        if (state === "memorialized") repository.markMemorialized({ artistKey: "incoming", artistMbid: DUPLICATE_MBID, reviewerId: "mod", at: 11 });
+      }
+      const before = db.prepare("SELECT * FROM artist_death_candidates ORDER BY artist_key").all();
+      const result = repository.saveConfirmedCandidate(candidate("incoming", DUPLICATE_MBID, "Q42", 20));
+      assert.equal(result.conflict, true);
+      assert.equal(result.row.artist_key, "owner");
+      assert.deepEqual(db.prepare("SELECT * FROM artist_death_candidates ORDER BY artist_key").all(), before);
+    } finally {
+      db.close();
+    }
+  });
+}
+
+test("unrelated SQLite failures still propagate instead of becoming identity conflicts", () => {
+  const db = database();
+  try {
+    const repository = createArtistDeathWatchRepository(db);
+    assert.throws(() => repository.saveConfirmedCandidate({
+      ...candidate("invalid", MBID, "Q42"), artistName: null,
+    }), (error) => error.code === "ERR_SQLITE_ERROR" && error.errcode === 1299);
+    assert.equal(repository.findCandidateByKey("invalid"), null);
+  } finally {
+    db.close();
+  }
+});
+
+test("a bounded scan continues past a Wikidata identity collision without publishing or replacing candidates", async () => {
+  const db = database();
+  try {
+    const repository = createArtistDeathWatchRepository(db);
+    repository.saveConfirmedCandidate(candidate("owner", MBID, "Q42"));
+    repository.review({ artistKey: "owner", status: "dismissed", reviewerId: "mod", at: 11 });
+    const owner = repository.findCandidateByKey("owner");
+    const nextMbid = "33333333-3333-4333-8333-333333333333";
+    const insertArtist = db.prepare("INSERT INTO artists (norm,name,mbid,data) VALUES (?,?,?,?)");
+    insertArtist.run("alpha", "Alpha", DUPLICATE_MBID, "{}");
+    insertArtist.run("beta", "Beta", nextMbid, "{}");
+    const service = createArtistDeathWatchService({
+      repository, sleep: async () => {}, recentWikidataReader: async () => [],
+      wikidataReader: async (artists) => new Map(artists.map((artist) => [artist.artistKey, {
+        ...artist, wikidataId: artist.artistKey === "alpha" ? "Q42" : "Q44", deathDate: "2026-08-29",
+      }])),
+      musicBrainzReader: async (signal) => ({ ...signal, artistType: "Person" }),
+    });
+    const at = Date.parse("2026-08-30T12:00:00Z");
+    const result = await service.scan({ at });
+    assert.equal(result.scanned, 2);
+    assert.equal(result.inserted, 1);
+    assert.equal(result.reopened, 0);
+    assert.equal(result.reconfirmed, 0);
+    assert.equal(repository.readSettings().last_success_at, at);
+    assert.equal(repository.readSettings().last_error_code, null);
+    assert.equal(repository.findCandidateByKey("alpha"), null);
+    assert.equal(repository.findCandidateByKey("beta").status, "pending");
+    assert.deepEqual(repository.findCandidateByKey("owner"), owner);
+    assert.equal(db.prepare("SELECT count(*) AS count FROM artist_memorials").get().count, 0);
   } finally {
     db.close();
   }
