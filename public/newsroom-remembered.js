@@ -50,7 +50,7 @@ async function confirm() {
   if(before!==generation)throw new Error('The session changed. Confirm it again.');
   if(account && account.id!==result.account.id)retire({preserveArticle:true});
   account=result.account;node('work').inert=false;node('work').hidden=false;node('enable').hidden=true;heldArticleNotice();
-  node('status').textContent=`Newsroom only � ${account.name} � current expiry ${expiryText(result.expiresAt)} � sign in again by ${expiryText(result.absoluteExpiresAt)}`;
+  node('status').textContent=`Newsroom only · ${account.name} · current expiry ${expiryText(result.expiresAt)} · sign in again by ${expiryText(result.absoluteExpiresAt)}`;
 }
 function text(tag,value){const item=document.createElement(tag);item.textContent=value;return item;}
 function editCopy(draft) {
@@ -71,7 +71,7 @@ async function refresh() {
   if(before!==generation)return;
   node('drafts').replaceChildren();
   for(const draft of result.drafts) {
-    const card=document.createElement('article');card.append(text('h3',draft.headline),text('p',`${draft.status}${draft.expired?' � expired':''}`));
+    const card=document.createElement('article');card.append(text('h3',draft.headline),text('p',`${draft.status}${draft.expired?' · expired':''}`));
     const preview=document.createElement('button');preview.type='button';preview.textContent='Preview saved article';
     preview.addEventListener('click',()=>act(async()=>{
       await confirm();const selected=await request('/api/newsroom-session/drafts/'+encodeURIComponent(draft.id));
