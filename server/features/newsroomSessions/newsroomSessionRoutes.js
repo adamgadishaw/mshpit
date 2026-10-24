@@ -131,9 +131,15 @@ export function newsroomSessionRoutes({ database, editor, ApiError, requireEdito
     }),
     'POST /api/newsroom-session/media': async ctx => {
       const user=actor(ctx), input=body(ctx,['clientAssetId','contentType','fileSize','name']);
-      if (!['image/jpeg','image/png','image/webp','image/gif'].includes(input.contentType) || !Number.isSafeInteger(input.fileSize)
-        || input.fileSize<1 || input.fileSize>10*1024*1024 || typeof input.clientAssetId!=='string'
-        || !/^[A-Za-z0-9._:-]{1,64}$/u.test(input.clientAssetId)) throw new ApiError(400,'Choose a JPEG, PNG, WebP or GIF image of at most 10 MiB.','VALIDATION_FAILED');
+      if (!['image/jpeg','image/png','image/webp','image/gif'].includes(input.contentType)) {
+        throw new ApiError(400,'Photo reservation: the declared type must be JPEG, PNG, WebP or GIF.','VALIDATION_FAILED');
+      }
+      if (!Number.isSafeInteger(input.fileSize) || input.fileSize<1 || input.fileSize>10*1024*1024) {
+        throw new ApiError(400,'Photo reservation: the declared size must be a whole number of bytes from 1 through 10 MiB.','VALIDATION_FAILED');
+      }
+      if (typeof input.clientAssetId!=='string' || !/^[A-Za-z0-9._:-]{1,64}$/u.test(input.clientAssetId)) {
+        throw new ApiError(400,'Photo reservation: the upload retry key is invalid. Select the photo again.','VALIDATION_FAILED');
+      }
       rateLimit(ctx,'newsroom-browser-photo',6,3_600_000);
       // Serialize the bound ticket reservation. Existing media quotas/circuit
       // breakers also apply; no user-supplied purpose, URL, object key or variant.

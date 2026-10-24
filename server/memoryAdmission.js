@@ -13,6 +13,27 @@ function positiveBytes(value) {
   return Number.isSafeInteger(number) && number > 0 && number < 2 ** 50 ? number : null;
 }
 
+function inactiveFileBytes(text, { v1 = false } = {}) {
+  const values = new Map();
+  for (const line of String(text).trim().split(/\n/u)) {
+    const parts = line.trim().split(/\s+/u);
+    if (parts.length !== 2 || !/^\d+$/u.test(parts[1]) || values.has(parts[0])) return 0;
+    const value = Number(parts[1]);
+    if (!Number.isSafeInteger(value) || value < 0 || value >= 2 ** 50) return 0;
+    values.set(parts[0], value);
+  }
+  const keys = v1
+    ? ['total_inactive_file', 'total_cache', 'total_shmem', 'total_dirty', 'total_writeback']
+    : ['inactive_file', 'file', 'shmem', 'file_dirty', 'file_writeback'];
+  if (keys.some(key => !values.has(key))) return 0;
+  const [inactive, file, shmem, dirty, writeback] = keys.map(key => values.get(key));
+  // Only cold file-backed cache can be reclaimed for a worker. Never discount
+  // anonymous/shared memory, active cache or dirty/writeback pages. Subtracting
+  // all dirty/writeback from the inactive subset is deliberately conservative.
+  if (inactive > file || shmem > file || dirty > file || writeback > file) return 0;
+  return Math.max(0, Math.min(inactive, file - shmem) - dirty - writeback);
+}
+
 export function createMemoryReader({ read = readFileSync, platform = process.platform,
   memoryUsage = () => process.memoryUsage(), constrainedMemory = () => process.constrainedMemory?.(),
   availableMemory = () => process.availableMemory?.(), totalMemory = totalmem, env = process.env } = {}) {
@@ -25,17 +46,23 @@ export function createMemoryReader({ read = readFileSync, platform = process.pla
     const rssBytes = positiveBytes(memory.rss) || 0;
     let limitBytes = positiveBytes(constrainedMemory());
     let usedBytes = rssBytes;
+    let chargedBytes = rssBytes;
+    let reclaimableFileBytes = 0;
     let source = "process";
     if (platform === "linux") {
-      for (const [limitPath, usagePath] of [
-        ["/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"],
-        ["/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes"],
+      for (const [limitPath, usagePath, statPath, v1] of [
+        ["/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.stat", false],
+        ["/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes", "/sys/fs/cgroup/memory/memory.stat", true],
       ]) {
         const limit = readNumber(limitPath);
         const usage = readNumber(usagePath);
         if (limit && usage && (!limitBytes || limit <= limitBytes)) {
           limitBytes = Math.min(limitBytes || limit, limit);
-          usedBytes = Math.max(rssBytes, usage);
+          chargedBytes = Math.max(rssBytes, usage);
+          try { reclaimableFileBytes = inactiveFileBytes(read(statPath, "utf8"), { v1 }); }
+          catch { reclaimableFileBytes = 0; } // Missing stats retain raw charged accounting.
+          if (reclaimableFileBytes > usage) reclaimableFileBytes = 0;
+          usedBytes = Math.max(rssBytes, usage - reclaimableFileBytes);
           source = "container";
           break;
         }
@@ -45,6 +72,7 @@ export function createMemoryReader({ read = readFileSync, platform = process.pla
       const available = Number(availableMemory());
       if (Number.isFinite(available) && available >= 0 && available <= limitBytes) {
         usedBytes = Math.max(rssBytes, limitBytes - available);
+        chargedBytes = usedBytes;
         source = "constrained";
       }
     }
@@ -54,7 +82,7 @@ export function createMemoryReader({ read = readFileSync, platform = process.pla
     limitBytes = Math.min(limitBytes || Infinity, configured || Infinity,
       positiveBytes(totalMemory()) || Infinity);
     return Object.freeze({ limitBytes: Number.isFinite(limitBytes) ? limitBytes : null,
-      usedBytes, rssBytes, heapUsedBytes: positiveBytes(memory.heapUsed) || 0,
+      usedBytes, chargedBytes, reclaimableFileBytes, rssBytes, heapUsedBytes: positiveBytes(memory.heapUsed) || 0,
       externalBytes: positiveBytes(memory.external) || 0, source });
   };
 }
@@ -258,6 +286,7 @@ export function startMemoryMonitor({ snapshot = memoryWorkSnapshot, log = consol
     const perKind = (values) => ["image", "share", "sitemap", "background"]
       .map((kind) => `${kind}:${Number(values?.[kind]) || 0}`).join(",");
     write(`[memory] source=${state.source} usedMiB=${mb(state.usedBytes)} limitMiB=${mb(state.limitBytes)}`
+      + ` chargedMiB=${mb(state.chargedBytes ?? state.usedBytes)} inactiveFileMiB=${mb(state.reclaimableFileBytes || 0)}`
       + ` rssMiB=${mb(state.rssBytes)} heapMiB=${mb(state.heapUsedBytes)} externalMiB=${mb(state.externalBytes)}`
       + ` reservedMiB=${mb(state.reservedBytes)} active=${state.activeKinds.join(",") || "none"}`
       + ` waiting=${state.queued || 0} waitingMiB=${mb(state.queuedRetainedBytes || 0)}`

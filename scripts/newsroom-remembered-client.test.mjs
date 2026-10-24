@@ -90,7 +90,22 @@ test('GIF selection uploads the original File and survives save, preview and two
 test('GIF size and unsupported MIME still fail before upload reservation',async()=>{
  for(const selected of [{type:'image/gif',size:0},{type:'image/gif',size:10*1024*1024+1},{type:'image/svg+xml',size:1000}]){
   const f=surface({initiallyRemembered:true});await settle();fill(f);f.node('photo').files=[{...file(),...selected}];await submit(f);
-  assert.match(f.node('error').textContent,/at most 10 MiB/);assert.equal(posts(f,'/api/newsroom-session/media').length,0);
+  assert.match(f.node('error').textContent,/Photo selection:/);assert.equal(posts(f,'/api/newsroom-session/media').length,0);
+ }
+});
+
+test('selection diagnostics distinguish MIME, byte size and absent photo before reservation',async()=>{
+ for(const [selected,expected] of [[{...file(),type:''},/browser reported type \(empty\)/],[{...file(),size:0},/browser reported 0 bytes/],[null,/choose an article photo/]]){
+  const f=surface({initiallyRemembered:true});await settle();fill(f);f.node('photo').files=selected?[selected]:[];await submit(f);
+  assert.match(f.node('error').textContent,expected);assert.equal(posts(f,'/api/newsroom-session/media').length,0);
+ }
+});
+
+test('reported JPEG byte sizes pass selection and reach reservation unchanged',async()=>{
+ for(const size of [869805,351047]){
+  const f=surface({initiallyRemembered:true});await settle();fill(f);f.node('photo').files=[{...file(),size}];await submit(f);
+  assert.equal(f.node('error').textContent,'');const ticket=JSON.parse(posts(f,'/api/newsroom-session/media')[0].options.body);
+  assert.equal(ticket.contentType,'image/jpeg');assert.equal(ticket.fileSize,size);
  }
 });
 
@@ -165,6 +180,17 @@ test('failed photo PUT retries the same source ticket and saves only after succe
  const f=surface({backend:fixture({putFailures:1})});await settle();fill(f);await submit(f);assert.match(f.node('error').textContent,/photo transfer did not complete/);assert.equal(posts(f,'/api/newsroom-session/drafts').length,0);
  await submit(f);assert.equal(f.node('error').textContent,'');const tickets=posts(f,'/api/newsroom-session/media').map(r=>JSON.parse(r.options.body));assert.equal(tickets.length,2);assert.equal(tickets[0].clientAssetId,tickets[1].clientAssetId);assert.equal(f.backend.assets.size,1);assert.equal(f.backend.drafts.size,1);
 });
+test('503 memory-capacity rejection preserves the uploaded asset and retries finalization without another PUT',async()=>{
+ const f=surface({initiallyRemembered:true});await settle();fill(f);
+ f.backend.nextFailure={path:'/api/newsroom-session/media/ma_browser_photo_1/finalize',status:503,code:'MEDIA_STORAGE_UNAVAILABLE',message:'Photo verification is at capacity. Your upload is safe; retry shortly.'};
+ await submit(f);assert.match(f.node('error').textContent,/at capacity/);assert.equal(f.backend.drafts.size,0);
+ assert.equal(f.node('work').hidden,false);assert.equal(f.node('photo').files.length,1);
+ await submit(f);assert.equal(f.node('error').textContent,'');assert.equal(f.backend.drafts.size,1);
+ assert.equal(posts(f,'/api/newsroom-session/media').length,1);
+ assert.equal(f.requests.filter(r=>r.path.startsWith('https://upload.example.test/')).length,1);
+ assert.equal(f.requests.filter(r=>r.path.endsWith('/finalize')).length,2);
+});
+
 test('lost finalize response retries the same asset without uploading again',async()=>{
  const f=surface({backend:fixture({finalizeFailures:1})});await settle();fill(f);await submit(f);assert.equal(f.node('error').textContent,'Finalize response lost.');assert.equal(f.backend.drafts.size,0);
  await submit(f);assert.equal(f.node('error').textContent,'');assert.equal(posts(f,'/api/newsroom-session/media').length,1);assert.equal(f.requests.filter(r=>r.path.endsWith('/finalize')).length,2);assert.equal(f.backend.drafts.size,1);

@@ -20,6 +20,39 @@ test("container accounting includes child/native memory and respects the smaller
   assert.ok(admission.tryAcquire("share"), "small work may fit the remaining budget");
 });
 
+test("cold file cache cannot permanently starve a photo while dirty and anonymous memory remain charged", () => {
+  const files = { '/sys/fs/cgroup/memory.max': String(2048*MIB), '/sys/fs/cgroup/memory.current': String(1095*MIB),
+    '/sys/fs/cgroup/memory.stat': `inactive_file ${546*MIB}\nfile ${560*MIB}\nshmem 0\nfile_dirty 0\nfile_writeback 0\n` };
+  const options = { read: path => files[path], platform:'linux', memoryUsage:()=>({rss:526*MIB}),
+    constrainedMemory:()=>2048*MIB, totalMemory:()=>16000*MIB, env:{} };
+  const readMemory=createMemoryReader(options);
+  assert.equal(readMemory().chargedBytes,1095*MIB);assert.equal(readMemory().usedBytes,549*MIB);
+  const admission=createMemoryAdmission({readMemory});const lease=admission.tryAcquire('image');assert.ok(lease);lease.release();
+  files['/sys/fs/cgroup/memory.stat']=`inactive_file ${546*MIB}\nfile ${560*MIB}\nshmem 0\nfile_dirty ${540*MIB}\nfile_writeback ${6*MIB}\n`;
+  assert.equal(readMemory().usedBytes,1095*MIB);assert.equal(admission.tryAcquire('image'),null);
+  files['/sys/fs/cgroup/memory.current']=String(1900*MIB);
+  files['/sys/fs/cgroup/memory.stat']=`inactive_file ${546*MIB}\nfile ${560*MIB}\nshmem 0\nfile_dirty 0\nfile_writeback 0\n`;
+  assert.equal(admission.tryAcquire('image'),null,'real working-set pressure still denies the worker');
+});
+
+test("cache accounting fails closed for missing, malformed or inconsistent stats and never falls below parent RSS", () => {
+ const options={platform:'linux',memoryUsage:()=>({rss:526*MIB}),constrainedMemory:()=>2048*MIB,totalMemory:()=>16000*MIB,env:{}};
+ for(const stats of [undefined,'inactive_file 100', 'inactive_file -1', 'inactive_file 1\nfile 3\nshmem 0\nfile_dirty 0\nfile_writeback NaN',
+  'inactive_file 3\nfile 2\nshmem 0\nfile_dirty 0\nfile_writeback 0']){
+  const readMemory=createMemoryReader({...options,read:path=>path.endsWith('memory.max')?String(2048*MIB):path.endsWith('memory.current')?String(1095*MIB):stats});
+  assert.equal(readMemory().usedBytes,1095*MIB);assert.equal(createMemoryAdmission({readMemory}).tryAcquire('image'),null);
+ }
+ const readMemory=createMemoryReader({...options,read:path=>path.endsWith('memory.max')?String(2048*MIB):path.endsWith('memory.current')?String(600*MIB):`inactive_file ${550*MIB}\nfile ${550*MIB}\nshmem 0\nfile_dirty 0\nfile_writeback 0`});
+ assert.equal(readMemory().usedBytes,526*MIB);
+});
+
+test("cgroup v1 discounts only hierarchical inactive clean file cache", () => {
+ const files={'/sys/fs/cgroup/memory/memory.limit_in_bytes':String(2048*MIB),'/sys/fs/cgroup/memory/memory.usage_in_bytes':String(1095*MIB),
+ '/sys/fs/cgroup/memory/memory.stat':`total_inactive_file ${546*MIB}\ntotal_cache ${560*MIB}\ntotal_shmem 0\ntotal_dirty ${2*MIB}\ntotal_writeback ${3*MIB}`};
+ const memory=createMemoryReader({read:path=>files[path],platform:'linux',memoryUsage:()=>({rss:526*MIB}),constrainedMemory:()=>2048*MIB,totalMemory:()=>16000*MIB,env:{}})();
+ assert.equal(memory.usedBytes,554*MIB);assert.equal(memory.reclaimableFileBytes,541*MIB);
+});
+
 test("cgroup v1 and Node constrained-memory fallback account for the host limit", () => {
   const read = (path) => path.endsWith("memory.limit_in_bytes") ? String(2048 * MIB)
     : path.endsWith("memory.usage_in_bytes") ? String(1000 * MIB) : "max";

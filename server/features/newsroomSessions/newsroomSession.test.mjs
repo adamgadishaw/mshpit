@@ -97,6 +97,22 @@ test('photo adapters reject video, URL, arbitrary purpose, oversize files and fo
  for(const input of [{clientAssetId:'photo',contentType:'video/mp4',fileSize:1},{clientAssetId:'photo',contentType:'image/jpeg',fileSize:10*1024*1024+1},{clientAssetId:'photo',contentType:'image/jpeg',fileSize:2,purpose:'avatar'},{clientAssetId:'photo',contentType:'image/jpeg',fileSize:2,url:'https://untrusted.example/object'}]){const ctx=await context(scoped.token,'POST','/api/newsroom-session/media',input);await assert.rejects(isolated['POST /api/newsroom-session/media'](ctx),e=>e.status===400);}
  const ctx=await context(scoped.token,'GET','/api/newsroom-session/media/foreign',{},'newsroom',{params:{id:'foreign'}});assert.throws(()=>isolated['GET /api/newsroom-session/media/:id'](ctx),e=>e.status===404);assert.equal(calls,0);
 });
+test('photo reservation diagnostics distinguish declared type, size and retry key before storage',async()=>{
+ const actor=user(),scoped=createNewsroomSession(actor.id);let calls=0;
+ const isolated=newsroomSessionRoutes({database:db,editor:{},ApiError,requireEditor(){},verifyPassword:async()=>false,atomicWrite:work=>work(),rateLimit(){},mediaRoutes:()=>new Proxy({},{get(){calls++;throw Error('storage reached');}})});
+ const valid={clientAssetId:'photo-550e8400-e29b-41d4-a716-446655440000',contentType:'image/jpeg',fileSize:869805};
+ for(const [change,expected] of [[{contentType:''},/Photo reservation: the declared type/],[{fileSize:'869805'},/Photo reservation: the declared size/],[{fileSize:0},/Photo reservation: the declared size/],[{clientAssetId:''},/Photo reservation: the upload retry key/],[{clientAssetId:'x'.repeat(65)},/Photo reservation: the upload retry key/]]){
+  const ctx=await context(scoped.token,'POST','/api/newsroom-session/media',{...valid,...change});
+  await assert.rejects(isolated['POST /api/newsroom-session/media'](ctx),e=>e.status===400 && e.code==='VALIDATION_FAILED' && expected.test(e.message));
+ }
+ assert.equal(calls,0);
+ for(const fileSize of [869805,351047]){
+  const ctx=await context(scoped.token,'POST','/api/newsroom-session/media',{...valid,fileSize});
+  await assert.rejects(isolated['POST /api/newsroom-session/media'](ctx),/storage reached/);
+ }
+ assert.equal(calls,2,'valid JPEG metadata reaches the underlying media route');
+});
+
 test('password reset revokes every scoped browser before issuing its ordinary replacement',async()=>{
  const actor=user(),a=createNewsroomSession(actor.id),b=createNewsroomSession(actor.id),token='synthetic-reset-'+actor.id;db.prepare('UPDATE users SET reset_hash=?,reset_expires=? WHERE id=?').run(digest(token),Date.now()+60000,actor.id);let replacement;
  await routes['POST /api/reset']({body:{token,password:'New-synthetic-reset3'},ip:'reset-'+actor.id,setSession:s=>{replacement=s;}});assert.equal(getSession(a.token,{scope:'newsroom'}),null);assert.equal(getSession(b.token,{scope:'newsroom'}),null);assert.ok(getSession(replacement.token));
