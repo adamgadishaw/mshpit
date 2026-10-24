@@ -53,6 +53,32 @@ test("cgroup v1 discounts only hierarchical inactive clean file cache", () => {
  assert.equal(memory.usedBytes,554*MIB);assert.equal(memory.reclaimableFileBytes,541*MIB);
 });
 
+test("positive shared memory remains charged even when inactive-file counters exceed non-shared file bytes", () => {
+ for(const v1 of [false,true]){
+  const root=v1?'/sys/fs/cgroup/memory/':'/sys/fs/cgroup/';
+  const files={
+   [root+(v1?'memory.limit_in_bytes':'memory.max')]:String(2048*MIB),
+   [root+(v1?'memory.usage_in_bytes':'memory.current')]:String(1200*MIB),
+   [root+'memory.stat']:v1
+    ?`total_inactive_file ${546*MIB}\ntotal_cache ${560*MIB}\ntotal_shmem ${500*MIB}\ntotal_dirty ${2*MIB}\ntotal_writeback ${3*MIB}`
+    :`inactive_file ${546*MIB}\nfile ${560*MIB}\nshmem ${500*MIB}\nfile_dirty ${2*MIB}\nfile_writeback ${3*MIB}`,
+  };
+  const readMemory=createMemoryReader({read:path=>files[path],platform:'linux',memoryUsage:()=>({rss:526*MIB}),constrainedMemory:()=>2048*MIB,totalMemory:()=>16000*MIB,env:{}});
+  assert.equal(readMemory().reclaimableFileBytes,55*MIB);
+  assert.equal(readMemory().usedBytes,1145*MIB);
+  assert.equal(createMemoryAdmission({readMemory}).tryAcquire('image'),null,'shared memory pressure cannot be discounted to admit an image');
+ }
+});
+
+test("duplicate counters and a cache discount larger than total usage retain raw charged accounting", () => {
+ const stats=`inactive_file ${546*MIB}\nfile ${560*MIB}\nshmem 0\nfile_dirty 0\nfile_writeback 0`;
+ for(const [usage,text] of [[1095*MIB,stats+`\ninactive_file ${546*MIB}`],[100*MIB,stats]]){
+  const readMemory=createMemoryReader({read:path=>path.endsWith('memory.max')?String(2048*MIB):path.endsWith('memory.current')?String(usage):text,
+   platform:'linux',memoryUsage:()=>({rss:50*MIB}),constrainedMemory:()=>2048*MIB,totalMemory:()=>16000*MIB,env:{}});
+  assert.equal(readMemory().reclaimableFileBytes,0);assert.equal(readMemory().usedBytes,usage);
+ }
+});
+
 test("cgroup v1 and Node constrained-memory fallback account for the host limit", () => {
   const read = (path) => path.endsWith("memory.limit_in_bytes") ? String(2048 * MIB)
     : path.endsWith("memory.usage_in_bytes") ? String(1000 * MIB) : "max";
