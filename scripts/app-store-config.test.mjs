@@ -25,6 +25,7 @@ const productionDependencies = Object.freeze({
   "@anthropic-ai/sdk": "^0.128.0",
   "heic-decode": "2.1.0",
   sharp: "0.35.5",
+  zod: "4.6.6", // Explicit audited SDK peer survives production pruning.
 });
 
 const expoBuildDependencyConstraints = Object.freeze({
