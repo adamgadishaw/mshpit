@@ -116,9 +116,10 @@ node('photo').addEventListener('change',()=>{
 });
 node('article').addEventListener('submit',event=>{event.preventDefault();void act(async()=>{
   await confirm();const before=generation,cycle=pageCycle,file=node('photo').files[0];
-  if(file && (!['image/jpeg','image/png','image/webp','image/gif'].includes(file.type)||file.size<1||file.size>10*1024*1024))throw new Error('Choose a JPEG, PNG, WebP or GIF image of at most 10 MiB.');
+  if(file && !['image/jpeg','image/png','image/webp','image/gif'].includes(file.type))throw new Error('Photo selection: choose a JPEG, PNG, WebP or GIF. The browser reported type '+(file.type || '(empty)')+'.');
+  if(file && (!Number.isSafeInteger(file.size)||file.size<1||file.size>10*1024*1024))throw new Error('Photo selection: choose a nonempty image of at most 10 MiB. The browser reported '+file.size+' bytes.');
   if(file && photoTicket?.file!==file){photoTicket={file,clientAssetId:'photo-'+crypto.randomUUID()};saveKey=null;savedFingerprint=null;}
-    if(!photoTicket)throw new Error('Choose a JPEG, PNG, WebP or GIF image of at most 10 MiB.');
+    if(!photoTicket)throw new Error('Photo selection: choose an article photo before saving.');
   const values={headline:node('headline').value,summary:node('summary').value,body:node('body').value,category:node('category').value,
     sources:node('sources').value.split('\n').filter(v=>v.trim()).map(line=>{const [name,url,title]=line.split('|').map(v=>v.trim());return {kind:"article",name,url,...(title?{title}:{})};}),
     photoSource:{name:node('photo-name').value,url:node('photo-url').value,credit:node('photo-credit').value}};
