@@ -19,6 +19,8 @@ export function visibleTourDateRowsFrom(database, viewer, {
   countryCode = null,
   country = null,
   providerOnly = false,
+  search = null,
+  blockedViewerId = null,
   after = null,
   limit: rowLimit = 5000,
   at = Date.now(),
@@ -30,6 +32,20 @@ export function visibleTourDateRowsFrom(database, viewer, {
   // depends on a viewer's block graph or current account/page privacy.
   if (providerOnly === true) filters.push("td.owner_id IS NULL");
   const prefix = [];
+  if (search) {
+    // Search is a public catalogue, never an owner's unreleased/private view.
+    filters.push("td.release_at<=?");
+    prefix.push(at);
+    filters.push("(td.owner_id IS NULL OR EXISTS(SELECT 1 FROM users search_owner WHERE search_owner.id=td.owner_id AND COALESCE(search_owner.profile_audience,'everyone')='everyone'))");
+    for (const term of search.split(" ").slice(0, 8)) {
+      filters.push("instr(lower(COALESCE(td.artist,'')||' '||COALESCE(td.venue,'')||' '||COALESCE(td.place,'')||' '||COALESCE(td.venue_city,'')||' '||COALESCE(td.venue_country,'')),?)>0");
+      prefix.push(term);
+    }
+  }
+  if (blockedViewerId) {
+    filters.push("NOT EXISTS(SELECT 1 FROM blocks search_block WHERE (search_block.blocker_id=? AND search_block.blocked_id=td.owner_id) OR (search_block.blocked_id=? AND search_block.blocker_id=td.owner_id))");
+    prefix.push(blockedViewerId, blockedViewerId);
+  }
   if (id) {
     filters.push("td.id=?");
     prefix.push(id);

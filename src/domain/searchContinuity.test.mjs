@@ -5,7 +5,7 @@ import { createBrowserHistory } from "./browserHistory.mjs";
 
 test("search continuity expires, is bounded, and rejects a different account or logout", () => {
   const value = { accountId: "a", at: 1000, query: "private-query", category: "shows", scrollY: 325, people: ["private-result"] };
-  assert.deepEqual(searchContinuity(value, "a", 2000), { accountId: "a", at: 1000, query: "private-query", category: "shows", scrollY: 325 });
+  assert.deepEqual(searchContinuity(value, "a", 2000), { accountId: "a", at: 1000, query: "private-query", category: "shows", scrollY: 325, catalogPages: 1 });
   for (const account of ["b", null, undefined]) assert.equal(searchContinuity(value, account, 2000), null);
   assert.equal(searchContinuity(value, "a", 1000 + 15 * 60 * 1000 + 1), null);
   assert.equal(searchContinuity(value, "a", 999), null);
@@ -48,4 +48,10 @@ test("route entries retain independent search context in bounded memory without 
   controller.clear();
   assert.equal(controller.size, 0);
   assert.equal(controller.preparePop(second).snapshot, null);
+});
+
+test("search return depth is capped and does not retain result payloads", () => {
+  const value = searchContinuity({ accountId: "a", at: 1000, query: "Bon Jovi", category: "shows", catalogPages: 999, rows: [{ id: "private-result" }] }, "a", 2000);
+  assert.equal(value.catalogPages, 5);
+  assert.equal(value.rows, undefined);
 });

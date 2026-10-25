@@ -110,7 +110,8 @@ try {
           seen: []
         };else if (url.pathname === '/api/tourdates') body = {
           tourDates: [event]
-        };else if (url.pathname === '/api/artists') {
+        };else if (url.pathname === '/api/search/events') body = { events: (url.searchParams.get('q') || '').includes('fixture') ? [event] : [], nextCursor: null };
+        else if (url.pathname === '/api/artists') {
           const q = url.searchParams.get('q') || '';
           if (state.hold && q) await new Promise(done => state.delayed.push(done));
           if (state.fail && q) return await route.fulfill({

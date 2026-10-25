@@ -10,6 +10,7 @@ export function searchContinuity(value, accountId, now = Date.now()) {
     accountId: accountId || null, at: value.at,
     query: typeof value.query === "string" ? value.query.slice(0, 512) : "",
     category: categories.has(value.category) ? value.category : "all",
+    catalogPages: Number.isSafeInteger(value.catalogPages) ? Math.min(5, Math.max(1, value.catalogPages)) : 1,
     scrollY: Number.isFinite(value.scrollY) ? Math.max(0, Math.min(1_000_000, value.scrollY)) : 0,
   };
 }

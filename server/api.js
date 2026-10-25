@@ -240,6 +240,7 @@ import {
 import { ANALYTICS_MAX_RAW_ROWS, ANALYTICS_MAX_ROWS_PER_ACCOUNT, ANALYTICS_RETENTION_DAYS, ingestAnalyticsBatch } from "./analyticsService.js";
 import { readGuestSearchAnalytics } from "./guestSearchAnalytics.js";
 import { guestSearchAnalyticsRoutes } from "./features/guestSearchAnalytics/guestSearchAnalyticsRoutes.js";
+import { catalogSearchRoutes } from "./features/catalogSearch/catalogSearchRoutes.js";
 import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { jobRoutes } from "./features/jobs/jobRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
@@ -1062,6 +1063,8 @@ function tourDateRangePage(viewer, range, timestamp) {
       countryCode: range.countryCode,
       country: range.country,
       providerOnly: range.providerOnly === true,
+      search: range.search,
+      blockedViewerId: range.blockedViewerId,
       after: cursor,
       limit: batchLimit,
     });
@@ -4952,6 +4955,8 @@ export const routes = {
     pageRequest,
     requireModerator,
   }),
+  ...catalogSearchRoutes({ ApiError, now, rateLimit: limit,
+    readPage: (options, at) => tourDateRangePage(null, options, at), project: tourDateJson }),
   ...guestSearchAnalyticsRoutes({
     database: db,
     ApiError,

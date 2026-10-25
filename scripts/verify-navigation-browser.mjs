@@ -186,6 +186,7 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
     ...(discoverArtist ? { chart: { rows: [navigationArtistCard], source: "popularity" }, catalogTotal: 1 } : {}),
   };
   if (pathname === "/api/discover/chart") return { rows: [], source: "fixture" };
+  if (pathname === "/api/search/events") return { events: [], nextCursor: null };
   if (pathname === "/api/artists") return { artists: [] };
   if (pathname === "/api/artists/resolve") {
     assert.equal(discoverArtist, false, "A canonical Discover artist must open without the remote artist resolver.");
