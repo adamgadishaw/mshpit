@@ -1,5 +1,16 @@
 # Pit current status
 
+## 2026-10-26 Stored artist identity on event navigation (local review)
+
+- Isolated branch `fix/stored-artist-navigation` starts at verified remote master
+  `9c219b2afad591c45cd87fe215f27e48972483a4`; draft search PR74 is excluded.
+- Canonical identity checks now request the existing stored-only resolver scope.
+  Explicit discovery/composer lookups retain provider access; durable identity,
+  privacy, cancellation and public event fallback behavior remain enforced.
+- Reproduction, checks, remaining limits and rollback are recorded in
+  [the local review audit](docs/ARTIST_NAVIGATION_LOCAL_REVIEW_2026-10-26.md).
+  This is a local candidate only; nothing is pushed, merged or deployed.
+
 ## 2026-10-18 Profile layout and photo crop controls (local review)
 
 - Local branch `codex/profile-integrated-crop-web-20261018` starts at released PR62 merge `700c39697883617ca551736e5497864ae191f963`.

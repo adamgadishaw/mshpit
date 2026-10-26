@@ -1801,14 +1801,14 @@ export function StoreProvider({ children }) {
   };
   // Public lookup never creates a catalog row. Preserve its transient marker so
   // a provider preview cannot be mistaken for a persisted artist identity.
-  const resolveArtist = async (name, { signal, throwOnError = false } = {}) => {
+  const resolveArtist = async (name, { signal, throwOnError = false, scope } = {}) => {
     const k = norm(name);
     // Provider previews are not durable identities. Recheck them on an
     // explicit lookup so a newly imported catalogue page can become available
     // without making the member reload the whole site.
     if (remoteArtists[k] && remoteArtists[k].transient !== true) return remoteArtists[k];
     try {
-      const artist = await fetchResolvedArtist(name, { apiClient: api, signal });
+      const artist = await fetchResolvedArtist(name, { apiClient: api, signal, scope });
       if (artist) cacheArtists([artist]);
       return artist;
     }
