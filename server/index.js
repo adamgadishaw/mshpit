@@ -86,6 +86,7 @@ import { getEmailDeliveryReceipt } from "./mailer.js";
 import { pruneExpiredFeedImpressionHistory } from "./feedImpressions.js";
 import { startArtistDeathWatchScheduler } from "./features/artistDeathWatch/artistDeathWatchScheduler.js";
 import { missingStaticAssetResponse, privateStaticAssetResponse } from "./staticPolicy.js";
+import { sourceRegistryPageResponse } from "./features/newsDesk/sourceRegistryPage.js";
 import { publicPageFor, renderPublicPage } from "./publicPages.js";
 import { createJobRepository } from "./features/jobs/jobRepository.js";
 import { jobPublicPage } from "./features/jobs/jobPublicPage.js";
@@ -339,13 +340,14 @@ function servePublicPage(req, res, pathname) {
     res.end();
     return true;
   }
-  const body = renderPublicPage(page.path, process.env, jobsPage);
+  const sourcesResponse = pathname === "/promotion-sources" ? sourceRegistryPageResponse(db, new URL(req.url, "http://localhost").searchParams) : null;
+  const body = sourcesResponse?.body || renderPublicPage(page.path, process.env, jobsPage);
   if (!body) return false;
-  res.writeHead(page.status || 200, {
+  res.writeHead(sourcesResponse?.status || page.status || 200, {
     ...HEADERS,
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
-    "Cache-Control": jobsPage ? "no-store" : "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
+    "Cache-Control": (jobsPage || pathname === "/promotion-sources") ? "no-store" : "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
     "X-Robots-Tag": htmlRobotsDirective({ indexable }),
     Link: `<${origin()}${page.path}>; rel="canonical"`,
   });

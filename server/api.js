@@ -103,6 +103,7 @@ import { catalogEditorRoutes } from "./features/catalogEditor/catalogEditorRoute
 import { catalogResearchRoutes } from "./features/catalogResearch/catalogResearchRoutes.js";
 import { createNewsDeskEditor } from "./features/newsDesk/newsDeskEditor.js";
 import { newsroomSessionRoutes } from "./features/newsroomSessions/newsroomSessionRoutes.js";
+import { sourceRegistryRoutes } from "./features/newsDesk/sourceRegistry.js";
 import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
 import { createMediaApiService } from "./features/mediaApi/mediaApiService.js";
 import { mediaApiRoutes } from "./features/mediaApi/mediaApiRoutes.js";
@@ -10132,6 +10133,7 @@ export const routes = {
       return row ? publicUser(row) : null;
     } }),
   // Owner-chosen news stories: free to browse, one metered Claude call per draft.
+  ...sourceRegistryRoutes({ database: db, requireAdmin, rateLimit: limit, now }),
   ...newsDeskEditorRoutes({ editor: newsDeskEditor, database: db, ApiError, requireAdmin: requireNewsEditor, rateLimit: limit, now,
     photoResolver: resolveNewsArtwork, readStory: (postId) => newsDeskReader.forLivePost(postId), listStories: () => newsDeskReader.list({ limit: 10 }).stories || [] }),
   ...newsroomSessionRoutes({ database: db, editor: newsDeskEditor, ApiError, requireEditor: requireNewsEditor,

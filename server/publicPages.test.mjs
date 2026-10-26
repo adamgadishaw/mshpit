@@ -52,7 +52,7 @@ test("promotion sources are a standalone explanation, not fabricated campaign cr
   assert.ok(page);
   const html = renderPublicPage("/promotion-sources", { PUBLIC_ORIGIN: "https://www.example.com" });
   assert.match(html, /<link rel="canonical" href="https:\/\/www\.example\.com\/promotion-sources"/);
-  assert.match(html, /<h1>Promotion sources and credits<\/h1>/);
+  assert.match(html, /<h1>Sources<\/h1>/);
   assert.match(html, /<section id="credits">/);
   assert.match(html, /No promotional source entries have been published on this page/);
   assert.match(html, /does not itself grant permission to reuse anyone(?:'|&#39;)s content/);

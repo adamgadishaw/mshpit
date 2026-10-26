@@ -126,6 +126,19 @@ export function photoCreditForId(id) {
   return path ? photoCreditRegistry().get(path.slice(PUBLIC_CREDIT_PREFIX.length)) || null : null;
 }
 
+// Reuse the existing validated registry/cache; send only one bounded page.
+export function listPublicPhotoCredits({ q = "", page = 1 } = {}) {
+  const query=String(q).toLocaleLowerCase().slice(0,160);
+  const offset=(Math.max(1,Math.min(10000,Math.trunc(Number(page)) || 1))-1)*20;
+  const rows=[];let matched=0;
+  for(const record of photoCreditRegistry().values()) {
+    if(query && !`${record.artistKey} ${record.photo.creator} ${record.photo.title}`.toLocaleLowerCase().includes(query)) continue;
+    if(matched++ < offset) continue;
+    rows.push(record);if(rows.length===21) break;
+  }
+  return {records:rows.slice(0,20),hasMore:rows.length>20};
+}
+
 export function photoCreditPathFromArtwork(artwork) {
   if (!artwork || typeof artwork !== "object" || Array.isArray(artwork)) return null;
   const objectKey = objectKeyFromDeliveryUrl(artwork.url || artwork.uri);

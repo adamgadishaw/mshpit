@@ -101,6 +101,9 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
           {!manual ? <Icon name="check" size={13} color={colors.good} /> : null}
           <View style={styles.sourceText}>
             <Text style={styles.sourcesLabel}>Sources</Text>
+            <Text accessibilityRole="link" style={styles.sourceLink}
+              onPress={Platform.OS === "web" ? undefined : () => openSource(`https://www.mshpit.com/promotion-sources?post=${encodeURIComponent(story.postId)}`)}
+              {...(Platform.OS === "web" ? { href: `/promotion-sources?post=${encodeURIComponent(story.postId)}` } : {})}>All credits for this article</Text>
             {allSources.map((source) => <Text key={`${source.kind || "article"}:${source.url}`} style={styles.sourceRow}>
               <Text style={styles.sourceLink} onPress={Platform.OS === "web" ? undefined : () => openSource(source.url)} accessibilityRole="link"
                 {...(Platform.OS === "web" ? { href: source.url, hrefAttrs: { target: "_blank", rel: "noopener noreferrer" } } : {})}>{source.name}</Text>

@@ -28,7 +28,7 @@ net.Server.prototype.listen = function fixtureListen(port) {
 syncBuiltinESMExports();
 
 const { db, q } = await import("../../server/db.js");
-const { createSession, destroySession, COOKIE } = await import("../../server/auth.js");
+const { createSession, destroySession, COOKIE, createNewsroomSession, newsroomCookieName } = await import("../../server/auth.js");
 const { ensureNewsDeskSchema, createNewsDeskReader } = await import("../../server/features/newsDesk/newsDeskService.js");
 const { createPublicDocumentService, renderPublicDocumentMain } = await import("../../server/features/seo/publicDocuments.js");
 const at = Date.now();
@@ -79,6 +79,19 @@ process.on("message", ({ id, operation, postId, value } = {}) => {
         audit: db.prepare("SELECT * FROM moderation_actions WHERE action='news_story_category_corrected' AND target_id=? ORDER BY created_at").all(postId),
         html: document ? renderPublicDocumentMain(document) : null, article: document?.jsonLd.find(node => node["@type"] === "NewsArticle"),
         paidReceipts: db.prepare("SELECT COUNT(*) n FROM news_desk_receipts").get().n };
+    } else if (operation === "source-newsroom-session") {
+      const scoped=createNewsroomSession(users.admin.id);
+      result={id:users.admin.id,cookie:`${newsroomCookieName(false)}=${scoped.token}`};
+    } else if (operation === "source-revoke-during-audit") {
+      db.exec("CREATE TEMP TRIGGER revoke_source_session AFTER INSERT ON moderation_actions WHEN NEW.action='source_credit_saved' BEGIN DELETE FROM sessions WHERE user_id='category_admin'; END");
+    } else if (operation === "source-clear-trigger") {
+      db.exec("DROP TRIGGER IF EXISTS revoke_source_session");
+    } else if (operation === "source-large-edition") {
+      const insert=db.prepare("INSERT INTO news_source_credits(id,post_id,kind,name,url,credit,licence,edition,position,revision) VALUES (?,NULL,'music',?,?,?,'','synthetic-http-edition',?,1)");
+      for(let i=0;i<101;i++) insert.run(`large-${i}`,`Large creator ${i}`,`https://www.nme.com/large-${i}`,`Large credit ${i}`,i+1);
+      result=true;
+    } else if (operation === "source-snapshot") {
+      result={credits:db.prepare("SELECT * FROM news_source_credits ORDER BY id").all(),editions:db.prepare("SELECT * FROM news_source_editions ORDER BY slug").all(),audit:db.prepare("SELECT * FROM moderation_actions WHERE action='source_credit_saved' ORDER BY id").all()};
     } else if (operation === "seed-legacy-category") {
       db.prepare("UPDATE news_stories SET category='charts' WHERE post_id=?").run(postId);
       db.prepare("INSERT INTO likes(user_id,post_id) VALUES ('category_fan',?)").run(postId);
