@@ -20,11 +20,29 @@ test("cancelled song type-ahead stops both outbound Deezer searches", async () =
     fetchImpl,
     signal: controller.signal,
   });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(signals.length, 2, "both provider attempts started before cancellation");
   controller.abort(new DOMException("new query replaced this one", "AbortError"));
 
   await assert.rejects(pending, (error) => error?.name === "AbortError");
   assert.equal(signals.length, 2);
   assert.ok(signals.every((signal) => signal?.aborted));
+});
+
+test("song type-ahead cancelled before dispatch starts no provider attempts", async () => {
+  const controller = new AbortController();
+  let fetches = 0;
+  const pending = searchDeezerTracks(`cancel-before-dispatch-${randomUUID()}`, {
+    fetchImpl: async () => {
+      fetches += 1;
+      return { ok: true, json: async () => ({ data: [] }) };
+    },
+    signal: controller.signal,
+  });
+  controller.abort(new DOMException("new query replaced this one", "AbortError"));
+  await assert.rejects(pending, (error) => error?.name === "AbortError");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fetches, 0);
 });
 
 test("identical live searches share provider work while each caller can cancel independently", async () => {

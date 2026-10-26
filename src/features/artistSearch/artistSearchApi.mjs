@@ -1,3 +1,5 @@
+import { artistNameInput } from "../../domain/artistNameInput.mjs";
+
 export const COMPOSER_ARTIST_SEARCH_LIMIT = 8;
 export const ARTIST_SEARCH_MAX_LIMIT = 40;
 
@@ -5,7 +7,7 @@ const ARTIST_SEARCH_CACHE_TTL_MS = 2 * 60 * 1000;
 const ARTIST_SEARCH_CACHE_MAX_ENTRIES = 48;
 const settledCachesByClient = new WeakMap();
 
-const cleanQuery = (value) => String(value || "").trim().slice(0, 80);
+const cleanQuery = (value) => String(value || "").trim().slice(0, 80).replace(/[\ud800-\udbff]$/u, "");
 const cleanLimit = (value) => Math.min(
   ARTIST_SEARCH_MAX_LIMIT,
   Math.max(1, Number.isFinite(Number(value)) ? Math.trunc(Number(value)) : 20),
@@ -105,9 +107,12 @@ export async function fetchArtistSuggestions(query, {
   if (typeof apiClient !== "function") throw new TypeError("Artist search requires an API client.");
   if (signal?.aborted) throw abortError(signal);
   const term = cleanQuery(query);
+  const resolutionName = remoteFallback ? artistNameInput(query) : "";
   const boundedLimit = cleanLimit(limit);
   const cache = cacheFor(apiClient);
-  const cacheKey = (remoteFallback ? "remote:" : "catalog:") + boundedLimit + ":" + term.toLowerCase();
+  const cacheIdentity = remoteFallback
+    ? JSON.stringify([term.toLowerCase(), resolutionName.toLowerCase()]) : term.toLowerCase();
+  const cacheKey = (remoteFallback ? "remote:" : "catalog:") + boundedLimit + ":" + cacheIdentity;
   const cached = force ? null : readCached(cache, cacheKey);
   if (cached) return cached;
   const requestOptions = {
@@ -121,14 +126,14 @@ export async function fetchArtistSuggestions(query, {
     requestOptions,
   );
   const localArtists = boundedArtists(local?.artists, boundedLimit);
-  if (localArtists.length || !remoteFallback || term.length < 3) {
+  if (localArtists.length || !remoteFallback || !resolutionName || resolutionName.length < 3) {
     if (signal?.aborted) throw abortError(signal);
     remember(cache, cacheKey, localArtists);
     return localArtists;
   }
 
   const resolved = await apiClient(
-    `/api/artists/resolve?name=${encodeURIComponent(term)}`,
+    `/api/artists/resolve?name=${encodeURIComponent(resolutionName)}`,
     requestOptions,
   );
   if (signal?.aborted) throw abortError(signal);
@@ -148,7 +153,7 @@ export async function refreshArtistCatalogEntry(name, {
   signal,
   apiClient,
 } = {}) {
-  const term = cleanQuery(name);
+  const term = artistNameInput(name);
   if (!term) return null;
   const identity = term.toLocaleLowerCase();
   const rows = await fetchArtistSuggestions(term, {
@@ -158,8 +163,8 @@ export async function refreshArtistCatalogEntry(name, {
     remoteFallback: false,
     force: true,
   });
-  return rows.find((artist) => cleanQuery(artist?.name).toLocaleLowerCase() === identity
-    || cleanQuery(artist?.key).toLocaleLowerCase() === identity) || null;
+  return rows.find((artist) => artistNameInput(artist?.name).toLocaleLowerCase() === identity
+    || artistNameInput(artist?.key).toLocaleLowerCase() === identity) || null;
 }
 
 export async function attachArtistSuggestion(artist, {
@@ -168,7 +173,7 @@ export async function attachArtistSuggestion(artist, {
 } = {}) {
   if (typeof apiClient !== "function") throw new TypeError("Artist attachment requires an API client.");
   if (signal?.aborted) throw abortError(signal);
-  const name = cleanQuery(artist?.name);
+  const name = artistNameInput(artist?.name);
   if (!name) throw new TypeError("Choose one artist before attaching it.");
   const mbid = String(artist?.mbid || "").trim().toLowerCase();
   const response = await apiClient("/api/artists/resolve", {
@@ -193,8 +198,8 @@ export async function attachArtistSuggestion(artist, {
 export async function fetchResolvedArtist(name, { signal, apiClient, scope } = {}) {
   if (typeof apiClient !== "function") throw new TypeError("Artist lookup requires an API client.");
   if (signal?.aborted) throw abortError(signal);
-  const term = String(name || "").trim();
-  if (!term || [...term].length > 120) return null;
+  const term = artistNameInput(name);
+  if (!term) return null;
   const result = await apiClient(`/api/artists/resolve?name=${encodeURIComponent(term)}${scope === "stored" ? "&scope=stored" : ""}`, {
     signal, silent: true, timeoutMs: 8_000, context: "Looking up an artist",
   });

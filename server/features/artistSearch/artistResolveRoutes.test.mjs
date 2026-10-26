@@ -13,6 +13,18 @@ class TestApiError extends Error {
 const clean = (value, { max } = {}) => String(value ?? "").trim().slice(0, max || Infinity);
 const normName = (value) => String(value || "").trim().toLowerCase();
 
+test("attachment rejects a truncated prefix and preserves complete astral names", async () => {
+  let read;
+  const routes = createRoutes({ findArtist: key => { read = key; return null; } });
+  for (const name of ["x".repeat(121), "🎵".repeat(121), "x\ud800"]) {
+    await assert.rejects(routes["POST /api/artists/resolve"]({ body: { name } }), { status: 400, code: "VALIDATION_FAILED" });
+    assert.equal(read, undefined);
+  }
+  const name = "🎵".repeat(61);
+  const result = await routes["POST /api/artists/resolve"]({ body: { name } });
+  assert.equal(read, name); assert.equal(result.artist.name, name);
+});
+
 function createRoutes(overrides = {}) {
   return artistResolveRoutes({
     ApiError: TestApiError,

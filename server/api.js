@@ -31,6 +31,7 @@ import { createTourDateArtistPhotoReader } from "./tourDateArtistPhotos.js";
 import { resolveReviewedArtistAlias } from "./reviewedArtistIdentities.js";
 import { assessArtistIdentityRisk, assertMemberIdentityAllowed } from "./features/artistAccounts/artistIdentityRisk.js";
 import { createArtistLookupWork } from "./artistLookupWork.js";
+import { artistNameInput } from "../src/domain/artistNameInput.mjs";
 import { artistResolverMetrics, createArtistResolverDiagnostics } from "./artistResolverDiagnostics.js";
 import { resolveArtistPreviewWithFallback } from "./artistPreviewRecovery.js";
 import { createArtistFallbackCache, isOptionalArtistCacheStorageFailure } from "./artistFallbackCache.js";
@@ -367,7 +368,11 @@ const VIDEO_VERIFY_GLOBAL_HOURLY_LIMIT = 2_000;
 const ARTIST_TOURDATE_DEMAND_USER_HOURLY_LIMIT = 12;
 const ARTIST_TOURDATE_DEMAND_USER_WINDOW_MS = 60 * 60 * 1000;
 const MUSICBRAINZ_ARTIST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS = 8_000;
+// This timer starts inside the admitted provider callback, after queue/pacing.
+// A full five-second transport stall is provider health evidence before the
+// six-second job deadline. If queue time leaves less execution time, the job
+// abort wins and remains a local budget expiry, not a provider failure.
+const MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS = 5_000;
 // A resolved MusicBrainz identity does not change, so the last good answer for
 // a name is kept and served while the provider is unavailable. Public catalogue
 // metadata only, never anything a member wrote.
@@ -3222,13 +3227,13 @@ function withCommentPreviews(posts, viewerId) {
 // Resolve an artist by name from MusicBrainz (CC0, keyless). Public lookup may
 // return a transient fuzzy fallback, but staff identity creation must be exact.
 function normalizedMusicBrainzArtistName(value) {
-  const name = clean(typeof value === "string" ? value : "", { max: 241 });
-  if (!name || [...name].length > 120) return null;
+  const name = artistNameInput(value);
+  if (!name) return null;
   return normName(name.normalize("NFKC"));
 }
 
 function musicBrainzArtistProjection(candidate) {
-  const name = clean(candidate?.name, { max: 241 });
+  const name = artistNameInput(candidate?.name);
   const mbid = String(candidate?.id || "").trim().toLowerCase();
   if (!name || [...name].length > 120 || !MUSICBRAINZ_ARTIST_ID.test(mbid)) return null;
   const tags = Array.isArray(candidate?.tags)
@@ -3268,9 +3273,9 @@ async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority 
       + encodeURIComponent(query)
       + "&fmt=json&limit=5";
     let response;
-    let requestSignal;
+    let requestSignal, timeoutSignal;
     try {
-      const timeoutSignal = AbortSignal.timeout(MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS);
+      timeoutSignal = AbortSignal.timeout(MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS);
       requestSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
       response = await fetch(url, {
         headers: { "User-Agent": "Pit/1.0 (https://mshpit.com)", Accept: "application/json" },
@@ -3279,7 +3284,7 @@ async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority 
     } catch (error) {
       if (signal?.aborted) throw signal.reason || error;
       throw new ProviderError("MusicBrainz", 502, "MusicBrainz could not be reached.", {
-        code: "network",
+        code: timeoutSignal?.aborted ? "provider_timeout" : "network",
         cause: error,
       });
     }
@@ -3309,7 +3314,7 @@ async function readMusicBrainzArtistCandidatesUnshared(name, { signal, priority 
     } catch (error) {
       if (signal?.aborted) throw signal.reason || error;
       throw new ProviderError("MusicBrainz", 502, "MusicBrainz returned unreadable data.", {
-        code: "invalid_json",
+        code: timeoutSignal?.aborted ? "provider_timeout" : "invalid_json",
         cause: error,
       });
     }
@@ -3416,7 +3421,7 @@ function cachedMusicBrainzResolution(name) {
   } catch {
     return null;
   }
-  const rememberedName = clean(stored?.name, { max: 241 });
+  const rememberedName = artistNameInput(stored?.name);
   const mbid = String(stored?.mbid || "").trim().toLowerCase();
   if (!rememberedName || !MUSICBRAINZ_ARTIST_ID.test(mbid)
     || normalizedMusicBrainzArtistName(rememberedName) !== normalizedMusicBrainzArtistName(name)) return null;
@@ -3469,7 +3474,7 @@ async function resolveFromDeezerExactName(name, { signal, observe } = {}) {
   if (exact.size !== 1) return null;
   const candidate = exact.values().next().value;
   return {
-    name: clean(candidate.name, { max: 120 }),
+    name: artistNameInput(candidate.name),
     deezerId: String(candidate.id),
     photo: candidate.photo || null,
     followers: Math.max(0, Number(candidate.fans) || 0),
@@ -4025,7 +4030,7 @@ const artistNewsReader = createArtistNewsReader(db, {
 export function startArtistPhotos() {
   return startDeezerArtistPhotoScheduler({
     database: db,
-    fetchJson: (url, { signal } = {}) => providerJson("Deezer", url, { signal }),
+    fetchJson: (url, options) => providerJson("Deezer", url, options),
   });
 }
 
@@ -4038,7 +4043,7 @@ export function readArtistNews(options) {
 export function startArtistNews() {
   return startArtistNewsScheduler({
     database: db,
-    fetchJson: (url, { signal } = {}) => providerJson("Deezer", url, { signal }),
+    fetchJson: (url, options) => providerJson("Deezer", url, options),
     notify: (userId, update) => addNotif(userId, null, "artist_update", { postId: update.id, artist: update.artist_name, text: update.title }),
     newId: uid,
   });
@@ -5466,8 +5471,8 @@ export const routes = {
       capture: (detail) => ctx.captureArtistResolverDiagnostics?.(detail),
     });
     try {
-      const name = clean(ctx.query.name, { max: 120 });
-      if (!name) throw new ApiError(400, "Missing name.");
+      const name = artistNameInput(ctx.query.name);
+      if (!name) throw new ApiError(400, "Enter one complete artist name of at most 120 characters.", "VALIDATION_FAILED");
       const storedOnly = ctx.query.scope === "stored";
       if (ctx.query.scope != null && !storedOnly) {
         throw new ApiError(400, "Unsupported artist lookup scope.", "VALIDATION_FAILED");
@@ -5585,8 +5590,8 @@ export const routes = {
   // photo, album count) so a listener can pick the one they actually mean and
   // re-pin this name to that artist via the discography endpoint's deezerId.
   "GET /api/artists/candidates": async (ctx) => {
-    const name = clean(ctx.query.name, { max: 120 });
-    if (!name) throw new ApiError(400, "Missing name.");
+    const name = artistNameInput(ctx.query.name);
+    if (!name) throw new ApiError(400, "Enter one complete artist name of at most 120 characters.", "VALIDATION_FAILED");
     assertArtistMusicServiceAvailable(name);
     limit(ctx, "artist-candidates", 60, 10 * 60 * 1000);
     try { return { candidates: await findDeezerArtistCandidates(name, { signal: ctx.signal }) }; }

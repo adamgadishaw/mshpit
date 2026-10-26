@@ -102,16 +102,15 @@ export async function runDeezerPhotoPass(database, { fetchJson, at = Date.now(),
     const data = parse(row.data);
     if (!data) continue;
     const knownId = DEEZER_ID.test(String(data.deezerId ?? "")) ? String(data.deezerId) : null;
-    let match = null;
-    if (knownId) {
-      const artist = await fetchJson(`https://api.deezer.com/artist/${knownId}`, { signal });
-      match = artist && !artist.error && normalName(artist.name) === normalName(row.name)
-        && (Number(artist.nb_fan) || 0) >= MIN_FANS ? artist : null;
-    } else {
-      const found = await fetchJson(`https://api.deezer.com/search/artist?q=${encodeURIComponent(row.name)}&limit=5`, { signal });
-      match = dominantNamesake(found?.data, row.name);
-    }
-    const picture = match ? usableDeezerPicture(match.picture_xl || match.picture_big) : null;
+    const url = knownId ? `https://api.deezer.com/artist/${knownId}`
+      : `https://api.deezer.com/search/artist?q=${encodeURIComponent(row.name)}&limit=5`;
+    const { match, picture } = await fetchJson(url, { signal, project: (data) => {
+      const match = knownId
+        ? (data && !data.error && normalName(data.name) === normalName(row.name)
+          && (Number(data.nb_fan) || 0) >= MIN_FANS ? data : null)
+        : dominantNamesake(data?.data, row.name);
+      return { match, picture: match ? usableDeezerPicture(match.picture_xl || match.picture_big) : null };
+    } });
     outcome.checked += 1;
     if (picture) {
       const deezerId = data.deezerId || match.id;

@@ -73,7 +73,7 @@ test("releases come only from a matching, established Deezer artist, with a quie
     { id: 3, title: "Live Hits", record_type: "compile", release_date: "2026-09-20" },
   ];
   let name = "Tame Impala";
-  const fetchJson = async (url) => (url.endsWith("/albums?limit=100") ? { data: albums } : { name, nb_fan: 5_000_000 });
+  const fetchJson = async (url, { project }) => project(url.endsWith("/albums?limit=100") ? { data: albums } : { name, nb_fan: 5_000_000 });
   const first = await checkArtistReleases(db, { now: NOW, fetchJson, newId });
   assert.deepEqual(first.created.map((row) => row.title), ["New single: Dracula"], "only a recent release counts on the first look");
 

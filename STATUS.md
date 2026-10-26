@@ -1,5 +1,24 @@
 # Pit current status
 
+## 2026-10-26 Artist provider reliability follow-up (local review)
+
+- Owned branch `fix/artist-provider-reliability-20261026` starts at
+  `60ff9d3445144137fc619be4347ffd4291a1f86a`, the navigation and diagnostics
+  release base identified by the owner. Draft search PR74 is excluded.
+- MusicBrainz now has a five-second active attempt budget within the existing
+  six-second lookup deadline. Full active timeouts count toward provider health;
+  caller cancellation and queue expiry do not. Deezer shares valid provider
+  Retry-After waits across names and endpoints, with one local recovery probe.
+- Independent rechecks prompted moving existing payload processing inside that
+  recovery boundary across all current Deezer callers, including discography
+  and background readers. Normal empty/missing optional results retain their
+  existing meanings; no new provider schema or matching policy is introduced.
+- Artist identity inputs validate the complete Unicode name without truncation.
+  Existing catalogue-first resolution, visibility and failure semantics remain.
+- Evidence, validation outcomes, limitations and rollback are recorded in
+  [the follow-up review audit](docs/ARTIST_PROVIDER_RELIABILITY_LOCAL_REVIEW_2026-10-26.md).
+  This follow-up remains local and uncommitted; no push, PR, merge or deployment.
+
 ## 2026-10-26 Stored artist identity on event navigation (local review)
 
 - Isolated branch `fix/stored-artist-navigation` starts at verified remote master
