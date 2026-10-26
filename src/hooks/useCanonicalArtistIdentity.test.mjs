@@ -4,6 +4,7 @@ import test from "node:test";
 import { parse } from "@babel/parser";
 import { canonicalArtistIdentity, canonicalArtistIdentityScope } from "../domain/canonicalArtistIdentity.mjs";
 import { createArtistLookupController } from "../features/artistSearch/artistLookupController.mjs";
+import { fetchResolvedArtist } from "../features/artistSearch/artistSearchApi.mjs";
 
 const source = readFileSync(new URL("./useCanonicalArtistIdentity.js", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module" });
@@ -131,5 +132,39 @@ test("an explicit stored key never starts a remote identity lookup", async () =>
   try {
     f.render({ artistName: "Requested", artistKey: "stored" }); await settle();
     assert.equal(f.render().artistKey, "stored"); assert.equal(f.calls.length, 0);
+  } finally { f.dispose(); }
+});
+
+test("direct, repeated and back navigation resolve durable identities using stored scope only", async () => {
+  const storeSource = readFileSync(new URL("../store.js", import.meta.url), "utf8");
+  const start = storeSource.indexOf("  const resolveArtist = async (name,");
+  const end = storeSource.indexOf("  const remoteArtistMeta =", start);
+  const createResolver = new Function("remoteArtists", "norm", "api", "cacheArtists", "fetchResolvedArtist",
+    storeSource.slice(start, end) + "\nreturn resolveArtist;");
+  const f = fixture(), calls = [], catalog = {};
+  const normalize = (name) => name.trim().toLowerCase();
+  f.store.remoteArtistMeta = (name) => catalog[normalize(name)];
+  f.store.resolveArtist = createResolver(catalog, normalize, async (path) => {
+    const url = new URL(path, "http://fixture.invalid");
+    calls.push(url);
+    assert.equal(url.searchParams.get("scope"), "stored", "canonical navigation must never enable providers");
+    const name = url.searchParams.get("name");
+    return { artist: name === "Saved" ? { name, key: "saved", transient: false } : null };
+  }, (artists) => { for (const artist of artists) catalog[normalize(artist.name)] = artist; }, fetchResolvedArtist);
+  try {
+    for (const name of ["Saved", "Unknown", "Simba Prisen 2026", "2026 Premium Offerings - Thunder Ridge Nature Arena", "<invalid>&?", "Unknown", "Saved"]) {
+      f.render({ artistName: name }); await settle();
+      const state = f.render();
+      assert.equal(state.error, null);
+      assert.equal(state.artistKey, name === "Saved" ? "saved" : null);
+      assert.equal(state.status, name === "Saved" ? "ready" : "unavailable");
+      const count = calls.length;
+      f.render(); await settle();
+      assert.equal(calls.length, count, "an unchanged render cannot restart the lookup");
+    }
+    assert.equal(calls.length, 6, "back navigation to the saved identity uses its durable cache");
+    f.render({ artistName: " ".repeat(3) }); await settle();
+    f.render({ artistName: "x".repeat(121) }); await settle();
+    assert.equal(calls.length, 6, "empty and overlong input cannot reach the API");
   } finally { f.dispose(); }
 });

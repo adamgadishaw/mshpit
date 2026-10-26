@@ -190,12 +190,12 @@ export async function attachArtistSuggestion(artist, {
 
 // Keep unavailable and no-match distinct. Interactive callers handle this
 // error inline; metadata-only callers can retain their already displayed data.
-export async function fetchResolvedArtist(name, { signal, apiClient } = {}) {
+export async function fetchResolvedArtist(name, { signal, apiClient, scope } = {}) {
   if (typeof apiClient !== "function") throw new TypeError("Artist lookup requires an API client.");
   if (signal?.aborted) throw abortError(signal);
   const term = String(name || "").trim();
   if (!term || [...term].length > 120) return null;
-  const result = await apiClient(`/api/artists/resolve?name=${encodeURIComponent(term)}`, {
+  const result = await apiClient(`/api/artists/resolve?name=${encodeURIComponent(term)}${scope === "stored" ? "&scope=stored" : ""}`, {
     signal, silent: true, timeoutMs: 8_000, context: "Looking up an artist",
   });
   if (signal?.aborted) throw abortError(signal);

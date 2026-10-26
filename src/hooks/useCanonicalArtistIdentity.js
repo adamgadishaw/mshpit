@@ -80,7 +80,8 @@ export default function useCanonicalArtistIdentity({
     setResolution({ scope, status: "checking", identity: cached });
     Promise.resolve().then(() => {
       if (!isCurrent()) return null;
-      return resolverRef.current?.(cached.artistName, { signal: request.controller.signal, throwOnError: true });
+      // Provider previews cannot supply the durable identity this hook needs.
+      return resolverRef.current?.(cached.artistName, { signal: request.controller.signal, throwOnError: true, scope: "stored" });
     })
       .then((catalogArtist) => {
         if (!isCurrent()) return;

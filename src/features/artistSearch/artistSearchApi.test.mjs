@@ -209,3 +209,16 @@ test("persisted catalog search clears an older preview marker without losing ric
   assert.equal(mergeArtistSearchCacheEntry(preview, { ...stored, transient: true }).transient, true);
   assert.equal(mergeArtistSearchCacheEntry(preview, { name: stored.name, searchSummary: true }).transient, true);
 });
+test("stored resolution is opt-in and preserves validation, abort and failure semantics", async () => {
+  const calls = [];
+  const apiClient = async (path) => { calls.push(path); return { artist: null }; };
+  assert.equal(await fetchResolvedArtist("Unknown", { scope: "stored", apiClient }), null);
+  await fetchResolvedArtist("Discovery", { apiClient });
+  assert.deepEqual(calls, ["/api/artists/resolve?name=Unknown&scope=stored", "/api/artists/resolve?name=Discovery"]);
+  await assert.rejects(fetchResolvedArtist("Invalid", { scope: "stored", apiClient: async () => ({}) }), /invalid response/);
+  const failure = Object.assign(new Error("Catalogue unavailable"), { status: 503 });
+  await assert.rejects(fetchResolvedArtist("Failure", { scope: "stored", apiClient: async () => { throw failure; } }), (error) => error === failure);
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(fetchResolvedArtist("Cancelled", { scope: "stored", signal: controller.signal, apiClient }), { name: "AbortError" });
+  assert.equal(calls.length, 2);
+});
