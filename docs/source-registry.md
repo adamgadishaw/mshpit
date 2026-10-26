@@ -59,8 +59,10 @@ endpoint is added to the remembered Newsroom allowlist. All admins may manage
 site attribution; post authorship is not a grant of source-management rights.
 
 Reads use parameterized SQL with escaped LIKE patterns. At most 20 articles and
-20 editions per page are returned, each with at most 100 supplemental credits
-and 100 historical citation candidates. Page is capped at 10,000 and queries at
+20 editions per page are returned, each with at most 100 combined, deduplicated credits per credit page. Public and
+admin previous/next credit controls expose further pages without a total-credit
+cap. Direct links retain the article or edition. Credit/licence line endings
+normalize to LF and render with preserved line breaks; other controls remain rejected. Page is capped at 10,000 and queries at
 160 characters. The fixed provider list and existing validated photo registry
 are server-owned; only a 20-photo page reaches the browser. Search uses SQLite
 filtering, not a new FTS index/trigger or a full-catalog startup download.

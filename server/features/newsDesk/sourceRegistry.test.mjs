@@ -147,3 +147,46 @@ test("public read errors have a safe retry view without leaking internal details
   assert.equal(result.status,503);assert.match(result.body,/Sources are temporarily unavailable/);
   assert.doesNotMatch(result.body,/token-secret|private database/);assert.match(result.body,/Reload Sources/);
 });
+test("populated editions allow moves and expose every credit through bounded continuation",()=>{
+  const {db,registry}=fixture();
+  registry.saveEdition({slug:"other-edition",title:"Other edition",status:"published",revision:0},()=>{},()=>{});
+  for(let i=0;i<100;i++) registry.save(source({postId:"",name:`Creator ${i}`,url:`https://www.nme.com/credit-${i}`,position:i}),()=>{},()=>{});
+  const moving=registry.save(source({postId:"",edition:"other-edition",name:"Moving creator"}),()=>{},()=>{});
+  const moved=registry.save(source({postId:"",id:moving.id,revision:1,edition:"synthetic-edition",name:"Moving creator",position:100}),()=>{},()=>{});
+  assert.equal(moved.revision,2);
+  assert.throws(()=>registry.save(source({postId:"",id:moving.id,revision:1,edition:"other-edition"}),()=>{},()=>{}),e=>e.status===409);
+  const first=registry.list({edition:"synthetic-edition"}).editions[0];
+  assert.equal(first.credits.length,100);assert.equal(first.nextCreditPage,2);
+  const second=registry.list({edition:"synthetic-edition",creditPage:2}).editions[0];
+  assert.equal(second.credits.length,1);assert.equal(second.credits[0].id,moving.id);assert.equal(second.nextCreditPage,null);
+  assert.equal(new Set([...first.credits,...second.credits].map(c=>c.id)).size,101);
+  const added=registry.save(source({postId:"",name:"Beyond old capacity",url:"https://www.nme.com/beyond-capacity",position:101}),()=>{},()=>{});
+  assert.equal(registry.list({edition:"synthetic-edition",creditPage:2}).editions[0].credits[1].id,added.id);
+  assert.equal(db.prepare("SELECT count(*) n FROM news_source_credits WHERE edition='synthetic-edition'").get().n,102);
+});
+test("multiline attribution normalizes line endings and rejects dangerous controls narrowly",()=>{
+  const {db,registry}=fixture();
+  const saved=registry.save(source({credit:"Line one\r\nLine two\rLine three",licence:"CC BY 4.0\nRequired attribution"}),()=>{},()=>{});
+  assert.equal(saved.credit,"Line one\nLine two\nLine three");assert.equal(saved.licence,"CC BY 4.0\nRequired attribution");
+  const html=renderSourceRegistryPage(db,new URLSearchParams("post=news_24"));
+  assert.match(html,/Line one\nLine two\nLine three/);assert.match(html,/white-space:pre-wrap/);
+  for(const control of ["\u0000","\u0008","\u0009","\u000b","\u001b","\u007f"]) assert.throws(()=>registry.save(source({credit:`First${control}Second`}),()=>{},()=>{}),e=>e.status===400);
+  for(const key of ["name","url","edition","postId"]) assert.throws(()=>registry.save(source({[key]:"First\nSecond"}),()=>{},()=>{}),e=>e.status===400);
+  assert.throws(()=>registry.save(source({credit:"x".repeat(1001)}),()=>{},()=>{}),e=>e.status===400);
+});
+
+test("large editions continue with stable order and direct public navigation",()=>{
+  const {registry,db}=fixture();
+  for(let i=0;i<251;i++) registry.save(source({postId:"",name:`Large creator ${i}`,position:i,url:`https://www.nme.com/large-${i}`}),()=>{},()=>{});
+  const ids=[];
+  for(let creditPage=1;creditPage<=3;creditPage++) {
+    const page=registry.list({edition:"synthetic-edition",creditPage}).editions[0];
+    assert.equal(page.credits.length,creditPage===3?51:100);
+    assert.equal(page.nextCreditPage,creditPage===3?null:creditPage+1);
+    ids.push(...page.credits.map(c=>c.id));
+  }
+  assert.equal(new Set(ids).size,251);
+  const html=renderSourceRegistryPage(db,new URLSearchParams("edition=synthetic-edition&creditPage=2"));
+  assert.match(html,/Previous credits/);assert.match(html,/Next credits/);
+  assert.match(html,/edition=synthetic-edition&amp;creditPage=3/);
+});

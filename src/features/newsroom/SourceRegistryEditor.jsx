@@ -19,14 +19,14 @@ export default function SourceRegistryEditor({ accountId }) {
   const [busy,setBusy] = useState(false);
   const [message,setMessage] = useState("");
   const serial = useRef(0);
-  const article = mode==="article" ? resource.data?.articles?.[0] : resource.data?.editions?.[0] ? {postId:"",headline:resource.data.editions[0].title,credits:resource.data.editions[0].credits} : null;
-  const load = async () => {
+  const article = mode==="article" ? resource.data?.articles?.[0] : resource.data?.editions?.[0] ? {...resource.data.editions[0],postId:"",headline:resource.data.editions[0].title} : null;
+  const load = async (creditPage = 1) => {
     const postId = mode==="article" ? publishedNewsPostId(link) : "";
     if (mode==="article" && !postId) { setMessage("Enter the published article link."); return; }
     if (mode==="edition" && !edition.slug) { setMessage("Enter an edition link name."); return; }
     const ticket = ++serial.current;
     setResource(current => beginLoadState(current,{scope:accountId,retainData:false})); setSource(empty()); setMessage("");
-    try { const data = await readSourceCredits({accountId,postId,edition:mode==="edition"?edition.slug:""}); if(ticket===serial.current) {setResource(resolveLoadState({scope:accountId,data}));if(mode==="edition" && data.editions[0]) setEdition(data.editions[0]);} }
+    try { const data = await readSourceCredits({accountId,postId,edition:mode==="edition"?edition.slug:"",creditPage}); if(ticket===serial.current) {setResource(resolveLoadState({scope:accountId,data}));if(mode==="edition" && data.editions[0]) setEdition(data.editions[0]);} }
     catch(error) { if(ticket===serial.current) setResource(current => rejectLoadState(current,{scope:accountId,error:toAppError(error),retainData:false})); }
   };
   const save = async () => {
@@ -51,18 +51,19 @@ export default function SourceRegistryEditor({ accountId }) {
       {edition.revision ? <Pressable accessibilityRole="link" onPress={()=>Linking.openURL(publicUrl(`/promotion-sources?edition=${encodeURIComponent(edition.slug)}`))}><Text style={{...copy,color:colors.gold}}>Open this edition’s sources</Text></Pressable> : null}
       <Button title="New edition" variant="secondary" disabled={busy} onPress={()=>{setEdition({slug:"",title:"",status:"draft",revision:0});setResource(createLoadState({scope:accountId}));setSource(empty());}} />
     </>}
-    <Button title="Load credits" onPress={load} disabled={busy || resource.status==="loading"} />
+    <Button title="Load credits" onPress={()=>load()} disabled={busy || resource.status==="loading"} />
     {resource.status==="loading" ? <Text style={copy}>Loading credits…</Text> : null}
     {resource.error ? <Text accessibilityRole="alert" style={copy}>{resource.error.message}</Text> : null}
     {resource.status==="ready" && !article ? <Text style={copy}>No available public article matches that link.</Text> : null}
     {article ? <>
       <Text style={{...copy,fontWeight:"800"}}>{article.headline}</Text>
       {article.credits.map((item,index) => <View key={item.id || index} style={{gap:6}}>
-        <Text style={copy}>{item.name} · {item.kind}{item.credit ? ` — ${item.credit}` : ""}</Text>
+        <Text style={copy}>{item.name} · {item.kind}{item.credit ? ` — ${item.credit}` : ""}{item.licence ? `\n${item.licence}` : ""}</Text>
         <Button small variant="secondary" title={item.id ? "Edit credit" : "Add attribution details"} disabled={busy} onPress={() => {
           setSource({...empty(),kind:item.kind,name:item.name,url:item.url,credit:item.credit || "",licence:item.licence || "",edition:item.edition || "",position:item.position || 0,...(item.id?{id:item.id,revision:item.revision}:{})}); setMessage("");
         }} />
       </View>)}
+      <View style={{flexDirection:"row",flexWrap:"wrap",gap:8}}>{article.creditPage>1 ? <Button title="Previous credits" disabled={busy} onPress={()=>load(article.creditPage-1)} /> : null}{article.nextCreditPage ? <Button title="Next credits" disabled={busy} onPress={()=>load(article.nextCreditPage)} /> : null}<Text style={copy}>Credits page {article.creditPage || 1}</Text></View>
       <Button small variant="secondary" title="Add source" disabled={busy} onPress={() => {setSource(empty());setMessage("");}} />
       <Text style={copy}>{source.id ? "Edit source" : "New source"}</Text>
       <View style={{flexDirection:"row",flexWrap:"wrap",gap:8}}>{kinds.map(kind => <Button key={kind} small title={kind} variant={source.kind===kind?"primary":"secondary"} disabled={busy} onPress={() => setSource({...source,kind})} />)}</View>

@@ -123,6 +123,12 @@ test("source registry real HTTP enforces full admin, origin, identity and source
   assert.equal((await publicRead()).data.editions.length,0);
   assert.equal((await request("/api/moderation/source-editions",{user:fixture.users.admin,method:"PUT",body:{...edition,status:"published",revision:1}})).status,200);
   assert.equal((await publicRead()).data.editions[0].credits.length,1);
+  await ipc("source-large-edition");
+  const largeFirst=(await publicRead()).data.editions[0];
+  const largeNext=(await request(`/api/source-credits?edition=${edition.slug}&creditPage=2`,{user:null,method:"GET"})).data.editions[0];
+  assert.equal(largeFirst.credits.length,100);assert.equal(largeFirst.nextCreditPage,2);
+  assert.equal(largeNext.credits.length,2);assert.equal(largeNext.nextCreditPage,null);
+  assert.equal(new Set([...largeFirst.credits,...largeNext.credits].map(c=>c.id)).size,102);
   if(process.env.PIT_SOURCE_BROWSER==="1") {
     const {verifySourceRegistryBrowser}=await import("../../../scripts/verify-source-registry-browser.mjs");
     await verifySourceRegistryBrowser({origin,cookie:fixture.users.admin.cookie,postId});

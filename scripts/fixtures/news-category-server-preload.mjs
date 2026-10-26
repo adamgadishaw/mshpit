@@ -86,6 +86,10 @@ process.on("message", ({ id, operation, postId, value } = {}) => {
       db.exec("CREATE TEMP TRIGGER revoke_source_session AFTER INSERT ON moderation_actions WHEN NEW.action='source_credit_saved' BEGIN DELETE FROM sessions WHERE user_id='category_admin'; END");
     } else if (operation === "source-clear-trigger") {
       db.exec("DROP TRIGGER IF EXISTS revoke_source_session");
+    } else if (operation === "source-large-edition") {
+      const insert=db.prepare("INSERT INTO news_source_credits(id,post_id,kind,name,url,credit,licence,edition,position,revision) VALUES (?,NULL,'music',?,?,?,'','synthetic-http-edition',?,1)");
+      for(let i=0;i<101;i++) insert.run(`large-${i}`,`Large creator ${i}`,`https://www.nme.com/large-${i}`,`Large credit ${i}`,i+1);
+      result=true;
     } else if (operation === "source-snapshot") {
       result={credits:db.prepare("SELECT * FROM news_source_credits ORDER BY id").all(),editions:db.prepare("SELECT * FROM news_source_editions ORDER BY slug").all(),audit:db.prepare("SELECT * FROM moderation_actions WHERE action='source_credit_saved' ORDER BY id").all()};
     } else if (operation === "seed-legacy-category") {

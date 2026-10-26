@@ -25,6 +25,11 @@ export async function verifySourceRegistryBrowser({ origin, cookie, postId }) {
       await page.getByRole("heading",{name:"Synthetic standalone edition",exact:true}).waitFor();
       assert.ok(await page.getByText("Synthetic clip credit",{exact:false}).count());
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false,"public page must fit viewport");
+      await page.getByRole("link",{name:"Next credits",exact:true}).click();
+      await page.getByText("Large creator 100",{exact:true}).waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("edition"),"synthetic-http-edition");
+      await page.getByRole("link",{name:"Previous credits",exact:true}).click();
+      await page.goto(`${origin}/promotion-sources?edition=synthetic-http-edition`);
       await page.keyboard.press("Tab");assert.equal(await page.evaluate(()=>document.activeElement.textContent),"Skip to content");
       await page.keyboard.press("Enter");
       await page.screenshot({path:resolve(directory,`edition-${width}.png`),fullPage:true});
@@ -65,9 +70,12 @@ export async function verifySourceRegistryBrowser({ origin, cookie, postId }) {
       await saveButton.focus();const savedResponse=page.waitForResponse(r=>r.url().endsWith("/api/moderation/source-credits") && r.request().method()==="PUT");
       await page.keyboard.press("Enter");assert.equal((await savedResponse).status(),200);
       await page.getByText("Credit saved. Article content is unchanged.",{exact:true}).waitFor();
-      await page.getByLabel("Credit text",{exact:true}).fill("Edited music attribution. ".repeat(20));
+      await page.getByLabel("Credit text",{exact:true}).fill("Edited music attribution. ".repeat(10)+"\nSecond attribution line");
       const editedResponse=page.waitForResponse(r=>r.url().endsWith("/api/moderation/source-credits") && r.request().method()==="PUT");
       await saveButton.focus();await page.keyboard.press("Enter");assert.equal((await editedResponse).status(),200);
+      await page.getByRole("button",{name:"Load credits",exact:true}).click();
+      await page.getByText("Loading credits…",{exact:true}).waitFor({state:"hidden"});
+      await page.getByText("Second attribution line",{exact:false}).first().waitFor();
       await page.getByRole("button",{name:"Save source",exact:true}).scrollIntoViewIfNeeded();
       await page.screenshot({path:resolve(directory,`admin-source-${width}.png`),fullPage:true});
       await page.getByRole("button",{name:"Edition",exact:true}).click();
@@ -75,6 +83,10 @@ export async function verifySourceRegistryBrowser({ origin, cookie, postId }) {
       await page.getByRole("button",{name:"Load credits",exact:true}).click();
       await page.getByText("Loading credits…",{exact:true}).waitFor({state:"hidden"});
       assert.equal(await page.getByLabel("Edition title",{exact:true}).inputValue(),"Synthetic standalone edition");
+      await page.getByRole("button",{name:"Next credits",exact:true}).click();
+      await page.getByText("Large creator 100",{exact:false}).waitFor();
+      await page.getByRole("button",{name:"Previous credits",exact:true}).click();
+      await page.getByText("Loading credits…",{exact:true}).waitFor({state:"hidden"});
       await page.getByRole("button",{name:"Save edition",exact:true}).scrollIntoViewIfNeeded();
       await page.screenshot({path:resolve(directory,`admin-edition-${width}.png`),fullPage:true});
       await page.goto(`${origin}/promotion-sources?post=${postId}`);

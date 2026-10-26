@@ -39,53 +39,68 @@ const publicStories = `FROM news_stories s JOIN posts p ON p.id=s.post_id JOIN u
  AND u.profile_audience='everyone'`;
 export function sourceRegistry(db) {
   const isPublished = postId => db.prepare(`SELECT s.post_id ${publicStories} AND s.post_id=?`).get(postId);
-  function list({ q = "", post = "", edition = "", kind = "", page = 1 } = {}, { staff = false } = {}) {
+  function creditPageFor({postId="",edition="",kind="",creditPage=1,staff=false}) {
+    // Combine/dedupe in SQLite before paging; never download the full credit list.
+    const records=db.prepare(`WITH historical AS (
+      SELECT CAST(j.key AS INTEGER) ordinal,
+        CASE json_extract(j.value,'$.kind') WHEN 'photo' THEN 'photographs' ELSE 'reporting' END kind,
+        COALESCE(json_extract(j.value,'$.name'),'') name,json_extract(j.value,'$.url') url,
+        COALESCE(json_extract(j.value,'$.credit'),'') credit
+      FROM news_stories s,json_each(CASE WHEN json_valid(s.sources) AND json_type(s.sources)='array' THEN s.sources ELSE '[]' END) j
+      WHERE s.post_id=? AND j.type='object' AND COALESCE(json_extract(j.value,'$.kind'),'article') IN ('article','photo')
+    ), stored AS (
+      SELECT c.* FROM news_source_credits c WHERE COALESCE(c.post_id,'')=? AND (?='' OR c.edition=?)
+        AND (? OR c.edition='' OR EXISTS(SELECT 1 FROM news_source_editions e WHERE e.slug=c.edition AND e.status='published'))
+    ), combined AS (
+      SELECT 0 stream,c.id,c.post_id,c.kind,c.name,c.url,c.credit,c.licence,c.edition,c.position,c.revision,
+        CASE WHEN c.licence='' AND EXISTS(SELECT 1 FROM historical h WHERE h.kind=c.kind AND h.url=c.url AND h.name=c.name AND h.credit=c.credit)
+          THEN 'published article + registry' ELSE 'registry' END provenance FROM stored c
+      UNION ALL
+      SELECT 1,NULL,?,h.kind,h.name,h.url,h.credit,'','',h.ordinal,NULL,'published article' FROM historical h
+        WHERE NOT EXISTS(SELECT 1 FROM stored c WHERE c.kind=h.kind AND c.url=h.url AND c.name=h.name AND c.credit=h.credit AND c.licence='')
+        AND h.ordinal=(SELECT MIN(h2.ordinal) FROM historical h2 WHERE h2.kind=h.kind AND h2.url=h.url AND h2.name=h.name AND h2.credit=h.credit)
+    ) SELECT * FROM combined WHERE (?='' OR kind=?) ORDER BY stream,position,id LIMIT 101 OFFSET ?`)
+      .all(postId,postId,edition,edition,Number(staff),postId,kind,kind,(creditPage-1)*100);
+    const credits=records.slice(0,100).flatMap(record=>{
+      const url=registryUrl(record.url);if(!url) return [];
+      const projected={...record,url,name:String(record.name || new URL(url).hostname).slice(0,200),credit:String(record.credit || '').slice(0,1000),licence:String(record.licence || '').slice(0,1000)};
+      delete projected.stream;return [projected];
+    });
+    return {credits,creditPage,nextCreditPage:records.length>100?creditPage+1:null};
+  }
+  function list({ q = "", post = "", edition = "", kind = "", page = 1, creditPage = 1 } = {}, { staff = false } = {}) {
     q = String(q).trim().slice(0, 160); post = String(post).slice(0, 100); edition = String(edition).slice(0, 80);
     page = Math.max(1, Math.min(10000, Math.trunc(Number(page)) || 1));
+    creditPage=Number(creditPage);
+    if(!Number.isSafeInteger(creditPage) || creditPage<1 || creditPage>Math.floor(Number.MAX_SAFE_INTEGER/100)) creditPage=1;
     const pattern = `%${q.replace(/[\\%_]/gu, "\\$&")}%`;
     kind=sourceKinds.includes(kind)?kind:"";
     const params = [post, post, edition, edition, Number(staff), q, pattern, pattern, Number(staff), pattern,kind,kind,Number(staff),kind];
     const where = ` AND (?='' OR s.post_id=?) AND (?='' OR EXISTS(SELECT 1 FROM news_source_credits c JOIN news_source_editions e ON e.slug=c.edition WHERE c.post_id=s.post_id AND c.edition=? AND (? OR e.status='published')))
       AND (?='' OR s.headline LIKE ? ESCAPE '\\' OR EXISTS(SELECT 1 FROM news_source_credits c WHERE c.post_id=s.post_id AND c.name LIKE ? ESCAPE '\\'
         AND (? OR c.edition='' OR EXISTS(SELECT 1 FROM news_source_editions e WHERE e.slug=c.edition AND e.status='published')))
-      OR EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(s.sources) THEN s.sources ELSE '[]' END) j WHERE json_extract(CASE WHEN j.type='object' THEN j.value ELSE '{}' END,'$.name') LIKE ? ESCAPE '\\'))
+      OR EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(s.sources) AND json_type(s.sources)='array' THEN s.sources ELSE '[]' END) j WHERE json_extract(CASE WHEN j.type='object' THEN j.value ELSE '{}' END,'$.name') LIKE ? ESCAPE '\\'))
       AND (?='' OR EXISTS(SELECT 1 FROM news_source_credits c WHERE c.post_id=s.post_id AND c.kind=? AND (? OR c.edition='' OR EXISTS(SELECT 1 FROM news_source_editions e WHERE e.slug=c.edition AND e.status='published')))
-      OR EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(s.sources) THEN s.sources ELSE '[]' END) j WHERE CASE json_extract(CASE WHEN j.type='object' THEN j.value ELSE '{}' END,'$.kind') WHEN 'photo' THEN 'photographs' ELSE 'reporting' END=?))`;
+      OR EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(s.sources) AND json_type(s.sources)='array' THEN s.sources ELSE '[]' END) j WHERE CASE json_extract(CASE WHEN j.type='object' THEN j.value ELSE '{}' END,'$.kind') WHEN 'photo' THEN 'photographs' ELSE 'reporting' END=?))`;
     const rows = db.prepare(`SELECT s.post_id,s.headline,s.sources ${publicStories} ${where}
       ORDER BY s.created_at DESC,s.id DESC LIMIT 21 OFFSET ?`).all(...params, (page - 1) * 20);
     const hasMore = rows.length > 20;
-    const articles = rows.slice(0,20).map(row => {
-      let historical;
-      try { historical = JSON.parse(row.sources); } catch { historical = []; }
-      if (!Array.isArray(historical)) historical = [];
-      const stored = db.prepare(`SELECT * FROM news_source_credits WHERE post_id=? AND (?='' OR edition=?) AND (? OR edition='' OR EXISTS(SELECT 1 FROM news_source_editions e WHERE e.slug=edition AND e.status='published')) ORDER BY position,id LIMIT 100`).all(row.post_id,edition,edition,Number(staff));
-      const credits = stored.map(c => ({ ...c, provenance: "registry" }));
-      const identity = c => JSON.stringify([c.kind,c.url,c.name,c.credit || "",c.licence || ""]);
-      const seen = new Map(credits.map(c=>[identity(c),c]));
-      for (const source of historical.slice(0,100)) {
-        const url = registryUrl(source?.url);
-        if (!url || ![undefined,"article","photo"].includes(source.kind)) continue;
-        const sourceKind = source.kind === "photo" ? "photographs" : "reporting";
-        const projected={ kind: sourceKind, url, name: String(source.name || new URL(url).hostname).slice(0,200),
-          credit: String(source.credit || "").slice(0,1000), licence: "", provenance: "published article" };
-        const key=identity(projected);
-        if(seen.has(key)) { if(seen.get(key).id) seen.get(key).provenance="published article + registry";continue; }
-        seen.set(key,projected);credits.push(projected);
-      }
-      return { postId: row.post_id, headline: row.headline, credits: credits.filter(c => !kind || c.kind === kind) };
-    });
+    const articles = rows.slice(0,20).map(row => ({postId:row.post_id,headline:row.headline,...creditPageFor({postId:row.post_id,edition,kind,creditPage,staff})}));
     const editions = !post ? db.prepare(`SELECT * FROM news_source_editions WHERE (? OR status='published') AND (?='' OR slug=?)
       AND (?='' OR title LIKE ? ESCAPE '\\' OR slug LIKE ? ESCAPE '\\' OR EXISTS(SELECT 1 FROM news_source_credits c WHERE c.post_id IS NULL AND c.edition=slug AND c.name LIKE ? ESCAPE '\\'))
       AND (?='' OR EXISTS(SELECT 1 FROM news_source_credits c WHERE c.post_id IS NULL AND c.edition=slug AND c.kind=?)) ORDER BY created_at DESC,slug LIMIT 21 OFFSET ?`)
-      .all(Number(staff),edition,edition,q,pattern,pattern,pattern,kind,kind,(page-1)*20).map(e => ({...e,credits:db.prepare("SELECT * FROM news_source_credits WHERE post_id IS NULL AND edition=? ORDER BY position,id LIMIT 100").all(e.slug).filter(c=>!kind || c.kind===kind)})) : [];
-    return { articles, editions:editions.slice(0,20), hasMore:hasMore || editions.length>20, page, q, post, edition, kind };
+      .all(Number(staff),edition,edition,q,pattern,pattern,pattern,kind,kind,(page-1)*20).map(e => ({...e,...creditPageFor({edition:e.slug,kind,creditPage,staff})})) : [];
+    return { articles, editions:editions.slice(0,20), hasMore:hasMore || editions.length>20, page, q, post, edition, kind,creditPage };
   }
   function save(input, authorize, audit) {
     const allowed = ["id","postId","kind","name","url","credit","licence","edition","position","revision"];
     if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(k => !allowed.includes(k))) throw new ApiError(400,"Check the source fields.","VALIDATION_FAILED");
     const text = (key, max, required = false) => {
-      const value = input[key] ?? "";
-      if (typeof value !== "string" || value.length > max || (required && !value.trim()) || /[\u0000-\u001f\u007f]/u.test(value)) throw new ApiError(400,`Check ${key}.`,"VALIDATION_FAILED");
+      let value = input[key] ?? "";
+      const multiline=key==='credit' || key==='licence';
+      if(typeof value==='string' && multiline) value=value.replace(/\r\n?/gu,'\n');
+      const controls=multiline?/[\u0000-\u0009\u000b-\u001f\u007f]/u:/[\u0000-\u001f\u007f]/u;
+      if (typeof value !== "string" || value.length > max || (required && !value.trim()) || controls.test(value)) throw new ApiError(400,`Check ${key}.`,"VALIDATION_FAILED");
       assertSafeAuthoredText(value, { field: key }); return value.trim();
     };
     const postId = text("postId",100), name = text("name",200,true), credit = text("credit",1000), licence = text("licence",1000), edition = text("edition",80);
@@ -101,7 +116,6 @@ export function sourceRegistry(db) {
       if (prior && prior.revision !== input.revision) throw new ApiError(409,"This credit changed. Reload before editing.","CONFLICT");
       const duplicate = db.prepare("SELECT id FROM news_source_credits WHERE COALESCE(post_id,'')=? AND edition=? AND kind=? AND url=? AND name=? AND credit=? AND licence=?").get(postId,edition,input.kind,url,name,credit,licence);
       if (duplicate && duplicate.id !== prior?.id) throw new ApiError(409,"That source is already listed for this article and kind.","CONFLICT");
-      if (!prior && db.prepare("SELECT count(*) n FROM news_source_credits WHERE COALESCE(post_id,'')=? AND (?<>'' OR edition=?)").get(postId,postId,edition).n>=100) throw new ApiError(400,"This article or edition has reached its 100-credit limit.","VALIDATION_FAILED");
       const next = { id: prior?.id || randomUUID(), post_id:postId || null, kind:input.kind, name,url,credit,licence,edition,position:input.position,revision:(prior?.revision || 0)+1 };
       db.prepare(`INSERT INTO news_source_credits(id,post_id,kind,name,url,credit,licence,edition,position,revision)
         VALUES (@id,@post_id,@kind,@name,@url,@credit,@licence,@edition,@position,@revision)
