@@ -9,6 +9,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { venueHydrationAlias, venueHydrationPath, venueHydrationResponse, venueHydrationText } from "./venue-hydration-fixture.mjs";
+import { createHomeDiagnostics } from "./navigation-home-diagnostics.mjs";
 
 const require = createRequire(import.meta.url);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -320,6 +321,9 @@ async function visiblePage(page, path) {
 
 async function runCase(browser, origin, item) {
   const context = await browser.newContext({ viewport: { width: item.width, height: 844 }, isMobile: item.width < 620, hasTouch: item.width < 620, serviceWorkers: "block" });
+  const diagnostics = createHomeDiagnostics({ context, name: item.name,
+    directory: join(root, ".tmp", "navigation-browser-diagnostics"), timeoutMs });
+  await diagnostics.start();
   const state = { member: !!item.member, artistBioMode: "imported", calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [], releaseResolve: null, resolveReleased: false, releaseLookup: null, lookupAttempts: 0, expectedLookupErrors: 0, snapshots: [] };
   await context.addInitScript(({ user, origin }) => {
     // The context script also runs in a new tab's opaque about:blank document.
@@ -409,6 +413,7 @@ async function runCase(browser, origin, item) {
     }
   });
   const page = await context.newPage();
+  diagnostics.phase("initial post", page);
   const snapshot = async label => state.snapshots.push({ label, ...await page.evaluate(() => ({ path: location.pathname, historyLength: history.length, title: document.title })) });
   const openTab = async label => { await page.getByRole("tab", { name: label, exact: true }).click(); };
   let failure = null;
@@ -692,16 +697,24 @@ async function runCase(browser, origin, item) {
         await page.goForward({ waitUntil: "networkidle" }); await visiblePage(page, path); await assertPath(page, path);
       }
     } else if (item.kind === "home") {
+      diagnostics.phase("original post ready", page);
       await visiblePage(page, start);
       const home = page.getByRole("link", { name: item.width >= 620 ? "Pit home" : "Home", exact: true }).first();
       assert.equal(await home.getAttribute("href"), "/");
       const popupPromise = context.waitForEvent("page");
+      diagnostics.phase("middle-click Home", page);
       await home.click({ button: "middle" });
       const popup = await popupPromise;
+      diagnostics.phase("popup landing", popup, "popup");
       await landing(popup); await assertPath(popup, "/");
       assert.equal(await login(popup).count(), 0, "Opening Home in another tab unexpectedly required sign-in.");
+      await diagnostics.rememberPopup(popup);
+      diagnostics.phase("close popup", popup, "popup");
       await popup.close();
-      await home.click(); await landing(page); await assertPath(page, "/");
+      diagnostics.phase("ordinary-click Home", page);
+      await home.click();
+      diagnostics.phase("original landing", page);
+      await landing(page); await assertPath(page, "/");
       assert.equal(await login(page).count(), 0, "Ordinary Home differed from the same link opened in a new tab.");
     } else if (item.kind === "signed-in-root") {
       await visiblePage(page, start);
@@ -803,6 +816,8 @@ async function runCase(browser, origin, item) {
   } finally {
     state.releaseResolve?.();
     state.releaseLookup?.();
+    const evidence = await diagnostics.finish(failure);
+    if (evidence) state.diagnostics = evidence;
     await context.close();
   }
   return { name: item.name, passed: !failure, ...(failure ? { failure, ...state, releaseResolve: undefined, releaseLookup: undefined } : {}) };
