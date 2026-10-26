@@ -36,7 +36,10 @@ function serviceBlock(name, nextName) {
 }
 
 test("video verifier container pins its runtime and drops root privileges", () => {
-  assert.match(dockerfile, /^ARG NODE_IMAGE=node:24\.19\.0-bookworm-slim@sha256:[a-f0-9]{64}$/m);
+  assert.match(dockerfile, /^ARG NODE_IMAGE=node:24\.22\.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205$/m);
+  assert.deepEqual(dockerfile.match(/^FROM .+$/gm), [
+    "FROM ${NODE_IMAGE} AS ffmpeg-build", "FROM ${NODE_IMAGE}",
+  ], "build and runtime must use the same patched official image");
   assert.match(dockerfile, /^ARG FFMPEG_VERSION=9\.0\.1$/m);
   assert.match(dockerfile, /^ARG FFMPEG_SHA256=[a-f0-9]{64}$/m);
   assert.match(dockerfile, /--disable-network/);

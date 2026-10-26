@@ -1,5 +1,18 @@
 # Pit current status
 
+## 2026-10-26 Video verifier runtime refresh (local review)
+
+- Isolated branch `fix/video-verifier-node-ca-refresh` starts at verified current
+  master `60ff9d3445144137fc619be4347ffd4291a1f86a`. PR 78 reliability and PR 74
+  search changes are excluded.
+- Both Docker stages now pin the official Node 24.22.1 Bookworm Slim image index.
+  Existing CA package installation, FFmpeg build, self-tests, media policy and
+  service/resource settings are preserved. Fresh no-cache build acceptance is
+  required before release; certificate refresh alone is insufficient.
+- Provenance, local checks, exact remaining gates and rollback implications are
+  in [the runtime review](docs/VIDEO_VERIFIER_RUNTIME_REVIEW_2026-10-26.md).
+  This is an uncommitted local candidate, with no push, PR, merge or deployment.
+
 ## 2026-10-26 Stored artist identity on event navigation (local review)
 
 - Isolated branch `fix/stored-artist-navigation` starts at verified remote master
