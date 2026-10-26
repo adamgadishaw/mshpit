@@ -92,6 +92,8 @@ import { createJobRepository } from "./features/jobs/jobRepository.js";
 import { jobPublicPage } from "./features/jobs/jobPublicPage.js";
 import { SECURITY_TXT_PATH, securityTxtResponse } from "./securityTxt.js";
 import { staticAssetCacheControl } from "./staticAssetCache.js";
+import { serveFingerprintAsset } from "./webAssetServing.js";
+import { runtimeWebAssetArchive } from "./webAssetArchive.js";
 import { randomUUID } from "node:crypto";
 import { apiRetryAfterHeaders, createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
 import { CAPACITY_CHALLENGE_HEADER } from "./capacityHandshake.js";
@@ -362,6 +364,7 @@ function serveStatic(req, res, pathname) {
     return true;
   }
   if (pathname === "/") return false;
+  if (serveFingerprintAsset(req, res, pathname, { distDir: DIST, archive: runtimeWebAssetArchive(), headers: HEADERS })) return true;
   // Source maps are private diagnostics (clientSourceLocation.js). Every bundle
   // names its map, so a map must be refused here, not merely left unlinked.
   const privateAsset = privateStaticAssetResponse(pathname);
