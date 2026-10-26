@@ -23,6 +23,13 @@ const target = {
 };
 const insert = db.prepare('INSERT INTO tour_dates(id,artist,venue,place,date,source,updated_at,venue_city,venue_country_code,venue_country,venue_provider_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)');
 for (let i = 0; i < 28; i++) insert.run(i === 27 ? target.id : `catalog-browser-${String(i).padStart(2, '0')}`, target.artist, target.venue, target.place, i === 27 ? target.date : '2027-07-01', target.source, Date.now(), 'Toronto', 'CA', 'Canada', 'rogers-stadium-fixture');
+const coverageDate = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+for (const [id,artist] of [['catalog-title-tour','Fixture Artist'],['catalog-billing','Fixture Artist'],['catalog-unicode','Beyoncé']]) {
+  insert.run(id,artist,'Fixture Hall','Toronto',coverageDate,'ticketmaster',Date.now(),'Toronto','CA','Canada','fixture-hall');
+}
+db.prepare("UPDATE tour_dates SET event_name='Fixture Artist - Moonlight Tour',tour_name='Moonlight Tour' WHERE id='catalog-title-tour'").run();
+db.prepare("UPDATE tour_dates SET music_evidence='ticketmaster:classification:music',billed_artists=? WHERE id='catalog-billing'").run(JSON.stringify(['Fixture Artist','Support Lantern']));
+db.prepare("UPDATE tour_dates SET venue_region='Québec' WHERE id='catalog-unicode'").run();
 const output = resolve(process.env.PIT_CATALOG_BROWSER_OUTPUT || '../catalog-browser-receipt');
 mkdirSync(output, {
   recursive: true
@@ -348,6 +355,13 @@ try {
         }).click();
         await ready();
         assert.equal(await row().count(), 24);
+      });
+      await step('public title, tour, billing, region and accent coverage is retained', async () => {
+        for (const [query, artist] of [['Moonlight','Fixture Artist'],['Lantern','Fixture Artist'],['quebec','Beyoncé'],['BEYONCE\u0301','Beyoncé']]) {
+          await search(query); await shows().click();
+          await page.getByRole('button',{name:new RegExp('^Open show for '+artist+' at Fixture Hall')}).waitFor();
+          assert.equal(await row().count(),0,'A field query must not display unrelated Bon Jovi shows');
+        }
       });
       if (member) await step('logout during catalogue request discards old scope', async () => {
         state.hold = 'Bon Jovi';

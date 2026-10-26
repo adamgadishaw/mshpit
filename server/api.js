@@ -314,7 +314,7 @@ import {
   publicTourDateVenueFields,
   publicTourDateVenueName,
 } from "./publicTourDateVenueProjection.js";
-import { publicTourDateArtistProjection, publicTourDateProviderFields } from "./tourDateMetadata.js";
+import { publicTourDateBilledArtists, publicTourDateArtistProjection, publicTourDateProviderFields } from "./tourDateMetadata.js";
 import { isOwnerId, ownerAccount, readOwnerIdentity } from "./ownerIdentity.js";
 import {
   createOwnerApprovalRequest,
@@ -1109,14 +1109,7 @@ const tourDateArtistPhotos = createTourDateArtistPhotoReader(db);
 
 function tourDateJson(row) {
   const projectedArtist = publicTourDateArtistProjection(row);
-  let billedArtists = [];
-  if (row.music_evidence) {
-    try {
-      const parsed = JSON.parse(row.billed_artists || "[]");
-      if (Array.isArray(parsed)) billedArtists = parsed.slice(0, 20)
-        .filter((name) => typeof name === "string" && name.trim());
-    } catch { /* architecture: allow-empty-catch -- malformed provider evidence stays out of the public projection */ }
-  }
+  const billedArtists = publicTourDateBilledArtists(row);
   return {
     id: row.id,
     artist: projectedArtist.artist,

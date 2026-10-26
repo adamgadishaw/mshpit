@@ -1,3 +1,4 @@
+import { catalogSearchSqliteText } from "./features/catalogSearch/catalogSearchProjection.js";
 import { slugify } from "../src/domain/urls.mjs";
 
 export function pitPublicSlug(value) {
@@ -28,6 +29,7 @@ export function registerPitSqliteFunctions(database) {
   if (!database || typeof database.function !== "function") {
     throw new Error("A SQLite connection is required to register PIT functions.");
   }
+  database.function("pit_catalog_search_text_v1", { deterministic: true, varargs: true }, catalogSearchSqliteText);
   database.function("pit_public_slug", { deterministic: true }, pitPublicSlug);
   database.function("pit_venue_public_slug", { deterministic: true }, pitVenuePublicSlug);
   database.function("pit_artist_identity", { deterministic: true }, pitArtistIdentity);

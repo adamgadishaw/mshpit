@@ -1,3 +1,4 @@
+import { normalizeCatalogSearchText } from "../../../src/domain/catalogSearchText.mjs";
 import { createHash } from "node:crypto";
 import { normalizedTourDateStart } from "../../tourDateLifecycle.js";
 
@@ -11,9 +12,9 @@ export function catalogSearchRoutes({ ApiError, now, rateLimit, readPage, projec
       const input = ctx.query || {};
       if (Object.keys(input).some(key => !["q", "after", "limit"].includes(key))
         || typeof input.q !== "string" || input.q.length > 80) throw invalid();
-      const search = input.q.replace(/\s+/gu, " ").trim().toLowerCase();
+      const search = normalizeCatalogSearchText(input.q);
       const requested = input.limit == null ? 24 : Number(input.limit);
-      if (search.length < 2 || search.split(" ").length > 8 || /[\u0000-\u001f\u007f]/u.test(search)
+      if (search.length < 2 || search.split(" ").length > 8 || /[\u0000-\u001f\u007f]/u.test(input.q)
         || !Number.isSafeInteger(requested) || requested < 1) throw invalid();
       const limit = Math.min(24, requested);
       const key = queryKey(search);
