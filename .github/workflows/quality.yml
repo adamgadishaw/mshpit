@@ -80,6 +80,16 @@ jobs:
       - run: npm run verify:artist-account-browser
       - run: npm run verify:artist-identity-moderation-browser
       - run: npm run verify:navigation-browser
+      - name: Retain synthetic Home navigation diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: home-navigation-diagnostics-${{ github.run_attempt }}
+          path: .tmp/navigation-browser-diagnostics/home-link-member-390/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
       - run: npm run verify:news-browser
       - name: Verify news category corrections (isolated fixtures)
         run: node scripts/verify-news-category-browser.mjs
