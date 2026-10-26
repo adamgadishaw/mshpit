@@ -1,3 +1,4 @@
+import SourceRegistryEditor from "./SourceRegistryEditor";
 import { Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useEffect, useRef, useState } from "react";
 import { colors, font, radius, space } from "../../theme";
@@ -60,6 +61,7 @@ export default function NewsroomScreen({ accountId, role, active = true, onClose
       {canUseNewsroom(role) ? <NewsDeskEditor accountId={accountId} role={role} active={active}
         onCompositionStateChange={(state) => { composition.current = state; setProtectedForm(state.dirty || state.busy); }} />
         : <Text style={styles.denied}>The newsroom is for the news team. Ask an admin for editor access.</Text>}
+      {role === "admin" ? <SourceRegistryEditor key={accountId} accountId={accountId} /> : null}
     </ScrollView>
     <Modal visible={!!prompt} transparent animationType="fade" onRequestClose={() => stay()}>
       <View style={styles.scrim}>

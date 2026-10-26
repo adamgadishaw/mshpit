@@ -423,7 +423,7 @@ const PAGES = Object.freeze({
     ],
   },
   "/promotion-sources": {
-    title: "Promotion sources and credits",
+    title: "Sources",
     description: "How Mshpit credits separately approved member content used to promote the app, and how to request a correction or withdraw permission.",
     intro: "Mshpit promotion must credit the people whose content it uses. Social-media posts and paid ads require separate permission for the specific content and intended use; a public upload or community spotlight setting is not that permission.",
     note: "No promotional source entries have been published on this page. This page does not itself grant permission to reuse anyone's content.",
@@ -797,6 +797,7 @@ export function renderPublicPage(pathname, env = process.env, pageOverride = nul
     <div class="foot">
       <p>Mshpit - Your life's musical journey</p>
       <div class="foot-links">
+        <a href="/promotion-sources">Sources</a>
         <a href="/artists">Artists</a>
         <a href="/events">Events</a>
         <a href="/">Open Mshpit</a>
