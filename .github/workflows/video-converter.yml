@@ -13,6 +13,8 @@ on:
       - src/domain/mediaUploadPolicy.mjs
       - src/domain/mediaMime.mjs
       - scripts/verify-video-converter.mjs
+      - scripts/verify-video-verifier-security*
+      - scripts/fixtures/video-verifier-security.json
       - .github/workflows/video-converter.yml
       - .github/video-verifier-buildkit.toml
 
@@ -44,6 +46,30 @@ jobs:
           # targets 8 GB (not a hard filesystem quota); runner disk is finite.
           docker buildx build --builder "$builder" --platform linux/amd64 --load \
             --file Dockerfile.video-verifier --tag pit-video-review:local .
+      - name: Record patched runtime and final CA inventory offline
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --cpus=1 --memory=2g --memory-swap=2g --pids-limit=128 \
+            --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=768m \
+            --mount "type=bind,src=$PWD/scripts/verify-video-verifier-security.mjs,dst=/app/scripts/verify-video-verifier-security.mjs,readonly" \
+            --mount "type=bind,src=$PWD/scripts/fixtures/video-verifier-security.json,dst=/app/scripts/fixtures/video-verifier-security.json,readonly" \
+            pit-video-review:local node scripts/verify-video-verifier-security.mjs --inventory
+      - name: Check public certificate rejection with a valid-chain control
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only this separate container needs public DNS/HTTPS. No application
+          # credentials or production endpoints; the media tests remain offline.
+          docker run --rm --cpus=1 --memory=2g --memory-swap=2g --pids-limit=128 \
+            --network=bridge --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+            --tmpfs /tmp:rw,nosuid,nodev,size=768m \
+            --mount "type=bind,src=$PWD/scripts/verify-video-verifier-security.mjs,dst=/app/scripts/verify-video-verifier-security.mjs,readonly" \
+            --mount "type=bind,src=$PWD/scripts/fixtures/video-verifier-security.json,dst=/app/scripts/fixtures/video-verifier-security.json,readonly" \
+            pit-video-review:local node scripts/verify-video-verifier-security.mjs --network
       - name: Validate image as non-root with production CPU and memory limits
         timeout-minutes: 5
         shell: bash

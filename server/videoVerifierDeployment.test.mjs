@@ -16,11 +16,20 @@ test("proposed image CI is scoped, uses the exact Dockerfile, and bounds offline
   const commands = workflow.jobs["exact-image"].steps.map((step) => step.run || "").join("\n");
   assert.match(commands, /--file Dockerfile\.video-verifier/);
   assert.match(commands, /--driver-opt memory=2g,memory-swap=2g,cpu-period=100000,cpu-quota=100000,cpuset-cpus=0/);
-  for (const command of commands.split("docker run ").slice(1)) {
-    const run = command.split("\n").slice(0, 7).join("\n");
-    assert.match(run, /--cpus=1 --memory=2g --memory-swap=2g --pids-limit=128/);
-    assert.match(run, /--network=none --read-only/);
-    assert.match(run, /--tmpfs \/tmp:rw,nosuid,nodev,size=768m/);
+  const onlineSteps = workflow.jobs["exact-image"].steps.filter((step) => step.run?.includes("--network=bridge"));
+  assert.equal(onlineSteps.length, 1, "only the dedicated public certificate check needs networking");
+  assert.equal(onlineSteps[0].name, "Check public certificate rejection with a valid-chain control");
+  assert.equal(onlineSteps[0]["timeout-minutes"], 3);
+  assert.match(onlineSteps[0].run, /node scripts\/verify-video-verifier-security\.mjs --network/);
+  assert.match(commands, /node scripts\/verify-video-verifier-security\.mjs --inventory/);
+  for (const step of workflow.jobs["exact-image"].steps) {
+    for (const command of (step.run || "").split("docker run ").slice(1)) {
+      const run = command.split("\n").slice(0, 7).join("\n");
+      assert.match(run, /--cpus=1 --memory=2g --memory-swap=2g --pids-limit=128/);
+      assert.match(run, step === onlineSteps[0] ? /--network=bridge --read-only/ : /--network=none --read-only/);
+      assert.match(run, /--cap-drop=ALL --security-opt=no-new-privileges/);
+      assert.match(run, /--tmpfs \/tmp:rw,nosuid,nodev,size=768m/);
+    }
   }
   assert.match(commands, /docker stats --no-stream/);
   assert.match(commands, /node --test server\/videoVerifierService\.test\.mjs/);
