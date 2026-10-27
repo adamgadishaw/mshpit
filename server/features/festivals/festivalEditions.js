@@ -51,6 +51,30 @@ export function matchFestival(catalog, eventName) {
   return null;
 }
 
+// Ontario's festival and its Edmonton sibling have different occurrences.
+// Apply this at ingestion AND read/rebuild time: old rows are retained for
+// review and member plans, but cannot supply another festival's dates/lineup.
+export function ontarioFestivalPlaceConflict(record) {
+  const city = fold(record.city || record.venue_city);
+  const region = fold(record.region || record.venue_region);
+  const country = fold(record.countryCode || record.country_code || record.venue_country_code);
+  const venue = fold(record.venue);
+  return Boolean((country && country !== "ca") || (region && !["on", "ontario"].includes(region))
+    || city.includes("edmonton") || venue.includes("ice district"));
+}
+
+export function festivalRecordMatches(entry, record) {
+  if (!entry) return false;
+  if (entry.slug !== "boots-and-hearts") return true;
+  if (matchFestival([entry], record.name || record.event_name)?.slug !== entry.slug) return false;
+  const city = fold(record.city || record.venue_city);
+  const region = fold(record.region || record.venue_region);
+  const venue = fold(record.venue);
+  if (ontarioFestivalPlaceConflict(record)) return false;
+  return ["on", "ontario"].includes(region) || ["oro-medonte", "oro medonte", "barrie"].includes(city)
+    || /burl['’]?s creek/u.test(venue);
+}
+
 // Acts on a listing, minus the festival itself and its pass products.
 export function festivalActs(entry, names) {
   const own = entry.match.map(fold);

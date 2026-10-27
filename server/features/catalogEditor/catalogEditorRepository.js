@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { canonicalVenueKey } from "../../../src/domain/venueIdentity.mjs";
-import { isIndexableMusicEventRecord } from "../seo/publicEntityPolicy.js";
+import { isIndexableMusicEventRecord, isStrictCalendarDate } from "../seo/publicEntityPolicy.js";
+import { tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
 
 export const catalogDigest = value => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export const catalogVenueEditorKey = (source, id) => source && id ? `${source}:${id}` : null;
@@ -8,6 +9,9 @@ const text = value => typeof value === "string" ? value.trim() : "";
 const parse = value => { try { return JSON.parse(value || "null"); } catch { return null; } };
 const TYPES = new Set(["artist", "venue", "event"]);
 const visibleProvider = "owner_id IS NULL AND release_at<=? AND provider_active=1 AND music_qualified=1 AND COALESCE(artist_identity_status,'') NOT IN ('pending','conflict')";
+// An event's sourced text belongs to its provider occurrence, independently of
+// artist registration. Artist and venue editing retain their stricter gates.
+const editableEvent = "owner_id IS NULL AND release_at<=? AND provider_active=1 AND music_qualified=1";
 
 export function ensureCatalogEditorSchema(database) {
   // New, empty feature tables only: no rewrite, backfill or index of existing catalog data.
@@ -36,11 +40,17 @@ export function readCatalogEditorEntity(database, { type, key, at = Date.now() }
     protectedFacts = { biography: text(profile?.bio) || text(row.bio), genre: row.genre || null, country: row.country || null };
     if (profile?.bio_staff_curated && !text(profile.bio)) protectedReason = "Staff intentionally cleared this biography. Use the artist editor to review that decision.";
   } else if (type === "event") {
-    const row = database.prepare(`SELECT * FROM tour_dates WHERE id=? AND ${visibleProvider}`).get(key, at);
+    const row = database.prepare(`SELECT * FROM tour_dates WHERE id=? AND ${editableEvent}`).get(key, at);
     if (!row || !row.provider_event_id || !row.source || !isIndexableMusicEventRecord(row)) return null;
+    const eventOnly = tourDateArtistIdentityPending(row);
+    if (eventOnly && (!text(row.venue_provider_id) || !text(row.venue) || !text(row.venue_city)
+      || !text(row.venue_country_code) || !isStrictCalendarDate(row.date))) return null;
     identity = { type, key, name: row.event_name || row.artist, source: row.source,
-      providerId: row.provider_event_id, artistKey: row.artist_key || null, venueId: row.venue_provider_id || null,
+      providerId: row.provider_event_id, artistKey: eventOnly ? null : row.artist_key || null, venueId: row.venue_provider_id || null,
       venue: row.venue, date: row.date, city: row.venue_city || null, country: row.venue_country_code || null };
+    if (eventOnly) Object.assign(identity, { scope: "event-only", artistIdentityStatus: row.artist_identity_status,
+      providerArtistId: row.provider_artist_id || null, artistDisplay: row.artist || null,
+      endDate: row.event_end_date || null, startDateTime: row.start_date_time || null });
     protectedFacts = { artist: row.artist, venue: row.venue, date: row.date, startDateTime: row.start_date_time,
       ticketUrl: row.ticket_url, status: row.event_status, soldOut: row.sold_out, lineup: row.billed_artists };
   } else {
@@ -76,7 +86,7 @@ export function listCatalogEditorEntities(database, { type, after = "", query = 
     rows = database.prepare(`SELECT norm k FROM artists WHERE norm>? AND COALESCE(source,'')<>'artist-created'
       AND name LIKE ? ESCAPE '\\' ORDER BY norm LIMIT ?`).all(after, like, scanLimit + 1);
   } else if (type === "event") {
-    rows = database.prepare(`SELECT id k FROM tour_dates WHERE ${visibleProvider} AND id>?
+    rows = database.prepare(`SELECT id k FROM tour_dates WHERE ${editableEvent} AND id>?
       AND COALESCE(event_name,artist) LIKE ? ESCAPE '\\' ORDER BY id LIMIT ?`).all(at, after, like, scanLimit + 1);
   } else {
     const separator = after.indexOf(":");

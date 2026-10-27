@@ -8,6 +8,7 @@ import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixtureApiResponse, navigationUser } from "./verify-navigation-browser.mjs";
+import { festivalAnnouncement } from "../server/features/festivals/festivalAnnouncements.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const shots = join(root, ".tmp", "festivals-browser");
@@ -68,6 +69,10 @@ async function scenario(browser, origin, width) {
         return await json({ festival, upcoming: [{ ...edition, lineup, going: 12 + (state.plan ? 1 : 0), goingByDay: {}, mustSee: [], plan: state.plan }],
           past: [], expected: null, reviews: [], reviewStats: { reviews: 0, average: null } });
       }
+      if (url.pathname === "/api/festivals/boots-and-hearts") {
+        return await json({ festival: { slug: "boots-and-hearts", name: "Boots and Hearts" }, upcoming: [], past: [],
+          expected: null, announcement: festivalAnnouncement("boots-and-hearts", "2026-10-27"), reviews: [], reviewStats: { reviews: 0, average: null } });
+      }
       if (url.pathname === "/api/festivals/lollapalooza/plan" && request.method() === "PUT") {
         const body = request.postDataJSON();
         assert.equal(request.headers()["x-pit-expected-account"], navigationUser.id);
@@ -117,6 +122,16 @@ async function scenario(browser, origin, width) {
     // Let the cards finish rising in before the picture.
     await page.waitForTimeout(width < 620 ? 0 : 1000);
     await page.screenshot({ path: join(shots, `discover-${width}.png`) });
+    await page.goto(origin + "/festival/boots-and-hearts", { waitUntil: "domcontentloaded" });
+    await page.getByText("Aug 6 to 8, 2027", { exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Boots and Hearts", exact: true }).waitFor();
+    await page.getByText(/Burl's Creek/).waitFor();
+    await page.getByRole("link", { name: "Official site", exact: true }).waitFor();
+    assert.equal(await page.getByText(/Expected late August|Edmonton|Not announced yet/).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Say you're going", exact: true }).count(), 0);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    await page.waitForTimeout(width < 620 ? 0 : 1000);
+    await page.screenshot({ path: join(shots, `boots-official-dates-${width}.png`) });
     assert.deepEqual(state.errors, []);
     assert.deepEqual(state.external, []);
     console.log(JSON.stringify({ name: `festivals-${width}`, passed: true, writes: state.writes.length }));

@@ -100,6 +100,34 @@ test("pending or conflicting event identities keep exact show details without a 
   }
 });
 
+test("conflicted event text renders only on its exact public occurrence without a namesake artist link", async () => {
+  const { createCatalogEditorService } = await import("./features/catalogEditor/catalogEditorService.js");
+  const { createPublicDocumentService } = await import("./features/seo/publicDocuments.js");
+  const name = "Snapshot Text Namesake", key = "snapshot-text-namesake", id = "snapshot-event-only-text";
+  addArtist(key, name);
+  addEvent(id, { artist: name, artistKey: key });
+  db.prepare(`UPDATE tour_dates SET artist_identity_status='conflict',provider_event_id='exact-event-only',
+    venue_city='Toronto',venue_country_code='CA',event_status='cancelled' WHERE id=?`).run(id);
+  q.insertUser.run("event-text-admin", "event-text-admin@example.test", "Admin", "eventtextadmin", "hash", "admin",
+    null, null, null, "CA", "#111111", Date.now());
+  const service = createCatalogEditorService({ database: db });
+  const current = service.read({ type: "event", key: id });
+  const draft = { type: "event", key: id, expectedRevision: current.revision, expectedHash: current.expectedHash,
+    summary: "The venue has published a cancellation notice for this exact performance.",
+    sources: [{ label: "Venue notice", url: "https://www.mshpit.com/about" }], reason: "Record sourced event context" };
+  service.save({ actorId: "event-text-admin", draft, idempotencyKey: "event_text_occurrence_1" });
+  const documents = createPublicDocumentService({ database: db, origin: "https://www.mshpit.com" });
+  const document = documents.eventDocument({ id });
+  const html = documents.render(document);
+  assert.equal(document.catalogText.summary, draft.summary);
+  assert.match(html, /data-catalog-text="true"/);
+  assert.match(html, /cancellation notice for this exact performance/);
+  assert.doesNotMatch(html, /href="\/artist\/snapshot-text-namesake"/);
+  assert.equal(documents.artistDocument({ artistKey: key })?.catalogText || null, null);
+  db.prepare("UPDATE tour_dates SET venue_provider_id='replacement' WHERE id=?").run(id);
+  assert.equal(documents.eventDocument({ id }).catalogText, null);
+});
+
 test("the snapshot marker is never returned for missing, unreleased, invalid, or restricted events", () => {
   q.insertUser.run("snapshot-banned-owner", "banned@example.com", "Banned owner", "snapshotbanned", "hash", "fan",
     null, null, null, "CA", "#111111", Date.now());

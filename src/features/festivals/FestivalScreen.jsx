@@ -115,7 +115,11 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
         <View style={styles.heroBody}>
           <Rise index={0}><Text style={styles.kicker}>Festival</Text></Rise>
           <Rise index={1}><Text style={[styles.heroTitle, wide && styles.heroTitleWide]} accessibilityRole="header">{festival.name}</Text></Rise>
-          {page.expected ? <>
+          {page.announcement ? <>
+            <Text style={styles.heroWhen}>{festivalDateRange(page.announcement.startDate, page.announcement.endDate)}</Text>
+            <Text style={styles.heroWhere}>{festivalPlace(page.announcement)}</Text>
+            <Pressable onPress={() => openLink(page.announcement.source.url)} accessibilityRole="link"><Text style={styles.link}>Official site</Text></Pressable>
+          </> : page.expected ? <>
             <Text style={styles.heroWhen}>{page.expected.label}</Text>
             <Text style={styles.heroWhere}>{`Not announced yet. Estimated from the last edition: ${festivalDateRange(page.expected.basis.startDate, page.expected.basis.endDate)}${page.expected.basis.city ? `, ${page.expected.basis.city}` : ""}.`}</Text>
           </> : <Text style={styles.heroWhere}>No dates listed yet. New dates show up here as soon as tickets are listed.</Text>}

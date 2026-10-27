@@ -1,5 +1,22 @@
 # Pit current status
 
+## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
+
+- Local branch `fix/catalog-event-festival-20261027` uses a source snapshot of
+  master `531fa4dc6193d86874cd71a20b240141743d065f`. No release or production
+  operation is authorized by this candidate; held PR74 remains excluded.
+- Pending/conflicted imported events can receive sourced occurrence text with
+  no artist binding. Artist and venue editing gates, provider facts, review
+  hashes, receipts, audit and staff authorization remain protected.
+- Ontario Boots and Hearts excludes West in ingestion, persisted-edition reads
+  and review/stat matching, including geographic evidence on generically named
+  reviews. Eligibility precedes edition/review limits and aggregate counts.
+  Mixed rows and member plans are retained. Its
+  official August 6–8, 2027 announcement is separate from provider events.
+- Evidence, limitations and a separate reviewed cleanup plan are recorded in
+  [the local audit](docs/CATALOG_EVENT_FESTIVAL_REVIEW_2026-10-27.md).
+  Nothing is pushed, merged, deployed, or written to production.
+
 ## 2026-10-27 Video verifier runtime and CA acceptance (draft PR 79)
 
 - Isolated branch `fix/video-verifier-node-ca-refresh` starts at verified current

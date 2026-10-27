@@ -31,6 +31,9 @@ export function festivalDateRange(startDate, endDate) {
 const place = (edition) => [edition.venue, [edition.city, edition.region].filter(Boolean).join(", ")].filter(Boolean).join(", ");
 
 function heading(page) {
+  if (page.announcement && (!page.upcoming[0] || page.announcement.startDate < page.upcoming[0].startDate)) {
+    return `${page.announcement.name}: Dates & History`;
+  }
   const edition = page.upcoming[0];
   const name = page.festival.name;
   if (edition) {
@@ -43,6 +46,9 @@ function heading(page) {
 }
 
 function description(page) {
+  if (page.announcement && (!page.upcoming[0] || page.announcement.startDate < page.upcoming[0].startDate)) {
+    return `${page.announcement.name} runs ${festivalDateRange(page.announcement.startDate, page.announcement.endDate)} at ${place(page.announcement)}. Official dates, festival history and fan reviews.`;
+  }
   const edition = page.upcoming[0];
   const name = page.festival.name;
   if (edition) {
@@ -65,7 +71,9 @@ export function projectFestivalDocument({ origin = "https://www.mshpit.com", pag
   const title = heading(page);
   const edition = page.upcoming[0] || null;
   const jsonLd = [];
-  for (const item of page.upcoming.slice(0, 3)) {
+  const announced = page.announcement && !page.upcoming.some(item => item.startDate === page.announcement.startDate && item.endDate === page.announcement.endDate)
+    ? [{ ...page.announcement, id: `announcement-${page.announcement.startDate}` }] : [];
+  for (const item of [...announced, ...page.upcoming].slice(0, 3)) {
     jsonLd.push({
       "@context": "https://schema.org",
       "@type": "Festival",
@@ -108,7 +116,7 @@ export function projectFestivalDocument({ origin = "https://www.mshpit.com", pag
     canonicalPath,
     canonicalUrl,
     // Worth a search result once there is something to read.
-    indexable: !!(edition || page.festival.about || page.past.length || page.reviews.length),
+    indexable: !!(edition || page.announcement || page.festival.about || page.past.length || page.reviews.length),
     ...(edition && safeHttps(edition.imageUrl) ? { image: edition.imageUrl } : {}),
     festivalPage: page,
     jsonLd,
@@ -194,6 +202,11 @@ export function renderFestivalMain(document) {
   const page = document.festivalPage;
   const festival = page.festival;
   const edition = page.upcoming[0];
+  const announcement = page.announcement && !page.upcoming.some(item => item.startDate === page.announcement.startDate && item.endDate === page.announcement.endDate)
+    ? page.announcement : null;
+  const announcementHtml = announcement ? `<section class="section"><h2>${esc(announcement.name)}</h2>
+    <p><strong>${esc(festivalDateRange(announcement.startDate, announcement.endDate))}</strong> · ${esc(place(announcement))}</p>
+    <p><a href="${esc(announcement.source.url)}" rel="noopener">${esc(announcement.source.label)}</a></p></section>` : "";
   const factsHtml = edition ? `<section class="section" aria-labelledby="festival-facts"><h2 id="festival-facts">${esc(edition.name)} at a glance</h2>
       <dl class="facts">
         <dt>Dates</dt><dd>${esc(festivalDateRange(edition.startDate, edition.endDate))}</dd>
@@ -219,7 +232,7 @@ export function renderFestivalMain(document) {
   return `<main id="main">
     <nav class="breadcrumbs" aria-label="Breadcrumb"><ol><li><a href="/">Mshpit</a></li><li><a href="${FESTIVALS_HUB_PATH}">Festivals</a></li><li><span aria-current="page">${esc(festival.name)}</span></li></ol></nav>
     <section class="hero"><p class="eyebrow">Festival</p><h1>${esc(document.heading)}</h1><p>${esc(document.description)}</p></section>
-    ${factsHtml}${upcomingHtml}${expectedHtml}${aboutHtml}${pastHtml}${reviewsHtml}
+    ${announcementHtml}${factsHtml}${upcomingHtml}${expectedHtml}${aboutHtml}${pastHtml}${reviewsHtml}
     <p class="muted"><a href="${FESTIVALS_HUB_PATH}">More festivals</a></p>
   </main>`;
 }
