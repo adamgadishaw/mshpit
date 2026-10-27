@@ -1,5 +1,27 @@
 # Pit current status
 
+## 2026-10-27 Video verifier runtime and CA acceptance (draft PR 79)
+
+- Isolated branch `fix/video-verifier-node-ca-refresh` starts at verified current
+  master `60ff9d3445144137fc619be4347ffd4291a1f86a`. PR 78 reliability and PR 74
+  search changes are excluded.
+- Both Docker stages now pin the official Node 24.22.1 Bookworm Slim image index.
+  Existing CA package installation, FFmpeg build, self-tests, media policy and
+  service/resource settings are preserved. Fresh no-cache build acceptance is
+  required before release; certificate refresh alone is insufficient.
+- Provenance, local checks, exact remaining gates and rollback implications are
+  in [the runtime review](docs/VIDEO_VERIFIER_RUNTIME_REVIEW_2026-10-26.md).
+  The original four-file update is published in draft PR 79 at `beeb1e23388fc3a891a98a38b3a570bc223cca5b`;
+  Quality and image CI passed on that head. It remains unmerged and undeployed.
+- An owner-approved local follow-up adds explicit runtime/CA inventory plus
+  default-Node-fetch rejection of both advisory test chains, with a valid-chain
+  positive control. Only a separate bounded test container has public networking;
+  decoder/media gates remain offline. Authentic public fingerprints/signatures,
+  current validity and exact CERT_REVOKED errors are required.
+- The follow-up awaits independent review before push. Local focused regressions
+  pass; its actual Docker/runtime/network gates remain unrun. The current audit
+  distinguishes public-fixture checks, prior-head CI, and remaining live acceptance.
+
 ## 2026-10-26 Stored artist identity on event navigation (local review)
 
 - Isolated branch `fix/stored-artist-navigation` starts at verified remote master
