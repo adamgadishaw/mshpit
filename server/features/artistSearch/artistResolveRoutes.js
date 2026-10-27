@@ -1,3 +1,5 @@
+import { artistNameInput } from "../../../src/domain/artistNameInput.mjs";
+
 const TEN_MINUTES = 10 * 60 * 1000;
 
 export function artistResolveRoutes({
@@ -27,7 +29,7 @@ export function artistResolveRoutes({
     "POST /api/artists/resolve": async (ctx) => {
       requireVerifiedUser(ctx);
       rateLimit(ctx, "artist-resolve-persist", 20, TEN_MINUTES);
-      const name = clean(ctx.body?.name, { max: 120 });
+      const name = artistNameInput(ctx.body?.name);
       const expectedMbid = clean(ctx.body?.mbid, { max: 80 });
       if (!name) {
         throw new ApiError(400, "Choose one artist before attaching it.", "VALIDATION_FAILED");

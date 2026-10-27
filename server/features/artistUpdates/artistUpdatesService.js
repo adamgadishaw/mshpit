@@ -187,35 +187,40 @@ export async function checkArtistReleases(database, { now = Date.now(), fetchJso
     try {
       // The stored id must still be this exact, established act before any of
       // its releases can be presented as this artist's news.
-      const profile = await fetchJson(`https://api.deezer.com/artist/${artist.deezerId}`, { signal });
-      if (normalName(profile?.name) !== normalName(artist.name) || (Number(profile?.nb_fan) || 0) < minFans) {
+      const identityMatches = await fetchJson(`https://api.deezer.com/artist/${artist.deezerId}`, { signal,
+        project: (profile) => normalName(profile?.name) === normalName(artist.name) && (Number(profile?.nb_fan) || 0) >= minFans,
+      });
+      if (!identityMatches) {
         record("identity_mismatch", !!check?.baseline_done);
         outcome.skipped += 1;
         continue;
       }
-      const list = await fetchJson(`https://api.deezer.com/artist/${artist.deezerId}/albums?limit=100`, { signal });
-      const releases = (Array.isArray(list?.data) ? list.data : [])
-        .filter((item) => item?.id && RELEASE_TYPES.has(item.record_type) && text(item.title, 200) && isoDay(item.release_date))
-        .sort((a, b) => String(b.release_date).localeCompare(String(a.release_date)));
+      const releases = await fetchJson(`https://api.deezer.com/artist/${artist.deezerId}/albums?limit=100`, { signal,
+        project: (list) => (Array.isArray(list?.data) ? list.data : [])
+          .filter((item) => item?.id && RELEASE_TYPES.has(item.record_type) && text(item.title, 200) && isoDay(item.release_date))
+          .sort((a, b) => String(b.release_date).localeCompare(String(a.release_date)))
+          .map((release) => {
+            const id = String(release.id);
+            const link = /^https:\/\/www\.deezer\.com\//u.test(String(release.link || "")) ? release.link : `https://www.deezer.com/album/${id}`;
+            const cover = /^https:\/\//u.test(String(release.cover_xl || release.cover_big || release.cover_medium || ""))
+              ? (release.cover_big || release.cover_medium || release.cover_xl) : null;
+            const payload = { release: { id, title: text(release.title, 200), type: release.record_type, releaseDate: release.release_date, cover, url: link } };
+            return { id, key: `deezer:${id}`, released: dayMs(release.release_date), link, payload, title: releaseHeadline(payload.release) };
+          }),
+      });
       const baseline = !check?.baseline_done;
       const oldest = dayMs(day) - (baseline ? 14 : 30) * DAY;
       const newest = dayMs(day) + 120 * DAY;
       const seen = database.prepare("SELECT 1 FROM artist_release_seen WHERE release_key=?");
       const markSeen = database.prepare("INSERT OR IGNORE INTO artist_release_seen(release_key,artist_key,first_seen_at) VALUES (?,?,?)");
       let madeForArtist = 0;
-      for (const release of releases) {
-        const key = `deezer:${release.id}`;
+      for (const { id, key, released, link, payload, title } of releases) {
         if (seen.get(key)) continue;
         markSeen.run(key, artist.norm, now);
-        const released = dayMs(release.release_date);
         if (released < oldest || released > newest || madeForArtist >= 3) continue;
-        const link = /^https:\/\/www\.deezer\.com\//u.test(String(release.link || "")) ? release.link : `https://www.deezer.com/album/${release.id}`;
-        const cover = /^https:\/\//u.test(String(release.cover_xl || release.cover_big || release.cover_medium || ""))
-          ? (release.cover_big || release.cover_medium || release.cover_xl) : null;
-        const payload = { release: { id: String(release.id), title: text(release.title, 200), type: release.record_type, releaseDate: release.release_date, cover, url: link } };
-        const createdRow = database.prepare("SELECT 1 FROM artist_updates WHERE dedupe_key=?").get(`release:${release.id}`) ? null : insertUpdate(database, {
-          id: newId("au"), artistKey: artist.norm, artistName: artist.name, kind: "release", dedupeKey: `release:${release.id}`,
-          title: releaseHeadline(payload.release), payload: JSON.stringify(payload), source: "deezer", sourceUrl: link,
+        const createdRow = database.prepare("SELECT 1 FROM artist_updates WHERE dedupe_key=?").get(`release:${id}`) ? null : insertUpdate(database, {
+          id: newId("au"), artistKey: artist.norm, artistName: artist.name, kind: "release", dedupeKey: `release:${id}`,
+          title, payload: JSON.stringify(payload), source: "deezer", sourceUrl: link,
           occurredAt: released, at: now,
         });
         if (createdRow) { outcome.created.push(createdRow); madeForArtist += 1; }

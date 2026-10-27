@@ -13,6 +13,36 @@ import {
   refreshArtistCatalogEntry,
 } from "./artistSearchApi.mjs";
 
+test("explicit fallback and its cache use the complete identity, not the catalogue search prefix", async () => {
+  const calls = [];
+  const apiClient = async path => {
+    const url = new URL(path, "https://fixture.invalid");
+    if (url.pathname === "/api/artists") {
+      assert.equal(url.searchParams.get("q").isWellFormed(), true);
+      return { artists: [] };
+    }
+    const name = url.searchParams.get("name"); calls.push(name);
+    return { artist: { name }, transient: true };
+  };
+  const names = ["x".repeat(80) + "A", "x".repeat(80) + "B", "A" + "🎵".repeat(60)];
+  for (const name of names) {
+    const results = await fetchArtistSuggestions(name, { apiClient, remoteFallback: true });
+    assert.equal(results[0].name, name);
+  }
+  assert.deepEqual(calls, names);
+  assert.equal((await fetchArtistSuggestions(names[0], { apiClient, remoteFallback: true }))[0].name, names[0]);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(await fetchArtistSuggestions("x".repeat(121), { apiClient, remoteFallback: true }), []);
+  assert.equal(calls.length, 3, "invalid full names cannot resolve their shorter prefix");
+});
+
+test("catalogue refresh cannot accept a different artist sharing the search prefix", async () => {
+  const prefix = "q".repeat(80);
+  const apiClient = async () => ({ artists: [{ name: prefix + "A", key: prefix + "a" }] });
+  assert.equal(await refreshArtistCatalogEntry(prefix + "B", { apiClient }), null);
+  assert.equal((await refreshArtistCatalogEntry(prefix + "A", { apiClient })).name, prefix + "A");
+});
+
 test("interactive artist resolution distinguishes a provider failure from a genuine no-match", async () => {
   const error = Object.assign(new Error("provider down"), { serverCode: "PROVIDER_UNAVAILABLE" });
   await assert.rejects(fetchResolvedArtist("Unavailable", { apiClient: async () => { throw error; } }), (value) => value === error);

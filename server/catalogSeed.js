@@ -141,15 +141,21 @@ export async function deezerEnrich(name, { findArtist = findDeezerArtist } = {})
   const match = await findArtist(name, { hintId: existing.deezerId || null });
   const dzA = match?.artist;
   if (!dzA) return null;
-  const top = await providerJson("Deezer", `https://api.deezer.com/artist/${dzA.id}/top?limit=25`);
+  const { topTracks, albumIds } = await providerJson("Deezer", `https://api.deezer.com/artist/${dzA.id}/top?limit=25`, {
+    project: (top) => ({
+      topTracks: (top?.data || []).map((t) => ({ id: t.id || null, title: t.title, album: t.album?.title || null, duration: t.duration || 0 })),
+      albumIds: [...new Set((top?.data || []).map((track) => track?.album?.id).filter(Boolean))].slice(0, 5)
+        .map((id) => { String(id); return id; }),
+    }),
+  });
   await sleep(60);
-  const topTracks = (top?.data || []).map((t) => ({ id: t.id || null, title: t.title, album: t.album?.title || null, duration: t.duration || 0 }));
-  const albumIds = [...new Set((top?.data || []).map((track) => track?.album?.id).filter(Boolean))].slice(0, 5);
   const releaseGenres = [];
   for (const albumId of albumIds) {
     try {
-      const album = await providerJson("Deezer", `https://api.deezer.com/album/${albumId}`);
-      releaseGenres.push(album?.genres?.data?.[0]?.name || null);
+      const genre = await providerJson("Deezer", `https://api.deezer.com/album/${albumId}`, {
+        project: (album) => album?.genres?.data?.[0]?.name || null,
+      });
+      releaseGenres.push(genre);
     } catch {
       // A removed/rate-limited album is one missing sample, not a failed artist.
     }

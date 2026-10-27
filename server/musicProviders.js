@@ -7,6 +7,7 @@ import {
 } from "./trackIdentity.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
 import { discardProviderResponse, providerRetryAfterMs } from "./providerResponsePolicy.js";
+import { createDeezerRequestCooldown } from "./deezerRequestCooldown.js";
 
 const DEEZER_DISCOGRAPHY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEEZER_PREVIEW_MAX_TTL_MS = 5 * 60 * 1000;
@@ -197,6 +198,12 @@ export class ProviderError extends Error {
     if (providerResponse) this.providerResponse = true;
   }
 }
+
+const runDeezerRequest = createDeezerRequestCooldown({
+  unavailable: (retryAt, at) => new ProviderError("Deezer", 503, "Deezer is recovering. Retry after the provider wait.", {
+    code: "circuit_open", retryAt, retryAfterMs: Math.max(0, retryAt - at),
+  }),
+});
 
 function pacificDay(value = new Date()) {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -622,7 +629,17 @@ function providerMessage(provider, status) {
   return `${provider} did not return a usable response.`;
 }
 
-export async function providerJson(provider, url, { timeoutMs = 10_000, fetchImpl = fetch, signal } = {}) {
+export async function providerJson(provider, url, { timeoutMs = 10_000, fetchImpl = fetch, signal, project } = {}) {
+  const request = async () => {
+    const data = await readProviderJson(provider, url, { timeoutMs, fetchImpl, signal });
+    // Endpoint validation is part of probe success, not work after the shared
+    // cooldown has already announced recovery. Projection may also be async.
+    return project ? project(data) : data;
+  };
+  return provider === "Deezer" ? runDeezerRequest(request, { signal }) : request();
+}
+
+async function readProviderJson(provider, url, { timeoutMs, fetchImpl, signal }) {
   let response;
   let requestSignal;
   try {
@@ -672,11 +689,20 @@ export async function findDeezerArtist(name, {
   fetchImpl = fetch,
   signal,
 } = {}) {
-  const data = await providerJson("Deezer", `https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=10`, {
+  return providerJson("Deezer", `https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=10`, {
     fetchImpl,
     signal,
+    project: (data) => {
+      const selected = selectDeezerArtist(name, data?.data || [], preferredId, { hintId });
+      if (selected) {
+        // Validate the coercions needed by downstream endpoint URLs/enrichment
+        // before announcing recovery, retaining the selected provider values.
+        String(selected.artist.id);
+        Number(selected.artist.nb_fan);
+      }
+      return selected;
+    },
   });
-  return selectDeezerArtist(name, data?.data || [], preferredId, { hintId });
 }
 
 function storedDeezerId(name) {
@@ -748,10 +774,14 @@ async function inBatches(items, size, mapper, { signal } = {}) {
 // Deezer artist candidates for disambiguation: many acts share a name, so the
 // UI can show fans/photo/album-count and let the listener pick the right one.
 async function findDeezerArtistCandidatesUnshared(name, { fetchImpl, limit, signal }) {
-  const data = await providerJson("Deezer", `https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=${limit}`, {
+  return providerJson("Deezer", `https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=${limit}`, {
     fetchImpl,
     signal,
+    project: (data) => projectDeezerArtistCandidates(data, limit),
   });
+}
+
+function projectDeezerArtistCandidates(data, limit) {
   if (!Array.isArray(data?.data)) {
     throw new ProviderError("Deezer", 502, "Deezer returned an invalid artist response.", { code: "invalid_payload" });
   }
@@ -815,19 +845,26 @@ async function getDeezerDiscographyUnshared(name, {
     if (!ephemeralSelection) persistDeezerIdentity(name, artist.id);
     // A deep popular-songs chart (up to 25) so the artist page isn't cut off at
     // ~10. Resolved live for ANY artist, not just ones the seeder pre-enriched.
-    const topData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/top?limit=25`, { fetchImpl, signal });
-    const topTracks = (topData?.data || []).map((t) => ({ id: t.id || null, title: t.title, album: t.album?.title || null, duration: t.duration || 0 }));
+    const topTracks = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/top?limit=25`, {
+      fetchImpl, signal,
+      project: (data) => (data?.data || []).map((t) => ({ id: t.id || null, title: t.title, album: t.album?.title || null, duration: t.duration || 0 })),
+    });
     // Full discography: albums AND EPs (not just the most recent LPs), newest
     // first, capped high enough to cover a deep back catalogue. Previously this
     // kept only `record_type === "album"` and sliced to 12, so earlier releases
     // and every EP silently vanished from the page.
-    const albumData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/albums?limit=300`, { fetchImpl, signal });
-    const seen = new Set();
-    const picks = (albumData?.data || [])
-      .filter((album) => (album.record_type === "album" || album.record_type === "ep") && album.title
-        && !seen.has(normalizeMusicText(album.title)) && seen.add(normalizeMusicText(album.title)))
-      .sort((a, b) => String(b.release_date || "").localeCompare(String(a.release_date || "")))
-      .slice(0, 28);
+    const picks = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/albums?limit=300`, {
+      fetchImpl, signal,
+      project: (data) => {
+        const seen = new Set();
+        return (data?.data || [])
+          .filter((album) => (album.record_type === "album" || album.record_type === "ep") && album.title
+            && !seen.has(normalizeMusicText(album.title)) && seen.add(normalizeMusicText(album.title)))
+          .sort((a, b) => String(b.release_date || "").localeCompare(String(a.release_date || "")))
+          .slice(0, 28)
+          .map((album) => ({ ...album, year: String(album.release_date || "").slice(0, 4), detailUrl: `https://api.deezer.com/album/${album.id}` }));
+      },
+    });
     // Each album detail is fetched independently and RESILIENTLY: a single bad
     // album (rate limit, 403, a pulled release) used to reject the whole batch
     // and throw away the entire discography AND the song chart (this is why some
@@ -835,14 +872,13 @@ async function getDeezerDiscographyUnshared(name, {
     // Slightly wider batches with fewer albums also cut the artist-page load.
     const albumResults = await inBatches(picks, 6, async (album) => {
       try {
-        const full = await providerJson("Deezer", `https://api.deezer.com/album/${album.id}`, { fetchImpl, signal });
-        return {
+        return await providerJson("Deezer", album.detailUrl, { fetchImpl, signal, project: (full) => ({
           status: "available",
           album: {
             id: album.id,
             title: album.title,
             type: album.record_type === "ep" ? "ep" : "album",
-            year: String(album.release_date || "").slice(0, 4),
+            year: album.year,
             cover: album.cover_medium || album.cover || null,
             // Deezer's clean, canonical genre label for this release (used to
             // correct the artist's noisy catalog genre below).
@@ -851,7 +887,7 @@ async function getDeezerDiscographyUnshared(name, {
             // is resolved by getFreshDeezerPreview only when a listener presses play.
             tracks: (full?.tracks?.data || []).map((track) => ({ id: track.id || null, title: track.title, duration: track.duration || 0 })),
           },
-        };
+        }) });
       } catch (error) {
         if (signal?.aborted) throw signal.reason || error;
         return { status: "unavailable", album: null };
@@ -1020,21 +1056,23 @@ export async function getFreshDeezerPreview(title, artist, { fetchImpl = fetch, 
     };
   }
   const exactQuery = `track:"${title}"${artist ? ` artist:"${artist}"` : ""}`;
-  let data = await providerJson("Deezer", `https://api.deezer.com/search?q=${encodeURIComponent(exactQuery)}&limit=10`, { fetchImpl, signal });
-  let selected = selectDeezerTrack(title, artist, data?.data || []);
-  if (!selected) {
-    data = await providerJson("Deezer", `https://api.deezer.com/search?q=${encodeURIComponent(`${artist || ""} ${title}`.trim())}&limit=10`, { fetchImpl, signal });
-    selected = selectDeezerTrack(title, artist, data?.data || []);
-  }
-  const track = selected?.track;
-  const result = {
-    preview: track?.preview || null,
-    url: track?.link || null,
-    title: track?.title || null,
-    artist: track?.artist?.name || null,
-    confidence: selected ? Math.min(1, selected.score / 115) : 0,
+  const project = (data) => {
+    const selected = selectDeezerTrack(title, artist, data?.data || []);
+    const track = selected?.track;
+    const result = {
+      preview: track?.preview || null,
+      url: track?.link || null,
+      title: track?.title || null,
+      artist: track?.artist?.name || null,
+      confidence: selected ? Math.min(1, selected.score / 115) : 0,
+    };
+    return { selected: !!selected, result, expiresAt: playbackUrlExpiry(result.preview) };
   };
-  const expiresAt = playbackUrlExpiry(result.preview);
+  let projected = await providerJson("Deezer", `https://api.deezer.com/search?q=${encodeURIComponent(exactQuery)}&limit=10`, { fetchImpl, signal, project });
+  if (!projected.selected) {
+    projected = await providerJson("Deezer", `https://api.deezer.com/search?q=${encodeURIComponent(`${artist || ""} ${title}`.trim())}&limit=10`, { fetchImpl, signal, project });
+  }
+  const { result, expiresAt } = projected;
   writePreviewCache(
     key,
     result,
@@ -1092,14 +1130,22 @@ async function providerTrackCreditProof({ sourceProvider, sourceId, title, artis
   ])}`;
   const cached = readProviderCache(key);
   if (cached?.fresh) return cached.data || null;
-  let data;
+  let proof;
   try {
-    data = await providerJson("Deezer", `https://api.deezer.com/track/${sourceId}`, { fetchImpl, timeoutMs: 6_000, signal });
+    proof = await providerJson("Deezer", `https://api.deezer.com/track/${sourceId}`, {
+      fetchImpl, timeoutMs: 6_000, signal,
+      project: (data) => projectDeezerTrackCredit(data, { sourceId, title, artist }),
+    });
   } catch {
     throwIfAborted(signal);
     // architecture: allow-ambiguous-result -- optional provider credit absence is interpreted by the caller as no recording proof
     return null;
   }
+  if (proof) writeProviderCache(key, proof, days(1));
+  return proof;
+}
+
+function projectDeezerTrackCredit(data, { sourceId, title, artist }) {
   const requestedBase = youtubeTitleCreditCandidates(title)[0]?.base || "";
   const providerBase = youtubeTitleCreditCandidates(data?.title || "")[0]?.base || "";
   const requestedArtist = normalizeTrackIdentityText(artist);
@@ -1115,7 +1161,6 @@ async function providerTrackCreditProof({ sourceProvider, sourceId, title, artis
     provider: "deezer",
     sourceId: String(sourceId),
   };
-  writeProviderCache(key, proof, days(1));
   return proof;
 }
 
@@ -2456,39 +2501,23 @@ async function searchDeezerTracksUnshared(q, { key, limit, fetchImpl, signal }) 
     `https://api.deezer.com/search?q=${encodeURIComponent(q)}&limit=25`,
   ];
   const responses = await Promise.allSettled(
-    urls.map((url) => providerJson("Deezer", url, { fetchImpl, signal })),
+    urls.map((url) => providerJson("Deezer", url, { fetchImpl, signal, project: projectDeezerSongRows })),
   );
   // A browser moving on to another query closes this request. Do not keep
   // ranking or caching an obsolete provider result after that cancellation.
   throwIfAborted(signal);
-  const rows = responses.flatMap((r) => (r.status === "fulfilled" ? r.value?.data || [] : []));
+  const rows = responses.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
   if (!rows.length) return [];
 
   const seen = new Map();
   const items = [];
-  for (const t of rows) {
-    const title = t?.title_short || t?.title;
-    const artist = t?.artist?.name;
-    if (!title || !artist) continue;
+  for (const [identity, candidate] of rows) {
     // One row per recording: Deezer lists the same song across many
     // compilations, which would otherwise fill the results with itself. When a
     // recording appears more than once, keep the highest-ranked copy rather
     // than the first seen — Nirvana's "Smells Like Teen Spirit" comes back at
     // both rank 636,897 and 349,751, and keeping the weaker copy pushed the
     // original below covers that outranked it.
-    const identity = `${normalizeMusicText(artist)}|${normalizeMusicText(title)}`;
-    const candidate = {
-      title,
-      artist,
-      id: t.id ? String(t.id) : null,
-      sourceId: t.id ? String(t.id) : null,
-      provider: "deezer",
-      album: t?.album?.title || null,
-      art: t?.album?.cover_medium || t?.album?.cover || null,
-      duration: Number(t.duration) || null,
-      // Not stored: preview URLs expire, so they are fetched at play time.
-      rank: Number(t.rank) || 0,
-    };
     const existing = seen.get(identity);
     if (existing) {
       if (candidate.rank > existing.rank) Object.assign(existing, candidate);
@@ -2519,6 +2548,28 @@ async function searchDeezerTracksUnshared(q, { key, limit, fetchImpl, signal }) 
   throwIfAborted(signal);
   writeProviderCache(key, { items }, DEEZER_DISCOGRAPHY_TTL_MS);
   return items;
+}
+
+function projectDeezerSongRows(data) {
+  const rows = [];
+  for (const t of data?.data || []) {
+    const title = t?.title_short || t?.title;
+    const artist = t?.artist?.name;
+    if (!title || !artist) continue;
+    const identity = `${normalizeMusicText(artist)}|${normalizeMusicText(title)}`;
+    rows.push([identity, {
+      title, artist,
+      id: t.id ? String(t.id) : null,
+      sourceId: t.id ? String(t.id) : null,
+      provider: "deezer",
+      album: t?.album?.title || null,
+      art: t?.album?.cover_medium || t?.album?.cover || null,
+      duration: Number(t.duration) || null,
+      // Not stored: preview URLs expire, so they are fetched at play time.
+      rank: Number(t.rank) || 0,
+    }]);
+  }
+  return rows;
 }
 
 export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch, signal } = {}) {

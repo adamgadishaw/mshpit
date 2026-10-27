@@ -6,6 +6,7 @@ import { dominantNamesake, runDeezerPhotoPass, usableDeezerPicture } from "./dee
 
 const PIC = (hash) => `https://cdn-images.dzcdn.net/images/artist/${hash}/1000x1000-000000-80-0-0.jpg`;
 const NOW = Date.parse("2026-09-25T12:00:00Z");
+const projectedJson = (read) => async (url, { project }) => project(await read(url));
 
 function world(t) {
   const db = new DatabaseSync(":memory:");
@@ -38,12 +39,12 @@ test("a pass fills safe matches, marks misses, and never overwrites", async (t) 
   add("self made", "Self Made", { source: "artist-created" });
   db.prepare("INSERT INTO artist_profiles VALUES ('owned',0,'https://example.test/avatar.jpg')").run();
   const lookups = [];
-  const fetchJson = async (url) => {
+  const fetchJson = projectedJson(async (url) => {
     const name = decodeURIComponent(new URL(url).searchParams.get("q"));
     lookups.push(name);
     if (name === "Drake") return { data: [{ id: 246791, name: "Drake", nb_fan: 24_090_882, picture_xl: PIC("eb0ed5b21d1ea5af021fc074ded0e91f") }] };
     return { data: [{ name, nb_fan: 5000, picture_xl: PIC("aaaabbbbccccddddeeeeffff00001111") }, { name, nb_fan: 4000 }] };
-  };
+  });
   const result = await runDeezerPhotoPass(db, { fetchJson, at: NOW });
   assert.deepEqual(lookups.sort(), ["Drake", "Twin"], "owner avatars, existing photos and self-made artists are skipped");
   assert.deepEqual(result, { checked: 2, filled: 1, noMatch: 1 });
@@ -59,12 +60,12 @@ test("a stored Deezer id is looked up directly and must still carry the artist's
   add("coldplay", "Coldplay", { data: JSON.stringify({ deezerId: 892 }) });
   add("renamed", "Renamed", { data: JSON.stringify({ deezerId: 555 }) });
   const urls = [];
-  const fetchJson = async (url) => {
+  const fetchJson = projectedJson(async (url) => {
     urls.push(url);
     if (url.endsWith("/artist/892")) return { id: 892, name: "Coldplay", nb_fan: 12_000_000, picture_xl: PIC("c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0") };
     if (url.endsWith("/artist/555")) return { id: 555, name: "Somebody Else", nb_fan: 90_000, picture_xl: PIC("5555555555555555aaaaaaaaaaaaaaaa") };
     throw new Error(`unexpected ${url}`);
-  };
+  });
   const result = await runDeezerPhotoPass(db, { fetchJson, at: NOW });
   assert.deepEqual(result, { checked: 2, filled: 1, noMatch: 1 });
   assert.equal(urls.some((url) => url.includes("/search/")), false, "no name search when the id is known");
@@ -76,7 +77,7 @@ test("an artist whose page shows a Spotify photo gets a Discover-only Deezer ima
   const { db, add } = world(t);
   const spotify = { deezerId: 246791, spotifyId: "3TVXtAsR1Inumwj472S9r4", spotifyPhoto: "https://i.scdn.co/image/ab6761610000e5eb0000", photoSource: "spotify", photoCredit: "Spotify" };
   add("drake", "Drake", { data: JSON.stringify(spotify) });
-  const fetchJson = async () => ({ id: 246791, name: "Drake", nb_fan: 24_090_882, picture_xl: PIC("eb0ed5b21d1ea5af021fc074ded0e91f") });
+  const fetchJson = projectedJson(async () => ({ id: 246791, name: "Drake", nb_fan: 24_090_882, picture_xl: PIC("eb0ed5b21d1ea5af021fc074ded0e91f") }));
   assert.deepEqual(await runDeezerPhotoPass(db, { fetchJson, at: NOW }), { checked: 1, filled: 1, noMatch: 0 });
   const drake = db.prepare("SELECT photo,data FROM artists WHERE norm='drake'").get();
   const data = JSON.parse(drake.data);
@@ -91,7 +92,7 @@ test("a legacy Spotify URL in the photo column still gets a Discover-only image 
   const { db, add } = world(t);
   const legacy = "https://i.scdn.co/image/ab6761610000e5eb1111";
   add("coldplay", "Coldplay", { photo: legacy, data: JSON.stringify({ deezerId: 892, photoCredit: "Spotify" }) });
-  const fetchJson = async () => ({ id: 892, name: "Coldplay", nb_fan: 12_000_000, picture_xl: PIC("c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0") });
+  const fetchJson = projectedJson(async () => ({ id: 892, name: "Coldplay", nb_fan: 12_000_000, picture_xl: PIC("c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0") }));
   assert.deepEqual(await runDeezerPhotoPass(db, { fetchJson, at: NOW }), { checked: 1, filled: 1, noMatch: 0 });
   const row = db.prepare("SELECT photo,data FROM artists WHERE norm='coldplay'").get();
   assert.equal(row.photo, legacy, "the artist page's Spotify image is left alone");
