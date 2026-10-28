@@ -18,6 +18,63 @@ const { festivalYears, projectFestivalDocument, projectFestivalsHubDocument, ren
 after(() => { db.close(); rmSync(dataDir, { recursive: true, force: true }); });
 
 const entry = (slug) => FESTIVAL_CATALOG.find((item) => item.slug === slug);
+
+test("Ontario excludes West through both ingests and hides persisted mixed editions without deleting plans", async () => {
+  const now = () => Date.parse("2026-10-27T12:00:00Z");
+  const store = createFestivalStore(db, { now });
+  const ontario = { festivalSlug: "boots-and-hearts", providerEventId: "tm:ontario-fixture", name: "Boots and Hearts 2026",
+    startDate: "2026-08-07", endDate: "2026-08-09", venue: "Burl's Creek", venueId: "ontario-venue", city: "Oro-Medonte", region: "ON", countryCode: "CA", acts: [] };
+  for (const name of ["Boots and Hearts West 2026", "Boots & Hearts West 2026"]) {
+    assert.equal(matchFestival(FESTIVAL_CATALOG, name), null);
+    const data = { _embedded: { events: [{ id: name, name, dates: { start: { localDate: "2026-08-28" } },
+      _embedded: { venues: [{ name: "Fan Park @ ICE District", city: { name: "Edmonton" }, state: { stateCode: "AB" }, country: { countryCode: "CA" } }] } }] } };
+    assert.deepEqual(festivalListingsFromTicketmaster(entry("boots-and-hearts"), data), []);
+    store.saveListings([{ ...ontario, providerEventId: name, name, city: "Edmonton", region: "AB" }]);
+    assert.equal(db.prepare("SELECT 1 FROM festival_listings WHERE provider_event_id=?").get(name), undefined);
+  }
+  // Existing tour rows use the same store-side fence even with a name-only callback.
+  db.prepare(`INSERT INTO tour_dates(id,artist,venue,date,release_at,source,provider_event_id,event_kind,event_name,venue_city,venue_region,venue_country_code,updated_at)
+    VALUES('west-tour-fixture','Boots and Hearts West','Fan Park','2026-08-28',0,'ticketmaster','west-provider','festival','Boots and Hearts West 2026','Edmonton','AB','CA',?)`).run(now());
+  await runFestivalScan({ database: db, store, env: {}, now, catalog: [entry("boots-and-hearts")], knowledge: async () => null });
+  assert.equal(db.prepare("SELECT 1 FROM festival_listings WHERE provider_event_id='tm:west-provider'").get(), undefined);
+  store.saveListings([ontario]); store.rebuildEditions("boots-and-hearts");
+  const validEdition = db.prepare("SELECT * FROM festival_editions WHERE festival_slug='boots-and-hearts'").get();
+  const fan = addUser("ontario-plan-fixture");
+  db.prepare("INSERT INTO festival_plans VALUES(?,?,?,?,?,?)").run(fan.id, validEdition.id, '["2026-08-07"]', '[]', now(), now());
+  // Simulate old contaminated storage, retaining the original ID and member plan.
+  db.prepare("UPDATE festival_editions SET name='Boots and Hearts West 2026',city='Edmonton',region='AB',start_date='2026-08-28',end_date='2026-08-29' WHERE id=?").run(validEdition.id);
+  const before = JSON.stringify(db.prepare("SELECT * FROM festival_plans WHERE edition_id=?").all(validEdition.id));
+  store.rebuildEditions("boots-and-hearts");
+  assert.equal(db.prepare("SELECT city FROM festival_editions WHERE id=?").get(validEdition.id).city, "Edmonton", "rebuild cannot repurpose a quarantined ID or its plans");
+  const reader = createFestivalReader(db, { now });
+  assert.equal(reader.edition(validEdition.id), null);
+  assert.equal(reader.upcoming().some(row => row.id === validEdition.id), false);
+  const page = reader.festival("boots-and-hearts");
+  assert.deepEqual(page.past, []); assert.equal(page.expected, null);
+  assert.equal(page.announcement.startDate, "2027-08-06"); assert.equal(page.announcement.endDate, "2027-08-08");
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM festival_editions WHERE id=?").get(validEdition.id).n, 1);
+  assert.equal(JSON.stringify(db.prepare("SELECT * FROM festival_plans WHERE edition_id=?").all(validEdition.id)), before);
+  const document = projectFestivalDocument({ page });
+  const html = renderFestivalMain(document);
+  assert.match(html, /Aug 6 to 8, 2027/); assert.doesNotMatch(html, /Edmonton|Expected late August|Not announced yet/);
+  const schema = document.jsonLd.find(item => item["@type"] === "Festival");
+  assert.equal(schema.startDate, "2027-08-06"); assert.equal(schema.offers, undefined); assert.equal(schema.performer, undefined);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM festival_editions WHERE festival_slug='boots-and-hearts' AND start_date='2027-08-06'").get().n, 0);
+  assert.equal(createFestivalReader(db, { now: () => Date.parse("2027-08-10") }).festival("boots-and-hearts").announcement, null);
+});
+
+test("West reviews and ratings never count towards Ontario", () => {
+  const fan = addUser("boots-reviews-fixture");
+  for (const [i, artist] of ["Boots and Hearts West 2025", "Boots & Hearts West 2025", "Boots & Hearts 2025"].entries()) {
+    routes["POST /api/posts"]({ user: fan, ip: `203.0.113.${70 + i}`, body: {
+      clientMutationId: `boots_review_${i}`, artist, showFormat: "festival", date: "2025-08-08", overall: i === 2 ? 4 : 1,
+      venue: i === 2 ? "Burl's Creek" : "Fan Park", city: i === 2 ? "Oro-Medonte" : "Edmonton", review: "Festival review fixture.",
+    } });
+  }
+  const page = createFestivalReader(db).festival("boots-and-hearts");
+  assert.equal(page.reviewStats.reviews, 1); assert.equal(page.reviewStats.average, 4);
+  assert.deepEqual(page.reviews.map(row => row.name), ["Boots & Hearts 2025"]);
+});
 const listing = (overrides) => ({ festivalSlug: "lollapalooza", providerEventId: `tm:${Math.random()}`, name: "Lollapalooza 2026", startDate: "2026-07-30",
   endDate: "2026-07-30", venue: "Grant Park", venueId: "v1", city: "Chicago", region: "IL", countryCode: "US", acts: [], ...overrides });
 function addUser(id) {
@@ -216,4 +273,69 @@ test("edition names drop the ticket product and carry the year", () => {
   assert.equal(name("Lovers & Friends: The Reunion"), "Lovers & Friends: The Reunion 2027", "a subtitle that is not a ticket stays");
   assert.equal(name(""), "festival 2027");
   assert.equal(festivalEditionName("Primavera Sound 2026", { year: "2026" }), "Primavera Sound 2026");
+});
+
+test("generic West reviews are excluded by place before review limits and aggregate counts", () => {
+  db.exec("SAVEPOINT boots_review_geography");
+  try {
+    const before = createFestivalReader(db).festival("boots-and-hearts");
+    const beforeOther = createFestivalReader(db).festival("rolling-loud");
+    const template = db.prepare("SELECT * FROM posts WHERE show_format='festival' LIMIT 1").get();
+    const columns = Object.keys(template);
+    const insert = db.prepare(`INSERT INTO posts(${columns.join(',')}) VALUES(${columns.map(() => '?').join(',')})`);
+    const addReview = overrides => {
+      const row = { ...template, ...overrides, client_mutation_id: overrides.id };
+      insert.run(...columns.map(column => row[column]));
+    };
+    for (let i = 0; i < 14; i++) {
+      const fan = addUser(`boots-geo-${i}`);
+      addReview({ id: `boots_geo_review_${i}`, user_id: fan.id, artist: "Boots and Hearts 2026",
+        date: "2026-08-28", end_date: "2026-08-29", overall: 1,
+        venue: i === 0 ? "Unknown venue" : "Fan Park @ ICE District", city: i === 1 ? "" : "Edmonton, Alberta",
+        review: "Geographic identity regression fixture.",
+      });
+    }
+    const fan = addUser("boots-geo-valid");
+    for (const [i, artist] of ["Boots and Hearts 2025", "Rolling Loud Edmonton 2025"].entries()) {
+      addReview({ id: `boots_geo_valid_${i}`, user_id: fan.id, artist, date: "2025-08-08", overall: 4,
+        venue: i ? "Fan Park @ ICE District" : "Burl's Creek", city: i ? "Edmonton" : "Oro-Medonte", review: "A valid independent review.",
+      });
+    }
+    const stored = JSON.stringify(db.prepare("SELECT id,artist,venue,city FROM posts WHERE artist LIKE 'Boots%' ORDER BY id").all());
+    const page = createFestivalReader(db).festival("boots-and-hearts");
+    assert.equal(page.reviewStats.reviews, before.reviewStats.reviews + 1);
+    assert.equal(page.reviewStats.average, 4);
+    assert.equal(page.reviews.length, before.reviews.length + 1);
+    assert.ok(page.reviews.some(row => row.name === "Boots and Hearts 2025"));
+    assert.ok(page.reviews.every(row => !row.city.includes("Edmonton") && !row.venue.includes("ICE District")));
+    assert.equal(createFestivalReader(db).festival("rolling-loud").reviewStats.reviews, beforeOther.reviewStats.reviews + 1);
+    assert.equal(JSON.stringify(db.prepare("SELECT id,artist,venue,city FROM posts WHERE artist LIKE 'Boots%' ORDER BY id").all()), stored);
+  } finally { db.exec("ROLLBACK TO boots_review_geography; RELEASE boots_review_geography"); }
+});
+
+test("edition eligibility precedes upcoming and detail limits with stable ordering", () => {
+  db.exec("SAVEPOINT boots_edition_limits");
+  try {
+    // All modifications are confined to this throwaway fixture savepoint.
+    db.exec("DELETE FROM festival_editions WHERE festival_slug='boots-and-hearts'");
+    const template = db.prepare("SELECT * FROM festival_editions LIMIT 1").get();
+    const columns = Object.keys(template);
+    const insert = db.prepare(`INSERT INTO festival_editions(${columns.join(',')}) VALUES(${columns.map(() => '?').join(',')})`);
+    const add = (id, date, west) => {
+      const row = { ...template, id, festival_slug: "boots-and-hearts", name: west ? "Boots and Hearts West 2026" : "Boots and Hearts 2026",
+        start_date: date, end_date: date, venue: west ? "Fan Park @ ICE District" : "Burl's Creek", city: west ? "Edmonton" : "Oro-Medonte", region: west ? "AB" : "ON", country_code: "CA" };
+      insert.run(...columns.map(column => row[column]));
+    };
+    add("boots-limit-west-first", "2026-08-28", true);
+    add("boots-limit-valid-a", "2026-09-10", false);
+    add("boots-limit-valid-b", "2026-09-10", false);
+    const reader = createFestivalReader(db, { now: () => Date.parse("2026-08-27T12:00:00Z") });
+    assert.deepEqual(reader.upcoming({ country: "CA", limit: 1 }).map(row => row.id), ["boots-limit-valid-a"]);
+    assert.deepEqual(reader.upcoming({ country: "CA", limit: 2 }).map(row => row.id), ["boots-limit-valid-a", "boots-limit-valid-b"]);
+    for (let i = 0; i < 31; i++) add(`boots-limit-hidden-${i}`, "2026-10-01", true);
+    const page = reader.festival("boots-and-hearts");
+    assert.deepEqual(page.upcoming.map(row => row.id), ["boots-limit-valid-a", "boots-limit-valid-b"]);
+    const past = createFestivalReader(db, { now: () => Date.parse("2026-11-01T12:00:00Z") }).festival("boots-and-hearts");
+    assert.deepEqual(past.past.map(row => row.id), ["boots-limit-valid-a", "boots-limit-valid-b"]);
+  } finally { db.exec("ROLLBACK TO boots_edition_limits; RELEASE boots_edition_limits"); }
 });

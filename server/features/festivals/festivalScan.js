@@ -6,7 +6,7 @@ import { createFestivalStore } from "./festivalStore.js";
 import { selectTicketmasterEventImage } from "../../providerEventImage.js";
 import { canonicalTicketUrl } from "../../../src/domain/ticketLinks.mjs";
 import { FESTIVAL_CATALOG } from "./festivalCatalog.js";
-import { festivalActs, matchFestival } from "./festivalEditions.js";
+import { festivalActs, matchFestival, festivalRecordMatches } from "./festivalEditions.js";
 import { fetchFestivalKnowledge } from "./festivalKnowledge.js";
 
 // Keeps festival editions current. Each pass looks up a few festivals on
@@ -51,6 +51,8 @@ export function festivalListingsFromTicketmaster(entry, data) {
     if (!startDate || !/^\d{4}-\d{2}-\d{2}$/u.test(startDate)) continue;
     const endDate = text(event.dates?.end?.localDate, 10);
     const venue = event._embedded?.venues?.[0] || {};
+    if (!festivalRecordMatches(entry, { name, venue: venue.name, city: venue.city?.name,
+      region: venue.state?.stateCode || venue.state?.name, countryCode: venue.country?.countryCode })) continue;
     const image = selectTicketmasterEventImage(event);
     out.push({
       festivalSlug: entry.slug,
@@ -111,7 +113,10 @@ export async function runFestivalScan({ database, store, env = process.env, sign
   const summary = { scanned: 0, listings: 0, editionsChanged: 0, knowledge: 0, failures: 0 };
   const touched = new Set();
   // 1. Festival rows the tour-date ingest already has: free.
-  const known = store.tourDateListings((name) => matchFestival(catalog, name));
+  const known = store.tourDateListings((name, row) => {
+    const entry = matchFestival(catalog, name);
+    return festivalRecordMatches(entry, row) ? entry : null;
+  });
   store.saveListings(known.map(({ entry, billed, ...listing }) => ({ ...listing, acts: festivalActs(entry, billed) })));
   for (const listing of known) touched.add(listing.festivalSlug);
   // 2. A rotating batch straight from Ticketmaster.

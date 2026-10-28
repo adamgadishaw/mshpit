@@ -1,5 +1,6 @@
 import { FESTIVAL_CATALOG } from "./festivalCatalog.js";
-import { editionDays, expectedEdition, festivalEditionName, groupFestivalEditions } from "./festivalEditions.js";
+import { editionDays, expectedEdition, festivalEditionName, groupFestivalEditions, festivalRecordMatches, ontarioFestivalPlaceConflict } from "./festivalEditions.js";
+import { festivalAnnouncement } from "./festivalAnnouncements.js";
 
 // Festivals, their editions (one dated run in one place), the ticket
 // listings each edition was built from, and members' plans for an edition:
@@ -8,6 +9,19 @@ import { editionDays, expectedEdition, festivalEditionName, groupFestivalEdition
 const DAY_MS = 86_400_000;
 const parse = (value, fallback) => { try { const parsed = JSON.parse(value ?? ""); return parsed ?? fallback; } catch { return fallback; } };
 const today = (now) => new Date(now).toISOString().slice(0, 10);
+const festivalPolicyDatabases = new WeakSet();
+const ONTARIO_EDITION_IDENTITY_SQL = `(e.festival_slug<>'boots-and-hearts' OR
+  pit_ontario_festival_record(e.name,e.venue,e.city,e.region,e.country_code)=1)`;
+function installFestivalReadPolicy(database) {
+  if (festivalPolicyDatabases.has(database)) return;
+  // Deterministic row predicates run inside SQLite, before LIMIT/counts. They
+  // do no I/O and constrain only Ontario; traveling brands remain unchanged.
+  database.function("pit_ontario_festival_record", { deterministic: true }, (name, venue, city, region, countryCode) =>
+    festivalRecordMatches(FESTIVAL_CATALOG_BY_SLUG.get("boots-and-hearts"), { name, venue, city, region, countryCode }) ? 1 : 0);
+  database.function("pit_ontario_festival_place", { deterministic: true }, (venue, city) =>
+    ontarioFestivalPlaceConflict({ venue, city }) ? 0 : 1);
+  festivalPolicyDatabases.add(database);
+}
 export const FESTIVAL_PLAN_LIMITS = Object.freeze({ mustSee: 30 });
 
 export function ensureFestivalSchema(database, { now = Date.now } = {}) {
@@ -108,6 +122,8 @@ export function createFestivalStore(database, { now = Date.now } = {}) {
     saveListings(listings) {
       const at = now();
       for (const listing of listings) {
+        const entry = FESTIVAL_CATALOG_BY_SLUG.get(listing.festivalSlug);
+        if (entry && !festivalRecordMatches(entry, listing)) continue;
         saveListing.run({ providerEventId: listing.providerEventId, festivalSlug: listing.festivalSlug, name: listing.name, startDate: listing.startDate,
           endDate: listing.endDate || null, venue: listing.venue || null, venueId: listing.venueId || null,
           city: listing.city || null, region: listing.region || null, countryCode: listing.countryCode || null,
@@ -123,7 +139,7 @@ export function createFestivalStore(database, { now = Date.now } = {}) {
       const since = today(now() - 60 * DAY_MS);
       const out = [];
       for (const row of tourDateFestivalRows.all(since)) {
-        const entry = match(row.event_name);
+        const entry = match(row.event_name, row);
         if (!entry) continue;
         out.push({ festivalSlug: entry.slug, providerEventId: `tm:${row.provider_event_id}`, name: row.event_name, startDate: row.date,
           endDate: row.event_end_date || row.date, venue: row.venue, venueId: row.venue_provider_id, city: row.venue_city, region: row.venue_region,
@@ -137,13 +153,15 @@ export function createFestivalStore(database, { now = Date.now } = {}) {
     // keeps its id (and members' plans) when its dates move a little.
     rebuildEditions(festivalSlug, { quiet = false } = {}) {
       const at = now();
-      const listings = listingsFor.all(festivalSlug).map((row) => ({
+      const entry = FESTIVAL_CATALOG_BY_SLUG.get(festivalSlug);
+      const listings = listingsFor.all(festivalSlug).filter(row => !entry || festivalRecordMatches(entry, row)).map((row) => ({
         festivalSlug, providerEventId: row.provider_event_id, name: row.name, startDate: row.start_date, endDate: row.end_date,
         venue: row.venue, venueId: row.venue_id, city: row.city, region: row.region, countryCode: row.country_code,
         lat: row.lat, lng: row.lng, imageUrl: row.image_url, imageAttribution: row.image_attribution, ticketUrl: row.ticket_url,
         acts: parse(row.acts, []),
       }));
-      const existing = editionsFor.all(festivalSlug);
+      const storedEditions = editionsFor.all(festivalSlug);
+      const existing = storedEditions.filter(row => !entry || festivalRecordMatches(entry, row));
       const claimed = new Set();
       const gap = (row, edition) => Math.abs(Date.parse(`${row.start_date}T00:00:00Z`) - Date.parse(`${edition.startDate}T00:00:00Z`));
       let changed = 0;
@@ -154,6 +172,10 @@ export function createFestivalStore(database, { now = Date.now } = {}) {
         const near = existing.find((row) => row.id === edition.id && !claimed.has(row.id))
           || existing.filter((row) => !claimed.has(row.id) && (row.city || "") === (edition.city || "") && gap(row, edition) <= 10 * DAY_MS)
             .sort((a, b) => gap(a, edition) - gap(b, edition))[0];
+        // A legacy mixed edition can carry an Ontario-shaped ID. Do not let
+        // an UPSERT overwrite that quarantined row (and repurpose its plans).
+        // Resolve this exact collision in the separately reviewed cleanup.
+        if (!near && storedEditions.some(row => row.id === edition.id)) continue;
         if (near) claimed.add(near.id);
         const lineup = JSON.stringify(edition.lineup);
         if (near?.lineup !== lineup) changed += 1;
@@ -169,15 +191,18 @@ export function createFestivalStore(database, { now = Date.now } = {}) {
 
 // Reading festivals for the app and the public pages.
 export function createFestivalReader(database, { now = Date.now } = {}) {
+  installFestivalReadPolicy(database);
   const festivalBySlug = database.prepare("SELECT * FROM festivals WHERE slug=?");
   const allFestivals = database.prepare("SELECT * FROM festivals ORDER BY name");
-  const editionsFor = database.prepare("SELECT * FROM festival_editions WHERE festival_slug=? ORDER BY start_date DESC, id LIMIT 30");
+  const editionsFor = database.prepare(`SELECT e.* FROM festival_editions e WHERE e.festival_slug=?
+    AND ${ONTARIO_EDITION_IDENTITY_SQL} ORDER BY e.start_date DESC, e.id LIMIT 30`);
   const upcomingEditions = database.prepare(`SELECT e.*, f.name AS festival_name,
       (SELECT COUNT(*) FROM festival_plans p JOIN users u ON u.id=p.user_id WHERE p.edition_id=e.id AND u.is_banned=0) AS going
     FROM festival_editions e JOIN festivals f ON f.slug=e.festival_slug
     WHERE e.end_date >= ? AND (? = '' OR e.country_code = ?)
+      AND ${ONTARIO_EDITION_IDENTITY_SQL}
     ORDER BY e.start_date, e.id LIMIT ?`);
-  const editionById = database.prepare("SELECT * FROM festival_editions WHERE id=?");
+  const editionById = database.prepare(`SELECT e.* FROM festival_editions e WHERE e.id=? AND ${ONTARIO_EDITION_IDENTITY_SQL}`);
   const goingByDay = database.prepare(`SELECT day.value AS day, COUNT(*) AS going FROM festival_plans p JOIN users u ON u.id=p.user_id,
       json_each(CASE WHEN json_valid(p.days) THEN p.days ELSE '[]' END) day
     WHERE p.edition_id=? AND u.is_banned=0 GROUP BY day.value`);
@@ -192,10 +217,14 @@ export function createFestivalReader(database, { now = Date.now } = {}) {
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND p.show_format='festival' AND COALESCE(p.kind,'review')='review' AND u.is_banned=0 AND u.dormant_at IS NULL
       AND EXISTS (SELECT 1 FROM json_each(?) phrase WHERE instr(lower(p.artist), phrase.value) > 0)
+      AND NOT EXISTS (SELECT 1 FROM json_each(?) phrase WHERE instr(lower(p.artist), phrase.value) > 0)
+      AND (?<>'boots-and-hearts' OR pit_ontario_festival_place(p.venue,p.city)=1)
     ORDER BY CASE WHEN p.date<>'' THEN p.date ELSE '' END DESC, p.created_at DESC LIMIT 12`);
   const reviewStats = database.prepare(`SELECT COUNT(*) AS reviews, AVG(p.overall) AS average FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND p.show_format='festival' AND COALESCE(p.kind,'review')='review' AND u.is_banned=0
-      AND EXISTS (SELECT 1 FROM json_each(?) phrase WHERE instr(lower(p.artist), phrase.value) > 0)`);
+      AND EXISTS (SELECT 1 FROM json_each(?) phrase WHERE instr(lower(p.artist), phrase.value) > 0)
+      AND NOT EXISTS (SELECT 1 FROM json_each(?) phrase WHERE instr(lower(p.artist), phrase.value) > 0)
+      AND (?<>'boots-and-hearts' OR pit_ontario_festival_place(p.venue,p.city)=1)`);
 
   const editionJson = (row, { full = false } = {}) => {
     const lineup = parse(row.lineup, []);
@@ -229,7 +258,8 @@ export function createFestivalReader(database, { now = Date.now } = {}) {
 
   return Object.freeze({
     upcoming({ country = "", limit = 60 } = {}) {
-      return upcomingEditions.all(today(now()), country, country, Math.min(100, Math.max(1, limit))).map((row) => ({
+      return upcomingEditions.all(today(now()), country, country, Math.min(100, Math.max(1, limit)))
+        .map((row) => ({
         ...editionJson(row), festivalName: row.festival_name,
       }));
     },
@@ -241,12 +271,15 @@ export function createFestivalReader(database, { now = Date.now } = {}) {
     festival(slug, { viewerId = null } = {}) {
       const row = festivalBySlug.get(slug);
       if (!row) return null;
+      const entry = FESTIVAL_CATALOG_BY_SLUG.get(slug);
       const editions = editionsFor.all(slug);
       const current = today(now());
       const upcoming = editions.filter((edition) => edition.end_date >= current).sort((a, b) => a.start_date.localeCompare(b.start_date));
       const past = editions.filter((edition) => edition.end_date < current);
       const phrases = catalogPhrases(slug);
-      const stats = reviewStats.get(phrases);
+      const excludes = JSON.stringify(slug === "boots-and-hearts" ? entry?.exclude || [] : []);
+      const stats = reviewStats.get(phrases, excludes, slug);
+      const announcement = festivalAnnouncement(slug, current);
       return {
         festival: {
           slug: row.slug, name: row.name, city: row.city, country: row.country,
@@ -264,8 +297,9 @@ export function createFestivalReader(database, { now = Date.now } = {}) {
           };
         }),
         past: past.map((edition) => editionJson(edition)),
-        expected: upcoming.length ? null : expectedEdition(past.map((edition) => ({ startDate: edition.start_date, endDate: edition.end_date, city: edition.city })), { today: current }),
-        reviews: festivalReviews.all(phrases).map((review) => ({
+        announcement,
+        expected: upcoming.length || announcement ? null : expectedEdition(past.map((edition) => ({ startDate: edition.start_date, endDate: edition.end_date, city: edition.city })), { today: current }),
+        reviews: festivalReviews.all(phrases, excludes, slug).map((review) => ({
           postId: review.id, name: review.artist, date: review.date || "", endDate: review.end_date || "", overall: review.overall,
           review: String(review.review || "").slice(0, 280), city: review.city || "", venue: review.venue || "",
           // Only photos the author chose to share publicly.

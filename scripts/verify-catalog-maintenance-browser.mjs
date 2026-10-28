@@ -127,7 +127,8 @@ async function localServer() {
   return { server, origin: `http://127.0.0.1:${server.address().port}` };
 }
 function catalogEditorFixture(type) {
-  return { type, key: `${type}-fixture`, identity: { name: `Fixture ${type}`, city: "Toronto", country: "CA" },
+  return { type, key: `${type}-fixture`, identity: { name: `Fixture ${type}`, city: "Toronto", country: "CA",
+    ...(type === "event" ? { scope: "event-only", artistKey: null, artistIdentityStatus: "conflict", source: "ticketmaster", providerId: "fixture-event", venueId: "fixture-venue", date: "2027-05-01" } : {}) },
     protectedFacts: { venue: "Provider hall", date: "2027-05-01" }, protectedReason: null, revision: 0,
     identityHash: "a".repeat(64), expectedHash: "b".repeat(64), content: null, identityCurrent: true,
     missingFields: ["sourced summary"] };

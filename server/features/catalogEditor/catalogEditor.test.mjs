@@ -33,6 +33,49 @@ function draft(service, type = "artist", key = "sample artist") {
 }
 const save = (service, value, key = "operation_0000000001") => service.save({ actorId: "admin", draft: value, idempotencyKey: key, requestId: "request-1" });
 
+test("unresolved public events support exact occurrence text without artist or venue propagation", t => {
+  const { db, service } = fixture(t);
+  db.exec("UPDATE tour_dates SET artist_identity_status='conflict',event_status='cancelled'");
+  const before = JSON.stringify(db.prepare("SELECT * FROM tour_dates").all());
+  const current = service.read({ type: "event", key: "event-1" });
+  assert.equal(current.identity.scope, "event-only");
+  assert.equal(current.identity.artistKey, null);
+  assert.equal(current.protectedFacts.status, "cancelled");
+  assert.equal(service.list({ type: "event" }).items[0].key, "event-1");
+  assert.throws(() => service.read({ type: "venue", key: "ticketmaster:p-venue" }), { code: "NOT_FOUND" });
+  const input = draft(service, "event", "event-1");
+  assert.equal(service.prepare([input]).results[0].ok, true);
+  const result = save(service, input);
+  assert.equal(readPublicCatalogEditorText(db, { type: "event", key: "event-1", at: AT }).summary, input.summary);
+  assert.equal(readPublicCatalogEditorText(db, { type: "artist", key: "sample artist", at: AT }), null);
+  assert.equal(save(service, input).auditId, result.auditId);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM moderation_actions").get().n, 1);
+  assert.equal(JSON.stringify(db.prepare("SELECT * FROM tour_dates").all()), before);
+  db.exec("UPDATE artist_profiles SET identity_review_status='conflict'; INSERT INTO artist_profiles VALUES('sample artist',NULL,NULL,0,0,'pending')");
+  assert.throws(() => service.read({ type: "artist", key: "sample artist" }), { code: "NOT_FOUND" });
+});
+
+test("event-only prepare, save and public reads fail closed on occurrence or eligibility changes", t => {
+  const changes = ["provider_event_id='another'", "source='another'", "venue_provider_id='another'", "date='2026-10-06'",
+    "venue='Another Hall'", "venue_city='Ottawa'", "venue_country_code='US'", "artist='Another Artist'",
+    "artist_identity_status='registered'", "artist_identity_status='pending'", "provider_active=0", "owner_id='member'",
+    "release_at=9999999999999", "music_qualified=0", "venue_provider_id=NULL", "date='2026-02-31'",
+    "provider_artist_id='different-attraction'", "event_end_date='2026-10-06'", "start_date_time='2026-10-05T20:00:00Z'"];
+  for (const [index, change] of changes.entries()) {
+    const { db, service } = fixture(t);
+    db.exec("ALTER TABLE tour_dates ADD COLUMN provider_artist_id TEXT; ALTER TABLE tour_dates ADD COLUMN event_end_date TEXT");
+    db.exec("UPDATE tour_dates SET artist_identity_status='conflict'");
+    const original = draft(service, "event", "event-1");
+    save(service, original);
+    const next = draft(service, "event", "event-1");
+    db.exec(`UPDATE tour_dates SET ${change}`);
+    assert.equal(service.prepare([next]).results[0].ok, false, change);
+    assert.throws(() => save(service, next, `changed_operation_${index}`), change);
+    assert.equal(readPublicCatalogEditorText(db, { type: "event", key: "event-1", at: AT }), null, change);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM moderation_actions").get().n, 1);
+  }
+});
+
 function completionFixture(t) {
   const { db } = fixture(t), mbid = "12345678-1234-4234-8234-123456789abc";
   db.exec(`ALTER TABLE artists ADD photo TEXT; ALTER TABLE artist_profiles ADD avatar_uri TEXT;

@@ -58,7 +58,7 @@ export const FESTIVAL_CATALOG = Object.freeze([
   festival("ile-soniq", "ÎLESONIQ", { match: ["ilesoniq", "îlesoniq"], city: "Montreal", country: "CA", wikipedia: "Îlesoniq" }),
   festival("heavy-montreal", "Heavy Montréal", { match: ["heavy montreal", "heavy montréal"], city: "Montreal", country: "CA", wikipedia: "Heavy Montréal" }),
   festival("veld", "Veld Music Festival", { match: ["veld music festival", "veld festival"], city: "Toronto", country: "CA", wikipedia: "Veld Music Festival", search: "Veld" }),
-  festival("boots-and-hearts", "Boots and Hearts", { match: ["boots and hearts", "boots & hearts"], city: "Oro-Medonte", country: "CA", wikipedia: "Boots and Hearts Music Festival" }),
+  festival("boots-and-hearts", "Boots and Hearts", { match: ["boots and hearts", "boots & hearts"], exclude: ["boots and hearts west", "boots & hearts west"], city: "Oro-Medonte", country: "CA", wikipedia: "Boots and Hearts Music Festival" }),
   festival("festival-d-ete-de-quebec", "Festival d'été de Québec", { match: ["festival d'été de québec", "festival d'ete de quebec"], city: "Quebec City", country: "CA", wikipedia: "Festival d'été de Québec" }),
   festival("glastonbury", "Glastonbury Festival", { match: ["glastonbury festival"], city: "Pilton", country: "GB", wikipedia: "Glastonbury Festival" }),
   festival("reading-and-leeds", "Reading and Leeds Festivals", { match: ["reading festival", "leeds festival", "reading & leeds"], country: "GB", wikipedia: "Reading and Leeds Festivals", search: "Reading Festival" }),
