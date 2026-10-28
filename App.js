@@ -104,6 +104,7 @@ import { artistPath, eventPath, parsePublicCollectionPath } from "./src/domain/u
 import { cityIdentityForLocation } from "./src/cityIdentity.js";
 import { CityNavigationContext } from "./src/components/cities/CityNavigationContext";
 import { shouldRestorePersistedStack, MAIN_TAB_PATHS, mainTabForPath, serverDocumentNavigationPath } from "./src/domain/browserNavigation.mjs";
+import { searchContinuity } from "./src/domain/searchContinuity.mjs";
 import { createBrowserHistory, publicPresentationHintFromHistory } from "./src/domain/browserHistory.mjs";
 import { publicBrowserDestination } from "./src/domain/publicBrowserDestination.mjs";
 import { needsPublicFrameIdentity } from "./src/domain/publicFrameNavigation.mjs";
@@ -602,8 +603,18 @@ function Root() {
     demoEnabled: ENABLE_DEMO_DATA,
     readPersisted: load,
   }));
+  const searchContinuityRef = useRef(null);
   const navigationRef = useRef({ stack, tab, landing, accountId: session?.id || null });
-  navigationRef.current = { stack, tab, landing, accountId: session?.id || null };
+  searchContinuityRef.current = searchContinuity(searchContinuityRef.current, session?.id);
+  navigationRef.current = { stack, tab, landing, accountId: session?.id || null, searchContinuity: searchContinuityRef.current };
+  const rememberSearch = (value) => {
+    const next = searchContinuity(value, session?.id);
+    if (!next) return;
+    searchContinuityRef.current = next;
+    navigationRef.current = { ...navigationRef.current, searchContinuity: next };
+    // Updates bounded visit memory without adding browser history or URL text.
+    browserHistoryRef.current?.capture(navigationRef.current);
+  };
   const browserHistoryRef = useRef(null);
   const browserEntryPresentationRef = useRef(web ? publicPresentationHintFromHistory(window.history.state, window.location.pathname) : null);
   const pageHeadRef = useRef(null);
@@ -638,7 +649,8 @@ function Root() {
     cancelNewsStory();
   };
   const applyNavigation = (next) => {
-    navigationRef.current = next;
+    searchContinuityRef.current = searchContinuity(next.searchContinuity, next.accountId);
+    navigationRef.current = { ...next, searchContinuity: searchContinuityRef.current };
     stackRef.current = next.stack;
     setStack(next.stack);
     setTab(next.tab);
@@ -1669,7 +1681,7 @@ function Root() {
                   onRemoveMyPostTag={removePostTag}
                 />
               )}
-              {activeTab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
+              {activeTab === "search" && <SearchScreen key={session?.id || "guest"} initialContinuity={searchContinuityRef.current} onContinuityChange={rememberSearch} onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
               {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
               {activeTab === "you" && !!session && (
                 <YouScreen

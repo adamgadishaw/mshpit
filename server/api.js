@@ -242,6 +242,7 @@ import {
 import { ANALYTICS_MAX_RAW_ROWS, ANALYTICS_MAX_ROWS_PER_ACCOUNT, ANALYTICS_RETENTION_DAYS, ingestAnalyticsBatch } from "./analyticsService.js";
 import { readGuestSearchAnalytics } from "./guestSearchAnalytics.js";
 import { guestSearchAnalyticsRoutes } from "./features/guestSearchAnalytics/guestSearchAnalyticsRoutes.js";
+import { catalogSearchRoutes } from "./features/catalogSearch/catalogSearchRoutes.js";
 import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { jobRoutes } from "./features/jobs/jobRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
@@ -315,7 +316,7 @@ import {
   publicTourDateVenueFields,
   publicTourDateVenueName,
 } from "./publicTourDateVenueProjection.js";
-import { publicTourDateArtistProjection, publicTourDateProviderFields } from "./tourDateMetadata.js";
+import { publicTourDateBilledArtists, publicTourDateArtistProjection, publicTourDateProviderFields } from "./tourDateMetadata.js";
 import { isOwnerId, ownerAccount, readOwnerIdentity } from "./ownerIdentity.js";
 import {
   createOwnerApprovalRequest,
@@ -1068,6 +1069,8 @@ function tourDateRangePage(viewer, range, timestamp) {
       countryCode: range.countryCode,
       country: range.country,
       providerOnly: range.providerOnly === true,
+      search: range.search,
+      blockedViewerId: range.blockedViewerId,
       after: cursor,
       limit: batchLimit,
     });
@@ -1112,14 +1115,7 @@ const tourDateArtistPhotos = createTourDateArtistPhotoReader(db);
 
 function tourDateJson(row) {
   const projectedArtist = publicTourDateArtistProjection(row);
-  let billedArtists = [];
-  if (row.music_evidence) {
-    try {
-      const parsed = JSON.parse(row.billed_artists || "[]");
-      if (Array.isArray(parsed)) billedArtists = parsed.slice(0, 20)
-        .filter((name) => typeof name === "string" && name.trim());
-    } catch { /* architecture: allow-empty-catch -- malformed provider evidence stays out of the public projection */ }
-  }
+  const billedArtists = publicTourDateBilledArtists(row);
   return {
     id: row.id,
     artist: projectedArtist.artist,
@@ -4958,6 +4954,8 @@ export const routes = {
     pageRequest,
     requireModerator,
   }),
+  ...catalogSearchRoutes({ ApiError, now, rateLimit: limit,
+    readPage: (options, at) => tourDateRangePage(null, options, at), project: tourDateJson }),
   ...guestSearchAnalyticsRoutes({
     database: db,
     ApiError,

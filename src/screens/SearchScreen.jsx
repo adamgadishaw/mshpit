@@ -22,8 +22,11 @@ import {
   withoutBlockedPersonSearches,
 } from "../domain/unifiedSearch.mjs";
 import { searchLiveAnnouncement } from "../domain/searchAccessibility.mjs";
+import { searchContinuity } from "../domain/searchContinuity.mjs";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
-import { createUnifiedEventSearchIndex, searchUnifiedEventIndex } from "../domain/unifiedLocationSearch.mjs";
+import { searchCatalogEvents, searchMoreCatalogEvents } from "../features/catalogSearch/catalogSearchApi";
+import { CATALOG_MAX_PAGES, mergeCatalogEvents } from "../features/catalogSearch/catalogSearchClient.mjs";
+import { createUnifiedVenueSearchIndex, searchUnifiedVenueIndex, createUnifiedEventSearchIndex, searchUnifiedEventIndex } from "../domain/unifiedLocationSearch.mjs";
 import { openTicketLink } from "../lib/ticketLinks";
 import { recordGuestSearch } from "../features/analytics/services/guestSearchAnalyticsApi.mjs";
 import { artistLookupFailureMessage } from "../features/artistSearch/artistSearchApi.mjs";
@@ -105,13 +108,13 @@ function SongRow({ song, onPress, onAdd }) {
 }
 function VenueRow({ v, onPress }) {
   return (
-    <Pressable style={styles.row} onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open venue ${v.name}${v.place ? `, ${v.place}` : ""}${v.upcoming > 0 ? `, ${v.upcoming} upcoming` : ""}`}>
+    <Pressable style={styles.row} onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open venue ${v.name}${v.place ? `, ${v.place}` : ""}${v.upcoming > 0 ? `, ${v.upcoming} ${v.fromCatalog ? "matching shows loaded" : "upcoming"}` : ""}`}>
       <View style={[styles.dot, { borderColor: colors.cool }]}><Icon name="pin" size={14} color={colors.cool} /></View>
       <View style={{ flex: 1 }}>
         <Text style={styles.rowName} numberOfLines={1}>{v.name}</Text>
         <Text style={styles.rowSub} numberOfLines={1}>{v.place || "Location not listed"}</Text>
       </View>
-      {v.upcoming > 0 && <View style={styles.pill}><Text style={styles.pillTxt}>{v.upcoming}</Text></View>}
+      {v.upcoming > 0 && <View style={styles.pill}><Text style={styles.pillTxt}>{v.upcoming}{v.partial ? "+" : ""}</Text></View>}
     </Pressable>
   );
 }
@@ -169,30 +172,45 @@ function searchResultBucket(count) {
   return "over_twenty";
 }
 
-export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
+export default function SearchScreen({ initialContinuity, onContinuityChange, onOpen, onOpenArtist, onOpenCity, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
   const { tourDates, refreshTourDates, searchVenues, artistsAlphabetical, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, track,
     session, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
   const searchAccountScope = accountTargetScope(session?.id, "search");
   const lookupRequestRef = useRef(null);
   if (!lookupRequestRef.current) lookupRequestRef.current = createArtistLookupController();
-  const [queryState, setQueryState] = useState(() => ({ scope: searchAccountScope, value: "" }));
+  const restoredRef = useRef(searchContinuity(initialContinuity, session?.id));
+  const [queryState, setQueryState] = useState(() => ({ scope: searchAccountScope, value: restoredRef.current?.query || "" }));
   const q = scopedScreenValue(queryState, searchAccountScope, "");
   const setQ = (value) => {
     lookupRequestRef.current.cancel();
     setQueryState({ scope: searchAccountScope, value: String(value || "") });
   };
   const [focused, setFocused] = useState(false);
-  const [activeCategory, setActiveCategory] = useState("all");
+  const [activeCategory, setActiveCategory] = useState(restoredRef.current?.category || "all");
+  const catalogPagesRef = useRef(restoredRef.current?.catalogPages || 1);
+  const scrollYRef = useRef(restoredRef.current?.scrollY || 0);
+  const pendingScrollRef = useRef(restoredRef.current?.scrollY || 0);
+  const continuityCallbackRef = useRef(onContinuityChange);
+  continuityCallbackRef.current = onContinuityChange;
+  const publishContinuity = () => continuityCallbackRef.current?.({
+    accountId: session?.id || null, at: Date.now(), query: q, category: activeCategory, scrollY: scrollYRef.current, catalogPages: catalogPagesRef.current,
+  });
+  useEffect(() => { publishContinuity(); }, [q, activeCategory, searchAccountScope]);
   const resultScrollRef = useRef(null);
   const searchInputRef = useRef(null);
   const categoryRefs = useRef({});
   const selectCategory = (key) => {
+    pendingScrollRef.current = 0;
+    scrollYRef.current = 0;
     setActiveCategory(key);
     resultScrollRef.current?.scrollTo?.({ y: 0, animated: false });
     categoryRefs.current[key]?.focus?.();
   };
   const [artistCache, setArtistCache] = useState({ scope: null, rows: [] });
+  const [catalogCache, setCatalogCache] = useState({ scope: null, rows: [], nextCursor: null, pages: 0 });
+  const catalogMoreControllerRef = useRef(null);
+  const [catalogMoreState, setCatalogMoreState] = useState({ scope: null, loading: false, error: "" });
   const [songCache, setSongCache] = useState({ scope: null, rows: [] });
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
@@ -200,11 +218,15 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   const [surfaceRefreshing, setSurfaceRefreshing] = useState(false);
   const [surfaceRefreshError, setSurfaceRefreshError] = useState(false);
   const query = q.trim().toLowerCase();
-  const [settledQuery, setSettledQuery] = useState(query);
+  const generationRef = useRef(0);
+  const completedSearchRef = useRef(false);
+  const [settledSearch, setSettledSearch] = useState({ query, generation: 0 });
+  const settledQuery = settledSearch.query;
   const activeSearchControllerRef = useRef(null);
   const surfaceRefreshControllerRef = useRef(null);
   const searchRefreshWaiterRef = useRef(null);
-  const previousQueryRef = useRef(query);
+  const forceSearchRef = useRef(false);
+  const previousAccountScopeRef = useRef(searchAccountScope);
   const lookupScope = accountTargetScope(session?.id, `search:${query}`);
   const remoteSearchScope = accountTargetScope(session?.id, `search:${settledQuery}`);
   const dbArtists = artistCache.scope === lookupScope ? artistCache.rows : EMPTY_ROWS;
@@ -231,6 +253,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   }));
   const setActionMessage = (message) => updateLookupState({ message });
   const changeQuery = (value) => {
+    if (String(value || "").trim().toLowerCase() !== query) {
+      catalogPagesRef.current = 1;
+      restoredRef.current = null;
+      pendingScrollRef.current = 0;
+      scrollYRef.current = 0;
+      resultScrollRef.current?.scrollTo?.({ y: 0, animated: false });
+    }
     setQ(value);
     // Case-only and whitespace-only edits keep the same normalized scope. Clear
     // an old lookup message explicitly, but avoid another state write while the
@@ -250,6 +279,11 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   fanClubDirectoryLoaderRef.current = loadFanClubsDirectory;
 
   useEffect(() => {
+    if (previousAccountScopeRef.current === searchAccountScope) return;
+    previousAccountScopeRef.current = searchAccountScope;
+    restoredRef.current = null;
+    pendingScrollRef.current = 0;
+    scrollYRef.current = 0;
     lookupRequestRef.current.reset();
     surfaceRefreshControllerRef.current?.abort();
     surfaceRefreshControllerRef.current = null;
@@ -267,6 +301,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
     setLookupState({ scope: accountTargetScope(session?.id, "search:"), value: EMPTY_LOOKUP_STATE });
   }, [searchAccountScope, session?.id]);
   useEffect(() => () => {
+    catalogMoreControllerRef.current?.abort();
     surfaceRefreshControllerRef.current?.abort();
     if (searchRefreshWaiterRef.current) {
       const waiter = searchRefreshWaiterRef.current;
@@ -276,25 +311,26 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
     lookupRequestRef.current.reset();
   }, []);
   useEffect(() => {
-    // Stop the previous request as soon as the text changes, not after the next
-    // debounce finishes. Expensive local scans and remote requests then share the
-    // same settled query and execute only once for a typing pause.
-    const previousQuery = previousQueryRef.current;
-    previousQueryRef.current = query;
+    // Every normalized edit owns a generation, including A -> B -> A. The
+    // query string alone cannot identify a cancelled request's replacement.
+    const generation = ++generationRef.current;
+    completedSearchRef.current = false;
     activeSearchControllerRef.current?.abort();
+    catalogMoreControllerRef.current?.abort();
+    catalogMoreControllerRef.current = null;
+    setCatalogMoreState({ scope: null, loading: false, error: "" });
     if (!query) {
-      setSettledQuery("");
+      setSettledSearch({ query: "", generation });
       setSearchLoading(false);
       setSearchError("");
-      setActiveCategory("all");
-      if (previousQuery) setSearchRevision((value) => value + 1);
+      if (!restoredRef.current) setActiveCategory("all");
       return undefined;
     }
     setSearchLoading(true);
     setSearchError("");
-    const id = setTimeout(() => setSettledQuery(query), 250);
+    const id = setTimeout(() => setSettledSearch({ query, generation }), 250);
     return () => clearTimeout(id);
-  }, [query]);
+  }, [query, searchAccountScope]);
   useEffect(() => {
     const controller = new AbortController();
     fanClubDirectoryLoaderRef.current?.({ signal: controller.signal })
@@ -315,28 +351,49 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
     if (!settledQuery) return [];
     return fanClubsDirectory().filter((c) => c.artist.toLowerCase().includes(settledQuery)).slice(0, 12);
   }, [fanClubDirectoryStatus, settledQuery]);
-  const queryIsSettled = query === settledQuery;
-  const venues = queryIsSettled ? searchedVenues : [];
-  const events = queryIsSettled ? searchedEvents : [];
+  const queryIsSettled = query === settledQuery && settledSearch.generation === generationRef.current;
+  const catalogScope = accountTargetScope(peopleScope, query);
+  const catalogScopeRef = useRef(catalogScope);
+  catalogScopeRef.current = catalogScope;
+  const catalog = catalogCache.scope === catalogScope ? catalogCache : null;
+  const catalogEvents = catalog?.rows || EMPTY_ROWS;
+  const catalogVenues = useMemo(() => searchUnifiedVenueIndex(createUnifiedVenueSearchIndex({
+    tourDates: catalogEvents, catalogVenues: searchedVenues,
+  }), settledQuery, { limit: 50 }), [catalogEvents, searchedVenues, settledQuery]);
+  const venues = queryIsSettled ? (query.length >= 2 ? catalogVenues : searchedVenues) : [];
+  const events = queryIsSettled ? (query.length >= 2 ? catalogEvents : searchedEvents) : [];
+  useEffect(() => {
+    if (!catalog || catalog.pages < 1) return;
+    catalogPagesRef.current = catalog.pages;
+    publishContinuity();
+  }, [catalogCache]);
   const clubs = queryIsSettled ? searchedClubs : [];
   // Local venue/event/club indexes can finish hydrating while the remote search
   // is in flight. Keep their latest count for analytics without making those
   // unrelated updates cancel and restart people/artist/song requests.
   const localResultCountRef = useRef(0);
-  localResultCountRef.current = venues.length + events.length + clubs.length;
+  localResultCountRef.current = searchedVenues.length + (query.length >= 2 ? 0 : events.length) + clubs.length;
 
   // Pull the artist catalog on open and whenever the box is cleared. A typed
   // query searches every available remote source together. The caches are
   // request-scoped, so an old query disappears synchronously and never flashes
   // beneath newly typed text while its replacement is debouncing.
   useEffect(() => {
+    if (settledSearch.generation !== generationRef.current || query !== settledQuery) return undefined;
+    catalogMoreControllerRef.current?.abort();
+    catalogMoreControllerRef.current = null;
+    setCatalogMoreState({ scope: null, loading: false, error: "" });
     let live = true;
     let requestSucceeded = false;
     const controller = new AbortController();
     activeSearchControllerRef.current = controller;
-    const requestOptions = unifiedSearchRequestOptions(controller);
+    const requestOptions = { ...unifiedSearchRequestOptions(controller), force: forceSearchRef.current };
+    forceSearchRef.current = false;
     const requestScope = remoteSearchScope;
     const searchQuery = settledQuery;
+    const catalogRequestScope = accountTargetScope(peopleScope, searchQuery);
+    const generation = settledSearch.generation;
+    const ownsRequest = () => live && !controller.signal.aborted && generation === generationRef.current;
     const effectRevision = searchRevision;
     const settleRefreshWaiter = (succeeded) => {
       const waiter = searchRefreshWaiterRef.current;
@@ -349,18 +406,22 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
       setSearchError("");
       searchArtistsApi("", requestOptions)
         .then((rows) => {
-          if (live && !controller.signal.aborted) {
+          if (ownsRequest()) {
             setArtistCache({ scope: requestScope, rows: rows || [] });
             requestSucceeded = true;
           }
         })
         .catch((error) => {
-          if (live && !controller.signal.aborted && error?.name !== "AbortError") {
+          if (ownsRequest() && error?.name !== "AbortError") {
             setArtistCache((current) => settleArtistSearchSnapshot(current, { scope: requestScope, error }));
             setSearchError("Artist results could not refresh. Please try again.");
           }
         })
         .finally(() => {
+          if (ownsRequest()) {
+            completedSearchRef.current = true;
+            setSearchLoading(false);
+          }
           if (activeSearchControllerRef.current === controller) activeSearchControllerRef.current = null;
           settleRefreshWaiter(requestSucceeded);
         });
@@ -375,22 +436,27 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
     setSearchError("");
     const run = async () => {
       try {
-        const remote = await settleUnifiedSearchRequests({
+        const [remote, catalogResult] = await Promise.all([settleUnifiedSearchRequests({
           // People search is intentionally member-only. Guests should not see a
           // People filter that can never produce a result or call its private API.
           people: session?.id ? searchPeople(searchQuery, requestOptions) : null,
           artists: searchArtistsApi(searchQuery, requestOptions),
           songs: ENABLE_MUSIC_PLAYER ? searchSongsApi(searchQuery, requestOptions) : null,
-        });
-        if (!live || controller.signal.aborted || remote.aborted) return;
-        requestSucceeded = remote.failures.length === 0 && remote.succeeded > 0;
+        }), searchQuery.length >= 2
+          ? searchCatalogEvents(searchQuery, { signal: controller.signal, pages: catalogPagesRef.current })
+          : Promise.resolve({ rows: [], nextCursor: null, pages: 0, error: null })]);
+        if (!ownsRequest() || remote.aborted) return;
+        requestSucceeded = remote.failures.length === 0 && !catalogResult.error && remote.succeeded > 0;
+        setCatalogCache((current) => catalogResult.error && !catalogResult.pages && current.scope === catalogRequestScope && ![401, 403].includes(catalogResult.error.status)
+          ? current : { scope: catalogRequestScope, ...catalogResult });
         setPeopleCache({ scope: peopleScope, query: searchQuery, rows: remote.people });
         setArtistCache((current) => settleArtistSearchSnapshot(current, {
           scope: requestScope, rows: remote.artists, error: remote.errors.artists,
         }));
         setSongCache({ scope: requestScope, rows: remote.songs });
 
-        const localResultCount = localResultCountRef.current;
+        const localResultCount = localResultCountRef.current + catalogResult.rows.length;
+        if (catalogResult.error) remote.failures.push("catalog");
 
         // Search text stays inside the search requests. Analytics receives only a
         // coarse result-count bucket, computed after this query's remote and local
@@ -418,14 +484,17 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
           void recordGuestSearch({ kind: "all", resultBucket: "unknown", outcome: "failed" }, { signal: controller.signal });
         }
       } catch (error) {
-        if (live && !controller.signal.aborted && error?.name !== "AbortError") {
+        if (ownsRequest() && error?.name !== "AbortError") {
           setSearchError("Search could not update. Check your connection and try again.");
           if (!session?.id) {
             void recordGuestSearch({ kind: "all", resultBucket: "unknown", outcome: "failed" }, { signal: controller.signal });
           }
         }
       } finally {
-        if (live && !controller.signal.aborted) setSearchLoading(false);
+        if (ownsRequest()) {
+          completedSearchRef.current = true;
+          setSearchLoading(false);
+        }
         if (activeSearchControllerRef.current === controller) activeSearchControllerRef.current = null;
         settleRefreshWaiter(requestSucceeded);
       }
@@ -437,9 +506,33 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
       if (activeSearchControllerRef.current === controller) activeSearchControllerRef.current = null;
       settleRefreshWaiter(false);
     };
-  }, [peopleScope, remoteSearchScope, searchRevision, session?.id, settledQuery]);
+  }, [peopleScope, remoteSearchScope, searchRevision, session?.id, settledSearch, query]);
+
+  const loadMoreCatalog = async () => {
+    if (searchLoading || surfaceRefreshing || activeSearchControllerRef.current || forceSearchRef.current
+      || !catalog?.nextCursor || catalog.pages >= CATALOG_MAX_PAGES || catalogMoreControllerRef.current) return;
+    const controller = new AbortController();
+    catalogMoreControllerRef.current = controller;
+    const scope = catalogScope;
+    const generation = generationRef.current;
+    const current = () => catalogMoreControllerRef.current === controller && !controller.signal.aborted
+      && generation === generationRef.current && catalogScopeRef.current === scope;
+    setCatalogMoreState({ scope, loading: true, error: "" });
+    try {
+      const page = await searchMoreCatalogEvents(query, { signal: controller.signal, after: catalog.nextCursor });
+      if (!current()) return;
+      setCatalogCache({ scope, rows: mergeCatalogEvents(catalog.rows, page.rows), nextCursor: page.nextCursor, pages: catalog.pages + 1 });
+      setCatalogMoreState({ scope, loading: false, error: "" });
+    } catch (error) {
+      if (current() && error?.name !== "AbortError") setCatalogMoreState({ scope, loading: false, error: "More shows could not load. Your current matches are still here." });
+    } finally {
+      if (catalogMoreControllerRef.current === controller) catalogMoreControllerRef.current = null;
+    }
+  };
 
   const refreshSearch = async () => {
+    catalogMoreControllerRef.current?.abort();
+    catalogMoreControllerRef.current = null;
     if (surfaceRefreshControllerRef.current) return false;
     const controller = new AbortController();
     surfaceRefreshControllerRef.current = controller;
@@ -451,6 +544,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
       if (searchRefreshWaiterRef.current) searchRefreshWaiterRef.current.resolve(false);
       searchRefreshWaiterRef.current = { revision: targetRevision, scope: targetScope, resolve };
     });
+    forceSearchRef.current = true;
     setSearchRevision(targetRevision);
     const results = await Promise.allSettled([
       searchResult,
@@ -502,6 +596,17 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   const showBrowse = !query;
   const exactArtist = artists.some((a) => a.name.toLowerCase() === query);
   const resultState = unifiedSearchState({ query, loading: searchLoading || !queryIsSettled, people, artists, songs, venues, events, clubs });
+  const restoreScroll = () => {
+    const y = pendingScrollRef.current;
+    if (!y || !completedSearchRef.current || searchLoading || !queryIsSettled) return;
+    resultScrollRef.current?.scrollTo?.({ y, animated: false });
+    pendingScrollRef.current = 0;
+  };
+  useEffect(() => {
+    if (searchLoading || !queryIsSettled) return undefined;
+    const frame = requestAnimationFrame(restoreScroll);
+    return () => cancelAnimationFrame(frame);
+  }, [searchLoading, queryIsSettled]);
   const resultGroups = { people, artists, songs, venues, events, clubs };
   const availableCategories = availableSearchCategories(searchCategories, resultGroups);
   const alternativeCategories = availableCategories.filter((item) => item.key !== "all" && item.key !== activeCategory && item.count > 0);
@@ -516,7 +621,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   const activeCategoryLabel = searchCategories.find((item) => item.key === activeCategory)?.label || "Results";
   const showCategory = (key) => activeCategory === "all" || activeCategory === key;
   const visibleSearchError = queryIsSettled ? searchError : "";
-  const liveAnnouncement = actionMessage || searchLiveAnnouncement({ query, state: visibleResultState, error: visibleSearchError, groups: visibleResultGroups });
+  const liveAnnouncement = (actionMessage || searchLiveAnnouncement({ query, state: visibleResultState, error: visibleSearchError, groups: visibleResultGroups }))
+    + (queryIsSettled && !searchLoading && catalog?.nextCursor ? " More shows may be available." : "");
   const previewRows = (rows, category) => showBrowse ? rows : unifiedSearchPreviewRows(rows, {
     activeCategory, category, limit: SEARCH_ALL_PREVIEW_LIMIT,
   });
@@ -644,7 +750,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
           <Text style={[styles.resultStatus, (visibleSearchError || actionMessage) && styles.resultError]} accessibilityRole="summary" accessibilityLiveRegion={visibleSearchError || actionMessage ? "assertive" : "polite"}>{liveAnnouncement}</Text>
         )}
         {!!visibleSearchError && (
-          <Pressable style={styles.retrySearch} onPress={() => { setSearchError(""); setSearchRevision((value) => value + 1); }} accessibilityRole="button" accessibilityLabel="Retry search">
+          <Pressable style={styles.retrySearch} onPress={() => { forceSearchRef.current = true; setSearchError(""); setSearchRevision((value) => value + 1); }} accessibilityRole="button" accessibilityLabel="Retry search">
             <Text style={styles.retrySearchText}>Try search again</Text>
           </Pressable>
         )}
@@ -656,7 +762,11 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
         accessibilityLabel="Refresh search results"
         testID="search-refresh"
       >
-      <ScrollView ref={resultScrollRef} style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic">
+      <ScrollView ref={resultScrollRef} scrollEventThrottle={100} onScroll={(event) => {
+        if (pendingScrollRef.current) return;
+        scrollYRef.current = event.nativeEvent.contentOffset.y;
+        publishContinuity();
+      }} onContentSizeChange={restoreScroll} style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic">
         {(activeCategory === "all" || activeCategory === "venues") && <CityDiscoveryTiles query={settledQuery} limit={5} onOpenCity={onOpenCity} layout="rail" />}
         {surfaceRefreshError ? (
           <Text style={styles.surfaceRefreshError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
@@ -767,11 +877,18 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
 
         <Section hidden={!showCategory("venues")} icon="pin" tint={colors.cool} title="VENUES" count={venues.length}
           onShowAll={expandCategory("venues", venues)}
-          rows={venueRows.map((v) => <VenueRow key={v.identity || `${v.name}|${v.place || ""}|${v.source || ""}|${v.providerVenueId || ""}`} v={v} onPress={() => openVenue(v)} />)} />
+          rows={venueRows.map((v) => <VenueRow key={v.identity || `${v.name}|${v.place || ""}|${v.source || ""}|${v.providerVenueId || ""}`} v={query.length >= 2 ? { ...v, fromCatalog: true, partial: !!catalog?.nextCursor } : v} onPress={() => openVenue(v)} />)} />
 
         <Section hidden={!showCategory("shows")} icon="calendar" tint={colors.amber} title="SHOWS" count={events.length}
           onShowAll={expandCategory("shows", events)}
           rows={eventRows.map((t) => <EventRow key={t.id || `${t.artist}|${t.venue}|${t.date}`} t={t} onOpenShow={onOpen} onOpenVenue={openVenue} onOpenTicket={openTicket} />)} />
+
+        {queryIsSettled && (showCategory("shows") || showCategory("venues")) && catalogMoreState.scope === catalogScope && !!catalogMoreState.error && <Text style={styles.resultError} accessibilityRole="alert">{catalogMoreState.error}</Text>}
+        {queryIsSettled && (showCategory("shows") || showCategory("venues")) && !!catalog?.nextCursor && (catalog.pages < CATALOG_MAX_PAGES
+          ? <Pressable style={styles.retrySearch} onPress={loadMoreCatalog} disabled={searchLoading || catalogMoreState.loading} accessibilityRole="button" accessibilityLabel={catalogMoreState.loading ? "Loading more shows" : "Load more shows"}>
+              <Text style={styles.retrySearchText}>{catalogMoreState.loading ? "Loading more shows..." : catalogMoreState.error ? "Try loading more shows again" : "Load more shows"}</Text>
+            </Pressable>
+          : <Text style={styles.resultStatus}>Showing {catalog.rows.length} catalog shows. Refine your search for more.</Text>)}
 
         <Section hidden={!showCategory("clubs")} icon="comment" tint={colors.magenta} title="FAN CLUBS" count={clubs.length}
           onShowAll={expandCategory("clubs", clubs)}
@@ -789,8 +906,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
 
         {!visibleSearchError && !actionMessage && visibleResultState === "no-results" && (
           <View style={styles.empty} accessibilityLiveRegion="polite">
-            <Text style={styles.emptyTitle} selectable>No {activeCategory === "all" ? "matches" : activeCategoryLabel.toLowerCase()} for “{q}”.</Text>
-            <Text style={styles.emptyDetail}>{alternativeCategories.length ? "There are matches in other categories." : "Try a shorter name, another spelling, or a city."}</Text>
+            <Text style={styles.emptyTitle} selectable>No {activeCategory === "all" ? "matches" : activeCategoryLabel.toLowerCase()} {catalog?.nextCursor ? "on this page " : ""}for "{q}".</Text>
+            <Text style={styles.emptyDetail}>{catalog?.nextCursor ? "Load more shows to continue searching." : alternativeCategories.length ? "There are matches in other categories." : "Try a shorter name, another spelling, or a city."}</Text>
             <View style={styles.emptyActions}>
               {alternativeCategories.map((item) => <Pressable key={item.key} style={({ focused }) => [styles.recoveryAction, focused && focusRing]} onPress={() => selectCategory(item.key)} accessibilityRole="button" accessibilityLabel={`Show ${item.count} available ${item.label.toLowerCase()} for ${q.trim()}`}>
                 <Text style={styles.recoveryActionText}>{item.label} · {item.count}</Text><Icon name="chevron-right" size={14} color={colors.amber} />

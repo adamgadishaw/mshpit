@@ -30,6 +30,7 @@ import { privateErrorLabel } from "./errors.js";
 import { ensureLineupSchema } from "./supportingActs.js";
 import { quarantineUnsafeLegacyImages } from "./publicMedia.js";
 import { ensurePostMediaCapacity, POST_MEDIA_MAX_POSITION } from "./postMediaSchema.js";
+import { ensureCatalogSearchSchema } from "./features/catalogSearch/catalogSearchSchema.js";
 import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
 import { ensureShowSchema } from "./features/shows/showSchema.js";
@@ -2017,6 +2018,7 @@ try {
   ensureLoungeSchema(db);
   ensureArtistPublicSlugs(db);
   ensureProviderArtistRegistrationSchema(db);
+  ensureCatalogSearchSchema(db);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_media_objects_owner_accounting_status_bytes
     ON media_objects(owner_id,accounting_class,status,byte_size)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_media_upload_issuances_owner_accounting_at_bytes

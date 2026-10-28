@@ -6,11 +6,12 @@ import { parse } from "@babel/parser";
 import { replaceNavigationFrame } from "./navigationStack.mjs";
 import { navigationFrameForAccount } from "./memberAccess.mjs";
 import { createBrowserHistory } from "./browserHistory.mjs";
+import { searchContinuity } from "./searchContinuity.mjs";
 import { createArtistLookupController } from "../features/artistSearch/artistLookupController.mjs";
 
 const source = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
 const syntax = parse(source, { sourceType: "module", plugins: ["jsx"] });
-const names = ["cancelNewsStory", "cancelPublicRoute", "applyNavigation", "writeNavigation", "runAfterComposerClose", "commitGo", "commitReplace", "popStack", "requestComposerPop", "back", "onPop"];
+const names = ["rememberSearch", "cancelNewsStory", "cancelPublicRoute", "applyNavigation", "writeNavigation", "runAfterComposerClose", "commitGo", "commitReplace", "popStack", "requestComposerPop", "back", "onPop"];
 const declarations = new Map();
 function visit(node) {
   if (!node || typeof node !== "object") return;
@@ -60,6 +61,7 @@ function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => f
     go(delta) { calls.push({ method: "go", delta }); move(delta); },
   };
   const stackRef = { current: initialStack };
+  const searchContinuityRef = { current: null };
   const navigationRef = { current: { stack: initialStack, tab: "discover", landing: false, accountId: session?.id || null } };
   const browser = createBrowserHistory({ history, location });
   const base = { ...navigationRef.current, stack: [{}] };
@@ -73,7 +75,7 @@ function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => f
   const publicNavigationPendingRef = { current: null };
   const publicRouteRequestRef = { current: null };
   functions = runInNewContext(actualFunctions, {
-    web, Platform: { OS: web ? "web" : "android" }, stackRef, navigationRef, replaceNavigationFrame, prepareAvailableNavigationFrame: prepare, navigationFrameForAccount, session,
+    web, Platform: { OS: web ? "web" : "android" }, stackRef, navigationRef, searchContinuityRef, searchContinuity, replaceNavigationFrame, prepareAvailableNavigationFrame: prepare, navigationFrameForAccount, session,
     pathForFrame: (frame) => frame.path || null, serverDocumentNavigationPath: () => null,
     setStack: (update) => queued.push(update), setTab: () => {}, setLanding: () => {},
     window: { history, location }, browser, browserHistoryRef: { current: browser },
@@ -85,7 +87,7 @@ function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => f
     authNavigationAbortRef: { current: null }, sessionRef,
   });
   return {
-    ...functions, calls, entries, stackRef, guardRef, history, sessionRef, newsOpenRef,
+    ...functions, calls, entries, stackRef, guardRef, history, sessionRef, newsOpenRef, navigationRef, searchContinuityRef,
     publicLookup, publicNavigationPendingRef, publicRouteRequestRef,
     get cursor() { return cursor; },
     get state() { return snapshot(state); },
@@ -277,4 +279,25 @@ test("native Back invalidates an in-flight news open before returning to the pre
   app.back(); app.flush();
   assert.ok(app.newsOpenRef.current > request, "late story response cannot push after Back");
   assert.deepEqual(app.state, [{}]);
+});
+
+test("App captures search edits without history growth and restores each entry on Back/Forward", () => {
+  const app = appNavigation();
+  const context = { accountId: "navigation-fixture", at: Date.now(), query: "private-search", category: "artists", scrollY: 350 };
+  app.rememberSearch(context);
+  assert.equal(app.entries.length, 1);
+  app.commitGo({ path: "/artist/fixture-artist", artistName: "Fixture Artist" }); app.flush();
+  app.history.back(); app.flush();
+  assert.equal(app.searchContinuityRef.current.query, "private-search");
+  assert.equal(app.searchContinuityRef.current.category, "artists");
+  assert.equal(app.searchContinuityRef.current.scrollY, 350);
+  app.rememberSearch({ ...context, query: "second-search", scrollY: 0 });
+  app.history.forward(); app.flush();
+  assert.equal(app.searchContinuityRef.current.query, "private-search", "Forward uses that entry's own snapshot");
+  assert.equal(app.entries.length, 2);
+  assert.equal(JSON.stringify(app.entries).includes("private-search"), false);
+  app.applyNavigation({ stack: [{}], tab: "search", landing: false, accountId: "different-account", searchContinuity: context });
+  assert.equal(app.searchContinuityRef.current, null);
+  app.applyNavigation({ stack: [{}], tab: "search", landing: false, accountId: null, searchContinuity: context });
+  assert.equal(app.searchContinuityRef.current, null);
 });
