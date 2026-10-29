@@ -17,6 +17,7 @@ import { projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
 import {
   artistConcertsPath,
   artistPath,
+  confirmedArtistPath,
   artistsPath,
   concertPath,
   concertsPath,
@@ -123,7 +124,7 @@ const publicPostIdentity = db.prepare(`SELECT p.id FROM posts p JOIN users u ON 
 const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.artist_key,td.venue,td.place,td.date,
     td.start_date_time,td.start_local_time,td.event_timezone,td.event_status,td.ticket_url,td.sold_out,
     td.source,td.owner_id,td.venue_provider_id,td.event_kind,td.music_qualified,
-    td.music_evidence,td.billed_artists,td.event_end_date,td.artist_identity_status,canonical_artist.norm AS canonical_artist_key
+    td.music_evidence,td.billed_artists,td.event_end_date,td.artist_identity_status,canonical_artist.norm AS canonical_artist_key,canonical_artist.public_slug AS canonical_artist_public_slug
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   LEFT JOIN artists canonical_artist ON canonical_artist.norm=td.artist_key
   WHERE td.id=?1 AND td.release_at<=?2
@@ -287,6 +288,9 @@ function eventResolution(id, at = Date.now()) {
       eventKind: event.event_kind || "concert",
       artist: display(artistProjection.artist),
       artistKey,
+      artistPublicSlug: artistProjection.bindingAllowed && confirmedArtistPath({ publicSlug: event.canonical_artist_public_slug })
+        && artistResolution(event.canonical_artist_public_slug)
+        ? event.canonical_artist_public_slug : null,
       artistIdentityPending,
       venue: display(event.venue),
       place: event.place || "",
@@ -321,6 +325,8 @@ function concertResolution(showKey) {
   // multiple copies of the same concert. Unknown identities still fail above.
   const canonicalKey = archiveShowKey({ artistIdentity, venueIdentity, date: decoded.date });
   const path = concertPath(canonicalKey);
+  const artist = artistStmts.byNorm.get(concert.artist_key || normName(concert.artist));
+  const artistPublicSlug = confirmedArtistPath(artist) && artistCatalogVisibleTo(db, artist) ? artist.public_slug : null;
   return {
     entity: {
       kind: "concert",
@@ -328,6 +334,8 @@ function concertResolution(showKey) {
       showKey: canonicalKey,
       archiveShowKey: canonicalKey,
       artist: concert.artist,
+      artistKey: artist?.norm || null,
+      artistPublicSlug,
       venue: concert.venue,
       city: concert.city || "",
       place: concert.city || "",

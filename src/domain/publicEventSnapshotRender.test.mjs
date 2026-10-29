@@ -283,3 +283,33 @@ test("a trusted pending Show restricts artist identity even without a public eve
   assert.equal(evaluate(pendingNode, { ...context, trustedShow: { artistIdentityPending: false }, log: { artistIdentityPending: true },
     publicEventResource: { status: "ready" }, eventIdentitySnapshot: { artistIdentityPending: false } }), false);
 });
+
+test('plural product snapshots render in full and compact navigation recovers their eventName', () => {
+  const component = parse(source, { sourceType: 'module', plugins: ['jsx'] }).program.body.find(n => n.type === 'ExportDefaultDeclaration').declaration;
+  const norm = component.body.body.filter(n => n.type === 'VariableDeclaration').flatMap(n => n.declarations).find(n => n.id.name === 'norm').init;
+  const value = norm.properties.find(n => n.key?.name === 'eventName').value;
+  const eventNameFor = new Function('eventIdentitySnapshot', 'log', `return (${source.slice(value.start, value.end)});`);
+  for (const title of ['Metallica - Suite Reservations', 'Metallica - Hotel Packages', 'Metallica - Seat Upgrades']) {
+    const entity = { id: 'compact', kind: 'event', path: '/event/compact', publicEventSnapshot: true, artist: 'Metallica', venue: 'Fixture Venue', date: '2036-06-14', eventName: title };
+    const snapshot = normalizePublicEventSnapshot(entity, 'compact');
+    assert.equal(eventNameFor(snapshot, { artist: 'Metallica' }), title);
+    assert.match(text(fixture().render({ event: snapshot, status: 'ready', artistIdentityPending: true })), new RegExp(title));
+  }
+});
+
+test('new navigation generations remount ShowScreen rather than relabel its prior ready hook resource', () => {
+  const app = readFileSync(new URL('../../App.js', import.meta.url), 'utf8');
+  let screen;
+  const walk = node => {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'JSXOpeningElement' && node.name?.name === 'ShowScreen') screen = node;
+    for (const value of Object.values(node)) { if (Array.isArray(value)) value.forEach(walk); else if (value && typeof value === 'object') walk(value); }
+  };
+  walk(parse(app, { sourceType: 'module', plugins: ['jsx'] }).program);
+  assert.equal(screen.attributes.find(n => n.name?.name === 'key')?.value?.expression?.name, 'publicEventGeneration');
+  assert.equal(screen.attributes.find(n => n.name?.name === 'onPublicEventResource')?.value?.expression?.name, 'reportPublicEventResource');
+  assert.match(app, /frame !== nav/);
+  assert.match(app, /generation: publicEventVisitRef\.current\.generation \+ 1/);
+  assert.match(app, /setPublicEventTrailResource\(\{ generation: publicEventGeneration, resource \}\)/);
+  assert.match(app, /publicEventTrailForVisit\(publicEventTrailResource, publicEventGeneration\)/);
+});

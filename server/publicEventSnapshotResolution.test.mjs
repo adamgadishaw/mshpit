@@ -204,3 +204,31 @@ test("modern memorial history stays readable, while stale legacy identity cannot
   });
   assert.equal(resolveEntity(separateArtist).publicEventSnapshot, true);
 });
+
+test('confirmed event artist slugs are projected only for valid bindings', () => {
+  const key = 'snapshot-canonical-punctuation';
+  addArtist(key, 'AC/DC');
+  const path = addEvent('snapshot-canonical-link', { artist: 'AC/DC', artistKey: key, billedArtists: ['AC/DC'] });
+  assert.equal(resolveEntity(path).artistPublicSlug, key);
+  db.prepare("UPDATE artists SET source='artist-created' WHERE norm=?").run(key);
+  assert.equal(resolveEntity(path).artistPublicSlug, null, "a stored slug without a public artist page is not navigable");
+  db.prepare("UPDATE artists SET source='test' WHERE norm=?").run(key);
+  db.prepare("UPDATE tour_dates SET artist_identity_status='conflict' WHERE id=?").run('snapshot-canonical-link');
+  assert.equal(resolveEntity(path).artistPublicSlug, null);
+});
+
+test('concert archives project publicly available canonical artist slugs instead of display-name URLs', async () => {
+  const { archiveShowKey } = await import('./features/artistArchive/artistArchiveKeys.js');
+  const { publicNavigationLinks } = await import('../src/domain/publicNavigationLinks.mjs');
+  addArtist('snapshot-archive-identity', 'Archive AC/DC');
+  q.insertUser.run('snapshot-archive-fan', 'archive@example.test', 'Fan', 'archivefan', 'hash', 'fan', null, null, null, 'CA', '#111111', Date.now());
+  db.prepare(`INSERT INTO posts (id,user_id,artist,artist_key,venue,venue_key,date,overall,review,kind,created_at)
+    VALUES ('snapshot-archive-post','snapshot-archive-fan','Archive AC/DC','snapshot-archive-identity','Archive Hall','archive hall','2026-08-20',5,?,'review',1)`).run('A firsthand concert review describing the room, sound, performance and encore in enough detail.');
+  const key = archiveShowKey({ artistIdentity: 'snapshot-archive-identity', venueIdentity: 'archive hall', date: '2026-08-20' });
+  const path = '/concert/' + encodeURIComponent(key);
+  const resolved = resolveEntity(path);
+  assert.equal(resolved.artistPublicSlug, 'snapshot-archive-identity');
+  assert.ok(publicNavigationLinks({ openLog: resolved }).some(x => x.href === '/artist/snapshot-archive-identity'));
+  db.prepare("UPDATE artists SET source='artist-created' WHERE norm='snapshot-archive-identity'").run();
+  assert.equal(resolveEntity(path).artistPublicSlug, null);
+});

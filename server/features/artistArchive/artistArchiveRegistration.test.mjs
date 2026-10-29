@@ -204,3 +204,13 @@ test("archive upcoming dates and totals honor blocks in both directions without 
     .run(owner.id, admin.id, Date.now());
   expectVisibleIds(read(admin, "archive-block-admin"), ["archive-provider-date", "archive-owned-date"]);
 });
+
+test('archive summary navigation carries the stored public canonical slug', () => {
+  const fan = account('archive-slug-fan');
+  db.prepare("INSERT INTO artists (norm,name,public_slug,source,created_at,updated_at) VALUES ('archive route artist','Archive Route Artist','archive-route-canonical','test',1,1)").run();
+  db.prepare(`INSERT INTO posts (id,user_id,artist,artist_key,venue,venue_key,date,overall,review,kind,created_at)
+    VALUES ('archive-slug-post',?,'Archive Route Artist','archive route artist','Archive Hall','archive hall','2024-06-01',5,'A firsthand concert review describing the performance in detail.','review',1)`).run(fan.id);
+  const { archive } = routes['GET /api/artists/archive']({ user: null, ip: '127.0.0.22', query: { artistKey: 'archive route artist', name: 'Archive Route Artist' } });
+  assert.equal(archive.shows[0].artistPublicSlug, 'archive-route-canonical');
+  assert.equal(archive.topShows[0].artistPublicSlug, 'archive-route-canonical');
+});

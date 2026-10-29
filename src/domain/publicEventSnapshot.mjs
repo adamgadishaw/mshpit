@@ -1,6 +1,6 @@
 import { hasPostDiscussion } from "./showDiscussion.mjs";
 import { accountTargetScope } from "./screenScope.mjs";
-import { eventPath } from "./urls.mjs";
+import { confirmedArtistPath, eventPath } from "./urls.mjs";
 
 const text = (value, max = 300) => typeof value === "string" && value.trim().length <= max
   ? value.trim() : "";
@@ -34,9 +34,11 @@ export function normalizePublicEventSnapshot(entity, requestedId) {
   if (!name || !artist || !venue || !calendarDate(date)) return null;
   return Object.freeze({
     id, name, artist, venue, date,
+    eventName: text(entity.eventName) || null,
     path: eventPath(id),
     city: text(entity.city || entity.place),
     artistKey: text(entity.artistKey, 180) || null,
+    artistPublicSlug: confirmedArtistPath({ publicSlug: entity.artistPublicSlug, artistIdentityPending: entity.artistIdentityPending }) ? entity.artistPublicSlug : null,
     ...(typeof entity.artistIdentityPending === "boolean" ? { artistIdentityPending: entity.artistIdentityPending } : {}),
     source: text(entity.source, 40) || null,
     providerVenueId: text(entity.providerVenueId, 180) || null,
