@@ -34,9 +34,10 @@ export function liveEventTitle(event) {
   const artist = clean(event?.artist, 160);
   const eventName = clean(event?.eventName, 200);
   const eventKind = clean(event?.eventKind, 40).toLowerCase();
-  // Provider-backed festivals, fairs, rodeos, and other multi-day programs are
-  // their own social object. Do not mislabel the entire event as its first act.
-  if (eventName && eventKind && eventKind !== "concert") return eventName;
+  // Programmes and admission products have an identity beyond the performer,
+  // even when a reservation or upgrade covers only a single concert night.
+  if (eventName && ((eventKind && eventKind !== "concert")
+    || /\b(?:reservations?|upgrades?|pass(?:es)?|packages?|vip|ticket(?:s)?|parking|cannot\s+split)\b/i.test(eventName))) return eventName;
   return artist || eventName || "Event to be announced";
 }
 
