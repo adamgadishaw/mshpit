@@ -1,4 +1,5 @@
 import { slugify } from "../src/domain/urls.mjs";
+import { installProviderEventIdentitySql } from "./providerEventIdentity.js";
 
 export function pitPublicSlug(value) {
   return slugify(value) || "";
@@ -25,6 +26,7 @@ export function pitArtistIdentity(value) {
 // Register the same deterministic callbacks on web, backup, restore, and test
 // connections so a healthy database never looks corrupt in another process.
 export function registerPitSqliteFunctions(database) {
+  installProviderEventIdentitySql(database);
   if (!database || typeof database.function !== "function") {
     throw new Error("A SQLite connection is required to register PIT functions.");
   }

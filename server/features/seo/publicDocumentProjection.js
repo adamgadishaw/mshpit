@@ -1,4 +1,5 @@
 import { publicProviderEventText } from "../../providerEventText.js";
+import { reviewedEventBilling, reviewedEventTimes } from "../../providerEventIdentity.js";
 import { catalogVenueEditorKey, readPublicCatalogEditorText } from "../catalogEditor/catalogEditorRepository.js";
 import {
   artistConcertsPath,
@@ -689,6 +690,7 @@ function eventAllowsTicketOffer(event, today = null) {
 const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 function eventCard(row, paths) {
+  row = { ...row, ...reviewedEventTimes(row) };
   if (!row?.id || !isIndexableMusicEventRecord(row)) return null;
   const projectedArtist = publicTourDateArtistProjection(row);
   const display = (value, length) => cleanLine(publicProviderEventText(value, row.owner_id ?? row.ownerId), length);
@@ -705,8 +707,8 @@ function eventCard(row, paths) {
   })();
   const providerEvidence = cleanLine(row.music_evidence, 120);
   const memberAuthored = (row.owner_id ?? row.ownerId ?? null) != null;
-  const billedArtists = providerEvidence ? parseArray(row.billed_artists)
-    .slice(0, 20).map((name) => cleanLine(name, 160)).filter(Boolean) : [];
+  const billedArtists = reviewedEventBilling(row) || (providerEvidence ? parseArray(row.billed_artists)
+    .slice(0, 20).map((name) => cleanLine(name, 160)).filter(Boolean) : []);
   const eventKind = (providerEvidence || memberAuthored)
     && ["concert", "festival", "fair", "multi_day"].includes(row.event_kind)
     ? row.event_kind
@@ -735,6 +737,8 @@ function eventCard(row, paths) {
     // genuine multi-day range.
     endDate: endDate && endDate > date ? endDate : null,
     startDateTime,
+    accessStartDateTime: cleanLine(row.access_start_date_time, 80) || null,
+    ...(row.start_time_approximate === true ? { startApproximate: true } : {}),
     localTime: cleanLine(row.start_local_time, 20) || null,
     timezone: cleanLine(row.event_timezone, 80) || null,
     status: eventStatus(row.event_status),
@@ -789,6 +793,7 @@ function eventSchema(event, origin, { image = null, description = null, today = 
     name,
     url: absolute(origin, path),
     startDate,
+    ...(completeDateTime(event.accessStartDateTime) ? { doorTime: event.accessStartDateTime } : {}),
     ...(event.endDate ? { endDate: event.endDate } : {}),
     ...(event.status ? { eventStatus: event.status } : {}),
     eventAttendanceMode: "https://schema.org/OfflineEventAttendanceMode",

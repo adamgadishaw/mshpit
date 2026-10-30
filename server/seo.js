@@ -1,4 +1,5 @@
 import { publicProviderEventText } from "./providerEventText.js";
+import { canonicalProviderEventId } from "./providerEventIdentity.js";
 // Public discovery documents, canonical URL resolution, and crawler controls.
 //
 // The interactive app remains an Expo web bundle. Public entity routes receive
@@ -265,6 +266,7 @@ function postResolution(id) {
 
 function eventResolution(id, at = Date.now()) {
   const instant = Number.isFinite(Number(at)) ? Number(at) : Date.now();
+  id = canonicalProviderEventId(db, String(id || ""), instant);
   const today = new Date(instant).toISOString().slice(0, 10);
   const event = publicEventIdentity.get(String(id || ""), instant, today);
   if (!event || !isStrictCalendarDate(event.date) || !isIndexableMusicEventRecord(event)) return null;

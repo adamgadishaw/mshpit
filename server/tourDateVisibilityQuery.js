@@ -1,4 +1,5 @@
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
+import { canonicalProviderEventSql, installProviderEventIdentitySql } from "./providerEventIdentity.js";
 import { artistAuthoredTourDateVisibleSql } from "./artistAuthoredTourDateVisibility.js";
 import {
   currentOrUpcomingTourDateSql,
@@ -25,7 +26,10 @@ export function visibleTourDateRowsFrom(database, viewer, {
 } = {}) {
   // Legacy rows predate provider classification evidence and remain qualified.
   // New imports can explicitly fail closed without leaking into discovery.
+  installProviderEventIdentitySql(database);
+  // Exact legacy references remain readable. Collections expose one identity.
   const filters = ["COALESCE(td.music_qualified,1)=1"];
+  if (!id) filters.push(canonicalProviderEventSql("td"));
   // A shared catalogue must never retain member-authored rows whose visibility
   // depends on a viewer's block graph or current account/page privacy.
   if (providerOnly === true) filters.push("td.owner_id IS NULL");

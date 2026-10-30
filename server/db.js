@@ -658,6 +658,7 @@ CREATE TABLE IF NOT EXISTS tour_dates (
   event_image_height    INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_tourdates_artist ON tour_dates(artist);
+CREATE INDEX IF NOT EXISTS idx_tourdates_performance_peers ON tour_dates(artist,date,id);
 
 -- ---- Artist catalog (moved out of the bundled JSON so it can scale past a
 -- bundle: on-demand resolution + a full MusicBrainz dump seed). norm is the

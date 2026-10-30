@@ -11,6 +11,9 @@ process.env.PIT_DATA_DIR = directory;
 const { db, q } = await import("./db.js");
 const { resolveEntity, seoHttpPlan } = await import("./seo.js");
 const { eventPath } = await import("../src/domain/urls.mjs");
+const { visibleTourDateRowsFrom } = await import("./tourDateVisibilityQuery.js");
+const { createPublicDocumentRepository } = await import("./features/seo/publicDocumentRepository.js");
+const { eventSitemapEntries } = await import("./features/seo/sitemapService.js");
 
 after(() => {
   db.close();
@@ -55,6 +58,36 @@ function addMemorial(key, name, mbid, deathDate) {
   }, { artistKey: key, artistName: name, artistMbid: mbid, at: Date.parse("2026-09-01T00:00:00Z") });
   assert.equal(saved.ok, true);
 }
+
+test("reviewed duplicate URLs redirect and collections retain one show with doors separate from start", () => {
+  const canonicalId = "tm_16wZk8IvsZA5v122";
+  const aliasId = "tm_LvZ18QnJ_3ZBENPibGAjN";
+  for (const id of [canonicalId, aliasId]) {
+    addEvent(id, { name: "The South", artist: "The South", venue: "The Brook", date: "2026-10-30", billedArtists: ["The South"] });
+    db.prepare(`UPDATE tour_dates SET place='Southampton, Great Britain',venue_city='Southampton',
+      venue_country_code='GB',venue_address_line1='466 Portswood Road',event_timezone='Europe/London',
+      start_date_time=?,start_local_time=? WHERE id=?`).run(
+      id === aliasId ? "2026-10-30T19:30:00Z" : "2026-10-30T20:00:00Z",
+      id === aliasId ? "2026-10-30T19:30:00" : "2026-10-30T20:00:00", id);
+  }
+  const aliasPlan = seoHttpPlan(eventPath(aliasId));
+  assert.equal(aliasPlan.status, 301);
+  assert.equal(aliasPlan.location, eventPath(canonicalId));
+  const canonicalPlan = seoHttpPlan(eventPath(canonicalId));
+  assert.equal(canonicalPlan.status, 200);
+  assert.equal(canonicalPlan.document.event.startDateTime, "2026-10-30T20:00:00.000Z");
+  assert.equal(canonicalPlan.document.event.accessStartDateTime, "2026-10-30T19:30:00.000Z");
+  assert.deepEqual(canonicalPlan.document.event.billedArtists, ["The South", "King Brasstards"]);
+  assert.match(JSON.stringify(canonicalPlan.document), /"doorTime":"2026-10-30T19:30:00.000Z"/u);
+  assert.deepEqual(visibleTourDateRowsFrom(db, null, { artist: "The South" }).map((row) => row.id), [canonicalId]);
+  assert.equal(visibleTourDateRowsFrom(db, null, { id: aliasId }).length, 1, "existing attendance references stay readable");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM tour_dates WHERE artist='The South'").get().n, 2);
+  assert.equal(createPublicDocumentRepository(db).readEvent({ id: aliasId }), null, "alias cannot emit a second public document");
+  const sitemapPaths = eventSitemapEntries(db, { now: Date.parse("2026-10-30T12:00:00Z") }).map(({ path }) => path);
+  assert.ok(sitemapPaths.includes(eventPath(canonicalId)));
+  assert.equal(sitemapPaths.includes(eventPath(aliasId)), false);
+  db.prepare("DELETE FROM tour_dates WHERE id IN (?,?)").run(canonicalId, aliasId);
+});
 
 test("an exact eligible event without a catalogue artist resolves to a read-only public snapshot", () => {
   const path = addEvent("snapshot-no-artist");

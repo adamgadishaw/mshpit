@@ -23,6 +23,7 @@ function fixture() {
       artist_key TEXT PRIMARY KEY,artist_mbid TEXT,status TEXT NOT NULL,death_date TEXT
     );
     CREATE TABLE tour_dates (
+      source TEXT,venue TEXT,place TEXT,ticket_url TEXT,start_date_time TEXT,event_name TEXT,event_status TEXT,
       artist_identity_status TEXT,
       id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,
       date TEXT,event_end_date TEXT,event_kind TEXT,music_evidence TEXT,billed_artists TEXT,

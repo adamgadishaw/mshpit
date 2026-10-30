@@ -1,4 +1,5 @@
 import { publicProviderEventText } from "./providerEventText.js";
+import { reviewedEventTimes } from "./providerEventIdentity.js";
 import { storedBillingAllowsArtistBinding } from "./artistBillingIdentity.js";
 import { tourDateArtistIdentityPending } from "./providerArtistBinding.js";
 
@@ -72,6 +73,7 @@ export function deriveTourNameFromEventTitle({ eventName, artist, eventKind } = 
 }
 
 export function publicTourDateProviderFields(row) {
+  row = { ...row, ...reviewedEventTimes(row) };
   const approximate = row?.access_start_approximate;
   return {
     // Explicit false lets a refreshed authoritative event clear a stale pending
@@ -82,6 +84,7 @@ export function publicTourDateProviderFields(row) {
     tourName: cleanLine(row?.tour_name),
     startDateTime: cleanLine(row?.start_date_time, 80),
     startLocalTime: cleanLine(row?.start_local_time, 80),
+    ...(row?.start_time_approximate === true ? { startApproximate: true } : {}),
     accessStartDateTime: cleanLine(row?.access_start_date_time, 80),
     accessStartApproximate: approximate == null ? null : !!approximate,
     eventStatus: cleanLine(row?.event_status, 40),
