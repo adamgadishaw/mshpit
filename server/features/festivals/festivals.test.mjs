@@ -19,7 +19,14 @@ after(() => { db.close(); rmSync(dataDir, { recursive: true, force: true }); });
 
 const entry = (slug) => FESTIVAL_CATALOG.find((item) => item.slug === slug);
 
-test("Ontario excludes West through both ingests and hides persisted mixed editions without deleting plans", async () => {
+test("Ontario excludes West through both ingests and hides persisted mixed editions without deleting plans", async (t) => {
+  // This fixture scans with a fixed October clock. Restore its global marker
+  // so the later first-cycle fixture does not inherit several days of history.
+  const firstPass = db.prepare("SELECT value FROM app_meta WHERE key='festivals:first-pass-at'").get();
+  t.after(() => {
+    if (firstPass) db.prepare("UPDATE app_meta SET value=? WHERE key='festivals:first-pass-at'").run(firstPass.value);
+    else db.prepare("DELETE FROM app_meta WHERE key='festivals:first-pass-at'").run();
+  });
   const now = () => Date.parse("2026-10-27T12:00:00Z");
   const store = createFestivalStore(db, { now });
   const ontario = { festivalSlug: "boots-and-hearts", providerEventId: "tm:ontario-fixture", name: "Boots and Hearts 2026",
