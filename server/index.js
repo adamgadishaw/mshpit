@@ -473,7 +473,7 @@ function serveSeoRoute(req, res, pathname, { search = "" } = {}) {
     res.writeHead(plan.status || 301, {
       ...HEADERS,
       Location: plan.location,
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": plan.cacheControl || "public, max-age=3600",
     });
     return res.end();
   }

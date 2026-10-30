@@ -129,7 +129,7 @@ const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.
   LEFT JOIN artists canonical_artist ON canonical_artist.norm=td.artist_key
   WHERE td.id=?1 AND td.release_at<=?2
     AND ${artistAuthoredTourDateVisibleSql("td")}
-    AND ${publicMusicEventCandidateSql("td")}
+    AND ${publicMusicEventCandidateSql("td", "?2")}
     AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
     AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?3)
     AND (${effectiveTourDateEndSql("td")}<?3 OR ${tourDateHasNoPublishedMemorialSql("td")})
@@ -155,14 +155,14 @@ const PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS = `td.venue,LOWER(td.venue) AS venue_k
 const PUBLIC_VENUE_EVENT_EVIDENCE_SQL = `td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
     AND date(td.date)=td.date
     AND ${artistAuthoredTourDateVisibleSql("td")}
-    AND ${publicMusicEventCandidateSql("td")}
+    AND ${publicMusicEventCandidateSql("td", "?2")}
     AND ${publicIndexableMusicEventSql("td")}`;
 const venueProviderByPublicSlug = db.prepare(`SELECT ${PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS}
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   WHERE pit_venue_public_slug(td.source,td.venue_provider_id)=?
     AND td.venue_provider_id IS NOT NULL AND TRIM(td.venue_provider_id)<>''
     AND ${PUBLIC_VENUE_EVENT_EVIDENCE_SQL}
-    AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+    AND td.release_at<=?2 AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
     AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
   ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
 // The city part of a location. Older provider rows have no venue_city, only a
@@ -177,7 +177,7 @@ const venueProvidersByNameSlug = db.prepare(`SELECT MAX(td.venue) AS venue,td.so
   WHERE pit_public_slug(td.venue)=? AND TRIM(COALESCE(td.venue,''))<>''
     AND td.venue_provider_id IS NOT NULL AND TRIM(td.venue_provider_id)<>''
     AND ${PUBLIC_VENUE_EVENT_EVIDENCE_SQL}
-    AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+    AND td.release_at<=?2 AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
     AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
   GROUP BY td.source,td.venue_provider_id
   ORDER BY COUNT(*) DESC,MAX(td.updated_at) DESC,td.source,td.venue_provider_id LIMIT 6`);
@@ -186,7 +186,7 @@ const venueEventIdentitiesByNameSlug = db.prepare(`SELECT LOWER(TRIM(td.venue)) 
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   WHERE pit_public_slug(td.venue)=? AND TRIM(COALESCE(td.venue,''))<>''
     AND ${PUBLIC_VENUE_EVENT_EVIDENCE_SQL}
-    AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+    AND td.release_at<=?2 AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
     AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
   GROUP BY venue_identity,location_identity
   ORDER BY MAX(td.updated_at) DESC,venue_identity,location_identity LIMIT 2`);
@@ -202,7 +202,7 @@ const venueEventByNameSlug = db.prepare(`SELECT ${PUBLIC_VENUE_EVENT_IDENTITY_CO
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   WHERE pit_public_slug(td.venue)=? AND TRIM(COALESCE(td.venue,''))<>''
     AND ${PUBLIC_VENUE_EVENT_EVIDENCE_SQL}
-    AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+    AND td.release_at<=?2 AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
     AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
   ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
 const venuePostByNameSlug = db.prepare(`SELECT p.venue,p.venue_key,p.city,
@@ -658,7 +658,9 @@ function publicRoute(pathname) {
         if (target.unavailable) return { type: "unavailable", status: 503 };
         if (!target.document) return { type: "not-found", status: 404 };
       }
-      return { type: "redirect", status: 301, location: identity.canonicalPath, entity: identity.entity };
+      return { type: "redirect", status: identity.entity?.kind === "event" ? 302 : 301,
+        ...(identity.entity?.kind === "event" ? { cacheControl: "no-store" } : {}),
+        location: identity.canonicalPath, entity: identity.entity };
     }
     const resolution = hydrateResolution(identity);
     if (resolution.unavailable) return { type: "unavailable", status: 503 };

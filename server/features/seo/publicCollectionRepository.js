@@ -25,7 +25,7 @@ const MAX_PAGE = 1_000;
 const validCalendarDateSql = (a) => `${a}.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(${a}.date)=${a}.date`;
 const structuredLocationSql = (a) => `TRIM(COALESCE(${a}.venue_city,''))<>'' AND LENGTH(TRIM(COALESCE(${a}.venue_country_code,'')))=2 AND UPPER(TRIM(${a}.venue_country_code)) GLOB '[A-Z][A-Z]'`;
 const publicTourVisibility = (a, owner, at) => `${a}.release_at<=${at}
-  AND ${publicMusicEventCandidateSql(a)}
+  AND ${publicMusicEventCandidateSql(a, at)}
   AND ${publicIndexableMusicEventSql(a)}
   AND ${artistAuthoredTourDateVisibleSql(a)}
   AND (${a}.owner_id IS NULL OR ${activeAccountSql(owner)})
@@ -112,7 +112,7 @@ export function createPublicCollectionRepository(database) {
   const resolveCity = database.prepare(`WITH candidates AS (
     SELECT TRIM(td.venue_city) AS display_city,NULLIF(TRIM(td.venue_country),'') AS display_country
     FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
-    WHERE ${publicTourVisibility("td", "owner", "?")}
+    WHERE ${publicTourVisibility("td", "owner", "?1")}
       AND ${validCalendarDateSql("td")} AND ${structuredLocationSql("td")}
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
       AND UPPER(TRIM(td.venue_country_code))=? AND pit_public_slug(td.venue_city)=?

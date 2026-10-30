@@ -226,7 +226,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND ${tourDateArtistBindingAllowedSql("td")}
       AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?4")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?3")}
       AND ${publicIndexableMusicEventSql("td")}
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
       AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
@@ -296,7 +296,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND (a.norm=td.artist_key OR (td.artist_key IS NULL AND a.norm=LOWER(TRIM(td.artist))))
     LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE td.id=? AND td.release_at<=?
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?2")}
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
@@ -361,7 +361,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
     WHERE LOWER(TRIM(td.artist))=LOWER(TRIM(?)) AND LOWER(TRIM(td.venue))=LOWER(TRIM(?))
       AND ${tourDateArtistBindingAllowedSql("td")}
       AND td.date=? AND td.release_at<=?
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?4")}
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("location_owner")})
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)`);
@@ -374,7 +374,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND ${tourDateArtistBindingAllowedSql("td")}
       AND pit_archive_identity(td.venue)=?
       AND td.date=? AND td.release_at<=?
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?4")}
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
@@ -402,7 +402,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND LOWER(TRIM(COALESCE(td.event_status,''))) NOT IN ('cancelled','canceled')
       AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?3")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?2")}
       AND ${publicIndexableMusicEventSql("td")}
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
@@ -417,7 +417,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND LOWER(TRIM(COALESCE(td.event_status,''))) NOT IN ('cancelled','canceled')
       AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?4")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?3")}
       AND ${publicIndexableMusicEventSql("td")}
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
@@ -436,7 +436,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND lower(trim(td.venue))<>?3 AND LOWER(TRIM(td.artist))<>?4 AND td.id<>?5
       AND td.release_at<=?6 AND ${currentOrUpcomingPublicMusicEventSql("td", "?7")} AND td.date<=?8
       AND ${tourDateHasNoPublishedMemorialSql("td")}
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?6")}
       AND ${publicIndexableMusicEventSql("td")}
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
@@ -455,7 +455,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND td.venue_provider_id IS NOT NULL AND TRIM(td.venue_provider_id)<>''
       AND td.release_at<=?
       AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(td.date)=td.date
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?4")}
       AND ${publicIndexableMusicEventSql("td")}
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
@@ -472,7 +472,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
     WHERE pit_public_slug(td.venue)=? AND LOWER(TRIM(td.venue))=LOWER(TRIM(?))
       AND TRIM(COALESCE(td.venue,''))<>'' AND td.release_at<=?
       AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' AND date(td.date)=td.date
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?3")}
       AND ${publicIndexableMusicEventSql("td")}
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
@@ -504,7 +504,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
           AND ${tourDateArtistBindingAllowedSql("td")}
           AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?2")}
           AND ${tourDateHasNoPublishedMemorialSql("td")}
-          AND ${publicMusicEventCandidateSql("td")}
+          AND ${publicMusicEventCandidateSql("td", "?1")}
           AND ${publicIndexableMusicEventSql("td")}
           AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
           AND date(td.date)=td.date
@@ -532,7 +532,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
     LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
     WHERE td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?2")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?1")}
       AND ${publicIndexableMusicEventSql("td")}
       AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
       AND date(td.date)=td.date
@@ -555,7 +555,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
     FROM tour_dates td
     LEFT JOIN users canonical_owner ON canonical_owner.id=td.owner_id
     WHERE td.release_at<=? AND TRIM(COALESCE(td.venue,''))<>''
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?1")}
       AND ${publicIndexableMusicEventSql("td")}
       AND ${artistAuthoredTourDateVisibleSql("td")}
       AND (td.owner_id IS NULL OR ${activeAccountSql("canonical_owner")})
@@ -597,7 +597,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
     LEFT JOIN post_location_quality post_quality ON post_quality.venue_name=LOWER(TRIM(td.venue))
     WHERE td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?4")} AND date(td.date)=td.date
       AND ${tourDateHasNoPublishedMemorialSql("td")}
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?3")}
       AND ${publicIndexableMusicEventSql("td")}
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
       AND ${artistAuthoredTourDateVisibleSql("td")}

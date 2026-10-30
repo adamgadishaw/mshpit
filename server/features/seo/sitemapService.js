@@ -390,7 +390,7 @@ function visibleTourDateCandidates(database, {
     FROM tour_dates td INDEXED BY idx_tourdates_sitemap_cursor
     LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE td.release_at<=?
-      AND ${publicMusicEventCandidateSql("td")}
+      AND ${publicMusicEventCandidateSql("td", "?1")}
       AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
       AND ${artistAuthoredTourDateVisibleSql("td")}

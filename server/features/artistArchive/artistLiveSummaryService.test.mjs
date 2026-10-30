@@ -24,7 +24,7 @@ function fixture() {
     CREATE TABLE artist_tourdate_refresh_queue(artist_key TEXT PRIMARY KEY,status TEXT,attempted_at INTEGER,succeeded_at INTEGER,
       ticketmaster_coverage_limited INTEGER DEFAULT 0,last_error_code TEXT);
     CREATE TABLE tour_dates(id TEXT PRIMARY KEY,artist_key TEXT,artist TEXT DEFAULT 'Alpha',venue TEXT DEFAULT 'Hall',
-      place TEXT,ticket_url TEXT,start_date_time TEXT,event_name TEXT,event_status TEXT,
+      place TEXT,ticket_url TEXT,start_date_time TEXT,event_name TEXT,event_status TEXT,start_local_time TEXT,access_start_date_time TEXT,
       artist_identity_status TEXT,
       date TEXT DEFAULT '2026-10-01',event_end_date TEXT,event_timezone TEXT,owner_id TEXT,release_at INTEGER DEFAULT 0,
       source TEXT DEFAULT 'ticketmaster',provider_active INTEGER DEFAULT 1,music_qualified INTEGER DEFAULT 1,
