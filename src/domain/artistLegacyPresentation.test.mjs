@@ -36,6 +36,7 @@ test("a legacy transition immediately masks cached owner identity and posts", ()
   }), {
     bio: "Catalogue biography",
     bannerUri: "https://catalog.example/artist.jpg",
+    bannerContain: true,
     profileUri: "https://catalog.example/artist.jpg",
     profileAvatarUri: null,
     profileOwnerId: null,
@@ -65,6 +66,7 @@ test("only a current legacy-projected response can add staff profile content and
   assert.deepEqual(artistLegacyPresentation(input), {
     bio: "Staff-curated biography",
     bannerUri: "https://staff.example/banner.jpg",
+    bannerContain: false,
     profileUri: "https://staff.example/avatar.jpg",
     profileAvatarUri: "https://staff.example/avatar.jpg",
     profileOwnerId: null,
@@ -78,6 +80,7 @@ test("only a current legacy-projected response can add staff profile content and
   }), {
     bio: "Catalogue biography",
     bannerUri: "https://catalog.example/artist.jpg",
+    bannerContain: true,
     profileUri: "https://catalog.example/artist.jpg",
     profileAvatarUri: null,
     profileOwnerId: null,
@@ -104,10 +107,29 @@ test("ordinary artist pages retain cached owner presentation and community hero 
   }), {
     bio: "Owner bio",
     bannerUri: "https://owner.example/banner.jpg",
+    bannerContain: false,
     profileUri: "https://owner.example/avatar.jpg",
     profileAvatarUri: "https://owner.example/avatar.jpg",
     profileOwnerId: "u_owner",
     posts,
     heroGallery: gallery,
   });
+});
+
+
+test("catalog fallback photos fit in full while intentional banners keep cover", () => {
+  const photo = "https://catalog.example/xg-square.jpg";
+  for (const legacyMode of [false, true]) {
+    for (const banner of [null, "", "   ", photo, "https://artist.example/wide.jpg"]) {
+      const view = artistLegacyPresentation({
+        legacyMode,
+        catalogArtist: { photo },
+        cachedArtist: { banner },
+        confirmedPage: { legacyProfile: true, profile: { banner } },
+      });
+      assert.equal(view.bannerContain, !banner?.trim());
+      assert.equal(view.bannerUri, banner?.trim() || photo);
+    }
+    assert.equal(artistLegacyPresentation({ legacyMode }).bannerContain, false);
+  }
 });
