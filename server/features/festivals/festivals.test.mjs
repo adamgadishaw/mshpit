@@ -56,8 +56,12 @@ test("Ontario excludes West through both ingests and hides persisted mixed editi
   assert.equal(JSON.stringify(db.prepare("SELECT * FROM festival_plans WHERE edition_id=?").all(validEdition.id)), before);
   const document = projectFestivalDocument({ page });
   const html = renderFestivalMain(document);
+  assert.equal(document.title, "Boots and Hearts 2027: Dates & Lineup Status | Mshpit");
+  assert.equal(document.description, "Boots and Hearts 2027 runs Aug 6 to 8, 2027 at Burl's Creek, Oro-Medonte, ON. Lineup details are not yet listed on Mshpit.");
+  assert.doesNotMatch(document.description, /fan reviews/i);
   assert.match(html, /Aug 6 to 8, 2027/); assert.doesNotMatch(html, /Edmonton|Expected late August|Not announced yet/);
   const schema = document.jsonLd.find(item => item["@type"] === "Festival");
+  assert.equal(schema.description, document.description);
   assert.equal(schema.startDate, "2027-08-06"); assert.equal(schema.offers, undefined); assert.equal(schema.performer, undefined);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM festival_editions WHERE festival_slug='boots-and-hearts' AND start_date='2027-08-06'").get().n, 0);
   assert.equal(createFestivalReader(db, { now: () => Date.parse("2027-08-10") }).festival("boots-and-hearts").announcement, null);
@@ -74,6 +78,25 @@ test("West reviews and ratings never count towards Ontario", () => {
   const page = createFestivalReader(db).festival("boots-and-hearts");
   assert.equal(page.reviewStats.reviews, 1); assert.equal(page.reviewStats.average, 4);
   assert.deepEqual(page.reviews.map(row => row.name), ["Boots & Hearts 2025"]);
+});
+
+test("announcement descriptions reflect overlapping lineups and each structured edition", () => {
+  const page = createFestivalReader(db, { now: () => Date.parse("2026-10-27T12:00:00Z") }).festival("boots-and-hearts");
+  const edition = { id: "provider-day", name: "Boots and Hearts 2027 Saturday", startDate: "2027-08-07", endDate: "2027-08-07",
+    venue: "Burl's Creek", city: "Oro-Medonte", region: "ON", days: ["2027-08-07"], lineup: [{ name: "Fixture Artist" }], lineupCount: 1 };
+  const overlapping = projectFestivalDocument({ page: { ...page, upcoming: [edition] } });
+  assert.match(overlapping.description, /See listed lineup details below/);
+  assert.doesNotMatch(overlapping.description, /not yet listed/);
+  const [announcement, provider] = overlapping.jsonLd.filter(item => item["@type"] === "Festival");
+  assert.equal(announcement.description, overlapping.description);
+  assert.match(provider.description, /Aug 7, 2027.*Lineup includes Fixture Artist/);
+  assert.doesNotMatch(provider.description, /Aug 6 to 8|not yet listed|tickets|lineup by day/i);
+  const later = projectFestivalDocument({ page: { ...page, upcoming: [{ ...edition, startDate: "2028-08-07", endDate: "2028-08-07" }] } });
+  assert.match(later.description, /Lineup details are not yet listed on Mshpit/);
+  assert.match(later.jsonLd.filter(item => item["@type"] === "Festival")[1].description, /Aug 7, 2028.*Lineup includes Fixture Artist/);
+  const noLineup = projectFestivalDocument({ page: { ...page, upcoming: [{ ...edition, lineup: [], lineupCount: 0 }] } });
+  assert.match(noLineup.jsonLd.filter(item => item["@type"] === "Festival")[1].description, /Lineup details are not yet listed on Mshpit/);
+  assert.doesNotMatch(noLineup.jsonLd.filter(item => item["@type"] === "Festival")[1].description, /announced|tickets|lineup by day/i);
 });
 const listing = (overrides) => ({ festivalSlug: "lollapalooza", providerEventId: `tm:${Math.random()}`, name: "Lollapalooza 2026", startDate: "2026-07-30",
   endDate: "2026-07-30", venue: "Grant Park", venueId: "v1", city: "Chicago", region: "IL", countryCode: "US", acts: [], ...overrides });
