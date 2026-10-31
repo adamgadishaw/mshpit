@@ -1,3 +1,4 @@
+import { createPublicVenueReviewService } from "./features/seo/publicVenueReviews.js";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
 import { mapLibreServerEnabled } from "./mapLibreConfiguration.mjs";
 import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
@@ -10028,7 +10029,7 @@ export const routes = {
                              WHERE r.venue_key IN (${keyPlaceholders}) AND r.removed=0 AND ${activeAccountSql("u")} ${blockSql} ${cursorSql}
                              ORDER BY r.created_at DESC, r.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
-    return { reviews: rows.map((r) => ({
+    return { stats: createPublicVenueReviewService(db).read({ venueKey: key, viewerId: viewer, limit: 0 }).stats, reviews: rows.map((r) => ({
       id: r.id,
       userId: r.user_id,
       name: r.name,
