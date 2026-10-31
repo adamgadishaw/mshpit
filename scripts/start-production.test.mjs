@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import test from "node:test";
 
-import { runStartupBackup, startProduction, startupBackupPlan } from "./start-production.mjs";
+import { runStartupBackup, runStartupWebAssetArchive, startProduction, startupBackupPlan } from "./start-production.mjs";
 
 test("production startup backs up an existing persistent database", () => {
   const plan = startupBackupPlan({
@@ -30,16 +30,19 @@ test("production startup skips backup only for an explicit first boot", () => {
 
 test("a failed backup prevents the server module from loading", async () => {
   let loaded = false;
+  let archived = false;
   await assert.rejects(
     startProduction({
       env: { NODE_ENV: "production", PIT_DATA_DIR: "/data", PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "false" },
       exists: () => true,
       spawn: () => ({ status: 7 }),
+      prepareWebAssets: () => { archived = true; },
       loadServer: async () => { loaded = true; },
     }),
     /backup failed with exit code 7/,
   );
   assert.equal(loaded, false);
+  assert.equal(archived, false);
 });
 
 test("a timed-out backup is killed and prevents the server module from loading", async () => {
@@ -68,15 +71,16 @@ test("a timed-out backup is killed and prevents the server module from loading",
   assert.equal(loaded, false);
 });
 
-test("a verified backup completes before the server module loads", async () => {
+test("a verified backup completes before optional retention and server loading", async () => {
   const order = [];
   const plan = await startProduction({
     env: { NODE_ENV: "production", PIT_DATA_DIR: "/data", PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "false" },
     exists: () => true,
     spawn: () => { order.push("backup"); return { status: 0 }; },
+    prepareWebAssets: () => { order.push("assets"); return { ok: true }; },
     loadServer: async () => { order.push("server"); },
   });
-  assert.deepEqual(order, ["backup", "server"]);
+  assert.deepEqual(order, ["backup", "assets", "server"]);
   assert.equal(plan.backup, true);
 });
 
@@ -119,4 +123,48 @@ test("the startup backup timeout is capped at thirty minutes", () => {
   });
   assert.equal(options.timeout, 30 * 60 * 1000);
   assert.equal(options.killSignal, "SIGKILL");
+});
+
+test("optional retention failure preserves startup after the mandatory backup", async () => {
+  const order = [];
+  await startProduction({
+    env: { NODE_ENV: "production", PIT_DATA_DIR: "/data" }, exists: () => true,
+    spawn: () => { order.push("backup"); return { status: 0 }; },
+    prepareWebAssets: () => { order.push("assets"); throw new Error("synthetic disk failure"); },
+    loadServer: async () => { order.push("server"); },
+  });
+  assert.deepEqual(order, ["backup", "assets", "server"]);
+});
+
+test("retention uses a killed-on-timeout child with a bounded receipt and least privilege", () => {
+  let call;
+  const installed = [];
+  const result = runStartupWebAssetArchive({
+    env: { NODE_ENV: "production", PIT_DATA_DIR: "/data", RENDER_GIT_COMMIT: "a".repeat(40), NODE_OPTIONS: "fixture", ADMIN_PASSWORD: "fixture" },
+    spawn: (...args) => { call = args; return { error: { code: "ETIMEDOUT" }, signal: "SIGKILL", status: null }; },
+    install: (snapshot) => installed.push(snapshot),
+  });
+  assert.deepEqual(result, { ok: false, reason: "timeout" });
+  assert.deepEqual(installed, [null]);
+  assert.equal(call[0], process.execPath);
+  assert.match(call[1][0].replaceAll("\\", "/"), /\/scripts\/web-asset-archive\.mjs$/);
+  assert.equal(call[1][1], "prepare");
+  assert.equal(call[2].timeout, 30_000);
+  assert.equal(call[2].killSignal, "SIGKILL");
+  assert.equal(call[2].maxBuffer, 4 * 1024 * 1024);
+  assert.deepEqual(call[2].env, { PIT_DATA_DIR: "/data", RENDER_GIT_COMMIT: "a".repeat(40) });
+});
+
+test("retention installs only a successful verified child receipt", () => {
+  const installed = [];
+  const snapshot = { synthetic: true };
+  const options = {
+    env: { NODE_ENV: "production", PIT_DATA_DIR: "/data", RENDER_GIT_COMMIT: "a".repeat(40) },
+    install: (value) => installed.push(value),
+  };
+  assert.deepEqual(runStartupWebAssetArchive({ ...options, spawn: () => ({ status: 0, stdout: JSON.stringify({ ok: true, status: "published", snapshot }) }) }), { ok: true, reason: "published" });
+  assert.deepEqual(installed, [null, snapshot]);
+  assert.deepEqual(runStartupWebAssetArchive({ ...options, spawn: () => ({ status: 0, stdout: "not JSON" }) }), { ok: false, reason: "invalid_receipt" });
+  assert.equal(installed.at(-1), null);
+  assert.deepEqual(runStartupWebAssetArchive({ env: {}, install: () => {}, spawn: () => assert.fail("must not spawn") }), { ok: false, reason: "not_configured" });
 });

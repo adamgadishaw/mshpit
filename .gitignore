@@ -6,6 +6,7 @@ node_modules/
 # Expo
 .expo/
 dist/
+/web-asset-manifest.json
 web-build/
 expo-env.d.ts
 

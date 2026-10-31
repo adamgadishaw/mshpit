@@ -21,6 +21,7 @@ function bootHarness() {
   };
   const globalObject = {
     document: { documentElement: html },
+    location: { reload: () => assert.fail("boot failure must never automatically discard a working tab") },
     addEventListener(type, listener, capture = false) {
       const key = `${type}:${capture}`;
       listeners.set(key, [...(listeners.get(key) || []), listener]);

@@ -11,10 +11,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { backupChildEnvironment } from "../server/backupScheduler.js";
 import { boundedBackupTimeout } from "./backup-db-verification.mjs";
 import { assertDatabaseRecoveryPathReady } from "../server/databaseRecovery.js";
+import { installWebAssetArchiveSnapshot, webAssetProcessEnvironment } from "../server/webAssetArchive.js";
+import { WEB_ASSET_LIMITS } from "../server/webAssetManifest.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
 const BACKUP_SCRIPT = join(HERE, "backup-db.mjs");
+const ASSET_SCRIPT = join(HERE, "web-asset-archive.mjs");
 const SERVER_ENTRY = pathToFileURL(join(ROOT, "server", "index.js")).href;
 
 function enabled(value) {
@@ -78,11 +81,31 @@ export function runStartupBackup({ env = process.env, spawn = spawnSync } = {}) 
   }
 }
 
+export function runStartupWebAssetArchive({ env = process.env, spawn = spawnSync, install = installWebAssetArchiveSnapshot } = {}) {
+  install(null);
+  if (env.NODE_ENV !== "production" || !env.PIT_DATA_DIR || !/^[a-f0-9]{40}$/.test(env.RENDER_GIT_COMMIT || "")) {
+    return { ok: false, reason: "not_configured" };
+  }
+  const result = spawn(process.execPath, [ASSET_SCRIPT, "prepare"], {
+    cwd: ROOT, env: webAssetProcessEnvironment(env), windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", maxBuffer: 4 * 1024 * 1024,
+    timeout: WEB_ASSET_LIMITS.deadlineMs, killSignal: "SIGKILL",
+  });
+  if (result.error || result.signal || result.status !== 0) return { ok: false, reason: result.error?.code === "ETIMEDOUT" ? "timeout" : "archive_unavailable" };
+  try {
+    const receipt = JSON.parse(result.stdout);
+    if (!receipt.ok || !receipt.snapshot) return { ok: false, reason: "invalid_receipt" };
+    install(receipt.snapshot);
+    return { ok: true, reason: receipt.status };
+  } catch { install(null); return { ok: false, reason: "invalid_receipt" }; }
+}
+
 export async function startProduction({
   env = process.env,
   exists = existsSync,
   spawn = spawnSync,
   loadServer = () => import(SERVER_ENTRY),
+  prepareWebAssets = runStartupWebAssetArchive,
 } = {}) {
   const plan = startupBackupPlan({ env, exists });
   if (!plan.ok) {
@@ -97,6 +120,16 @@ export async function startProduction({
     runStartupBackup({ env, spawn });
   }
   else console.log(`[pit] pre-migration backup skipped (${plan.reason}).`);
+  // Optional public-asset continuity cannot weaken the mandatory backup gate
+  // or stop the current web/API release. The subprocess owns a hard deadline;
+  // its verified bounded snapshot avoids scanning/hashing on request paths.
+  try {
+    const assets = prepareWebAssets({ env });
+    if (!assets?.ok && assets?.reason !== "not_configured") console.warn("[web-assets] previous-build retention unavailable; serving current build");
+  } catch {
+    installWebAssetArchiveSnapshot(null);
+    console.warn("[web-assets] previous-build retention unavailable; serving current build");
+  }
   await loadServer();
   return plan;
 }
