@@ -11,6 +11,9 @@
   recorded in [the local review](docs/PUBLIC_REVIEW_PERMALINK_LOCAL_REVIEW_2026-10-31.md).
   The owner authorized publishing this branch and opening a draft PR for checks.
   No merge, auto-merge, deployment or production write is authorized.
+- Initial draft CI exposed an obsolete auth browser setup click. The follow-up
+  asserts the direct post shell, URL and text while retaining all existing
+  interaction/privacy checks. The two baseline festival failures remain separate.
 
 
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)

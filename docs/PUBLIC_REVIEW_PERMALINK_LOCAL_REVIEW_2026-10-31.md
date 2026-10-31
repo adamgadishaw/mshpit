@@ -95,3 +95,34 @@ were installed with `npm ci`; lockfile and package manifest are unchanged.
 Evidence logs are under ignored `.tmp/`: `focused-tests.log`,
 `browser-archive-review.log`, `browser-all.log`, `check-final.log`,
 `festivals-isolated.log`, `festivals-master-baseline.log`, `build-web.log`.
+
+
+## Auth browser follow-up after draft PR checks
+
+CI on initial PR head `6c63dac372faa828928a837c74e62cfeb95fe311` reached
+terminal failure. Quality had 7,073 passes and the same two baseline festival
+failures. The auth browser suite had 64/76 passes: twelve physical-review cases
+failed before exercising their actions because setup still clicked
+"Open the original fan post" after direct post hydration. Later browser suites
+were skipped on that run.
+
+A read-only in-memory loader probe replacing only that obsolete step passed all
+12 affected cases. The committed follow-up replaces it with explicit post-shell,
+exact /post/id pathname and visible review-text assertions. Every subsequent
+interaction and privacy assertion is retained: guest prompts and return route,
+comment/reply reads, photo index preservation, reports, explicit signed-in Like,
+no automatic replay, theme/session handling and no guest writes/private reads.
+No application code changes are part of this follow-up.
+
+The owner authorized this bounded test correction and push to the existing draft
+PR. No merge, auto-merge, deployment or public-content operation is authorized.
+Final local validation: complete auth browser suite 76/76 passed, including all
+12 formerly failing cases; focused routing/fixture tests 46/46 passed. Script
+syntax and diff whitespace checks passed. Required aggregate check repeated:
+7,072 passed, the same two baseline festival failures, one Windows skip.
+
+A separate reviewer found no weakened coverage: every later interaction/privacy
+assertion is unchanged; fixture text and identity assertions apply across all
+post kinds. No production behavior changes were needed. New local evidence is
+in ignored .tmp/auth-corrected.log, .tmp/focused-auth-followup.log and
+.tmp/check-auth-followup.log.
