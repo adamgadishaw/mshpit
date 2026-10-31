@@ -1,5 +1,17 @@
 # Pit current status
 
+## 2026-10-31 HISTORY venue directory identity (draft review)
+
+- City browsing now preserves the bounded search index's provider identity and
+  per-row upcoming counts, fixing HISTORY navigation from Toronto.
+- The existing UI/theme, server matching, provider alias rules and public preview
+  limits are unchanged. No data migration or production operation is included.
+- Independent review corrected a weak browser assertion; both city/search paths
+  now require snapshot-only content in the venue Shows section.
+- The two known festival-suite failures reproduce on untouched base 91cef8b9;
+  the unrelated fixture correction remains excluded. This is not a green-suite
+  or release claim. See [the review](docs/HISTORY_VENUE_DIRECTORY_REVIEW_2026-10-31.md).
+
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 
 - Local branch `fix/catalog-event-festival-20261027` uses a source snapshot of
