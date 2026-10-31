@@ -127,3 +127,10 @@ test("online review identity participates in ambiguous edit reconciliation", () 
     version: 100,
   }), false);
 });
+
+test("long concert edits reconcile every authored unit instead of just a 2,000-unit prefix", () => {
+  const review = "Words about the performance. ".repeat(400);
+  assert.equal(postMatchesEditIntent({ ...canonical, kind: "review", review }, { review }), true);
+  assert.equal(postMatchesEditIntent({ ...canonical, kind: "review", review: review.slice(0, 2000) }, { review }), false);
+  assert.equal(postMatchesEditIntent({ ...canonical, kind: "review", review: review.slice(0, -1) + "!" }, { review }), false);
+});

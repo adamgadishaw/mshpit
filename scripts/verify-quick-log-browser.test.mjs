@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertQuickLogPayload } from "./verify-quick-log-browser.mjs";
+import { assertQuickLogPayload, quickLogReviewText } from "./verify-quick-log-browser.mjs";
 
 function quickLog() {
   return {
     artist: "Fixture Artist", venue: "", city: "Toronto, Ontario, Canada", date: "",
     overall: 5, band: null, room: null,
-    dims: { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 5 },
-    review: "I remember the music, not the exact date. Fixture only.", tour: "A remembered tour",
+    dims: { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 },
+    review: quickLogReviewText, tour: "A remembered tour",
     supportingActs: ["MUNA"],
   };
 }
@@ -21,6 +21,7 @@ test("quick-log browser contract rejects invented dates and component scores", (
   assert.throws(() => assertQuickLogPayload({ ...quickLog(), date: "2026-09-16" }), /unknown date/);
   assert.throws(() => assertQuickLogPayload({ ...quickLog(), band: 5 }), /invent a band score/);
   assert.throws(() => assertQuickLogPayload({ ...quickLog(), room: 0 }), /invent a venue score/);
+  assert.throws(() => assertQuickLogPayload({ ...quickLog(), dims: { ...quickLog().dims, experience: 5 } }), /invent a detailed experience rating/);
 });
 
 test("quick-log browser contract catches loss of the remembered review during retry", () => {

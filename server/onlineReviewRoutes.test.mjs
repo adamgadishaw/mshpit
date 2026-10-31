@@ -395,3 +395,19 @@ test("published artist memorials reject online ratings on create and edit", () =
     (error) => error instanceof ApiError && error.status === 409 && error.code === "ARTIST_MEMORIALIZED",
   );
 });
+
+test("text-only online legacy edits preserve their precise overall score", async () => {
+  const { buildReviewEditBody } = await import("../src/domain/post-payload.mjs");
+  const user = addUser("onlinelegacyscore");
+  const created = routes["POST /api/posts"]({ user, ip: "online-legacy-create", body: onlineBody({ clientMutationId: "online_legacy_score_001" }) });
+  db.prepare("UPDATE posts SET overall=4.2 WHERE id=?").run(created.id);
+  const current = routes["GET /api/posts/:id"]({ user, params: { id: created.id } }).post;
+  assert.equal(current.overall, 4.2);
+  const patch = buildReviewEditBody({ ...current, review: "Updated words about the same online performance." }, current);
+  assert.equal(Object.hasOwn(patch, "overall"), false);
+  const updated = routes["PATCH /api/posts/:id"]({ user, params: { id: created.id }, body: patch });
+  assert.equal(updated.post.overall, 4.2);
+  assert.equal(db.prepare("SELECT overall FROM posts WHERE id=?").get(created.id).overall, 4.2);
+  const reselected = routes["PATCH /api/posts/:id"]({ user, params: { id: created.id }, body: { overall: 4.5 } });
+  assert.equal(reselected.post.overall, 4.5, "A new score selection remains editable");
+});

@@ -3,19 +3,19 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("./LogScreen.jsx", import.meta.url), "utf8");
-const eligibility = source.match(/: (artist\.trim\(\).*computed\.overall > 0);/u)?.[1];
+const eligibility = source.match(/: (artist\.trim\(\).*overallRating > 0);/u)?.[1];
 assert.ok(eligibility, "The in-person composer exposes its actual eligibility expression");
-const canPost = new Function("artist", "venue", "city", "eventAddress", "computed", `return !!(${eligibility});`);
+const canPost = new Function("artist", "venue", "city", "eventAddress", "overallRating", `return !!(${eligibility});`);
 
 test("in-person composer accepts city without venue but never accepts address alone", () => {
-  assert.equal(canPost("Artist", "", "Toronto, Ontario, Canada", "", { overall: 4 }), true);
-  assert.equal(canPost("Artist", "", "Toronto, Ontario, Canada", "123 Main Street", { overall: 4 }), true);
-  assert.equal(canPost("Artist", "Unknown room", "", "", { overall: 4 }), true);
-  assert.equal(canPost("Artist", "", "", "123 Main Street", { overall: 4 }), false);
-  assert.equal(canPost("Artist", "Room", "", "123 Main Street", { overall: 4 }), false);
-  assert.equal(canPost("Artist", "", "", "", { overall: 4 }), false);
-  assert.equal(canPost("", "", "Toronto", "", { overall: 4 }), false);
-  assert.equal(canPost("Artist", "", "Toronto", "", { overall: 0 }), false);
+  assert.equal(canPost("Artist", "", "Toronto, Ontario, Canada", "", 4), true);
+  assert.equal(canPost("Artist", "", "Toronto, Ontario, Canada", "123 Main Street", 4), true);
+  assert.equal(canPost("Artist", "Unknown room", "", "", 4), true);
+  assert.equal(canPost("Artist", "", "", "123 Main Street", 4), false);
+  assert.equal(canPost("Artist", "Room", "", "123 Main Street", 4), false);
+  assert.equal(canPost("Artist", "", "", "", 4), false);
+  assert.equal(canPost("", "", "Toronto", "", 4), false);
+  assert.equal(canPost("Artist", "", "Toronto", "", 0), false);
 });
 
 test("address participates in edit hydration, checkpointing, recovery and in-person submit only", () => {
