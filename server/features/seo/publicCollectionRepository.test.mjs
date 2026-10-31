@@ -25,6 +25,7 @@ function createDatabase() {
       artist_key TEXT PRIMARY KEY,artist_mbid TEXT,status TEXT NOT NULL,death_date TEXT
     );
     CREATE TABLE tour_dates (
+      ticket_url TEXT,start_date_time TEXT,start_local_time TEXT,event_timezone TEXT,event_status TEXT,access_start_date_time TEXT,
       artist_identity_status TEXT,
       id TEXT PRIMARY KEY,artist TEXT NOT NULL,artist_key TEXT,venue TEXT,place TEXT,date TEXT,
       source TEXT,updated_at INTEGER NOT NULL DEFAULT 0,owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,

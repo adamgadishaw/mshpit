@@ -24,6 +24,7 @@ function fixture() {
     CREATE TABLE artist_tourdate_refresh_queue(artist_key TEXT PRIMARY KEY,status TEXT,attempted_at INTEGER,succeeded_at INTEGER,
       ticketmaster_coverage_limited INTEGER DEFAULT 0,last_error_code TEXT);
     CREATE TABLE tour_dates(id TEXT PRIMARY KEY,artist_key TEXT,artist TEXT DEFAULT 'Alpha',venue TEXT DEFAULT 'Hall',
+      place TEXT,ticket_url TEXT,start_date_time TEXT,event_name TEXT,event_status TEXT,start_local_time TEXT,access_start_date_time TEXT,
       artist_identity_status TEXT,
       date TEXT DEFAULT '2026-10-01',event_end_date TEXT,event_timezone TEXT,owner_id TEXT,release_at INTEGER DEFAULT 0,
       source TEXT DEFAULT 'ticketmaster',provider_active INTEGER DEFAULT 1,music_qualified INTEGER DEFAULT 1,
@@ -48,6 +49,26 @@ function fixture() {
   return { database, addDate: (id, fields) => add("tour_dates", id, fields),
     addPost: (id, fields) => add("posts", id, fields), read };
 }
+
+test("artist counts and paginated schedules collapse a confirmed provider duplicate but retain separate performances", () => {
+  const f = fixture();
+  try {
+    const fields = { artist_key: "alpha", place: "Toronto, Canada", event_name: "Alpha",
+      ticket_url: "https://www.ticketmaster.ca/event/123", start_date_time: "2026-10-01T20:00:00Z" };
+    f.addDate("provider-a", fields);
+    f.addDate("provider-b", { ...fields, ticket_url: fields.ticket_url + "?utm_source=feed" });
+    f.addDate("later", { ...fields, start_date_time: "2026-10-01T22:00:00Z" });
+    f.addDate("member", { ...fields, owner_id: "fan" });
+    const result = f.read({ limit: 2 });
+    assert.equal(result.schedule.total, 3);
+    const ids = result.schedule.items.map(({ id }) => id);
+    assert.equal(ids.includes("provider-b"), false);
+    assert.equal(f.database.prepare("SELECT COUNT(*) n FROM tour_dates").get().n, 4);
+    f.database.prepare("UPDATE tour_dates SET music_evidence='music',billed_artists=? WHERE id='provider-b'").run('["Alpha","Beta"]');
+    const support = f.read({}, null, "beta");
+    assert.deepEqual(support.schedule.items.map(({ id }) => id), ["provider-b"], "unique supporting billing cannot disappear behind the primary artist's canonical row");
+  } finally { f.database.close(); }
+});
 
 test("pending and conflicting provider identities cannot bind by key, display name, or cached billing", () => {
   const f = fixture();

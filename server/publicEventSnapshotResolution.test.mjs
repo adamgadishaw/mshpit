@@ -11,6 +11,9 @@ process.env.PIT_DATA_DIR = directory;
 const { db, q } = await import("./db.js");
 const { resolveEntity, seoHttpPlan } = await import("./seo.js");
 const { eventPath } = await import("../src/domain/urls.mjs");
+const { visibleTourDateRowsFrom } = await import("./tourDateVisibilityQuery.js");
+const { createPublicDocumentRepository } = await import("./features/seo/publicDocumentRepository.js");
+const { eventSitemapEntries } = await import("./features/seo/sitemapService.js");
 
 after(() => {
   db.close();
@@ -55,6 +58,67 @@ function addMemorial(key, name, mbid, deathDate) {
   }, { artistKey: key, artistName: name, artistMbid: mbid, at: Date.parse("2026-09-01T00:00:00Z") });
   assert.equal(saved.ok, true);
 }
+
+test("reviewed duplicate URLs redirect and collections retain one show with doors separate from start", () => {
+  const canonicalId = "tm_16wZk8IvsZA5v122";
+  const aliasId = "tm_LvZ18QnJ_3ZBENPibGAjN";
+  for (const id of [canonicalId, aliasId]) {
+    addEvent(id, { name: "The South", artist: "The South", venue: "The Brook", date: "2026-10-30", billedArtists: ["The South"] });
+    db.prepare(`UPDATE tour_dates SET place='Southampton, Great Britain',venue_city='Southampton',
+      venue_country_code='GB',venue_address_line1='466 Portswood Road',event_timezone='Europe/London',
+      start_date_time=?,start_local_time=? WHERE id=?`).run(
+      id === aliasId ? "2026-10-30T19:30:00Z" : "2026-10-30T20:00:00Z",
+      id === aliasId ? "2026-10-30T19:30:00" : "2026-10-30T20:00:00", id);
+  }
+  const aliasPlan = seoHttpPlan(eventPath(aliasId));
+  assert.equal(aliasPlan.status, 302);
+  assert.equal(aliasPlan.cacheControl, "no-store");
+  assert.equal(aliasPlan.location, eventPath(canonicalId));
+  const canonicalPlan = seoHttpPlan(eventPath(canonicalId));
+  assert.equal(canonicalPlan.status, 200);
+  assert.equal(canonicalPlan.document.event.startDateTime, "2026-10-30T20:00:00.000Z");
+  assert.equal(canonicalPlan.document.event.accessStartDateTime, "2026-10-30T19:30:00.000Z");
+  assert.deepEqual(canonicalPlan.document.event.billedArtists, ["The South", "King Brasstards"]);
+  assert.match(JSON.stringify(canonicalPlan.document), /"doorTime":"2026-10-30T19:30:00.000Z"/u);
+  assert.deepEqual(visibleTourDateRowsFrom(db, null, { artist: "The South" }).map((row) => row.id), [canonicalId]);
+  assert.equal(visibleTourDateRowsFrom(db, null, { id: aliasId }).length, 1, "existing attendance references stay readable");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM tour_dates WHERE artist='The South'").get().n, 2);
+  assert.equal(createPublicDocumentRepository(db).readEvent({ id: aliasId }), null, "alias cannot emit a second public document");
+  const sitemapPaths = eventSitemapEntries(db, { now: Date.parse("2026-10-30T12:00:00Z") }).map(({ path }) => path);
+  assert.ok(sitemapPaths.includes(eventPath(canonicalId)));
+  assert.equal(sitemapPaths.includes(eventPath(aliasId)), false);
+  db.prepare("UPDATE tour_dates SET provider_active=0 WHERE id=?").run(canonicalId);
+  assert.equal(seoHttpPlan(eventPath(aliasId)).status, 200, "withdrawal restores the active alias without a cached permanent redirect");
+  db.prepare("UPDATE tour_dates SET provider_active=1,start_date_time='2026-10-30T21:00:00Z',start_local_time='2026-10-30T21:00:00',event_status='rescheduled' WHERE id=?").run(canonicalId);
+  const revised = seoHttpPlan(eventPath(canonicalId));
+  assert.equal(revised.document.event.startDateTime, "2026-10-30T21:00:00Z");
+  assert.equal(revised.document.event.statusLabel, "rescheduled");
+  assert.equal(revised.document.event.accessStartDateTime, null, "stale reviewed doors do not overwrite refreshed facts");
+  assert.equal(seoHttpPlan(eventPath(aliasId)).status, 200, "changed source facts supersede the reviewed alias claim");
+  db.prepare("DELETE FROM tour_dates WHERE id IN (?,?)").run(canonicalId, aliasId);
+});
+
+test("public collections and exact documents agree across unequal release timestamps", () => {
+  const canonicalId = "release-dupe-a", aliasId = "release-dupe-z";
+  for (const id of [canonicalId, aliasId]) {
+    addEvent(id, { name: "Released Artist", artist: "Released Artist", date: "2036-06-14" });
+    db.prepare("UPDATE tour_dates SET release_at=?,start_date_time='2036-06-14T20:00:00Z' WHERE id=?").run(id === canonicalId ? 100 : 0, id);
+  }
+  const repository = createPublicDocumentRepository(db);
+  for (const [at, expected] of [[50, aliasId], [200, canonicalId]]) {
+    if (at === 200) assert.deepEqual(visibleTourDateRowsFrom(db, null, { artist: "Released Artist", at }).map(({ id }) => id), [expected]);
+    const directory = repository.readDirectory({ kind: "events", at, today: "2036-06-14" });
+    assert.deepEqual(directory.events.filter((row) => row.artist === "Released Artist").map(({ id }) => id), [expected]);
+    assert.ok(repository.readEvent({ id: expected, at }));
+    const hidden = expected === aliasId ? canonicalId : aliasId;
+    assert.equal(repository.readEvent({ id: hidden, at }), null);
+  }
+  db.prepare("UPDATE tour_dates SET start_date_time='2036-06-14' WHERE id IN (?,?)").run(canonicalId, aliasId);
+  assert.equal(visibleTourDateRowsFrom(db, null, { artist: "Released Artist", at: 200 }).length, 2, "date-only input never proves two records represent the same performance");
+  db.prepare("UPDATE tour_dates SET start_date_time='2036-06-14T20:00:00' WHERE id IN (?,?)").run(canonicalId, aliasId);
+  assert.equal(visibleTourDateRowsFrom(db, null, { artist: "Released Artist", at: 200 }).length, 2, "offset-free clocks never prove the same instant");
+  db.prepare("DELETE FROM tour_dates WHERE id IN (?,?)").run(canonicalId, aliasId);
+});
 
 test("an exact eligible event without a catalogue artist resolves to a read-only public snapshot", () => {
   const path = addEvent("snapshot-no-artist");

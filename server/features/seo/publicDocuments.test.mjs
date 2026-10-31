@@ -71,7 +71,7 @@ function createDatabase() {
       id TEXT PRIMARY KEY,artist TEXT NOT NULL,artist_key TEXT,venue TEXT,place TEXT,lat REAL,lng REAL,date TEXT,ticket_url TEXT,
       sold_out INTEGER NOT NULL DEFAULT 0,source TEXT,updated_at INTEGER NOT NULL DEFAULT 0,
       owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,provider_event_id TEXT,event_name TEXT,
-      start_date_time TEXT,start_local_time TEXT,event_timezone TEXT,event_status TEXT,venue_provider_id TEXT,
+      start_date_time TEXT,start_local_time TEXT,event_timezone TEXT,event_status TEXT,venue_provider_id TEXT,access_start_date_time TEXT,
       venue_address_line1 TEXT,venue_address_line2 TEXT,venue_city TEXT,venue_region TEXT,
       venue_postal_code TEXT,venue_country_code TEXT,venue_country TEXT,
       provider_active INTEGER NOT NULL DEFAULT 1,last_seen_at INTEGER,

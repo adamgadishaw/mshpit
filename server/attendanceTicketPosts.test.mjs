@@ -395,6 +395,84 @@ test("ambiguous legacy attendance cannot authorize either of two same-night prov
   );
 });
 
+test("confirmed provider duplicates preserve existing Going, ticket history and privacy through the representative", () => {
+  const user = addUser("duplicate_old_going");
+  const other = addUser("duplicate_other_going");
+  const canonical = { id: "tm_duplicate_a", providerEventId: "duplicate-a", date: `${FUTURE_YEAR}-12-13` };
+  const alias = { id: "tm_duplicate_z", providerEventId: "duplicate-z", date: canonical.date };
+  addEvent(canonical);
+  addEvent(alias);
+  const original = markExactAttendance(user, alias);
+  db.prepare("INSERT INTO show_attendance_verifications(show_id,user_id,source,verified_at) VALUES (?,?,'fixture',1)").run(original.showId, user.id);
+  const representative = markExactAttendance(other, canonical);
+  const published = routes["POST /api/posts"]({ user, ip: "duplicate-ticket-before",
+    body: ticketBody(alias.id, "duplicate_ticket_before_0001") });
+  db.prepare("UPDATE tour_dates SET ticket_url=? WHERE id=?").run("https://www.ticketmaster.ca/event/duplicate-a", alias.id);
+
+  const hydrated = routes["GET /api/me/going"]({ user }).attendance;
+  assert.equal(hydrated.length, 1);
+  assert.equal(hydrated[0].tourDateId, canonical.id);
+  assert.equal(hydrated[0].state, "going");
+  const repeated = markExactAttendance(user, canonical);
+  assert.equal(repeated.attendance.createdAt, original.attendance.createdAt);
+  assert.equal(repeated.showId, original.showId, "the original persisted relationship survives");
+  assert.equal(repeated.attendance.verified, true);
+  assert.equal(db.prepare("SELECT tour_date_id FROM shows WHERE id=?").get(original.showId).tour_date_id, alias.id);
+  assert.equal(db.prepare("SELECT json_extract(attendance_ticket,'$.tourDateId') id FROM posts WHERE id=?").get(published.post.id).id, alias.id);
+  assert.throws(() => routes["POST /api/posts"]({ user, ip: "duplicate-ticket-after",
+    body: ticketBody(canonical.id, "duplicate_ticket_after_0001") }), (error) => error.status === 409);
+
+  const crowd = routes["GET /api/going/:key/attendees"]({ user, params: { key: representative.showId }, query: {} });
+  assert.equal(crowd.viewerGoing, true);
+  assert.equal(crowd.total, 1, "the other member's private selection stays private");
+  db.prepare("UPDATE tour_dates SET provider_active=0 WHERE id=?").run(canonical.id);
+  assert.equal(routes["GET /api/me/going"]({ user: other }).attendance[0].tourDateId, alias.id, "withdrawing the public representative retains existing attendance on the active identity");
+  const removed = markExactAttendance(user, alias, null);
+  assert.equal(removed.attendance, null);
+  assert.equal(routes["GET /api/me/going"]({ user }).attendance.length, 0);
+  assert.equal(routes["GET /api/me/going"]({ user: other }).attendance[0].state, "going");
+});
+
+test("a proven duplicate pair preserves an older legacy Going selection without granting a separate performance", () => {
+  const user = addUser("duplicate_legacy_going");
+  const canonical = { id: "tm_dupe_legacy_a", providerEventId: "dupe-legacy-a", date: `${FUTURE_YEAR}-12-15` };
+  const alias = { id: "tm_dupe_legacy_z", providerEventId: "dupe-legacy-z", date: canonical.date };
+  addEvent(canonical); addEvent(alias);
+  const legacy = markAttendance(user, canonical);
+  db.prepare("UPDATE tour_dates SET ticket_url=? WHERE id=?").run("https://www.ticketmaster.ca/event/dupe-legacy-a", alias.id);
+  const repeated = markExactAttendance(user, canonical);
+  assert.equal(repeated.showId, legacy.showId);
+  assert.equal(repeated.attendance.createdAt, legacy.attendance.createdAt);
+  assert.equal(repeated.attendance.tourDateId, canonical.id);
+  const posted = routes["POST /api/posts"]({ user, ip: "duplicate-legacy-ticket",
+    body: ticketBody(canonical.id, "duplicate_legacy_ticket_0001") });
+  assert.equal(posted.post.attendanceTicket.tourDateId, canonical.id);
+});
+
+test("preexisting duplicate attendance rows read latest state once and removal clears only that member's selections", () => {
+  const user = addUser("duplicate_two_rows");
+  const canonical = { id: "tm_dupe_two_a", providerEventId: "dupe-two-a", date: `${FUTURE_YEAR}-12-14` };
+  const alias = { id: "tm_dupe_two_z", providerEventId: "dupe-two-z", date: canonical.date };
+  addEvent(canonical); addEvent(alias);
+  const older = markExactAttendance(user, alias);
+  const newer = markExactAttendance(user, canonical, "interested");
+  db.prepare("UPDATE show_attendance SET updated_at=10,visibility='members' WHERE show_id=? AND user_id=?").run(older.showId, user.id);
+  db.prepare("UPDATE show_attendance SET updated_at=20 WHERE show_id=? AND user_id=?").run(newer.showId, user.id);
+  db.prepare("UPDATE tour_dates SET ticket_url=? WHERE id=?").run("https://www.ticketmaster.ca/event/dupe-two-a", alias.id);
+  const before = db.prepare("SELECT * FROM show_attendance WHERE user_id=? ORDER BY show_id").all(user.id);
+  const hydrated = routes["GET /api/me/going"]({ user }).attendance;
+  assert.equal(hydrated.length, 1);
+  assert.equal(hydrated[0].tourDateId, canonical.id);
+  assert.equal(hydrated[0].state, "interested");
+  const guestCrowd = routes["GET /api/going/:key/attendees"]({ params: { key: newer.showId }, query: {} });
+  assert.equal(guestCrowd.total, 0, "an older public Going row cannot reappear behind the latest private selection");
+  assert.deepEqual(db.prepare("SELECT * FROM show_attendance WHERE user_id=? ORDER BY show_id").all(user.id), before, "reads never merge or move stored records");
+  assert.throws(() => routes["POST /api/posts"]({ user, ip: "duplicate-stale-going",
+    body: ticketBody(alias.id, "duplicate_stale_going_0001") }), (error) => error.status === 403);
+  markExactAttendance(user, canonical, null);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM show_attendance WHERE user_id=?").get(user.id).n, 0);
+});
+
 test("exact attendance authorizes only its tour date when two events share artist venue and date", () => {
   const user = addUser("ticket_exact_collision");
   const first = { id: "tm_ticket_exact_collision_1", providerEventId: "exact-collision-1", date: `${FUTURE_YEAR}-12-12` };

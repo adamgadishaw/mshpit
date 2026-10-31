@@ -141,6 +141,7 @@ import { artistDiscographyRoutes } from "./features/artistDiscography/artistDisc
 import { showAttendanceRoutes } from "./features/shows/showAttendanceRoutes.js";
 import { showRoutes } from "./features/shows/showRoutes.js";
 import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
+import { providerEventIdentityFor } from "./providerEventIdentity.js";
 import { normalizeShowAliasKey, normalizeTourDateId } from "./features/shows/showIdentity.js";
 import { socialShareCardRoutes } from "./features/socialSharing/socialShareCardRoutes.js";
 import { createSocialShareCardRenderer } from "./features/socialSharing/socialShareCardRenderer.js";
@@ -328,7 +329,9 @@ import { capacityHandshakeRoutes } from "./features/capacity/capacityHandshakeRo
 export { ApiError } from "./errors.js";
 
 const now = () => Date.now();
-const showAttendanceRepository = createShowAttendanceRepository(db);
+const showAttendanceRepository = createShowAttendanceRepository(db, {
+  providerEventIdentity: (id) => providerEventIdentityFor(db, id, now(), { includeInactiveReferences: true }),
+});
 const loungeLifecycleService = createLoungeLifecycleService({
   database: db,
   attendanceRepository: showAttendanceRepository,
@@ -2294,9 +2297,10 @@ function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
         return [entry.artist, publicTourDateArtistProjection(entry).artist].some((name) =>
           normalizeShowAliasKey(`${ticketText(name, LIMITS.artist)}|${entryVenue}|${entry.date}`) === alias);
       });
-      return matches.length === 1 && matches[0].id === id;
+      const performances = new Set(matches.map((entry) => providerEventIdentityFor(db, entry.id, at).canonicalId));
+      return performances.size === 1 && performances.has(providerEventIdentityFor(db, id, at).canonicalId);
     });
-  const startAt = Date.parse(row.start_date_time || "");
+  const startAt = Date.parse(providerFields.startDateTime || "");
   const provider = ticketText(row.source, 40)?.toLowerCase() || null;
   return {
     tourDateId: id,
@@ -2311,7 +2315,7 @@ function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
     startAt: Number.isFinite(startAt) ? startAt : null,
     startLocalTime: providerFields.startLocalTime,
     timezone: liveEventTimeZone(row),
-    lifecycle: tourDateShowLifecycle(row, at),
+    lifecycle: tourDateShowLifecycle({ ...row, start_date_time: providerFields.startDateTime }, at),
     tour: providerFields.tourName,
     provider: providerFields.providerEventId ? provider : null,
     providerEventId: provider && providerFields.providerEventId ? providerFields.providerEventId : null,
@@ -2328,10 +2332,13 @@ function legacyConcertKeyForTicket(ticket) {
 function legacyAliasUniquelyIdentifiesTicket(ticket, legacyKey) {
   const matches = possibleLegacyTicketDates.all(ticket.date, ticket.artist, ticket.venue)
     .filter((row) => normalizeShowAliasKey(`${row.artist}|${row.venue || row.place || "Venue TBA"}|${row.date}`) === legacyKey);
-  return matches.length === 1 && matches[0].id === ticket.tourDateId;
+  const performances = new Set(matches.map((row) => providerEventIdentityFor(db, row.id).canonicalId));
+  return performances.size === 1 && performances.has(providerEventIdentityFor(db, ticket.tourDateId).canonicalId);
 }
 
 function hasGoingAttendanceForTicket(userId, ticket) {
+  const existing = showAttendanceRepository.ownExactAttendance(userId, { tourDateId: ticket.tourDateId }).attendance;
+  if (existing) return existing.state === "going";
   if (exactTourDateGoingAttendance.get(userId, ticket.tourDateId)) return true;
   if (ticket.provider && ticket.providerEventId
     && providerGoingAttendance.get(userId, ticket.provider, ticket.providerEventId)) return true;
@@ -2348,7 +2355,8 @@ function assertGoingAttendanceForTicket(userId, ticket) {
 }
 
 function assertNoActiveAttendanceTicketPost(userId, ticket) {
-  const existing = activeAttendanceTicketPost?.get(userId, ticket.tourDateId);
+  const existing = providerEventIdentityFor(db, ticket.tourDateId, now(), { includeInactiveReferences: true }).ids
+    .some((id) => activeAttendanceTicketPost?.get(userId, id));
   if (existing) {
     throw new ApiError(409, "You already shared a Going ticket for this event.", "CONFLICT");
   }

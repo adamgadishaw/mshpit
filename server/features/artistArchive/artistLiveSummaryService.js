@@ -1,4 +1,5 @@
 import { activeAccountSql } from "../../accountVisibility.js";
+import { canonicalProviderEventSql, installProviderEventIdentitySql } from "../../providerEventIdentity.js";
 import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
 import { artistHasLegacyMemorial, artistHasPublishedMemorial, tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
 import {
@@ -82,6 +83,7 @@ function emptyReputation() {
 // can retain ratings after a block, account removal, or moderation change.
 export function createArtistLiveSummaryService({ database, projectDate, clock = Date.now,
   providersConfigured = () => !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID) } = {}) {
+  installProviderEventIdentitySql(database);
   if (!database?.prepare || typeof projectDate !== "function") throw new TypeError("Artist live summary dependencies are missing");
   database.function("pit_artist_identity", { deterministic: true }, pitArtistIdentity);
   database.function("pit_live_billing_identity", { deterministic: true }, providerBillingIdentity);
@@ -129,6 +131,7 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
   )`;
   const eventWhere = `FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE td.id IN (SELECT id FROM candidate_ids) AND COALESCE(td.music_qualified,1)=1
+      AND ${canonicalProviderEventSql("td", "@name", "@at")}
       AND ${tourDateArtistBindingAllowedSql("td")}
       AND ((((td.artist_key=@key) OR (td.artist_key IS NULL AND LOWER(td.artist)=LOWER(@name)
           AND @uniqueName=1))

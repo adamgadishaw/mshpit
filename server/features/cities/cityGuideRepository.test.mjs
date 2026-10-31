@@ -15,6 +15,7 @@ function fixture() {
     CREATE TABLE artist_profiles (artist_key TEXT PRIMARY KEY,owner_id TEXT,removed INTEGER DEFAULT 0,identity_review_status TEXT DEFAULT 'clear');
     CREATE TABLE artist_memorials(artist_key TEXT,artist_mbid TEXT,status TEXT,death_date TEXT);
     CREATE TABLE tour_dates(id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,venue TEXT,date TEXT,source TEXT,
+      place TEXT,start_date_time TEXT,event_status TEXT,access_start_date_time TEXT,
       artist_identity_status TEXT,
       venue_provider_id TEXT,provider_event_id TEXT,venue_city TEXT,venue_region TEXT,venue_country TEXT,venue_country_code TEXT,
       event_name TEXT,event_kind TEXT DEFAULT 'concert',music_qualified INTEGER DEFAULT 1,music_evidence TEXT,billed_artists TEXT DEFAULT '[]',

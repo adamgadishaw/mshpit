@@ -1,3 +1,4 @@
+import { canonicalProviderEventSql, installProviderEventIdentitySql } from "../../providerEventIdentity.js";
 import {
   MAX_PROVIDER_FESTIVAL_FAIR_SPAN_DAYS,
   MAX_PROVIDER_MULTI_DAY_SPAN_DAYS,
@@ -37,10 +38,10 @@ export function isPublicMusicEventCandidate(value = {}) {
   const qualified = value.musicQualified ?? value.music_qualified ?? null;
   return ownerId != null || Number(qualified) === 1;
 }
-export function publicMusicEventCandidateSql(alias = "td") {
+export function publicMusicEventCandidateSql(alias = "td", atSql = undefined) {
   const identifier = String(alias || "");
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(identifier)) throw new TypeError("Invalid SQL alias");
-  return `(${identifier}.owner_id IS NOT NULL OR COALESCE(${identifier}.music_qualified,0)=1)`;
+  return `((${identifier}.owner_id IS NOT NULL OR COALESCE(${identifier}.music_qualified,0)=1) AND ${canonicalProviderEventSql(identifier, null, atSql)})`;
 }
 
 const PUBLIC_EVENT_TITLE_RULES = Object.freeze([
@@ -135,6 +136,7 @@ const PUBLIC_EVENT_POLICY_CACHE_LIMIT = 50_000;
 const publicEventPolicyCaches = new WeakMap();
 
 export function installPublicMusicEventPolicySql(database) {
+  installProviderEventIdentitySql(database);
   if (!database?.function) throw new TypeError("Public music event SQL policy requires a database");
   let cache = publicEventPolicyCaches.get(database);
   if (!cache) {
