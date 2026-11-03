@@ -4244,16 +4244,12 @@ function postJsonWithImpressions(p, viewerId) {
 function resolvePostCreateRetry(userId, mutationId, mutationHash, { canonical } = {}) {
   if (!mutationId) return null;
   const receipt = postReceiptByClientMutation.get(userId, mutationId);
-  // Before long-form reviews, creates hashed only the first 2,000 units. This
-  // fallback can return an existing post, never authorize a new truncated write.
-  const canonicalVariants = [canonical];
-  if (canonical?.kind === "review" && canonical.review.length > LIMITS.review) {
-    canonicalVariants.push({ ...canonical, review: canonical.review.slice(0, LIMITS.review) });
-  }
+  // Matching only a truncated prefix cannot prove the same authored request,
+  // even for legacy rows. Keep the full text so conflicts preserve the draft.
   const retryHashes = new Set([mutationHash]);
-  for (const candidate of canonicalVariants.filter(Boolean)) {
-    retryHashes.add(postMutationHash(candidate));
-    if (candidate.mediaAssetIds?.length) retryHashes.add(postMutationHash(candidate, { legacyMediaUrls: true }));
+  if (canonical) {
+    retryHashes.add(postMutationHash(canonical));
+    if (canonical.mediaAssetIds?.length) retryHashes.add(postMutationHash(canonical, { legacyMediaUrls: true }));
   }
   if (receipt?.state === "removed") {
     throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
