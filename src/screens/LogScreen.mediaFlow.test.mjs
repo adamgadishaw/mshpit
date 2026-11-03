@@ -89,7 +89,10 @@ test("pending local videos render a picker still or lightweight tile without sta
   includes(preview, "styles.pendingVideoPreview");
   excludes(preview, 'mediaKind="video"');
   excludes(preview, "posterUri={");
-  const pendingGrid = source.slice(source.indexOf("pendingMediaAssets.map"), source.indexOf("photos.length + pendingMediaAssets.length <"));
+  const start = source.indexOf("{pendingMediaAssets.filter((asset) => !mediaProject.assets.some");
+  const end = source.indexOf("{photos.length + convertingClips.length + pendingMediaAssets.length <", start);
+  assert.ok(start >= 0 && end > start, "the waiting-only grid must have explicit valid boundaries");
+  const pendingGrid = source.slice(start, end);
   includes(pendingGrid, "<PendingMediaPreview");
   excludes(pendingGrid, "<SmartImage");
 });

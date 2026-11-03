@@ -136,6 +136,7 @@ async function scenario(browser, origin, width) {
     await page.getByRole("button", { name: "Remove media 1", exact: true }).waitFor();
     await page.waitForFunction(() => window.__pickerHandles.revoked.length >= 1);
     await page.getByRole("progressbar", { name: /Starting media check/ }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Move media 1 later", exact: true }).isDisabled(), true);
     assert.equal(state.finalizes.length, 2, "A selected video must reach verification without any browser metadata decode.");
     await page.getByRole("button", { name: "Cancel media upload", exact: true }).click();
     const retry = page.getByRole("button", { name: "Retry uploading selected photos and videos", exact: true });
@@ -159,6 +160,13 @@ async function scenario(browser, origin, width) {
     assert.equal(await retry.count(), 0);
     assert.equal(await page.locator('[data-testid="composer-file-input"]').count(), 0);
     assert.equal(await review.inputValue(), "Keep this concert memory during interrupted uploads.");
+    assert.equal(await page.getByRole("button", { name: "Move media 1 earlier", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Move media 2 later", exact: true }).isDisabled(), true);
+    await page.getByRole("button", { name: "Move media 2 earlier", exact: true }).click();
+    await page.getByRole("button", { name: "Remove clip 1", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Remove media 2", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Move media 1 later", exact: true }).click();
+    await page.getByRole("button", { name: "Remove clip 2", exact: true }).waitFor();
     assert.deepEqual(state.reports, []); assert.deepEqual(state.errors, []);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
     await page.screenshot({ path: join(shots, `media-${width}-complete.png`) });
