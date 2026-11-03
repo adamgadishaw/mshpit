@@ -20,7 +20,7 @@ test("artist review actions have distinct reload-safe post and concert URLs", ()
 });
 
 test("memorial and pre-1970 legacy profiles use distinct permanent presentation modes", () => {
-  assert.match(source, /deceased \? "CREATIVE LEGACY" : liveAvailable \? "CONCERT RATINGS" : "ARTIST STATUS"/);
+  assert.match(source, /deceased \? "CREATIVE LEGACY" : liveAvailable \? "LIVE PERFORMANCE" : "ARTIST STATUS"/);
   assert.match(source, /New live ratings are closed\./);
   assert.match(source, /deceased \? `FAN MEMORIES/);
   assert.match(source, /sectionModel\.active === "shows" && liveAvailable/);
@@ -60,7 +60,7 @@ test("artist and show screens fail closed until memorial status is authoritative
   assert.match(source, /artistPageSectionModel\(activeSection, \{ legacyMode: !profileServicesAvailable, signedIn: !!session \}\)/);
   assert.match(source, /useArtistOverview\(\{[\s\S]*?enabled: profileServicesAvailable/);
   assert.match(source, /sectionModel\.showLive && liveAvailable && \([\s\S]*?<ArtistUpcomingShows/);
-  assert.match(source, /liveAvailable \? "CONCERT RATINGS" : "ARTIST STATUS"/);
+  assert.match(source, /liveAvailable \? "LIVE PERFORMANCE" : "ARTIST STATUS"/);
   assert.match(source, /memorialKnown && sectionModel\.showCommunity/);
   assert.match(showSource, /const liveActionsAvailable = memorialAvailability === "living"/);
   assert.match(showSource, /useCanonicalArtistIdentity\(\{[\s\S]*?artistName: artist,[\s\S]*?artistKey: norm\.artistKey \|\| null/);
