@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { publicBrowserDestination } from "./publicBrowserDestination.mjs";
 
 const source = (relative) => readFileSync(new URL(relative, import.meta.url), "utf8");
 
@@ -49,7 +50,7 @@ test("online review cards never present physical show, venue, attendance, or arc
   assert.match(postScreen, /onOpenArtistArchive=\{isOnlineReview \? undefined : onOpenArtistArchive\}/);
 });
 
-test("online cards and public links route to post detail instead of the physical show screen", () => {
+test("online cards and public links route to post detail instead of the physical show screen", async () => {
   const card = source("../components/TicketStub.jsx");
   const feed = source("../screens/FeedScreen.jsx");
   const profile = source("../screens/ProfileScreen.jsx");
@@ -61,6 +62,11 @@ test("online cards and public links route to post detail instead of the physical
   assert.match(profile, /onOpenPost=\{capabilities\.openPost \? openPost : undefined\}/);
   assert.match(profile, /onOpenPost,/);
   assert.match(app, /isOnlineReview\(log\) \|\| isCityOnlyReview\(log\)\) return openPost\(log, analytics\)/);
-  assert.match(source("./publicBrowserDestination.mjs"), /post\.kind === "status" \|\| isOnlineReview\(post\) \|\| isCityOnlyReview\(post\) \? \{ post \} : \{ openLog: post \}/);
+  const post = { id: "online-review", userId: "fan", kind: "review", experienceType: "online" };
+  const destination = await publicBrowserDestination("/post/online-review", {
+    resolveEntity: async () => ({ kind: "show", id: post.id, path: "/post/online-review" }),
+    readPost: async () => post,
+  });
+  assert.deepEqual(destination.stack.at(-1), { post });
   assert.match(app, /<ProfileScreen[^>]*onOpenPost=\{openPost\}/);
 });
