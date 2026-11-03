@@ -617,6 +617,13 @@ export default function LogScreen({
   function setMediaProject(update) {
     const next = typeof update === "function" ? update(mediaProjectRef.current) : update;
     mediaProjectRef.current = next;
+    // Keep the chosen image through recovery and delivery-URL changes, but
+    // never leave a background pointing at a removed or replaced attachment.
+    // This is outside the project updater; the campaign updater stays pure.
+    setCampaign((current) => !current?.backgroundAssetId
+      || next.assets.some((asset) => asset.assetId === current.backgroundAssetId && asset.kind === "image")
+      ? current
+      : { ...current, backgroundAssetId: undefined });
     renderMediaProject(next);
   }
   const [pendingMediaAssets, renderPendingMediaAssets] = useState([]);
@@ -1165,9 +1172,6 @@ export default function LogScreen({
       return next;
     });
     if (matching) {
-      if (campaign?.backgroundAssetId === matching.assetId) {
-        setCampaign((current) => current ? { ...current, backgroundAssetId: undefined } : current);
-      }
       setMediaProject((current) => removeMediaProjectAsset(current, matching.id));
     }
   };
@@ -2402,7 +2406,8 @@ export default function LogScreen({
             const converting = descriptor.status === "processing";
             const waiting = pendingMediaAssets.some((pending) => pending.id === descriptor.id);
             const backgroundAssetId = descriptor?.assetId || null;
-            const canBeCampaignBackground = isCampaign && !!backgroundAssetId && mediaDisplayKind(descriptor || uri) === "image";
+            const canBeCampaignBackground = isCampaign && !waiting && descriptor.status === "ready" && !!uri
+              && !!backgroundAssetId && mediaDisplayKind(descriptor || uri) === "image";
             const isCampaignBackground = canBeCampaignBackground && campaign?.backgroundAssetId === backgroundAssetId;
             return (
             <View key={descriptor.id} style={[styles.thumb, isCampaignBackground && styles.campaignThumbSelected]}>
@@ -2755,3 +2760,4 @@ const styles = StyleSheet.create({
   bigPost: { marginTop: 28, backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 16, alignItems: "center" },
   bigPostTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 1 },
 });
+
