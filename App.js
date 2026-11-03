@@ -1,7 +1,7 @@
 import NativeAccountLinks from "./src/screens/NativeAccountLinks";
 import { nativeNewsLinkFrame } from "./src/domain/nativeNewsLink.mjs";
 import { publicDiscoveryRailAllowed } from "./src/domain/publicPlacementPolicy.mjs";
-import { useState, useRef, useEffect, useLayoutEffect, useMemo, Suspense } from "react";
+import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, Suspense } from "react";
 import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler, Linking } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
@@ -110,7 +110,7 @@ import { needsPublicFrameIdentity } from "./src/domain/publicFrameNavigation.mjs
 import { createArtistLookupController } from "./src/features/artistSearch/artistLookupController.mjs";
 import { artistLookupFailureMessage } from "./src/features/artistSearch/artistSearchApi.mjs";
 import { initialLandingState, landingRenderSurface } from "./src/domain/landingStartup.mjs";
-import { publicNavigationLinks, shouldShowMobilePublicTrail } from "./src/domain/publicNavigationLinks.mjs";
+import { publicEventTrailForVisit, publicNavigationLinks, shouldShowMobilePublicTrail } from "./src/domain/publicNavigationLinks.mjs";
 import {
   publicDirectoryProgramme,
   publicFramePath,
@@ -320,6 +320,15 @@ function Root() {
     return top && Object.keys(top).length ? [{}, top] : [{}];
   });
   const nav = stack[stack.length - 1];
+  const [publicEventTrailResource, setPublicEventTrailResource] = useState(null);
+  const publicEventVisitRef = useRef({ frame: null, generation: 0 });
+  if (publicEventVisitRef.current.frame !== nav) {
+    publicEventVisitRef.current = { frame: nav, generation: publicEventVisitRef.current.generation + 1 };
+  }
+  const publicEventGeneration = publicEventVisitRef.current.generation;
+  const reportPublicEventResource = useCallback((resource) => {
+    setPublicEventTrailResource({ generation: publicEventGeneration, resource });
+  }, [publicEventGeneration]);
   const stackRef = useRef(stack);
   const nearbySelectionRef = useRef(null);
   stackRef.current = stack;
@@ -1489,7 +1498,7 @@ function Root() {
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onOpenFanClub={openFanClub} onReport={openReport} onRequireAuth={openSignIn} />;
-  else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} />;
+  else if (nav.openLog) overlay = <ShowScreen key={publicEventGeneration} log={nav.openLog} onPublicEventResource={reportPublicEventResource} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} />;
   else if (nav.post) overlay = <PostScreen key={`${session?.id || "guest"}:${nav.post.id}`} log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
   else if (nav.festival?.slug) overlay = <FestivalScreen key={`${session?.id || "guest"}:${nav.festival.slug}`} slug={nav.festival.slug} editionId={nav.festival.editionId || null}
@@ -1549,7 +1558,7 @@ function Root() {
   }
   const screenDirection = screenMotionRef.current.direction;
 
-  const hydratedPublicLinks = publicNavigationLinks(nav, { resolveUser: userById });
+  const hydratedPublicLinks = publicNavigationLinks(nav, { resolveUser: userById, publicEventResource: publicEventTrailForVisit(publicEventTrailResource, publicEventGeneration), accountId: session?.id || null });
   const showMobilePublicTrail = shouldShowMobilePublicTrail(nav);
   const hydratedDirectoryArtists = nav.directory === "artists"
     ? [

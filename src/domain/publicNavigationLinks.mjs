@@ -1,5 +1,6 @@
 import {
   artistPath,
+  confirmedArtistPath,
   concertPath,
   eventPath,
   postPath,
@@ -8,7 +9,14 @@ import {
 } from "./urls.mjs";
 import { liveEventTitle } from "./liveDiscovery.mjs";
 
+import { publicEventArtistIdentityPending, publicEventCandidateId, readablePublicEventSnapshot } from "./publicEventSnapshot.mjs";
+
 const text = (value) => String(value ?? "").trim();
+
+// A prior visit may share both event ID and account; it cannot confirm this visit.
+export function publicEventTrailForVisit(trail, generation) {
+  return generation != null && trail?.generation === generation ? trail.resource : null;
+}
 
 const publicUser = (log, resolveUser) => {
   const embedded = log?.user && typeof log.user === "object" ? log.user : null;
@@ -88,7 +96,7 @@ export function shouldShowMobilePublicTrail(frame = {}) {
  * that document once React hydrates. Keeping this model independent of rendering
  * lets the shared shell retain genuine anchors without inventing hidden SEO copy.
  */
-export function publicNavigationLinks(frame = {}, { resolveUser } = {}) {
+export function publicNavigationLinks(frame = {}, { resolveUser, publicEventResource, accountId = null } = {}) {
   const links = [
     { key: "home", label: "Home", href: "/", target: { type: "home" } },
     { key: "artists", label: "Artists", href: "/artists", target: { type: "directory", value: "artists" } },
@@ -115,7 +123,10 @@ export function publicNavigationLinks(frame = {}, { resolveUser } = {}) {
     return links;
   }
 
-  const log = frame.post || frame.openLog || null;
+  const sourceLog = frame.post || frame.openLog || null;
+  const snapshot = readablePublicEventSnapshot(publicEventResource, { eventId: publicEventCandidateId(sourceLog), accountId });
+  const log = snapshot ? { ...sourceLog, artist: snapshot.artist, artistPublicSlug: snapshot.artistPublicSlug,
+    artist_public_slug: null, artistIdentityPending: publicEventArtistIdentityPending(sourceLog, snapshot, { status: publicEventResource.status }) } : sourceLog;
   if (!log) {
     if (frame.directory === "artists") links[1] = { ...links[1], current: true, target: null };
     if (frame.directory === "events") links[2] = { ...links[2], current: true, target: null };
@@ -134,7 +145,12 @@ export function publicNavigationLinks(frame = {}, { resolveUser } = {}) {
   }
 
   const artistName = text(log.artist);
-  if (artistName) {
+  const eventIdentity = log.performanceEvent === true || log.kind === "event" || log.publicEventSnapshot === true;
+  const artistHref = confirmedArtistPath({
+    publicSlug: log.artistPublicSlug || log.artist_public_slug || null,
+    artistIdentityPending: log.artistIdentityPending,
+  });
+  if (artistName && (!eventIdentity || artistHref)) {
     const artist = {
       name: artistName,
       publicSlug: log.artistPublicSlug || log.artist_public_slug || null,
@@ -142,7 +158,7 @@ export function publicNavigationLinks(frame = {}, { resolveUser } = {}) {
     append(links, {
       key: `artist:${artist.publicSlug || artistName}`,
       label: artistName,
-      href: artistPath(artist),
+      href: eventIdentity ? artistHref : artistPath(artist),
       target: { type: "artist", value: artist },
     });
   }

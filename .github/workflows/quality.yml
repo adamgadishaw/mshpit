@@ -80,6 +80,8 @@ jobs:
       - run: npm run verify:artist-account-browser
       - run: npm run verify:artist-identity-moderation-browser
       - run: npm run verify:navigation-browser
+      - name: Verify event identity integration (synthetic loopback)
+        run: node scripts/verify-public-event-identity-browser.mjs
       - name: Retain synthetic Home navigation diagnostics
         if: always()
         continue-on-error: true
