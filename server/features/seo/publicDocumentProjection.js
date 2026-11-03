@@ -1083,6 +1083,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const knowledgeData = parseObject(source.data);
       const displayBio = artistKnowledgeDisplayBio(knowledgeData, { mbid: source.mbid, bio: selectedBio });
       const bio = cleanBody(displayBio, 2_000);
+      const bioNamesArtist = name && bio.slice(0, name.length).toLocaleLowerCase("en") === name.toLocaleLowerCase("en")
+        && !/^[\p{L}\p{M}\p{N}]/u.test(bio.slice(name.length));
       // Validate the exact selected text before harmless display formatting or
       // excerpting. Formatting an imported excerpt does not remove its credit.
       const bioSource = bio ? projectArtistKnowledgeSource(knowledgeData, { mbid: source.mbid, bio: displayBio }) : null;
@@ -1185,7 +1187,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         : hasUpcomingShows
         ? `${name}${tourYears ? ` tour ${tourYears}` : ""}: ${upcomingSignal}${nextLine}. Dates, venues and tickets on Mshpit.`
         : bio
-        ? `${name} artist profile on Mshpit. ${bio}`
+        ? bioNamesArtist ? bio : `${name} artist profile on Mshpit. ${bio}`
         : catalogText?.summary
         ? `${name} artist profile on Mshpit. ${catalogText.summary}`
         : updates.length

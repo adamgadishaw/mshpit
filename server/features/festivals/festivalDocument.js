@@ -32,7 +32,7 @@ const place = (edition) => [edition.venue, [edition.city, edition.region].filter
 
 function heading(page) {
   if (page.announcement && (!page.upcoming[0] || page.announcement.startDate < page.upcoming[0].startDate)) {
-    return `${page.announcement.name}: Dates & History`;
+    return `${page.announcement.name}: Dates & Lineup Status`;
   }
   const edition = page.upcoming[0];
   const name = page.festival.name;
@@ -45,9 +45,22 @@ function heading(page) {
   return `${name}: Lineups, History & Fan Reviews`;
 }
 
+function announcementDescription(page) {
+  const announcement = page.announcement;
+  const hasLineup = page.upcoming.some((item) => item.startDate <= (announcement.endDate || announcement.startDate)
+    && (item.endDate || item.startDate) >= announcement.startDate && item.lineup?.length);
+  return `${announcement.name} runs ${festivalDateRange(announcement.startDate, announcement.endDate)} at ${place(announcement)}. ${hasLineup ? "See listed lineup details below." : "Lineup details are not yet listed on Mshpit."}`;
+}
+
+function structuredEditionDescription(item, festival) {
+  const lead = item.lineup?.slice(0, 4).map((act) => act.name).join(", ");
+  return [`${item.name || festival.name} runs ${festivalDateRange(item.startDate, item.endDate)}${place(item) ? ` at ${place(item)}` : ""}.`,
+    lead ? `Lineup includes ${lead}.` : "Lineup details are not yet listed on Mshpit."].join(" ").slice(0, 300);
+}
+
 function description(page) {
   if (page.announcement && (!page.upcoming[0] || page.announcement.startDate < page.upcoming[0].startDate)) {
-    return `${page.announcement.name} runs ${festivalDateRange(page.announcement.startDate, page.announcement.endDate)} at ${place(page.announcement)}. Official dates, festival history and fan reviews.`;
+    return announcementDescription(page);
   }
   const edition = page.upcoming[0];
   const name = page.festival.name;
@@ -84,7 +97,8 @@ export function projectFestivalDocument({ origin = "https://www.mshpit.com", pag
       endDate: item.endDate || item.startDate,
       eventStatus: "https://schema.org/EventScheduled",
       eventAttendanceMode: "https://schema.org/OfflineEventAttendanceMode",
-      description: description({ ...page, upcoming: [item] }),
+      description: item === announced[0] ? announcementDescription(page)
+        : page.announcement ? structuredEditionDescription(item, page.festival) : description({ ...page, upcoming: [item] }),
       ...(safeHttps(item.imageUrl) ? { image: [item.imageUrl] } : {}),
       location: {
         "@type": "Place",
