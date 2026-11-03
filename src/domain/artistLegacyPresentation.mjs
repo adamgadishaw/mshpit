@@ -21,6 +21,7 @@ export function artistLegacyPresentation({
     return Object.freeze({
       bio: cached.bioStaffCurated === true ? text(cached.ownerBio) : text(cached.ownerBio) || text(catalog.bio),
       bannerUri: text(cached.banner) || text(catalog.photo),
+      bannerContain: !text(cached.banner) && !!text(catalog.photo),
       profileUri: text(cached.photo) || text(catalog.photo),
       profileAvatarUri: text(cached.profileAvatarUri),
       profileOwnerId: confirmedPage ? confirmedPage.profile?.ownerId || null : cached.ownerId || null,
@@ -37,6 +38,7 @@ export function artistLegacyPresentation({
   return Object.freeze({
     bio: profile.bioStaffCurated === true ? text(profile.bio) : text(profile.bio) || text(catalog.bio),
     bannerUri: text(profile.banner) || text(catalog.photo),
+    bannerContain: !text(profile.banner) && !!text(catalog.photo),
     profileUri: text(profile.avatarUri) || text(catalog.photo),
     profileAvatarUri: text(profile.avatarUri),
     profileOwnerId: null,
