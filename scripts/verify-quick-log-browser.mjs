@@ -11,7 +11,9 @@ import { fixtureApiResponse, navigationUser } from "./verify-navigation-browser.
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const shots = join(root, ".tmp", "quick-log-browser");
-const review = "I remember the music, not the exact date. Fixture only.";
+import { twoThousandWordReview } from "./fixtures/concert-review-text.mjs";
+export const quickLogReviewText = twoThousandWordReview;
+const review = quickLogReviewText;
 const featuredReview = "Featured fixture copy must survive the quota fallback.";
 const failureCopy = "That didn't post. Your review is still here, give it another try.";
 const retryReadyCopy = "Your post is still here. You can try posting again now.";
@@ -34,7 +36,7 @@ export function assertQuickLogPayload(body) {
   assert.equal(body.overall, 5);
   assert.equal(body.band, null, "Overall-only rating must not invent a band score.");
   assert.equal(body.room, null, "Overall-only rating must not invent a venue score.");
-  assert.equal(body.dims.experience, 5);
+  assert.equal(body.dims.experience, 0, "Overall selection must not invent a detailed experience rating.");
   for (const key of ["performance", "setlist", "sound", "venue", "crowd"]) assert.equal(body.dims[key], 0);
   assert.equal(body.review, review);
   assert.equal(body.tour, "A remembered tour");
@@ -83,6 +85,7 @@ async function scenario(browser, origin, width) {
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       state.calls.push({ path: url.pathname, method: request.method() });
       if (url.pathname === "/api/client-errors") { state.reports.push(request.postDataJSON()); return await json({ ok: true }); }
+      if (url.pathname === "/api/feed/impressions") return await json({ ok: true });
       if (url.pathname === "/api/health") return await json({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: true } } });
       // Opener search: the headliner comes back too and must not be offered.
       if (url.pathname === "/api/artists" && /^mu/i.test(url.searchParams.get("q") || "")) return await json({ artists: [
@@ -129,7 +132,7 @@ async function scenario(browser, origin, width) {
       assert.equal(await page.getByLabel("Public event address, optional", { exact: true }).isVisible(), true);
     };
     const assertRatings = async () => {
-      const ratings = page.getByLabel("Rating", { exact: true });
+      const ratings = page.getByLabel(/^(Overall concert rating|Rating)$/);
       assert.equal(await ratings.count(), 6, "Overall, band, room and crowd ratings must all appear without an expansion tap.");
       for (const rating of await ratings.all()) assert.equal(await rating.isVisible(), true);
     };
@@ -148,9 +151,13 @@ async function scenario(browser, origin, width) {
     await page.screenshot({ path: join(shots, `quick-log-${width}-where.png`) });
     await next("The music");
     await assertRatings();
-    await page.getByLabel("Rating", { exact: true }).first().press("End");
+    await page.getByLabel("Overall concert rating", { exact: true }).press("End");
     assert.equal(await headerPost.isEnabled(), true, "A city-only show with an unknown date and one rating must be publishable from any step.");
-    await page.getByLabel("Rating", { exact: true }).nth(1).press("End");
+    const overall = page.getByLabel("Overall concert rating", { exact: true });
+    await overall.press("ArrowLeft");
+    await page.getByLabel("Rating", { exact: true }).first().press("End");
+    assert.equal((await overall.locator("..").innerText()).trim(), "4.5", "Five-star performance cannot change overall.");
+    await overall.press("End");
     await page.getByRole("button", { name: "Leave performance unrated", exact: true }).click();
     const opener = page.getByLabel("Add an opener", { exact: true });
     await opener.fill("Mu");
@@ -168,6 +175,14 @@ async function scenario(browser, origin, width) {
     await next("Your story");
     assert.equal(await progress(), "Step 4 of 4: Your story");
     const reviewInput = page.getByPlaceholder("What made the night? Be honest - this is what people read.", { exact: true });
+    const overflow = "x".repeat(31999) + "😀";
+    await reviewInput.fill(overflow);
+    await page.getByText(/32,001 \/ 32,000 characters after formatting cleanup/).waitFor();
+    assert.equal(await post.isDisabled(), true);
+    assert.equal(await reviewInput.inputValue(), overflow, "Overflow text must remain intact.");
+    await reviewInput.fill("  " + "x".repeat(31998) + "😀" + "  ");
+    await page.getByText(/32,000 \/ 32,000 characters after formatting cleanup/).waitFor();
+    assert.equal(await post.isEnabled(), true);
     await reviewInput.fill(review);
     await page.screenshot({ path: join(shots, `quick-log-${width}-details.png`) });
     await post.click();
@@ -205,6 +220,7 @@ async function scenario(browser, origin, width) {
     state.failureMode = null;
     await post.click();
     await artist.waitFor({ state: "hidden" });
+    await page.getByText("See more", { exact: true }).first().click();
     await page.getByText(review, { exact: true }).waitFor();
     await page.getByRole("button", {
       name: "Overall 5.0 out of 5. Show the rating breakdown.", exact: true,
@@ -216,7 +232,7 @@ async function scenario(browser, origin, width) {
     await page.screenshot({ path: join(shots, `quick-log-${width}-published.png`) });
     assert.equal(state.writes.length, failedAttempts + 1);
     assert.ok(state.writes.every(body => body.clientMutationId === state.writes[0].clientMutationId));
-    assert.deepEqual(state.calls.filter(call => call.method !== "GET").map(call => call.path), Array(state.writes.length).fill("/api/posts"));
+    assert.deepEqual(state.calls.filter(call => call.method !== "GET" && call.path !== "/api/feed/impressions").map(call => call.path), Array(state.writes.length).fill("/api/posts"));
     assert.equal(state.calls.some(call => call.path === "/api/artists/resolve"), false, "Typing must not trigger a remote artist lookup.");
     assert.deepEqual(state.reports, []); assert.deepEqual(state.errors, []);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
@@ -253,6 +269,7 @@ async function featuredQuotaScenario(browser, origin, width) {
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       state.calls.push({ path: url.pathname, method: request.method() });
       if (url.pathname === "/api/client-errors") { state.reports.push(request.postDataJSON()); return await json({ ok: true }); }
+      if (url.pathname === "/api/feed/impressions") return await json({ ok: true });
       if (url.pathname === "/api/health") return await json({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: true } } });
       if (url.pathname === "/api/me") return await json({ user: featuredArtistUser });
       if (url.pathname === "/api/posts" && request.method() === "POST") {
@@ -312,7 +329,7 @@ async function featuredQuotaScenario(browser, origin, width) {
 
     assert.equal(state.writes.length, 2);
     assert.equal(state.writes[1].campaign, null);
-    assert.deepEqual(state.calls.filter(call => call.method !== "GET").map(call => call.path), ["/api/posts", "/api/posts"]);
+    assert.deepEqual(state.calls.filter(call => call.method !== "GET" && call.path !== "/api/feed/impressions").map(call => call.path), ["/api/posts", "/api/posts"]);
     assert.deepEqual(state.reports, []);
     assert.deepEqual(state.errors, []);
     console.log(JSON.stringify({ name: `quick-log-featured-quota-${width}`, passed: true, simulatedPosts: state.writes.length }));
@@ -321,6 +338,115 @@ async function featuredQuotaScenario(browser, origin, width) {
     console.error(JSON.stringify({ error: error.message, state, body: (await page.locator("body").innerText()).slice(-7000) }));
     throw error;
   } finally { state.closing = true; await context.close(); }
+}
+
+async function restoredScoringScenario(browser, origin, width, cleared = false) {
+  const context = await browser.newContext({ viewport: { width, height: 900 }, serviceWorkers: "block" });
+  const page = await context.newPage(); page.setDefaultTimeout(12_000);
+  const writes = [], errors = [];
+  const draft = { id: "draft_scoring_fixture", ownerId: navigationUser.id, postType: "show", artist: "Fixture Artist", city: "Toronto", date: "", dims: { experience: 4 }, review: "Draft words survive restoration.", ...(cleared ? { overallRating: 0 } : {}) };
+  await page.addInitScript(({ user, draft }) => {
+    localStorage.setItem("pit_theme", "stage");
+    localStorage.setItem("pit.session", JSON.stringify(user));
+    localStorage.setItem("pit.users", JSON.stringify([user]));
+    localStorage.setItem("pit.drafts", JSON.stringify([draft]));
+  }, { user: navigationUser, draft });
+  page.on("pageerror", error => errors.push(error.message));
+  await context.route("**/*", async route => {
+    const request = route.request(), url = new URL(request.url());
+    if (url.origin !== origin) return await route.abort();
+    if (!url.pathname.startsWith("/api/")) return await route.continue();
+    if (url.pathname === "/api/feed/impressions") return await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    if (url.pathname === "/api/health") return await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: true } } }) });
+    let body;
+    if (url.pathname === "/api/posts" && request.method() === "POST") {
+      const posted = request.postDataJSON(); writes.push(posted);
+      body = { post: { ...posted, id: "p_restored_fixture", kind: "review", userId: navigationUser.id, user: navigationUser, at: Date.now(), likes: 0, comments: 0 }, created: true };
+    } else body = fixtureApiResponse(url.pathname, { member: true, method: request.method() });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  try {
+    await page.goto(origin + "/feed");
+    await page.getByRole("button", { name: "Log a show", exact: true }).last().click();
+    await page.getByRole("button", { name: "Resume Fixture Artist", exact: true }).click();
+    await page.getByRole("button", { name: "Go to The music", exact: true }).click();
+    const overall = page.getByLabel("Overall concert rating", { exact: true });
+    assert.equal((await overall.locator("..").innerText()).trim(), cleared ? "—" : "4.0", "Only a missing overall receives the old draft's computed score.");
+    const post = page.getByRole("button", { name: "Post", exact: true });
+    assert.equal(await post.isEnabled(), !cleared);
+    await page.getByLabel("Rating", { exact: true }).first().press("End");
+    assert.equal((await overall.locator("..").innerText()).trim(), cleared ? "—" : "4.0", "Detailed ratings stay independent after restore.");
+    if (cleared) assert.equal(await post.isDisabled(), true, "Detailed scores cannot repopulate a cleared overall.");
+    else {
+      await page.getByRole("button", { name: "Clear overall experience rating", exact: true }).click();
+      assert.equal(await post.isDisabled(), true);
+    }
+    await overall.press("Home");
+    for (let i = 0; i < 4; i++) await overall.press("ArrowRight");
+    assert.equal((await overall.locator("..").innerText()).trim(), "2.0");
+    await page.getByRole("button", { name: "Go to Your story", exact: true }).click();
+    assert.equal(await page.getByPlaceholder("What made the night? Be honest - this is what people read.", { exact: true }).inputValue(), draft.review);
+    await post.click();
+    await page.getByRole("button", { name: "Overall 2.0 out of 5. Show the rating breakdown.", exact: true }).waitFor();
+    assert.equal(writes.length, 1); assert.equal(writes[0].overall, 2);
+    assert.equal(writes[0].dims.performance, 5); assert.equal(writes[0].dims.experience, 4);
+    assert.equal(writes[0].review, draft.review); assert.deepEqual(errors, []);
+    await page.screenshot({ path: join(shots, `restored-score-${width}-${cleared}.png`) });
+    console.log(JSON.stringify({ name: `restored-score-${width}-${cleared ? "cleared" : "old"}`, passed: true }));
+  } finally { await context.close(); }
+}
+
+async function legacyEditScenario(browser, origin, width, online = false) {
+  const context = await browser.newContext({ viewport: { width, height: 900 }, serviceWorkers: "block" });
+  const page = await context.newPage(); page.setDefaultTimeout(12_000);
+  const writes = [], errors = [];
+  const legacyText = "Legacy music and memories. ".repeat(1400);
+  let stored = { id: "p_legacy_edit_fixture", kind: "review", experienceType: "in_person", artist: "Fixture Artist", city: "Toronto", venue: "", date: "", overall: 4.2, band: null, room: 3.7, dims: {}, review: legacyText, userId: navigationUser.id, user: navigationUser, at: Date.now(), version: 1, likes: 0, comments: 0, photos: [] };
+  if (online) stored = { ...stored, experienceType: "online", venue: "", city: "", band: null, room: null, onlineTitle: "Old online concert", youtubeUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", youtubeVideoId: "dQw4w9WgXcQ" };
+  await page.addInitScript(user => {
+    localStorage.setItem("pit_theme", "stage"); localStorage.setItem("pit.session", JSON.stringify(user)); localStorage.setItem("pit.users", JSON.stringify([user]));
+  }, navigationUser);
+  page.on("pageerror", error => errors.push(error.message));
+  await context.route("**/*", async route => {
+    const request = route.request(), url = new URL(request.url());
+    if (url.origin !== origin) return await route.abort();
+    if (!url.pathname.startsWith("/api/")) return await route.continue();
+    if (url.pathname === "/api/feed/impressions") return await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    if (url.pathname === "/api/health") return await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: true } } }) });
+    let body;
+    if (url.pathname === "/api/posts/" + stored.id) {
+      if (request.method() === "PATCH") { const change = request.postDataJSON(); writes.push(change); stored = { ...stored, ...change, version: stored.version + 1 }; }
+      body = { post: stored };
+    } else if (url.pathname.startsWith("/api/feed")) body = { posts: [stored], hasMore: false, hiddenPostIds: [] };
+    else body = fixtureApiResponse(url.pathname, { member: true, method: request.method() });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  });
+  try {
+    await page.goto(origin + "/feed");
+    await page.getByRole("button", { name: "Edit post", exact: true }).first().click();
+    const input = page.getByPlaceholder(online ? "What stood out about this concert?" : "What made the night? Be honest - this is what people read.", { exact: true });
+    assert.equal(await input.inputValue(), legacyText);
+    const save = page.getByRole("button", { name: "Save changes", exact: true });
+    assert.equal(await save.isEnabled(), true, "An unchanged long legacy review stays editable.");
+    if (online) {
+      assert.equal((await page.getByLabel("Online concert rating", { exact: true }).locator("..").locator("..").innerText()).includes("4.2"), true);
+      await page.getByLabel("Online concert or video title", { exact: true }).fill("Updated online concert");
+    } else await page.getByLabel("Concert city, region and country", { exact: true }).fill("Ottawa");
+    await save.click(); await input.waitFor({ state: "hidden" });
+    assert.equal(writes.length, 1);
+    for (const key of ["overall", "band", "room", "review", ...(!online ? ["dims"] : [])]) assert.equal(Object.hasOwn(writes[0], key), false, key + " must be omitted when untouched");
+    assert.equal(stored.review, legacyText); assert.equal(stored.overall, 4.2);
+    await page.getByRole("button", { name: "Edit post", exact: true }).first().click();
+    await input.fill("Shortened legacy review; the music stays with me.");
+    await save.click(); await input.waitFor({ state: "hidden" });
+    assert.equal(writes.length, 2);
+    for (const key of ["overall", "band", "room", ...(!online ? ["dims"] : [])]) assert.equal(Object.hasOwn(writes[1], key), false, key + " must survive a text-only edit");
+    assert.equal(writes[1].review, "Shortened legacy review; the music stays with me.");
+    assert.equal(stored.overall, 4.2); assert.equal(stored.room, online ? null : 3.7); assert.equal(stored.band, null); assert.deepEqual(stored.dims, {});
+    assert.deepEqual(errors, []);
+    await page.screenshot({ path: join(shots, `legacy-edit-${width}-${online ? "online" : "in-person"}.png`) });
+    console.log(JSON.stringify({ name: `legacy-edit-${width}-${online ? "online" : "in-person"}`, passed: true }));
+  } finally { await context.close(); }
 }
 
 export async function main() {
@@ -332,7 +458,13 @@ export async function main() {
     browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
     for (const width of [375, 1280]) await scenario(browser, origin, width);
     for (const width of [375, 1280]) await featuredQuotaScenario(browser, origin, width);
-    console.log(JSON.stringify({ passed: 4, failed: 0, network: "isolated fixtures only", screenshots: shots }));
+    for (const width of [375, 1280]) {
+      await restoredScoringScenario(browser, origin, width);
+      await restoredScoringScenario(browser, origin, width, true);
+      await legacyEditScenario(browser, origin, width);
+      await legacyEditScenario(browser, origin, width, true);
+    }
+    console.log(JSON.stringify({ passed: 12, failed: 0, network: "isolated fixtures only", screenshots: shots }));
   } finally { await browser?.close(); await new Promise(done => server.close(done)); }
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) main().catch(error => { console.error(error.message); process.exitCode = 1; });

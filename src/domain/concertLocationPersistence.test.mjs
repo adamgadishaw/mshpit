@@ -68,11 +68,11 @@ test("ambiguous edit recovery verifies addresses instead of silently accepting a
 
 test("the real Store edit guard accepts city-only reviews and requires city for addresses", () => {
   const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
-  const begin = source.indexOf("    const safe = buildReviewEditBody(changes);");
+  const begin = source.indexOf("    const safe = buildReviewEditBody(changes, previous);");
   const end = source.indexOf("    const version = previous.version", begin);
   assert.ok(begin > 0 && end > begin);
-  const guard = new Function("changes", "buildReviewEditBody", `${source.slice(begin, end)}; return { ok: true, safe };`);
-  assert.equal(guard(review, buildReviewEditBody).ok, true);
+  const guard = new Function("changes", "buildReviewEditBody", "previous", `${source.slice(begin, end)}; return { ok: true, safe };`);
+  assert.equal(guard(review, buildReviewEditBody, review).ok, true);
   assert.equal(guard({ ...review, venue: "", city: "", eventAddress: "" }, buildReviewEditBody).ok, false);
   assert.equal(guard({ ...review, venue: "Known room", city: "", eventAddress: "" }, buildReviewEditBody).ok, true);
   assert.equal(guard({ ...review, venue: "Known room", city: "" }, buildReviewEditBody).ok, false);

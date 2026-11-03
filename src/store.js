@@ -3569,7 +3569,7 @@ export function StoreProvider({ children }) {
       venue: clean(log.venue, { max: 80 }),
       city: clean(log.city, { max: LIMITS.city }),
       eventAddress: clean(log.eventAddress, { max: LIMITS.eventAddress }) || null,
-      review: clean(log.review, { max: LIMITS.review, newlines: true }),
+      review: clean(log.review, { max: kind === "review" ? Infinity : LIMITS.review, newlines: true }),
       overall: clampRating(log.overall),
       band: log.band == null ? log.band : clampRating(log.band),
       room: log.room == null ? log.room : clampRating(log.room),
@@ -3777,9 +3777,9 @@ export function StoreProvider({ children }) {
       }
     }
 
-    const safe = buildReviewEditBody(changes);
+    const safe = buildReviewEditBody(changes, previous);
     const editingOnlineReview = safe.experienceType === "online";
-    if (!safe.artist || safe.overall <= 0
+    if (!safe.artist || Number(safe.overall ?? previous.overall) <= 0
       || (editingOnlineReview ? !safe.youtubeUrl : (!safe.venue && !safe.city) || (safe.eventAddress && !safe.city))) return { ok: false };
     const version = previous.version ?? previous.editedAt ?? previous.createdAt;
     feedMutationRevisionRef.current += 1;

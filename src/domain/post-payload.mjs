@@ -1,7 +1,7 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
 import { parseTimesSeen } from "./supportingActs.mjs";
 import { lineupRequestFields } from "./lineup.mjs";
-import { clean, clampRating, LIMITS } from "./validation.mjs";
+import { clean, clampRating, LIMITS, normalizeReviewText } from "./validation.mjs";
 import { taggedUserIdsFromPeople } from "./postFriendTags.mjs";
 import {
   IN_PERSON_REVIEW_EXPERIENCE,
@@ -80,9 +80,9 @@ export function buildReviewCreateBody(post) {
   };
 }
 
-export function buildReviewEditBody(changes) {
+export function buildReviewEditBody(changes, previous = null) {
   const online = isOnlineReview(changes);
-  return {
+  const body = {
     experienceType: online ? ONLINE_REVIEW_EXPERIENCE : IN_PERSON_REVIEW_EXPERIENCE,
     artist: clean(changes.artist, { max: 80 }),
     artistKey: cleanArtistKey(changes.artistKey),
@@ -96,7 +96,7 @@ export function buildReviewEditBody(changes) {
     dims: !online && changes.dims && typeof changes.dims === "object" ? changes.dims : {},
     onlineTitle: online ? clean(changes.onlineTitle, { max: 160 }) || null : null,
     youtubeUrl: online ? canonicalYouTubeReviewUrl(changes.youtubeUrl, changes.youtubeVideoId) : null,
-    review: clean(changes.review, { max: LIMITS.review, newlines: true }),
+    review: normalizeReviewText(changes.review),
     taggedUserIds: taggedUserIdsFromPeople(changes.taggedPeople),
     photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, MEDIA_POST_MAX_ATTACHMENTS) : [],
     ...(Array.isArray(changes.mediaAssetIds) ? { mediaAssetIds: cleanMediaAssetIds(changes.mediaAssetIds) } : {}),
@@ -110,6 +110,13 @@ export function buildReviewEditBody(changes) {
     tags: [],
     song: !online && changes.song?.videoId ? changes.song : null,
   };
+  // Omit untouched historical values rather than round scores or truncate text.
+  if (previous) {
+    for (const key of ["overall", "band", "room", "dims", "review"]) {
+      if (JSON.stringify(changes[key] ?? null) === JSON.stringify(previous[key] ?? null)) delete body[key];
+    }
+  }
+  return body;
 }
 
 // The artist page may open a memory composer with a server-projected legacy

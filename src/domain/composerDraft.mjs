@@ -72,6 +72,8 @@ export function normalizeComposerDraft(value = {}) {
     onlineTitle: isOnlineReview ? text(value.onlineTitle ?? value.online_title) : "",
     youtubeUrl: isOnlineReview ? text(value.youtubeUrl ?? value.youtube_url) : "",
     onlineRating: isOnlineReview ? normalizeOnlineRating(value.onlineRating ?? value.overall) : 0,
+    // Missing means a draft saved before independent scoring. Zero is an explicit clear.
+    overallRating: value.overallRating == null ? null : Math.max(0, Math.min(5, Number(value.overallRating) || 0)),
     dims: normalizedDims(value.dims),
     review: text(value.review),
     taggedPeople: normalizeTaggedPeople(value.taggedPeople),
@@ -115,6 +117,7 @@ export function composerDraftHasContent(value) {
     || draft.onlineTitle.trim()
     || draft.youtubeUrl.trim()
     || draft.onlineRating > 0
+    || draft.overallRating > 0
     || draft.review.trim()
     || draft.taggedPeople.length
     || draft.song?.videoId

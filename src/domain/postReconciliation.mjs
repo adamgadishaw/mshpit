@@ -65,7 +65,7 @@ function cleanSong(value) {
   };
 }
 
-function intendedValue(key, value) {
+function intendedValue(key, value, reviewLimit = LIMITS.review) {
   switch (key) {
     case "artist": return clean(value, { max: LIMITS.artist });
     case "experienceType": return normalizeReviewExperienceType(value);
@@ -80,7 +80,7 @@ function intendedValue(key, value) {
     case "band":
     case "room": return value == null ? null : clampRating(value);
     case "dims": return cleanDimensions(value);
-    case "review": return clean(value, { max: LIMITS.review, newlines: true });
+    case "review": return clean(value, { max: reviewLimit, newlines: true });
     case "photos": return cleanArray(value, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 });
     case "mediaAssetIds": {
       if (!Array.isArray(value)) return [];
@@ -187,7 +187,7 @@ function storedValue(post, key) {
     default:
       return INVALID_STORED_VALUE;
   }
-  return intendedValue(key, value);
+  return intendedValue(key, value, post.kind === "status" ? LIMITS.review : Infinity);
 }
 
 function sameValue(left, right) {
@@ -203,7 +203,7 @@ export function postMatchesEditIntent(post, requestBody) {
   if (!post || !requestBody || typeof requestBody !== "object" || Array.isArray(requestBody)) return false;
   const keys = Object.keys(requestBody).filter((key) => key !== "version");
   if (!keys.length || keys.some((key) => !EDITABLE_KEYS.has(key))) return false;
-  return keys.every((key) => sameValue(storedValue(post, key), intendedValue(key, requestBody[key])));
+  return keys.every((key) => sameValue(storedValue(post, key), intendedValue(key, requestBody[key], post.kind === "status" ? LIMITS.review : Infinity)));
 }
 
 export function shouldReconcileEditFailure(error) {

@@ -8,6 +8,7 @@ import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
 import { useWebRecoveryDraft } from "../hooks/useWebRecoveryDraft";
 import { verifyDurableJson } from "../lib/webRecovery.mjs";
 import { RATING_DIMS, computeReview } from "../data";
+import { clampRating, LIMITS, reviewTextLength } from "../domain/validation.mjs";
 
 // Tour presets: pick one to attach the show to the artist without an album/tour.
 const TOUR_PRESETS = ["One-off show", "Reunion tour", "Festival set", "Anniversary tour", "Surprise show"];
@@ -17,7 +18,6 @@ const LOG_STEPS_ONLINE = ["The show", "The video", "Your story"];
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
-import Stars from "../components/Stars";
 import TapStars from "../components/TapStars";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
@@ -30,7 +30,7 @@ import ConcertLocationFields from "../components/ConcertLocationFields";
 import { isDurableMediaUrl, reportMediaPickerError } from "../lib/mediaUpload";
 import { api } from "../lib/api";
 import { formatDate, initialComposerDate, todayIso } from "../domain/dates.mjs";
-import { composerLogRequirement, composerRatingDims, hasDetailedComposerRatings, restoredComposerDate } from "../domain/composerLogDetails.mjs";
+import { composerLogRequirement, composerRatingDims, composerReviewRatings, restoredComposerDate } from "../domain/composerLogDetails.mjs";
 import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import {
   composerDraftFingerprint,
@@ -338,9 +338,10 @@ export default function LogScreen({
   const [automaticTimesSeen, setAutomaticTimesSeen] = useState(null);
   const [onlineTitle, setOnlineTitle] = useState(editing?.onlineTitle || editing?.online_title || prefill?.onlineTitle || prefill?.online_title || "");
   const [youtubeUrl, setYoutubeUrl] = useState(editing?.youtubeUrl || editing?.youtube_url || prefill?.youtubeUrl || prefill?.youtube_url || "");
-  const [onlineRating, setOnlineRating] = useState(() => normalizeOnlineRating(
-    initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? editing?.overall ?? prefill?.overall : 0,
-  ));
+  const [onlineRating, setOnlineRating] = useState(() => initialExperienceType === ONLINE_REVIEW_EXPERIENCE
+    // Keep historical precision until the member actually changes the score.
+    ? editing ? Number(editing.overall) || 0 : normalizeOnlineRating(prefill?.overall)
+    : 0);
   const officialEventName = !editing && typeof prefill?.officialEventName === "string"
     ? prefill.officialEventName.trim()
     : "";
@@ -534,7 +535,7 @@ export default function LogScreen({
   const [dims, setDims] = useState(() => editing && initialExperienceType !== ONLINE_REVIEW_EXPERIENCE
     ? postDims(editing)
     : { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
-  const [ratingsDirty, setRatingsDirty] = useState(false);
+  const [overallRating, setOverallRating] = useState(() => Number(editing?.overall) || 0);
   const [review, setReview] = useState(editing?.review || "");
   const [song, setSong] = useState(editing?.song || null);
   const [songUrl, setSongUrl] = useState(editing?.song?.url || "");
@@ -1245,15 +1246,11 @@ export default function LogScreen({
     }
   };
 
-  const setDim = (k, v) => { setRatingsDirty(true); setDims((d) => ({ ...d, [k]: v })); };
+  const setDim = (k, v) => { setDims((d) => ({ ...d, [k]: v })); };
   const computed = computeReview(dims);
-  const submittedRatings = editing && !ratingsDirty
-    ? {
-        overall: Number(editing.overall) || computed.overall,
-        band: editing.band == null ? computed.band : Number(editing.band),
-        room: editing.room == null ? computed.room : Number(editing.room),
-      }
-    : computed;
+  const submittedRatings = composerReviewRatings({ overall: overallRating, dims, computed, editing });
+  const reviewLength = reviewTextLength(review);
+  const reviewTooLong = !isStatus && reviewLength > LIMITS.concertReview && !(editing && review === editing.review);
   const youtubeUrlValid = isValidYouTubeSourceUrl(youtubeUrl);
   const convertingClips = mediaProjectConvertingAssets(mediaProject);
   const canPostStatus = protectedLegacyMemory
@@ -1263,14 +1260,14 @@ export default function LogScreen({
     ? canPostStatus
     : isOnlineReview
       ? artist.trim() && onlineRating > 0 && youtubeUrlValid
-      : artist.trim() && (venue.trim() || city.trim()) && (!eventAddress.trim() || city.trim()) && computed.overall > 0;
+      : artist.trim() && (venue.trim() || city.trim()) && (!eventAddress.trim() || city.trim()) && overallRating > 0;
   // The last day of a festival, and the second headliner of a co-headline show.
   const festivalSpanDays = isFestival && date && endDate ? Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`)) / 86_400_000) : 0;
   const lineupProblem = isStatus || isOnlineReview ? ""
     : isFestival && endDate && (!date || festivalSpanDays < 0 || festivalSpanDays >= 14) ? "Pick the festival's first day, then a last day up to two weeks later."
       : isCoHeadline && !lineup.some((act) => act.role === "co_headliner") ? "Add the other headliner, or switch to Concert."
         : "";
-  const canPost = !!canPostBase && !lineupProblem && pendingMediaAssets.length === 0;
+  const canPost = !!canPostBase && !lineupProblem && !reviewTooLong && pendingMediaAssets.length === 0;
   const submitBusy = pickingMedia || uploadingPhotos || resolvingSong || posting || artistAttaching;
   const engagementPrompt = useMemo(() => protectedLegacyMemory || (!isStatus && !isOnlineReview) ? null : composerEngagementPrompt({
     kind: isStatus ? "status" : "review",
@@ -1341,6 +1338,7 @@ export default function LogScreen({
     onlineTitle,
     youtubeUrl,
     onlineRating,
+    overallRating,
     dims,
     review,
     tags: [],
@@ -1354,7 +1352,7 @@ export default function LogScreen({
     photosPublic,
     landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatiblePhoto,
     panels: { song: showSong, photos: showPhotos, people: !isStatus && !isOnlineReview && showPeople },
-  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, showFormat, endDate, lineup, timesSeen, date, onlineTitle, youtubeUrl, onlineRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
+  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, showFormat, endDate, lineup, timesSeen, date, onlineTitle, youtubeUrl, onlineRating, overallRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasPendingMedia = pendingMediaAssets.length > 0;
@@ -1510,7 +1508,7 @@ export default function LogScreen({
       .map((asset, index) => originalMediaProjectAsset(asset, index));
     const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
     setTour(restored.tour); setShowFormat(restored.showFormat); setEndDate(restored.endDate);
-    setLineup(lineupFromPost({ artist: restored.artist, showFormat: restored.showFormat, lineup: restored.lineup })); setTimesSeen(restored.timesSeen); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : restoredComposerDate(restored.date)); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    setLineup(lineupFromPost({ artist: restored.artist, showFormat: restored.showFormat, lineup: restored.lineup })); setTimesSeen(restored.timesSeen); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : restoredComposerDate(restored.date)); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setOverallRating(restored.overallRating ?? clampRating(computeReview(restored.dims).overall)); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
     void recoverRestoredMedia(restoredPending, restored.id);
     setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE && (restored.panels.people || restored.taggedPeople.length > 0));
   };
@@ -1738,7 +1736,7 @@ export default function LogScreen({
           overall: submittedRatings.overall,
           band: submittedRatings.band || null,
           room: submittedRatings.room || null,
-          dims,
+          dims: submittedRatings.dims,
           setlist: editing?.setlist || [],
           inTourWindow: editing?.inTourWindow || false,
         }),
@@ -1747,7 +1745,7 @@ export default function LogScreen({
         ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
         photosPublic,
         landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatibleImage(durablePhotos),
-        review: review.trim(),
+        review,
         taggedPeople: isOnlineReview ? [] : taggedPeople,
         song: isOnlineReview ? null : song,
         tags: [],
@@ -2058,7 +2056,7 @@ export default function LogScreen({
             <View style={styles.onlineRatingCard}>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.onlineRatingLabel}>YOUR RATING</Text>
-                <TapStars value={onlineRating} onChange={(value) => { setRatingsDirty(true); setOnlineRating(normalizeOnlineRating(value)); }} size={28} gap={5} color={colors.amber} />
+                <TapStars accessibilityLabel="Online concert rating" value={onlineRating} onChange={(value) => { setOnlineRating(normalizeOnlineRating(value)); }} size={28} gap={5} color={colors.amber} />
               </View>
               <Text style={styles.onlineRatingValue}>{onlineRating ? onlineRating.toFixed(1) : "-"}</Text>
             </View>
@@ -2173,11 +2171,11 @@ export default function LogScreen({
         <View style={styles.quickRatingCard}>
           <Text style={styles.onlineRatingLabel}>{isFestival ? "HOW WAS THE FESTIVAL?" : "HOW WAS THE SHOW?"}</Text>
           <View style={styles.quickRatingRow}>
-            <TapStars value={dims.experience} onChange={(value) => setDim("experience", value)} size={32} gap={5} color={colors.amber} />
-            <Text style={styles.onlineRatingValue}>{dims.experience ? dims.experience.toFixed(1) : "—"}</Text>
+            <TapStars accessibilityLabel="Overall concert rating" value={overallRating} onChange={(value) => setOverallRating(clampRating(value))} size={32} gap={5} color={colors.amber} />
+            <Text style={styles.onlineRatingValue}>{overallRating ? overallRating.toFixed(1) : "—"}</Text>
           </View>
-          <Text style={styles.detailHint}>Your overall experience. Leave any detailed scores you don't remember unrated.</Text>
-          {!!dims.experience && <Pressable style={styles.optionalAction} onPress={() => setDim("experience", 0)} accessibilityRole="button" accessibilityLabel="Clear overall experience rating"><Text style={styles.optionalActionText}>Clear this rating</Text></Pressable>}
+          <Text style={styles.detailHint}>Choose your overall score independently. Detailed scores are optional and do not change it.</Text>
+          {!!overallRating && <Pressable style={styles.optionalAction} onPress={() => setOverallRating(0)} accessibilityRole="button" accessibilityLabel="Clear overall experience rating"><Text style={styles.optionalActionText}>Clear this rating</Text></Pressable>}
         </View>
 
         <Text style={[styles.fieldLabel, { marginTop: 18 }]}>BAND, ROOM & CROWD <Text style={styles.optional}>optional</Text></Text>
@@ -2197,7 +2195,6 @@ export default function LogScreen({
             ))}
           </View>
         ))}
-        {hasDetailedComposerRatings(dims) && <View style={styles.overallCard}><Text style={styles.overallNum}>{computed.overall.toFixed(1)}</Text><View><Stars value={computed.overall} size={18} /><Text style={styles.overallSub}>Combined score · only the factors you rated</Text></View></View>}
         </View>
           </>
         )}
@@ -2212,6 +2209,10 @@ export default function LogScreen({
           onChangeText={setReview}
           multiline
         />
+        <Text style={[styles.detailHint, reviewTooLong && { color: colors.magenta }]} accessibilityLiveRegion="polite">
+          {reviewLength.toLocaleString()} / {LIMITS.concertReview.toLocaleString()} characters after formatting cleanup (emoji may count as two). Generous space for long reviews; this is a character ceiling, not a word limit.
+          {reviewTooLong ? " Shorten your review before posting. Your text has been kept." : editing && reviewLength > LIMITS.concertReview ? " Existing text is preserved unless you edit it." : ""}
+        </Text>
         </View>
 
           </>
@@ -2512,7 +2513,7 @@ export default function LogScreen({
             </View>
           </View>
         ) : null}
-        {!isStatus && !isOnlineReview && <Text style={styles.submitHint} accessibilityLiveRegion="polite">{composerLogRequirement({ artist, venue, city, eventAddress, overall: computed.overall })}</Text>}
+        {!isStatus && !isOnlineReview && <Text style={styles.submitHint} accessibilityLiveRegion="polite">{composerLogRequirement({ artist, venue, city, eventAddress, overall: overallRating })}</Text>}
         {!stepped || currentLogStep === storyStep ? <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy || postCoolingDown || featuredPostingBlocked} style={{ marginTop: engagementPrompt ? 14 : 28 }} /> : null}
         {!editing && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>

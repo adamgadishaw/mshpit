@@ -291,3 +291,36 @@ test("the hourly post limit returns retry guidance without breaking an idempoten
   assert.equal(duplicate.duplicate, true);
   assert.equal(duplicate.id, first.id);
 });
+
+test("legacy over-limit create retries resolve only the same committed canonical request", async () => {
+  const { clean, LIMITS } = await import("../src/domain/validation.mjs");
+  const user = addUser("legacyoverflowretry");
+  const create = routes["POST /api/posts"];
+  const raw = "  " + "A great performance. ".repeat(2000) + "😀 extra authored text";
+  const body = { clientMutationId: "legacy_overflow_retry_001", artist: "Artist", city: "Toronto", overall: 4.5, review: raw };
+  const historicalReview = clean(raw, { max: LIMITS.review, newlines: true });
+  assert.equal(historicalReview.length, 2000);
+  // Before the policy change this raw request committed precisely this record
+  // and digest. Simulate that canonical commit without weakening new creates.
+  const original = create({ user, ip: "legacy-overflow-record", body: { ...body, review: historicalReview } });
+  const rowBefore = db.prepare("SELECT * FROM posts WHERE id=?").get(original.id);
+  const receiptBefore = db.prepare("SELECT * FROM post_create_receipts WHERE post_id=?").get(original.id);
+  const duplicate = create({ user, ip: "legacy-overflow-retry", body });
+  assert.equal(duplicate.id, original.id);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.post.review, historicalReview);
+  for (const changes of [{ overall: 2 }, { review: "Different retained review. " + raw }, { city: "Ottawa" }]) {
+    assert.throws(() => create({ user, ip: "legacy-overflow-conflict", body: { ...body, ...changes } }), e => e.status === 409 && e.code === "POST_MUTATION_CONFLICT");
+  }
+  for (const clientMutationId of [undefined, "legacy_overflow_new_001"]) {
+    assert.throws(() => create({ user, ip: "legacy-overflow-new", body: { ...body, clientMutationId } }), e => e.status === 400 && e.code === "VALIDATION_FAILED");
+  }
+  assert.deepEqual(db.prepare("SELECT * FROM posts WHERE id=?").get(original.id), rowBefore);
+  assert.deepEqual(db.prepare("SELECT * FROM post_create_receipts WHERE post_id=?").get(original.id), receiptBefore);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM posts WHERE user_id=?").get(user.id).count, 1);
+  // Pre-receipt records use the existing exact stored-canonical comparison too.
+  db.prepare("DELETE FROM post_create_receipts WHERE post_id=?").run(original.id);
+  db.prepare("UPDATE posts SET client_mutation_hash=NULL WHERE id=?").run(original.id);
+  assert.equal(create({ user, ip: "legacy-overflow-old-row", body }).duplicate, true);
+  assert.throws(() => create({ user, ip: "legacy-overflow-old-conflict", body: { ...body, overall: 2 } }), e => e.status === 409 && e.code === "POST_MUTATION_CONFLICT");
+});
