@@ -1,5 +1,27 @@
 # Pit current status
 
+## 2026-10-31 Artist catalog fallback photo fit (approved draft checks)
+
+- Owner approved commit, feature-branch push and draft PR checks on
+  fix/artist-catalog-photo-fit. Current master remains 91cef8b9.
+- The photo candidate remains narrow and preserves the current theme.
+  PR 81's independent festival-fixture cleanup is excluded.
+- Exact remote-head CI must be reported honestly; merge, auto-merge,
+  deployment and production/content/data changes remain unauthorized.
+
+## 2026-10-30 Artist catalog fallback photo fit (local review)
+
+- Isolated task-owned clone at verified master 91cef8b9eabe2a97d3e7daf255dad67ec406e809.
+- Catalog fallback banner photos use existing contain fit; explicit banners and
+  other carousel slides keep their existing fit. Theme and frame styles are unchanged.
+- Local checks and synthetic desktop/mobile browser evidence are recorded in
+  [the review note](docs/ARTIST_CATALOG_PHOTO_FIT_LOCAL_REVIEW_2026-10-30.md).
+- Actual XG-image, image-failure, video browser checks and independent review pass.
+  Full suite: 7,070 pass, 2 baseline-reproduced festival failures, 1 skip.
+  Native-device and production end-to-end checks remain untested.
+  No push, PR, commit, merge, deployment or production-data operation.
+
+
 ## 2026-10-31 Public review permalink (draft review candidate)
 
 - Isolated clone/branch `fix/public-review-permalink` starts at current master

@@ -465,6 +465,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const {
     bio,
     bannerUri,
+    bannerContain,
     profileUri,
     profileAvatarUri,
     profileOwnerId,
@@ -936,6 +937,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <ArtistCinematicCarousel
             artistName={a.name}
             bannerUri={bannerUri}
+            bannerContain={bannerContain}
             profileUri={profileUri}
             gallery={heroGallery}
             compact
