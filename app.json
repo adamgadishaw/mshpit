@@ -55,7 +55,8 @@
         }
       ],
       "expo-asset",
-      "expo-build-properties"
+      "expo-build-properties",
+      "./plugins/with-ios-scene-lifecycle.cjs"
     ],
     "ios": {
       "bundleIdentifier": "com.mshpit.app",
