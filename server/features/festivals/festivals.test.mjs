@@ -19,7 +19,9 @@ after(() => { db.close(); rmSync(dataDir, { recursive: true, force: true }); });
 
 const entry = (slug) => FESTIVAL_CATALOG.find((item) => item.slug === slug);
 
-test("Ontario excludes West through both ingests and hides persisted mixed editions without deleting plans", async () => {
+test("Ontario excludes West through both ingests and hides persisted mixed editions without deleting plans", async (t) => {
+  db.exec("SAVEPOINT ontario_festival_fixture");
+  t.after(() => db.exec("ROLLBACK TO ontario_festival_fixture; RELEASE ontario_festival_fixture"));
   const now = () => Date.parse("2026-10-27T12:00:00Z");
   const store = createFestivalStore(db, { now });
   const ontario = { festivalSlug: "boots-and-hearts", providerEventId: "tm:ontario-fixture", name: "Boots and Hearts 2026",
