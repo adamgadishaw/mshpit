@@ -2,14 +2,14 @@
 
 ## Latest fully verified artifact
 
-Checkpoint 230f0ca is preserved at
-.tmp/ios-phone-checkpoints/flagship-230f0ca/MshpitDev.app with a receipt, exact
-manifest, platform-isolation record and matched bundle comparison. All 8,236
-tests, three platform exports and signed Release compilation passed. This is a
-development-signed, live-linked preview, not installed or App Store distribution.
-Physical interaction, accessibility and performance remain open. Earlier signed
-checkpoints, including 95df901, remain preserved. Later work is not included until
-separately verified.
+Checkpoint aa3a29a is preserved at
+.tmp/ios-phone-checkpoints/flagship-aa3a29a/MshpitDev.app with a receipt, exact
+manifest and platform/purpose-copy isolation evidence. All 8,238 tests, three
+platform exports and signed Release compilation passed. This is a development-
+signed, live-linked preview, not installed or App Store distribution. Physical
+interaction, accessibility and performance remain open. Earlier signed checkpoints,
+including 230f0ca, remain preserved. Later work is not included until separately
+verified.
 
 ## Scope and release boundary
 
@@ -850,3 +850,36 @@ No install, push, deployment, dependency/security change, real attendance/ticket
 operation or native performance/accessibility certification occurred. The existing
 server-only audit wording in the initial scene/visual reviews and the initial
 Discover test receipt are explicitly qualified as historical evidence.
+
+## Photos purpose wording checkpoint aa3a29a
+
+The owner-approved Photos purpose now names MSHPIT rather than Pit while retaining
+its exact selection purpose: “Allow MSHPIT to choose concert photos, videos, and
+profile photos you want to share.” No permission request, permission setting or
+access-scope change occurred. Installed Expo introspection for both production
+and local-development variants verified that only the Photos option and its two
+iOS plist representations changed. All generated Android output was identical.
+
+The existing generated native plist was updated from that introspected value,
+without prebuild. The actual signed artifact confirms the same single Info.plist
+value change. Its packaged EXConstants app.config changes only the matching plugin
+option. All 11 privacy manifests and the provisioning profile remain byte-identical;
+the JavaScript bundle is byte-identical to 230f0ca. Native icon/splash pixels and
+packaged identity assets were inspected separately and required no alteration.
+
+- Source: aa3a29a9c4e8f81e1d5eede087d6c5d2386f099c.
+- Full suite: 8,238 passed, no failures/skips/cancellations, 85.762 seconds.
+- Syntax: 921 files; architecture and diff checks passed.
+- iOS/Android exports, web budget and signed Release build passed.
+- Artifact: 60,271,262 bytes; 52 files/links; development-signed Release.
+- JS SHA-256: 109e736bfa100160ba4a9ccf541485c56d8bba11bfe4eabc086c9358eefd4db4.
+- Executable SHA-256: ccc8dd2e09037896c25b34442f37b55c18318655959a28c2372b90f957f070e9.
+- Manifest SHA-256: 45519e04c0f311759ceb98e5fcd62bcc6135a9c2d633bac00a2a827c66fb73d7.
+- Web initial gzip: 521,565 bytes, with 2,723 bytes of budget headroom.
+- Android/web source maps contain no app .ios modules or iOS message-draft domain.
+- Same signing identity/profile, expiring November 14 at 23:50:01 UTC.
+- No installation, launch, permission grant, production action or native UI QA.
+
+Generated-output evidence is beside the checkpoint in photos-copy-evidence; the
+isolated review preserves both complete before/after variants. The previous signed
+artifact still contains its original wording and has not been overwritten.

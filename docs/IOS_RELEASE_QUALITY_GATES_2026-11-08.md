@@ -262,3 +262,14 @@ actual attendance rules. Check largest text and VoiceOver focus on the notice.
 Use fixtures for real attendance/ticket effects; no live synthetic action is
 permitted merely to certify this flow. Installation and all prior native,
 signing, dependency-advisory and privacy acceptance limits remain unchanged.
+
+## Latest purpose-copy artifact aa3a29a
+
+The current preserved preview supersedes 230f0ca with 8,238 passing tests and
+verified three-platform exports plus signed Release compilation. The embedded
+Photos explanation now accurately names MSHPIT and selection of concert photos,
+videos and profile photos. Only this Info.plist purpose value and its packaged
+configuration changed; JavaScript, privacy manifests and the provisioning profile
+are byte-identical to the previous checkpoint. This does not request or expand
+Photos access. Permission-flow evaluation remains a separately authorized native
+fixture gate. The phone build is still held, not installed or App Store distributed.
