@@ -209,6 +209,8 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
   const width = measuredWidth || Math.min(windowWidth, 840);
   const artistWidth = Math.min(240, Math.max(154, (width - 52) / (fontScale > 1.25 ? 1.4 : 2.1)));
   const popular = chart?.rows || [];
+  const searchQuery = String(query || "").trim();
+  const overviewPending = ["idle", "loading", "refreshing"].includes(overviewStatus);
   const visibleArtists = useMemo(() => filterDiscoverRows(popular, query), [popular, query]);
   const rankedGenres = useMemo(() => discoverGenreDistribution(rankDiscoverGenres(genres, popular), 0, { limit: 12 }).genres, [genres, popular]);
   const attendedArtists = useMemo(() => buildDiscoverArtistSpotlight({ genreRows, fallbackRows: popular, attendanceRows,
@@ -317,16 +319,24 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
         </View></View>
         {loungeRows.length ? <View style={styles.section}><SectionHeader title="In the lounges" /><View style={styles.inset}>{loungeRows.map((lounge) => <PopularLoungeCard key={lounge.key} lounge={lounge} compact onPress={() => onOpenLounge?.(lounge)} />)}</View></View> : null}
       </> : programme === "artists" ? <>
-        {!query && !genreFocused ? <FeaturedRail artists={popular} width={width} onOpenArtist={onOpenArtist} region={region} /> : null}
+        {!searchQuery && !genreFocused ? <FeaturedRail artists={popular} width={width} onOpenArtist={onOpenArtist} region={region} /> : null}
         <View style={styles.searchField}><Icon name="search" size={19} color={colors.textDim} /><TextInput value={query} onChangeText={changeQuery}
           placeholder="Artists, genres, or songs" placeholderTextColor={colors.textFaint} accessibilityLabel="Search this artist list"
           autoCorrect={false} autoCapitalize="none" returnKeyType="search" style={styles.searchInput} />
           {query ? <Pressable onPress={() => changeQuery("")} style={styles.clearButton} accessibilityRole="button" accessibilityLabel="Clear artist search"><Icon name="x" size={18} /></Pressable> : null}</View>
-        {!genreFocused || query ? (visibleArtists.length ? <ArtistRail rows={visibleArtists} title={query ? "Search results" : chart?.source === "plays" ? "What fans are playing" : "Popular artists"} cardWidth={artistWidth} onOpen={onOpenArtist} />
-          : <View style={styles.empty}>{["idle", "loading"].includes(overviewStatus) ? <ActivityIndicator color={colors.amber} /> : null}
-            <Text style={styles.emptyTitle}>{query ? `No matches for “${query.trim()}”` : overviewStatus === "error" ? "Artists couldn’t load" : ["idle", "loading"].includes(overviewStatus) ? "Finding artists" : `No artists in ${region} yet`}</Text>
-            {query ? <TextAction onPress={() => changeQuery("")}>Clear search</TextAction> : overviewStatus === "error" ? <TextAction onPress={onRetryOverview}>Try again</TextAction> : region !== "Worldwide" ? <TextAction onPress={() => pickRegion("Worldwide")}>Try Worldwide</TextAction> : null}</View>) : null}
-        {!query ? <>{genreFocused ? <SectionHeader title="Artists by genre" action="All artists" onPress={showAllArtists} /> : null}<GenreBrowse genres={rankedGenres} selected={selectedGenre} onSelect={chooseGenre} width={width} />
+        {!genreFocused || searchQuery ? (visibleArtists.length ? <ArtistRail rows={visibleArtists} title={searchQuery ? "Search results" : chart?.source === "plays" ? "What fans are playing" : "Popular artists"} cardWidth={artistWidth} onOpen={onOpenArtist} />
+          : <View style={styles.empty}>{overviewPending ? <ActivityIndicator color={colors.amber} /> : null}
+            <Text style={styles.emptyTitle}>{overviewPending ? "Finding artists" : overviewStatus === "error"
+              ? popular.length ? "Artists couldn’t refresh" : "Artists couldn’t load"
+              : searchQuery ? `No matches for “${searchQuery}”` : `No artists in ${region} yet`}</Text>
+            <Text style={styles.body}>{overviewPending ? `Updating the artist list for ${region}.`
+              : overviewStatus === "error" ? `Try loading the artist list for ${region} again.${searchQuery ? " Your search is unchanged." : ""}`
+              : searchQuery ? `No matches in this artist list for ${region}. Try another search or clear it to browse.`
+              : `Explore another area to find artists.`}</Text>
+            {overviewStatus === "error" ? <TextAction onPress={onRetryOverview}>Try again</TextAction> : null}
+            {searchQuery ? <TextAction onPress={() => changeQuery("")}>Clear search</TextAction>
+              : !overviewPending && overviewStatus !== "error" && region !== "Worldwide" ? <TextAction onPress={() => pickRegion("Worldwide")}>Try Worldwide</TextAction> : null}</View>) : null}
+        {!searchQuery ? <>{genreFocused ? <SectionHeader title="Artists by genre" action="All artists" onPress={showAllArtists} /> : null}<GenreBrowse genres={rankedGenres} selected={selectedGenre} onSelect={chooseGenre} width={width} />
           {selectedGenre ? <View style={styles.section}>
             {genreRows.length ? <ArtistRail rows={genreRows} title={discoverGenreLabel(selectedGenre)} cardWidth={artistWidth} onOpen={onOpenArtist} />
               : <View style={styles.inset}><Text style={styles.sectionTitle} accessibilityRole="header">{discoverGenreLabel(selectedGenre)}</Text>

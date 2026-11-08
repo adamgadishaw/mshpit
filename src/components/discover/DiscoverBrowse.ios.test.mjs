@@ -303,3 +303,95 @@ test("retrying the unchanged Discover range can still restore after results arri
   nodes(tree).find((n) => n.type === "ScrollView" && n.props.onContentSizeChange).props.onContentSizeChange(393, 2500);
   assert.deepEqual(scrolled, [{ y: 900, animated: false }]);
 });
+
+test("artist empty search never claims no matches before overview is ready", () => {
+  for (const overviewStatus of ["idle", "loading", "refreshing", "error"]) {
+    for (const rows of [[], [{ name: "Cached artist" }]]) {
+      const c = fixture(), retry = () => {};
+      const tree = c.render(c.exports.default, props({ programme: "artists", region: "Canada", query: "  missing  ", chart: { rows }, overviewStatus, onRetryOverview: retry }));
+      assert.doesNotMatch(text(tree), /No matches/, `${overviewStatus}, cached=${rows.length}`);
+      if (overviewStatus === "error") {
+        assert.match(text(tree), /Artists couldn’t (load|refresh)/);
+        assert.equal(nodes(tree).find(n => n.props.children === "Try again").props.onPress, retry);
+      } else {
+        assert.match(text(tree), /Finding artists/);
+        assert.ok(nodes(tree).some(n => n.type === "ActivityIndicator"));
+      }
+    }
+  }
+});
+
+test("cached matching artists stay usable through loading, failure, and aggregate refresh", () => {
+  const artist = { name: "Real Artist", country: "Canada" };
+  for (const overviewStatus of ["idle", "loading", "refreshing", "error", "ready"]) {
+    for (const refreshError of [false, true]) {
+      const c = fixture(), refresh = () => {}, open = () => {};
+      const tree = c.render(c.exports.default, props({ programme: "artists", query: "real", chart: { rows: [artist] }, overviewStatus,
+        refreshing: true, refreshError, onRefresh: refresh, onOpenArtist: open }));
+      const rail = named(tree, "ArtistRail");
+      assert.equal(rail.props.rows[0], artist); assert.equal(rail.props.onOpen, open);
+      assert.doesNotMatch(text(tree), /No matches|Artists couldn’t load|Finding artists/);
+      assert.equal(tree.props.onRefresh, refresh); assert.equal(tree.props.refreshing, true);
+      if (refreshError || overviewStatus === "error") {
+        assert.equal(nodes(tree).find(n => n.props.children === "Retry").props.onPress, refresh);
+      }
+    }
+  }
+});
+
+test("empty failure retry retains query, region and pending return; ready no-match offers clear", () => {
+  const c = fixture(), calls = [], saved = [];
+  const p = props({ programme: "artists", query: "  Missing artist  ", region: "Canada", chart: { rows: [] }, overviewStatus: "error",
+    initialBrowse: { scrollY: 900 }, browseReturn: { save: v => saved.push(v) }, onRetryOverview: () => calls.push("overview"),
+    onQuery: v => calls.push(["query", v]), onRegion: v => calls.push(["region", v]), onRefresh: () => calls.push("refresh") });
+  let tree = c.render(c.exports.default, p);
+  nodes(tree).find(n => n.props.children === "Try again").props.onPress();
+  assert.deepEqual(calls, ["overview"]); assert.deepEqual(saved, []);
+  assert.equal(nodes(tree).find(n => n.type === "TextInput").props.value, p.query);
+  assert.match(text(tree), /Canada/);
+  tree = c.render(c.exports.default, { ...p, overviewStatus: "ready" });
+  assert.match(text(tree), /No matches for “Missing artist”/);
+  assert.match(text(tree), /this artist list for Canada/);
+  assert.equal(nodes(tree).find(n => n.props.children === "Try again"), undefined);
+  nodes(tree).find(n => n.props.children === "Clear search").props.onPress();
+  assert.deepEqual(calls, ["overview", ["query", ""]]);
+});
+
+test("empty artist lists distinguish pending, failed and ready with no search", () => {
+  for (const overviewStatus of ["idle", "loading", "refreshing", "error", "ready"]) {
+    const c = fixture(), calls = [];
+    const tree = c.render(c.exports.default, props({ programme: "artists", query: "", chart: { rows: [] }, region: "Canada", overviewStatus,
+      onRegion: region => calls.push(region) }));
+    assert.match(text(tree), overviewStatus === "ready" ? /No artists in Canada yet/ : overviewStatus === "error" ? /Artists couldn’t load/ : /Finding artists/);
+    const worldwide = nodes(tree).find(n => n.props.children === "Try Worldwide");
+    assert.equal(!!worldwide, overviewStatus === "ready");
+    if (worldwide) { worldwide.props.onPress(); assert.deepEqual(calls, ["Worldwide"]); }
+  }
+});
+
+test("whitespace is browse intent without modifying the controlled query or shared filtering", () => {
+  const c = fixture();
+  for (const rows of [[], [{ name: "Real Artist" }]]) {
+    const tree = c.render(c.exports.default, props({ programme: "artists", query: "  \t ", chart: { rows } }));
+    assert.equal(nodes(tree).find(n => n.type === "TextInput").props.value, "  \t ");
+    assert.doesNotMatch(text(tree), /No matches/); assert.ok(named(tree, "GenreBrowse"));
+    assert.ok(named(tree, "FeaturedRail"));
+    if (rows.length) assert.equal(named(tree, "ArtistRail").props.title, "Popular artists");
+  }
+});
+
+test("recovery copy wraps and actions retain 44 point targets at large text", () => {
+  const c = fixture({ fontScale: 3.1, width: 320 });
+  const flatten = value => Array.isArray(value) ? Object.assign({}, ...value.filter(Boolean).map(flatten)) : value || {};
+  for (const overviewStatus of ["loading", "refreshing", "error", "ready"]) {
+    const tree = c.render(c.exports.default, props({ programme: "artists", query: "A very long artist query that must wrap", chart: { rows: [] }, overviewStatus }));
+    for (const node of nodes(tree).filter(n => n.type === "Text")) {
+      assert.equal(node.props.numberOfLines, undefined); assert.equal(flatten(node.props.style).height, undefined);
+    }
+    for (const action of nodes(tree).filter(n => n.type?.name === "TextAction")) {
+      const control = c.render(action.type, action.props);
+      assert.ok(flatten(control.props.style({ pressed: false })).minHeight >= 44);
+      assert.equal(nodes(control).find(n => n.type === "Text").props.numberOfLines, undefined);
+    }
+  }
+});
