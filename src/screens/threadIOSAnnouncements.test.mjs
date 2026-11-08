@@ -6,9 +6,10 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const { parseSync } = require("@babel/core");
-const source = readFileSync(new URL("./ThreadScreen.jsx", import.meta.url), "utf8");
+const source = readFileSync(new URL("../hooks/useIOSThreadRefreshAnnouncement.ios.js", import.meta.url), "utf8");
 const ast = parseSync(source, { babelrc: false, configFile: false, parserOpts: { plugins: ["jsx"] } });
-const hook = ast.program.body.find(node => node.type === "FunctionDeclaration" && node.id.name === "useThreadFailureAnnouncement");
+const hook = ast.program.body.find(node => node.type === "ExportDefaultDeclaration").declaration;
+const silentSource = readFileSync(new URL("../hooks/useIOSThreadRefreshAnnouncement.js", import.meta.url), "utf8");
 
 // Execute the production hook with deterministic React effect lifetimes and timers.
 function fixture({ os = "ios", state = "active", reader = true } = {}) {
@@ -24,8 +25,13 @@ function fixture({ os = "ios", state = "active", reader = true } = {}) {
       announceForAccessibilityWithOptions: (message, options) => speech.push({ message, queue: options.queue }),
       addEventListener(_event, listener) { readerListeners.add(listener); return { remove: () => readerListeners.delete(listener) }; },
     },
+    getConfirmedScreenReaderEnabled: () => reader,
+    subscribeConfirmedScreenReaderEnabled(callback) {
+      const listener = enabled => { reader = enabled; callback(); };
+      readerListeners.add(listener); return () => readerListeners.delete(listener);
+    },
     useRef(value) { return refs[refIndex++] ||= { current: value }; },
-    useEffect(effect, deps) {
+    useLayoutEffect(effect, deps) {
       const i = effectIndex++, previous = effects[i];
       if (!previous || deps.some((dep, j) => dep !== previous.deps[j])) {
         pending.push(() => { previous?.cleanup?.(); effects[i] = { deps, cleanup: effect() }; });
@@ -34,12 +40,15 @@ function fixture({ os = "ios", state = "active", reader = true } = {}) {
     setTimeout(callback, delay) { assert.equal(delay, 120); const id = ++timerID; timers.set(id, callback); return id; },
     clearTimeout: id => timers.delete(id),
   };
-  const useAnnouncement = vm.runInNewContext(`(${source.slice(hook.start, hook.end)})`, context);
+  const useAnnouncement = os === "ios" ? vm.runInNewContext(`(${source.slice(hook.start, hook.end)})`, context)
+    : vm.runInNewContext(silentSource.replace("export default ", "") + "; useIOSThreadRefreshAnnouncement", context);
   const f = {
     speech, timers, appListeners, readerListeners,
     render({ nextOwner = owner, nextReader = reader, flush = true } = {}) {
       owner = nextOwner; reader = nextReader; refIndex = effectIndex = 0;
-      f.announce = useAnnouncement(owner, reader);
+      f.action = useAnnouncement("account", 1, "recipient", owner, "Messages could not update.");
+      const action = f.action;
+      f.announce = () => action.finish(action.begin(), true);
       if (flush) f.effects();
       return f.announce;
     },

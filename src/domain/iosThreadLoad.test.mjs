@@ -146,7 +146,9 @@ test("Thread integration keeps polling, drafts, read markers, scroll and legacy 
   assert.match(source, /!signal\?\.aborted && !result\?\.stale/);
   assert.match(source, /session && threadStatus === "ready"/);
   assert.match(source, /refreshFlight.current\?\.owner === relationshipOwner/);
-  assert.match(source, /announceForAccessibilityWithOptions\(THREAD_READ_ERROR, \{ queue: true \}\)/);
+  assert.match(source, /useIOSThreadRefreshAnnouncement\(session\?\.id, chatAuthEpoch, otherId, relationshipOwner, THREAD_READ_ERROR\)/);
+  const announcement = readFileSync(new URL("../hooks/useIOSThreadRefreshAnnouncement.ios.js", import.meta.url), "utf8");
+  assert.match(announcement, /announceForAccessibilityWithOptions\(message, \{ queue: true \}\)/);
   assert.match(source, /const claim = iosDraft.claim\(\)/);
   assert.match(source, /if \(otherId && incomingReadTarget\) void markThreadRead\(otherId\)/);
   assert.match(source, /useChatScroll\(\{ messageCount: messages.length, scopeKey: `\$\{chatAuthEpoch\}:\$\{composerScope\}` \}\)/);
@@ -239,17 +241,18 @@ test("actual non-iOS relationship path preserves legacy context and scope behavi
   assert.equal(updates.length, 1);
 });
 
-test("actual manual failure callback queues speech only for active owner and enabled VoiceOver", () => {
+test("actual manual failure callback carries only its active owner action claim to speech", () => {
   const onError = find(ast, node => node.type === "ObjectProperty" && node.key?.name === "onError").value.consequent;
   for (const mode of ["current", "old", "unmounted", "reader-off", "old-error"]) {
     const relationshipOwner = { alive: mode !== "unmounted" }, updates = [], speech = [];
+    const claim = mode === "reader-off" ? null : {};
     const callback = compile(onError, {
       relationshipOwner, activeOwner: { current: mode === "old" ? {} : relationshipOwner },
-      setThreadLoad: value => updates.push(value), screenReaderEnabled: mode !== "reader-off",
+      setThreadLoad: value => updates.push(value),
       THREAD_READ_ERROR: "Messages could not update.",
-      announceThreadFailure: () => speech.push(true),
+      threadAnnouncement: { finish(value, failed) { assert.equal(value, claim); assert.equal(failed, true); if (value) speech.push(true); } },
     });
-    callback({ threadOwner: mode === "old-error" ? {} : relationshipOwner });
+    callback({ threadOwner: mode === "old-error" ? {} : relationshipOwner, threadAnnouncementClaim: claim });
     assert.equal(updates.length, ["current", "reader-off"].includes(mode) ? 1 : 0);
     assert.equal(speech.length, mode === "current" ? 1 : 0);
     // The lifecycle hook owns delayed native speech, tested separately.

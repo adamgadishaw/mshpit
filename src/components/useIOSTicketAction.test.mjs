@@ -6,19 +6,24 @@ import test from "node:test";
 const source = readFileSync(new URL("./useIOSTicketAction.js", import.meta.url), "utf8")
   .replace(/^import .*;\n/gm, "")
   .replace("export default function", "function");
+// Deterministic hook fixture for before-effect boundaries and same-tick claims.
+// The companion lifecycle suite also runs the hook with actual React effects.
 function fixture(os = "ios", initialReader = true) {
-  const refs = [], calls = [], announcements = [];
-  let reader = initialReader, readerCalls = 0;
-  let state = null, index = 0, previousScope, cleanup;
+  const slots = [], effects = [], calls = [], announcements = [];
+  let reader = initialReader, readerCalls = 0, index = 0, pendingRender = false;
   const hook = new vm.Script(source + "\nuseIOSTicketAction;").runInNewContext({
     Platform: { OS: os },
     AccessibilityInfo: { announceForAccessibilityWithOptions(message, options) { announcements.push({ message, queue: options.queue }); } },
     useScreenReaderEnabled: () => { readerCalls++; return reader; },
-    useState: () => [state, (next) => { state = next; }],
-    useRef: (initial) => refs[index++] ||= { current: initial },
-    useEffect(effect, [scope]) {
-      if (scope === previousScope) return;
-      cleanup?.(); cleanup = effect(); previousScope = scope;
+    useState(initial) {
+      const i = index++;
+      slots[i] ||= { value: initial };
+      return [slots[i].value, (next) => { slots[i].value = next; pendingRender = true; }];
+    },
+    useRef: (initial) => slots[index++] ||= { current: initial },
+    useLayoutEffect(effect) {
+      const i = index++;
+      if (!slots[i]) { slots[i] = { effect }; effects.push(slots[i]); }
     },
     openTicketLink(url, options) {
       return new Promise((resolve) => calls.push({ url, options, finish(status) {
@@ -27,7 +32,18 @@ function fixture(os = "ios", initialReader = true) {
       } }));
     },
   });
-  return { calls, announcements, readerCalls: () => readerCalls, setReader(value) { reader = value; }, render(scope = "account-a:show-a") { index = 0; return hook(scope); }, unmount() { cleanup?.(); } };
+  return {
+    calls, announcements, readerCalls: () => readerCalls, setReader(value) { reader = value; },
+    render(scope = "account-a:show-a", commit = true) {
+      let action;
+      do {
+        pendingRender = false; index = 0; action = hook(scope);
+        if (commit) for (const slot of effects.splice(0)) slot.cleanup = slot.effect();
+      } while (commit && pendingRender);
+      return action;
+    },
+    unmount() { for (const slot of slots) slot?.cleanup?.(); },
+  };
 }
 
 test("iOS ticket failures are visible, cancellation quiet and successful retry clears failure", async () => {
@@ -124,4 +140,38 @@ test("VoiceOver fences old account/show and unmounted failures before enqueueing
   const next = f.render("a:show-a").open("https://seller.example/a");
   f.unmount(); f.calls[1].finish("failed"); await next;
   assert.equal(f.announcements.length, 0);
+});
+
+
+test("retained iOS ticket controls cannot start an opener after unmount", async () => {
+  const f = fixture(), old = f.render();
+  f.unmount();
+  await old.open("https://seller.example/retired");
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.announcements.length, 0);
+});
+
+test("scope round trips retire old controls before effects and leave current controls usable", async () => {
+  const f = fixture(), old = f.render("A");
+  f.render("B", false); f.render("A", false);
+  await old.open("https://seller.example/retired");
+  assert.equal(f.calls.length, 0);
+  const pending = f.render("A").open("https://seller.example/current");
+  assert.equal(f.calls.length, 1);
+  f.calls[0].finish("opened"); await pending;
+});
+
+test("an old completion cannot clear the newer scope's pending ticket claim", async () => {
+  const f = fixture();
+  const old = f.render("A").open("https://seller.example/old");
+  f.render("B");
+  const current = f.render("A"), next = current.open("https://seller.example/current");
+  f.calls[0].finish("failed"); await old;
+  await current.open("https://seller.example/duplicate");
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.render("A").error, "");
+  assert.equal(f.announcements.length, 0);
+  f.calls[1].finish("failed"); await next;
+  assert.ok(f.render("A").error);
+  assert.equal(f.announcements.length, 1);
 });

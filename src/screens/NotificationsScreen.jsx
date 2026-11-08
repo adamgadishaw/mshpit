@@ -13,6 +13,7 @@ import { postTagNotificationCopy, postTagNotificationPhrase } from "../domain/po
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import useIOSActivityNavigation from "../hooks/useIOSActivityNavigation";
 
 const ago = (ts) => {
   const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
@@ -49,17 +50,31 @@ function notificationCopy(notification, actorName) {
   return `${actorName || "Someone"} ${meta.verb}${reference}`;
 }
 
+// Share the existing transport operation with the iOS intent owner. The hook
+// owns lifetime/cancellation, while this screen keeps its established API call.
+const fetchNotificationPost = (destination, controller) => api(`/api/posts/${encodeURIComponent(destination.postId)}`, {
+  signal: controller.signal,
+  silent: true,
+  context: "Opening this activity post",
+});
+
 // The activity feed, the social heartbeat that connects follows, likes, comments
 // and DMs into one place instead of leaving them scattered across the app.
-export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen, onOpenPost, onOpenPlans, onOpenArtist }) {
-  const { myNotifications, refreshNotifications, markNotificationsRead, feed, session } = useStore();
+export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen, onOpenPost, onOpenPlans, onOpenArtist, isCurrentIOSRoute }) {
+  const { myNotifications, refreshNotifications, markNotificationsRead, feed, session, chatAuthEpoch } = useStore();
   const items = myNotifications();
   const accountId = session?.id || null;
   const accountIdRef = useRef(accountId);
   accountIdRef.current = accountId;
   const postRequestRef = useRef({ sequence: 0, accountId, postId: null, controller: null });
-  const [openingNotificationId, setOpeningNotificationId] = useState(null);
-  const [unavailableNotice, setUnavailableNotice] = useState(null);
+  const [legacyOpeningNotificationId, setOpeningNotificationId] = useState(null);
+  const [legacyUnavailableNotice, setUnavailableNotice] = useState(null);
+  const iosNavigation = useIOSActivityNavigation({
+    accountId, authEpoch: chatAuthEpoch, feed, fetchPost: fetchNotificationPost, isCurrentRoute: isCurrentIOSRoute,
+    onClose, onOpenProfile, onOpenThread, onOpenPost, onOpenPlans, onOpenArtist,
+  });
+  const openingNotificationId = iosNavigation ? iosNavigation.openingNotificationId : legacyOpeningNotificationId;
+  const unavailableNotice = iosNavigation ? iosNavigation.unavailableNotice : legacyUnavailableNotice;
   const [viewMode, setViewMode] = useState("recent");
   const notificationReadScope = accountTargetScope(accountId, "notifications:read");
   const notificationReadRequestRef = useRef({ sequence: 0, scope: notificationReadScope, controller: null });
@@ -150,6 +165,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
   // Tapping the ROW goes to the thing the notification is about; tapping the
   // AVATAR always goes to the person who did it.
   const open = async (n) => {
+    if (iosNavigation) return iosNavigation.open(n);
     const destination = resolveNotificationPost(n, feed);
     if (destination.kind !== "fetch-post") {
       const active = postRequestRef.current;
@@ -180,11 +196,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
     setUnavailableNotice(null);
     setOpeningNotificationId(n.id);
     try {
-      const payload = await api(`/api/posts/${encodeURIComponent(destination.postId)}`, {
-        signal: controller.signal,
-        silent: true,
-        context: "Opening this activity post",
-      });
+      const payload = await fetchNotificationPost(destination, controller);
       if (!isCurrentNotificationPostRequest(postRequestRef.current, { sequence, accountId: accountIdRef.current, postId: destination.postId })) return;
       const post = normalizeFetchedNotificationPost(payload, destination.postId);
       if (!post) {
@@ -206,7 +218,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader title="Activity" onBack={onClose} />
+      <ScreenHeader title="Activity" onBack={iosNavigation ? iosNavigation.close : onClose} />
       <VinylRefreshBoundary
         refreshing={activityRefreshing}
         onRefresh={refreshActivity}
@@ -231,7 +243,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
           <View style={styles.notice} accessibilityRole="alert" accessibilityLiveRegion="polite">
             <Icon name="lock" size={16} color={colors.amber} />
             <Text style={styles.noticeText}>{unavailableNotice}</Text>
-            <Pressable onPress={() => setUnavailableNotice(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Dismiss unavailable post message">
+            <Pressable onPress={iosNavigation ? iosNavigation.dismissNotice : () => setUnavailableNotice(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Dismiss unavailable post message">
               <Icon name="x" size={14} color={colors.textDim} />
             </Pressable>
           </View>
@@ -289,7 +301,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
                 {n.type === "artist_update" ? (
                   <View style={styles.newsMark}><Icon name="music" size={18} color={colors.amber} /></View>
                 ) : (
-                  <Avatar user={{ name: n.actorName, initials: n.actorInitials, avatarUri: n.actorUri, avatarColor: n.actorColor }} size={40} onPress={n.actorId ? () => onOpenProfile?.(n.actorId) : undefined} />
+                  <Avatar user={{ name: n.actorName, initials: n.actorInitials, avatarUri: n.actorUri, avatarColor: n.actorColor }} size={40} onPress={n.actorId ? () => iosNavigation ? iosNavigation.openProfile(n.actorId) : onOpenProfile?.(n.actorId) : undefined} />
                 )}
                 <View style={[styles.badge, { backgroundColor: meta.tint }]}>
                   <Icon name={meta.icon} size={11} color="#0B0E16" filled />

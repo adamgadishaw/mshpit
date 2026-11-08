@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, AccessibilityInfo, AppState } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
@@ -14,75 +14,17 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { createIOSThreadLoad } from "../domain/iosThreadLoad.mjs";
-import useScreenReaderEnabled from "../hooks/useScreenReaderEnabled";
+import useIOSThreadRefreshAnnouncement from "../hooks/useIOSThreadRefreshAnnouncement";
 import {
   messageRelationshipChips,
   messageRelationshipSummary,
   normalizeMessageRelationshipContext,
 } from "../domain/messageRelationshipContext.mjs";
 
-const useThreadScreenReader = Platform.OS === "ios" ? useScreenReaderEnabled : () => false;
 const THREAD_READ_ERROR = "Messages could not update. Check your connection and try again.";
 const EMPTY_COMPOSER = Object.freeze({ text: "", sending: false });
 const subscribeLocalComposer = () => () => {};
 const readLocalComposer = () => EMPTY_COMPOSER;
-
-// Only explicit refresh failures schedule speech. State changes never replay it.
-function useThreadFailureAnnouncement(owner, screenReaderEnabled) {
-  const current = useRef(null);
-  current.current = { owner, screenReaderEnabled };
-  const lifecycle = useRef(null);
-  useEffect(() => {
-    if (Platform.OS !== "ios") return;
-    const lifetime = { owner, active: AppState.currentState === "active", readerDisabled: false, timer: null, claim: null };
-    lifecycle.current = lifetime;
-    const cancel = () => {
-      lifetime.claim = null;
-      if (lifetime.timer !== null) clearTimeout(lifetime.timer);
-      lifetime.timer = null;
-    };
-    const subscription = AppState.addEventListener("change", (state) => {
-      lifetime.active = state === "active";
-      if (!lifetime.active) cancel();
-    });
-    const readerSubscription = AccessibilityInfo.addEventListener("screenReaderChanged", (enabled) => {
-      lifetime.readerDisabled = !enabled;
-      if (!enabled) cancel();
-    });
-    return () => {
-      cancel();
-      subscription.remove();
-      readerSubscription.remove();
-      if (lifecycle.current === lifetime) lifecycle.current = null;
-    };
-  }, [owner]);
-  useEffect(() => {
-    if (!screenReaderEnabled && lifecycle.current?.timer != null) {
-      lifecycle.current.claim = null;
-      clearTimeout(lifecycle.current.timer);
-      lifecycle.current.timer = null;
-    }
-  }, [screenReaderEnabled]);
-  return () => {
-    const lifetime = lifecycle.current;
-    if (Platform.OS !== "ios" || !lifetime || lifetime.owner !== owner
-      || current.current.owner !== owner || !owner.alive
-      || !current.current.screenReaderEnabled || lifetime.readerDisabled || !lifetime.active || AppState.currentState !== "active") return;
-    if (lifetime.timer !== null) clearTimeout(lifetime.timer);
-    const claim = {};
-    lifetime.claim = claim;
-    lifetime.timer = setTimeout(() => {
-      // Revoked callbacks must not speak or clear a newer pending timer.
-      if (lifetime.claim !== claim) return;
-      lifetime.claim = null;
-      lifetime.timer = null;
-      if (lifecycle.current !== lifetime || current.current.owner !== owner || !owner.alive
-        || !current.current.screenReaderEnabled || lifetime.readerDisabled || !lifetime.active || AppState.currentState !== "active") return;
-      // Once handed to iOS, queued speech cannot be recalled by this timer.
-      AccessibilityInfo.announceForAccessibilityWithOptions(THREAD_READ_ERROR, { queue: true });
-    }, 120);
-  };
-}
 
 export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
   const {
@@ -91,7 +33,6 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
   } = useStore();
   const other = userById(otherId);
   const isIOS = Platform.OS === "ios";
-  const screenReaderEnabled = useThreadScreenReader();
   const threadRefreshScope = refreshScope(session?.id, "message-thread", `${chatAuthEpoch}:${otherId || ""}`);
   const composerScope = accountTargetScope(session?.id, `dm:${otherId || ""}`);
   const composerScopeRef = useRef(composerScope);
@@ -103,7 +44,7 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
   relationshipScopeRef.current = composerScope;
   const relationshipLoadedRef = useRef(false);
   const relationshipOwner = useMemo(() => ({ loaded: false, alive: true }), [relationshipScope]);
-  const announceThreadFailure = useThreadFailureAnnouncement(relationshipOwner, screenReaderEnabled);
+  const threadAnnouncement = useIOSThreadRefreshAnnouncement(session?.id, chatAuthEpoch, otherId, relationshipOwner, THREAD_READ_ERROR);
   const activeOwner = useRef(relationshipOwner);
   activeOwner.current = relationshipOwner;
   const [threadLoad, setThreadLoad] = useState(null);
@@ -190,6 +131,8 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
     scope: threadRefreshScope,
     enabled: !!session && !!otherId,
     task: async ({ signal }) => {
+      // The deduped, enabled manual task owns speech from acceptance, not failure.
+      const announcementClaim = isIOS ? threadAnnouncement.begin(signal) : null;
       try {
         const reads = [
           isIOS
@@ -208,20 +151,22 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
         if (userResult?.status === "error") {
           throw userResult.error instanceof Error ? userResult.error : new Error(userResult.error || "This member could not be refreshed.");
         }
+        if (isIOS) threadAnnouncement.finish(announcementClaim, false);
         return { threadResult, userResult };
       } catch (error) {
         if (!isIOS) throw error;
+        if (error?.name === "AbortError") threadAnnouncement.finish(announcementClaim, false);
         // onError is a current-render callback; keep the originating owner on
         // the failure as well, including the render-before-effect boundary.
         throw Object.assign(new Error(error?.message || THREAD_READ_ERROR), {
-          name: error?.name || "Error", threadOwner: relationshipOwner,
+          name: error?.name || "Error", threadOwner: relationshipOwner, threadAnnouncementClaim: announcementClaim,
         });
       }
     },
     onError: isIOS ? (error) => {
       if (error?.threadOwner !== relationshipOwner || activeOwner.current !== relationshipOwner || !relationshipOwner.alive) return;
       setThreadLoad({ owner: relationshipOwner, status: "error" });
-      if (screenReaderEnabled) announceThreadFailure();
+      threadAnnouncement.finish(error.threadAnnouncementClaim, true);
     } : null,
   });
   const refreshFlight = useRef(null);
