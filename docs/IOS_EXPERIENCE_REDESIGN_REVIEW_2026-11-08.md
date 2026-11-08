@@ -125,3 +125,20 @@ simulator VoiceOver-off preference was restored and read back as false, followed
 by a simulator restart. The physical phone's settings were not changed. Runtime
 Reduce Motion, physical shelf gestures and live physical Dynamic Type still need
 hands-on review; their existing logic/guards were not described as runtime-proven.
+
+The signed physical-iPhone Release build from source commit 20c4be7 completed
+successfully. Strict deep signature verification passed on the build and its
+preserved copy. It retains com.mshpit.app.dev and the existing signing team.
+The generated Info.plist remains version 1.0.0, bundle version 1 despite the
+command-line build-number request; it must not be described as version/build 2.
+Its fresh bundled JavaScript is 9,594,436 bytes, SHA-256
+887fd910035cf7c39271931a6bcd7de8889f48ed5ecffa9d1a74e17bba4b8441.
+
+The owner needed their phone before installation. No install or launch of the
+updated physical build was attempted. The signed app and receipt are preserved
+under ignored .tmp/ios-phone-checkpoints/redesign-build2; this directory name is
+a checkpoint label, not the app's CFBundleVersion. The previous local build is
+also preserved in a verified zip. Wait for explicit reconnection before install.
+No website/Android deployment, push, merge, TestFlight submission, new signing
+permission or production-content write occurred. The test simulator was shut
+down after restoring VoiceOver, and Device Hub keyboard capture stayed off.
