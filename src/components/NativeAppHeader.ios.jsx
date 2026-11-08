@@ -5,8 +5,8 @@ import NativeTabRail from "./NativeTabRail";
 import { colors, font } from "../theme";
 
 // The navigation layer stays compact so each page can own its large title.
-export default function NativeAppHeader({ onHome, onAccount, loggedIn, onMenu, menuRef, onPost, active, onChange }) {
-  return <NativeTabRail active={active} onChange={onChange}>
+export default function NativeAppHeader({ onHome, onAccount, loggedIn, onMenu, menuRef, onPost, active, onChange, swipeScope, swipeEnabled, isCurrentSwipeRoute }) {
+  return <NativeTabRail active={active} onChange={onChange} swipeScope={swipeScope} swipeEnabled={swipeEnabled} isCurrentSwipeRoute={isCurrentSwipeRoute}>
     <View style={styles.header}>
       <Pressable ref={menuRef} onPress={onMenu} style={styles.control} accessibilityRole="button" accessibilityLabel="Open side menu" accessibilityHint="Shows your account, music community and settings">
         <Icon name="menu" size={23} color={colors.text} strokeWidth={1.8} />

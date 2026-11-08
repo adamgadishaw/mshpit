@@ -11,11 +11,13 @@ function load(name, { reduced = false, reader = false, fontScale = 1, queued = f
   const source = readFileSync(new URL(name, import.meta.url), 'utf8');
   const focus = [], gestures = [], jsx = (type, props) => ({type, props});
   const shared = [];
+  const states = []; let stateIndex = 0, dirty = false;
   const refs = [], memos = [], effects = [], pending = [], queue = [];
   let refIndex = 0, memoIndex = 0, effectIndex = 0, sharedIndex = 0;
   const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const modules = {
     react: {
+      useState: initial => { const i = stateIndex++; if (!(i in states)) states[i] = initial; return [states[i], value => { states[i] = value; dirty = true; }]; },
       useMemo: (f, deps) => { const i = memoIndex++; if (!same(memos[i]?.deps, deps)) memos[i] = { deps, value: f() }; return memos[i].value; },
       useRef: v => refs[refIndex++] ||= {current:v},
       useLayoutEffect: (create, deps) => { const i = effectIndex++; if (!same(effects[i]?.deps, deps)) pending.push(() => { effects[i]?.cleanup?.(); effects[i] = {deps, create, cleanup:create()}; }); },
@@ -27,7 +29,7 @@ function load(name, { reduced = false, reader = false, fontScale = 1, queued = f
     '../theme':{colors:new Proxy({},{get:()=> '#888'}),font:'System'},
     '../domain/menuJourney.mjs':{journeyMenuModel}, '../domain/iosNavigationPolicy.mjs':{iosBackSwipeCommits},
     './Avatar':'Avatar','./BrandMark':'BrandMark','./Icon':'Icon','./NativeTabRail':'TabRail',
-    '../hooks/useReducedMotion':()=>reduced, '../hooks/useScreenReaderEnabled':()=>reader,
+    '../hooks/useReducedMotion':()=>reduced, '../hooks/useScreenReaderEnabled':{__esModule:true,default:()=>reader,getConfirmedScreenReaderEnabled:()=>reader,subscribeConfirmedScreenReaderEnabled:()=>()=>{}},
     'react-native-worklets':{scheduleOnRN:(f,...args)=>queued ? queue.push(()=>f(...args)) : f(...args)},
     'react-native-reanimated':{__esModule:true,default:{View:'AnimatedView'},ReduceMotion:{System:'system'},
       useSharedValue:value=>{const i=sharedIndex++;return shared[i] ||= {get:()=>value,set:x=>{value=x;}};},useAnimatedStyle:f=>f(),withSpring:x=>x},
@@ -37,7 +39,7 @@ function load(name, { reduced = false, reader = false, fontScale = 1, queued = f
   const module={exports:{}};
   new Function('require','module','exports',code)(key=>{assert.ok(key in modules,key);return modules[key];},module,module.exports);
   return {
-    render: props => { refIndex=0;memoIndex=0;effectIndex=0;sharedIndex=0;const tree=module.exports.default(props);while(pending.length)pending.shift()();return tree; },
+    render: props => { let tree; do { dirty=false; stateIndex=0;refIndex=0;memoIndex=0;effectIndex=0;sharedIndex=0;tree=module.exports.default(props);while(pending.length)pending.shift()(); } while(dirty); return tree; },
     setReader: value => { reader=value; },
     unmount: () => effects.forEach(effect=>effect.cleanup?.()),
     replayLayoutEffects: () => { effects.forEach(effect=>effect.cleanup?.());effects.forEach(effect=>{effect.cleanup=effect.create();}); },
@@ -81,16 +83,16 @@ test('detail back owns only a 20-point edge and commits deliberate completed dra
  const detector=nodes(tree).find(n=>n.type==='Detector'),edge=detector.props.children;
  assert.equal(edge.props.style.width,20);assert.equal(edge.props.style.top,52);assert.equal(detector.props.children.type,'View');
  assert.equal(nodes(tree).find(n=>n.type==='AnimatedView').props.children,child);
- const g=f.gestures[0];assert.equal(g.maxPointersValue,1);
+ const g=f.gestures.at(-1);assert.equal(g.maxPointersValue,1);
  let rejected=0;
  for(const event of [{allTouches:[],numberOfTouches:0},{allTouches:[{absoluteX:10,absoluteY:200}],numberOfTouches:2}])g.onTouchesDownValue(event,{fail:()=>rejected++});
  assert.equal(rejected,2);
  g.onTouchesDownValue({allTouches:[{absoluteX:10,absoluteY:200}],numberOfTouches:1},{fail:()=>assert.fail('valid edge touch rejected')});
- g.onUpdateValue({absoluteX:60});assert.equal(f.shared[0].get(),50);
- g.onUpdateValue({absoluteX:500});assert.equal(f.shared[0].get(),393*0.42);
+ g.onUpdateValue({absoluteX:60});assert.equal(f.shared[2].get(),50);
+ g.onUpdateValue({absoluteX:500});assert.equal(f.shared[2].get(),393*0.42);
  g.onEndValue({absoluteX:140,absoluteY:203,translationX:0,translationY:0},true);assert.equal(backs,1);
  g.onEndValue({absoluteX:140,absoluteY:203},false);g.onEndValue({absoluteX:35,absoluteY:203},true);assert.equal(backs,1);
- g.onFinalizeValue();assert.equal(f.shared[0].get(),0);
+ g.onFinalizeValue();assert.equal(f.shared[2].get(),0);
 });
 
 test('screen readers and protected screens retain explicit back without gesture strip',()=>{
@@ -102,8 +104,8 @@ test('screen readers and protected screens retain explicit back without gesture 
  assert.equal(nodes(tree).find(n=>n.type==='AnimatedView').props.style[1].transform[0].translateX,0);
 });
 
-const completeBackDrag = gesture => {
- gesture.onTouchesDownValue({allTouches:[{absoluteX:10,absoluteY:200}],numberOfTouches:1},{fail:()=>assert.fail('valid touch rejected')});
+const completeBackDrag = (gesture, retired = false) => {
+ gesture.onTouchesDownValue({allTouches:[{absoluteX:10,absoluteY:200}],numberOfTouches:1},{fail:()=>{ if (!retired) assert.fail("valid touch rejected"); }});
  gesture.onEndValue({absoluteX:140,absoluteY:203},true);
 };
 
@@ -119,18 +121,17 @@ for (const interruption of ['unmount','disabled','reader','disabled round trip',
   if(interruption.endsWith('round trip')){f.setReader(false);f.render(props);}
   f.flush();assert.equal(backs,0);
   // A delayed old worklet must also remain revoked after permissions return.
-  completeBackDrag(oldGesture);f.flush();assert.equal(backs,0);
+  completeBackDrag(oldGesture, true);f.flush();assert.equal(backs,0);
   if(interruption.endsWith('round trip')){completeBackDrag(f.gestures.at(-1));f.flush();assert.equal(backs,1);}
  });
 }
 
-test('queued Back keeps current callback across ordinary rerenders and StrictMode layout replay',()=>{
+test('layout replay retires queued Back and permits a fresh callback',()=>{
  const f=load('./IosDetailNavigation.ios.jsx',{queued:true}),calls=[];
- f.render({enabled:true,onBack:()=>calls.push('old')});f.replayLayoutEffects();
- completeBackDrag(f.gestures.at(-1));
- f.render({enabled:true,onBack:()=>calls.push('current')});f.flush();
- assert.deepEqual(calls,['current']);
- completeBackDrag(f.gestures.at(-1));f.flush();assert.deepEqual(calls,['current','current']);
+ const props={enabled:true,onBack:()=>calls.push('current')};
+ f.render(props);completeBackDrag(f.gestures.at(-1));
+ f.replayLayoutEffects();f.render(props);f.flush();assert.deepEqual(calls,[]);
+ completeBackDrag(f.gestures.at(-1));f.flush();assert.deepEqual(calls,['current']);
 });
 
 test('a replacement detail mount cannot inherit the outgoing screen queued Back',()=>{

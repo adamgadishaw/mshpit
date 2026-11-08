@@ -88,6 +88,8 @@ export default function PhotoViewer({
   onRequireAuth,
   onRememberIndex,
   onClose,
+  iosGestureScope,
+  isCurrentIOSRoute,
 }) {
   const insets = useSafeAreaInsets();
   const [i, setI] = useState(() => normalizedGalleryIndex(index, photos.length));
@@ -314,7 +316,7 @@ export default function PhotoViewer({
           : (
             web ? <Animated.View style={[styles.swipeLayer, { transform: swipeDrag.getTranslateTransform() }]} {...swipe.panHandlers}>
               <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />
-            </Animated.View> : <NativePhotoSwipe count={photos.length} onNext={next} onPrevious={prev} onClose={onClose}>
+            </Animated.View> : <NativePhotoSwipe key={Platform.OS === "ios" ? JSON.stringify([i, uri, currentPostId]) : undefined} presentation={iosGestureScope} isCurrentRoute={isCurrentIOSRoute} count={photos.length} onNext={next} onPrevious={prev} onClose={onClose}>
               <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />
             </NativePhotoSwipe>
           )}

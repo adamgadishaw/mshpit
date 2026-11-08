@@ -376,7 +376,13 @@ function Root() {
   if (!artistReturnRef.current) artistReturnRef.current = createIOSArtistReturnStore();
   artistReturnRef.current.reconcile(session?.id || null, chatAuthEpoch, stack);
   const artistReturn = Platform.OS === "ios" ? artistReturnRef.current.lease(nav, nav.artistPreview || nav.artistName) : null;
-  const [iosMenuOpen, setIosMenuOpen] = useState(false);
+  const [iosMenuOpen, setIOSMenuOpenState] = useState(false);
+  const iosTabSwipeRevisionRef = useRef(0);
+  const [iosTabSwipeRevision, setIOSTabSwipeRevision] = useState(0);
+  const setIosMenuOpen = visible => {
+    if (visible) setIOSTabSwipeRevision(++iosTabSwipeRevisionRef.current);
+    setIOSMenuOpenState(visible);
+  };
   const iosMenuOpener = useRef(null);
   useEffect(() => { setIosMenuOpen(false); }, [activeTab, stack, session?.id]);
   const openMainMenu = () => Platform.OS === "ios" ? setIosMenuOpen(true) : go({ menu: true });
@@ -899,10 +905,14 @@ function Root() {
   };
   // Back one screen. On web, route through history.back() so the browser Back
   // button and in-app back share one code path (the popstate handler pops).
-  const back = () => {
+  const back = (_event, isCurrentIOSGesture) => {
     if (web) {
       if (!browserHistoryRef.current?.canGoBack()) { runAfterComposerClose(() => restoreBrowserPathRef.current?.("/", { replace: true })); return; }
       window.history.back();
+      return;
+    }
+    if (Platform.OS === "ios" && isCurrentIOSGesture) {
+      if (isCurrentIOSGesture()) runAfterComposerClose(popStack, () => {}, isCurrentIOSGesture);
       return;
     }
     requestComposerPop();
@@ -958,7 +968,7 @@ function Root() {
     writeNavigation({ ...navigationRef.current, stack: [{}], tab: nextTab, landing: false }, MAIN_TAB_PATHS[nextTab], "replace");
   };
   const clear = () => runAfterComposerClose(commitClear);
-  const switchTab = (key) => runAfterComposerClose(() => {
+  const switchTab = (key, isCurrentIOSSwipe) => runAfterComposerClose(() => {
     if (!session && memberTabRequiresAccount(key)) { openSignIn(); return; }
     // Discover is a secondary, comparatively rich surface. Keep it out of the
     // first-load bundle, but start its guarded chunk request in the same user
@@ -972,7 +982,7 @@ function Root() {
       browseReturnRef.current.reset("discover");
     }
     writeNavigation({ ...navigationRef.current, stack: [{}], tab: key, landing: false }, MAIN_TAB_PATHS[key]);
-  });
+  }, undefined, Platform.OS === "ios" && typeof isCurrentIOSSwipe === "function" ? isCurrentIOSSwipe : undefined);
   const openPublicDirectory = (directory, { region } = {}) => {
     if (directory !== "artists" && directory !== "events") return;
     runAfterComposerClose(() => {
@@ -1599,7 +1609,7 @@ function Root() {
   ) : null;
   // Auth is a modal that must win over any page overlay — requireAuth() can fire
   // from inside a venue/show/profile page, and the login sheet has to surface.
-  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} session={session} mediaReactions={mediaReactions} loadMediaReactions={loadMediaReactions} toggleMediaReaction={toggleMediaReaction} track={track} onReport={openReport} onClose={back} onRememberIndex={rememberPhotoIndex} onRequireAuth={openSignIn} />;
+  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} session={session} mediaReactions={mediaReactions} loadMediaReactions={loadMediaReactions} toggleMediaReaction={toggleMediaReaction} track={track} onReport={openReport} onClose={Platform.OS === "ios" ? () => { if (linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav) back(); } : back} iosGestureScope={Platform.OS === "ios" ? linkedNavigationScope : undefined} isCurrentIOSRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} onRememberIndex={rememberPhotoIndex} onRequireAuth={openSignIn} />;
   else if (MUSIC_PLAYER_ENABLED && nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
   else if (nav.auth) overlay = <AuthScreen navigationAbortRef={authNavigationAbortRef} initialMode={nav.authMode} onModeChange={(mode) => { const frame = updatedAuthFrame(stackRef.current[stackRef.current.length - 1], mode); if (frame) commitReplace(frame); }} onDone={finishAuthentication} onCancel={back} onOpenCity={(city) => replace({ cityGuide: city })} />;
@@ -1631,7 +1641,7 @@ function Root() {
   else if (nav.cityGuide) overlay = <CityScreen city={nav.cityGuide} accountId={session?.id || null} onClose={back} onOpenCity={openCity} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenShow={openShow} onOpenPhotos={openPhotos} />;
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
-  else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
+  else if (nav.suggestion) overlay = <SuggestionBoxScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.suggestion.surface]) : undefined} onClose={back} initialSurface={nav.suggestion.surface} accountId={Platform.OS === "ios" ? session?.id || null : undefined} authEpoch={Platform.OS === "ios" ? chatAuthEpoch : undefined} closeGuardRef={Platform.OS === "ios" ? composerCloseGuardRef : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} />;
   else if (nav.administration) overlay = <AdministrationScreen session={session} onClose={back} />;
     else if (nav.settings) overlay = <SettingsScreen initialAccountAction={nav.accountAction === "switch" ? "switch" : null} onClose={back} onFinishSetup={needsSignupOnboarding(session) ? () => go({ signupSetup: true }) : undefined} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} onOpenCatalogEditor={() => go({ catalogEditor: true })} onOpenNewsroom={() => go({ newsroom: true })} onOpenAdministration={() => go({ administration: true })} onOpenModeration={() => go({ admin: true })} onRequestArtist={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} />;
   else if (nav.deleteAccount) overlay = <DeleteAccountScreen onClose={back} onDeleted={onAccountDeleted} />;
@@ -1742,6 +1752,19 @@ function Root() {
     web, pathname: web ? window.location.pathname : null,
   });
 
+  // A retained Feed remains mounted under media. A queued rail swipe belongs
+  // to its visible route/presentation, not whichever route is current later.
+  const iosTabSwipeEnabled = Platform.OS === "ios" && !overlay && !landing && !iosMenuOpen
+    && !nativeAccountLinkActive && status === "ok" && !acctOpen && !welcome
+    && !resetToken && !unsubToken && !verifyToken && !ownerApprovalToken;
+  const iosTabSwipeScope = useMemo(() => ({ navigation: linkedNavigationScope, revision: iosTabSwipeRevision, enabled: iosTabSwipeEnabled }),
+    [linkedNavigationScope, iosTabSwipeRevision, iosTabSwipeEnabled]);
+  const isCurrentIOSTabSwipe = () => iosTabSwipeEnabled
+    && iosTabSwipeRevisionRef.current === iosTabSwipeRevision
+    && linkedNavigationRef.current.ownsScope(linkedNavigationScope)
+    && navigationRef.current.stack === stack && navigationRef.current.tab === tab
+    && navigationRef.current.landing === landing;
+
   const retainNativeFeed = retainNativeFeedForMedia({ platform: Platform.OS, wide, accountId: session?.id, tab: activeTab, frames: stack, hasOverlay: !!overlay });
 
   const tabScreens = (
@@ -1843,7 +1866,7 @@ function Root() {
             </View>
   );
 
-  const mobileTabBar = Platform.OS === "ios" ? <IosTabBar active={activeTab} onChange={switchTab} /> : (
+  const mobileTabBar = Platform.OS === "ios" ? <IosTabBar active={activeTab} onChange={switchTab} swipeScope={iosTabSwipeScope} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={isCurrentIOSTabSwipe} /> : (
                       <NativeTabRail key={activeTab} active={activeTab} onChange={switchTab}>
 <View style={styles.tabbar}>
                         {LEFT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
@@ -2036,7 +2059,7 @@ function Root() {
               </View>
             )}
             <View style={styles.appContent}>
-              {Platform.OS !== "web" && !overlay && !retainNativeFeed && <NativeAppHeader active={activeTab} onChange={switchTab} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
+              {Platform.OS !== "web" && !overlay && !retainNativeFeed && <NativeAppHeader active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
               {web ? responsiveWeb : (
                 <>
                   {showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
@@ -2049,11 +2072,11 @@ function Root() {
                     onOpenEvent={openShow}
                   />
                   {retainNativeFeed ? <NativeFeedMediaLayer key={session.id} obscured={!!overlay}
-                    header={<NativeAppHeader active={activeTab} onChange={switchTab} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn onAccount={() => openProfileManagement()} />}
+                    header={<NativeAppHeader active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn onAccount={() => openProfileManagement()} />}
                     tabBar={mobileTabBar}
-                    media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense>}>
+                    media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back} presentationKey={Platform.OS === "ios" ? nav : undefined} presentationScope={linkedNavigationScope} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense>}>
                     <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey="main:feed">{tabScreens}</ScreenTransition></Suspense>
-                  </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense> : (
+                  </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back} presentationKey={Platform.OS === "ios" ? nav : undefined} presentationScope={linkedNavigationScope} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense> : (
                     <>
                       <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{tabScreens}</ScreenTransition></Suspense>
                       {mobileTabBar}

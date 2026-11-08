@@ -97,7 +97,7 @@ test("failure copy handles throttling without exposing arbitrary exception text"
 
 test("the suggestion screen keeps draft text in component memory only", () => {
   const screen = readFileSync(new URL("../screens/SuggestionBoxScreen.jsx", import.meta.url), "utf8");
-  assert.match(screen, /export default function SuggestionBoxScreen\(\{ onClose, initialSurface = null \}\)/);
+  assert.match(screen, /export default function SuggestionBoxScreen\(\{ onClose, initialSurface = null, accountId = null, authEpoch, closeGuardRef, isCurrentRoute \}\)/);
   assert.doesNotMatch(screen, /localStorage|AsyncStorage|SecureStore|\bsave\s*\(|\bload\s*\(/);
   assert.doesNotMatch(screen, /from ["']\.\.\/lib\/api/);
   assert.match(screen, /from ["']\.\.\/features\/suggestions\/suggestionService["']/);

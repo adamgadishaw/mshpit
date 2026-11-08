@@ -3,10 +3,10 @@ import Icon from "./Icon";
 import NativeTabRail from "./NativeTabRail";
 import { colors, font } from "../theme";
 const tabs = [{ key: "feed", label: "Feed", icon: "feed" }, { key: "search", label: "Search", icon: "search" }, { key: "discover", label: "Discover", icon: "discover" }, { key: "you", label: "You", icon: "you" }];
-export default function IosTabBar({ active, onChange }) {
+export default function IosTabBar({ active, onChange, swipeScope, swipeEnabled, isCurrentSwipeRoute }) {
   const { fontScale } = useWindowDimensions();
   const largeText = fontScale > 1.6;
-  return <NativeTabRail active={active} onChange={onChange}><View style={[styles.bar, largeText && styles.largeBar]} accessibilityRole="tablist" accessibilityLabel="Main navigation">
+  return <NativeTabRail active={active} onChange={onChange} swipeScope={swipeScope} swipeEnabled={swipeEnabled} isCurrentSwipeRoute={isCurrentSwipeRoute}><View style={[styles.bar, largeText && styles.largeBar]} accessibilityRole="tablist" accessibilityLabel="Main navigation">
     {tabs.map(tab => <Pressable key={tab.key} onPress={() => onChange(tab.key)} style={({ pressed }) => [styles.tab, largeText && styles.largeTab, pressed && styles.pressed]} accessibilityRole="tab" accessibilityState={{ selected: active === tab.key }} accessibilityLabel={tab.label}>
       <View style={[styles.icon, largeText && styles.largeIcon, active === tab.key && styles.selected]}><Icon name={tab.icon} size={23} color={active === tab.key ? colors.amber : colors.textDim} strokeWidth={active === tab.key ? 2.2 : 1.7} /></View>
       <Text style={[styles.label, active === tab.key && styles.active]}>{tab.label}</Text>

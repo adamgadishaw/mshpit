@@ -59,7 +59,7 @@ const rootAST = require('@babel/parser').parse(rootSource, { sourceType: 'module
 const closeNames = ['runAfterComposerClose', 'requestComposerPop', 'back'];
 const closeSource = rootAST.body.body.flatMap(statement => statement.type === 'VariableDeclaration' ? statement.declarations : [])
   .filter(node => closeNames.includes(node.id?.name)).map(node => `const ${node.id.name} = ${rootSource.slice(node.init.start, node.init.end)};`).join('\n');
-const actualRootBack = new Function('composerCloseGuardRef', 'popStack', `const web = false; const authNavigationAbortRef = { current: null }; ${closeSource} return back;`);
+const actualRootBack = new Function('composerCloseGuardRef', 'popStack', 'Platform', `const web = false; const authNavigationAbortRef = { current: null }; ${closeSource} return back;`);
 
 const routeCode = transformSync(`export default function route({ Platform, session, chatAuthEpoch, nav, navigationRef, linkedNavigationRef, linkedNavigationScope, back, composerCloseGuardRef, ReportScreen }) {
   ${route.replace('else if', 'if')} return overlay;
@@ -108,7 +108,7 @@ function fixture({ platform = 'ios', strict = false, keyed = true, guard = true,
     if (closeMode === 'noop') return;
     linkedNavigationRef.current.invalidate(); navigationRef.current.stack.pop(); closed++;
   };
-  const back = actualRootBack(guardRef, proceed);
+  const back = actualRootBack(guardRef, proceed, native.Platform);
   rootClose = back;
   const f = {
     renderer, requests, blocks, alerts, guardRef, navigationRef, linkedNavigationRef,
