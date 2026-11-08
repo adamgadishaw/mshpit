@@ -196,3 +196,25 @@ The hardening document and receipt hold exact hashes and limitations. No native
 keyboard, VoiceOver, offline, Photos, account-write or installation certification
 is implied. The native decoder dependency remains unpatched despite the reviewed
 AVIF path-specific mitigation; preserve that advisory distinction.
+
+
+## Latest compiled checkpoint: community and media recovery
+
+79858de supersedes 6461b05 as the latest preserved signed preview. All 8,130 tests,
+platform exports, 509.3 KiB web budget and signed exact-copy checks passed. No
+phone installation or live mutation test was performed. The existing signing
+profile expires November 14, 2026 at 23:50:01 UTC; do not change signing or infer
+App Store/TestFlight readiness from this development-signed Release.
+
+Highest-value remaining physical fixture gates:
+- FanClub/DM text and selection survive Profile and Back without extra submission.
+- Explicit Lounge entry, metadata outage and Retry show readable status/reachable
+  controls, preserve available text, and cause no second Going write.
+- Clips cold/page failure recovers to confirmed empty or nonempty content without
+  stale or inert errors.
+- A current paused/error video's Open action remains usable, while explicit
+  Next/Previous/Retry/Close interruptions cannot open retired media.
+
+Use authorized isolated data for attendance, sending, read-state and external
+opening verification. Native layout, focus, spoken timing, UI-thread ordering and
+physical Release performance are not certified by source/React test fixtures.

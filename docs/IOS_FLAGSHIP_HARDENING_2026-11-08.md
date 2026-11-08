@@ -2,9 +2,9 @@
 
 ## Latest fully verified artifact
 
-Checkpoint 6461b05 is preserved at
-.tmp/ios-phone-checkpoints/flagship-6461b05/MshpitDev.app with a receipt and exact
-manifest. All 7,963 tests, three platform exports and signed Release compilation
+Checkpoint 79858de is preserved at
+.tmp/ios-phone-checkpoints/flagship-79858de/MshpitDev.app with a receipt and exact
+manifest. All 8,130 tests, three platform exports and signed Release compilation
 passed. This is a development-signed, live-linked preview, not installed and not
 App Store distribution. Physical interaction/accessibility/performance are still
 open. Later in-progress slices are not included until separately verified.
@@ -641,3 +641,76 @@ physical dismissal remain uncertified. All behavioral tests used synthetic
 accounts/services. The live-linked artifact must not receive synthetic login,
 profile writes or reviews for QA; use an authorized isolated fixture. Phone
 installation still waits for explicit reconnection.
+
+
+## Community, direct-message controls and media recovery checkpoint
+
+Source 79858ded36d4d5f40028e637dbd3367c04a39ef2 was compiled and preserved on
+November 8 at 07:55:39 UTC. It adds the following iOS-only journeys:
+
+- FanClub and Lounge composers retain bounded in-memory text and accepted pending
+  claims across detail navigation, with separate account/authentication-epoch/
+  channel ownership. Same-tick keyboard/button submission admits one Store
+  intent. Existing Store outbox, delivery keys, retries and settlement remain
+  authoritative. Later text revisions survive earlier successful settlement.
+- Community eligibility remains live. Draft restoration never rejoins a FanClub,
+  enters a Lounge, marks Going or restores polling. Lounge re-entry still requires
+  the existing explicit server-confirmed action. Stale controls cannot edit, send,
+  retry or cancel after route/presentation/gate ownership ends.
+- An entered Lounge now offers an explicit, accessible metadata Retry when its
+  current status cannot be confirmed. Confirmed entry and available draft state
+  are retained; composing and polling remain gated until current open metadata
+  succeeds. Retry does not issue another attendance action.
+- DM composer controls now require current route and presentation ownership before
+  starting edits or actions. Already-accepted delivery settlement still runs
+  after navigation, preserving newer revisions and existing outbox behavior.
+- A successful replacement Clips head retires only the error it supersedes.
+  Failed, canceled, stale or malformed reads cannot claim recovery or hide a newer
+  pagination failure.
+- Video external-opening controls reject retired route, foreground, presentation,
+  media-item and retry intents. Current paused/error media retains its explicit
+  Open action. Already-started operating-system opening cannot be recalled.
+
+The shared Store, API client, chat delivery/draft owner, live-chat and scoped-
+refresh implementations, dependencies, app/EAS configuration and Pod lock remain
+unchanged from 0c53aaa. Android/web use their existing paths. Inspection of 81 web
+source maps (1,164 distinct source paths) found none of the three new iOS helper
+implementations. The web initial JavaScript budget remains 509.3/512.0 KiB gzip.
+
+Verification: 8,130/8,130 full-suite tests passed with zero failures, skips or
+cancellations (83.504 seconds); 215 focused integrated checks also passed. iOS
+and Android Hermes exports, web export/budget, syntax, architecture, diff checks,
+signed Release build and exact-copy signature verification passed. Independent
+actual-React sensitivity probes also caught three removed chat admission guards
+and four removed media recovery/admission guards. These are synthetic ownership
+checks, not native timing or performance measurements. Evidence lives in the
+checkpoint receipt and /tmp/mshpit-ios-chat-media-final-full-tests.log; the
+preserved .tmp/ios-flagship-stress chat-admission and media-recovery harnesses
+contain the repeatable in-memory probes.
+
+The first full run (8,110/8,111) exposed a test fixture that typed before fresh
+post-entry Lounge metadata had committed, when the actual input was disabled.
+Controlled delayed-metadata probes showed the text was rejected immediately,
+not lost by stale settlement. The corrected fixture explicitly waits for current
+metadata/readiness and asserts that text was accepted before testing the old
+completion. Its historical failed log is retained. The separately reproduced
+entered-room missing-Retry issue was repaired in a distinct product commit; no
+assertion was weakened or product gate bypassed to make the suite green.
+
+Signed artifact: 60,261,202 bytes across 52 files/links. JavaScript SHA-256:
+c8e49fcfcaa0ce8b03f64a638bb8ccbfd0a1ce27f3f06e904b89d6666856f3c0
+Executable SHA-256:
+0036868cfd7618f61eaa346be07dd156bfa0e960eaddab1a04c159a77d494a36
+Manifest SHA-256:
+5d89c457800dba62941707272c21f3853531378da048d7c9b8a2ec0b93a74f93
+Only the executable, JavaScript bundle and signature resource manifest differ
+from 6461b05. All 11 privacy manifests and the provisioning profile are byte-
+identical. The existing profile includes the intended phone and expires November
+14 at 23:50:01 UTC. No signing grants or profile changes were made.
+
+This remains a development-signed, live-linked Release preview, not installed.
+Draft continuity is in-memory navigation continuity, not app-termination recovery.
+Native keyboard/cursor, VoiceOver, gesture arbitration, real offline media and
+physical performance remain unverified. Attendance, sends, read markers and
+external opening must be tested against an authorized isolated fixture, not as
+synthetic activity on the live backend.
