@@ -32,6 +32,7 @@ function fixture(name, { reuseNativeView = false, platform = "ios" } = {}) {
   const hook = run(hookCode, dep => dep === 'react' ? react : attempts).default;
   const jsx = (type, props, key) => ({ type, props, key });
   const component = run(componentCodes[name], dep => {
+    if (dep.endsWith('/useNativeTabPreview')) return require('../hooks/useNativeTabPreview.js');
     if (dep === 'react') return react;
     if (dep === 'react/jsx-runtime') return { jsx, jsxs: jsx, Fragment: 'Fragment' };
     if (dep === 'react-native') return { Platform: { OS: platform }, View: 'View', Text: 'Text', Pressable: 'Pressable', PixelRatio: { get: () => 3 }, StyleSheet: { create: v => v, absoluteFill: {} } };

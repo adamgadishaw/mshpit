@@ -11,15 +11,16 @@ function nodes(tree) {
   if (!tree) return []; if (Array.isArray(tree)) return tree.flatMap(nodes); if (typeof tree !== "object") return [];
   return [tree, ...nodes(tree.props?.children)];
 }
-function component(file, platform = "ios") {
+function component(file, platform = "ios", preview = false) {
   const source = readFileSync(new URL(file, import.meta.url), "utf8");
   const modules = {
+    "../hooks/useNativeTabPreview": platform === "ios" ? () => preview : require("../hooks/useNativeTabPreview.js"),
     react: { useMemo: fn => fn(), useEffect: () => {}, useRef: current => ({ current }), useState: initial => [typeof initial === "function" ? initial() : initial, () => {}] },
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "react-native": { Platform: { OS: platform }, ActivityIndicator: "Spinner", View: "View", Text: "Text", Pressable: "Pressable", StyleSheet: { create: s => s, absoluteFill: {} }, useWindowDimensions: () => ({ width: 393 }) },
     "expo-image": { Image: "Image" }, "../theme": { colors: new Proxy({}, { get: () => "#111" }), mono: "mono" },
     "./Icon": "Icon", "./ClipPoster": "ClipPoster", "../lib/img": { displaySrc: u => u, previewSrc: u => u, isHttp: () => false, proxied: u => u, isVideoUrl: u => u?.endsWith(".mp4") },
-    "../domain/imageLoadPolicy.mjs": { imageLoadPolicy: () => ({ priority: "normal", loading: "eager" }) },
+    "../domain/imageLoadPolicy.mjs": { imageLoadPolicy: () => ({ priority: "normal", loading: "eager", autoplay: true }) },
     "../hooks/feedImageRetry": { useFeedImageRetryPulse: () => null },
     "../hooks/useImageAttempt": (_scope, candidates) => ({ uri: candidates[0] }),
     "../domain/clipPoster.mjs": poster, "../domain/posterVisibility.mjs": { posterGenerationEnabled: () => false },
@@ -62,5 +63,17 @@ test("generated iOS posters never acquire disk storage and respect a no-cache ca
   const evaluate = new Function("Platform", "cachePolicy", `return (${source.slice(expressions[1].start, expressions[1].end)});`);
   for (const platform of ["ios", "android", "web"]) for (const policy of ["none", "memory", "disk", "memory-disk"]) {
     assert.equal(evaluate({ OS: platform }, policy), platform === "ios" && policy === "none" ? "none" : "memory");
+  }
+});
+
+test("SmartImage preview suppresses animation without changing source or cache policy", () => {
+  for (const platform of ["ios", "android", "web"]) {
+    const props = { uri: "file://animated.gif", cachePolicy: "none" };
+    const committed = nodes(component("./SmartImage.jsx", platform)(props)).find(n => n.type === "Image");
+    const preview = nodes(component("./SmartImage.jsx", platform, true)(props)).find(n => n.type === "Image");
+    assert.equal(committed.props.autoplay, true);
+    assert.equal(preview.props.autoplay, platform !== "ios");
+    assert.deepEqual(preview.props.source, committed.props.source);
+    assert.equal(preview.props.cachePolicy, "none");
   }
 });

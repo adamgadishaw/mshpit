@@ -28,6 +28,8 @@ function fixture(platform='ios') {
   const request = signal => new Promise(resolve=>calls.push({signal,resolve}));
   const jsx=(type,props,key)=>({type,props,key});
   const feed=run(feedCode,dep=>{
+    if(dep.endsWith('/useNativeTabPreview'))return require('../hooks/useNativeTabPreview.js');
+    if(dep.endsWith('/useNativeTabContentReady'))return require('../hooks/useNativeTabContentReady.js');
     if(dep==='react')return react;
     if(dep.endsWith('/useIOSFeedReturn'))return {__esModule:true,default:()=>null,FeedReturnProvider:'FeedReturnProvider'};
     if(dep==='react/jsx-runtime')return {jsx,jsxs:jsx};

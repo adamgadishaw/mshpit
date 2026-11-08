@@ -13,7 +13,7 @@ const domains = Object.fromEntries([
 ].map((name) => [`../domain/${name}.mjs`, require(`../domain/${name}.mjs`)]));
 const colors = new Proxy({}, { get: (_, key) => `color:${String(key)}` });
 const jsx = (type, props, key) => ({ type, props, key });
-export function fixture({ platform = "ios", own = false, loggedIn = true, inputSource = source } = {}) {
+export function fixture({ platform = "ios", own = false, loggedIn = true, inputSource = source, preview = false, reduceMotion = false } = {}) {
   const calls = [], state = [], sheets = [];
   let cursor = 0;
   const store = {
@@ -38,7 +38,8 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
     "expo-image": { Image: "ExpoImage" },
     "../theme": { colors, displayFont: "display", font: "font", mono: "mono", glow: {}, radius: { md: 12, lg: 18, sm: 8, pill: 999 }, shadow: { card: {} }, roleColor: () => null, space: (value) => value * 4 },
     "../store": { useStore: () => store }, "../config/runtime.mjs": { ENABLE_MUSIC_PLAYER: false },
-    "../hooks/useReducedMotion": () => false,
+    "../hooks/useReducedMotion": () => reduceMotion,
+    "../hooks/useNativeTabPreview": platform === "ios" ? () => preview : require("../hooks/useNativeTabPreview.js"),
     "./PublicWebLinks": { PublicPressableLink: "PublicPressableLink", PublicTextLink: "PublicTextLink" },
     "./SocialReactionButtons": { RepostButton: "RepostButton", RepostAttribution: "RepostAttribution" },
     "./Badge": { BadgeRow: "BadgeRow" }, "./SocialShareStudio": { SocialShareButton: "SocialShareButton" },
@@ -439,5 +440,21 @@ test("native sheet callbacks are consumed once and cannot release a newer sheet"
     f.sheets[1].choose(1); f.sheets[1].choose(1);
     assert.deepEqual(f.calls, [...expected, ["onReport", review]]);
     hold(); assert.equal(f.sheets.length, 3, "consuming the current sheet permits a fresh hold");
+  }
+});
+
+test("campaign artwork requires committed presentation and motion permission", () => {
+  const uri = "https://example.test/campaign.gif";
+  const log = { ...review, kind: "status", photos: [uri],
+    media: [{ id: "ma_campaign_art", kind: "image", status: "ready", uri }],
+    campaign: { version: 1, treatment: "after-dark", backgroundAssetId: "ma_campaign_art" } };
+  for (const platform of ["ios", "android", "web"]) for (const preview of [false, true]) for (const reduceMotion of [false, true]) {
+    const f = fixture({ platform, preview, reduceMotion });
+    const image = type(f.render({ log }), "ExpoImage");
+    assert.ok(image, `${platform} renders the real campaign artwork`);
+    assert.equal(image.props.source.uri, uri);
+    assert.equal(image.props.autoplay, !(platform === "ios" && preview) && !reduceMotion);
+    assert.equal(image.props.transition, reduceMotion ? 0 : 180);
+    assert.equal(image.props.accessible, false);
   }
 });
