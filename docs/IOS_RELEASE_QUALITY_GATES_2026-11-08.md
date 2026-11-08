@@ -336,4 +336,6 @@ old controls must not supersede a newer auth action. Ordinary confirmed-session
 refresh failures remain quiet. Check actual large-text reachability, status
 readability and VoiceOver order; synthetic React/transport traces are not native
 accessibility certification. No real sign-out, credential change, or forced
-live-service outage is authorized merely for testing. Installation remains held.
+live-service outage is authorized merely for testing. Owner-approved installation
+and process launch subsequently succeeded. Visual/session/accessibility checks
+remain incomplete and are paused for the owner's separate OS update.

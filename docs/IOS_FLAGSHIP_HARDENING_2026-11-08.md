@@ -6,7 +6,8 @@ Checkpoint b73d54a is preserved at
 .tmp/ios-phone-checkpoints/flagship-b73d54a/MshpitDev.app with receipt, exact
 manifest and platform-isolation evidence. All 8,356 tests, three platform exports
 and signed Release compilation passed. This development-signed, live-linked
-preview is not installed or App Store distribution. Physical interaction,
+preview was subsequently installed and its process launched with owner approval;
+it is not App Store distribution. Physical interaction, session preservation,
 accessibility and performance remain open. Earlier checkpoints, including
 2f24923, remain preserved. The current concise [preview handoff](IOS_PREVIEW_HANDOFF_2026-11-08.md)
 records the artifact and separate test-before-release workflow.
@@ -26,7 +27,8 @@ provisioning and all 11 privacy manifests match 2f24923.
 This continues the iOS redesign on `feat/ios-experience-redesign`. Android and
 web retain their current presentation and behavior. No new dependencies, backend
 changes, website deployment, signing grants or production-content writes are part
-of this pass. The physical-phone update remains held until explicit reconnection.
+of this pass. The owner approved and reconnected for installation; after successful
+installation/launch, physical checks paused for the owner's separate OS update.
 The earlier signed build and its original receipt are preserved separately.
 
 ## Design rationale
