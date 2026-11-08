@@ -9,7 +9,7 @@ import SmartImage from "./SmartImage";
 import Stars from "./Stars";
 import RatingBreakdown from "./RatingBreakdown";
 import RatingSplit from "./RatingSplit";
-import useReducedMotion from "../hooks/useReducedMotion";
+import { useIOSReducedMotion } from "../hooks/iosOnlyAccessibility";
 
 const text = (value) => typeof value === "string" ? value.trim() : "";
 
@@ -23,7 +23,7 @@ export default function ConcertMemoryModal({
   onOpenPost,
 }) {
   const { width, fontScale } = useWindowDimensions();
-  const reducedMotion = useReducedMotion();
+  const reducedMotion = useIOSReducedMotion();
   const ios = Platform.OS === "ios";
   const largeText = ios && fontScale > 1.25;
   const desktop = Platform.OS === "web" && width >= 900;

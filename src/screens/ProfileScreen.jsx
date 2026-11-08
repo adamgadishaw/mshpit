@@ -617,18 +617,18 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           ) : session && isBlocked(user.id) ? (
             <View style={styles.blockedBox}>
               <Text style={styles.blockedTxt}>You've blocked this account. They can't message you, follow you, or see your posts.</Text>
-              <Pressable style={styles.unblockBtn} onPress={() => unblockUser(user.id)} accessibilityRole="button" accessibilityLabel={`Unblock ${user.name}`}>
+              <Pressable style={styles.unblockBtn} onPress={() => unblockUser(user.id)} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `Unblock ${user.name}` } : {})}>
                 <Text style={styles.unblockTxt}>Unblock</Text>
               </Pressable>
             </View>
           ) : (
             session && (
               <View style={[styles.actionRow, largeText && styles.nativeActionsLarge]}>
-                <Pressable style={[styles.followBtn, following && styles.followingBtn]} onPress={() => (following ? unfollow(user.id) : follow(user.id))} accessibilityRole="button" accessibilityLabel={`${following ? "Unfollow" : "Follow"} ${user.name}`}>
+                <Pressable style={[styles.followBtn, following && styles.followingBtn]} onPress={() => (following ? unfollow(user.id) : follow(user.id))} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `${following ? "Unfollow" : "Follow"} ${user.name}` } : {})}>
                   {!following && <Icon name="user-plus" size={15} color="#1A1206" />}
                   <Text style={[styles.followTxt, following && styles.followingTxt]}>{following ? "Following" : "Follow"}</Text>
                 </Pressable>
-                <Pressable style={styles.msgBtn} onPress={() => onMessage?.(user.id)} accessibilityRole="button" accessibilityLabel={`Message ${user.name}`}>
+                <Pressable style={styles.msgBtn} onPress={() => onMessage?.(user.id)} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `Message ${user.name}` } : {})}>
                   <Icon name="comment" size={15} color={colors.amber} />
                   <Text style={styles.msgTxt}>Message</Text>
                 </Pressable>
@@ -738,7 +738,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         {/* Media gallery, using the same resilient descriptor pipeline as You. */}
         {gallery.length > 0 && (
           <>
-            <Text style={styles.sectionLabel} accessibilityRole="header">{IS_IOS ? "Gallery" : "Media"} · {historyCount(gallery.length)}</Text>
+            <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>{IS_IOS ? "Gallery" : "Media"} · {historyCount(gallery.length)}</Text>
             <View style={styles.gallery}>
               {galleryPreview.map((g, i) => (
                 <ProfileMediaTile key={g.id || `${g.postId || "post"}:${g.uri}:${i}`} item={g} index={i} viewerItems={galleryViewerItems} onOpenPhotos={onOpenPhotos} />
@@ -762,13 +762,13 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
 
         {/* One calendar projection powers both this summary and Calendar. A
             dated post appears here immediately; plain statuses remain posts. */}
-        <Text style={styles.sectionLabel} accessibilityRole="header">Upcoming shows{IS_IOS ? historyHeadingCount(planned.length) : ` · ${planned.length}`}</Text>
+        <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>Upcoming shows{IS_IOS ? historyHeadingCount(planned.length) : ` · ${planned.length}`}</Text>
         {planned.length === 0 && (!IS_IOS || historyConfirmed) && <Text style={styles.empty}>No upcoming shows yet.</Text>}
         {planned.map((p) => {
           // Calendar rows carry a normalized day, not a verified doors time.
           const target = IS_IOS ? null : showDateMs(p.date);
           return (
-            <Pressable key={p.calendarKey || p.key || p.postId} style={[styles.showRow, largeText && styles.nativeShowLarge]} onPress={() => onOpenShow?.(p)} accessibilityRole="button" accessibilityLabel={`${p.artist}, ${p.venue}, ${formatDate(p.date, p.date)}`}>
+            <Pressable key={p.calendarKey || p.key || p.postId} style={[styles.showRow, largeText && styles.nativeShowLarge]} onPress={() => onOpenShow?.(p)} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `${p.artist}, ${p.venue}, ${formatDate(p.date, p.date)}` } : {})}>
               <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>
               <View style={largeText ? { alignSelf: "stretch" } : { flex: 1 }}>
                 <Text style={styles.showArtist}>{p.artist}</Text>
@@ -821,7 +821,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         <View style={styles.postsSection}>
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
-        <Text style={styles.sectionLabel} accessibilityRole="header">{IS_IOS && isSelf ? "Your diary" : isSelf ? "Your posts" : "Posts"}{historyHeadingCount(logs.length)}</Text>
+        <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>{IS_IOS && isSelf ? "Your diary" : isSelf ? "Your posts" : "Posts"}{historyHeadingCount(logs.length)}</Text>
         {logs.length === 0 && (IS_IOS ? historyConfirmed : !historyLoading) && (
           <Text style={styles.empty}>{isSelf ? "You haven't posted yet. Tap “Make a post” to log a show or share an update." : "No posts yet."}</Text>
         )}

@@ -167,8 +167,11 @@ for (const platform of ['ios', 'android', 'web']) test(`${platform}: actual norm
     const countdowns = f.all().filter(n => n.type === 'Countdown');
     assert.equal(countdowns.length, platform === 'ios' ? 0 : self ? 2 : 1);
     assert.equal(f.text().includes('until doors'), platform !== 'ios');
-    const row = f.all().find(n => n.props?.accessibilityLabel?.startsWith('Public plan,'));
-    assert.ok(row); row.props.onPress(); assert.equal(f.opened.at(-1).date, date);
+    const row = f.all().find(n => n.type === 'Pressable' && nodes(n).some(child => child.text === 'Public plan'));
+    assert.ok(row);
+    if (platform === 'ios') assert.ok(row.props.accessibilityLabel.startsWith('Public plan,'));
+    else { assert.equal(Object.hasOwn(row.props, 'accessibilityLabel'), false); assert.equal(Object.hasOwn(row.props, 'accessibilityRole'), false); }
+    row.props.onPress(); assert.equal(f.opened.at(-1).date, date);
     f.unmount();
   }
 });

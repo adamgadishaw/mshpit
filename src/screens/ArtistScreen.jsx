@@ -55,7 +55,7 @@ import Button from "../components/Button";
 import ArtistLiveSets from "../components/ArtistLiveSets";
 import { fetchArtistSets } from "../lib/lineupApi";
 
-import useScreenReaderEnabled from "../hooks/useScreenReaderEnabled";
+import { useIOSScreenReaderEnabled } from "../hooks/iosOnlyAccessibility";
 import { createIOSArtistAnnouncements, iosArtistLayout } from "../domain/iosArtistPresentation.mjs";
 import { createBrowseScrollReturn } from "../domain/iosBrowseReturn.mjs";
 const IS_IOS = Platform.OS === "ios";
@@ -516,7 +516,7 @@ export default function ArtistScreen({ artistReturn, initialSection, artistName,
     joinFanClub,
   });
   const followed = followUi.followed;
-  const screenReader = useScreenReaderEnabled();
+  const screenReader = useIOSScreenReaderEnabled();
   const announcements = useRef(null);
   if (!announcements.current) announcements.current = createIOSArtistAnnouncements({
     announce: (message, options) => AccessibilityInfo.announceForAccessibilityWithOptions(message, options),

@@ -85,7 +85,7 @@ export default function YouScreen({ onLogin, onManageProfile, onSettings, onOpen
           </View>
           <Text style={styles.heroName}>{IS_IOS ? "Your live-music life" : "You're logged out"}</Text>
           <Text style={styles.heroHandle}>{IS_IOS ? "Keep the shows, photos and memories that stay with you." : "Log in to build your live-music history and post reviews."}</Text>
-          <Pressable style={styles.primary} onPress={onLogin} accessibilityRole="button" accessibilityLabel="Log in or sign up">
+          <Pressable style={styles.primary} onPress={onLogin} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: "Log in or sign up" } : {})}>
             <Text style={styles.primaryTxt}>{IS_IOS ? "Log in or sign up" : "LOG IN / SIGN UP"}</Text>
           </Pressable>
         </View>
@@ -105,7 +105,7 @@ export default function YouScreen({ onLogin, onManageProfile, onSettings, onOpen
     <ProfileScreen {...profile} userId={session.id} asTab ownerTools={ownerTools} onManageProfile={onManageProfile}>
       {memories.length > 0 && (
         <View style={styles.memories}>
-          <View style={styles.memoriesHeading}><Text style={styles.sectionTitle} accessibilityRole="header">Concert memories</Text>{IS_IOS ? <View style={styles.privateLabel}><Icon name="lock" size={12} color={colors.textDim} /><Text style={styles.privateLabelText}>Only you</Text></View> : null}</View>
+          <View style={styles.memoriesHeading}><Text style={styles.sectionTitle} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>Concert memories</Text>{IS_IOS ? <View style={styles.privateLabel}><Icon name="lock" size={12} color={colors.textDim} /><Text style={styles.privateLabelText}>Only you</Text></View> : null}</View>
           <Text style={styles.scopeCopy}>{IS_IOS ? "Great nights, worth another look." : "Only you can see this. Tap a memory for a quick look."}</Text>
           <MemoryCollection horizontal={IS_IOS || undefined} showsHorizontalScrollIndicator={IS_IOS ? false : undefined} contentContainerStyle={IS_IOS ? styles.memoryGrid : undefined} style={IS_IOS ? styles.memoryRail : styles.memoryGrid}>
             {memories.map((memory) => {

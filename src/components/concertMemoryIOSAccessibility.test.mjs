@@ -34,7 +34,7 @@ function fixture(os = "ios") {
     "../theme": { colors: {}, radius: {}, shadow: {}, displayFont: "display", mono: "mono" },
     "../domain/dates.mjs": dates,
     "../domain/postMediaDisplay.mjs": media,
-    "../hooks/useReducedMotion": () => settings.reducedMotion,
+    "../hooks/iosOnlyAccessibility": { useIOSReducedMotion: () => settings.reducedMotion },
     "./Icon": "Icon", "./SmartImage": "SmartImage", "./Stars": "Stars", "./RatingBreakdown": "RatingBreakdown", "./RatingSplit": "RatingSplit",
   };
   const module = { exports: {} };
