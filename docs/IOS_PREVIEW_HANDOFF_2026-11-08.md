@@ -133,3 +133,7 @@ Queued speech cannot be recalled after native handoff. Calendar share completion
 is not proof that another app imported an event. These limits are intentional and
 remain in the detailed [quality gates](IOS_RELEASE_QUALITY_GATES_2026-11-08.md)
 and [hardening record](IOS_FLAGSHIP_HARDENING_2026-11-08.md).
+
+The concrete [test-before-release workflow](IOS_TEST_BEFORE_RELEASE_2026-11-08.md)
+separates today's local fixtures/live preview from the isolated native testing
+variant and distribution work that still needs implementation and approval.
