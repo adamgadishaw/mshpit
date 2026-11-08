@@ -615,6 +615,7 @@ test("actual iOS Feed previews Local cached posts beneath one stable strip witho
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
   const f = fixture({ feedScreen: true }); t.after(f.close);
   const source = f.lists()[0].props.instance;
+  assert.deepEqual(f.all().find(n => n.props?.testID === "feed-fixed-navigation").props.style, { paddingHorizontal: 12, paddingTop: 4 });
   assert.equal(f.lists()[0].props.data[0].id, "global");
   const before = f.leaseWrites.length, g = dragPage(f, 120); f.flush(); f.ready("local");
   assert.equal(f.lists().length, 2);

@@ -42,7 +42,9 @@ function FeedOwner(props) {
   const commit = value => { if (selected.current === selection && current()) select(value); };
   const enabled = !!props.loggedIn && !!props.visible && active && props.swipeEnabled !== false;
   return <View style={{ flex: 1, minHeight: 0 }}>
-    <FeedNavigation filter={filter} loggedIn={props.loggedIn} onSelect={choose} />
+    <View testID="feed-fixed-navigation" style={{ paddingHorizontal: 12, paddingTop: 4 }}>
+      <FeedNavigation filter={filter} loggedIn={props.loggedIn} onSelect={choose} />
+    </View>
     <NativeFeedFilterPager active={filter} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
       swipeEnabled={enabled} isCurrentSwipeRoute={current}
       renderPage={(page, preview, mayRead) => <FeedPane {...props} filter={page} preview={preview}
