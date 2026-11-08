@@ -273,3 +273,14 @@ configuration changed; JavaScript, privacy manifests and the provisioning profil
 are byte-identical to the previous checkpoint. This does not request or expand
 Photos access. Permission-flow evaluation remains a separately authorized native
 fixture gate. The phone build is still held, not installed or App Store distributed.
+
+## Feed return artifact a39bdba
+
+The current signed preview has 8,268 passing tests and verified exports/build.
+On the authorized isolated physical fixture, browse cached For You/Local beyond
+the first eight rows, open a post/profile/show, and return. Check actual position,
+unchanged filter, current variable-height media and new-drag cancellation without
+an unexpected jump. Repeat with a changed/removed anchor, largest text and the
+existing direct-gallery path. The bounded JS/native-like fixture proves count,
+anchor ownership and finite progression, not native scrolling or performance.
+Do not claim deep Following/News restoration or recovery after process termination.

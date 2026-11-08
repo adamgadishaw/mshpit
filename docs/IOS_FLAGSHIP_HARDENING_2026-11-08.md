@@ -2,14 +2,13 @@
 
 ## Latest fully verified artifact
 
-Checkpoint aa3a29a is preserved at
-.tmp/ios-phone-checkpoints/flagship-aa3a29a/MshpitDev.app with a receipt, exact
-manifest and platform/purpose-copy isolation evidence. All 8,238 tests, three
-platform exports and signed Release compilation passed. This is a development-
-signed, live-linked preview, not installed or App Store distribution. Physical
-interaction, accessibility and performance remain open. Earlier signed checkpoints,
-including 230f0ca, remain preserved. Later work is not included until separately
-verified.
+Checkpoint a39bdba is preserved at
+.tmp/ios-phone-checkpoints/flagship-a39bdba/MshpitDev.app with a receipt, exact
+manifest and platform-isolation evidence. All 8,268 tests, three platform exports
+and signed Release compilation passed. This is a development-signed, live-linked
+preview, not installed or App Store distribution. Physical interaction,
+accessibility and performance remain open. Earlier checkpoints, including aa3a29a,
+remain preserved. Later work is not included until separately verified.
 
 ## Scope and release boundary
 
@@ -883,3 +882,40 @@ packaged identity assets were inspected separately and required no alteration.
 Generated-output evidence is beside the checkpoint in photos-copy-evidence; the
 isolated review preserves both complete before/after variants. The previous signed
 artifact still contains its original wording and has not been overwritten.
+
+## Feed return-continuity checkpoint a39bdba
+
+Opening a post, profile or show previously remounted Feed with eight revealed rows
+after browsing 24. The selected filter already persisted; it was not a filter-loss
+defect. Direct media already retained the same Feed instance and remains unchanged.
+
+The iOS-only return snapshot keeps up to 64 cached For You/Local rows and bounded
+opaque row identity/position metadata, never post payloads. It preserves normal
+detail unmounts and all existing data, media, analytics and virtualization owners.
+A valid same-order anchor is restored from current measured layout, with at most
+six nonanimated seeks and a 1.5-second deadline. Incomplete restoration does not
+force a jump to the top or add reads. New drag/filter/refresh, owner/epoch/route,
+geometry or lifetime invalidates old work. Following/News deep-page return is not
+promised. Exact physical position and scrolling quality remain unverified.
+
+- Source: a39bdbaa8683502ab73134189a9aa2c51e7362e8.
+- Full suite: 8,268 passed, no failures/skips/cancellations, 85.245 seconds.
+- Thirty new actual-React cases; independent review passed 59 focused cases.
+- Separate integrated sensitivity run passed current behavior and detected baseline
+  row loss, one-seek failure, geometry relabeling and missing route admission.
+- Syntax: 921 files; architecture/diff checks passed. All platform exports and
+  signed Release build passed.
+- Artifact: 60,282,744 bytes, 52 files/links.
+- JS SHA-256: 24221d4bfcc6fdc2b4abc8d3d8aef0a8019a0a1e4f8f240065bdbbfe5a0d7975.
+- Executable SHA-256: e0ba80a203b54865dab4db73171e53bded0a6c7a1c4451b6547e0bbdc38f58e6.
+- Manifest SHA-256: db072a30b6047048f4987d082df6d9fce0ebde3f42506d602859c8abb7e61e4a.
+- Web initial gzip: 521,884 bytes, 2,404 bytes below budget.
+- Android/web maps contain inert default Feed entries, no app .ios files and no
+  iOS Feed-return/message-draft domains. This is build isolation evidence.
+- Info.plist, all 11 privacy manifests and the profile match aa3a29a byte-for-byte.
+- Same signing identity, live backend and installation hold. No device actions.
+
+See ios-feed-return-continuity-2026-11-08.md for the bounded algorithm and acceptance
+limits. The preserved sensitivity harness is feed-return-sensitivity.mjs under the
+ignored checkpoint stress directory, SHA-256
+a5d73db27dd37c6aa1a2e3f8a28ac478b809d387937dee115106501b80edd86b.
