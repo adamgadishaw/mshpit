@@ -162,7 +162,7 @@ test("local catalogue hydration does not cancel and restart remote unified searc
   const requestEffect = source.slice(effectStart, effectEnd);
 
   assert.match(requestEffect, /localResultCountRef\.current/);
-  assert.match(requestEffect, /\}, \[peopleScope, remoteSearchScope, searchRevision, session\?\.id, settledQuery\]\);/);
+  assert.match(requestEffect, /\}, \[peopleScope, remoteSearchScope, searchRevision, session\?\.id, settledSearch, query\]\);/);
   assert.doesNotMatch(
     requestEffect,
     /\[(?:[^\]]*\b(?:venues|events|clubs)\.length\b[^\]]*)\]/,
@@ -172,7 +172,7 @@ test("local catalogue hydration does not cancel and restart remote unified searc
 
 test("local catalogue work shares the debounced query and show rows open the show page", () => {
   const source = readFileSync(new URL("../screens/SearchScreen.jsx", import.meta.url), "utf8");
-  assert.match(source, /setTimeout\(\(\) => setSettledQuery\(query\), 250\)/);
+  assert.match(source, /setTimeout\(\(\) => setSettledSearch\(\{ query, generation \}\), 250\)/);
   assert.match(source, /searchVenues\(settledQuery, 24\)/);
   assert.match(source, /createUnifiedEventSearchIndex\(tourDates\)/);
   assert.match(source, /searchUnifiedEventIndex\(eventSearchIndex, settledQuery, \{ limit: 24 \}\)/);

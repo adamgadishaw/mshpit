@@ -1,3 +1,4 @@
+import { catalogSearchMatchExpression } from "./features/catalogSearch/catalogSearchProjection.js";
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
 import { artistAuthoredTourDateVisibleSql } from "./artistAuthoredTourDateVisibility.js";
 import {
@@ -19,6 +20,8 @@ export function visibleTourDateRowsFrom(database, viewer, {
   countryCode = null,
   country = null,
   providerOnly = false,
+  search = null,
+  blockedViewerId = null,
   after = null,
   limit: rowLimit = 5000,
   at = Date.now(),
@@ -30,6 +33,24 @@ export function visibleTourDateRowsFrom(database, viewer, {
   // depends on a viewer's block graph or current account/page privacy.
   if (providerOnly === true) filters.push("td.owner_id IS NULL");
   const prefix = [];
+  const match = search ? catalogSearchMatchExpression(search) : "";
+  const searchJoin = search ? `JOIN catalog_event_search_docs_v1 search_doc ON search_doc.event_id=td.id
+    ${match ? "JOIN catalog_event_search_fts_v1 ON catalog_event_search_fts_v1.rowid=search_doc.docid" : ""}` : "";
+  if (search) {
+    // Search is a public catalogue, never an owner's unreleased/private view.
+    filters.push("td.release_at<=?");
+    prefix.push(at);
+    filters.push("(td.owner_id IS NULL OR EXISTS(SELECT 1 FROM users search_owner WHERE search_owner.id=td.owner_id AND COALESCE(search_owner.profile_audience,'everyone')='everyone'))");
+    if (match) { filters.push("catalog_event_search_fts_v1 MATCH ?"); prefix.push(match); }
+    for (const term of search.split(" ").slice(0, 8)) {
+      filters.push("instr(search_doc.search_text,?)>0");
+      prefix.push(term);
+    }
+  }
+  if (blockedViewerId) {
+    filters.push("NOT EXISTS(SELECT 1 FROM blocks search_block WHERE (search_block.blocker_id=? AND search_block.blocked_id=td.owner_id) OR (search_block.blocked_id=? AND search_block.blocker_id=td.owner_id))");
+    prefix.push(blockedViewerId, blockedViewerId);
+  }
   if (id) {
     filters.push("td.id=?");
     prefix.push(id);
@@ -77,7 +98,7 @@ export function visibleTourDateRowsFrom(database, viewer, {
   }
   const filterSql = filters.length ? `${filters.join(" AND ")} AND ` : "";
   if (viewer?.role === "admin" && accountIsPublic(viewer, at)) {
-    return database.prepare(`SELECT td.* FROM tour_dates td WHERE ${filterSql}1=1 ORDER BY td.date ASC,td.id ASC LIMIT ?`)
+    return database.prepare(`SELECT td.* FROM tour_dates td ${searchJoin} WHERE ${filterSql}1=1 ORDER BY td.date ASC,td.id ASC LIMIT ?`)
       .all(...prefix, rowLimit);
   }
   const publicDate = new Date(Number.isFinite(Number(at)) ? Number(at) : Date.now()).toISOString().slice(0, 10);
@@ -88,7 +109,7 @@ export function visibleTourDateRowsFrom(database, viewer, {
   const publicProviderSql = "(td.owner_id IS NULL AND (COALESCE(td.provider_active,1)=1 OR "
     + effectiveTourDateEndSql("td") + "<?))";
   if (viewer?.id) {
-    return database.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
+    return database.prepare(`SELECT td.* FROM tour_dates td ${searchJoin} LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
       (${publicProviderSql} OR (${activeAccountSql("owner")} AND (td.release_at<=? OR td.owner_id=?)
         AND ${artistAuthoredTourDateVisibleSql("td", `?${prefix.length + 3}`)}
         AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
@@ -97,7 +118,7 @@ export function visibleTourDateRowsFrom(database, viewer, {
       ORDER BY td.date ASC,td.id ASC LIMIT ?`)
       .all(...prefix, publicDate, at, viewer.id, viewer.id, viewer.id, rowLimit);
   }
-  return database.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
+  return database.prepare(`SELECT td.* FROM tour_dates td ${searchJoin} LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
     (${publicProviderSql} OR (${activeAccountSql("owner")} AND td.release_at<=?
       AND ${artistAuthoredTourDateVisibleSql("td")}))
     ORDER BY td.date ASC,td.id ASC LIMIT ?`)

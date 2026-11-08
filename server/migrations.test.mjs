@@ -302,6 +302,16 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
     (provider,source_id,title,artist,video_id,set_by,updated_at)
     VALUES ('deezer','1234638792','Shared Recording','Proofed Artist','sourcepin01',NULL,8)`).run();
   previous.db.exec(`
+    -- Remove derived search structures before reconstructing the earlier schema.
+    -- Their triggers legitimately reference columns absent from that release.
+    DROP TRIGGER catalog_search_source_insert_v1;
+    DROP TRIGGER catalog_search_source_update_v1;
+    DROP TRIGGER catalog_search_source_delete_v1;
+    DROP TRIGGER catalog_search_doc_insert_v1;
+    DROP TRIGGER catalog_search_doc_update_v1;
+    DROP TRIGGER catalog_search_doc_delete_v1;
+    DROP TABLE catalog_event_search_fts_v1;
+    DROP TABLE catalog_event_search_docs_v1;
     DROP INDEX idx_artists_trimmed_name_lookup;
     DROP INDEX idx_going_cursor;
     DROP INDEX idx_tourdates_owner_show;
