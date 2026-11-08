@@ -20,6 +20,7 @@ import { venueRowWindow } from "../domain/venueDiscovery.mjs";
 import { VENUE_PAGE_SECTIONS, venuePagePreview, venuePageSectionModel, venuePhotoViewerIndex } from "../domain/venuePageSections.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
+import useIOSVenueReviews from "../hooks/useIOSVenueReviews";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
 import { venueGuideModel } from "../domain/venueGuide.mjs";
@@ -37,7 +38,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const wide = concertDetailWide(width, fontScale, Platform.OS, 760);
   const {
     venueSummary, venueReviewsFor, loadVenueReviews, venueRating, venueTopPhotos,
-    session, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, userByHandle,
+    session, chatAuthEpoch, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, userByHandle,
   } = useStore();
   const publicVenue = usePublicVenueSnapshot({ name: venueName, identity: venueIdentity, accountId: session?.id });
   const snapshot = publicVenue.resource.data;
@@ -55,6 +56,11 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const photos = venuePhotos(venue.name, photoIdentity);
   const photoState = venuePhotoState(venue.name, photoIdentity);
   const reviews = venueReviewsFor(venue.name);
+  const iosReviewScope = JSON.stringify([session?.id ?? null, chatAuthEpoch, publicVenue.resource.scope, venuePhotoPrivacyRevision]);
+  const iosReviews = useIOSVenueReviews({
+    scope: iosReviewScope,
+    enabled: !!session, venueName: venue.name, loadVenueReviews,
+  });
   const [visibleReviewCount, setVisibleReviewCount] = useState(REVIEW_BATCH);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_BATCH);
   const [visibleUpcomingCount, setVisibleUpcomingCount] = useState(UPCOMING_BATCH);
@@ -72,7 +78,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
     setVisibleReviewCount(REVIEW_BATCH);
     setVisibleHistoryCount(HISTORY_BATCH);
     setVisibleUpcomingCount(UPCOMING_BATCH);
-    if (session) void loadVenueReviews(venue.name, { signal: controller.signal });
+    if (session && Platform.OS !== "ios") void loadVenueReviews(venue.name, { signal: controller.signal });
     void loadVenuePhotos(venue.name, { ...photoIdentity, signal: controller.signal }).catch(() => { /* architecture: allow-empty-catch -- the venue page retains its licensed empty state and visible retry control */ });
     return () => controller.abort();
   }, [venue.name, photoIdentity?.source, photoIdentity?.providerVenueId, venuePhotoPrivacyRevision, session?.id]);
@@ -93,7 +99,9 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const openPhotoWidget = photos.length
     ? (photo, fallbackIndex = 0) => { if (!session) return onRequireAuth?.(); onOpenPhotos?.(photos, venuePhotoViewerIndex(photos, photo, fallbackIndex)); }
     : undefined;
-  const venueRefreshScope = refreshScope(session?.id, "venue", publicVenue.resource.scope);
+  const venueRefreshScope = Platform.OS === "ios"
+    ? JSON.stringify(["venue-refresh", iosReviewScope, venue.name])
+    : refreshScope(session?.id, "venue", publicVenue.resource.scope);
   const openVenueGuideAction = (action) => {
     setVenueGuideError("");
     if (Platform.OS === "web") return;
@@ -103,7 +111,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
     scope: venueRefreshScope,
     task: async ({ signal }) => {
       const [reviewResult, refreshedPhotos] = await Promise.all([
-        session ? loadVenueReviews(venue.name, { signal }) : Promise.resolve(null),
+        session ? (Platform.OS === "ios" ? iosReviews.load() : loadVenueReviews(venue.name, { signal })) : Promise.resolve(null),
         loadVenuePhotos(venue.name, { ...photoIdentity, force: true, signal }),
         publicVenue.load({ signal }),
       ]);
@@ -248,7 +256,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
               <Text style={styles.reputationBody}>Sound, sightlines and crowd energy stay with the venue, separate from the artist’s performance.</Text>
               <View style={styles.reviewSignal}>
                 <Icon name="star" size={13} color={colors.gold} />
-                <Text style={styles.reviewSignalText}>{reviews.length ? `${reviews.length} written ${reviews.length === 1 ? "review" : "reviews"} · ${fanRating.toFixed(1)} average` : "No written reviews yet"}</Text>
+                <Text style={styles.reviewSignalText}>{reviews.length ? `${reviews.length} written ${reviews.length === 1 ? "review" : "reviews"} · ${fanRating.toFixed(1)} average` : Platform.OS === "ios" && iosReviews.status !== "ready" ? (iosReviews.status === "error" ? "Fan notes unavailable" : "Loading fan notes…") : "No written reviews yet"}</Text>
               </View>
             </View>
           </View>
@@ -259,7 +267,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
             accessibilityLabel={`Review ${venue.name}`}
           >
             <Icon name="edit" size={16} color="#1A1206" />
-            <Text style={styles.reviewButtonText}>{reviews.length ? "Add your take" : "Write the first review"}</Text>
+            <Text style={styles.reviewButtonText}>{reviews.length ? "Add your take" : Platform.OS === "ios" && iosReviews.status !== "ready" ? "Write a review" : "Write the first review"}</Text>
           </Pressable>
         </Section>
         ) : null}
@@ -286,7 +294,23 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         ) : null}
 
         {sectionModel.showReviews ? (
-        <Section title="Fan notes" count={reviews.length}>
+        <Section title="Fan notes" count={Platform.OS === "ios" && iosReviews.status !== "ready" && !reviews.length ? null : reviews.length}>
+          {Platform.OS === "ios" && iosReviews.status !== "ready" ? (
+            <View style={styles.iosReviewStatus}>
+              <Text style={styles.emptyBody} accessibilityLiveRegion="polite">
+                {iosReviews.status === "error"
+                  ? (reviews.length ? "Fan notes could not update. Showing saved notes." : "Fan notes could not load. Try again.")
+                  : (reviews.length ? "Updating fan notes…" : "Loading fan notes…")}
+              </Text>
+              {iosReviews.status === "error" ? (
+                <Pressable onPress={() => { void iosReviews.load(); }}
+                  accessibilityRole="button" accessibilityLabel="Retry loading fan notes"
+                  style={({ pressed }) => [styles.iosReviewRetry, pressed && styles.buttonPressed]}>
+                  <Text style={styles.iosReviewRetryText}>Try again</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
           {reviews.length ? (
             <View style={styles.stack}>
               {visibleReviews.map((review) => {
@@ -382,13 +406,13 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
                 />
               ) : null}
             </View>
-          ) : (
+          ) : Platform.OS !== "ios" || iosReviews.status === "ready" ? (
             <View style={styles.emptyReviews}>
               <Icon name="comment" size={24} color={colors.textFaint} />
               <Text style={styles.emptyTitle}>Nobody has described this room yet</Text>
               <Text style={styles.emptyBody}>Share the sound, view and crowd experience after your next show here.</Text>
             </View>
-          )}
+          ) : null}
         </Section>
         ) : null}
 
@@ -573,6 +597,9 @@ function MoreButton({ label, remaining, onPress }) {
 }
 
 const baseStyles = {
+  iosReviewStatus: { gap: 4, paddingVertical: 8 },
+  iosReviewRetry: { minHeight: 44, minWidth: 44, alignSelf: "flex-start", justifyContent: "center", paddingHorizontal: 12 },
+  iosReviewRetryText: { color: colors.amber, fontWeight: "600", fontSize: 15 },
   ticketError: { color: colors.danger, fontSize: 15, lineHeight: 22 },
   iosTitleBlock: { gap: 7, paddingTop: 4 },
   iosKicker: { fontFamily: "System", fontSize: 13, fontWeight: "600", color: colors.amber },

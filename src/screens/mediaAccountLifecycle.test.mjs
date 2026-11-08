@@ -96,6 +96,7 @@ for (const [file, component, name, resultSetter, platform] of photoCases) {
   // The iOS wrapper gets its real close guard rather than a no-op busy stub.
   const compileTask = platform ? callback(file, component, `${name}Task`) : null;
   const compile = platform ? (bindings) => compileCallback({
+    iosEditor: platform === "ios" ? { run: action => action({ isCurrent: () => true }) } : null,
     [`${name}Task`]: compileTask({ ...bindings, Platform: { OS: platform } }),
     editorClose: platform === "ios" ? createEditProfileCloseGuard({
       accountId: "a", draft: {}, alert: () => assert.fail("Uploads alone must not show a close dialog"),

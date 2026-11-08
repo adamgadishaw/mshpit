@@ -24,12 +24,13 @@ const flatten = (style) => Array.isArray(style) ? Object.assign({}, ...style.fil
 function fixture(os, overrides = {}, options = {}) {
   let cursor = 0, closed = 0;
   let refCursor = 0, effectCursor = 0;
-  const states = [], saves = [], refs = [], effects = [], alerts = [];
+  const states = [], saves = [], refs = [], effects = [], alerts = [], layouts = [];
+  let layoutCursor = 0, queuedLayouts = [];
   const guardRef = { current: null };
   const session = { id: "account-a", name: "Fan", handle: "music_fan", bio: "Live music", genres: ["Rock"], favoriteArtists: ["one", "two"], ...overrides };
   const jsx = (type, props, key) => ({ type, props, key });
   const deps = {
-    react: { Suspense: "Suspense", useRef(initial) { return refs[refCursor++] ||= { current: initial }; }, useEffect(effect) { const i = effectCursor++; if (!(i in effects)) effects[i] = effect(); }, useState(initial) { const i = cursor++; if (!(i in states)) states[i] = typeof initial === "function" ? initial() : initial; return [states[i], (value) => { states[i] = typeof value === "function" ? value(states[i]) : value; }]; } },
+    react: { createElement: (type, props, ...children) => jsx(type, { ...props, children }), Suspense: "Suspense", useLayoutEffect(effect, dependencies) { const i = layoutCursor++; const previous = layouts[i]; if (!previous || !dependencies || dependencies.some((value, index) => value !== previous.dependencies[index])) queuedLayouts.push(() => { previous?.cleanup?.(); layouts[i] = { dependencies, cleanup: effect() }; }); }, useRef(initial) { return refs[refCursor++] ||= { current: initial }; }, useEffect(effect) { const i = effectCursor++; if (!(i in effects)) effects[i] = effect(); }, useState(initial) { const i = cursor++; if (!(i in states)) states[i] = typeof initial === "function" ? initial() : initial; return [states[i], (value) => { states[i] = typeof value === "function" ? value(states[i]) : value; }]; } },
     "react/jsx-runtime": { jsx, jsxs: jsx },
     "react-native": { ...Object.fromEntries(["View", "Text", "ScrollView", "TextInput", "Pressable", "Image"].map((name) => [name, name])), Alert: { alert: (...args) => alerts.push(args) }, Platform: { OS: os }, StyleSheet: { create: (styles) => styles, absoluteFill: {} } },
     "expo-image-picker": { launchImageLibraryAsync: options.pickImage || (async () => ({ canceled: true })) },
@@ -48,16 +49,22 @@ function fixture(os, overrides = {}, options = {}) {
     "./editProfileCloseGuard.mjs": closeGuard,
     ...Object.fromEntries(["Avatar", "Icon", "LocationPicker", "Button", "SheetHeader"].map((name) => [`../components/${name}`, name])),
   };
+  const hookCode = transformSync(readFileSync(new URL(`../hooks/useIOSProfileEditor${os === "ios" ? ".ios" : ""}.js`, import.meta.url), "utf8"), {
+    babelrc: false, configFile: false, plugins: [require("@babel/plugin-transform-modules-commonjs")],
+  }).code;
+  const hookModule = { exports: {} };
+  new vm.Script(hookCode).runInNewContext({ module: hookModule, exports: hookModule.exports, require: name => deps[name] });
+  deps["../hooks/useIOSProfileEditor"] = hookModule.exports;
   const module = { exports: {} };
   new vm.Script(compiled).runInNewContext({ module, exports: module.exports, require(name) { assert.ok(Object.hasOwn(deps, name), name); return deps[name]; } });
   const back = () => guardRef.current ? guardRef.current({ proceed: () => { closed++; } }) : closed++;
-  return { saves, alerts, session, guardRef, back, dispose() { effects.forEach((cleanup) => cleanup?.()); }, get closed() { return closed; }, render() { cursor = refCursor = effectCursor = 0; return module.exports.default({ onClose: back, closeGuardRef: guardRef }); } };
+  return { saves, alerts, session, guardRef, back, dispose() { layouts.forEach(layout => layout.cleanup?.()); effects.forEach((cleanup) => cleanup?.()); }, get closed() { return closed; }, render() { cursor = refCursor = effectCursor = layoutCursor = 0; queuedLayouts = []; const result = module.exports.default({ onClose: back, closeGuardRef: guardRef }); queuedLayouts.forEach(effect => effect()); return result; } };
 }
 
 test("iOS populated form fields have stable spoken names and native keyboard behavior", () => {
   const f = fixture("ios"), tree = f.render();
   for (const [label, value] of [["Name", "Fan"], ["Username", "music_fan"], ["Bio", "Live music"]]) {
-    const input = labeled(tree, label);
+    const input = labeled(f.render(), label);
     assert.equal(input.type, "TextInput");
     assert.equal(input.props.value, value);
     input.props.onChangeText(label === "Username" ? "new_handle" : "Edited");

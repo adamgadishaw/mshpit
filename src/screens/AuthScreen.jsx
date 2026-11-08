@@ -3,6 +3,7 @@ import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollVie
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore } from "../store";
+import useIOSAuthErrorAnnouncement from "../hooks/useIOSAuthErrorAnnouncement";
 import Icon from "../components/Icon";
 import BrandMark from "../components/BrandMark";
 import SheetHeader from "../components/SheetHeader";
@@ -38,7 +39,7 @@ function AuthPressable({ accessibilityState = {}, disabled, ...props }) {
 }
 
 export default function AuthScreen({ onDone, onCancel, onModeChange, navigationAbortRef, initialMode = "login", addAccount = false, initialEmail = "" }) {
-  const { login, signup, forgotPassword, session } = useStore();
+  const { login, signup, forgotPassword, session, chatAuthEpoch } = useStore();
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState(["signup", "forgot"].includes(initialMode) ? initialMode : "login");
   const [step, setStep] = useState(1);
@@ -79,6 +80,12 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   const handleStatus = signupHandlePresentation(availability.resource, handle);
   const currentAvailability = availability.resource.status === "ready" ? availability.resource.data : null;
 
+  const errorAnnouncement = useIOSAuthErrorAnnouncement(session?.id, chatAuthEpoch, navigationAbortRef,
+    mode, step, signupChoice, accounts, sentTo, viewing, pickingCity, addAccount,
+    artistSignup, city, genres, ageBand, agreed, analyticsConsent);
+  const cancelErrorAnnouncement = useRef(null);
+  cancelErrorAnnouncement.current = errorAnnouncement.cancel;
+
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; authAttempt.current?.abort(); }; }, []);
   useLayoutEffect(() => {
     if (!navigationAbortRef) return undefined;
@@ -86,6 +93,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     // must cancel the identity-changing request synchronously, not wait for
     // passive cleanup while a late response is still able to sign somebody in.
     const abortPending = () => {
+      cancelErrorAnnouncement.current?.();
       const attempt = authAttempt.current;
       if (!attempt) return;
       authAttempt.current = null;
@@ -112,7 +120,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     if (!errorField || !inputs.current[errorField]) scroll.current?.scrollTo?.({ y: 0, animated: false });
   }, [error, errorField, step]);
 
-  const clearError = () => { setError(""); setErrorField(null); };
+  const clearError = () => { errorAnnouncement.cancel(); setError(""); setErrorField(null); };
   const showError = (failure) => { setError(failure.message); setErrorField(failure.field || null); };
   const changeMode = (next) => {
     if (busyRef.current) return;
@@ -134,6 +142,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   const submit = async (accountId, { createAdditional = false, useExisting = false } = {}) => {
     if (typeof accountId !== "string") accountId = undefined;
     if (busyRef.current) return;
+    errorAnnouncement.cancel();
     const creating = signupMode && !useExisting;
     if (creating && step < SIGNUP_STEPS.length) { advance(); return; }
     if (creating) {
@@ -148,12 +157,14 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     clearError(); busyRef.current = true; setBusyAction("auth");
     const attempt = new AbortController();
     authAttempt.current = attempt;
+    const announcementClaim = errorAnnouncement.begin(attempt.signal);
     try {
       const result = creating
         ? await signup({ ...signupFormPayload({ ...accountValues(), city, genres, ageBand, agreed, analyticsConsent }), ...(addAccount ? { addAccount, currentPassword } : {}), createAdditional }, { signal: attempt.signal })
         : await login(email.trim(), password, accountId, { signal: attempt.signal });
       if (!mounted.current || attempt.signal.aborted || authAttempt.current !== attempt) return;
       if (result?.ok) {
+        errorAnnouncement.cancel(announcementClaim);
         if (result.needsAccountChoice) { setSignupChoice(result); return; }
         if (result.chooseAccount) { setSignupChoice(null); setAccounts(result.accounts); return; }
         setPassword(""); setShowPassword(false);
@@ -168,10 +179,15 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
         const handleTaken = result?.error?.serverCode === "HANDLE_TAKEN" || result?.code === "HANDLE_TAKEN"
           || /username.*taken|handle.*taken/i.test(readableError(result?.error, ""));
         if (signupMode && handleTaken) { setStep(1); availability.retry(); }
+        if (handleTaken) errorAnnouncement.cancel(announcementClaim);
+        else errorAnnouncement.finish(announcementClaim, creating);
         showError({ field: handleTaken ? "handle" : null, message: readableError(result?.error, "That request did not complete. Please try again.") });
       }
     } catch (failure) {
-      if (mounted.current && !attempt.signal.aborted && authAttempt.current === attempt) showError({ message: readableError(failure, "Couldn't connect. Check your connection and try again.") });
+      if (mounted.current && !attempt.signal.aborted && authAttempt.current === attempt) {
+        showError({ message: readableError(failure, "Couldn't connect. Check your connection and try again.") });
+        errorAnnouncement.finish(announcementClaim, creating);
+      }
     } finally {
       if (authAttempt.current === attempt) {
         authAttempt.current = null;
@@ -182,6 +198,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   };
   const close = () => {
     if (busyRef.current) return;
+    errorAnnouncement.cancel();
     setPassword(""); setCurrentPassword(""); setAccounts(null); onCancel?.();
   };
   const sendReset = async () => {

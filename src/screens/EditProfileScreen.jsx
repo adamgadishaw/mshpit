@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platfo
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
+import { useIOSProfileEditor } from "../hooks/useIOSProfileEditor";
 import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
 import { useProfileImageUpload } from "../hooks/useProfileImageUpload";
 import Avatar from "../components/Avatar";
@@ -33,8 +34,8 @@ import { createEditProfileCloseGuard } from "./editProfileCloseGuard.mjs";
 const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar", { platform:Platform.OS });
 const BANNER_IMAGE_HINT = profileImageSelectionHint("banner", { platform:Platform.OS });
 
-export default function EditProfileScreen({ onClose, closeGuardRef }) {
-  const { session, updateProfile, locationCenter } = useStore();
+export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRoute }) {
+  const { session, updateProfile, locationCenter, chatAuthEpoch } = useStore();
   const accountTasks = useAccountTaskScope(session?.id);
   const { uploadProfileImage, imageCropDialog } = useProfileImageUpload();
   const uploadSelectedImage = (asset, purpose, task) => uploadProfileImage(asset, purpose, {
@@ -65,13 +66,17 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
   const myShows = (Array.isArray(history.posts) ? history.posts : []).filter(pinnableShow);
   const historyLoading = ["idle", "loading", "refreshing"].includes(history.status);
 
+  const iosEditor = useIOSProfileEditor({ accountId: session?.id, authEpoch: chatAuthEpoch,
+    picker: pickingCity || pickingArtists, isCurrentRoute });
+  const edit = action => iosEditor ? iosEditor.edit(action) : action;
+  const locked = !!iosEditor?.locked;
   const editorCloseRef = useRef(null);
   const draft = { name, handle, bio, avatarUri, banner, genres, home, pronouns, accent, favoriteShows };
   if (Platform.OS === "ios" && !editorCloseRef.current) {
     editorCloseRef.current = createEditProfileCloseGuard({ accountId: session?.id, draft, alert: (...args) => Alert.alert(...args) });
   }
   const editorClose = editorCloseRef.current;
-  editorClose?.update({ accountId: session?.id, draft, busy: saving || uploadingAvatar || uploadingBanner,
+  editorClose?.update({ accountId: session?.id, draft, busy: locked || saving || uploadingAvatar || uploadingBanner,
     dismissPicker: pickingCity ? () => setPickingCity(false) : pickingArtists ? () => setPickingArtists(false) : null });
   useEffect(() => {
     if (!editorClose) return undefined;
@@ -88,11 +93,11 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
   if (pickingCity) {
     return (
       <LocationPicker
-        onClose={() => setPickingCity(false)}
-        onSelect={(place) => {
+        onClose={edit(() => setPickingCity(false))}
+        onSelect={edit((place) => {
           setHome(locationCenter(place));
           setPickingCity(false);
-        }}
+        })}
       />
     );
   }
@@ -102,14 +107,14 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
       <Suspense fallback={null}>
         <PickArtistsScreen
           showTheme={false}
-          onDone={() => setPickingArtists(false)}
-          onSkip={() => setPickingArtists(false)}
+          onDone={edit(() => setPickingArtists(false))}
+          onSkip={edit(() => setPickingArtists(false))}
         />
       </Suspense>
     );
   }
 
-  const pickPhotoTask = async () => {
+  const pickPhotoTask = async (command) => {
     if (uploadingAvatar || saving) return;
     const task = accountTasks.begin(session?.id);
     if (!task) return;
@@ -117,24 +122,24 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
     try {
       res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("avatar", { platform: Platform.OS }));
     } catch (error) {
-      if (task.isCurrent()) reportMediaPickerError(error, "Opening the profile photo library");
+      if (task.isCurrent() && (!command || command.isCurrent())) reportMediaPickerError(error, "Opening the profile photo library");
       task.finish();
       return;
     }
-    if (!task.isCurrent() || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
+    if (!(task.isCurrent() && (!command || command.isCurrent())) || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
     setUploadingAvatar(true);
     try {
       const uploaded = await uploadSelectedImage(res.assets[0], "avatar", task);
-      if (task.isCurrent() && uploaded) setAvatarUri(uploaded);
+      if (task.isCurrent() && (!command || command.isCurrent()) && uploaded) setAvatarUri(uploaded);
     } catch {
       // The upload helper records the themed diagnostic and leaves the existing
       // durable photo untouched.
     } finally {
-      if (task.isCurrent()) setUploadingAvatar(false);
+      if (task.isCurrent() && (!command || command.isCurrent())) setUploadingAvatar(false);
       task.finish();
     }
   };
-  const pickBannerTask = async () => {
+  const pickBannerTask = async (command) => {
     if (uploadingBanner || saving) return;
     const task = accountTasks.begin(session?.id);
     if (!task) return;
@@ -142,25 +147,25 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
     try {
       res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("banner", { platform: Platform.OS }));
     } catch (error) {
-      if (task.isCurrent()) reportMediaPickerError(error, "Opening the banner photo library");
+      if (task.isCurrent() && (!command || command.isCurrent())) reportMediaPickerError(error, "Opening the banner photo library");
       task.finish();
       return;
     }
-    if (!task.isCurrent() || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
+    if (!(task.isCurrent() && (!command || command.isCurrent())) || !res || res.canceled || !res.assets?.[0]) { task.finish(); return; }
     setUploadingBanner(true);
     try {
       const uploaded = await uploadSelectedImage(res.assets[0], "banner", task);
-      if (task.isCurrent() && uploaded) setBanner(uploaded);
+      if (task.isCurrent() && (!command || command.isCurrent()) && uploaded) setBanner(uploaded);
     } catch {
       // Keep the editor open with its previous banner when upload fails.
     } finally {
-      if (task.isCurrent()) setUploadingBanner(false);
+      if (task.isCurrent() && (!command || command.isCurrent())) setUploadingBanner(false);
       task.finish();
     }
   };
 
-  const pickPhoto = () => editorClose ? editorClose.runBusy(pickPhotoTask) : pickPhotoTask();
-  const pickBanner = () => editorClose ? editorClose.runBusy(pickBannerTask) : pickBannerTask();
+  const pickPhoto = () => iosEditor ? iosEditor.run(command => editorClose.runBusy(() => pickPhotoTask(command)), { media: true }) : pickPhotoTask();
+  const pickBanner = () => iosEditor ? iosEditor.run(command => editorClose.runBusy(() => pickBannerTask(command)), { media: true }) : pickBannerTask();
 
   const genreOptions = profileGenreOptions(genres);
   const genreSelection = profileGenreSelection(genres);
@@ -178,7 +183,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
   });
 
   const mediaBusy = uploadingAvatar || uploadingBanner;
-  const saveTask = async () => {
+  const saveTask = async (command) => {
     if (mediaBusy || saving) return;
     if (handleInvalid) {
       setSaveError("Use 3–20 letters, numbers, or underscores for your @username.");
@@ -201,35 +206,35 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
         // Pins whose review is gone are dropped rather than failing the save.
         favoriteShows: history.status === "ready" && !history.nextCursor ? favoriteShows.filter((id) => myShows.some((post) => post.id === id)) : favoriteShows,
       }, { expectedAccountId: task.accountId, signal: task.controller.signal }));
-      if (!task.isCurrent()) return;
+      if (!(task.isCurrent() && (!command || command.isCurrent()))) return;
       if (result?.ok !== false) {
-        if (editorClose) editorClose.saved(onClose);
+        if (command) command.confirm(() => editorClose.saved(onClose));
         else onClose?.();
       }
       else setSaveError(result?.error?.message || result?.error || "Profile could not be saved. Try again.");
     } catch (error) {
-      if (task.isCurrent()) setSaveError(error?.message || "Profile could not be saved. Try again.");
+      if (task.isCurrent() && (!command || command.isCurrent())) setSaveError(error?.message || "Profile could not be saved. Try again.");
     } finally {
-      if (task.isCurrent()) setSaving(false);
+      if (task.isCurrent() && (!command || command.isCurrent())) setSaving(false);
       task.finish();
     }
   };
-  const save = () => editorClose ? editorClose.runBusy(saveTask) : saveTask();
+  const save = () => iosEditor ? iosEditor.run(command => editorClose.runBusy(() => saveTask(command))) : saveTask();
 
   const preview = { ...session, name, avatarUri, initials: (name.trim() || "?").slice(0, 2).toUpperCase() };
 
   return (
     <View style={styles.wrap}>
       {imageCropDialog}
-      <SheetHeader title="Edit your profile" onClose={requestClose} action={{ label: saving ? "Saving..." : mediaBusy ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : "Save", onPress: save, disabled: mediaBusy || saving || !genreSelection.valid || handleInvalid }} />
+      <SheetHeader title="Edit your profile" onClose={requestClose} action={{ label: saving ? "Saving..." : mediaBusy ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : "Save", onPress: save, disabled: iosEditor?.confirmed || locked || mediaBusy || saving || !genreSelection.valid || handleInvalid }} />
 
       <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"
         {...(Platform.OS === "ios" ? { automaticallyAdjustKeyboardInsets: true, keyboardDismissMode: "interactive" } : {})}>
         <Text style={styles.profileScope}>This is the profile people see for your personal account. Artist page, promotion, and show tools are in Artist HQ.</Text>
-        <Pressable
+        <Pressable {...(iosEditor ? { disabled: locked } : {})}
           style={styles.bannerEdit}
           onPress={pickBanner}
-          disabled={uploadingBanner || saving}
+          disabled={locked || uploadingBanner || saving}
           accessibilityRole="button"
           accessibilityLabel={banner ? "Change profile banner" : "Add a profile banner"}
           accessibilityHint={BANNER_IMAGE_HINT}
@@ -246,10 +251,10 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
 
         <View style={styles.avatarWrap}>
           <Avatar user={preview} size={96} />
-          <Pressable
+          <Pressable {...(iosEditor ? { disabled: locked } : {})}
             style={styles.cameraBtn}
             onPress={pickPhoto}
-            disabled={uploadingAvatar || saving}
+            disabled={locked || uploadingAvatar || saving}
             accessibilityRole="button"
             accessibilityLabel="Change profile photo"
             accessibilityHint={AVATAR_IMAGE_HINT}
@@ -257,9 +262,9 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
             <Icon name="camera" size={16} color="#1A1206" />
           </Pressable>
         </View>
-        <Pressable
+        <Pressable {...(iosEditor ? { disabled: locked } : {})}
           onPress={pickPhoto}
-          disabled={uploadingAvatar || saving}
+          disabled={locked || uploadingAvatar || saving}
           accessibilityRole="button"
           accessibilityLabel="Change profile photo"
           accessibilityHint={AVATAR_IMAGE_HINT}
@@ -269,17 +274,17 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
         <Text style={styles.avatarFormat}>{AVATAR_IMAGE_HINT}</Text>
 
         <Text style={styles.label}>NAME</Text>
-        <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Your name" placeholderTextColor={colors.textFaint} maxLength={40}
+        <TextInput {...(iosEditor ? { editable: !locked } : {})} style={styles.input} value={name} onChangeText={edit(setName)} placeholder="Your name" placeholderTextColor={colors.textFaint} maxLength={40}
           {...(Platform.OS === "ios" ? { accessibilityLabel: "Name" } : {})} />
 
         <Text style={styles.label}>USERNAME</Text>
         <View style={[styles.handleRow, handleInvalid && styles.handleRowBad, handleChanged && !handleInvalid && styles.handleRowGood]}>
           <Text style={styles.at}>@</Text>
-          <TextInput
+          <TextInput {...(iosEditor ? { editable: !locked } : {})}
             style={styles.handleInput}
             value={handle}
             {...(Platform.OS === "ios" ? { accessibilityLabel: "Username" } : {})}
-            onChangeText={(value) => { setHandle(cleanHandle(value)); setSaveError(""); }}
+            onChangeText={edit((value) => { setHandle(cleanHandle(value)); setSaveError(""); })}
             placeholder="username"
             placeholderTextColor={colors.textFaint}
             autoCapitalize="none"
@@ -295,7 +300,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
         </Text>
 
         <Text style={styles.label}>HOME CITY</Text>
-        <Pressable style={styles.cityPick} onPress={() => setPickingCity(true)}
+        <Pressable {...(iosEditor ? { disabled: locked } : {})} style={styles.cityPick} onPress={edit(() => setPickingCity(true))}
           {...(Platform.OS === "ios" ? { accessibilityRole: "button", accessibilityLabel: "Home city", accessibilityValue: { text: home?.city || "Not selected" } } : {})}>
           <Icon name="pin" size={16} color={colors.amber} />
           <Text style={[styles.cityTxt, !home && styles.cityPlaceholder]}>{home?.city || "Pick your city"}</Text>
@@ -303,11 +308,11 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
         </Pressable>
 
         <Text style={styles.label}>BIO</Text>
-        <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Tell people about yourself" placeholderTextColor={colors.textFaint} multiline maxLength={240}
+        <TextInput {...(iosEditor ? { editable: !locked } : {})} style={[styles.input, styles.multiline]} value={bio} onChangeText={edit(setBio)} placeholder="Tell people about yourself" placeholderTextColor={colors.textFaint} multiline maxLength={240}
           {...(Platform.OS === "ios" ? { accessibilityLabel: "Bio" } : {})} />
 
         <Text style={styles.label}>FAVORITE ARTISTS</Text>
-        <Pressable style={styles.artistsBtn} onPress={() => setPickingArtists(true)}
+        <Pressable {...(iosEditor ? { disabled: locked } : {})} style={styles.artistsBtn} onPress={edit(() => setPickingArtists(true))}
           {...(Platform.OS === "ios" ? { accessibilityRole: "button", accessibilityLabel: "Favorite artists", accessibilityValue: { text: `${session?.favoriteArtists?.length || 0} selected` }, accessibilityHint: "Choose artists for your feed" } : {})}>
           <Icon name="music" size={16} color={colors.amber} />
           <Text style={styles.artistsBtnTxt}>
@@ -325,7 +330,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
           {genreOptions.map((g) => {
             const on = genres.includes(g);
             return (
-              <Pressable key={g} style={[styles.chip, on && styles.chipOn]} onPress={() => toggleGenre(g)} accessibilityRole="checkbox" accessibilityState={{ checked: on }}>
+              <Pressable {...(iosEditor ? { disabled: locked } : {})} key={g} style={[styles.chip, on && styles.chipOn]} onPress={edit(() => toggleGenre(g))} accessibilityRole="checkbox" accessibilityState={{ checked: on }}>
                 <Text style={[styles.chipTxt, on && styles.chipTxtOn]}>{g}</Text>
               </Pressable>
             );
@@ -337,7 +342,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
         <Text style={styles.genreHint}>Everything here shows on your public profile.</Text>
 
         <Text style={styles.label}>PRONOUNS</Text>
-        <TextInput style={styles.input} value={pronouns} onChangeText={setPronouns} placeholder="e.g. she/her, he/him, they/them" placeholderTextColor={colors.textFaint}
+        <TextInput {...(iosEditor ? { editable: !locked } : {})} style={styles.input} value={pronouns} onChangeText={edit(setPronouns)} placeholder="e.g. she/her, he/him, they/them" placeholderTextColor={colors.textFaint}
           maxLength={PROFILE_PRONOUNS_MAX} autoCapitalize="none" autoCorrect={false} accessibilityLabel="Pronouns, optional" />
 
         <Text style={styles.label}>ACCENT COLOR</Text>
@@ -346,12 +351,12 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
           <View style={[styles.accentPreviewStripe, { backgroundColor: profileAccentColor(accent) || colors.line }]} />
         </View>
         <View style={styles.accentRow} accessibilityRole="radiogroup" accessibilityLabel="Profile accent color">
-          <Pressable style={[styles.accentSwatch, styles.accentNone, !accent && styles.accentOn]} onPress={() => setAccent(null)}
+          <Pressable {...(iosEditor ? { disabled: locked } : {})} style={[styles.accentSwatch, styles.accentNone, !accent && styles.accentOn]} onPress={edit(() => setAccent(null))}
             accessibilityRole="radio" accessibilityState={{ checked: !accent }} accessibilityLabel="No accent color">
             <Icon name="x" size={14} color={colors.textDim} />
           </Pressable>
           {PROFILE_ACCENT_OPTIONS.map((option) => (
-            <Pressable key={option.id} style={[styles.accentSwatch, { backgroundColor: option.color }, accent === option.id && styles.accentOn]} onPress={() => setAccent(option.id)}
+            <Pressable {...(iosEditor ? { disabled: locked } : {})} key={option.id} style={[styles.accentSwatch, { backgroundColor: option.color }, accent === option.id && styles.accentOn]} onPress={edit(() => setAccent(option.id))}
               accessibilityRole="radio" accessibilityState={{ checked: accent === option.id }} accessibilityLabel={`${option.label} accent`}>
               {accent === option.id ? <Icon name="check" size={15} color="#1A1206" /> : null}
             </Pressable>
@@ -371,8 +376,8 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
             const on = order >= 0;
             const full = !on && favoriteShows.length >= PROFILE_FAVORITE_SHOWS_MAX;
             return (
-              <Pressable key={post.id} style={[styles.showRow, on && styles.showRowOn, full && styles.showRowFull]} onPress={() => setFavoriteShows((current) => toggleFavoriteShow(current, post.id))}
-                disabled={full} accessibilityRole="checkbox" accessibilityState={{ checked: on, disabled: full }}
+              <Pressable {...(iosEditor ? { disabled: locked } : {})} key={post.id} style={[styles.showRow, on && styles.showRowOn, full && styles.showRowFull]} onPress={edit(() => setFavoriteShows((current) => toggleFavoriteShow(current, post.id)))}
+                disabled={locked || full} accessibilityRole="checkbox" accessibilityState={{ checked: on, disabled: locked || full }}
                 accessibilityLabel={`${on ? `Pinned ${order + 1}. ` : ""}${post.artist || post.onlineTitle}${post.venue ? ` at ${post.venue}` : ""}`}>
                 <View style={[styles.showPin, on && styles.showPinOn]}><Text style={[styles.showPinText, on && styles.showPinTextOn]}>{on ? order + 1 : ""}</Text></View>
                 <View style={{ flex: 1, minWidth: 0 }}>
@@ -386,7 +391,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef }) {
 
         {!!saveError && <Text style={styles.saveError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{saveError}</Text>}
 
-        <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} disabled={mediaBusy || saving || !genreSelection.valid || handleInvalid} style={{ marginTop: 28 }} />
+        <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} disabled={iosEditor?.confirmed || locked || mediaBusy || saving || !genreSelection.valid || handleInvalid} style={{ marginTop: 28 }} />
       </ScrollView>
     </View>
   );
