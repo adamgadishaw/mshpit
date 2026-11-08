@@ -136,6 +136,27 @@ test("artist and hero names remain untruncated at accessibility text sizes", () 
   assert.ok(named(largeTree, "ArtistRail").props.cardWidth >= named(normalTree, "ArtistRail").props.cardWidth);
 });
 
+test("featured artwork has a stable frame while its separate caption grows at the largest text size", () => {
+  const c = fixture({ fontScale: 3.1, width: 320 });
+  const artist = { name: "A long artist name that must remain fully available", photo: "https://example.com/artist.jpg", genre: "Alternative rock" };
+  const tree = c.render(c.exports.FeaturedRail, { artists: [artist], width: 320 });
+  const card = nodes(tree).find((node) => node.props.accessibilityRole === "button");
+  const children = card.props.children;
+  const [artwork, caption] = children;
+  assert.equal(artwork.props.style.aspectRatio, 1.6);
+  assert.equal(named(artwork, "BrowseArtwork").props.uri, artist.photo);
+  assert.equal(named(caption, "BrowseArtwork"), undefined);
+  assert.equal(caption.props.style.height, undefined);
+  assert.equal(caption.props.style.maxHeight, undefined);
+  assert.equal(caption.props.style.position, undefined, "Caption is not an image overlay");
+  assert.ok(text(caption).includes(artist.name));
+  for (const node of nodes(caption).filter((node) => node.type === "Text")) {
+    assert.equal(node.props.numberOfLines, undefined);
+    assert.notEqual(node.props.allowFontScaling, false);
+  }
+  assert.equal(card.props.style({ pressed: false })[0].height, undefined);
+});
+
 test("region selection, range recovery, and genre selection call the existing owners", () => {
   const c = fixture(), selected = [];
   const p = props({ onRegion: (value) => selected.push(["region", value]), onGenre: (value) => selected.push(["genre", value]),

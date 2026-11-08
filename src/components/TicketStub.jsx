@@ -161,7 +161,7 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
           accessibilityLabel={reviewOnly ? `Open ${artist || "concert"} review` : `View ${artist || "this"} show`}
         >
           <Icon name="ticket" size={15} color={accent} />
-          <Text style={[styles.ticketActionText, Platform.OS !== "web" && styles.nativeTicketActionText, { color: textColor }]} numberOfLines={2}>{reviewOnly ? "Open review" : "View this show"}</Text>
+          <Text style={[styles.ticketActionText, Platform.OS !== "web" && styles.nativeTicketActionText, { color: textColor }]} numberOfLines={Platform.OS === "ios" ? undefined : 2}>{reviewOnly ? "Open review" : "View this show"}</Text>
           <Icon name="chevron-right" size={13} color={accent} />
         </PublicPressableLink>
       ) : null}
@@ -174,7 +174,7 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
           accessibilityLabel={`Compare scores across ${artist} concerts`}
         >
           <Icon name="archive" size={15} color={secondary} />
-          <Text style={[styles.ticketActionText, Platform.OS !== "web" && styles.nativeTicketActionText, { color: textColor }]} numberOfLines={2}>Compare {artist} shows</Text>
+          <Text style={[styles.ticketActionText, Platform.OS !== "web" && styles.nativeTicketActionText, { color: textColor }]} numberOfLines={Platform.OS === "ios" ? undefined : 2}>Compare {artist} shows</Text>
           <Icon name="chevron-right" size={13} color={secondary} />
         </PublicPressableLink>
       ) : null}
@@ -369,7 +369,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         <View style={campaignPresentation ? [styles.campaignContent, { backgroundColor: campaignTreatment.contentSurfaceColor }] : null}>
         <View style={styles.header}>
           <Avatar user={author} size={40} priority={avatarPriority} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
-          <Pressable style={{ flex: 1 }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
+          <Pressable style={{ flex: 1, ...(Platform.OS === "ios" ? { minWidth: 120 } : {}) }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
             <View style={styles.nameRow}>
               <Text style={[styles.name, campaignPresentation && { color: campaignTreatment.textColor }]}>{author.name}</Text>
               <BadgeRow badges={userBadges(author)} size={14} />
@@ -442,7 +442,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 
         <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />
 
-        <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : Platform.OS === "ios" ? colors.bg : colors.surface}>
+        <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
 <View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
           <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
           <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} palette={campaignTreatment} />
@@ -476,7 +476,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
       {/* who + score */}
       <View style={styles.header}>
         <Avatar user={author} size={38} priority={avatarPriority} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
-        <Pressable style={{ flex: 1 }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
+        <Pressable style={{ flex: 1, ...(Platform.OS === "ios" ? { minWidth: 120 } : {}) }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
           <View style={styles.nameRow}>
             <Text style={styles.name}>{author.name}</Text>
             <BadgeRow badges={userBadges(author)} size={14} />
@@ -514,12 +514,12 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
               <Text style={styles.performanceEyebrow}>{isOnlineReview ? "ONLINE CONCERT" : performance.festival ? "FESTIVAL" : titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
               <Text style={styles.performanceArchiveMark}>{isOnlineReview ? "MSHPIT / ONLINE REVIEW" : "MSHPIT / LIVE MEMORY"}</Text>
             </View>}
-            <Text style={[styles.performanceTitle, Platform.OS !== "web" && styles.nativePerformanceTitle]} numberOfLines={3}>
+            <Text style={[styles.performanceTitle, Platform.OS !== "web" && styles.nativePerformanceTitle]} numberOfLines={Platform.OS === "ios" ? undefined : 3}>
               {performance.primaryIsArtist
                 ? <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceTitle}>{performanceTitle}</PublicTextLink>
                 : performanceTitle}
             </Text>
-            {!!performance.secondary && <Text style={styles.performanceSubtitle} numberOfLines={2}>{performance.secondary}</Text>}
+            {!!performance.secondary && <Text style={styles.performanceSubtitle} numberOfLines={Platform.OS === "ios" ? undefined : 2}>{performance.secondary}</Text>}
             {Platform.OS === "web" && <View style={styles.performancePerforation} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
               <View style={styles.performancePerforationLine} />
               <View style={styles.performancePerforationDot} />
@@ -541,12 +541,12 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
                 </Text>
                 {!!log.eventAddress && <Text selectable style={styles.seenTxt} numberOfLines={2}>Event address: {log.eventAddress}</Text>}
                 {log.seen > 1 ? <Text style={styles.seenTxt}>{ordinal(log.seen)} time in the pit</Text> : null}
-                <SupportingActsLine post={log} onOpenArtist={onOpenArtist} />
+                {Platform.OS !== "ios" && <SupportingActsLine post={log} onOpenArtist={onOpenArtist} />}
               </>
             )}
           </View>
         </View>
-        {!isOnlineReview ? (
+        {!isOnlineReview ? (Platform.OS !== "ios" &&
           <TicketActionRail
             showHref={canonicalPostHref}
             onOpenShow={cityOnlyReview ? openPostDetail : () => (onOpenShow || onOpen)?.(log)}
@@ -603,6 +603,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
               <Text style={styles.statsSub}>{isOnlineReview ? "Your online concert score" : hasDimensions && factors ? "The details you rated" : factors ? "Band vs room" : "Your overall score"}</Text>
             </View>
           </View>
+          {Platform.OS === "ios" && !isOnlineReview && !!factors && <Text style={styles.factors}>{factors}</Text>}
           {isOnlineReview
             ? <Text style={styles.onlineRatingNote}>Rating for the online concert</Text>
             : <RatingBars dims={log.dims} band={band} room={room} />}
@@ -635,7 +636,19 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
       )}
       {convertingNotice}
 
-      {!isOnlineReview && (
+      {Platform.OS === "ios" && !isOnlineReview && <>
+        <SupportingActsLine key={`lineup:${log.id}`} post={log} onOpenArtist={onOpenArtist} compact={compactContent} />
+        <TicketActionRail
+          showHref={canonicalPostHref}
+          onOpenShow={cityOnlyReview ? openPostDetail : () => (onOpenShow || onOpen)?.(log)}
+          reviewOnly={cityOnlyReview}
+          compareHref={canCompareArtistShows ? postContext.artistConcertsHref : null}
+          onCompare={openArtistShows}
+          artist={postContext.artist}
+        />
+      </>}
+
+      {!isOnlineReview && (Platform.OS !== "ios" &&
         <>
           {/* perforated ticket-stub line */}
           <View style={styles.perfWrap}>
@@ -666,7 +679,8 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 
       {/* setlist - de-emphasized, collapsible */}
       {!isOnlineReview && setlist.length > 0 && (
-        <Pressable style={styles.setRow} onPress={() => setRevealed((v) => !v)}>
+        <Pressable style={styles.setRow} onPress={() => setRevealed((v) => !v)}
+          {...(Platform.OS === "ios" ? { accessibilityRole: "button", accessibilityState: { expanded: revealed }, accessibilityLabel: `${revealed ? "Hide" : "Show"} setlist. ${setlist.length} songs` } : {})}>
           <Icon name={revealed ? "chevron-down" : "chevron-right"} size={15} color={colors.textFaint} />
           <Text style={styles.setTitle}>SETLIST · {setlist.length}</Text>
           {!revealed && <Text style={styles.lock}>tap to reveal</Text>}
@@ -679,7 +693,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
       <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
 
       {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
-      <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : Platform.OS === "ios" ? colors.bg : colors.surface}>
+      <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
 <View style={styles.footer}>
         <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
         <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
@@ -692,7 +706,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           {Platform.OS === "web" && <Text style={styles.commentActionText}>Comments</Text>}
           <Text style={styles.fCount}>{commentCount}</Text>
         </PublicPressableLink>
-        {(Platform.OS === "web" || isOnlineReview) && <ViewTally count={viewCount} />}
+        {(Platform.OS === "web" || Platform.OS === "ios" || isOnlineReview) && <ViewTally count={viewCount} />}
         <SocialShareButton accountId={session?.id || null} model={shareModel} style={Platform.OS !== "web" ? styles.nativeFooterButton : undefined} />
         <View style={{ flex: 1 }} />
         {canEdit && (
@@ -854,9 +868,19 @@ const styles = StyleSheet.create({
   whyDetail: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 7 },
   controlPressed: { backgroundColor: colors.surfaceAlt, transform: [{ scale: 0.96 }] },
   ...(Platform.OS === "ios" ? {
-    card: { backgroundColor: colors.bg, borderRadius: 0, borderWidth: 0, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.lineSoft, paddingHorizontal: 0, paddingTop: 2, paddingBottom: 24, marginBottom: 24, boxShadow: "none" },
-    name: { color: colors.text, fontFamily: font, fontWeight: "600", fontSize: 16, letterSpacing: -0.2 },
+    card: { backgroundColor: colors.surface, borderRadius: 18, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, padding: 16, marginBottom: 16, boxShadow: "none" },
+    header: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 },
+    nameRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 },
+    name: { flexShrink: 1, color: colors.text, fontFamily: font, fontWeight: "600", fontSize: 16, letterSpacing: -0.2 },
     sub: { color: colors.textDim, fontFamily: font, fontSize: 13, lineHeight: 18, marginTop: 3 },
     review: { color: colors.text, fontFamily: font, fontSize: 16, lineHeight: 24, fontWeight: "400" },
+    performanceDate: { color: colors.textDim, fontFamily: font, fontSize: 13 },
+    performanceTitle: { color: colors.text, fontFamily: font, fontSize: 21, lineHeight: 28, fontWeight: "700", letterSpacing: -0.3, marginTop: 8 },
+    nativePerformanceTitle: { fontSize: 21, lineHeight: 28, marginTop: 0, fontWeight: "700" },
+    nativeTicketActionRail: { flexDirection: "column", backgroundColor: "transparent", borderWidth: 0, borderTopWidth: StyleSheet.hairlineWidth, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, marginTop: 16 },
+    nativeTicketActionText: { flex: 1, fontSize: 14, lineHeight: 20, textAlign: "left", fontWeight: "500" },
+    setRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 10, minHeight: 44, paddingVertical: 8 },
+    whyButton: { minHeight: 44, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7, borderRadius: radius.sm },
+    footer: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 4, rowGap: 4, marginTop: 12, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft },
   } : {}),
 });

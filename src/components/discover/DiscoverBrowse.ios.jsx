@@ -105,18 +105,19 @@ export function FeaturedRail({ slides = [], artists = [], width, onOpen, onOpenA
       {entries.map((entry, index) => <Pressable key={entry.id} accessibilityRole="button"
         accessibilityLabel={`Open ${entry.title}${entry.artist ? "" : `. ${browseDate(entry.date)}. ${entry.venue || ""}`}. ${index + 1} of ${entries.length}`}
         onPress={() => entry.artist ? onOpenArtist?.(entry.artist) : onOpen?.(eventFromBrowseSlide(entry))}
-        style={({ pressed }) => [styles.feature, { width: cardWidth, backgroundColor: washFor(entry.title) }, pressed && styles.pressed]}>
-        <BrowseArtwork uri={entry.media?.uri} name={entry.title} size={cardWidth} style={StyleSheet.absoluteFill}
-          proxy={!!entry.artist} contain={entry.media?.source === "catalog"} />
-        <View style={styles.featureTop}><View style={styles.featureBadge}><Text style={styles.featureBadgeText}>{entry.artist ? "ARTIST SPOTLIGHT" : "LIVE MUSIC"}</Text></View></View>
-        <View style={styles.featureSpace} />
+        style={({ pressed }) => [styles.feature, { width: cardWidth }, pressed && styles.pressed]}>
+        <View style={styles.featureArtwork}>
+          <BrowseArtwork uri={entry.media?.uri} name={entry.title} size={cardWidth} style={StyleSheet.absoluteFill}
+            proxy={!!entry.artist} contain={entry.media?.source === "catalog"} />
+          <View style={styles.featureTop}><View style={styles.featureBadge}><Text style={styles.featureBadgeText}>{entry.artist ? "ARTIST SPOTLIGHT" : "LIVE MUSIC"}</Text></View></View>
+        </View>
         <View style={styles.featureCopy}>
           <Text style={styles.featureTitle}>{entry.title}</Text>
           <View style={styles.featureBottom}>
             <Text style={styles.featureDetail}>{entry.artist
               ? discoverGenreLabel(entry.artist.genre) || "Explore the artist"
               : [browseDate(entry.date), entry.venue || entry.place].filter(Boolean).join(" · ")}</Text>
-            <View style={styles.featureArrow}><Icon name="chevron-right" color="#FFFFFF" size={17} /></View>
+            <View style={styles.featureArrow}><Icon name="chevron-right" color={colors.textDim} size={17} /></View>
           </View>
         </View>
       </Pressable>)}
@@ -376,14 +377,15 @@ const styles = StyleSheet.create({
   selectedText: { color: colors.amber }, rail: { flexGrow: 0 }, railContent: { paddingHorizontal: GUTTER, gap: GAP, alignItems: "flex-start" },
   artwork: { overflow: "hidden" }, artworkFallback: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
   initials: { color: "rgba(255,255,255,0.55)", fontFamily: "System", fontSize: 46, fontWeight: "700", letterSpacing: -1 },
-  feature: { borderRadius: 18, borderCurve: "continuous", overflow: "hidden", minHeight: 292 },
-  featureTop: { padding: 16, alignItems: "flex-start" }, featureBadge: { borderRadius: 7, backgroundColor: "rgba(0,0,0,0.58)", paddingVertical: 6, paddingHorizontal: 8 },
+  feature: { borderRadius: 18, borderCurve: "continuous", overflow: "hidden", backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.line },
+  featureArtwork: { width: "100%", aspectRatio: 1.6, overflow: "hidden" },
+  featureTop: { padding: 14, alignItems: "flex-start" }, featureBadge: { borderRadius: 7, backgroundColor: "rgba(0,0,0,0.58)", paddingVertical: 6, paddingHorizontal: 8 },
   featureBadgeText: { color: "#FFFFFF", fontFamily: "System", fontSize: 10, fontWeight: "700", letterSpacing: 1.1 },
-  featureSpace: { minHeight: 130, flex: 1 }, featureCopy: { padding: 16, gap: 6, backgroundColor: "rgba(0,0,0,0.76)" },
-  featureTitle: { color: "#FFFFFF", fontFamily: "System", fontSize: 27, fontWeight: "700", letterSpacing: -.55 },
+  featureCopy: { padding: 16, gap: 8 },
+  featureTitle: { color: colors.text, fontFamily: "System", fontSize: 24, fontWeight: "700", letterSpacing: -.45 },
   featureBottom: { flexDirection: "row", alignItems: "center", gap: 12 },
-  featureDetail: { flex: 1, color: "#F1E9E3", fontFamily: "System", fontSize: 14, lineHeight: 20 },
-  featureArrow: { width: 28, height: 28, borderRadius: 14, backgroundColor: "rgba(255,255,255,0.14)", alignItems: "center", justifyContent: "center" },
+  featureDetail: { flex: 1, color: colors.textDim, fontFamily: "System", fontSize: 14, lineHeight: 20 },
+  featureArrow: { width: 28, height: 28, borderRadius: 14, backgroundColor: colors.surfaceAlt, alignItems: "center", justifyContent: "center" },
   artistCard: { gap: 5, minHeight: 44 }, artistArt: { width: "100%", aspectRatio: 1, borderRadius: 12, borderCurve: "continuous", marginBottom: 5 },
   artistName: { color: colors.text, fontFamily: "System", fontSize: 16, fontWeight: "600", letterSpacing: -.2 },
   artistDetail: { color: colors.textDim, fontFamily: "System", fontSize: 13 },
