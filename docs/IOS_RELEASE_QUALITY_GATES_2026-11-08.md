@@ -218,3 +218,29 @@ Highest-value remaining physical fixture gates:
 Use authorized isolated data for attendance, sending, read-state and external
 opening verification. Native layout, focus, spoken timing, UI-thread ordering and
 physical Release performance are not certified by source/React test fixtures.
+
+
+## Latest compiled checkpoint: primary-screen recovery
+
+95df901 supersedes 79858de as the latest preserved signed preview. Its 8,183-test
+suite, three platform exports and exact signed copy passed. Web initial gzip is
+509.9 / 512.0 KiB; retain this budget gate. Android/web source maps contain no app
+.ios implementations and select the inert Feed observer. This is build/source
+isolation evidence, not physical behavior or performance certification.
+
+In an authorized isolated fixture, verify:
+- Discover's query survives cold failure and Retry; no-match copy requires a
+  current ready result.
+- Feed cold/fallback failure exposes a reachable Refresh; cached cards remain,
+  and verified empty content uses neutral copy.
+- Profile identity can remain while posts and nested concert history fail
+  independently, without false zero/absence claims or an empty-map invitation.
+- Complete-empty and partial/cached history retain their distinctions and the
+  original Open review navigation.
+- Pinned scores remain readable in light themes at largest supported text size.
+- Date-only Upcoming retains date/navigation without a guessed doors countdown.
+
+These checks require real layout, focus, VoiceOver and scroll-reachability
+observation. The current live-linked preview is not a mutation-blocked test app;
+keep the existing live-data and installation boundaries. Signing expiry and the
+unpatched native decoder advisory remain unchanged.

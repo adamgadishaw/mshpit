@@ -2,12 +2,13 @@
 
 ## Latest fully verified artifact
 
-Checkpoint 79858de is preserved at
-.tmp/ios-phone-checkpoints/flagship-79858de/MshpitDev.app with a receipt and exact
-manifest. All 8,130 tests, three platform exports and signed Release compilation
-passed. This is a development-signed, live-linked preview, not installed and not
-App Store distribution. Physical interaction/accessibility/performance are still
-open. Later in-progress slices are not included until separately verified.
+Checkpoint 95df901 is preserved at
+.tmp/ios-phone-checkpoints/flagship-95df901/MshpitDev.app with a receipt, exact
+manifest and platform-isolation record. All 8,183 tests, three platform exports
+and signed Release compilation passed. This is a development-signed, live-linked
+preview, not installed and not App Store distribution. Physical interaction,
+accessibility and performance remain open. Earlier signed checkpoints, including
+79858de, remain preserved. Later work is not included until separately verified.
 
 ## Scope and release boundary
 
@@ -714,3 +715,77 @@ Native keyboard/cursor, VoiceOver, gesture arbitration, real offline media and
 physical performance remain unverified. Attendance, sends, read markers and
 external opening must be tested against an authorized isolated fixture, not as
 synthetic activity on the live backend.
+
+## Primary-screen recovery checkpoint: 95df901
+
+Source 95df9017f075f96baec5bf915fadb29fe903b232 was frozen and compiled on
+November 8 at 08:35:50 UTC. This slice prioritizes truthful state and usable
+recovery in the primary journeys rather than adding decorative UI.
+
+- Discover's artist query no longer turns an unfinished or failed overview read
+  into a false no-match result. Existing query/scope and cached matching rows
+  remain, with the existing explicit retry action.
+- Feed now distinguishes an unconfirmed first read from verified empty content.
+  Initial/fallback failure exposes Refresh instead of a dead cursorless older-
+  posts footer. Cached cards and buffered local reveals remain available.
+- Public Profile and You no longer claim zero reviews, no posts or no upcoming
+  history based on an unavailable/incomplete history response. Current complete
+  receipts still establish real empty states, and cached rows remain visible.
+- The nested concert-history component has its own independent history source.
+  Its count stamp, summary and empty-map invitation now follow the same iOS
+  truthfulness rule. The actual child, hook, resource and lazy map are tested,
+  not just a mocked child. Existing map preference, rows and review links remain.
+- Favorite rating text uses readable theme amber on iOS rather than an arbitrary
+  profile accent. All 96 actual theme/accent combinations meet 4.5:1 for this
+  text. Member banner/border accents remain unchanged; this is not an app-wide
+  accessibility certification.
+- iOS Profile no longer labels the normalized date's 20:00 fallback as a precise
+  countdown to doors. Date, provenance and navigation remain. Shared date and
+  calendar normalization are unchanged; no actual doors time was inferred.
+
+Feed observer scope is deliberately narrow. Its platform-resolved iOS owner
+observes the existing admitted head read, and retains only status, verification
+and an opaque lifetime token. It owns no requests, content, account identifiers,
+cache or analytics. Current receipts, cancellation, account resets and logout
+retire stale status. Android/web resolve to an inert default. Executed reader
+parity tests preserve request options/order, data updates, returns and telemetry;
+removing only the observer additions reproduces the prior Store source. This
+is not proof of native timing or performance neutrality.
+
+Verification and artifact evidence:
+- Complete suite: 8,183 passed; zero failed, skipped or cancelled; 86.248 seconds.
+  Log: /tmp/mshpit-ios-primary-recovery-final-full-tests.log.
+- The earlier run's four failures were outdated AST-extracted logout fixtures
+  missing the new optional observer dependency. Their original auth assertions
+  remain, with actual observer reset/late-receipt checks added. The failed log
+  /tmp/mshpit-ios-primary-recovery-full-tests.log is preserved, not replaced.
+- Syntax: 920 Node files. Architecture: 144 Store hooks including 47 state hooks,
+  and 156 inline API routes, unchanged. Diff check passed.
+- Independent review and actual React/source tests cover loading, cold failure,
+  cached data, explicit retry, complete empty, partial history and account/epoch
+  retirement. The saved primary-journey-recovery.mjs harness passed four positive
+  groups and caught six deliberate baseline/mutated regressions. Its SHA-256 is
+  65f4df6c389cab8dedb84b5510d6fc290dc0d17fc74f2bd3e81c304bbb48db76.
+- iOS and Android Hermes exports and web export passed. Android's 2,194 source
+  entries and web's 81 maps / 1,165 distinct sources include no app .ios module.
+  Both resolve Feed status to the default helper and exclude its domain owner.
+  Local source maps are evidence only; they were not uploaded or deployed.
+- Web initial JavaScript is 509.9 / 512.0 KiB gzip. The narrow remaining budget
+  is a release constraint for future changes, not a claim of unchanged bytes.
+- Signed artifact: 60,266,681 bytes; 52 files/links; 11 privacy manifests. Its
+  exact copy and deep strict signature verify. The provisioning profile and all
+  11 privacy manifests are byte-identical to 79858de; only executable, JavaScript
+  and signature resource bytes differ. Existing signing identity/grants remain.
+- JavaScript SHA-256:
+  0a154ad353501d676e22a04d27d5634f1bb5425383bfeec02776460e1666acec
+- Executable SHA-256:
+  3c41d8662e884a0d0111c4c4864f42882e33171fcaa34938def0cfd16462baa8
+- Exact artifact manifest SHA-256:
+  2046ab7dea2719fa7c8ac2cbc6bcf0339cf15356919764930eeb8288cc949ae9
+
+No phone installation, website deployment, production synthetic actions,
+permission change or native runtime certification occurred. The live-linked
+artifact still needs authorized fixture checks of largest text, focus/VoiceOver,
+actual retry controls and physical Release performance. Profile history loaders,
+concert resources/map implementation, calendar/show-time policy, API client,
+dependencies and Pod lock remain unchanged for this checkpoint.

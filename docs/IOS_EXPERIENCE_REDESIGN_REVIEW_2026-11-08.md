@@ -1,5 +1,13 @@
 # iOS experience redesign review
 
+This is the dated initial visual-review checkpoint, not the current release
+receipt. See IOS_FLAGSHIP_HARDENING_2026-11-08.md and
+IOS_RELEASE_QUALITY_GATES_2026-11-08.md for later fixes, signed artifacts and
+remaining native acceptance. Any early zero-vulnerability npm audit statement
+below describes the server-only production dependency audit; it does not clear
+mobile dependencies or native Pods. The dated native decoder review preserves
+the separate unresolved advisory and path-specific mitigation limits.
+
 ## Scope and isolation
 
 This change is a local review checkpoint for the iOS app. It builds on cce58fa
