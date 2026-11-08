@@ -26,6 +26,7 @@ function load(name, { reduced = false, reader = false, fontScale = 1, queued = f
       Modal:'Modal',Pressable:'Pressable',ScrollView:'ScrollView',Text:'Text',View:'View',
       StyleSheet:{create:x=>x,absoluteFill:{position:'absolute'},hairlineWidth:1},useWindowDimensions:()=>({width:393,fontScale})},
     'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:59,bottom:34})},
+    '../hooks/useIOSDetailBackBlock': { IOSDetailBackContext: { Provider: 'DetailBackProvider' } },
     '../theme':{colors:new Proxy({},{get:()=> '#888'}),font:'System'},
     '../domain/menuJourney.mjs':{journeyMenuModel}, '../domain/iosNavigationPolicy.mjs':{iosBackSwipeCommits},
     './Avatar':'Avatar','./BrandMark':'BrandMark','./Icon':'Icon','./NativeTabRail':'TabRail',

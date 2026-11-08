@@ -1,3 +1,4 @@
+import useIOSDetailBackBlock from "../hooks/useIOSDetailBackBlock";
 import CatalogText from "../features/catalogEditor/CatalogText";
 import { Suspense, useState, useEffect, useRef } from "react";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
@@ -561,6 +562,7 @@ export default function ArtistScreen({ artistReturn, initialSection, artistName,
   const [reportNote, setReportNote] = useState("");
   const [reportingBusy, setReportingBusy] = useState(false);
   const [reportedSongs, setReportedSongs] = useState({});
+  useIOSDetailBackBlock(!!reportingSong || reportingBusy);
   const submitSongReport = async (track) => {
     if (reportingBusy) return;
     const descriptor = trackReportDescriptor(track, a.name);

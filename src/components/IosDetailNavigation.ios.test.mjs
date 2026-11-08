@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { parse } from "@babel/parser";
+import { createIOSCommentDrafts } from "../domain/iosCommentDrafts.mjs";
 import { createIOSLinkedNavigation } from "../domain/iosLinkedNavigation.mjs";
 const require = createRequire(import.meta.url);
 const React = require("react"), reconciler = require("react-reconciler");
@@ -49,7 +50,7 @@ function createRenderer() {
     act(callback) { renderer.flushSyncFromReconciler(callback); flush(); } };
 }
 
-function rootNavigationFixture(platform = "ios") {
+function rootNavigationFixture(platform = "ios", frames) {
   const source = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
   const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
   const names = ["cancelNewsStory", "cancelPublicRoute", "applyNavigation", "runAfterComposerClose", "popStack", "requestComposerPop", "back"];
@@ -73,7 +74,7 @@ function rootNavigationFixture(platform = "ios") {
   walk(ast); assert.equal(predicates.length, 2); assert.equal(predicates[0], predicates[1]); assert.ok(predicate); assert.ok(edgeCallbacks.length); assert.ok(edgeCallbacks.every(name => name === "back"));
   for (const name of names) assert.ok(declarations.has(name), `Missing Root callback ${name}`);
   const owner = createIOSLinkedNavigation(); const scope = owner.account("A", 1); owner.mount();
-  const nav = { venueName: "fixture" }, stack = [{}, { profileId: "fixture" }, nav], queued = [];
+  const nav = frames?.at(-1) || { venueName: "fixture" }, stack = frames || [{}, { profileId: "fixture" }, nav], queued = [];
   let aborts = 0;
   const stackRef = { current: stack }, navigationRef = { current: { stack, tab: "feed", landing: false } };
   const bindings = {
@@ -92,9 +93,9 @@ function rootNavigationFixture(platform = "ios") {
   };
 }
 
-function fixture() {
-  const renderer = createRenderer(), root = rootNavigationFixture(), queue = [], pans = [], listeners = new Set(), shared = [], confirmedListeners = [];
-  let hidden = false, enabled = true, reduced = false, callback = root.back, presentationKey, width = 412;
+function fixture(frames) {
+  const renderer = createRenderer(), root = rootNavigationFixture("ios", frames), queue = [], pans = [], listeners = new Set(), shared = [], confirmedListeners = [];
+  let hidden = false, enabled = true, reduced = false, callback = root.back, presentationKey, width = 412, blocked = false, secondBlocked = false;
   const never = new Promise(() => {});
   const native = { View: 'View', StyleSheet: { create: x => x }, useWindowDimensions: () => ({ width }), AccessibilityInfo: {
     isScreenReaderEnabled: () => never, addEventListener: (_name, cb) => { listeners.add(cb); return { remove: () => listeners.delete(cb) }; },
@@ -105,7 +106,7 @@ function fixture() {
     return value.current;
   };
   const Gesture = { Pan() { const handlers = {}; pans.push(handlers); const proxy = new Proxy(handlers, { get: (o, k) => value => { o[k] = value; return proxy; } }); return proxy; } };
-  let preference;
+  let preference, blockModule;
   const imports = (name, local) => {
     if (name === 'react') return React;
     if (name === 'react/jsx-runtime') return require(name);
@@ -113,6 +114,7 @@ function fixture() {
     if (name === 'react-native-gesture-handler') return { Gesture, GestureDetector: 'GestureDetector' };
     if (name === 'react-native-reanimated') return { __esModule: true, default: { View: 'AnimatedView' }, ReduceMotion: { System: 'system' }, useSharedValue, useAnimatedStyle: cb => cb(), withSpring: v => v };
     if (name === 'react-native-worklets') return { scheduleOnRN: (cb, ...args) => queue.push(() => cb(...args)) };
+    if (name === '../hooks/useIOSDetailBackBlock') return blockModule;
     if (name === '../hooks/useScreenReaderEnabled') return preference;
     if (name === '../hooks/useReducedMotion') return () => reduced;
     if (name === '../theme') return { colors: {} };
@@ -122,16 +124,20 @@ function fixture() {
   preference = execute('../hooks/useScreenReaderEnabled.ios.js', imports);
   const subscribe = preference.subscribeConfirmedScreenReaderEnabled;
   preference.subscribeConfirmedScreenReaderEnabled = listener => { confirmedListeners.push(listener); return subscribe(listener); };
+  blockModule = execute('../hooks/useIOSDetailBackBlock.ios.js', imports);
   const Detail = execute('./IosDetailNavigation.ios.jsx', imports).default;
+  function Editor({ active }) { blockModule.default(active); return React.createElement('Editor'); }
   function Gate() { if (hidden) throw never; return null; }
   const f = { root, queue, pans, shared, renderer, confirmedListeners,
-    render() { renderer.render(React.createElement(React.Suspense, { fallback: React.createElement('Fallback') }, React.createElement(Detail, { enabled, onBack: callback, isCurrentRoute: root.isCurrentRoute, presentationKey }, React.createElement('Venue')), React.createElement(Gate))); },
+    render() { renderer.render(React.createElement(React.Suspense, { fallback: React.createElement('Fallback') }, React.createElement(Detail, { enabled, onBack: callback, isCurrentRoute: root.isCurrentRoute, presentationKey }, React.createElement('Venue'), React.createElement(Editor, { active: blocked }), React.createElement(Editor, { active: secondBlocked })), React.createElement(Gate))); },
     reader(value) { for (const cb of [...listeners]) cb(value); },
     queueBack(pan = pans.at(-1), success = true) {
       pan.onTouchesDown({ allTouches: [{ absoluteX: 10, absoluteY: 100 }], numberOfTouches: 1 }, { fail: noop });
       pan.onEnd({ absoluteX: 150, absoluteY: 101 }, success);
     },
     hide() { hidden = true; f.render(); }, show() { hidden = false; f.render(); },
+    block(value) { blocked = value; f.render(); },
+    secondBlock(value) { secondBlocked = value; f.render(); },
     enable(value) { enabled = value; f.render(); },
     resize(value) { width = value; f.render(); },
     keepPresentation() { presentationKey = root.bindings.nav; f.render(); },
@@ -213,6 +219,9 @@ test('installed Metro resolves only iOS to edge navigation and confirmed reader 
     assert.equal(component.filePath, fileURLToPath(new URL(`./IosDetailNavigation${suffix}.jsx`, import.meta.url)));
     const hook = resolve({ ...context, originModulePath: component.filePath }, '../hooks/useScreenReaderEnabled', platform);
     assert.equal(hook.filePath, fileURLToPath(new URL(`../hooks/useScreenReaderEnabled${suffix}.js`, import.meta.url)));
+    const blocker = resolve({ ...context, originModulePath: component.filePath }, '../hooks/useIOSDetailBackBlock', platform);
+    assert.equal(blocker.filePath, fileURLToPath(new URL(`../hooks/useIOSDetailBackBlock${suffix}.js`, import.meta.url)));
+    if (platform !== 'ios') assert.equal(readFileSync(blocker.filePath, 'utf8'), 'export default function useIOSDetailBackBlock() {}\n');
   }
 });
 test('explicit iOS and Android Back retain existing close guard behavior', () => {
@@ -278,4 +287,104 @@ test('second pointer cancellation returns the current drag home without navigati
   pan.onTouchesDown({ allTouches: [{ absoluteX: 10, absoluteY: 100 }], numberOfTouches: 2 }, { fail() { failures++; } });
   pan.onEnd({ absoluteX: 150, absoluteY: 101 }, false); pan.onFinalize();
   assert.equal(failures, 1); assert.equal(f.shared[2].get(), 0); assert.equal(f.queue.length, 0); f.close();
+});
+
+for (const key of ['profileId', 'artistName', 'venueName', 'openLog', 'post', 'followList']) {
+  test(`edge Back on ${key} pops exactly the real previous frame`, () => {
+    const previous = { cityGuide: 'London', retainedContext: 'fixture' };
+    const frames = [{}, previous, { [key]: 'detail' }];
+    const f = fixture(frames); f.queueBack(); f.queue.shift()();
+    assert.deepEqual(f.root.queued.at(-1), frames.slice(0, -1));
+    assert.equal(f.root.queued.at(-1).at(-1), previous);
+    f.close();
+  });
+}
+test('inline editor immediately retires queued Back; closing enables a fresh gesture only', () => {
+  const f = fixture(), old = f.pans.at(-1); f.queueBack(old);
+  f.block(true); assert.equal(f.pans.at(-1).enabled, false);
+  f.queue.shift()(); assert.equal(f.root.queued.length, 0);
+  f.block(false); f.queueBack(old); assert.equal(f.queue.length, 0);
+  f.queueBack(); f.queue.shift()(); assert.equal(f.root.queued.at(-1).length, 2); f.close();
+});
+test('two nested editor blockers must both close before Back is renewed', () => {
+  const f = fixture(); f.block(true); f.secondBlock(true); f.block(false);
+  assert.equal(f.pans.at(-1).enabled, false);
+  f.secondBlock(false); assert.equal(f.pans.at(-1).enabled, true);
+  f.queueBack(); f.queue.shift()(); assert.equal(f.root.queued.at(-1).length, 2); f.close();
+});
+test('inline editor opening revokes delayed Root close guard', () => {
+  const f = fixture(); let proceed;
+  f.root.bindings.composerCloseGuardRef.current = guard => { proceed = guard.proceed; };
+  f.queueBack(); f.queue.shift()(); f.block(true); f.block(false);
+  const aborts = f.root.aborts; proceed();
+  assert.equal(f.root.queued.length, 0); assert.equal(f.root.aborts, aborts); f.close();
+});
+test('Post edge Back preserves Root-owned comment text, reply and pending delivery', () => {
+  const drafts = createIOSCommentDrafts(); drafts.account('A', 1);
+  const lease = drafts.lease('post'); lease.edit('A retained comment'); lease.reply('parent');
+  const claim = lease.claim(true);
+  const f = fixture([{}, { openLog: 'show' }, { post: { id: 'post' } }]);
+  f.queueBack(); f.queue.shift()(); assert.equal(f.root.queued.at(-1).at(-1).openLog, 'show');
+  assert.equal(drafts.lease('post'), lease); assert.equal(lease.read().text, 'A retained comment');
+  assert.equal(lease.read().parentId, 'parent'); assert.equal(lease.read().sending, true);
+  lease.settle(claim, { ok: false }); assert.equal(lease.read().retry, true); f.close();
+});
+
+test('inline editor remains blocked through Suspense reconnect and reader interruption', () => {
+  const f = fixture(); f.block(true); f.hide(); f.show();
+  f.renderer.act(() => { f.reader(true); f.reader(false); });
+  assert.equal(f.pans.at(-1).enabled, false);
+  f.block(false); f.queueBack(); f.queue.shift()(); assert.equal(f.root.queued.at(-1).length, 2); f.close();
+});
+for (const [file, keys] of [
+  ['ArtistScreen.jsx', ['reportingSong', 'reportingBusy']],
+  ['ShowScreen.jsx', ['goingTicketPrompt', 'goingBusy']],
+]) {
+  test(`actual ${file} inline draft/busy expressions revoke queued Back`, () => {
+    const source = readFileSync(new URL(`../screens/${file}`, import.meta.url), 'utf8');
+    const ast = parse(source, { sourceType: 'module', plugins: ['jsx'] });
+    const calls = [];
+    function walk(node) {
+      if (!node || typeof node !== 'object') return;
+      if (node.type === 'CallExpression' && node.callee.name === 'useIOSDetailBackBlock') calls.push(node.arguments[0]);
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) value.forEach(walk);
+        else if (value && typeof value === 'object') walk(value);
+      }
+    }
+    walk(ast); assert.equal(calls.length, 1);
+    const predicate = new Function(...keys, `return ${source.slice(calls[0].start, calls[0].end)};`);
+    assert.equal(predicate(...keys.map(() => false)), false);
+    for (const key of keys) {
+      const f = fixture(); f.queueBack(); f.block(predicate(...keys.map(candidate => candidate === key)));
+      f.queue.shift()(); assert.equal(f.root.queued.length, 0, key); f.close();
+    }
+  });
+}
+
+test('Artist report Cancel restores edge even when the canceled local input remains', () => {
+  const source = readFileSync(new URL('../screens/ArtistScreen.jsx', import.meta.url), 'utf8');
+  const ast = parse(source, { sourceType: 'module', plugins: ['jsx'] });
+  let cancelSource, predicateSource;
+  function walk(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'CallExpression' && node.callee.name === 'useIOSDetailBackBlock') predicateSource = source.slice(node.arguments[0].start, node.arguments[0].end);
+    if (node.type === 'JSXElement' && node.openingElement.name.name === 'Pressable' && source.slice(node.start, node.end).includes('Cancel</Text>')) {
+      const onPress = node.openingElement.attributes.find(a => a.name?.name === 'onPress');
+      if (onPress && source.slice(onPress.start, onPress.end).includes('setReportingSong(null)')) cancelSource = source.slice(onPress.value.expression.start, onPress.value.expression.end);
+    }
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(walk);
+      else if (value && typeof value === 'object') walk(value);
+    }
+  }
+  walk(ast); assert.ok(cancelSource); assert.ok(predicateSource);
+  let song = { key: 'song' };
+  const cancel = new Function('setReportingSong', `return ${cancelSource};`)(value => { song = value; });
+  const blocked = new Function('reportingSong', 'reportingBusy', 'reportUrl', 'reportNote', `return ${predicateSource};`);
+  const f = fixture(); f.block(blocked(song, false, 'typed URL', 'typed note'));
+  assert.equal(f.pans.at(-1).enabled, false);
+  cancel(); f.block(blocked(song, false, 'typed URL', 'typed note'));
+  assert.equal(f.pans.at(-1).enabled, true); f.queueBack(); f.queue.shift()();
+  assert.equal(f.root.queued.at(-1).length, 2); f.close();
 });

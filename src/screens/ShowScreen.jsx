@@ -1,3 +1,4 @@
+import useIOSDetailBackBlock from "../hooks/useIOSDetailBackBlock";
 import ShowRefreshNotice, { isTransientShowReadFailure, isRetainedShowDocument, restrictedShowAvailabilityCopy } from "./ShowRefreshRecovery";
 import { concertDetailStyles, concertDetailWide } from "../components/concertDetailIOSPresentation.mjs";
 import useIOSTicketAction from "../components/useIOSTicketAction";
@@ -348,6 +349,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const [socialRead, setSocialRead] = useState(null);
   const [attendanceRefreshVersion, setAttendanceRefreshVersion] = useState(0);
   const [goingTicketPrompt, setGoingTicketPrompt] = useState(null);
+  useIOSDetailBackBlock(!!goingTicketPrompt || goingBusy);
   const showDocumentRequestRef = useRef(0);
   const showSocialRequestRef = useRef(0);
   const socialIdentity = showSocialIdentity(key, accountId);

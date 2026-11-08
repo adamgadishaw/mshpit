@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { iosBackGestureAllowed, iosBackSwipeCommits } from "./iosNavigationPolicy.mjs";
 test("iOS edge Back permits read-only details and never silently dismisses editors or media", () => {
-  for (const key of ["profileId", "venueName", "news", "calendar"]) assert.equal(iosBackGestureAllowed({ [key]: true }), true);
-  for (const key of ["artistName", "post", "openLog", "festival", "photos", "logging", "editingPost", "auth", "editProfile", "newsroom", "settings", "thread", "reporting", "ownerApproval"]) {
+  for (const key of ["artistName", "post", "openLog", "followList", "privacy", "terms", "profileId", "venueName", "news", "calendar"]) assert.equal(iosBackGestureAllowed({ [key]: true }), true);
+  for (const key of ["festival", "photos", "logging", "editingPost", "auth", "editProfile", "newsroom", "settings", "thread", "reporting", "ownerApproval"]) {
     assert.equal(iosBackGestureAllowed({ [key]: true }), false);
     assert.equal(iosBackGestureAllowed({ profileId: "Member", [key]: true }), false);
   }

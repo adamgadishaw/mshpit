@@ -6,6 +6,7 @@ import { scheduleOnRN } from "react-native-worklets";
 import useReducedMotion from "../hooks/useReducedMotion";
 import useScreenReaderEnabled, { getConfirmedScreenReaderEnabled, subscribeConfirmedScreenReaderEnabled } from "../hooks/useScreenReaderEnabled";
 import { iosBackSwipeCommits } from "../domain/iosNavigationPolicy.mjs";
+import { IOSDetailBackContext } from "../hooks/useIOSDetailBackBlock";
 import { colors } from "../theme";
 
 export default function IosDetailNavigation({ children, enabled, onBack, isCurrentRoute, presentationKey, presentationScope }) {
@@ -16,6 +17,23 @@ export default function IosDetailNavigation({ children, enabled, onBack, isCurre
   const revision = useRef(0);
   const generation = useSharedValue(0), touching = useSharedValue(false);
   const x = useSharedValue(0), startX = useSharedValue(0), startY = useSharedValue(0);
+  const blockers = useRef(new Set());
+  const [blockRevision, setBlockRevision] = useState(0);
+  const blockScope = useMemo(() => ({
+    add(token) {
+      blockers.current.add(token);
+      // Revoke immediately, before the state update: a queued native release
+      // must not outrun a newly opened inline editor.
+      generation.set(++revision.current);
+      touching.set(false); x.set(0);
+      if (livePermission.current) livePermission.current.active = false;
+      setBlockRevision(value => value + 1);
+    },
+    remove(token) {
+      if (blockers.current.delete(token)) setBlockRevision(value => value + 1);
+    },
+  }), []);
+  const canSwipe = enabled && blockers.current.size === 0;
   const ownerKey = presentationKey ?? onBack;
   useLayoutEffect(() => {
     // Effect setup is a new presentation even when Suspense reconnects the
@@ -31,23 +49,23 @@ export default function IosDetailNavigation({ children, enabled, onBack, isCurre
     const renew = () => {
       if (!mounted) return;
       revoke();
-      const next = { generation: revision.current, active: !!enabled && !reader && getConfirmedScreenReaderEnabled() === false };
+      const next = { generation: revision.current, active: !!enabled && blockers.current.size === 0 && !reader && getConfirmedScreenReaderEnabled() === false };
       livePermission.current = next;
       setPermission(next);
     };
     const unsubscribe = subscribeConfirmedScreenReaderEnabled(renew);
     renew();
     return () => { mounted = false; revoke(); unsubscribe(); };
-  }, [enabled, reader, ownerKey, presentationScope, width]);
+  }, [enabled, reader, ownerKey, presentationScope, width, blockRevision]);
   const back = useMemo(() => () => {
-    const current = () => permission?.active && livePermission.current === permission
+    const current = () => blockers.current.size === 0 && permission?.active && livePermission.current === permission
       && getConfirmedScreenReaderEnabled() === false && (!isCurrentRoute || isCurrentRoute());
     if (!current()) return;
     // Keep the same fence through Root's potentially deferred close guard.
     onBack?.(undefined, current);
   }, [permission, onBack, isCurrentRoute]);
   const ownedGeneration = permission?.generation;
-  const gesture = useMemo(() => Gesture.Pan().enabled(!!enabled && !reader).maxPointers(1)
+  const gesture = useMemo(() => Gesture.Pan().enabled(!!canSwipe && !reader).maxPointers(1)
     .activeOffsetX(12).failOffsetY([-12, 12])
     .onTouchesDown((event, manager) => {
       if (generation.get() !== ownedGeneration) { manager.fail(); return; }
@@ -62,11 +80,11 @@ export default function IosDetailNavigation({ children, enabled, onBack, isCurre
       touching.set(false);
       if (iosBackSwipeCommits({ dx: event.absoluteX - startX.get(), dy: event.absoluteY - startY.get(), width, canceled: !success })) scheduleOnRN(back);
     })
-    .onFinalize(() => { if (generation.get() !== ownedGeneration) return; touching.set(false); x.set(withSpring(0, { duration: 260, dampingRatio: 1, overshootClamping: true, reduceMotion: ReduceMotion.System })); }), [enabled, reader, width, x, startX, startY, back, generation, touching, ownedGeneration]);
+    .onFinalize(() => { if (generation.get() !== ownedGeneration) return; touching.set(false); x.set(withSpring(0, { duration: 260, dampingRatio: 1, overshootClamping: true, reduceMotion: ReduceMotion.System })); }), [canSwipe, reader, width, x, startX, startY, back, generation, touching, ownedGeneration]);
   const animated = useAnimatedStyle(() => ({ transform: [{ translateX: reduced ? 0 : x.get() }] }));
-  return <View style={styles.fill}>
+  return <IOSDetailBackContext.Provider value={blockScope}><View style={styles.fill}>
     <Animated.View style={[styles.fill, animated]}>{children}</Animated.View>
-    {enabled && !reader ? <GestureDetector gesture={gesture}><View style={styles.edge} testID="ios-detail-back-edge" accessible={false} accessibilityElementsHidden /></GestureDetector> : null}
-  </View>;
+    {canSwipe && !reader ? <GestureDetector gesture={gesture}><View style={styles.edge} testID="ios-detail-back-edge" accessible={false} accessibilityElementsHidden /></GestureDetector> : null}
+  </View></IOSDetailBackContext.Provider>;
 }
 const styles = StyleSheet.create({ fill: { flex: 1, minHeight: 0, backgroundColor: colors.bg }, edge: { position: "absolute", left: 0, top: 52, bottom: 0, width: 20 } });
