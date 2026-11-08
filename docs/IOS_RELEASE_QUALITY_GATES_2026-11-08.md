@@ -293,3 +293,13 @@ Nine new Profile/You accessibility annotations and two new preference subscripti
 are now strictly iOS-only. Default platform source checks and mocked component
 execution complement export isolation; real Android/web assistive-technology
 behavior is not certified. Physical iOS gates and the installation hold remain.
+
+## Current Search-feedback artifact b907ea8
+
+The preserved signed preview now includes verified actual-state Search speech,
+with 8,310 passing tests and all exports/build gates. On an authorized native
+fixture, check All/category success, no matches and explicit Retry with VoiceOver;
+interrupt the pending result/quiet window by changing query, leaving the screen,
+backgrounding or turning VoiceOver off. Old feedback must not replay afterward,
+while current reader-off controls remain usable. The JS bridge/coexistence tests
+do not certify audible timing or OS queue behavior. The install hold remains.

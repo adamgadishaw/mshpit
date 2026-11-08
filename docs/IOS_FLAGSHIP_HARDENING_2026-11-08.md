@@ -2,12 +2,12 @@
 
 ## Latest fully verified artifact
 
-Checkpoint 264f9ad is preserved at
-.tmp/ios-phone-checkpoints/flagship-264f9ad/MshpitDev.app with a receipt, exact
-manifest and platform-isolation evidence. All 8,273 tests, three platform exports
+Checkpoint b907ea8 is preserved at
+.tmp/ios-phone-checkpoints/flagship-b907ea8/MshpitDev.app with a receipt, exact
+manifest and platform-isolation evidence. All 8,310 tests, three platform exports
 and signed Release compilation passed. This is a development-signed, live-linked
 preview, not installed or App Store distribution. Physical interaction,
-accessibility and performance remain open. Earlier checkpoints, including a39bdba,
+accessibility and performance remain open. Earlier checkpoints, including 264f9ad,
 remain preserved. Later work is not included until separately verified.
 
 ## Scope and release boundary
@@ -956,3 +956,46 @@ platform-specific presentation and release lanes are not three separate backends
 No phone installation, production deployment, account/permission change or live QA
 occurred. Actual VoiceOver, keyboard, Dynamic Type, gesture/scroll feel and physical
 Release performance remain the separately authorized fixture/device gates.
+
+## Search feedback checkpoint b907ea8
+
+Actual Search execution revealed that default All success emits the result state
+“ready”, while the original speech helper accepted “results”. Visible results were
+correct but their iOS completion announcement was rejected. The actual outcome is
+now normalized, and explicit query/Retry intents own speech only when VoiceOver is
+positively known on and the app is active. Reader/foreground interruptions, account
+or auth-epoch change, presentation teardown and newer user intent retire pending
+feedback permanently. Retired query/Retry/Clear/Cancel controls cannot alter the
+current query or cancel newer speech. Current reader-off/unknown users retain
+normal search controls. Search reads, caches, recents, visible copy and live data
+owners are unchanged; default platforms keep their existing live regions.
+
+- Source: b907ea879638bb74ab01f25ea810fd8a2294fc7d.
+- Full integrated suite: 8,310 passed, no failures/skips/cancellations, 84.866 seconds.
+- 37 new actual-component cases; focused 72 passed. Independent review passed
+  58 selected cases, 17 actual-screen scenarios and five sensitivity controls.
+- Integrated seven-owner coexistence passed in normal/StrictMode: one shared
+  native reader listener, independent gesture/speech retirement and recovery,
+  isolated Search removal/readdition, and zero remaining listeners on teardown.
+  Seven intentionally broken owner variants were detected. This is synthetic
+  React/bridge ownership evidence, not native recognition or audible certification.
+- Syntax 921, architecture/diff, all platform exports and signed Release passed.
+- Artifact: 60,285,587 bytes; 52 files/links.
+- JS SHA-256: e0bb4973fffebef5a57374cfed90fe24ea475b0de9322ce8e0bf67f738c49ea2.
+- Executable SHA-256: a411558532e4aef285145718d6a7582b55fbae6ac5089ae7ae7c898023287fbb.
+- Manifest SHA-256: bbaf1c848aeca9cecf59a86500421b49cba42a8f7e80e1de8aafc944d1233fe1.
+- Web initial gzip: 521916 bytes; 2372 bytes below budget.
+- Export maps exclude app .ios files and the iOS message-draft, Feed-return and
+  Search-announcement domains; default platform entries are present.
+- Info.plist, all 11 privacy manifests and provisioning profile remain byte-identical.
+- Existing signing identity, live backend, November 14 profile expiry and install
+  hold remain. No phone, account, permission, native speech or production actions.
+
+The exact combined-search-gesture-owners.mjs evidence SHA-256 is
+c6467bc9372f29a414dcfd2d4c2aa0d445e997893594743c730a6680450a9a1e.
+Once speech is handed to React Native's native queue, it cannot be recalled.
+
+Feed wording clarification: restoration starts no explicit Feed query or automatic
+pagination and introduces no request owner. It does not prove identical total
+network/media/analytics activity as current cards mount; those existing owners
+remain intact and native timing has not been measured.
