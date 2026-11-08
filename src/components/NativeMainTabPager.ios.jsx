@@ -42,7 +42,7 @@ export default function NativeMainTabPager({ active, onChange, swipeScope, swipe
     if (pending && candidateRef.current === pending && current()) setContentReady(value ? pending : null);
   }, [pending, owner, swipeEnabled]);
   const index = tabs.indexOf(active);
-  const readyDirection = useMemo(() => pending && ready === pending ? { direction: pending.direction, gesture: pending.gesture, contentReady: pending.target === "feed" || contentReady === pending } : null, [pending, ready, contentReady]);
+  const readyDirection = useMemo(() => pending && ready === pending ? { direction: pending.direction, gesture: pending.gesture, contentReady: contentReady === pending } : null, [pending, ready, contentReady]);
   const renderPages = (x, width) => [active, ...(pending ? [pending.target] : [])].map(tab =>
     <NativeTabPage key={tab} tab={tab} active={active} offset={tabs.indexOf(tab) - index}
       x={x} width={width} loading={loading} renderPage={renderPage} onReady={destinationReady} onContentReady={destinationContentReady} />);

@@ -74,10 +74,13 @@ const code = transformSync(`export default function RootSlice(p) { const {${name
 new Function("require", "module", "exports", code)(require, module, module.exports);
 const RootSlice = module.exports.default;
 let serial = 0;
-function fixture(platform = "ios") {
+function fixture(platform = "ios", options = {}) {
   const renderer = createRenderer(), persisted = new Map(), owner = createIOSFeedReturnStore();
   let account = "A", epoch = 1, tab = "feed", frames = [{}], admitted = true, presentation = null, width = 393, fontScale = 1;
-  let rows = Array.from({ length: 80 }, (_, index) => ({ id: "post" + index, userId: "synthetic" }));
+  const readiness = [], followingReads = [];
+  let primary = { head: null, following: { posts: [], status: "ready", loaded: true }, news: { stories: [], status: "ready" }, ...options };
+  if (options.filter) persisted.set(require("./src/domain/feedExperience.mjs").feedFilterStorageKey("A"), options.filter);
+  let rows = options.rows || Array.from({ length: 80 }, (_, index) => ({ id: "post" + index, userId: "synthetic" }));
   let heights = null;
   const rowY = index => 400 + Array.from({ length: index }, (_, i) => heights?.[i] ?? 300).reduce((a, b) => a + b, 0);
   let hook, highest = 2, mountedId, measurements = [], scrolls = [], attempts = [], pendingBatch = false, currentOffset = 0;
@@ -110,13 +113,15 @@ function fixture(platform = "ios") {
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
     if (name.endsWith("/useIOSFeedReturn")) return hook;
-    if (name.endsWith("/feedHeadStatus")) return { useFeedHeadStatus: () => null };
+    if (name.endsWith("/feedHeadStatus")) return { useFeedHeadStatus: () => primary.head };
+    if (name.endsWith("/useNativeTabPreview")) return { __esModule: true, default: () => !!primary.preview };
+    if (name.endsWith("/useNativeTabContentReady")) return { __esModule: true, default: ready => { readiness.push(ready); } };
     if (name.endsWith("/feedImageRetry")) return { useFeedImageRetry: () => ({ value: null, isCurrent: () => true, accept: noop }), FeedImageRetryProvider: p => p.children };
     if (name.endsWith("/theme")) return { colors: {}, radius: {}, shadow: {}, space: v => v * 4 };
     if (name.endsWith("/persist")) return { load: (key, value) => persisted.get(key) ?? value, save: (key, value) => persisted.set(key, value) };
     if (name.endsWith("/useAppActive")) return { __esModule: true, default: () => true };
-    if (name.endsWith("/useFollowingFeed")) return { __esModule: true, default: () => ({ posts: [], status: "ready" }) };
-    if (name.endsWith("/useNewsDeskStories")) return { __esModule: true, default: () => ({ stories: [], status: "ready" }) };
+    if (name.endsWith("/useFollowingFeed")) return { __esModule: true, default: args => { followingReads.push(args); return primary.following; } };
+    if (name.endsWith("/useNewsDeskStories")) return { __esModule: true, default: () => primary.news };
     if (name.endsWith("/useNewsIntroduction")) return { __esModule: true, default: () => ({ post: null, dismiss: noop }) };
     if (name.endsWith("/NewsInteractionContext")) return { useNewsInteractions: () => ({}) };
     if (name.endsWith("/lazyWithRetry")) return { lazyWithRetry: () => "Lazy" };
@@ -138,7 +143,7 @@ function fixture(platform = "ios") {
     const overlay = frames.length > 1 ? React.createElement("Detail") : null;
     const retain = retainNativeFeedForMedia({ platform, accountId: account, tab, frames, hasOverlay: !!overlay });
     renderer.render(React.createElement(RootSlice, { chatAuthEpoch: epoch, openSignIn: noop, retainNativeFeed: retain, session: { id: account }, overlay, NativeFeedMediaLayer: Layer, NativeAppHeader: "Header", activeTab: tab, switchTab: noop, Platform: native.Platform, iosTabSwipeEnabled: false, isCurrentIOSTabSwipe: () => true, openMainMenu: noop, requireVerifiedMutation: noop, go: noop, openProfileManagement: noop, mobileTabBar: React.createElement("Tabs"), Suspense: React.Suspense, ScreenLoading: "Loading", ScreenTransition: pass, screenKey: overlay ? "detail" : "main:feed", screenDirection: "forward", IosDetailNavigation: pass, iosBackGestureAllowed: () => false, nav: frames.at(-1), linkedNavigationScope: {}, linkedNavigationRef: { current: { ownsScope: () => true } }, navigationRef: { current: { stack: frames } }, back: noop,
-      tabScreens: tab === "feed" ? React.createElement("View", null, React.createElement(Feed, { key: lease?.key, feedReturn: lease, feedPresentation: presentation, feed: rows, localFeed: rows, loggedIn: true, accountId: account, visible: !overlay, hasMore: false, onRefresh: async () => true, onLoadMore: () => assert.fail("No service reads") })) : React.createElement("OtherTab") }));
+      tabScreens: tab === "feed" ? React.createElement("View", null, React.createElement(Feed, { key: lease?.key, feedReturn: lease, feedPresentation: presentation, feed: rows, localFeed: rows, loggedIn: true, accountId: account, visible: !overlay && !primary.preview, hasMore: false, onRefresh: async () => true, onLoadMore: () => assert.fail("No service reads") })) : React.createElement("OtherTab") }));
   };
   const press = label => { const node = all().find(n => n.props?.accessibilityLabel === label); assert.ok(node, label); renderer.act(() => node.props.onPress()); };
   const measure = () => {
@@ -146,7 +151,8 @@ function fixture(platform = "ios") {
     renderer.act(() => cells.forEach((node, index) => node.props.onLayout({ nativeEvent: { layout: { y: rowY(index), height: heights?.[index] ?? 300 } } })));
   };
   render();
-  return { all, list, press, render, measure, scrolls, attempts, measurements,
+  return { all, list, press, render, measure, scrolls, attempts, measurements, readiness, followingReads,
+    primary(patch) { primary = { ...primary, ...patch }; render(); },
     get instance() { return mountedId; },
     get snapshot() { return owner.reconcile(account, epoch, tab === "feed" ? frames[0] : null)?.read("local"); },
     freshBase() { frames = [{}]; render(); },
@@ -355,4 +361,28 @@ test("deadline retires captured callbacks without jumping to top or saving a coa
     callbacks.onScrollToIndexFailed({ index: 20, averageItemLength: 300 }); f.batches(); deadline();
     assert.equal(f.scrolls.length, before); assert.deepEqual(f.snapshot, snapshot);
   } finally { f?.close(); globalThis.setTimeout = set; globalThis.clearTimeout = clear; }
+});
+test("Feed preview reports cold primary head pending, cached rows usable, terminal empty/error ready", () => {
+  const f = fixture("ios", { preview: true, rows: [], head: { status: "loading", verified: false } });
+  assert.equal(f.readiness.at(-1), false);
+  f.primary({ head: { status: "ready", verified: true } }); assert.equal(f.readiness.at(-1), true);
+  f.primary({ head: { status: "error", verified: false } }); assert.equal(f.readiness.at(-1), true);
+  f.primary({ head: { status: "loading", verified: false } }); f.rows([{ id: "cached", userId: "synthetic" }]);
+  assert.equal(f.readiness.at(-1), true); f.close();
+});
+test("Following preview starts normal intent read without visible admission and waits for its own result", () => {
+  const f = fixture("ios", { preview: true, filter: "following", rows: [], following: { posts: [], loaded: false, status: "loading" } });
+  assert.equal(f.followingReads.at(-1).enabled, true); assert.equal(f.readiness.at(-1), false);
+  f.primary({ following: { posts: [], loaded: true, status: "ready" } }); assert.equal(f.readiness.at(-1), true);
+  f.primary({ following: { posts: [], loaded: false, status: "error" } }); assert.equal(f.readiness.at(-1), true);
+  f.primary({ following: { posts: [{ id: "cached-follow" }], loaded: false, status: "loading" } }); assert.equal(f.readiness.at(-1), true);
+  f.close();
+});
+test("News preview waits for its scoped stories or terminal result, not unrelated cached feed rows", () => {
+  const f = fixture("ios", { preview: true, filter: "news", news: { stories: [], status: "loading" } });
+  assert.equal(f.readiness.at(-1), false);
+  f.primary({ news: { stories: [], status: "ready" } }); assert.equal(f.readiness.at(-1), true);
+  f.primary({ news: { stories: [], status: "error" } }); assert.equal(f.readiness.at(-1), true);
+  f.primary({ news: { stories: [{ id: "story" }], status: "loading" } }); assert.equal(f.readiness.at(-1), true);
+  f.close();
 });

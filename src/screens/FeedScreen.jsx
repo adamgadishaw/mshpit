@@ -1,3 +1,5 @@
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
+import useNativeTabContentReady from "../hooks/useNativeTabContentReady";
 import { FlatList, ScrollView } from "../components/NativeTabScroll";
 import useIOSFeedReturn, { FeedReturnProvider } from "../hooks/useIOSFeedReturn";
 import { useFeedHeadStatus } from "../hooks/feedHeadStatus";
@@ -93,6 +95,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
 
 export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, headStatusOwner = null, feedReturn = null, feedPresentation = null, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
   const { width, fontScale } = useWindowDimensions();
+  const tabPreview = useNativeTabPreview();
   const appActive = useAppActive();
   const feedActive = nativeFeedCanWork({ platform: Platform.OS, appActive, visible });
   const phone = width < 700;
@@ -129,7 +132,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   const primaryHead = headStatus && (filter === "everyone" || filter === "local") ? headStatus : null;
   const newsTab = filter === "news";
   const { followedArtists = [], blockedIds = [], mutedIds = [], removedIds = [] } = useNewsInteractions();
-  const following = useFollowingFeed({ accountId, enabled: filter === "following" && loggedIn && visible && appActive,
+  const following = useFollowingFeed({ accountId, enabled: filter === "following" && loggedIn && (visible || tabPreview) && appActive,
     privacyScope: JSON.stringify([blockedIds,mutedIds,removedIds]) });
   const news = useNewsDeskStories({ limit: 20, enabled: newsTab });
   // The phone strip shows top stories; the News tab lists the newest.
@@ -139,6 +142,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     { filter, accountId, followedArtists, introduction: introduction.post }), [filter, accountId, followedArtists, feed, following.posts, localFeed, introduction.post]);
   const data = useMemo(() => full.slice(0, count), [count, full]);
   const baseListData = newsTab ? news.stories : data;
+  // Only this selected filter's primary result matters. Intent may start its
+  // normal read, while visible=false still denies media, impressions and dwell.
+  useNativeTabContentReady(Platform.OS === "ios" && (newsTab
+    ? news.stories.length > 0 || news.status === "ready" || news.status === "error"
+    : filter === "following"
+      ? following.posts.length > 0 || following.loaded || following.status === "ready" || following.status === "error"
+      : full.length > 0 || primaryHead?.verified || primaryHead?.status === "ready" || primaryHead?.status === "error" || (!primaryHead && !loadingMore)));
   const discovery = useMemo(() => feedDiscoveryPlacement(baseListData, {
     platform: Platform.OS, enabled: loggedIn && showSuggestedPitters, newsTab,
   }), [baseListData, loggedIn, showSuggestedPitters, newsTab]);
