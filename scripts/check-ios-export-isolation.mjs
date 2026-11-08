@@ -4,9 +4,11 @@ import { basename, dirname, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const LIMIT = 100;
-const confinedDomains = new Set(['iosMessageDrafts.mjs', 'iosFeedReturn.mjs', 'iosSearchAnnouncements.mjs']);
+const confinedDomains = new Set(['iosMessageDrafts.mjs', 'iosFeedReturn.mjs', 'iosSearchAnnouncements.mjs', 'sessionValidationStatus.mjs']);
 // Validate retained defaults, without requiring tree-shaken modules to survive.
 const inertDefaults = new Map([
+  ['src/hooks/sessionValidationStatus.js', 'export const sessionValidationStatusForOwner = () => null;'],
+  ['src/components/SessionValidationPending.jsx', 'export default function SessionValidationPending({ fallback }) { return fallback; }'],
   ['src/domain/messageDraftOwner.js', 'export const createIOSMessageDrafts = () => null;'],
   ['src/hooks/useIOSFeedReturn.js', 'export default function useIOSFeedReturn() { return null; } export function FeedReturnProvider({ children }) { return children; }'],
   ['src/hooks/useIOSSearchAnnouncement.js', 'const noop = () => {}; const silent = Object.freeze({ isCurrent: () => true, request: noop, update: noop }); export default function useIOSSearchAnnouncement() { return silent; }'],

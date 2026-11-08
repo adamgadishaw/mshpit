@@ -168,3 +168,28 @@ test('CLI rejects missing, unknown and repeated options', (t) => {
   for (const args of [['--unknown', 'x'], ['--report'], ['--web', f.web]]) assert.equal(f.cli(...args).status, 1);
   assert.equal(spawnSync(process.execPath, [script], { encoding: 'utf8' }).status, 1);
 });
+
+
+test('session recovery domain stays iOS-only and both retained defaults stay inert on Android/web', (t) => {
+  const f = fixture(t);
+  const entries = ['src/hooks/sessionValidationStatus.js', 'src/components/SessionValidationPending.jsx'];
+  const contents = entries.map(entry => readFileSync(new URL(`../${entry}`, import.meta.url), 'utf8'));
+  for (const target of [f.androidMap, f.webMap]) {
+    for (const source of ['src/domain/sessionValidationStatus.mjs', 'sessionValidationStatus.mjs']) {
+      f.put(target, map([source]));
+      const report = f.check();
+      assert.equal(report.passed, false);
+      assert.ok(report.issues.some(issue => issue.reason === 'iOS-confined domain leaked' && issue.source === source));
+    }
+    f.put(target, map(entries, { sourcesContent: contents }));
+    assert.equal(f.check().passed, true);
+    for (let index = 0; index < entries.length; index++) {
+      const changed = [...contents]; changed[index] += '\nfetch("unexpected");';
+      f.put(target, map(entries, { sourcesContent: changed }));
+      assert.equal(f.check().passed, false, entries[index]);
+    }
+    f.put(target, map(entries));
+    assert.equal(f.check().passed, false, 'retained defaults require embedded source');
+    f.put(target, map());
+  }
+});

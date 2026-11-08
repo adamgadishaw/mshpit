@@ -27,15 +27,17 @@ directories is refused. Parent directories must already exist. Map filenames and
 app-relative source names replace host-specific paths; source content is omitted.
 At most 100 issues are retained, with total/omitted counts.
 
-The checks reject application `.ios.*` implementations and the three explicitly
-confined domains `iosMessageDrafts.mjs`, `iosFeedReturn.mjs` and
-`iosSearchAnnouncements.mjs` in Android/web. `node_modules` and native `Pods`
+The checks reject application `.ios.*` implementations and the four explicitly
+confined domains `iosMessageDrafts.mjs`, `iosFeedReturn.mjs`,
+`iosSearchAnnouncements.mjs` and `sessionValidationStatus.mjs` in Android/web.
+`node_modules` and native `Pods`
 implementations are excluded. Other shared `ios`-prefixed helpers are deliberately
 allowed. Relative, absolute and file-URL source names, sourceRoot and Windows
 separators are normalized without resolving or reading original source files.
 
-If retained in a map, the defaults `messageDraftOwner.js`, `useIOSFeedReturn.js`
-and `useIOSSearchAnnouncement.js` must contain their reviewed inert implementations
+If retained in a map, the defaults `messageDraftOwner.js`, `useIOSFeedReturn.js`,
+`useIOSSearchAnnouncement.js`, `sessionValidationStatus.js` and
+`SessionValidationPending.jsx` must contain their reviewed inert implementations
 in sourcesContent. Comments/whitespace do not matter; executable changes require
 reviewing the gate's explicit contract. Their absence is allowed for tree shaking.
 Other defaults remain covered by existing source/component tests, not assertions
