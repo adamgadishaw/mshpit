@@ -32,6 +32,7 @@ function fixture(platform='ios') {
     if(dep==='react/jsx-runtime')return {jsx,jsxs:jsx};
     if(dep==='react-native')return {View:'View',Text:'Text',FlatList:'FlatList',Pressable:'Pressable',ScrollView:'ScrollView',Platform:{OS:platform,select:v=>v[platform]||v.default},StyleSheet:{create:v=>v},useWindowDimensions:()=>({width:393,fontScale:1})};
     if(dep.endsWith('/feedImageRetry'))return retry;
+    if(dep.endsWith('/feedHeadStatus'))return {useFeedHeadStatus:()=>null};
     if(dep.endsWith('/theme'))return {colors:{},radius:{},shadow:{}};
     if(dep.endsWith('/persist'))return {load:(key,fallback)=>persisted.get(key)??fallback,save:(key,value)=>persisted.set(key,value)};
     if(dep.endsWith('/feedExperience.mjs'))return feedExperience;

@@ -1,3 +1,4 @@
+import { useFeedHeadStatus } from "../hooks/feedHeadStatus";
 import { nativeFeedCanWork } from "../domain/nativeFeedMediaRetention.mjs";
 import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, FlatList, Platform, Pressable, ScrollView, useWindowDimensions } from "react-native";
@@ -87,7 +88,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   );
 });
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, headStatusOwner = null, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
   const { width, fontScale } = useWindowDimensions();
   const appActive = useAppActive();
   const feedActive = nativeFeedCanWork({ platform: Platform.OS, appActive, visible });
@@ -121,6 +122,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     setGuideState({ scope: guideScope, dismissed: true });
     save(guideScope, true);
   };
+  const headStatus = useFeedHeadStatus(headStatusOwner);
+  const primaryHead = headStatus && (filter === "everyone" || filter === "local") ? headStatus : null;
   const newsTab = filter === "news";
   const { followedArtists = [], blockedIds = [], mutedIds = [], removedIds = [] } = useNewsInteractions();
   const following = useFollowingFeed({ accountId, enabled: filter === "following" && loggedIn && visible && appActive,
@@ -326,6 +329,11 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     }
   };
 
+  const retryHead = () => {
+    if (!headStatus?.isCurrent() || !imageRetry.isCurrent() || headStatusOwner.getSnapshot().status === "loading") return;
+    return refresh();
+  };
+
   rowActionsRef.current = {
     hideRecommendation,
     onComment,
@@ -454,6 +462,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             </Text>
           ) : null}
 
+          {primaryHead && full.length > 0 && primaryHead.status !== "ready" ? (
+            <View style={styles.refreshStatus} accessibilityLiveRegion="polite">
+              <Text style={primaryHead.status === "error" ? styles.refreshStatusError : styles.emptySub}>{primaryHead.status === "loading" ? "Refreshing your feed…" : primaryHead.status === "error" ? "The feed could not refresh. Your posts are kept." : "Refresh to check for new posts."}</Text>
+              {primaryHead.status !== "loading" ? <HomeAction icon="feed" label="Refresh feed" onPress={retryHead} /> : null}
+            </View>
+          ) : null}
+
           {loggedIn && showHomeCountdown && countdownPlan ? (
             <View style={styles.countdownTop}>
               <Suspense fallback={<Text style={styles.tag}>Loading your next show…</Text>}><HomeShowCountdown plan={countdownPlan} onOpen={onOpenCountdown} onViewAll={onViewAllCountdown} /></Suspense>
@@ -547,6 +562,12 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             ? REFRESH_RETRY_HINT
             : "Stories are scheduled after three independent publisher groups corroborate them, with a limited two-source fallback on quiet days."}</Text>
         </View>
+      ) : primaryHead && primaryHead.status !== "ready" ? (
+        <View style={styles.emptyBox} accessibilityLiveRegion="polite">
+          <Text style={styles.emptyTitle}>{primaryHead.status === "loading" ? "Loading your feed…" : primaryHead.status === "error" ? "Your feed could not load" : "Refresh your feed"}</Text>
+          <Text style={styles.emptySub}>{primaryHead.status === "loading" ? "Getting the latest concert posts." : "Try refreshing to load concert posts."}</Text>
+          {primaryHead.status !== "loading" ? <HomeAction icon="feed" label="Refresh feed" onPress={retryHead} primary /> : null}
+        </View>
       ) : (
         <View style={styles.emptyBox}>
           <View style={styles.emptyIcon}>
@@ -556,15 +577,15 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             {filter === "following"
               ? (following.status === "error" ? "Following couldn't load" : !following.loaded ? "Loading your Following feed..." : effectiveHasMore ? "More followed posts are available" : "Your Following feed is quiet")
               : filter === "local"
-              ? (hasMore ? `No recent posts from ${homeCity || "your city"}` : `Nothing in ${homeCity || "your city"} yet`)
-              : "No shows logged yet"}
+              ? (hasMore ? `No recent posts from ${homeCity || "your city"}` : primaryHead ? `No posts from ${homeCity || "your city"} to show yet` : `Nothing in ${homeCity || "your city"} yet`)
+              : primaryHead ? "No posts to show yet" : "No shows logged yet"}
           </Text>
           <Text style={styles.emptySub}>
             {filter === "following"
               ? (following.status === "error" ? "Refresh to try again. Your existing posts are kept." : "Posts and reposts from people you follow appear here, always credited to their original authors.")
               : filter === "local"
-              ? (hasMore ? "Load one older page at a time to look for nearby concert posts." : "Be the first to log a show in your city, tap the + to post one.")
-              : "Log the first show, tap the + to rate the band and the room."}
+              ? (hasMore ? "Load one older page at a time to look for nearby concert posts." : primaryHead ? "New local concert posts will appear here. Tap the + to log a show." : "Be the first to log a show in your city, tap the + to post one.")
+              : primaryHead ? "New concert posts will appear here. Tap the + to log a show." : "Log the first show, tap the + to rate the band and the room."}
           </Text>
           <View style={styles.emptyActions}>
             <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />
@@ -577,7 +598,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
           disabled={news.status === "loading"} accessibilityRole="button" accessibilityLabel="Load older stories">
           <Text style={styles.olderTxt}>{news.status === "loading" ? "Loading..." : "Load older stories"}</Text>
         </Pressable>
-      ) : null) : (
+      ) : null) : primaryHead && count >= full.length && (!primaryHead.verified || primaryHead.status === "loading") ? null : (
         <View>
           {following.status === "error" && filter === "following" ? (
             <Pressable style={styles.olderBtn} onPress={following.reload} accessibilityRole="button" accessibilityLabel="Retry Following feed"><Text style={styles.olderTxt}>Try again</Text></Pressable>

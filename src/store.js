@@ -1,3 +1,4 @@
+import { createFeedHeadStatus, hasFeedHeadReceipt } from "./hooks/feedHeadStatus";
 import { nativeVenueCoordinates } from "./domain/nativeVenueCoordinates.mjs";
 import { nativeNearbyVenues } from "./domain/nativeNearbyVenues.mjs";
 import { nativeVenueLookupCache } from "./domain/nativeVenueLookupCache.mjs";
@@ -666,6 +667,9 @@ export function StoreProvider({ children }) {
   // state prevents overlapping deliberate refreshes from racing each other.
   const feedMutationRevisionRef = useRef(0);
   const feedRefreshRef = useRef({ inFlight: false, sequence: 0 });
+  // iOS observes this existing reader; Android/web resolve to a null observer.
+  // Keep the owner stable without adding Store state or another request effect.
+  if (!("headStatus" in feedRefreshRef.current)) feedRefreshRef.current.headStatus = createFeedHeadStatus();
   const feedModeRef = useRef("for-you");
   const feedAlgorithmRef = useRef("global-personal-v1");
   const feedSnapshotIdentityRef = useRef(null);
@@ -995,6 +999,7 @@ export function StoreProvider({ children }) {
     blockedIdsRef.accountId = nextAccountId || null;
     blockedIdsRef.status = ENABLE_DEMO_DATA || !nextAccountId ? "ready" : "loading";
     accountMutationEpochRef.current += 1;
+    feedRefreshRef.current.headStatus?.reset();
     // Rating aggregates include the viewer's `mine` field. Drop them at the
     // synchronous identity boundary instead of waiting for a passive effect.
     // Scoped keys and response guards below provide a second line of defense.
@@ -1200,6 +1205,7 @@ export function StoreProvider({ children }) {
     feedLoadMoreRef.current = null;
     setFeedLoadingMore(false);
     refresh.inFlight = true;
+    const headStatusTicket = refresh.headStatus?.begin();
     try {
       const startedAt = Date.now();
       let payload;
@@ -1256,9 +1262,11 @@ export function StoreProvider({ children }) {
         surface: "everyone",
         outcome: "ok",
       });
+      refresh.headStatus?.settle(headStatusTicket, hasFeedHeadReceipt(payload) ? "ready" : "error");
       return true;
     } catch (error) {
       const current = isCurrent(error);
+      if (current) refresh.headStatus?.settle(headStatusTicket, "error");
       if (current) trackProductEvent("performance", {
         metric: "feed_load",
         durationBucket: "over_5s",
@@ -1267,6 +1275,7 @@ export function StoreProvider({ children }) {
       });
       return current ? false : null;
     } finally {
+      refresh.headStatus?.settle(headStatusTicket, "cancelled");
       if (sequence === refresh.sequence) refresh.inFlight = false;
     }
   };
@@ -1414,6 +1423,7 @@ export function StoreProvider({ children }) {
     void hydrateFeed({ resetPagination: true, signal: controller.signal });
     return () => {
       controller.abort();
+      feedRefreshRef.current.headStatus?.reset();
       feedRefreshRef.current.sequence += 1;
       feedRefreshRef.current.inFlight = false;
       feedLoadMoreRef.current?.controller.abort();
@@ -3133,6 +3143,7 @@ export function StoreProvider({ children }) {
   const logout = () => {
     authValidationSequenceRef.current += 1;
     accountMutationEpochRef.current += 1;
+    feedRefreshRef.current.headStatus?.reset();
     const departingAccountId = sessionRef.current?.id || null;
     const request = authTransitions.signOut().then((result) => {
       if (result.kind === "pending") captureAppError(new AppError(undefined, { code: "PIT-AUTH-006", context: "Finishing sign-out", cause: result.cause }), { toast: true });
@@ -7124,6 +7135,7 @@ export function StoreProvider({ children }) {
     favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, searchSongsApi, myPlaylists: scopedMyPlaylists, myPlaylistsAccountId, myPlaylistsStatus: scopedMyPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
     drafts: draftsForAccount(drafts, session?.id), saveDraft, deleteDraft,
     loadDiscoverTourDateRange,
+    feedHeadStatus: feedRefreshRef.current.headStatus,
     visibleFeed, followingFeed, refreshFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, notInterested, undoNotInterested, refreshTourDates, refreshDiscoverySidebar, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord, locationCenter,
     searchVenues, venuesByCity, venueUpcomingCount, venueDirectoryIndex: venueSearchIndex,

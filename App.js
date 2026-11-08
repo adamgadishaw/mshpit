@@ -240,7 +240,7 @@ function Root() {
   const safeAreaInsets = useSafeAreaInsets();
   const {
     session, chatAuthEpoch, authReady, concertKey, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
-    feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
+    feedHeadStatus, feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
     searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, isFollowing, follow, isBlocked,
     loadPlayHistory, saveQueueAsPlaylist, autoplayQueue, followingCount, resendEmailVerification, completeSignupOnboarding,
     topArtists, artistsAlphabetical, upcomingEvents, discoverySidebar, discoverySidebarStatus, refreshDiscoverySidebar, refreshTourDates, tourDates, goingFor, myAttendance, refreshMyAttendance,
@@ -1795,6 +1795,7 @@ function Root() {
                   newUser={!!session && feed.filter((l) => l.userId === session.id).length === 0}
                   onRefresh={refreshHomeFeedData}
                   onLoadMore={loadMoreFeed}
+                  headStatusOwner={feedHeadStatus}
                   hasMore={feedHasMore}
                   loadingMore={feedLoadingMore}
                   countdownPlan={homeCountdown}
