@@ -1,6 +1,6 @@
 # iOS content page swipes
 
-## Continuous pager revision (integration in progress)
+## Continuous pager revision
 
 The earlier staged-slide sections below describe the installed eb2ae41 checkpoint, which the owner rejected. They are historical evidence, not the current implementation or acceptance claim.
 
@@ -16,7 +16,7 @@ Nested horizontal scroll views now have explicit native recognizers related to t
 
 Expanded detail edge Back is documented separately in IOS_DETAIL_GESTURE_EXPANSION_2026-11-08.md. It uses the actual prior route and existing close policy; its outgoing-only animation is not a full previous-detail reveal.
 
-Focused source/React/Worklets tests and independent review pass for the pager. Combined release gates and physical motion/carousel/profile acceptance are still pending. The installed old checkpoint remains preserved and must not be described as the final revised experience.
+Focused source/React/Worklets tests and independent review pass for the pager. Combined release gates passed on bb1dc9b; physical motion/carousel/profile acceptance is still pending. The installed old checkpoint remains preserved and must not be described as the final revised experience.
 
 
 ## Scope
@@ -65,3 +65,15 @@ Actual Device Hub review:
 - Phone left on Search, no modal. Exact private screenshots retained only in ignored checkpoint.
 
 Remote drags/screenshots do not establish frame rate, tactile quality, VoiceOver, largest Dynamic Type, canceled/multipointer gestures, or complete gallery/map arbitration. These remain checks after correction.
+
+## Signed continuous-pager checkpoint bb1dc9b
+
+- Source: bb1dc9b6d4649cd9b2ff965560a233a5a3c44853. Clean tracked tree at build.
+- Complete serial suite: 8,552 passed, zero failed/skipped/cancelled. Earlier 5a0a17f run stopped with 74 stale-fixture dependency/extraction failures; independently reviewed test-only repairs preserved original assertions, and this complete rerun passed.
+- Server-production dependency audit, syntax (924 Node files), architecture, iOS/Android/web exports and source-map isolation passed. Web initial JavaScript is 523,097 / 524,288 gzip bytes (1,191 bytes headroom).
+- Release build and deep/strict signature verification passed. Development-signed, not App Store distribution. Same profile expires 2026-11-14 at 23:50:01 UTC; existing permissions and all eleven privacy manifests unchanged.
+- Preserved app has 52 files / 60,428,406 bytes. JS SHA-256: 9d1349e2128e6dcf41b20b8ef6bc321c481f48e23cfcd1047214bcf5adbd94c3. Executable: 1fd115e6aa285aa7198fc58670f6f5e73a52ba45d3062b07a0657a247a252304. Manifest: 22ffda34b4dd8075a287601c8752541b1712edb6a2c977a6e28d4d044d050c39.
+- Independent verification matched all artifact files and unchanged configuration/privacy/profile. Compared with eb2ae41, only executable, main.jsbundle and signature CodeResources differ.
+- Device Hub reported the Mac locked before inspection/installation. This new build has NOT been installed or visually accepted yet; no attempt was made to bypass the lock. Prior installed preview and all signed checkpoints remain preserved.
+
+Normal committed profile opening retains the existing rewards check, which may award earned achievements. The task owner confirmed ordinary profile testing is authorized; unselected previews suppress this endpoint. No artificial reward/social actions or Activity/Inbox read-marking will be used for device QA.
