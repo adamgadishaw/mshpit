@@ -344,3 +344,42 @@ navigation, Calendar sharing and existing comment/draft behavior. The three
 slices had independent source/test sign-off before integration. The next full
 suite/export/signed checkpoint remains required. No native share sheet or real
 calendar was invoked by the mocked tests.
+
+## Verified signed journey checkpoint 94be923
+
+The integrated journey checkpoint passed all 7,516 tests, with no failures,
+skips or cancellations, in 129.5 seconds. Syntax and the architecture baseline
+passed. Sequential iOS and Android Hermes exports succeeded; the web export
+remained within its unchanged 512.0 KiB budget at 509.1 KiB gzip. The signed
+iPhone build succeeded and passed strict deep verification plus an exact
+52-entry copied-artifact comparison.
+
+Preserved app: .tmp/ios-phone-checkpoints/flagship-94be923/MshpitDev.app
+Receipt and exact manifest are beside it. Source:
+94be92348e1c1ced383ae4341647166d02010d73.
+Artifact bytes: 60,187,372. Bundled JavaScript bytes: 9,680,280.
+JavaScript SHA-256:
+751d146199d78a1acf908d5306bae2320f0e6188e5ebd6676d72ed6b78f206dd.
+Manifest SHA-256:
+ebcc9d68b010ad0ce8fc60117a54ba5e52255135908051e652a005c6e5be5d96.
+
+All preceding signed checkpoints remain preserved. No app was installed,
+pushed, merged, deployed or submitted. This is a development-signed Release-
+configuration preview using the approved live backend, not App Store distribution.
+Actual identity remains com.mshpit.app.dev, version 1.0.0, build 1, iOS 16.4 minimum,
+iPhoneOS 27.2 SDK and the same profile expiring November 14 at 23:50:01 UTC.
+
+The actual artifact declares portrait and upside-down orientations only.
+Landscape/iPad floating-keyboard scenarios are future/support-dependent tests,
+not current artifact acceptance paths. No camera or microphone purpose string
+or background mode is present. ATS arbitrary loads are false, with the existing
+localhost exception. The photo-library purpose string and development profile's
+get-task-allow entitlement remain unchanged. Eleven bundled privacy manifests
+have no tracking domains; this does not certify the app's data disclosures.
+
+The independent linked-navigation stress harness is preserved in ignored
+.tmp/ios-flagship-stress/linked-navigation.mjs, with its JSON result beside it.
+A reproduced run used seed 0x4d534850, 128 sequences, 32,768 operations, 2,925
+accepted claims and 791,060 independent-oracle checks. Six independent negative
+controls were caught by the reviewer. These are ownership/correctness evidence,
+not native performance measurements.

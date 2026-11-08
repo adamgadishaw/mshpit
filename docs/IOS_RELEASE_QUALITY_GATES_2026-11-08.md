@@ -125,3 +125,18 @@ phone build is held until the owner reconnects and authorizes installation.
   duplicate presentation or stuck control. Confirm the chosen app's result
   separately; the share promise is not an import receipt. Check temporary-file
   cleanup after actual native completion without deleting unrelated files.
+
+### Artifact-specific interpretation
+
+The verified 94be923 artifact currently declares portrait and upside-down only.
+Landscape/iPad floating/split-view cases above are conditional future checks,
+not supported orientations to claim tested now. Performance measurement should
+use the Release JavaScript binary with React Native __DEV__ false and no Metro
+or debug inspector runtime. Do not disable the device's iOS Developer Mode or
+change security settings: the current development-signed installation can require
+Developer Mode. Release configuration is not App Store distribution signing.
+
+The existing native-performance-probe.mjs is Android-emulator/Metro-specific;
+it is not an iOS Release benchmark. The Xcode project currently exposes only the
+app target, so an XCTest accessibility/launch suite would need a separate test-
+target setup. Neither of those absent gates has been claimed passed.
