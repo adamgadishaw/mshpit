@@ -54,8 +54,8 @@ function createRenderer(nativeActions = []) {
 
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const walk = n => [n, ...(n.children || []).flatMap(walk)];
-async function fixture({ platform = "ios", reader = true, restored = false, unknown = false, strict = false, preview = false, guest = false } = {}) {
-  const nativeActions = [], analytics = [], saves = [], browseCalls = [];
+async function fixture({ platform = "ios", reader = true, restored = false, unknown = false, strict = false, preview = false, guest = false, deferBrowse = false } = {}) {
+  const nativeActions = [], analytics = [], saves = [], browseCalls = [], readiness = [], browseDeferred = deferred();
   const renderer = createRenderer(nativeActions), said = [], calls = [], jobs = [], appListeners = new Set(), readerListeners = new Set();
   const retiredApp = [], retiredReader = [], initialReader = deferred();
   let readCount = 0, hidden = false;
@@ -72,10 +72,11 @@ async function fixture({ platform = "ios", reader = true, restored = false, unkn
     addEventListener: (name, fn) => { readerListeners.add(fn); retiredReader.push(fn); return { remove: () => readerListeners.delete(fn) }; },
   };
   const native = { ActivityIndicator: "ActivityIndicator", View: "View", Text: "Text", ScrollView: "ScrollView", TextInput: "TextInput", Pressable: "Pressable", Image: "Image", Platform: { OS: platform, select: x => x[platform] || x.default }, useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1 }), StyleSheet: { create: x => x }, AccessibilityInfo, AppState };
-  const store = { session: { id: "synthetic" }, chatAuthEpoch: 1, blockedIds: [], tourDates: [], artistsAlphabetical: () => [], searchVenues: () => [], fanClubsDirectory: () => [], fanClubDirectoryStatus: "ready", loadFanClubsDirectory: () => Promise.resolve({ ok: true }), track: (...args) => analytics.push(args), isFollowing: () => false, follow: noop, unfollow: noop, searchPeople: () => Promise.resolve([]), searchArtistsApi: (query) => { if (!query) { browseCalls.push(query); return Promise.resolve([]); } const d = deferred(); calls.push({ query, ...d }); return d.promise; }, resolveArtist: () => Promise.resolve(null), recentSearches: [], addRecentSearch: noop, removeRecentSearch: noop, clearRecentSearches: noop, searchSongsApi: () => Promise.resolve([]) };
+  const store = { session: { id: "synthetic" }, chatAuthEpoch: 1, blockedIds: [], tourDates: [], artistsAlphabetical: () => [], searchVenues: () => [], fanClubsDirectory: () => [], fanClubDirectoryStatus: "ready", loadFanClubsDirectory: () => Promise.resolve({ ok: true }), track: (...args) => analytics.push(args), isFollowing: () => false, follow: noop, unfollow: noop, searchPeople: () => Promise.resolve([]), searchArtistsApi: (query) => { if (!query) { browseCalls.push(query); return deferBrowse ? browseDeferred.promise : Promise.resolve([]); } const d = deferred(); calls.push({ query, ...d }); return d.promise; }, resolveArtist: () => Promise.resolve(null), recentSearches: [], addRecentSearch: noop, removeRecentSearch: noop, clearRecentSearches: noop, searchSongsApi: () => Promise.resolve([]) };
   if (guest) store.session = null;
   let speech, preference;
   const imports = (name, local) => {
+    if (name.endsWith("/useNativeTabContentReady")) return { __esModule: true, default: value => readiness.push(value) };
     if (name.endsWith("/useNativeTabPreview")) return { __esModule: true, default: () => platform === "ios" && preview };
     if (name.endsWith('/NativeTabScroll')) return native;
     if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
@@ -106,7 +107,7 @@ async function fixture({ platform = "ios", reader = true, restored = false, unkn
   const text = value => renderer.act(() => input()(value));
   const press = label => renderer.act(() => { const node = walk(renderer.container).find(n => n.props?.accessibilityLabel === label); assert.ok(node, label); node.props.onPress(); });
   render(); await settle();
-  return { said, calls, jobs, text, input, press, fire, settle, store, render, analytics, saves, browseCalls, props,
+  return { said, calls, jobs, text, input, press, fire, settle, store, render, analytics, saves, browseCalls, props, readiness, browseDeferred,
     preview: value => { preview = value; render(); },
     scroll: () => walk(renderer.container).find(n => n.type === "ScrollView" && n.props.onScroll)?.props, retiredApp, retiredReader, initialReader, nativeActions,
     handler: label => walk(renderer.container).find(n => n.props?.accessibilityLabel === label)?.props.onPress,
@@ -274,4 +275,29 @@ for (const platform of ["android", "web"]) test(`${platform} retains ordinary an
   const f = await fixture({ platform, preview: true });
   try { await search(f); await result(f, artist); assert.equal(f.analytics.length, 1); }
   finally { f.close(); }
+});
+
+for (const outcome of ["rows", "empty", "error"]) test(`fresh preview primary readiness waits for scoped ${outcome} browse result`, async () => {
+  const f = await fixture({ preview: true, deferBrowse: true });
+  try {
+    assert.equal(f.readiness.at(-1), false); assert.equal(f.browseCalls.length, 1);
+    if (outcome === "error") f.browseDeferred.reject(new Error("Synthetic browse failure"));
+    else f.browseDeferred.resolve(outcome === "rows" ? artist : []);
+    await f.settle();
+    assert.equal(f.readiness.at(-1), true);
+    assert.equal(f.saves.length, 0); assert.equal(f.analytics.length, 0);
+    f.preview(false); assert.equal(f.readiness.at(-1), true); assert.equal(f.browseCalls.length, 1);
+  } finally { f.close(); }
+});
+test("primary readiness cannot borrow a prior query snapshot or stale failure", async () => {
+  const f = await fixture();
+  try {
+    assert.equal(f.readiness.at(-1), true);
+    await search(f); assert.equal(f.readiness.at(-1), false);
+    await result(f, [], true); assert.equal(f.readiness.at(-1), true);
+    f.text("mitski"); assert.equal(f.readiness.at(-1), false);
+    f.fire(250); await f.settle(); assert.equal(f.readiness.at(-1), false);
+    await result(f, artist); assert.equal(f.readiness.at(-1), true);
+    f.store.session = { id: "other" }; f.render(); assert.equal(f.readiness.at(-1), false);
+  } finally { f.close(); }
 });

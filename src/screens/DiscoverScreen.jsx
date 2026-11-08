@@ -1,3 +1,4 @@
+import useNativeTabContentReady from "../hooks/useNativeTabContentReady";
 import useNativeTabPreview from "../hooks/useNativeTabPreview";
 import { ScrollView } from "../components/NativeTabScroll";
 import { Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -579,6 +580,9 @@ export default function DiscoverScreen({
   const overviewState = discoverSectionState({ status: overviewStatus, rows: overview.chart.rows });
   const showOverviewContent = hasDiscoverOverviewContent(overview)
     && (overviewStatus === "ready" || overviewStatus === "refreshing" || overviewStatus === "error");
+  // Current scoped primary content (including honest empty/error states) is
+  // sufficient; recommendations, photos and other optional widgets may follow.
+  useNativeTabContentReady(showOverviewContent || overviewStatus === "ready" || overviewStatus === "error");
   const countries = useMemo(() => discoverNationOptions(overview.eventCoverage.countries, {
     homeCountry,
     selectedRegion: region,

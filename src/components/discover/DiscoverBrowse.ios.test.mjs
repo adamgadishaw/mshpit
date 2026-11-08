@@ -478,3 +478,22 @@ test("Discover initial browse snapshot ignores preview leases but restores commi
   for (const OS of ["android", "web"]) assert.equal(run(fn => [fn()], { OS }, false, lease), null);
   assert.equal(reads, 1);
 });
+
+test("Discover primary readiness follows only current scoped overview content", () => {
+  const source = readFileSync(new URL("../../screens/DiscoverScreen.jsx", import.meta.url), "utf8");
+  const fn = parse(source, { sourceType: "module", plugins: ["jsx"] }).program.body.find(n => n.type === "ExportDefaultDeclaration").declaration;
+  const declaration = name => fn.body.body.find(n => n.type === "VariableDeclaration" && n.declarations[0].id.name === name);
+  const signal = fn.body.body.find(n => n.type === "ExpressionStatement" && n.expression.callee?.name === "useNativeTabContentReady");
+  assert.ok(signal);
+  const parts = [declaration("overviewStatus"), declaration("showOverviewContent"), signal];
+  const run = new Function("overviewRequestState,overviewScopeKey,overview,hasDiscoverOverviewContent,useNativeTabContentReady", parts.map(n => source.slice(n.start, n.end)).join("\n"));
+  const readiness = (status, { requestScope = "current", content = false } = {}) => {
+    let result; run({ scopeKey: requestScope, status }, "current", { content }, o => o.content, value => { result = value; }); return result;
+  };
+  assert.equal(readiness("loading"), false);
+  assert.equal(readiness("ready"), true); assert.equal(readiness("error"), true);
+  assert.equal(readiness("refreshing", { content: true }), true);
+  assert.equal(readiness("ready", { requestScope: "old" }), false);
+  assert.equal(readiness("error", { requestScope: "old" }), false);
+  assert.equal(readiness("loading", { requestScope: "old", content: true }), true);
+});

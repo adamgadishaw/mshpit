@@ -1,3 +1,4 @@
+import useNativeTabContentReady from "../hooks/useNativeTabContentReady";
 import useNativeTabPreview from "../hooks/useNativeTabPreview";
 import NativeTabSwipeExclusion from "../components/NativeTabSwipeExclusion";
 import { ScrollView } from "../components/NativeTabScroll";
@@ -567,6 +568,10 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   }, [settledQuery, tourDates, dbArtists]);
   const artists = queryIsSettled ? searchedArtists : [];
 
+  // A matching snapshot is produced for success, empty results and terminal
+  // artist failures. Do not borrow an older query's unscoped error message.
+  useNativeTabContentReady(queryIsSettled && artistCache.scope === lookupScope
+    && (!searchLoading || dbArtists.length > 0));
   const showBrowse = !query;
   const exactArtist = artists.some((a) => a.name.toLowerCase() === query);
   useEffect(() => {
