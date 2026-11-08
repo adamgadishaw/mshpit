@@ -1,5 +1,5 @@
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, Platform, useWindowDimensions } from "react-native";
+import { ActionSheetIOS, ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, Platform, useWindowDimensions } from "react-native";
 import { colors, mono, radius, roleColor, space, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { useStore } from "../store";
 import Avatar from "../components/Avatar";
@@ -34,8 +34,44 @@ import NewsStoryCard from "../components/news/NewsStoryCard";
 import { PostNavigationContext } from "../components/PostNavigationContext";
 import { profileAccentColor } from "../domain/profileAccents.mjs";
 
+const IS_IOS = Platform.OS === "ios";
 const EMPTY_LIST = Object.freeze([]);
 const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "", favoriteShows: EMPTY_LIST });
+
+// Native menus keep account tools secondary without hiding their labels or
+// unread state. An open sheet must never act on a previous account/profile.
+function ProfileActionMenu({ actions, scope, label, unread = 0 }) {
+  const current = useRef({ actions, scope, mounted: true });
+  const showing = useRef(false);
+  current.current = { actions, scope, mounted: true };
+  useEffect(() => {
+    current.current.mounted = true;
+    return () => { current.current.mounted = false; };
+  }, []);
+  const open = () => {
+    if (showing.current) return;
+    const visible = actions.filter((action) => typeof action.onPress === "function");
+    showing.current = true;
+    ActionSheetIOS.showActionSheetWithOptions({
+      title: label,
+      options: [...visible.map((action) => action.label), "Cancel"],
+      cancelButtonIndex: visible.length,
+      destructiveButtonIndex: visible.map((action, index) => action.destructive ? index : -1).filter((index) => index >= 0),
+    }, (index) => {
+      showing.current = false;
+      if (!current.current.mounted || current.current.scope !== scope) return;
+      const selected = visible[index];
+      if (!selected) return;
+      current.current.actions.find((action) => action.key === selected.key)?.onPress?.();
+    });
+  };
+  return (
+    <Pressable testID="profile-action-menu" onPress={open} style={({ pressed }) => [styles.nativeMenu, pressed && { opacity: 0.6 }]} accessibilityRole="button" accessibilityLabel={`${label}${unread > 0 ? `, ${unread} unread updates` : ""}`} accessibilityHint="Opens the available actions">
+      <View style={styles.nativeMenuDots} accessible={false}>{[0, 1, 2].map((dot) => <View key={dot} style={styles.nativeMenuDot} />)}</View>
+      {unread > 0 ? <View style={styles.nativeUnreadDot} accessible={false} /> : null}
+    </Pressable>
+  );
+}
 
 // The member's pinned favorite shows, in their order, near the top.
 function FavoriteShows({ shows, accent, isSelf, onOpen, onManage }) {
@@ -61,8 +97,8 @@ function FavoriteShows({ shows, accent, isSelf, onOpen, onManage }) {
               {show.photo ? <SmartImage uri={show.photo} style={styles.favoritePhoto} contain={false} accessible={false} />
                 : <View style={[styles.favoritePhoto, styles.favoritePhotoEmpty, accent && { backgroundColor: accent }]}><Icon name="ticket" size={20} color="#FFFFFF" /></View>}
               <View style={styles.favoriteCopy}>
-                <Text style={styles.favoriteArtist} numberOfLines={1}>{title}</Text>
-                {meta ? <Text style={styles.favoriteMeta} numberOfLines={1}>{meta}</Text> : null}
+                <Text style={styles.favoriteArtist} numberOfLines={IS_IOS ? undefined : 1}>{title}</Text>
+                {meta ? <Text style={styles.favoriteMeta} numberOfLines={IS_IOS ? undefined : 1}>{meta}</Text> : null}
                 {show.overall ? <Text style={[styles.favoriteScore, accent && { color: accent }]}>{show.overall.toFixed(1)}</Text> : null}
               </View>
             </Pressable>
@@ -446,12 +482,25 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   // On someone else's profile we only show ones they marked public; you always
   // see all of your own. Stable descriptors keep posters, edits, and alt text.
   const following = isFollowing(user.id);
+  const reportProfile = () => onReport?.({
+    targetType: "user", targetId: user.id, ownerId: user.id, targetName: "profile",
+    title: `${user.name} (@${user.handle})`,
+    summary: "Report this account and its public profile to the moderation team.",
+  });
+  const profileMenuActions = isSelf ? (ownerTools || []).map((tool) => ({
+    ...tool, label: tool.label + (tool.badge > 0 ? ` (${tool.badge} new)` : ""),
+  })) : [
+    { key: isMuted(user.id) ? "unmute" : "mute", label: isMuted(user.id) ? "Unmute" : "Mute", onPress: isMuted(user.id) ? () => unmuteUser(user.id) : () => muteUser(user.id) },
+    { key: isBlocked(user.id) ? "unblock" : "block", label: isBlocked(user.id) ? "Unblock" : "Block", destructive: !isBlocked(user.id), onPress: isBlocked(user.id) ? () => unblockUser(user.id) : () => blockUser(user.id) },
+    ...(onReport ? [{ key: "report", label: "Report profile", destructive: true, onPress: reportProfile }] : []),
+  ];
+  const ownerUnread = isSelf ? (ownerTools || []).reduce((total, tool) => total + (tool.badge || 0), 0) : 0;
   const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? user.verified ? "VERIFIED ARTIST" : "ARTIST" : "FAN";
   return (
     <View style={styles.wrap}>
       <View testID="profile-header" style={styles.topbar}>
         {asTab ? (
-          <Text style={[styles.topTitle, styles.topTitleTab]} numberOfLines={1} accessibilityRole="header">@{user.handle}</Text>
+          <Text style={[styles.topTitle, styles.topTitleTab]} numberOfLines={1} accessibilityRole="header">{IS_IOS ? "You" : `@${user.handle}`}</Text>
         ) : (
           <>
             <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
@@ -460,7 +509,9 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             <Text style={styles.topTitle}>@{user.handle}</Text>
           </>
         )}
-        {asTab && isSelf && ownerTools?.length ? null : session && !isSelf && onReport ? (
+        {IS_IOS && session && (isSelf ? asTab && ownerTools?.length : true) ? (
+          <ProfileActionMenu actions={profileMenuActions} scope={profileScope} label={isSelf ? "Your account" : "Profile actions"} unread={ownerUnread} />
+        ) : asTab && isSelf && ownerTools?.length ? null : session && !isSelf && onReport ? (
           <Pressable
             style={styles.profileReportBtn}
             onPress={() => onReport({
@@ -479,7 +530,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           </Pressable>
         ) : <View style={{ width: 40 }} />}
       </View>
-      {asTab && isSelf && ownerTools?.length ? (
+      {!IS_IOS && asTab && isSelf && ownerTools?.length ? (
         // Your own tools, each with its name under the icon, in one row that
         // fits a 320px phone.
         <View style={styles.ownerTools}>
@@ -511,7 +562,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         accessibilityLabel={`Refresh ${user.name || "member"} profile`}
         testID="profile-refresh"
       >
-      <ScrollView ref={profileScrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView ref={profileScrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} contentInsetAdjustmentBehavior={IS_IOS ? "automatic" : undefined}>
         {profileView.status === "stale" && (
           <View style={styles.staleProfile} accessibilityRole="alert" accessibilityLiveRegion="polite">
             <Text style={styles.staleProfileText}>{profileView.error}</Text>
@@ -522,12 +573,12 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         )}
         {/* banner + avatar */}
         <View testID="profile-banner" style={[styles.banner, Platform.OS === "web" && { minHeight: user.banner ? webBannerMinHeight : 0 }]}>
-          {user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }]} />}
-          <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, ${colors.bg}00 0px, ${colors.bg}30 32px, ${colors.bg}CC 104px, ${colors.bg}F2 220px, ${colors.bg} 340px)` }]} />
-          {accentColor && Platform.OS !== "web" ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
-        <View style={[styles.identityWrap, !user.banner && styles.identityWrapCompact]}>
+          {user.banner ? <SmartImage uri={user.banner} style={IS_IOS ? styles.nativeBannerArtwork : StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }, IS_IOS && styles.nativeBannerArtwork, IS_IOS && styles.nativeBannerCompact]} />}
+          <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, IS_IOS && !user.banner && styles.nativeBannerCompact, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, ${colors.bg}00 0px, ${colors.bg}30 32px, ${colors.bg}CC 104px, ${colors.bg}F2 220px, ${colors.bg} 340px)` }]} />
+          {accentColor && Platform.OS !== "web" && !IS_IOS ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
+        <View style={[styles.identityWrap, !user.banner && styles.identityWrapCompact, IS_IOS && styles.nativeIdentityWrap, IS_IOS && !user.banner && styles.nativeIdentityCompact]}>
         <View testID="profile-identity-tile" style={[styles.head, Platform.OS === "web" && styles.integratedHead]}>
-          <View testID="profile-identity-avatar" style={[styles.avatarWrap, Platform.OS === "web" && styles.integratedAvatar]}><Avatar user={user} size={Platform.OS === "web" ? 88 : 72} /></View>
+          <View testID="profile-identity-avatar" style={[styles.avatarWrap, Platform.OS === "web" && styles.integratedAvatar, IS_IOS && accentColor && { borderColor: accentColor }]}><Avatar user={user} size={Platform.OS === "web" || IS_IOS ? 88 : 72} fallbackTextColor={IS_IOS ? colors.text : undefined} /></View>
           <View style={[styles.nameRow, Platform.OS === "web" && styles.integratedNameRow]}>
             <Text testID="profile-identity-name" style={[styles.name, Platform.OS === "web" && styles.integratedName]}>{user.name}</Text>
             <BadgeRow badges={userBadges(user)} size={20} />
@@ -558,27 +609,29 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           ) : session && isBlocked(user.id) ? (
             <View style={styles.blockedBox}>
               <Text style={styles.blockedTxt}>You've blocked this account. They can't message you, follow you, or see your posts.</Text>
-              <Pressable style={styles.unblockBtn} onPress={() => unblockUser(user.id)}>
+              <Pressable style={styles.unblockBtn} onPress={() => unblockUser(user.id)} accessibilityRole="button" accessibilityLabel={`Unblock ${user.name}`}>
                 <Text style={styles.unblockTxt}>Unblock</Text>
               </Pressable>
             </View>
           ) : (
             session && (
               <View style={styles.actionRow}>
-                <Pressable style={[styles.followBtn, following && styles.followingBtn]} onPress={() => (following ? unfollow(user.id) : follow(user.id))}>
+                <Pressable style={[styles.followBtn, following && styles.followingBtn]} onPress={() => (following ? unfollow(user.id) : follow(user.id))} accessibilityRole="button" accessibilityLabel={`${following ? "Unfollow" : "Follow"} ${user.name}`}>
                   {!following && <Icon name="user-plus" size={15} color="#1A1206" />}
                   <Text style={[styles.followTxt, following && styles.followingTxt]}>{following ? "Following" : "Follow"}</Text>
                 </Pressable>
-                <Pressable style={styles.msgBtn} onPress={() => onMessage?.(user.id)}>
+                <Pressable style={styles.msgBtn} onPress={() => onMessage?.(user.id)} accessibilityRole="button" accessibilityLabel={`Message ${user.name}`}>
                   <Icon name="comment" size={15} color={colors.amber} />
                   <Text style={styles.msgTxt}>Message</Text>
                 </Pressable>
+                {!IS_IOS ? <>
                 <Pressable style={styles.muteBtn} onPress={() => (isMuted(user.id) ? unmuteUser(user.id) : muteUser(user.id))} accessibilityRole="button" accessibilityLabel={`${isMuted(user.id) ? "Unmute" : "Mute"} ${user.name}`}>
                   <Text style={styles.muteTxt}>{isMuted(user.id) ? "Unmute" : "Mute"}</Text>
                 </Pressable>
                 <Pressable style={styles.blockBtn} onPress={() => blockUser(user.id)} hitSlop={6} accessibilityLabel="Block user">
                   <Icon name="lock" size={15} color={colors.danger} />
                 </Pressable>
+                </> : null}
               </View>
             )
           )}
@@ -592,8 +645,8 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
 
         <View style={styles.statsRow}>
           <Stat value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
-          <Stat value={followingCount(user.id)} label="People following" onPress={() => onOpenFollowList?.(user.id, "following")} />
-          <Stat value={isSelf ? new Set((session?.favoriteArtists || []).map((name) => String(name).trim().toLowerCase())).size : user.artistFollowingCount ?? (user.favoriteArtists || []).length} label="Artists followed" onPress={() => onOpenFollowList?.(user.id, "artists")} />
+          <Stat value={followingCount(user.id)} label={IS_IOS ? "Following" : "People following"} onPress={() => onOpenFollowList?.(user.id, "following")} />
+          <Stat value={isSelf ? new Set((session?.favoriteArtists || []).map((name) => String(name).trim().toLowerCase())).size : user.artistFollowingCount ?? (user.favoriteArtists || []).length} label={IS_IOS ? "Artists" : "Artists followed"} onPress={() => onOpenFollowList?.(user.id, "artists")} />
         </View>
         <FavoriteShows shows={profileView.favoriteShows || EMPTY_LIST} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} />
         {!session ? (
@@ -610,14 +663,14 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         </View>
 
         {/* Rewards: points + badges earned, tap for the full legend. */}
-        <Pressable style={styles.rewards} onPress={() => onOpenBadges?.(user.id)}>
+        {!IS_IOS ? <Pressable style={styles.rewards} onPress={() => onOpenBadges?.(user.id)}>
           <View style={styles.rewardsIcon}><Icon name="star" size={16} color={colors.amber} filled /></View>
           <View style={{ flex: 1 }}>
             <Text style={styles.rewardsTitle}>{userPoints(user).toLocaleString()} points · {userAchievements(user).length}/{ACHIEVEMENTS.length} badges</Text>
             <Text style={styles.rewardsSub}>{isSelf ? "See what you can earn next" : "See their badges"}</Text>
           </View>
           <Icon name="chevron-right" size={16} color={colors.textDim} />
-        </Pressable>
+        </Pressable> : null}
 
         {/* Shared attendance, the concert-overlap tracker. */}
         {!isSelf && session && (crossed.shows.length > 0 || crossed.artists.length > 0) && (
@@ -677,7 +730,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         {/* Media gallery, using the same resilient descriptor pipeline as You. */}
         {gallery.length > 0 && (
           <>
-            <Text style={styles.sectionLabel}>Media · {historyCount(gallery.length)}</Text>
+            <Text style={styles.sectionLabel} accessibilityRole="header">{IS_IOS ? "Gallery" : "Media"} · {historyCount(gallery.length)}</Text>
             <View style={styles.gallery}>
               {galleryPreview.map((g, i) => (
                 <ProfileMediaTile key={g.id || `${g.postId || "post"}:${g.uri}:${i}`} item={g} index={i} viewerItems={galleryViewerItems} onOpenPhotos={onOpenPhotos} />
@@ -701,12 +754,12 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
 
         {/* One calendar projection powers both this summary and Calendar. A
             dated post appears here immediately; plain statuses remain posts. */}
-        <Text style={styles.sectionLabel}>Upcoming shows · {planned.length}</Text>
+        <Text style={styles.sectionLabel} accessibilityRole="header">Upcoming shows · {planned.length}</Text>
         {planned.length === 0 && <Text style={styles.empty}>No upcoming shows yet.</Text>}
         {planned.map((p) => {
           const target = showDateMs(p.date);
           return (
-            <Pressable key={p.calendarKey || p.key || p.postId} style={styles.showRow} onPress={() => onOpenShow?.(p)}>
+            <Pressable key={p.calendarKey || p.key || p.postId} style={styles.showRow} onPress={() => onOpenShow?.(p)} accessibilityRole="button" accessibilityLabel={`${p.artist}, ${p.venue}, ${formatDate(p.date, p.date)}`}>
               <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.showArtist}>{p.artist}</Text>
@@ -746,10 +799,20 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         />
         </View>
 
+        {/* Rewards: points + badges earned, tap for the full legend. */}
+        {IS_IOS ? <Pressable style={styles.rewards} onPress={() => onOpenBadges?.(user.id)}>
+          <View style={styles.rewardsIcon}><Icon name="star" size={16} color={colors.amber} filled /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rewardsTitle}>{userPoints(user).toLocaleString()} points · {userAchievements(user).length}/{ACHIEVEMENTS.length} badges</Text>
+            <Text style={styles.rewardsSub}>{isSelf ? "See what you can earn next" : "See their badges"}</Text>
+          </View>
+          <Icon name="chevron-right" size={16} color={colors.textDim} />
+        </Pressable> : null}
+
         <View style={styles.postsSection}>
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
-        <Text style={styles.sectionLabel}>{isSelf ? "Your posts" : "Posts"} · {historyCount(logs.length)}</Text>
+        <Text style={styles.sectionLabel} accessibilityRole="header">{IS_IOS && isSelf ? "Your diary" : isSelf ? "Your posts" : "Posts"} · {historyCount(logs.length)}</Text>
         {logs.length === 0 && !historyLoading && (
           <Text style={styles.empty}>{isSelf ? "You haven't posted yet. Tap “Make a post” to log a show or share an update." : "No posts yet."}</Text>
         )}
@@ -793,7 +856,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   missingBox: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 40 },
   missingTitle: { color: colors.text, fontSize: 17, fontWeight: "800", marginTop: 6 },
@@ -937,3 +1000,75 @@ const styles = StyleSheet.create({
   scorePill: { flexDirection: "row", alignItems: "center", gap: 4 },
   scoreTxt: { color: colors.gold, fontFamily: mono, fontSize: 14, fontWeight: "700" },
 });
+
+
+// iOS has a quieter, editorial profile. The original Android/web styles above
+// remain unchanged, including the web-specific integrated banner treatment.
+const iosStyles = IS_IOS ? StyleSheet.create({
+  topbar: { ...baseStyles.topbar, paddingHorizontal: 20, paddingBottom: 12, paddingTop: 4, minHeight: 56 },
+  topTitle: { ...baseStyles.topTitle, fontSize: 17, fontWeight: "600", flexShrink: 1, textAlign: "center" },
+  topTitleTab: { flex: 1, minWidth: 0, fontSize: 34, fontWeight: "700", letterSpacing: -0.8, textAlign: "left" },
+  backBtn: { width: 44, minHeight: 44, justifyContent: "center" },
+  backCircle: { ...baseStyles.backCircle, width: 44, height: 44, borderRadius: 22, borderWidth: 0 },
+  nativeMenu: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceAlt },
+  nativeMenuDots: { flexDirection: "row", alignItems: "center", gap: 3 },
+  nativeMenuDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: colors.amber },
+  nativeUnreadDot: { position: "absolute", right: 3, top: 2, width: 10, height: 10, borderRadius: 5, backgroundColor: colors.magenta, borderWidth: 2, borderColor: colors.bg },
+  content: { paddingBottom: 48 },
+  banner: { backgroundColor: colors.bg },
+  nativeBannerArtwork: { position: "absolute", left: 20, right: 20, top: 0, height: 128, borderRadius: 18, overflow: "hidden" },
+  bannerShade: { position: "absolute", left: 20, right: 20, top: 0, height: 128, borderRadius: 18, backgroundColor: "rgba(0,0,0,0.12)" },
+  nativeIdentityWrap: { paddingHorizontal: 24, paddingTop: 88, paddingBottom: 4, alignItems: "flex-start" },
+  nativeBannerCompact: { height: 48, borderRadius: 14 },
+  nativeIdentityCompact: { paddingTop: 12 },
+  head: { width: "100%", alignItems: "flex-start", padding: 0, borderWidth: 0, backgroundColor: "transparent", shadowOpacity: 0, elevation: 0 },
+  avatarWrap: { borderWidth: 4, borderColor: colors.bg, borderRadius: 50 },
+  nameRow: { ...baseStyles.nameRow, justifyContent: "flex-start", gap: 7, marginTop: 12 },
+  name: { ...baseStyles.name, fontSize: 30, fontWeight: "700", letterSpacing: -0.7, textAlign: "left" },
+  handle: { ...baseStyles.handle, fontSize: 15, lineHeight: 21, textAlign: "left", marginTop: 3 },
+  roleBadge: { marginTop: 9 },
+  roleTxt: { color: colors.amber, fontSize: 11, fontWeight: "700", letterSpacing: 0.7 },
+  bio: { color: colors.text, fontSize: 15, lineHeight: 22, marginTop: 12 },
+  bioPreview: { width: "100%", alignItems: "flex-start" },
+  bioToggle: { alignSelf: "flex-start" },
+  editBtn: { ...baseStyles.editBtn, borderWidth: 0, borderRadius: 12, backgroundColor: colors.surfaceAlt, paddingHorizontal: 16, marginTop: 16 },
+  editTxt: { color: colors.amber, fontSize: 15, fontWeight: "600" },
+  actionRow: { ...baseStyles.actionRow, width: "100%", justifyContent: "flex-start", gap: 10 },
+  followBtn: { ...baseStyles.followBtn, flexGrow: 1, minHeight: 44, borderRadius: 12, justifyContent: "center" },
+  msgBtn: { ...baseStyles.msgBtn, flexGrow: 1, minHeight: 44, borderWidth: 0, borderRadius: 12, justifyContent: "center", backgroundColor: colors.surfaceAlt },
+  unblockBtn: { ...baseStyles.unblockBtn, minHeight: 44, justifyContent: "center" },
+  statsRow: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: 24, marginTop: 20, paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  stat: { flex: 1, minWidth: 80, minHeight: 44, alignItems: "flex-start", justifyContent: "center", paddingRight: 6 },
+  statVal: { color: colors.text, fontSize: 21, fontWeight: "600", fontVariant: ["tabular-nums"] },
+  statLabel: { color: colors.textDim, fontSize: 12, marginTop: 3 },
+  favorites: { marginHorizontal: 24, marginTop: 26, gap: 14 },
+  favoritesTitle: { color: colors.text, fontSize: 22, fontWeight: "700", letterSpacing: -0.35 },
+  favoriteGrid: { flexDirection: "row", flexWrap: "wrap", gap: 16 },
+  favoriteCard: { flexGrow: 1, flexBasis: "44%", minWidth: 130, maxWidth: 360, gap: 9 },
+  favoritePhoto: { width: "100%", aspectRatio: 1, borderRadius: 12, overflow: "hidden", backgroundColor: colors.surfaceAlt },
+  favoriteCopy: { minWidth: 0, gap: 3 },
+  favoriteArtist: { color: colors.text, fontSize: 16, fontWeight: "600" },
+  favoriteMeta: { color: colors.textDim, fontSize: 13, lineHeight: 18 },
+  favoriteScore: { color: colors.amber, fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"], marginTop: 2 },
+  favoriteEmpty: { ...baseStyles.favoriteEmpty, marginHorizontal: 24, marginTop: 24, padding: 16, minHeight: 64, borderWidth: 0, borderRadius: 14, backgroundColor: colors.surface },
+  favoriteEmptyText: { ...baseStyles.favoriteEmptyText, fontSize: 14, lineHeight: 20 },
+  sectionLabel: { color: colors.text, fontSize: 22, fontWeight: "700", letterSpacing: -0.35, marginTop: 30, marginBottom: 14, marginHorizontal: 24 },
+  empty: { color: colors.textDim, fontSize: 15, lineHeight: 22, marginHorizontal: 24 },
+  gallery: { ...baseStyles.gallery, marginHorizontal: 24, gap: 5 },
+  galleryCell: { ...baseStyles.galleryCell, borderWidth: 0, borderRadius: 10 },
+  gallerySeeAll: { ...baseStyles.gallerySeeAll, borderWidth: 0, backgroundColor: "transparent", justifyContent: "flex-start", marginHorizontal: 24 },
+  gallerySeeAllText: { color: colors.amber, fontSize: 15, fontWeight: "600" },
+  showRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12, minHeight: 72, marginHorizontal: 24, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  goingDot: { ...baseStyles.goingDot, borderWidth: 0, borderRadius: 10, backgroundColor: colors.surfaceAlt },
+  showVenue: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 3 },
+  showSource: { ...baseStyles.showSource, borderWidth: 0, paddingHorizontal: 0 },
+  rewards: { ...baseStyles.rewards, marginHorizontal: 24, marginTop: 24, paddingVertical: 16, paddingHorizontal: 0, borderWidth: 0, borderRadius: 0, backgroundColor: "transparent", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  rewardsIcon: { ...baseStyles.rewardsIcon, borderWidth: 0, backgroundColor: colors.surfaceAlt },
+  rewardsTitle: { color: colors.text, fontSize: 15, fontWeight: "600" },
+  rewardsSub: { color: colors.textDim, fontSize: 13, marginTop: 4 },
+  crossed: { ...baseStyles.crossed, marginHorizontal: 24, borderWidth: 0, backgroundColor: colors.surface, borderRadius: 14 },
+  tasteMatch: { ...baseStyles.tasteMatch, marginHorizontal: 24, borderWidth: 0, backgroundColor: colors.surface, borderRadius: 14 },
+  tasteMatchBasis: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
+  postsWrap: { paddingHorizontal: 20 },
+}) : {};
+const styles = { ...baseStyles, ...iosStyles };

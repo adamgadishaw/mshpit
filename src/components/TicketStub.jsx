@@ -442,7 +442,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 
         <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />
 
-        <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
+        <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : Platform.OS === "ios" ? colors.bg : colors.surface}>
 <View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
           <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
           <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} palette={campaignTreatment} />
@@ -679,7 +679,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
       <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
 
       {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
-      <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
+      <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : Platform.OS === "ios" ? colors.bg : colors.surface}>
 <View style={styles.footer}>
         <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
         <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
@@ -853,4 +853,10 @@ const styles = StyleSheet.create({
   whyAction: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
   whyDetail: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 7 },
   controlPressed: { backgroundColor: colors.surfaceAlt, transform: [{ scale: 0.96 }] },
+  ...(Platform.OS === "ios" ? {
+    card: { backgroundColor: colors.bg, borderRadius: 0, borderWidth: 0, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.lineSoft, paddingHorizontal: 0, paddingTop: 2, paddingBottom: 24, marginBottom: 24, boxShadow: "none" },
+    name: { color: colors.text, fontFamily: font, fontWeight: "600", fontSize: 16, letterSpacing: -0.2 },
+    sub: { color: colors.textDim, fontFamily: font, fontSize: 13, lineHeight: 18, marginTop: 3 },
+    review: { color: colors.text, fontFamily: font, fontSize: 16, lineHeight: 24, fontWeight: "400" },
+  } : {}),
 });

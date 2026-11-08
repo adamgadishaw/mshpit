@@ -5,6 +5,7 @@ import { useStore } from "../store";
 import { countryForCity } from "../geo";
 import Icon from "../components/Icon";
 import DiscoverChart from "../components/discover/DiscoverChart";
+import DiscoverBrowse from "../components/discover/DiscoverBrowse";
 import DiscoverGenres from "../components/discover/DiscoverGenres";
 import DiscoverVenues from "../components/discover/DiscoverVenues";
 import DiscoverPhotoPanel from "../features/discoverPhotos/DiscoverPhotoPanel";
@@ -82,7 +83,7 @@ const EMPTY_OVERVIEW = normalizeDiscoverOverview({});
 const EMPTY_EVENT_RANGE = Object.freeze({ scopeKey: "", days: null, through: null, rows: [], nextCursor: null, status: "idle" });
 // Cards or list: kept while the app is open, so coming back to Discover keeps
 // the member's choice. No browser storage.
-let rememberedEventView = Platform.OS === "web" ? "cards" : "list";
+let rememberedEventView = Platform.OS === "web" || Platform.OS === "ios" ? "cards" : "list";
 
 function useLatestCallback(callback) {
   const callbackRef = useRef(callback);
@@ -583,6 +584,32 @@ export default function DiscoverScreen({
     { label: "venues", value: (region === "Worldwide" ? overview.eventCoverage.venueTotal : overview.eventCoverage.countries.find((row) => discoverCountryIdentity(row.country) === discoverCountryIdentity(region))?.venueCount) ?? sceneProjection.venueCount, tint: colors.cool },
     { label: "genres", value: overview.distinctGenres ?? localStats.genres, tint: colors.magenta },
   ];
+
+  // iOS owns presentation only. Requests, filters, refresh and navigation above
+  // remain shared; Metro resolves a no-op entry on Android and web.
+  if (Platform.OS === "ios") return <DiscoverBrowse
+    programme={programme} onProgramme={(value) => setProgramme(discoverProgrammeKey(value))}
+    region={region} homeCity={homeCity} countries={countries} onRegion={pickRegion}
+    local={liveScope === LIVE_EVENT_SCOPE.LOCAL} onScope={(local) => pickLiveScope(local ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE)}
+    refreshing={pullRefreshing} onRefresh={refreshDiscover} refreshError={pullRefreshError}
+    chart={overview.chart} overviewStatus={overviewStatus} onRetryOverview={() => requestOverview({ force: true })}
+    genres={overview.genres} selectedGenre={selectedGenre} genreRows={genreRows} genreStatus={genreStatus} attendanceRows={sceneAttendance}
+    onGenre={setSelectedGenre} onRetryGenre={retryGenre} query={query} onQuery={setQuery}
+    slides={eventBannerSlides} events={visibleLiveEvents} rangeEvents={rangeEvents} eventRecovery={eventRecovery}
+    eventStatus={eventRange.scopeKey === rangeScopeKey ? eventRange.status : "idle"}
+    rangeLoadingMore={rangeLoadingMore} rangeHasMore={rangeHasMore} selectedRangeDays={selectedRangeDays} onRange={selectEventRange}
+    eventView={eventView} onEventView={setEventView} listView={listView} onEventList={openEventList} eventWeek={eventWeek} onEventWeek={setEventWeek}
+    onOpen={onOpen} onOpenArtist={openArtist} onOpenEvents={onOpenEvents} onOpenTopRated={onOpenTopRated}
+    onOpenCrew={onOpenCrew} onOpenFanClubs={onOpenFanClubs} onOpenLounge={onOpenLounge} loungeRows={loungeRows}
+    recommendations={session ? <ArtistRecommendationsRail resource={artistRecommendations.resource} onOpenArtist={onOpenArtist}
+      onOpenProfile={onOpenProfile} onManageTaste={onManageTaste} onRetry={artistRecommendations.retry} /> : null}
+    panels={{
+      cities: programme === "cities" ? <CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} registerRefresh={registerCityRefresh} /> : null,
+      venues: programme === "venues" ? <DiscoverVenues region={region} homeCity={homeCity} session={session} venueDirectoryIndex={venueDirectoryIndex} tourDates={tourDates} onOpenVenue={onOpenVenue} onOpenEvent={onOpen} onOpenVenues={onOpenVenues} /> : null,
+      festivals: programme === "festivals" ? <Suspense fallback={<ActivityIndicator color={colors.amber} style={{ marginVertical: 40 }} />}><FestivalsPanel region={region} onOpenFestival={onOpenFestival} registerRefresh={registerFestivalRefresh} /></Suspense> : null,
+      photos: programme === "photos" ? <DiscoverPhotoPanel region={region} accountId={session?.id || "guest"} compact={compact} width={width} onOpenPhotos={openPhotos} removedIds={removedIds} blockedIds={blockedIds} /> : null,
+    }}
+  />;
 
   return (
     <VinylRefreshBoundary

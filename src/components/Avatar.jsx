@@ -8,7 +8,7 @@ import useImageAttempt from "../hooks/useImageAttempt";
 
 // Shows the user's uploaded photo if set, else initials on their colour.
 // Tappable to open a profile.
-export default function Avatar({ user, size = 36, onPress, priority = "normal" }) {
+export default function Avatar({ user, size = 36, onPress, priority = "normal", fallbackTextColor }) {
   const profileName = user?.name || user?.username || "member";
   const previewWidth = Math.max(96, Math.min(384, Math.ceil((size * PixelRatio.get()) / 32) * 32));
   const rawAvatarUri = user?.avatarUri || null;
@@ -37,7 +37,7 @@ export default function Avatar({ user, size = 36, onPress, priority = "normal" }
         { width: size, height: size, borderRadius: size / 2, backgroundColor: (user?.avatarColor || colors.surfaceAlt) + "33", borderColor: user?.avatarColor || colors.line },
       ]}
     >
-      <Text style={[styles.txt, { fontSize: size * 0.34, color: user?.avatarColor || colors.amber }]}>
+      <Text style={[styles.txt, { fontSize: size * 0.34, color: fallbackTextColor || user?.avatarColor || colors.amber }]}>
         {user?.initials || "?"}
       </Text>
     </View>

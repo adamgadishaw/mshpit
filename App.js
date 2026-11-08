@@ -15,6 +15,10 @@ import { newsFeedSurfaceVisible } from "./src/domain/newsReaderState.mjs";
 import Icon from "./src/components/Icon";
 import NativeGestureRoot from "./src/components/NativeGestureRoot";
 import NativeTabRail from "./src/components/NativeTabRail";
+import IosTabBar from "./src/components/IosTabBar";
+import IosMenuDrawer from "./src/components/IosMenuDrawer";
+import IosDetailNavigation from "./src/components/IosDetailNavigation";
+import { iosBackGestureAllowed } from "./src/domain/iosNavigationPolicy.mjs";
 import ErrorBoundary from "./src/components/ErrorBoundary";
 import RuntimeErrorMonitor from "./src/components/RuntimeErrorMonitor";
 import useAppActive from "./src/lib/useAppActive";
@@ -320,6 +324,10 @@ function Root() {
     return top && Object.keys(top).length ? [{}, top] : [{}];
   });
   const nav = stack[stack.length - 1];
+  const [iosMenuOpen, setIosMenuOpen] = useState(false);
+  const iosMenuOpener = useRef(null);
+  useEffect(() => { setIosMenuOpen(false); }, [activeTab, stack, session?.id]);
+  const openMainMenu = () => Platform.OS === "ios" ? setIosMenuOpen(true) : go({ menu: true });
   const stackRef = useRef(stack);
   const nearbySelectionRef = useRef(null);
   stackRef.current = stack;
@@ -1587,7 +1595,7 @@ function Root() {
   const status = session ? accountStatus(session) : "ok";
   const feedSurfaceVisible = newsFeedSurfaceVisible({
     tab: activeTab, hasOverlay: !!overlay, landing,
-    obscured: nativeAccountLinkActive || status !== "ok" || !!acctOpen || !!welcome || !!resetToken || !!unsubToken || !!verifyToken || !!ownerApprovalToken,
+    obscured: iosMenuOpen || nativeAccountLinkActive || status !== "ok" || !!acctOpen || !!welcome || !!resetToken || !!unsubToken || !!verifyToken || !!ownerApprovalToken,
     pendingNavigation: !!publicNavigationNotice || !!newsStoryNotice,
     web, pathname: web ? window.location.pathname : null,
   });
@@ -1660,7 +1668,7 @@ function Root() {
                   onOpenArtistArchive={openArtistArchive}
                   onOpenVenue={openVenue}
                   onOpenNearby={() => go({ nearby: true })}
-                  onOpenMenu={() => go({ menu: true })}
+                  onOpenMenu={openMainMenu}
                   onOpenClips={ENABLE_CLIPS ? () => go({ clips: true }) : undefined}
                   onReport={openReport}
                   onEdit={openPostEditor}
@@ -1693,7 +1701,7 @@ function Root() {
             </View>
   );
 
-  const mobileTabBar = (
+  const mobileTabBar = Platform.OS === "ios" ? <IosTabBar active={activeTab} onChange={switchTab} /> : (
                       <NativeTabRail key={activeTab} active={activeTab} onChange={switchTab}>
 <View style={styles.tabbar}>
                         {LEFT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
@@ -1886,7 +1894,7 @@ function Root() {
               </View>
             )}
             <View style={styles.appContent}>
-              {Platform.OS !== "web" && !overlay && !retainNativeFeed && <NativeAppHeader onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
+              {Platform.OS !== "web" && !overlay && !retainNativeFeed && <NativeAppHeader active={activeTab} onChange={switchTab} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
               {web ? responsiveWeb : (
                 <>
                   {showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
@@ -1899,11 +1907,11 @@ function Root() {
                     onOpenEvent={openShow}
                   />
                   {retainNativeFeed ? <NativeFeedMediaLayer key={session.id} obscured={!!overlay}
-                    header={<NativeAppHeader onHome={() => switchTab("discover")} loggedIn onAccount={() => openProfileManagement()} />}
+                    header={<NativeAppHeader active={activeTab} onChange={switchTab} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn onAccount={() => openProfileManagement()} />}
                     tabBar={mobileTabBar}
-                    media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense>}>
+                    media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense>}>
                     <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey="main:feed">{tabScreens}</ScreenTransition></Suspense>
-                  </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense> : (
+                  </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense> : (
                     <>
                       <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{tabScreens}</ScreenTransition></Suspense>
                       {mobileTabBar}
@@ -1914,6 +1922,21 @@ function Root() {
             </View>
           </View>
         )}
+
+        {Platform.OS === "ios" && <IosMenuDrawer visible={iosMenuOpen} onClose={() => setIosMenuOpen(false)} openerRef={iosMenuOpener}
+          session={session} unread={session ? inboxUnread() : 0} activity={session ? unreadNotifications() : 0}
+          onProfile={() => session && openProfile(session.id)} onLogin={openSignIn} onLogout={signOut}
+          actions={{
+            near: () => go({ nearby: true }), venues: () => go({ venues: true }), fanClubs: () => go({ fanClubs: true }),
+            topRated: () => go({ topRated: true }), news: () => go({ news: true }),
+            crew: ENABLE_CREW ? () => go({ crew: true }) : undefined,
+            activity: openNotifications, inbox: openInbox, suggestion: () => go({ suggestion: { surface: "menu" } }),
+            manageProfile: openProfileManagement, settings: () => go({ settings: true }), admin: () => go({ admin: true }),
+            newsroom: () => go({ newsroom: true }), tourDates: () => requireVerifiedMutation("artist", () => go({ bulk: true })),
+            requestArtist: () => requireVerifiedMutation("artist", () => go({ reqArtist: true })),
+            howItWorks: () => go({ welcomeGuide: true }), clips: ENABLE_CLIPS ? () => go({ clips: true }) : undefined,
+            calendar: () => requireAuth(() => go({ calendar: true })),
+          }} />}
 
         <FeedbackHost canViewDiagnostics={canViewDiagnostics} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} />
 

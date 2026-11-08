@@ -111,7 +111,7 @@ test("high-frequency fallback and provenance copy stays literal", () => {
 });
 
 test("the feed uses the Mshpit brand and separates For You from Discover", () => {
-  assert.ok(feed.includes('Platform.OS === "web" ? "MSHPIT" : "Your feed"'));
+  assert.ok(feed.includes('Platform.OS === "web" ? "MSHPIT" : Platform.OS === "ios" ? "Feed" : "Your feed"'));
   assert.match(app, /<NativeAppHeader/);
   assert.match(nativeHeader, /MSHPIT/);
   assert.match(feed, /<Seg label="For You"/);
@@ -140,7 +140,7 @@ test("universal search offers typed result filters without member-count marketin
 test("primary branding is Mshpit across entry, navigation, and recovery surfaces", () => {
   assert.match(landing, />MSHPIT<\/Text>/);
   assert.match(landing, /accessibilityLabel="Mshpit, live music remembered"/);
-  assert.ok(feed.includes('Platform.OS === "web" ? "MSHPIT" : "Your feed"'));
+  assert.ok(feed.includes('Platform.OS === "web" ? "MSHPIT" : Platform.OS === "ios" ? "Feed" : "Your feed"'));
   assert.match(nativeHeader, /MSHPIT/);
   for (const [name, source] of Object.entries({ auth, errorBoundary, rails, resetPassword })) {
     assert.match(source, />MSHPIT<\/Text>/, `${name} carries the Mshpit wordmark`);

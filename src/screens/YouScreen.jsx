@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Share } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Share, Platform } from "react-native";
 import { colors, radius, shadow, displayFont } from "../theme";
 import Icon from "../components/Icon";
+import SmartImage from "../components/SmartImage";
 import ConcertMemoryModal from "../components/ConcertMemoryModal";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
 import { useStore } from "../store";
@@ -14,6 +15,8 @@ import { useArtistEventReviews } from "../features/artistEvents/useArtistEventAr
 // Loaded with the same lazy loader App.js uses, so both share one on-demand
 // chunk. A static import here made the bundler hoist the whole profile screen
 // into first-load code that every visitor downloads.
+const IS_IOS = Platform.OS === "ios";
+const MemoryCollection = IS_IOS ? ScrollView : View;
 const ProfileScreen = lazyWithRetry(() => import("./ProfileScreen"), "ProfileScreen");
 
 // The You tab is your own profile: the same page other members see, with your
@@ -77,10 +80,10 @@ export default function YouScreen({ onLogin, onManageProfile, onSettings, onOpen
           <View style={styles.loggedOutAvatar}>
             <Icon name="you" size={28} color={colors.textDim} />
           </View>
-          <Text style={styles.heroName}>You&apos;re logged out</Text>
-          <Text style={styles.heroHandle}>Log in to build your live-music history and post reviews.</Text>
-          <Pressable style={styles.primary} onPress={onLogin}>
-            <Text style={styles.primaryTxt}>LOG IN / SIGN UP</Text>
+          <Text style={styles.heroName}>{IS_IOS ? "Your live-music life" : "You're logged out"}</Text>
+          <Text style={styles.heroHandle}>{IS_IOS ? "Keep the shows, photos and memories that stay with you." : "Log in to build your live-music history and post reviews."}</Text>
+          <Pressable style={styles.primary} onPress={onLogin} accessibilityRole="button" accessibilityLabel="Log in or sign up">
+            <Text style={styles.primaryTxt}>{IS_IOS ? "Log in or sign up" : "LOG IN / SIGN UP"}</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -99,11 +102,17 @@ export default function YouScreen({ onLogin, onManageProfile, onSettings, onOpen
     <ProfileScreen {...profile} userId={session.id} asTab ownerTools={ownerTools} onManageProfile={onManageProfile}>
       {memories.length > 0 && (
         <View style={styles.memories}>
-          <Text style={styles.sectionTitle}>Concert memories</Text>
-          <Text style={styles.scopeCopy}>Only you can see this. Tap a memory for a quick look.</Text>
-          <View style={styles.memoryGrid}>
-            {memories.map((memory) => (
-              <View key={memory.id} style={styles.memoryCard}>
+          <View style={styles.memoriesHeading}><Text style={styles.sectionTitle} accessibilityRole="header">Concert memories</Text>{IS_IOS ? <View style={styles.privateLabel}><Icon name="lock" size={12} color={colors.textDim} /><Text style={styles.privateLabelText}>Only you</Text></View> : null}</View>
+          <Text style={styles.scopeCopy}>{IS_IOS ? "Great nights, worth another look." : "Only you can see this. Tap a memory for a quick look."}</Text>
+          <MemoryCollection horizontal={IS_IOS || undefined} showsHorizontalScrollIndicator={IS_IOS ? false : undefined} contentContainerStyle={IS_IOS ? styles.memoryGrid : undefined} style={IS_IOS ? styles.memoryRail : styles.memoryGrid}>
+            {memories.map((memory) => {
+              // Only explicit still-image descriptors are used as artwork. Legacy
+              // and video-only memories keep the dated ticket fallback.
+              const artwork = IS_IOS ? concertMemoryGallery(memory.log, []).find((item) => item.kind === "image") : null;
+              return <View key={memory.id} style={styles.memoryCard}>
+                {IS_IOS ? <Pressable style={styles.memoryArtwork} onPress={() => setMemorySelection({ accountId: session.id, memory })} accessibilityRole="button" accessibilityLabel={`Preview concert memory for ${memory.artist}`}>
+                  {artwork ? <SmartImage uri={artwork.uri} style={StyleSheet.absoluteFill} contain={false} accessible={false} /> : <View style={styles.memoryArtworkFallback}><Icon name="ticket" size={42} color={colors.amber} /><Text style={styles.memoryYear}>{memory.date.slice(0, 4)}</Text></View>}
+                </Pressable> : null}
                 <View style={styles.memoryTop}>
                   <View style={styles.memoryIcon}><Icon name="ticket" size={18} color={memory.kind === "anniversary" ? colors.magenta : colors.amber} /></View>
                   <View style={{ flex: 1, minWidth: 0 }}>
@@ -111,8 +120,8 @@ export default function YouScreen({ onLogin, onManageProfile, onSettings, onOpen
                     <Text style={styles.memoryDetail}>{memory.detail}</Text>
                   </View>
                 </View>
-                <Text style={styles.memoryArtist} numberOfLines={1}>{memory.artist}</Text>
-                <Text style={styles.memoryVenue} numberOfLines={2}>{memory.venue}{memory.city ? ` · ${memory.city}` : ""} · {formatDate(memory.date, memory.date)}</Text>
+                <Text style={styles.memoryArtist} numberOfLines={IS_IOS ? undefined : 1}>{memory.artist}</Text>
+                <Text style={styles.memoryVenue} numberOfLines={IS_IOS ? undefined : 2}>{memory.venue}{memory.city ? ` · ${memory.city}` : ""} · {formatDate(memory.date, memory.date)}</Text>
                 <View style={styles.memoryActions}>
                   <Pressable style={styles.memoryAction} onPress={() => setMemorySelection({ accountId: session.id, memory })} accessibilityRole="button" accessibilityLabel={`Open memory for ${memory.artist}`}>
                     <Icon name="ticket" size={13} color={colors.amber} />
@@ -123,9 +132,9 @@ export default function YouScreen({ onLogin, onManageProfile, onSettings, onOpen
                     <Text style={styles.memoryActionText}>Share memory</Text>
                   </Pressable>
                 </View>
-              </View>
-            ))}
-          </View>
+              </View>;
+            })}
+          </MemoryCollection>
           {!!memoryStatus && <Text style={styles.actionStatus} accessibilityLiveRegion="polite">{memoryStatus}</Text>}
         </View>
       )}
@@ -143,7 +152,7 @@ export default function YouScreen({ onLogin, onManageProfile, onSettings, onOpen
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 40 },
   loggedOut: { alignItems: "center", marginTop: 60, gap: 6 },
   loggedOutAvatar: { width: 64, height: 64, borderRadius: 32, backgroundColor: colors.surfaceAlt, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line },
@@ -168,3 +177,37 @@ const styles = StyleSheet.create({
   memoryActionText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
   actionStatus: { color: colors.textDim, fontSize: 12, marginTop: 8 },
 });
+
+
+const iosStyles = IS_IOS ? StyleSheet.create({
+  content: { padding: 24, paddingBottom: 48 },
+  loggedOut: { alignItems: "flex-start", marginTop: 48, gap: 12 },
+  loggedOutAvatar: { ...baseStyles.loggedOutAvatar, width: 80, height: 80, borderRadius: 24, borderWidth: 0, marginBottom: 14 },
+  heroName: { color: colors.text, fontSize: 34, fontWeight: "700", letterSpacing: -0.8 },
+  heroHandle: { color: colors.textDim, fontSize: 17, lineHeight: 25, marginTop: 4 },
+  primary: { ...baseStyles.primary, minHeight: 50, borderRadius: 14, alignSelf: "stretch" },
+  primaryTxt: { color: "#1A1206", fontSize: 17, fontWeight: "600" },
+  memories: { marginTop: 28 },
+  memoriesHeading: { flexDirection: "row", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between", marginHorizontal: 24 },
+  sectionTitle: { color: colors.text, fontSize: 22, fontWeight: "700", letterSpacing: -0.35 },
+  privateLabel: { flexDirection: "row", alignItems: "center", gap: 4 },
+  privateLabelText: { color: colors.textDim, fontSize: 12 },
+  scopeCopy: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginTop: 5, marginBottom: 16, marginHorizontal: 24 },
+  memoryRail: { overflow: "visible" },
+  memoryGrid: { flexDirection: "row", alignItems: "flex-start", gap: 14, paddingHorizontal: 24, paddingBottom: 4 },
+  memoryCard: { width: 280, gap: 10, padding: 0 },
+  memoryArtwork: { width: "100%", aspectRatio: 1.75, backgroundColor: colors.surfaceAlt, borderRadius: 14, overflow: "hidden" },
+  memoryArtworkFallback: { flex: 1, padding: 20, flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
+  memoryYear: { color: colors.textDim, fontSize: 36, fontWeight: "300", letterSpacing: -1.5 },
+  memoryTop: { flexDirection: "row", gap: 9, alignItems: "center", marginTop: 2 },
+  memoryIcon: { display: "none" },
+  memoryKind: { color: colors.amber, fontSize: 12, fontWeight: "600" },
+  memoryDetail: { color: colors.textDim, fontSize: 13, marginTop: 3 },
+  memoryArtist: { color: colors.text, fontSize: 20, fontWeight: "700", letterSpacing: -0.25 },
+  memoryVenue: { color: colors.textDim, fontSize: 14, lineHeight: 20 },
+  memoryActions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  memoryAction: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, maxWidth: "100%", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.surfaceAlt },
+  memoryActionText: { flexShrink: 1, color: colors.amber, fontSize: 13, fontWeight: "600" },
+  actionStatus: { color: colors.textDim, fontSize: 13, marginTop: 12, marginHorizontal: 24 },
+}) : {};
+const styles = { ...baseStyles, ...iosStyles };

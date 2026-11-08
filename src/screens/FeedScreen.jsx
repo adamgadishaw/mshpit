@@ -86,7 +86,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
 });
 
 export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
-  const { width } = useWindowDimensions();
+  const { width, fontScale } = useWindowDimensions();
   const appActive = useAppActive();
   const feedActive = nativeFeedCanWork({ platform: Platform.OS, appActive, visible });
   const phone = width < 700;
@@ -401,8 +401,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
         <View style={styles.head}>
           <View style={[styles.wordmarkRow, Platform.OS !== "web" && styles.nativeHeaderRow]}>
             {/* The native shell already owns the brand; this title identifies the page. */}
-            <Text style={Platform.OS === "web" ? styles.wordmark : styles.nativeFeedTitle}>{Platform.OS === "web" ? "MSHPIT" : "Your feed"}</Text>
-            {!hideHeaderActions && <View style={styles.headerBtns}>
+            <Text style={Platform.OS === "web" ? styles.wordmark : styles.nativeFeedTitle}>{Platform.OS === "web" ? "MSHPIT" : Platform.OS === "ios" ? "Feed" : "Your feed"}</Text>
+            {!hideHeaderActions && Platform.OS !== "ios" && <View style={styles.headerBtns}>
               {onOpenClips && (
                 <Pressable style={styles.clipsBtn} onPress={onOpenClips} hitSlop={8} accessibilityRole="button" accessibilityLabel="Clips">
                   <Icon name="play" size={15} color={colors.amber} />
@@ -440,7 +440,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             </View>
           ) : null}
 
-          {loggedIn && (
+          {loggedIn && Platform.OS !== "ios" && (
             <Pressable style={styles.nearBtn} onPress={onOpenNearby}>
               <Icon name="pin" size={16} color={colors.amber} />
               <Text style={styles.nearTxt}>
@@ -456,11 +456,11 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
               <View style={styles.gsHead}>
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={styles.gsTitle}>{onFinishSetup ? homeCity ? `Welcome to Mshpit, ${homeCity.split(",")[0]}.` : "You’re in. Welcome to Mshpit." : "Your first night on Mshpit"}</Text>
-                  <Text style={styles.gsJourney}>{HOME_JOURNEY_LINE}</Text>
+                  {Platform.OS !== "ios" && <Text style={styles.gsJourney}>{HOME_JOURNEY_LINE}</Text>}
                 </View>
-                <Pressable onPress={dismissGuide} hitSlop={10} accessibilityRole="button" accessibilityLabel="Dismiss getting started guide"><Icon name="x" size={16} color={colors.textDim} /></Pressable>
+                <Pressable onPress={dismissGuide} style={Platform.OS === "ios" ? { minWidth: 44, minHeight: 44, justifyContent: "center", alignItems: "center" } : undefined} hitSlop={10} accessibilityRole="button" accessibilityLabel="Dismiss getting started guide"><Icon name="x" size={16} color={colors.textDim} /></Pressable>
               </View>
-              <Text style={styles.gsSub}>{onFinishSetup ? "Have a look around. Your profile photo, banner and city welcome can wait. Find them in Settings anytime." : "Find a show, save the night, then come back to rate it, share the memory, and meet other fans."}</Text>
+              <Text style={styles.gsSub}>{Platform.OS === "ios" ? "Find your next show or start your concert collection." : onFinishSetup ? "Have a look around. Your profile photo, banner and city welcome can wait. Find them in Settings anytime." : "Find a show, save the night, then come back to rate it, share the memory, and meet other fans."}</Text>
               <View style={styles.gsActions}>
                 <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />
                 {onFinishSetup ? <HomeAction icon="you" label="Finish profile setup" onPress={onFinishSetup} /> : <HomeAction icon="plus" label="Log a show" onPress={onLogShow} primary />}
@@ -469,7 +469,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
           )}
 
           {loggedIn && (
-            <View style={styles.segment}>
+            <View style={[styles.segment, Platform.OS === "ios" && fontScale > 1.25 && { flexWrap: "wrap" }]}>
               <Seg label="Following" on={filter === "following"} onPress={() => pick("following")} />
               <Seg label="Local" on={filter === "local"} onPress={() => pick("local")} />
               <Seg label="For You" on={filter === "everyone"} onPress={() => pick("everyone")} />
@@ -606,9 +606,10 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
 }
 
 function Seg({ label, on, onPress }) {
+  const { fontScale } = useWindowDimensions();
   return (
     <Pressable
-      style={[styles.seg, on && styles.segOn]}
+      style={[styles.seg, Platform.OS === "ios" && fontScale > 1.25 && { flexBasis: "45%", flexGrow: 1, paddingHorizontal: 12 }, on && styles.segOn]}
       onPress={onPress}
       accessibilityRole="tab"
       accessibilityLabel={`${label} feed`}
@@ -698,4 +699,25 @@ const styles = StyleSheet.create({
   newsStripAll: { color: colors.amber, fontSize: 13, fontWeight: "800" },
   newsStripRow: { gap: 10, paddingRight: 4 },
   newsStripItem: { width: 270 },
+  ...(Platform.OS === "ios" ? {
+    content: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 36 },
+    head: { marginBottom: 22, marginTop: 0 },
+    nativeHeaderRow: { minHeight: 50 },
+    nativeFeedTitle: { color: colors.text, fontSize: 34, lineHeight: 41, fontWeight: "700", letterSpacing: -1 },
+    segment: { flexDirection: "row", marginTop: 16, padding: 3, borderRadius: 13, backgroundColor: colors.surfaceAlt },
+    seg: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", paddingVertical: 8, paddingHorizontal: 3, borderRadius: 10 },
+    segOn: { backgroundColor: colors.bgElev },
+    segTxt: { color: colors.textDim, fontSize: 13, fontWeight: "500", textAlign: "center" },
+    segTxtOn: { color: colors.text, fontWeight: "600" },
+    gs: { marginTop: 14, padding: 16, borderRadius: 20, backgroundColor: colors.surface, gap: 8 },
+    gsTitle: { color: colors.text, fontSize: 18, fontWeight: "600", lineHeight: 24 },
+    gsSub: { color: colors.textDim, fontSize: 15, lineHeight: 21 },
+    homeAction: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: colors.surfaceAlt },
+    newsStripTitle: { color: colors.text, fontSize: 20, fontWeight: "700", letterSpacing: -0.4 },
+    newsStripAll: { color: colors.amber, fontSize: 15, fontWeight: "500", paddingVertical: 12 },
+    caughtUp: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 24, padding: 16, borderRadius: 18, backgroundColor: colors.surface },
+    emptyBox: { alignItems: "center", paddingTop: 32, paddingHorizontal: 20, gap: 8 },
+    emptyTitle: { color: colors.text, fontSize: 22, fontWeight: "700", textAlign: "center" },
+    emptySub: { color: colors.textDim, fontSize: 16, lineHeight: 23, textAlign: "center" },
+  } : {}),
 });
