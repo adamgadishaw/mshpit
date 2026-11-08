@@ -38,8 +38,8 @@ test("secondary primary tabs stay out of the first bundle and warm inside the se
   assert.doesNotMatch(app, /import YouScreen from "\.\/src\/screens\/YouScreen"/);
   assert.match(app, /if \(key === "search"\) SearchScreen\.preload\?\.\(\)/);
   assert.match(app, /if \(key === "you"\) YouScreen\.preload\?\.\(\)/);
-  // Only iOS owns the intent-render callback; Android/web keep the already
-  // rendered current tab. Merely creating the iOS wrapper renders no neighbor.
+  // Main navigation is now tap-only on every platform. Only the local iOS
+  // Feed filters mount a destination on horizontal gesture intent.
   const declarations = [];
   const visit = node => {
     if (!node || typeof node !== "object") return;
@@ -48,17 +48,10 @@ test("secondary primary tabs stay out of the first bundle and warm inside the se
   };
   visit(parse(app, { sourceType: "module", plugins: ["jsx"] }));
   const native = declarations.find(node => node.id.name === "nativeTabPage").init;
-  assert.equal(native.type, "ConditionalExpression"); assert.equal(native.alternate.name, "tabScreens");
-  const isIOS = new Function("Platform", `return (${app.slice(native.test.start, native.test.end)});`);
-  assert.equal(isIOS({ OS: "ios" }), true);
-  for (const OS of ["android", "web"]) assert.equal(isIOS({ OS }), false);
-  const rail = native.consequent.openingElement;
-  assert.equal(rail.name.name, "NativeTabRail"); assert.ok(rail.attributes.some(a => a.name?.name === "page"));
-  const render = rail.attributes.find(a => a.name?.name === "renderPage").value.expression;
-  assert.equal(render.type, "ArrowFunctionExpression");
-  const calls = [], renderPage = new Function("renderTabScreen", `return (${app.slice(render.start, render.end)});`)((...args) => { calls.push(args); return args; });
-  assert.deepEqual(calls, [], "constructing the rail cannot prepare an idle neighbor");
-  for (const preview of [true, false]) assert.deepEqual(renderPage("discover", preview), ["discover", preview, true]);
+  assert.equal(native.type, "Identifier"); assert.equal(native.name, "tabScreens");
+  const local = readFileSync(new URL("../components/NativeFeedFilterPager.ios.jsx", import.meta.url), "utf8");
+  assert.match(local, /FEED_FILTERS = \["following", "local", "everyone", "news"\]/);
+  assert.match(local, /\[active, \.\.\.\(pending \? \[pending.target\] : \[\]\)\]/);
   const defaults = declarations.find(node => node.id.name === "renderTabScreen").init.params;
   assert.equal(defaults[0].right.name, "activeTab");
   assert.equal(defaults[1].right.value, false); assert.equal(defaults[2].right.value, false,

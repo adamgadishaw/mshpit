@@ -13,7 +13,7 @@ import { releasedSwipe, swipeAxis, swipeThreshold } from "../domain/nativeGestur
 
 // Rails own only their visible controls. Page mode owns main-tab content,
 // with passive native exclusions for child gestures and reserved Back edges.
-export default function NativeSwipeRail({ children, onCommit, positive = "Like", negative = "Repost", hint, enabled = true, testID, surfaceColor = colors.surface, page = false, pageKey, entryDirection = 0, canPrevious = true, canNext = true, previewPrevious = true, previewNext = true, renderPages, onPageIntent, onPageCancel, pageReady = null }) {
+export default function NativeSwipeRail({ children, onCommit, positive = "Like", negative = "Repost", hint, enabled = true, testID, surfaceColor = colors.surface, page = false, pageKey, pageIndex, entryDirection = 0, canPrevious = true, canNext = true, previewPrevious = true, previewNext = true, renderPages, onPageIntent, onPageCancel, pageReady = null }) {
   const { width: screenWidth } = useWindowDimensions();
   const reduced = useReducedMotion(), screenReader = useScreenReaderEnabled();
   const interactive = page && !!renderPages;
@@ -23,7 +23,7 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
   const startX = useSharedValue(0), startY = useSharedValue(0), width = useSharedValue(screenWidth - 32), x = useSharedValue(0);
   const epoch = useSharedValue(0), touching = useSharedValue(false);
   const excluded = useSharedValue(false), settling = useSharedValue(false);
-  const pageOrigin = useSharedValue(["feed", "search", "discover", "you"].indexOf(pageKey));
+  const pageOrigin = useSharedValue(pageIndex ?? ["feed", "search", "discover", "you"].indexOf(pageKey));
   const gestureId = useSharedValue(0), waitingRelease = useSharedValue(null);
   const readinessTimer = useRef(null);
   const readyDirection = useSharedValue(null), requestedDirection = useSharedValue(null), dragX = useSharedValue(0);
@@ -41,7 +41,7 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
     live.current = next;
     epoch.set(next.epoch); touching.set(false); excluded.set(false); settling.set(false); setArmed(null);
     const oldIndex = ["feed", "search", "discover", "you"].indexOf(lastPage.current);
-    const newIndex = ["feed", "search", "discover", "you"].indexOf(pageKey);
+    const newIndex = pageIndex ?? ["feed", "search", "discover", "you"].indexOf(pageKey);
     if (page && !interactive && next.allowed && !reduced && ((oldIndex >= 0 && newIndex >= 0 && oldIndex !== newIndex) || (!hasPresentedPage.current && entryDirection))) {
       x.set((entryDirection || (newIndex > oldIndex ? 1 : -1)) * screenWidth * 0.26);
       x.set(withSpring(0, { damping: 26, stiffness: 230, mass: 0.8, overshootClamping: true, reduceMotion: ReduceMotion.System }));
@@ -83,7 +83,7 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
       live.current = null;
       epoch.set(0); touching.set(false); if (!interactive) x.set(0);
     };
-  }, [enabled, screenReader, permissionRevision, onCommit, screenWidth, epoch, touching, x, page, pageKey, reduced, excluded, settling, interactive, pageOrigin]);
+  }, [enabled, screenReader, permissionRevision, onCommit, screenWidth, epoch, touching, x, page, pageKey, pageIndex, reduced, excluded, settling, interactive, pageOrigin]);
   const generation = owner?.allowed ? owner.epoch : 0;
   const rearm = useMemo(() => () => { if (live.current === owner) setPermissionRevision(revision => revision + 1); }, [owner]);
   const commit = useMemo(() => direction => {

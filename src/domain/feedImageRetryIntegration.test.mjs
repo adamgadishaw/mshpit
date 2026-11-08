@@ -52,7 +52,7 @@ function fixture(platform='ios') {
     return dep;
   }).default;
   const props={feed:[],localFeed:[],loggedIn:true,visible:true,accountId:'a',onRefresh:({signal})=>request(signal)};
-  const render=(flush=true)=>{cursor=0;tree=feed(props);if(flush)while(pending.length)pending.shift()();return tree;};
+  const render=(flush=true)=>{cursor=0;const selected=feed(props);tree=selected.type(selected.props);if(flush)while(pending.length)pending.shift()();return tree;};
   render();
   return {props,calls,render,get tree(){return tree;},get refresh(){return tree.props.children.props.onRefresh;},
     subscribe(fn){return tree.props.value?.subscribe(fn);},

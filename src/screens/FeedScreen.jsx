@@ -69,7 +69,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   return (
     <TicketStub
       log={item}
-      swipeActions={Platform.OS !== "web"}
+      swipeActions={Platform.OS !== "web" && Platform.OS !== "ios"}
       compactContent
       mediaViewable={mediaViewable}
       {...(Platform.OS === "ios" ? { contextPresentation } : {})}
@@ -93,22 +93,41 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   );
 });
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, headStatusOwner = null, feedReturn = null, feedPresentation = null, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
+export function useFeedSelection(accountId, loggedIn) {
+  const scope = feedFilterStorageKey(accountId);
+  const [state, setState] = useState(() => ({ scope, value: normalizeFeedFilter(load(scope, "everyone"), { loggedIn }) }));
+  const filter = state.scope === scope ? state.value : normalizeFeedFilter(load(scope, "everyone"), { loggedIn });
+  useEffect(() => {
+    setState(current => current.scope === scope ? current : { scope, value: normalizeFeedFilter(load(scope, "everyone"), { loggedIn }) });
+  }, [scope, loggedIn]);
+  return { filter, select: value => { setState({ scope, value }); save(scope, value); } };
+}
+
+export default function FeedScreen(props) {
+  const selection = useFeedSelection(props.accountId, props.loggedIn);
+  return <FeedContent {...props} filter={selection.filter} onSelectFilter={selection.select} />;
+}
+
+export function FeedNavigation({ filter, onSelect, loggedIn }) {
+  const { fontScale } = useWindowDimensions();
+  return <View style={styles.head}>
+    <View style={[styles.wordmarkRow, styles.nativeHeaderRow]}><Text style={styles.nativeFeedTitle}>Feed</Text></View>
+    {loggedIn && <View style={[styles.segment, fontScale > 1.25 && { flexWrap: "wrap" }]} accessibilityRole="tablist" accessibilityLabel="Feed filters">
+      <Seg label="Following" on={filter === "following"} onPress={() => onSelect("following")} />
+      <Seg label="Local" on={filter === "local"} onPress={() => onSelect("local")} />
+      <Seg label="For You" on={filter === "everyone"} onPress={() => onSelect("everyone")} />
+      <Seg label="News" on={filter === "news"} onPress={() => onSelect("news")} />
+    </View>}
+  </View>;
+}
+
+export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, headStatusOwner = null, feedReturn = null, feedPresentation = null, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews , filter, onSelectFilter, localNavigation = false, readEnabled = true }) {
   const { width, fontScale } = useWindowDimensions();
   const tabPreview = useNativeTabPreview();
   const appActive = useAppActive();
   const feedActive = nativeFeedCanWork({ platform: Platform.OS, appActive, visible });
   const phone = width < 700;
   const filterScope = feedFilterStorageKey(accountId);
-  const [filterState, setFilterState] = useState(() => ({
-    scope: filterScope,
-    value: normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }),
-  }));
-  // Account props change before passive effects run. Project the new account's
-  // persisted choice during that transition so A's preference never flashes for B.
-  const filter = filterState.scope === filterScope
-    ? filterState.value
-    : normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }); // following | local | everyone
   const [count, setCount] = useState(() => feedReturn?.read(filter)?.count || PAGE);
   const [undoItem, setUndoItem] = useState(null);
   const [undoBusy, setUndoBusy] = useState(false);
@@ -132,11 +151,11 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   const primaryHead = headStatus && (filter === "everyone" || filter === "local") ? headStatus : null;
   const newsTab = filter === "news";
   const { followedArtists = [], blockedIds = [], mutedIds = [], removedIds = [] } = useNewsInteractions();
-  const following = useFollowingFeed({ accountId, enabled: filter === "following" && loggedIn && (visible || tabPreview) && appActive,
+  const following = useFollowingFeed({ accountId, enabled: readEnabled && filter === "following" && loggedIn && (visible || tabPreview) && appActive,
     privacyScope: JSON.stringify([blockedIds,mutedIds,removedIds]) });
-  const news = useNewsDeskStories({ limit: 20, enabled: newsTab });
+  const news = useNewsDeskStories({ limit: 20, enabled: newsTab && readEnabled });
   // The phone strip shows top stories; the News tab lists the newest.
-  const topNews = useNewsDeskStories({ limit: 6, sort: "top", enabled: phone && newsTab });
+  const topNews = useNewsDeskStories({ limit: 6, sort: "top", enabled: phone && newsTab && readEnabled });
   const introduction = useNewsIntroduction(visible && filter === "everyone" && loggedIn && appActive);
   const full = useMemo(() => newsAwareFeed(filter === "following" ? following.posts : filter === "local" ? localFeed : feed,
     { filter, accountId, followedArtists, introduction: introduction.post }), [filter, accountId, followedArtists, feed, following.posts, localFeed, introduction.post]);
@@ -155,6 +174,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   const listData = discovery.rows;
   const returnUI = useIOSFeedReturn({ lease: feedReturn, presentation: feedPresentation, filter, count, rows: listData,
     keyExtractor: feedKeyExtractor, width, fontScale, active: feedActive });
+  const listRef = useRef(null);
+  const returnListRef = returnUI?.props?.ref;
+  const bindList = useCallback(node => {
+    listRef.current = node;
+    if (typeof returnListRef === "function") returnListRef(node);
+    else if (returnListRef) returnListRef.current = node;
+  }, [returnListRef]);
   const openAllNews = () => (loggedIn ? pick("news") : onOpenNews?.());
   const effectiveHasMore = filter === "following" ? !!following.nextCursor : hasMore;
   const effectiveLoading = filter === "following" ? following.status === "loading" : loadingMore;
@@ -169,9 +195,6 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     refreshControllerRef.current = null;
     setRefreshing(false);
     setRefreshError(false);
-    setFilterState((current) => current.scope === filterScope
-      ? current
-      : { scope: filterScope, value: normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }) });
     setCount(feedReturn?.read(filter)?.count || PAGE);
     setUndoItem(null);
     setUndoError(null);
@@ -213,14 +236,14 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     {
       // Media may warm as soon as a real slice is visible. This remains
       // separate from the stricter post-view qualification below.
-      viewabilityConfig: { itemVisiblePercentThreshold: 10 },
+      viewabilityConfig: { itemVisiblePercentThreshold: 10, ...(localNavigation ? { waitForInteraction: true } : {}) },
       onViewableItemsChanged: onMediaViewableItemsChanged,
     },
     {
       // Viewport coverage works for tall concert cards that can never be 60%
       // visible as an item. React Native enforces the continuous one-second
       // dwell before this callback qualifies the post.
-      viewabilityConfig: { viewAreaCoveragePercentThreshold: 50, minimumViewTime: 1_000 },
+      viewabilityConfig: { viewAreaCoveragePercentThreshold: 50, minimumViewTime: 1_000, ...(localNavigation ? { waitForInteraction: true } : {}) },
       onViewableItemsChanged: onQualifiedViewableItemsChanged,
     },
   ]).current;
@@ -235,6 +258,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     setVisibleMediaPostIds(new Set());
   }, [feedActive]);
 
+  useEffect(() => {
+    // Preview lists never start viewability timers. Promotion starts a fresh
+    // qualified interval on the same list, rather than counting hidden time or
+    // relying on RN to repeat unchanged viewable tokens after promotion.
+    if (localNavigation && feedActive) listRef.current?.recordInteraction();
+  }, [localNavigation, feedActive]);
+
   useEffect(() => () => {
     const at = Date.now();
     for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
@@ -244,6 +274,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   }, []);
 
   const pick = (f) => {
+    if (localNavigation) { onSelectFilter(f); return; }
     if (f === filter) return;
     returnUI?.cancel();
     const at = Date.now();
@@ -252,11 +283,11 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     }
     visibleSince.current.clear();
     setVisibleMediaPostIds(new Set());
-    setFilterState({ scope: filterScope, value: f });
-    save(filterScope, f);
+    onSelectFilter(f);
     setCount(PAGE);
   };
   const loadMore = async () => {
+    if (localNavigation && !feedActive) return;
     if (count < full.length) setCount((c) => c + PAGE);
     // Following/Local are projections of the pages already loaded. Letting an
     // empty projection paginate the global feed can cascade through every page
@@ -267,6 +298,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     }
   };
   const loadOlderFiltered = async () => {
+    if (localNavigation && !feedActive) return;
     if (filter === "following") {
       if (count < full.length) setCount(current => current + PAGE);
       else if (following.status !== "loading" && following.nextCursor && await following.loadMore()) setCount(current => current + PAGE);
@@ -433,6 +465,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     <FeedReturnProvider value={returnUI?.provider}>
     <FlatList
       {...returnUI?.props}
+      {...(localNavigation ? { ref: bindList } : {})}
       data={listData}
       extraData={visibleMediaPostIds}
       keyExtractor={feedKeyExtractor}
@@ -447,7 +480,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       viewabilityConfigCallbackPairs={viewabilityConfigCallbackPairs}
       ListHeaderComponent={
         <View style={styles.head}>
-          <View style={[styles.wordmarkRow, Platform.OS !== "web" && styles.nativeHeaderRow]}>
+          {!localNavigation && <View style={[styles.wordmarkRow, Platform.OS !== "web" && styles.nativeHeaderRow]}>
             {/* The native shell already owns the brand; this title identifies the page. */}
             <Text style={Platform.OS === "web" ? styles.wordmark : styles.nativeFeedTitle}>{Platform.OS === "web" ? "MSHPIT" : Platform.OS === "ios" ? "Feed" : "Your feed"}</Text>
             {!hideHeaderActions && Platform.OS !== "ios" && <View style={styles.headerBtns}>
@@ -469,7 +502,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
                 <Icon name="menu" size={22} color={colors.text} />
               </Pressable>
             </View>}
-          </View>
+          </View>}
           {Platform.OS === "web" && <Text style={styles.tag}>{JOURNEY_TAGLINE}</Text>}
 
           {(Platform.OS === "web" && refreshing) || refreshError ? (
@@ -523,7 +556,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             </View>
           )}
 
-          {loggedIn && (
+          {loggedIn && !localNavigation && (
             <View style={[styles.segment, Platform.OS === "ios" && fontScale > 1.25 && { flexWrap: "wrap" }]}>
               <Seg label="Following" on={filter === "following"} onPress={() => pick("following")} />
               <Seg label="Local" on={filter === "local"} onPress={() => pick("local")} />
@@ -533,7 +566,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
           )}
 
           {introduction.error ? <Pressable onPress={introduction.retry} accessibilityRole="button" style={{ padding: 12 }}><Text style={{ color: colors.textDim }}>News from your artists couldn't load. Try again.</Text></Pressable> : null}
-          {newsTab ? <View style={styles.liveCoverage}><Suspense fallback={<Text style={styles.tag}>Loading live coverage…</Text>}><LiveCoverageCard /></Suspense></View> : null}
+          {newsTab ? <View style={styles.liveCoverage}><Suspense fallback={<Text style={styles.tag}>Loading live coverage…</Text>}><LiveCoverageCard enabled={readEnabled} /></Suspense></View> : null}
           {phone && newsTab && topNews.stories.length ? (
             <View style={styles.newsStrip} accessibilityLabel="Music news">
               <View style={styles.newsStripHead}>

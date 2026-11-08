@@ -44,7 +44,7 @@ const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 const sleepForever = new Promise(() => {});
 // Actual React, platform-resolved rail and shell components. The native gesture,
 // UI/RN scheduler and actions are synthetic: this does not validate a device.
-function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "feed", entryDirection = 0, scrollChild = null, pager = false, shell = false, scrollRef = null, scrollProps = {} } = {}) {
+function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "following", entryDirection = 0, scrollChild = null, pager = false, shell = false, scrollRef = null, scrollProps = {}, feedScreen = false, selectedFilter = "everyone" } = {}) {
   const renderer = createRenderer(), gestures = [], queue = [], calls = [], shared = [], reactions = [], springs = [], timings = [], animatedStyles = [], appListeners = new Set(), appHistory = [], springCompletions = [];
   let props = { page, entryDirection, enabled: true, active, onCommit: onCommit || (direction => calls.push(direction)), onChange: onChange || (tab => calls.push(tab)), hint: "Swipe for an action",
     post: { id: "post-A", likes: 0 }, accountId: "account-A", likeInfo: () => ({ liked: false }),
@@ -96,15 +96,16 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   }
   modules["./NativeSwipeRail"] = execute("./NativeSwipeRail.ios.jsx");
   modules["./NativeTabPages.ios"] = execute("./NativeTabPages.ios.jsx");
-  modules["./NativeMainTabPager.ios"] = execute("./NativeMainTabPager.ios.jsx");
+  modules["./NativeFeedFilterPager.ios"] = execute("./NativeFeedFilterPager.ios.jsx");
   modules["./NativeTabRail"] = execute("./NativeTabRail.ios.jsx");
-  const Component = component === "rail" ? modules["./NativeSwipeRail"].default : component === "tabs" ? modules["./NativeTabRail"].default
+  let Component = component === "rail" ? modules["./NativeSwipeRail"].default : component === "tabs" ? (pager ? modules["./NativeFeedFilterPager.ios"].default : modules["./NativeTabRail"].default)
     : component === "social" ? execute("./PostSwipeActions.native.jsx").default : component === "bar" ? execute("./IosTabBar.ios.jsx").default : execute("./NativeAppHeader.ios.jsx").default;
   const exclusionModule = execute("./NativeTabSwipeExclusion.ios.jsx");
   const Exclusion = exclusionModule.default;
   modules["./NativeTabSwipeExclusion"] = exclusionModule;
+  if (component === "social-ios") { modules["./PostSwipeActions.native.jsx"] = execute("./PostSwipeActions.native.jsx"); Component = execute("./PostSwipeActions.ios.jsx").default; }
   const Scroll = execute("./NativeTabScroll.ios.jsx");
-  const Child = () => scrollChild === "nested" ? React.createElement(Scroll.ScrollView, { testID: "vertical" }, React.createElement(Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: true, testID: "horizontal", snapToInterval: 180 }, React.createElement("Pressable", { onPress: () => calls.push("card") }))) : scrollChild ? React.createElement(scrollChild === "input" ? Scroll.TextInput : Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: scrollChild === "horizontal" }, React.createElement("ExplicitButton")) : excludedChild ? React.createElement(Exclusion, null, React.createElement("ExplicitButton")) : React.createElement("ExplicitButton");
+  const Child = () => scrollChild === "nested" ? React.createElement(Scroll.ScrollView, { testID: "vertical" }, React.createElement(Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: true, testID: "horizontal", snapToInterval: 180 }, React.createElement("Pressable", { onPress: () => calls.push("card") }))) : scrollChild ? React.createElement(scrollChild === "input" ? Scroll.TextInput : Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: scrollChild === "horizontal" }, React.createElement("ExplicitButton")) : excludedChild ? React.createElement(Exclusion, null, React.createElement("ExplicitButton")) : React.createElement("ExplicitButton", { onPress: () => calls.push("explicit") });
   const useContentReady = execute("../hooks/useNativeTabContentReady.ios.js").default;
   const usePreview = execute("../hooks/useNativeTabPreview.ios.js").default;
   let mounted = 0;
@@ -117,13 +118,75 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     return React.createElement("ActualPage", { tab, identity, preview }, React.createElement(Child));
   }
   if (pager) { props.renderPage = tab => React.createElement(ActualPage, { tab }); props.member = true; }
+  const reads = [], writes = [], impressions = [], dwell = [], leaseWrites = [], introductions = [];
+  const persisted = new Map();
+  if (feedScreen) {
+    const key = require("../domain/feedExperience.mjs").feedFilterStorageKey("account-A");
+    persisted.set(key, selectedFilter);
+    const helperFile = require.resolve("@react-native/virtualized-lists/Lists/ViewabilityHelper");
+    const helperCode = transformSync(readFileSync(helperFile, "utf8"), { filename: helperFile, babelrc: false, configFile: false,
+      presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: false } }).code;
+    const helperModule = { exports: {} };
+    new Function("require", "module", "exports", helperCode)(name => name === "./ListMetricsAggregator" ? {} : require(name), helperModule, helperModule.exports);
+    const Helper = helperModule.exports.default;
+    let listSerial = 0;
+    const FlatList = p => {
+      const instance = React.useRef(++listSerial).current;
+      const liveProps = React.useRef(p); liveProps.current = p;
+      const helpers = React.useRef(null);
+      if (!helpers.current) helpers.current = p.viewabilityConfigCallbackPairs.map(pair => ({ ...pair, helper: new Helper(pair.viewabilityConfig) }));
+      const update = () => {
+        const value = liveProps.current;
+        const metrics = { getCellMetrics: index => ({ offset: index * 300, length: 300 }) };
+        for (const pair of helpers.current) pair.helper.onUpdate({ ...value, getItemCount: data => data.length, getItem: (data, index) => data[index] }, 0, 600, metrics,
+          (index, isViewable, value) => ({ item: value.data[index], key: String(value.data[index].id), index, isViewable }), pair.onViewableItemsChanged);
+      };
+      React.useImperativeHandle(p.ref, () => ({ recordInteraction() { for (const pair of helpers.current) pair.helper.recordInteraction(); update(); }, scrollToOffset: noop, scrollToIndex: noop }));
+      React.useLayoutEffect(update);
+      React.useEffect(() => () => { for (const pair of helpers.current) pair.helper.dispose(); }, []);
+      return React.createElement("FlatList", { ...p, instance }, p.ListHeaderComponent,
+        p.data.length ? p.data.map((item, index) => React.createElement(React.Fragment, { key: item.id }, p.renderItem({ item, index }))) : p.ListEmptyComponent, p.ListFooterComponent);
+    };
+    Object.assign(modules["react-native"], { FlatList, Platform: { OS: "ios" }, StyleSheet: { create: x => x, absoluteFillObject: {}, hairlineWidth: 1 } });
+    modules["../components/NativeTabScroll"] = { FlatList, ScrollView: "ScrollView" };
+    modules["../hooks/useNativeTabPreview"] = execute("../hooks/useNativeTabPreview.ios.js");
+    modules["../hooks/useNativeTabContentReady"] = execute("../hooks/useNativeTabContentReady.ios.js");
+    modules["../hooks/useIOSFeedReturn"] = execute("../hooks/useIOSFeedReturn.ios.js");
+    modules["../hooks/feedHeadStatus"] = { useFeedHeadStatus: () => ({ status: "ready", verified: true }) };
+    modules["../hooks/feedImageRetry"] = { FeedImageRetryProvider: p => p.children, useFeedImageRetry: () => ({ value: null, isCurrent: () => true, accept: noop }) };
+    modules["../lib/useAppActive"] = () => props.appActive !== false;
+    modules["../lib/persist"] = { load: (key, fallback) => persisted.get(key) ?? fallback, save: (key, value) => { writes.push([key, value]); persisted.set(key, value); } };
+    modules["../lib/lazyWithRetry"] = { lazyWithRetry: () => "OptionalPanel" };
+    modules["../theme"] = { colors: {}, radius: {}, shadow: {}, mono: "mono" };
+    const interactions = { useNewsInteractions: () => ({ session: { id: props.accountId }, authReady: true, blockedIds: props.blockedIds || [], mutedIds: [], removedIds: [], followedArtists: [] }) };
+    modules["./NewsInteractionContext"] = interactions;
+    modules["../components/news/NewsInteractionContext"] = interactions;
+    const read = (kind, args) => new Promise(resolve => reads.push({ kind, args, resolve }));
+    modules["./socialReactionsApi"] = { readFollowingFeed: args => read("following", args), subscribeSocialReactionChanges: () => noop };
+    modules["../features/socialReactions/useFollowingFeed"] = execute("../features/socialReactions/useFollowingFeed.js");
+    modules["../../lib/newsDeskApi"] = { fetchNewsDeskStories: args => read("news", args) };
+    modules["../components/news/useNewsDeskStories"] = execute("./news/useNewsDeskStories.js");
+    modules["../components/news/useNewsIntroduction"] = enabled => { introductions.push(enabled); return { post: null, dismiss: noop }; };
+    for (const name of ["TicketStub", "Icon", "SuggestedPittersRail", "news/NewsStoryCard"]) modules["../components/" + name] = name;
+    modules["../components/VinylRefreshBoundary"] = p => p.children;
+    modules["./FeedScreen.jsx"] = execute("../screens/FeedScreen.jsx");
+    modules["../components/NativeFeedFilterPager.ios"] = modules["./NativeFeedFilterPager.ios"];
+    Component = execute("../screens/FeedScreen.ios.jsx").default;
+    props = { ...props, feed: [{ id: "global", review: "Global post" }], localFeed: [{ id: "nearby", review: "Local post" }], loggedIn: true, visible: true,
+      swipeEnabled: true, swipeScope: {}, feedPresentation: { current: () => props.routeCurrent !== false }, isCurrentSwipeRoute: () => props.routeCurrent !== false,
+      feedReturn: { key: "lease-A", current: () => props.routeCurrent !== false, read: () => null, save: value => leaseWrites.push(value), clear: () => leaseWrites.push("clear") },
+      onImpression: (...args) => impressions.push(args), onDwell: (...args) => dwell.push(args), onLoadMore: () => assert.fail("Preview must not paginate"),
+    };
+  }
   const Layer = execute("./NativeFeedMediaLayer.jsx").default;
   function Gate() { if (suspended) throw sleepForever; return null; }
   const componentKey = () => pager ? `${props.accountId}:${props.authEpoch || 0}` : component === "social" ? `${props.accountId || "guest"}:${props.post.id}` : "component";
   const f = {
-    calls, queue, gestures, shared, reactions, springs, timings, animatedStyles, unmounted,
+    calls, queue, gestures, shared, reactions, springs, timings, animatedStyles, unmounted, reads, writes, impressions, dwell, leaseWrites, introductions, persisted,
     holdUI(value) { holdUI = value; }, flushUI() { while (uiQueue.length) uiQueue.shift()(); },
     pages: () => f.all().filter(node => node.type === "ActualPage"),
+    lists: () => f.all().filter(node => node.type === "FlatList"),
+    press(label) { const button = f.all().find(node => node.props?.accessibilityLabel === label); assert.ok(button, label); f.act(button.props.onPress); },
     surface: tab => f.all().find(node => node.props?.testID === `main-tab-page-${tab}`),
     translation: tab => f.surface(tab).props.style[1].__animate().transform[0].translateX,
     ready(tab) { const surface = f.surface(tab); f.act(() => nodes(surface).find(node => node.props?.onLayout)?.props.onLayout()); f.react(); },
@@ -142,7 +205,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     flush() { f.act(() => { while (queue.length) queue.shift()(); }); },
     confirmed(value, entry) { confirmed = value; f.act(() => { if (entry) entry.callback(); else for (const current of confirmedSubscriptions.filter(item => item.active)) current.callback(); }); },
     nativeEvents(...values) { f.act(() => { for (const value of values) for (const callback of [...nativeReaderListeners]) callback(value); }); },
-    async settle() { for (let i = 0; i < 8; i++) await Promise.resolve(); f.act(noop); },
+    async settle() { for (let i = 0; i < 8; i++) await Promise.resolve(); await new Promise(setImmediate); f.act(noop); },
     close(passive = true) { renderer.render(null, passive); },
   };
   f.render(); return f;
@@ -155,16 +218,7 @@ function down(gesture, { x = 260, y = 200, touches = 1 } = {}) {
 function release(gesture, { x = 110, y = 201, success = true } = {}) { gesture.onEnd({ absoluteX: x, absoluteY: y, translationX: 0, translationY: 0 }, success); }
 const swipe = gesture => { down(gesture); release(gesture); };
 
-for (const component of ["rail", "tabs", "bar", "header"]) {
-  for (const interruption of ["unmount", "reader", "reader round trip"]) test(`${component}: queued swipe is revoked by ${interruption}`, t => {
-    const f = fixture({ component }); t.after(f.close); const old = f.gesture; swipe(old); assert.equal(f.queue.length, 1);
-    if (interruption === "unmount") f.close(false); else f.reader(true);
-    if (interruption.endsWith("round trip")) f.reader(false);
-    f.flush(); assert.deepEqual(f.calls, []);
-    swipe(old); f.flush(); assert.deepEqual(f.calls, []);
-    if (interruption.endsWith("round trip")) { swipe(f.gesture); f.flush(); assert.deepEqual(f.calls, [component === "rail" ? "negative" : "search"]); }
-  });
-}
+
 for (const interruption of ["disabled", "disabled round trip", "replaced callback", "callback round trip"]) test(`rail: queued action is revoked by ${interruption}`, t => {
   const original = [], replacement = [], callback = value => original.push(value);
   const f = fixture({ onCommit: callback }); t.after(f.close); const old = f.gesture; swipe(old);
@@ -174,22 +228,7 @@ for (const interruption of ["disabled", "disabled round trip", "replaced callbac
   swipe(old); f.flush(); assert.deepEqual(original, []); assert.deepEqual(replacement, []);
   if (interruption !== "disabled") { swipe(f.gesture); f.flush(); assert.deepEqual(interruption === "replaced callback" ? replacement : original, ["negative"]); }
 });
-for (const component of ["tabs", "bar", "header"]) {
-  test(`${component}: same-tab rerenders preserve valid gesture and committed callback`, t => {
-    const oldCalls = [], nextCalls = [], f = fixture({ component, onChange: tab => oldCalls.push(tab) }); t.after(f.close);
-    const gesture = f.gesture; down(gesture);
-    f.render({ onChange: tab => nextCalls.push(tab) }); assert.equal(f.gesture, gesture);
-    release(gesture); f.flush(); assert.deepEqual(oldCalls, []); assert.deepEqual(nextCalls, ["search"]);
-    swipe(gesture); f.render({ onChange: tab => oldCalls.push(tab) }); f.flush(); assert.deepEqual(oldCalls, ["search"]);
-  });
-  test(`${component}: active-tab A to B to A cannot reinterpret queued or old worklets`, t => {
-    const f = fixture({ component }); t.after(f.close); const old = f.gesture; swipe(old);
-    f.render({ active: "search" }); f.render({ active: "feed" });
-    f.flush(); swipe(old); f.flush(); assert.deepEqual(f.calls, []);
-    swipe(f.gesture); f.flush(); assert.deepEqual(f.calls, ["search"]);
-    f.render({ active: "search" }); swipe(f.gesture); f.flush(); assert.deepEqual(f.calls, ["search", "discover"]);
-  });
-}
+
 test("unchanged generic callback survives a normal render and completes exactly once", t => {
   const f = fixture(); t.after(f.close); const old = f.gesture; down(old); f.render({ hint: "Updated hint" });
   assert.equal(f.gesture, old); release(old); release(old); f.flush(); assert.deepEqual(f.calls, ["negative"]);
@@ -235,17 +274,7 @@ test("original displacement, threshold, translation clamp and spring remain unch
   g.onFinalize(); assert.equal(f.shared[3].get(), 0);
   assert.deepEqual(f.springs.at(-1), { duration: 400, dampingRatio: 1, overshootClamping: true, reduceMotion: "system" });
 });
-test("Reduce Motion and screen readers retain all explicit tab destinations and targets", t => {
-  const f = fixture({ component: "bar", reader: true, reduced: true }); t.after(f.close);
-  assert.equal(f.gesture.enabled, false);
-  const tabs = f.all().filter(node => node.props?.accessibilityRole === "tab");
-  for (const tab of tabs) { assert.ok(tab.props.style({ pressed: false })[0].minHeight >= 44); f.act(tab.props.onPress); }
-  assert.deepEqual(f.calls, ["feed", "search", "discover", "you"]);
-  f.reader(false); const g = f.gesture; down(g); g.onUpdate({ absoluteX: 110 }); f.render();
-  const content = f.all().find(node => node.type === "AnimatedView");
-  assert.equal(content.props.style.at(-1).transform[0].translateX, 0);
-  assert.ok(f.all().some(node => node.props?.accessibilityElementsHidden && node.props.importantForAccessibility === "no-hide-descendants"));
-});
+
 test("installed Metro resolves only iOS rails to this implementation", () => {
   const { resolve } = require("metro-resolver");
   const context = { originModulePath: fileURLToPath(new URL("../../App.js", import.meta.url)), assetExts: new Set(), sourceExts: ["js", "jsx", "json", "ts", "tsx"],
@@ -336,36 +365,10 @@ function rootNavigationFixture({ platform = "ios" } = {}) {
     defer() { composerCloseGuardRef.current = request => guards.push(request); },
   };
 }
-for (const component of ["tabs", "bar", "header"]) for (const committed of [false, true]) test(`${component}: actual Root gallery protects retained rail, rendered=${committed}`, t => {
-  const root = rootNavigationFixture(), f = fixture({ component, retained: true }); t.after(f.close); f.render(root.props());
-  const old = f.gesture; swipe(old); root.gallery();
-  if (committed) { f.render(root.props()); assert.ok(f.all().some(node => node.props?.pointerEvents === "none")); }
-  const writes = root.queued.length; f.flush(); assert.equal(root.queued.length, writes); assert.ok(root.navigationRef.current.stack.at(-1).photos);
-  root.restore(); f.render(root.props()); swipe(old); f.flush(); assert.equal(root.navigationRef.current.tab, "feed");
-  swipe(f.gesture); f.flush(); assert.equal(root.navigationRef.current.tab, "search");
-});
-for (const transition of ["drawer before render", "drawer round trip", "route round trip", "account round trip", "reauth", "guard proceed"]) test(`actual Root fences ${transition}`, t => {
-  const root = rootNavigationFixture(), f = fixture({ component: "bar", retained: true }); t.after(f.close); f.render(root.props()); const old = f.gesture; swipe(old);
-  if (transition.startsWith("drawer")) { root.app.openMainMenu(); if (transition.endsWith("round trip")) root.app.setIosMenuOpen(false); }
-  else if (transition === "route round trip") { root.gallery(); root.restore(); }
-  else if (transition === "account round trip") { root.account("B", 2); root.account("A", 3); }
-  else if (transition === "reauth") root.account("A", 2);
-  else { root.defer(); f.flush(); assert.equal(root.guards.length, 1); root.gallery(); root.guards[0].proceed(); }
-  const writes = root.queued.length; f.flush(); assert.equal(root.queued.length, writes); assert.equal(root.navigationRef.current.tab, "feed");
-  if (transition === "drawer before render") root.app.setIosMenuOpen(false);
-  if (transition !== "guard proceed") { f.render(root.props()); swipe(old); f.flush(); assert.equal(root.navigationRef.current.tab, "feed"); swipe(f.gesture); f.flush(); assert.equal(root.navigationRef.current.tab, "search"); }
-});
-test("actual Root benign rerender keeps the same scope and valid tab gesture", t => {
-  const root = rootNavigationFixture(), f = fixture({ component: "bar", retained: true }); t.after(f.close); f.render(root.props()); const gesture = f.gesture; swipe(gesture);
-  f.render(root.props()); assert.equal(f.gesture, gesture); f.flush(); assert.equal(root.navigationRef.current.tab, "search");
-});
-for (const strict of [false, true]) test(`real confirmed preference batched round trip revokes then rearms, strict=${strict}`, async t => {
-  const f = fixture({ component: "bar", nativeReader: true, strict }); t.after(f.close); await f.settle();
-  const old = f.gesture; assert.equal(old.enabled, true); swipe(old); f.nativeEvents(true, false); f.flush(); assert.deepEqual(f.calls, []);
-  const current = f.gesture; assert.notEqual(current, old); down(current); current.onUpdate({ absoluteX: 110 }); const before = f.shared.map(value => value.get());
-  old.onFinalize(); swipe(old); f.flush(); assert.deepEqual(f.shared.map(value => value.get()), before);
-  release(current); f.flush(); assert.deepEqual(f.calls, ["search"]);
-});
+
+
+
+
 test("retired confirmed listener cannot revoke a reconnected gesture", t => {
   const f = fixture(); t.after(f.close); const stale = f.confirmedSubscriptions.at(-1);
   f.suspend(true); f.suspend(false); const current = f.gesture; down(current); const before = f.shared.map(value => value.get());
@@ -382,7 +385,7 @@ test("Root routes all iOS shell rails through presentation guards without changi
   assert.equal((app.match(/<NativeAppHeader active=\{activeTab\} onChange=\{switchTab\} swipeScope=/g) || []).length, 2);
   assert.match(app, /<IosTabBar active=\{activeTab\} onChange=\{switchTab\} swipeScope=\{iosTabSwipeScope\}/);
   assert.match(app, /<NativeFeedMediaLayer key=\{Platform.OS === "ios"/);
-  assert.match(app, /loading=\{<ScreenLoading \/>\} renderPage=/);
+  assert.match(app, /const nativeTabPage = tabScreens;/);
   for (const name of ["NativeTabRail.native.jsx", "NativeAppHeader.native.jsx", "NativeSwipeRail.native.jsx"]) assert.doesNotMatch(readFileSync(new URL(`./${name}`, import.meta.url), "utf8"), /swipeScope|isCurrentSwipeRoute|subscribeConfirmedScreenReaderEnabled/);
 });
 
@@ -393,140 +396,27 @@ for (const platform of ["android", "web"]) test(`${platform} Root tab callbacks 
 });
 
 // Page-motion tests exercise production callbacks but not native recognizer arbitration.
-test("page follows finger with restrained 3D motion, exits then dispatches once", t => {
-  const f = fixture({ component: "tabs", page: true }); t.after(f.close);
-  const g = f.gesture; down(g); g.onUpdate({ absoluteX: 140 });
-  const transform = f.animatedStyles.at(-3)().transform;
-  assert.ok(transform.some(item => item.perspective === 1200));
-  assert.ok(transform.some(item => item.translateX === -120));
-  release(g); assert.equal(f.timings.length, 1); assert.deepEqual(f.calls, []);
-  const manager = down(g); assert.equal(manager.failed, 1, "settling rejects a second gesture");
-  g.onFinalize(); f.finish(); f.flush(); assert.deepEqual(f.calls, ["search"]);
-});
-for (const interruption of ["route", "reader", "background", "reduced", "suspend", "unmount"]) test(`page animation completion is retired by ${interruption}`, t => {
-  const f = fixture({ component: "tabs", page: true }); t.after(f.close); const old = f.gesture;
-  swipe(old); assert.equal(f.timings.length, 1);
-  if (interruption === "route") f.render({ swipeScope: {} });
-  if (interruption === "reader") f.reader(true);
-  if (interruption === "background") { f.appState("background"); f.appState("active"); }
-  if (interruption === "reduced") f.reduced(true);
-  if (interruption === "suspend") { f.suspend(true); f.suspend(false); }
-  if (interruption === "unmount") f.close(false);
-  f.finish(0); f.flush(); assert.deepEqual(f.calls, []);
-});
-test("page cancels unsuccessful motion, reversals and boundary drags", t => {
-  const f = fixture({ component: "tabs", page: true }); t.after(f.close);
-  for (const args of [{ x: 240 }, { x: 110, success: false }, { x: 400 }]) { const g=f.gesture; down(g); release(g,args); g.onFinalize(); }
-  assert.equal(f.timings.length, 0); assert.deepEqual(f.calls, []);
-});
-test("page incoming direction and reduced motion transforms", t => {
-  const f = fixture({ component: "tabs", page: true }); t.after(f.close);
-  f.render({ active: "search", entryDirection: 1 }); assert.ok(f.springs.some(config => config.stiffness === 230));
-  f.reduced(true); const style = f.animatedStyles.at(-3)();
-  assert.ok(style.transform.some(item => item.translateX === 0));
-  assert.ok(style.transform.some(item => item.rotateY === "0deg"));
-  swipe(f.gesture); f.flush(); assert.equal(f.timings.length, 0);
-});
-for (const childFirst of [true, false]) test(`page exclusions preserve child ownership, down child-first=${childFirst}`, t => {
-  const f = fixture({ component: "tabs", page: true, excludedChild: true }); t.after(f.close);
-  const parent = f.gesture, child = f.all().filter(n=>n.type==="GestureDetector")[1].props.gesture.handlers;
-  const manager = { begin() {}, fail() {}, activate() { throw Error("exclusion must never activate"); } };
-  if(childFirst) child.onTouchesDown({},manager);
-  down(parent);
-  if(!childFirst) child.onTouchesDown({},manager);
-  parent.onTouchesMove({ allTouches: [{absoluteX:100,absoluteY:200}],numberOfTouches:1 },manager);
-  child.onTouchesUp({},manager); release(parent); parent.onFinalize();
-  assert.equal(f.timings.length,0); assert.deepEqual(f.calls,[]);
-  // Parent rejects edge first, then child begins; release must clear exclusion.
-  down(parent,{x:5}); parent.onFinalize(); child.onTouchesDown({},manager); child.onTouchesUp({},manager);
-  swipe(parent); f.finish(); f.flush(); assert.deepEqual(f.calls,["search"]);
-});
-
-test("old page move and removed app listener cannot retire a newer drag", t => {
- const f=fixture({component:"tabs",page:true}); t.after(f.close);
- const old=f.gesture, removed=f.appHistory.at(-1);
- f.render({swipeScope:{}}); const current=f.gesture; down(current);
- old.onTouchesMove({allTouches:[{absoluteX:100,absoluteY:200}],numberOfTouches:1},{fail(){},activate(){}});
- f.act(()=>removed("background")); release(current); f.finish(); f.flush(); assert.deepEqual(f.calls,["search"]);
- f.finish(); f.flush(); assert.deepEqual(f.calls,["search"],"completion is consumed once");
-});
-test("passive exclusion is stable across benign same-page renders and cancellation clears it", t=>{
- const f=fixture({component:"tabs",page:true,excludedChild:true});t.after(f.close);
- const observer=()=>f.all().filter(n=>n.type==="GestureDetector")[1].props.gesture.handlers;
- const g=f.gesture, child=observer(); f.render({hint:"new content"}); assert.equal(observer(),child); assert.equal(f.gesture,g);
- const manager={begin(){},fail(){}};child.onTouchesDown({},manager);down(g);child.onTouchesCancelled({},manager);release(g);g.onFinalize();assert.equal(f.timings.length,0);
- swipe(g); f.finish();f.flush();assert.deepEqual(f.calls,["search"]);
-});
-
-test("fresh page mount accepts Root direction across the retained Feed host boundary",t=>{
- const f=fixture({component:"tabs",page:true,active:"search",entryDirection:1});t.after(f.close);
- assert.ok(f.springs.some(config=>config.stiffness===230));
-});
-test("declined navigation recovery keeps input fenced until its spring rearms",t=>{
- const f=fixture({component:"tabs",page:true,onChange:()=>{}});t.after(f.close);
- const old=f.gesture;swipe(old);f.finish();f.flush();
- assert.equal(down(old).failed,1);f.finishSpring();f.flush();
- const fresh=f.gesture;assert.notEqual(fresh,old);assert.equal(down(fresh).failed,0);
- release(fresh);assert.equal(f.timings.length,2);
-});
-for (const kind of ["vertical","horizontal","input"]) test(`native ${kind} adapter retains child layout and owns arbitration`,t=>{
- const f=fixture({component:"tabs",page:true,scrollChild:kind});t.after(f.close);
- const detectors=f.all().filter(n=>n.type==="GestureDetector");assert.equal(detectors.length,2);
- const composition=detectors[1].props.gesture;
- const child=(composition.simultaneous?.[0] || composition).handlers;
- assert.ok(child.simultaneousWithExternalGesture);
- assert.equal(detectors[1].children[0].type,kind==="input"?"TextInput":"ScrollView","detector attaches directly, without layout wrapper");
- if(kind==="vertical") assert.equal(child.onTouchesDown,undefined);
- else if(kind==="horizontal") {
-  assert.equal(composition.simultaneous.length,2);
-  assert.equal(typeof composition.simultaneous[1].handlers.onTouchesDown,"function");
- } else assert.equal(typeof child.onTouchesDown,"function");
-});
-
-test("fresh-mount entry direction is consumed and cannot replay on permission changes",t=>{
- const f=fixture({component:"tabs",page:true,active:"search",entryDirection:1});t.after(f.close);
- const count=f.springs.length;f.reader(true);assert.equal(f.springs.length,count);assert.equal(f.shared[3].get(),0);
- f.reader(false);assert.equal(f.springs.length,count);assert.equal(f.shared[3].get(),0);
-});
-
-test("a later excluded-child touch cannot strand an accepted outgoing transition",t=>{
- const f=fixture({component:"tabs",page:true,excludedChild:true});t.after(f.close);
- swipe(f.gesture);const child=f.all().filter(n=>n.type==="GestureDetector")[1].props.gesture.handlers;
- child.onTouchesDown({},{begin(){},fail(){}});f.finish();f.flush();assert.deepEqual(f.calls,["search"]);
-});
 
 
-test("nested horizontal scroll owns a native handler simultaneous with its vertical ancestor and passive observer", t => {
- const f=fixture({component:"tabs",page:true,scrollChild:"nested"}); t.after(f.close);
- const detectors=f.all().filter(n=>n.type==="GestureDetector");assert.equal(detectors.length,3);
- const page=detectors[0].props.gesture, vertical=detectors[1].props.gesture;
- const [horizontal,observer]=detectors[2].props.gesture.simultaneous;
- assert.deepEqual(horizontal.handlers.simultaneousWithExternalGesture,[page,vertical]);
- assert.deepEqual(observer.handlers.simultaneousWithExternalGesture,[page,horizontal,vertical]);
- assert.equal(observer.handlers.cancelsTouchesInView,false);
- assert.equal(detectors[2].children[0].type,"ScrollView");
- assert.equal(detectors[2].children[0].props.horizontal,true);
- assert.equal(detectors[2].children[0].props.snapToInterval,180);
- const manager={begin(){},fail(){},activate(){assert.fail("passive observer must never activate");}};
- down(f.gesture);observer.handlers.onTouchesDown({},manager);
- f.gesture.onTouchesMove({allTouches:[{absoluteX:100,absoluteY:200}],numberOfTouches:1},manager);
- observer.handlers.onTouchesUp({},manager);release(f.gesture);f.gesture.onFinalize();
- assert.equal(f.timings.length,0);assert.deepEqual(f.calls,[]);
- const original=detectors[2].props.gesture;f.render({hint:"ordinary data update"});
- assert.equal(f.all().filter(n=>n.type==="GestureDetector")[2].props.gesture,original);
- // The adapter does not substitute an onPress for native scroll cancellation.
- f.all().find(n=>n.type==="Pressable").props.onPress();assert.deepEqual(f.calls,["card"]);
-});
 
-for (const scoped of [false, true]) test(`native scroll adapter preserves host identity, ref and layout/scroll props, scoped=${scoped}`, t => {
- const ref=React.createRef(), onScroll=()=>{}, style={height:180,marginHorizontal:12}, contentContainerStyle={gap:10};
- const f=fixture({component:scoped?"tabs":"rail",page:scoped,scrollChild:scoped?"nested":"horizontal",scrollRef:ref,
-  scrollProps:{style,contentContainerStyle,onScroll,scrollEventThrottle:32,keyboardShouldPersistTaps:"handled"}});t.after(f.close);
- const host=f.all().filter(n=>n.type==="ScrollView").at(-1);assert.equal(ref.current,host);
- for(const [key,value] of Object.entries({style,contentContainerStyle,onScroll,scrollEventThrottle:32,keyboardShouldPersistTaps:"handled"})) assert.equal(host.props[key],value);
- assert.equal(f.all().filter(n=>n.type==="GestureDetector").length,scoped?3:1);
- f.render({hint:"ordinary render"});assert.equal(ref.current,host);
-});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 function dragPage(f, dx = -120) {
   const g = f.gesture;
@@ -539,35 +429,35 @@ const paneLayout = (f, tab) => nodes(f.surface(tab)).find(node => node.props?.on
 
 test("real pager mounts one destination only on direction intent and moves both gaplessly", t => {
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
-  assert.deepEqual(f.pages().map(page => page.props.tab), ["feed"]);
-  const g = dragPage(f); assert.equal(f.translation("feed"), 0, "late JS cannot uncover a blank page");
-  f.flush(); assert.deepEqual(f.pages().map(page => page.props.tab), ["feed", "search"]);
+  assert.deepEqual(f.pages().map(page => page.props.tab), ["following"]);
+  const g = dragPage(f); assert.equal(f.translation("following"), 0, "late JS cannot uncover a blank page");
+  f.flush(); assert.deepEqual(f.pages().map(page => page.props.tab), ["following", "local"]);
   assert.equal(f.pages()[1].props.preview, true);
-  assert.equal(f.surface("search").props.pointerEvents, "none");
-  assert.equal(f.surface("search").props.accessibilityElementsHidden, true);
-  f.ready("search");
-  assert.equal(f.translation("feed"), -120);
-  assert.equal(f.translation("search"), 260);
-  assert.equal(f.translation("search") - f.translation("feed"), 380);
+  assert.equal(f.surface("local").props.pointerEvents, "none");
+  assert.equal(f.surface("local").props.accessibilityElementsHidden, true);
+  f.ready("local");
+  assert.equal(f.translation("following"), -120);
+  assert.equal(f.translation("local"), 260);
+  assert.equal(f.translation("local") - f.translation("following"), 380);
   g.onUpdate({ absoluteX: 200 });
-  assert.equal(f.translation("feed"), -60); assert.equal(f.translation("search"), 320);
+  assert.equal(f.translation("following"), -60); assert.equal(f.translation("local"), 320);
   assert.deepEqual(f.calls, []);
 });
 test("real pager promotes exact candidate instance and removes source only after settle", t => {
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
-  const source = f.pages()[0].props.identity, g = dragPage(f); f.flush(); f.ready("search");
+  const source = f.pages()[0].props.identity, g = dragPage(f); f.flush(); f.ready("local");
   const destination = f.pages()[1].props.identity;
   release(g); g.onFinalize(); assert.equal(f.pages().length, 2); assert.deepEqual(f.calls, []);
-  f.finish(); f.flush(); assert.deepEqual(f.calls, ["search"]);
-  f.render({ active: "search" });
-  assert.deepEqual(f.pages().map(page => [page.props.tab, page.props.identity, page.props.preview]), [["search", destination, false]]);
+  f.finish(); f.flush(); assert.deepEqual(f.calls, ["local"]);
+  f.render({ active: "local" });
+  assert.deepEqual(f.pages().map(page => [page.props.tab, page.props.identity, page.props.preview]), [["local", destination, false]]);
   assert.ok(f.unmounted.includes(source)); assert.ok(!f.unmounted.includes(destination));
-  assert.equal(f.translation("search"), 0);
-  f.finish(); f.flush(); assert.deepEqual(f.calls, ["search"]);
+  assert.equal(f.translation("local"), 0);
+  f.finish(); f.flush(); assert.deepEqual(f.calls, ["local"]);
 });
 test("real pager cancellation preserves source instance and retires preview without navigation", t => {
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
-  const source = f.pages()[0].props.identity, g = dragPage(f); f.flush(); f.ready("search");
+  const source = f.pages()[0].props.identity, g = dragPage(f); f.flush(); f.ready("local");
   const destination = f.pages()[1].props.identity;
   release(g, { x: 240 }); g.onFinalize(); f.finishSpring(); f.flush();
   assert.deepEqual(f.pages().map(page => page.props.identity), [source]);
@@ -576,28 +466,28 @@ test("real pager cancellation preserves source instance and retires preview with
 test("fast release before JS and native layout waits for real ready page, then commits once", t => {
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
   const g = dragPage(f); release(g); g.onFinalize();
-  assert.equal(f.translation("feed"), 0); assert.equal(f.timings.length, 0);
+  assert.equal(f.translation("following"), 0); assert.equal(f.timings.length, 0);
   f.flush(); assert.equal(f.pages().length, 2); assert.equal(f.timings.length, 0);
-  f.ready("search"); assert.equal(f.timings.length, 1);
+  f.ready("local"); assert.equal(f.timings.length, 1);
   f.react(); assert.equal(f.timings.length, 1, "readiness cannot dispatch duplicate settle");
-  f.finish(); f.flush(); assert.deepEqual(f.calls, ["search"]);
+  f.finish(); f.flush(); assert.deepEqual(f.calls, ["local"]);
 });
 test("primary data loads during drag and release waits for scoped usable content", t => {
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
-  f.render({ contentReady: false }); const g = dragPage(f); f.flush(); f.ready("search");
-  assert.equal(f.translation("feed"), -120, "real screen is visible during loading");
+  f.render({ contentReady: false }); const g = dragPage(f); f.flush(); f.ready("local");
+  assert.equal(f.translation("following"), -120, "real screen is visible during loading");
   release(g); g.onFinalize(); f.flush(); assert.equal(f.timings.length, 0);
   f.render({ contentReady: true }); f.react();
-  assert.equal(f.timings.length, 1); f.finish(); f.flush(); assert.deepEqual(f.calls, ["search"]);
+  assert.equal(f.timings.length, 1); f.finish(); f.flush(); assert.deepEqual(f.calls, ["local"]);
 });
 test("canceled JS-late preparation never mounts or navigates", t => {
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
   const g = dragPage(f); release(g, { success: false }); g.onFinalize(); f.finishSpring(); f.flush();
-  assert.deepEqual(f.pages().map(page => page.props.tab), ["feed"]); assert.deepEqual(f.calls, []);
+  assert.deepEqual(f.pages().map(page => page.props.tab), ["following"]); assert.deepEqual(f.calls, []);
 });
 for (const change of ["scope", "reader", "background", "disabled", "reduced", "unmount"]) test(`real pager ready/release is retired by ${change}`, t => {
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
-  const g = dragPage(f); f.flush(); const staleLayout = paneLayout(f, "search");
+  const g = dragPage(f); f.flush(); const staleLayout = paneLayout(f, "local");
   release(g); g.onFinalize(); f.flush();
   if (change === "scope") f.render({ swipeScope: {} });
   if (change === "reader") f.reader(true);
@@ -609,65 +499,55 @@ for (const change of ["scope", "reader", "background", "disabled", "reduced", "u
   assert.deepEqual(f.calls, []); assert.ok(f.pages().length <= 1);
 });
 test("superseded destination layout cannot ready A after A to B to A direction changes", t => {
-  const f = fixture({ component: "tabs", page: true, pager: true, active: "search" }); t.after(f.close);
-  const g = dragPage(f); f.flush(); const stale = paneLayout(f, "discover");
-  g.onUpdate({ absoluteX: 380 }); f.flush(); assert.ok(f.surface("feed"));
+  const f = fixture({ component: "tabs", page: true, pager: true, active: "local" }); t.after(f.close);
+  const g = dragPage(f); f.flush(); const stale = paneLayout(f, "everyone");
+  g.onUpdate({ absoluteX: 380 }); f.flush(); assert.ok(f.surface("following"));
   g.onUpdate({ absoluteX: 140 }); f.flush();
-  f.act(stale); f.react(); assert.equal(f.translation("search"), 0);
-  f.ready("discover"); assert.equal(f.translation("search"), -120);
+  f.act(stale); f.react(); assert.equal(f.translation("local"), 0);
+  f.ready("everyone"); assert.equal(f.translation("local"), -120);
 });
 test("same target reuses measured layout after canceled drag without requiring new onLayout", t => {
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
-  let g = dragPage(f); f.flush(); f.ready("search");
+  let g = dragPage(f); f.flush(); f.ready("local");
   const identity = f.pages()[1].props.identity;
   release(g, { x: 240 }); g.onFinalize();
   g = dragPage(f); f.flush(); f.react();
   assert.equal(f.pages()[1].props.identity, identity);
-  assert.equal(f.translation("feed"), -120);
+  assert.equal(f.translation("following"), -120);
   f.finishSpring(); f.flush(); assert.equal(f.pages().length, 2, "old cancellation cannot remove new gesture candidate");
 });
 test("real pager reduced motion commits without displacement or preview mount", t => {
   const f = fixture({ component: "tabs", page: true, pager: true, reduced: true }); t.after(f.close);
-  const g = dragPage(f); f.flush(); assert.equal(f.pages().length, 1); assert.equal(f.translation("feed"), 0);
-  release(g); g.onFinalize(); f.flush(); assert.deepEqual(f.calls, ["search"]);
+  const g = dragPage(f); f.flush(); assert.equal(f.pages().length, 1); assert.equal(f.translation("following"), 0);
+  release(g); g.onFinalize(); f.flush(); assert.deepEqual(f.calls, ["local"]);
 });
-test("guest pager preserves sign-in tab intent without preparing member-only data", t => {
-  const f = fixture({ component: "tabs", page: true, pager: true, active: "search" }); t.after(f.close);
-  f.render({ member: false }); const g = dragPage(f, 120); f.flush(); release(g, { x: 380 }); g.onFinalize(); f.finishSpring(); f.flush();
-  assert.deepEqual(f.pages().map(page => page.props.tab), ["search"]); assert.deepEqual(f.calls, ["feed"]);
-});
-test("guest Discover to You dispatches existing sign-in tab flow without a private pane", t => {
-  const f = fixture({ component: "tabs", page: true, pager: true, active: "discover" }); t.after(f.close);
-  f.render({ member: false }); const g = dragPage(f); f.flush(); release(g); g.onFinalize(); f.flush();
-  assert.deepEqual(f.pages().map(page => page.props.tab), ["discover"]); assert.deepEqual(f.calls, ["you"]);
-  const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
-  assert.match(app, /if \(!session && memberTabRequiresAccount\(key\)\) \{ openSignIn\(\); return; \}/);
-});
+
+
 test("slow primary GET settles to real loading UI after cap rather than rejecting navigation", t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
-  f.render({ contentReady: false }); const g = dragPage(f); f.flush(); f.ready("search");
+  f.render({ contentReady: false }); const g = dragPage(f); f.flush(); f.ready("local");
   release(g); g.onFinalize(); f.flush(); assert.equal(f.timings.length, 0);
   t.mock.timers.tick(2500); f.react(); assert.equal(f.timings.length, 1);
-  f.finish(); f.flush(); assert.deepEqual(f.calls, ["search"]);
+  f.finish(); f.flush(); assert.deepEqual(f.calls, ["local"]);
 });
 test("missing native destination layout times out without uncovering source or navigating", t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
   const identity = f.pages()[0].props.identity, g = dragPage(f); release(g); g.onFinalize(); f.flush();
-  assert.equal(f.translation("feed"), 0);
+  assert.equal(f.translation("following"), 0);
   f.act(() => t.mock.timers.tick(2500)); f.react();
   assert.deepEqual(f.pages().map(page => page.props.identity), [identity]); assert.deepEqual(f.calls, []);
 });
-test("common main shell preserves Feed through direct gallery, then promotes Search without remount", t => {
+test("common Feed shell preserves source through gallery, then promotes Local without remount", t => {
   const f = fixture({ component: "tabs", page: true, pager: true, shell: true }); t.after(f.close);
   const feed = f.pages()[0].props.identity;
   f.render({ obscured: true, swipeEnabled: false, swipeScope: {} });
   assert.equal(f.pages()[0].props.identity, feed);
   f.render({ obscured: false, swipeEnabled: true, swipeScope: {} });
   assert.equal(f.pages()[0].props.identity, feed);
-  const g = dragPage(f); f.flush(); f.ready("search"); const search = f.pages()[1].props.identity;
-  release(g); g.onFinalize(); f.finish(); f.flush(); f.render({ active: "search" });
+  const g = dragPage(f); f.flush(); f.ready("local"); const search = f.pages()[1].props.identity;
+  release(g); g.onFinalize(); f.finish(); f.flush(); f.render({ active: "local" });
   assert.equal(f.pages()[0].props.identity, search);
   const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
   assert.match(app, /retainNativeFeed \|\| \(Platform.OS === "ios" && !overlay\)/);
@@ -675,7 +555,7 @@ test("common main shell preserves Feed through direct gallery, then promotes Sea
 });
 for (const transition of ["account", "reauth"]) test(`actual page subtree unmounts and old callbacks retire on ${transition}`, t => {
   const f = fixture({ component: "tabs", page: true, pager: true, shell: true }); t.after(f.close);
-  const old = dragPage(f); f.flush(); const stale = paneLayout(f, "search"); const originalIds = f.pages().map(page => page.props.identity);
+  const old = dragPage(f); f.flush(); const stale = paneLayout(f, "local"); const originalIds = f.pages().map(page => page.props.identity);
   f.render(transition === "account" ? { accountId: "B" } : { authEpoch: 1 });
   f.act(stale); release(old); old.onFinalize(); f.react(); f.finish(); f.flush();
   assert.deepEqual(f.calls, []); assert.equal(f.pages().length, 1);
@@ -683,11 +563,11 @@ for (const transition of ["account", "reauth"]) test(`actual page subtree unmoun
 });
 test("reserved edge touch cannot strand a canceled candidate", t => {
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
-  const g = dragPage(f); f.flush(); f.ready("search"); release(g, { x: 240 }); g.onFinalize();
+  const g = dragPage(f); f.flush(); f.ready("local"); release(g, { x: 240 }); g.onFinalize();
   down(f.gesture, { x: 5 }); f.finishSpring(); f.flush();
   assert.equal(f.pages().length, 1); assert.deepEqual(f.calls, []);
 });
-for (const [active, destination, dx] of [["feed", "search", -120], ["discover", "search", 120]]) test(`promotion geometry stays continuous before and after delayed atomic UI rebase ${active} to ${destination}`, t => {
+for (const [active, destination, dx] of [["following", "local", -120], ["everyone", "local", 120]]) test(`promotion geometry stays continuous before and after delayed atomic UI rebase ${active} to ${destination}`, t => {
   const f = fixture({ component: "tabs", page: true, pager: true, active }); t.after(f.close);
   const g = dragPage(f, dx); f.flush(); f.ready(destination);
   release(g, { x: 260 + (dx < 0 ? -150 : 150) }); g.onFinalize();
@@ -702,14 +582,145 @@ test("retired queued timer setup cannot overwrite current gesture timeout", t =>
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
   f.render({ contentReady: false }); let g = dragPage(f); release(g); g.onFinalize();
   const oldTimerSetup = f.queue.pop(); f.flush();
-  f.render({ swipeScope: {} }); g = dragPage(f); f.flush(); f.ready("search"); release(g); g.onFinalize(); f.flush();
+  f.render({ swipeScope: {} }); g = dragPage(f); f.flush(); f.ready("local"); release(g); g.onFinalize(); f.flush();
   oldTimerSetup(); t.mock.timers.tick(2500); f.react();
-  assert.equal(f.timings.length, 1); f.finish(); f.flush(); assert.deepEqual(f.calls, ["search"]);
+  assert.equal(f.timings.length, 1); f.finish(); f.flush(); assert.deepEqual(f.calls, ["local"]);
 });
 test("queued superseded direction does not mount an abandoned adjacent page", t => {
-  const f = fixture({ component: "tabs", page: true, pager: true, active: "search" }); t.after(f.close);
+  const f = fixture({ component: "tabs", page: true, pager: true, active: "local" }); t.after(f.close);
   const g = dragPage(f); g.onUpdate({ absoluteX: 380 });
   const oldPrepare = f.queue.shift(); f.act(oldPrepare);
-  assert.deepEqual(f.pages().map(page => page.props.tab), ["search"]);
-  f.flush(); assert.deepEqual(f.pages().map(page => page.props.tab), ["search", "feed"]);
+  assert.deepEqual(f.pages().map(page => page.props.tab), ["local"]);
+  f.flush(); assert.deepEqual(f.pages().map(page => page.props.tab), ["local", "following"]);
+});
+
+for (const component of ["tabs", "bar", "header"]) test(`${component}: main navigation is tap-only with no horizontal recognizer`, t => {
+  const f = fixture({ component }); t.after(f.close);
+  assert.equal(f.all().filter(node => node.type === "GestureDetector").length, 0);
+  if (component === "bar") {
+    for (const tab of f.all().filter(node => node.props?.accessibilityRole === "tab")) f.act(tab.props.onPress);
+    assert.deepEqual(f.calls, ["feed", "search", "discover", "you"]);
+    f.reader(true); f.reduced(true);
+    assert.equal(f.all().filter(node => node.props?.accessibilityRole === "tab").length, 4);
+  }
+});
+test("selected filter tap cancels queued preview and release without a selection write", t => {
+  const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
+  const g = dragPage(f); f.flush(); f.ready("local"); release(g); g.onFinalize();
+  f.render({ tapRevision: 1 }); f.finish(); f.flush();
+  assert.deepEqual(f.calls, []); assert.deepEqual(f.pages().map(p => p.props.tab), ["following"]);
+});
+
+test("actual iOS Feed previews Local cached posts beneath one stable strip without writes", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  const source = f.lists()[0].props.instance;
+  assert.equal(f.lists()[0].props.data[0].id, "global");
+  const before = f.leaseWrites.length, g = dragPage(f, 120); f.flush(); f.ready("local");
+  assert.equal(f.lists().length, 2);
+  assert.equal(f.lists()[1].props.data[0].id, "nearby");
+  assert.equal(f.all().filter(n => n.props?.accessibilityLabel === "Following feed").length, 1);
+  assert.equal(f.translation("everyone"), 120);
+  assert.deepEqual(f.reads, []); assert.deepEqual(f.writes, []); assert.equal(f.leaseWrites.length, before);
+  f.act(() => t.mock.timers.tick(1500));
+  assert.ok(f.impressions.every(args => args[2] === "everyone"));
+  release(g, { x: 280 }); g.onFinalize(); f.finishSpring(); f.flush();
+  assert.equal(f.lists().length, 1); assert.equal(f.lists()[0].props.instance, source); assert.deepEqual(f.writes, []);
+});
+
+test("actual Following GET starts mid-drag and survives promotion without restart or hidden impressions", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true, selectedFilter: "local" }); t.after(f.close);
+  const g = dragPage(f, 120); f.flush(); f.ready("following");
+  assert.equal(f.reads.length, 1); assert.equal(f.reads[0].kind, "following");
+  const destination = f.lists()[1].props.instance, request = f.reads[0];
+  assert.equal(request.args.signal.aborted, false); assert.deepEqual(f.writes, []);
+  release(g, { x: 400 }); g.onFinalize(); f.flush();
+  f.act(() => t.mock.timers.tick(2500)); f.react(); f.finish(); f.flush();
+  assert.equal(f.lists()[0].props.instance, destination);
+  assert.equal(f.writes.length, 1); assert.equal(f.writes[0][1], "following");
+  assert.equal(f.reads.length, 1); assert.equal(request.args.signal.aborted, false);
+  request.resolve({ posts: [{ id: "followed", review: "A real followed post" }], nextCursor: "older" }); await f.settle();
+  assert.equal(f.lists()[0].props.data[0].id, "followed");
+  f.act(() => t.mock.timers.tick(999)); assert.ok(f.impressions.every(args => args[2] !== "following"));
+  f.act(() => t.mock.timers.tick(1)); assert.equal(f.impressions.filter(args => args[2] === "following").length, 1);
+});
+
+test("actual News normal reads render stories mid-drag and canceled preview aborts without selection", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  const g = dragPage(f); f.flush(); f.ready("news");
+  assert.equal(f.reads.length, 2); assert.ok(f.reads.every(r => r.kind === "news"));
+  for (const request of f.reads) request.resolve({ stories: [{ id: "story", title: "Actual destination story" }], nextCursor: "older" });
+  await f.settle();
+  assert.equal(f.lists()[1].props.data[0].title, "Actual destination story"); assert.equal(f.translation("news"), 260);
+  assert.deepEqual(f.writes, []);
+  release(g, { x: 240 }); g.onFinalize(); f.finishSpring(); f.flush();
+  assert.equal(f.lists().length, 1); assert.deepEqual(f.writes, []);
+  assert.ok(f.reads.every(r => r.args.signal.aborted));
+});
+
+test("loaded Following preview shows posts immediately but qualifies views only after promotion", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true, selectedFilter: "local" }); t.after(f.close);
+  const g = dragPage(f, 120); f.flush(); f.ready("following");
+  f.reads[0].resolve({ posts: [{ id: "followed", review: "Destination before release" }], nextCursor: "older" }); await f.settle();
+  assert.equal(f.lists()[1].props.data[0].review, "Destination before release");
+  f.act(() => t.mock.timers.tick(3000));
+  assert.ok(f.impressions.every(args => args[2] !== "following"));
+  const previewRow = f.all().find(n => n.type === "TicketStub" && n.props.log.id === "followed");
+  assert.equal(previewRow.props.mediaViewable, false); assert.equal(previewRow.props.swipeActions, false);
+  release(g, { x: 400 }); g.onFinalize(); f.finish(); f.flush();
+  assert.equal(f.reads.length, 1); assert.equal(f.writes[0][1], "following");
+  assert.equal(f.all().find(n => n.type === "TicketStub" && n.props.log.id === "followed").props.mediaViewable, true);
+  f.act(() => t.mock.timers.tick(999)); assert.ok(f.impressions.every(args => args[2] !== "following"));
+  f.act(() => t.mock.timers.tick(1)); assert.equal(f.impressions.filter(args => args[2] === "following").length, 1);
+});
+
+for (const change of ["unmount", "suspense", "route", "account", "scope", "background"]) test(`actual Feed retires selected-strip callbacks and preview reads on ${change}`, t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true, selectedFilter: "local", strict: true }); t.after(f.close);
+  const stale = f.all().find(n => n.props?.accessibilityLabel === "News feed").props.onPress;
+  const g = dragPage(f, 120); f.flush(); f.ready("following"); const request = f.reads.at(-1);
+  if (change === "unmount") f.close();
+  if (change === "suspense") { f.suspend(true); f.suspend(false); }
+  if (change === "route") f.render({ routeCurrent: false, visible: false });
+  if (change === "account") f.render({ accountId: "account-B" });
+  if (change === "scope") f.render({ swipeScope: {} });
+  if (change === "background") f.render({ appActive: false });
+  f.act(stale); release(g, { x: 400 }); g.onFinalize(); f.finish(); f.flush();
+  assert.deepEqual(f.writes, []); assert.equal(request.args.signal.aborted, true);
+});
+
+test("same-filter explicit tap cancels actual pending preview without saving the selected choice", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true, selectedFilter: "local" }); t.after(f.close);
+  const g = dragPage(f, 120); f.flush(); f.ready("following"); release(g, { x: 400 }); g.onFinalize(); f.flush();
+  f.press("Local feed"); f.finish(); f.flush();
+  assert.deepEqual(f.writes, []); assert.equal(f.lists().length, 1); assert.equal(f.reads[0].args.signal.aborted, true);
+});
+
+test("disabled iOS social wrapper exposes explicit controls without mutation or page exclusion", t => {
+  const f = fixture({ component: "social-ios" }); t.after(f.close); f.render({ enabled: false });
+  assert.equal(f.all().filter(n => n.type === "GestureDetector").length, 0);
+  assert.deepEqual(f.calls, []);
+  f.act(f.all().find(n => n.type === "ExplicitButton").props.onPress);
+  assert.deepEqual(f.calls, ["explicit"]);
+});
+
+for (const kind of ["vertical", "horizontal", "nested", "input"]) test(`local pager preserves native ${kind} arbitration`, t => {
+  const f = fixture({ component: "tabs", page: true, pager: true, scrollChild: kind }); t.after(f.close);
+  const detectors = f.all().filter(n => n.type === "GestureDetector");
+  assert.equal(detectors.length, kind === "nested" ? 3 : 2);
+  if (kind === "vertical") assert.ok(detectors[1].props.gesture.handlers.simultaneousWithExternalGesture);
+  else {
+    const composition = detectors.at(-1).props.gesture;
+    const observer = Array.isArray(composition.simultaneous) ? composition.simultaneous.at(-1) : composition;
+    const manager = { begin: noop, fail: noop, activate: () => assert.fail("exclusion never activates") };
+    down(f.gesture); observer.handlers.onTouchesDown({}, manager);
+    f.gesture.onTouchesMove({ allTouches: [{ absoluteX: 100, absoluteY: 200 }], numberOfTouches: 1 }, manager);
+    observer.handlers.onTouchesUp({}, manager); release(f.gesture); f.gesture.onFinalize(); f.flush();
+    assert.equal(f.pages().length, 1); assert.deepEqual(f.calls, []);
+    assert.equal(observer.handlers.cancelsTouchesInView, false);
+  }
 });

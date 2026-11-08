@@ -1,21 +1,5 @@
-import { useLayoutEffect, useMemo, useRef } from "react";
-import NativeMainTabPager from "./NativeMainTabPager.ios";
-import { colors } from "../theme";
-import NativeSwipeRail from "./NativeSwipeRail";
-import { adjacentSwipeTab } from "../domain/nativeGesturePolicy.mjs";
-const tabs = ["feed", "search", "discover", "you"];
-export default function NativeTabRail({ children, active, onChange, swipeScope, swipeEnabled = true, isCurrentSwipeRoute, page = false, entryDirection = 0, renderPage, loading, member = false }) {
-  const callback = useRef({ onChange, isCurrentSwipeRoute });
-  useLayoutEffect(() => { callback.current = { onChange, isCurrentSwipeRoute }; }, [onChange, isCurrentSwipeRoute]);
-  // Same-tab renders keep a valid swipe. Changing tabs retires the whole rail,
-  // so a queued Feed swipe can never become a Search-to-Discover action.
-  const commit = useMemo(() => direction => {
-    const next = adjacentSwipeTab(active, direction, tabs);
-    const { onChange: change, isCurrentSwipeRoute: current } = callback.current;
-    if (next && (!current || current())) change?.(next, current);
-  }, [active, swipeScope]);
-  if (page && renderPage) return <NativeMainTabPager active={active} onChange={onChange} swipeScope={swipeScope} swipeEnabled={swipeEnabled} isCurrentSwipeRoute={isCurrentSwipeRoute} renderPage={renderPage} loading={loading} member={member} />;
-  return <NativeSwipeRail key={page ? "page" : active} page={page} pageKey={active} entryDirection={entryDirection} canPrevious={tabs.indexOf(active) > 0} canNext={tabs.indexOf(active) < tabs.length - 1} enabled={swipeEnabled} positive={page ? ({ feed: "Feed", search: "Search", discover: "Discover", you: "You" }[adjacentSwipeTab(active, "positive", tabs)] || "") : "previous page"} negative={page ? ({ feed: "Feed", search: "Search", discover: "Discover", you: "You" }[adjacentSwipeTab(active, "negative", tabs)] || "") : "next page"} testID="main-tab-swipe-rail" surfaceColor={colors.bg} onCommit={commit}>
-    {children}
-  </NativeSwipeRail>;
+// Main navigation is deliberately tap-only on iOS. Horizontal paging belongs
+// to the Feed filter strip; detail Back has its own independently guarded owner.
+export default function NativeTabRail({ children }) {
+  return children;
 }

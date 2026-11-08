@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
 import useAppActive from "../lib/useAppActive";
 import Icon from "./Icon";
 import { checkConvertingClip, retryConvertingClip } from "../lib/convertingClipsApi";
@@ -16,7 +17,10 @@ const CHECK_EVERY_MS = 15_000;
 // quietly dropped from the post.
 export default function ConvertingClipNotice({ clips, onReady }) {
   const appActive = useAppActive();
-  const pollActive = Platform.OS === "web" || appActive;
+  const preview = useNativeTabPreview();
+  const pollActive = (Platform.OS === "web" || appActive) && (Platform.OS !== "ios" || !preview);
+  const previewAllowed = useRef(true);
+  previewAllowed.current = Platform.OS !== "ios" || !preview;
   const [states, setStates] = useState(() => new Map(clips.map((clip) => [clip.id, clip.state])));
   const [retrying, setRetrying] = useState(false);
   const retryGeneration = useRef(0);
@@ -36,7 +40,7 @@ export default function ConvertingClipNotice({ clips, onReady }) {
     };
     // clipKey captures every id and state the server reported.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clipKey]);
+  }, [clipKey, Platform.OS === "ios" ? preview : false]);
 
   const waiting = [...states].filter(([, state]) => state === "processing").map(([id]) => id);
   const waitingKey = waiting.join(",");
@@ -47,11 +51,11 @@ export default function ConvertingClipNotice({ clips, onReady }) {
     const controller = new AbortController();
     let checking = false;
     const check = async () => {
-      if (cancelled || checking) return;
+      if (cancelled || checking || !previewAllowed.current) return;
       checking = true;
       try {
         const results = await Promise.all(waiting.map(async (id) => [id, await checkConvertingClip(id, { signal: controller.signal })]));
-        if (cancelled) return;
+        if (cancelled || !previewAllowed.current) return;
         setStates((current) => {
           const next = new Map(current);
           for (const [id, state] of results) {
@@ -80,13 +84,13 @@ export default function ConvertingClipNotice({ clips, onReady }) {
   if (!summary) return null;
 
   const retry = async () => {
-    if (retrying || retryInFlight.current) return;
+    if (retrying || retryInFlight.current || !previewAllowed.current) return;
     retryInFlight.current = true;
     const generation = retryGeneration.current;
     setRetrying(true);
     const outcomes = await Promise.allSettled(failed.map((id) => retryConvertingClip(id)));
     // A replaced or unmounted notice cannot publish a retired retry result.
-    if (generation !== retryGeneration.current) return;
+    if (generation !== retryGeneration.current || !previewAllowed.current) return;
     retryInFlight.current = false;
     setStates((current) => {
       const next = new Map(current);

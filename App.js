@@ -1795,6 +1795,7 @@ function Root() {
                   key={pager ? undefined : feedReturn?.key}
                   feedReturn={feedReturn}
                   feedPresentation={feedPresentation}
+                  {...(Platform.OS === "ios" ? { swipeScope: iosTabSwipeScope, swipeEnabled: iosTabSwipeEnabled, isCurrentSwipeRoute: isCurrentIOSTabSwipe } : {})}
                   onRequireAuth={openSignIn}
                   onOpenNewsStory={openNewsStory}
                   onOpenNews={() => go({ news: true })}
@@ -1891,10 +1892,7 @@ function Root() {
   );
 
   const tabScreens = renderTabScreen();
-  const nativeTabPage = Platform.OS === "ios" ? <NativeTabRail page key={`${session?.id || "guest"}:${chatAuthEpoch}`}
-    active={activeTab} onChange={switchTab} member={!!session}
-    loading={<ScreenLoading />} renderPage={(pageTab, preview) => renderTabScreen(pageTab, preview, true)}
-    swipeScope={iosTabSwipeScope} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={isCurrentIOSTabSwipe} /> : tabScreens;
+  const nativeTabPage = tabScreens;
 
   const mobileTabBar = Platform.OS === "ios" ? <IosTabBar active={activeTab} onChange={switchTab} swipeScope={iosTabSwipeScope} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={isCurrentIOSTabSwipe} /> : (
                       <NativeTabRail key={activeTab} active={activeTab} onChange={switchTab}>

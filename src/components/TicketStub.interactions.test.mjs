@@ -178,7 +178,7 @@ for (const [path, variable, itemProp] of [
 
 test("memoized iOS Feed renderItem refreshes its post presentation when navigation ownership changes", () => {
   const screen = readFileSync(new URL("../screens/FeedScreen.jsx", import.meta.url), "utf8");
-  const fn = parse(screen, { sourceType: "module", plugins: ["jsx"] }).program.body.find(n => n.type === "ExportDefaultDeclaration").declaration;
+  const fn = parse(screen, { sourceType: "module", plugins: ["jsx"] }).program.body.find(n => n.type === "ExportNamedDeclaration" && n.declaration?.id?.name === "FeedContent").declaration;
   const declaration = fn.body.body.find(n => n.type === "VariableDeclaration" && n.declarations[0].id.name === "renderFeedItem");
   const code = compile(`${screen.slice(declaration.start, declaration.end)}; export default renderFeedItem;`);
   let memo;
