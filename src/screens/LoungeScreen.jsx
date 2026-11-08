@@ -18,12 +18,14 @@ import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { ENABLE_CREW } from "../config/runtime.mjs";
 import LoungePlans from "../components/crew/LoungePlans";
 
+import useIOSCommunityComposer from "../hooks/useIOSCommunityComposer";
+
 const EMPTY_LOUNGE_ACTIONS = Object.freeze({ enteredRoom: null, entering: false, sending: false, text: "" });
 
 // One persistent Lounge belongs to this exact show before, during, and after.
 // Gated: you have to tap in, so conversation reads and polling stay off until
 // the member deliberately enters the room.
-export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle, onOpenFanClub, onReport, onRequireAuth }) {
+export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle, onOpenFanClub, onReport, onRequireAuth, draftOwner, isCurrentRoute }) {
   const {
     session, chatAuthEpoch, concertKey, loungeFor, enterLounge, addLoungeMessage,
     retryChatMessage, cancelChatMessage, loadLounge, attendeesFor, userById, removeLoungeMessage,
@@ -32,11 +34,12 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   const staff = isStaff(session?.role);
   const key = concertKey(log);
   const roomIdentity = session && key ? `${session.id}:${key}` : null;
-  const actionScope = accountTargetScope(session?.id, `lounge:${key || ""}`);
+  const actionScope = accountTargetScope(session?.id, Platform.OS === "ios" ? JSON.stringify([chatAuthEpoch, "lounge", key]) : `lounge:${key || ""}`);
   const actionScopeRef = useRef(actionScope);
   actionScopeRef.current = actionScope;
   const [actionState, setActionState] = useState(() => ({ scope: actionScope, value: EMPTY_LOUNGE_ACTIONS }));
-  const { enteredRoom, entering, sending, text } = scopedScreenValue(actionState, actionScope, EMPTY_LOUNGE_ACTIONS);
+  const localActions = scopedScreenValue(actionState, actionScope, EMPTY_LOUNGE_ACTIONS);
+  const { enteredRoom, entering } = localActions;
   const updateActions = (changes) => setActionState((current) => ({
     scope: actionScope,
     value: { ...scopedScreenValue(current, actionScope, EMPTY_LOUNGE_ACTIONS), ...changes },
@@ -50,9 +53,14 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   const currentGateMeta = gateMeta?.key === key ? gateMeta : null;
   const loungeOpen = currentGateMeta?.status === "open";
 
+  const iosComposer = useIOSCommunityComposer({ draftOwner, accountId: session?.id || null, authEpoch: chatAuthEpoch,
+    kind: "lounge", target: key, enabled: entered && loungeOpen, isCurrentRoute });
+  const { text, sending, unavailable } = iosComposer || localActions;
+
   const readLoungeMessages = async ({ after, signal, strict = false }) => {
       const result = await loadLounge(key, { after, signal, strict });
       if (result?.closed && !signal?.aborted) {
+        iosComposer?.pause();
         clearLounge(key);
         setGateMeta((current) => current?.key === key
           ? { ...current, status: "closed", messageCount: 0 }
@@ -97,6 +105,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
           return;
         }
         const alreadyClosed = meta.cutoffAt != null && Date.now() >= meta.cutoffAt;
+        if (alreadyClosed || meta.status === "closed") iosComposer?.pause();
         setGateMeta({ ...meta, key, status: alreadyClosed ? "closed" : meta.status });
       })
       .catch(() => {
@@ -114,6 +123,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
     const arm = () => {
       const remaining = currentGateMeta.cutoffAt - Date.now();
       if (remaining <= 0) {
+        iosComposer?.pause();
         clearLounge(key);
         setGateMeta((current) => current?.key === key
           ? { ...current, status: "closed", messageCount: 0 }
@@ -127,12 +137,13 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   }, [clearLounge, currentGateMeta?.cutoffAt, currentGateMeta?.status, key]);
 
   const enter = async () => {
+    if (iosComposer && !iosComposer.current()) return;
     if (!session) { onRequireAuth?.(); return; }
     if (entering || !roomIdentity || !loungeOpen) return;
     const requestScope = actionScope;
     updateActions({ entering: true });
     const result = await enterLounge(log);
-    if (actionScopeRef.current !== requestScope) return;
+    if (actionScopeRef.current !== requestScope || (iosComposer && !iosComposer.ownsRoute())) return;
     updateActions({ enteredRoom: result?.ok && !result?.guest ? roomIdentity : null, entering: false });
   };
   const entryDisabled = session ? entering || !loungeOpen : !onRequireAuth;
@@ -166,6 +177,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   }
 
   const send = async () => {
+    if (iosComposer) return iosComposer.send(draft => addLoungeMessage(key, draft));
     const submitted = text;
     const draft = submitted.trim();
     if (!draft || sending) return;
@@ -179,6 +191,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
     });
   };
   const retry = async (message) => {
+    if (iosComposer) return iosComposer.retry(message, retryChatMessage);
     const requestScope = actionScope;
     const result = await retryChatMessage(message.id);
     if (result?.ok && actionScopeRef.current === requestScope) {
@@ -251,7 +264,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
                       <Pressable onPress={() => retry(m)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry lounge message">
                         <Text style={styles.deliveryAction}>retry</Text>
                       </Pressable>
-                      <Pressable onPress={() => cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel failed lounge message">
+                      <Pressable onPress={() => iosComposer ? iosComposer.cancel(m, cancelChatMessage) : cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel failed lounge message">
                         <Text style={styles.deliveryAction}>cancel</Text>
                       </Pressable>
                     </View>
@@ -289,14 +302,14 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
 
       {session ? (
         <View style={styles.inputBar}>
-          <TextInput style={styles.input} placeholder="Message the lounge…" placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateActions({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
+          <TextInput style={styles.input} editable={iosComposer ? iosComposer.canCompose : undefined} placeholder={unavailable ? "Wait for another message to finish sending" : "Message the lounge…"} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => iosComposer ? iosComposer.edit(value) : updateActions({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
           <Pressable
             style={[styles.sendBtn, sending && { opacity: 0.65 }]}
             onPress={send}
-            disabled={sending || !text.trim()}
+            disabled={(iosComposer && !iosComposer.canCompose) || sending || !text.trim()}
             accessibilityRole="button"
             accessibilityLabel={`Send message to the ${log.artist} lounge`}
-            accessibilityState={{ disabled: sending || !text.trim(), busy: sending }}
+            accessibilityState={{ disabled: (iosComposer && !iosComposer.canCompose) || sending || !text.trim(), busy: sending }}
           >
             <Icon name="chevron-right" size={20} color="#1A1206" />
           </Pressable>

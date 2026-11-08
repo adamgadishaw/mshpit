@@ -14,6 +14,7 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { createIOSThreadLoad } from "../domain/iosThreadLoad.mjs";
+import useIOSThreadControls from "../hooks/useIOSThreadControls";
 import useIOSThreadRefreshAnnouncement from "../hooks/useIOSThreadRefreshAnnouncement";
 import {
   messageRelationshipChips,
@@ -26,7 +27,7 @@ const EMPTY_COMPOSER = Object.freeze({ text: "", sending: false });
 const subscribeLocalComposer = () => () => {};
 const readLocalComposer = () => EMPTY_COMPOSER;
 
-export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
+export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
   const {
     session, chatAuthEpoch, userById, threadMessages, sendDM, retryChatMessage,
     cancelChatMessage, loadThread, markThreadRead, loadUser,
@@ -57,16 +58,23 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
     return () => { relationshipOwner.alive = false; threadLoader.cancel(); };
   }, [relationshipOwner, threadLoader]);
   const iosDraft = Platform.OS === "ios" ? draftLease : null;
+  const admitComposerAction = useIOSThreadControls({
+    accountId: session?.id, authEpoch: chatAuthEpoch, otherId, draftLease: iosDraft, isCurrentRoute: isCurrentIOSRoute,
+  });
   const retainedComposer = useSyncExternalStore(
     iosDraft?.subscribe || subscribeLocalComposer,
     iosDraft?.read || readLocalComposer,
     readLocalComposer,
   );
   const { text, sending, unavailable } = iosDraft ? retainedComposer : scopedScreenValue(composerState, composerScope, EMPTY_COMPOSER);
-  const updateComposer = (changes) => iosDraft ? iosDraft.edit(changes.text) : setComposerState((current) => ({
-    scope: composerScope,
-    value: { ...scopedScreenValue(current, composerScope, EMPTY_COMPOSER), ...changes },
-  }));
+  const updateComposer = (changes) => {
+    if (!admitComposerAction()) return;
+    if (iosDraft) return iosDraft.edit(changes.text);
+    setComposerState((current) => ({
+      scope: composerScope,
+      value: { ...scopedScreenValue(current, composerScope, EMPTY_COMPOSER), ...changes },
+    }));
+  };
   const messages = threadMessages(otherId);
   const { scrollRef, onScroll, onContentSizeChange } = useChatScroll({ messageCount: messages.length, scopeKey: `${chatAuthEpoch}:${composerScope}` });
   const incomingReadTarget = latestIncomingDirectMessageId(messages, session?.id);
@@ -193,6 +201,7 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
   }, [incomingReadTarget, otherId, session?.id]);
 
   const send = async () => {
+    if (!admitComposerAction()) return;
     if (iosDraft) {
       // Claim synchronously: keyboard submit + tap cannot enqueue twice, even
       // before React renders. Completion belongs to the owner across navigation.
@@ -219,6 +228,7 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
     });
   };
   const retry = async (message) => {
+    if (!admitComposerAction()) return;
     const retainedBefore = iosDraft?.read();
     const requestScope = composerScope;
     const result = await retryChatMessage(message.id);
@@ -232,6 +242,9 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
         return { scope: requestScope, value: { ...value, text: value.text.trim() === message.text ? "" : value.text } };
       });
     }
+  };
+  const cancel = (message) => {
+    if (admitComposerAction()) return cancelChatMessage(message.id);
   };
   const onMention = (h) => onOpenProfileByHandle?.(h);
 
@@ -294,7 +307,7 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
                       <Pressable style={styles.deliveryButton} onPress={() => retry(m)} accessibilityRole="button" accessibilityLabel="Retry direct message">
                         <Text style={styles.deliveryAction}>retry</Text>
                       </Pressable>
-                      <Pressable style={styles.deliveryButton} onPress={() => cancelChatMessage(m.id)} accessibilityRole="button" accessibilityLabel="Cancel failed direct message">
+                      <Pressable style={styles.deliveryButton} onPress={() => cancel(m)} accessibilityRole="button" accessibilityLabel="Cancel failed direct message">
                         <Text style={styles.deliveryAction}>cancel</Text>
                       </Pressable>
                     </View>

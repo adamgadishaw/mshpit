@@ -6,6 +6,7 @@ import { colors, radius } from "../../theme";
 import Icon from "../Icon";
 import ClipPoster from "../ClipPoster";
 import useAppActive from "../../lib/useAppActive";
+import useIOSVideoExternalAction from "../../hooks/useIOSVideoExternalAction";
 import { videoViewerBuffering, videoViewerDecodedSize, videoViewerPhase, videoViewerPosterVisible, videoViewerWebFrameReady } from "../../domain/mediaViewer.mjs";
 import { analyticsDurationBucket } from "../../domain/analyticsPolicy.mjs";
 import { createPlaybackMeasurement } from "../../domain/playbackMeasurement.mjs";
@@ -14,7 +15,7 @@ const web = Platform.OS === "web";
 
 // First-party playback of finalized Mshpit media. No ad SDK or tracker.
 // YouTube remains a separate provider and cannot inherit monetization rights.
-export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onTrack, onVideoSize, altText }) {
+export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onTrack, onVideoSize, altText, isCurrentIOSRoute, isCurrentIOSMedia }) {
   const appActive = useAppActive();
   const activeRef = useRef(appActive);
   activeRef.current = appActive;
@@ -26,6 +27,10 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
   });
   const [playbackRate, setPlaybackRate] = useState(1);
   const [controlError, setControlError] = useState("");
+  const openIOSVideo = useIOSVideoExternalAction({
+    uri, postId, active: appActive, isCurrentRoute: isCurrentIOSRoute, isCurrentMedia: isCurrentIOSMedia,
+    onFailure: () => setControlError("This video could not open. Please try again."),
+  });
   useEffect(() => {
     // Android SDK 57 pauses real background playback natively and exempts its
     // fullscreen activity. AppState also marks that internal transition inactive;
@@ -236,7 +241,7 @@ export default function MshpitVideoPlayer({ uri, posterUri, postId, onRetry, onT
             <Pressable style={styles.videoAction} onPress={onRetry} accessibilityRole="button">
               <Text style={styles.videoActionText}>Try again</Text>
             </Pressable>
-            <Pressable style={styles.videoAction} onPress={() => Linking.openURL(uri).catch(() => {
+            <Pressable style={styles.videoAction} onPress={Platform.OS === "ios" ? openIOSVideo : () => Linking.openURL(uri).catch(() => {
               if (mountedRef.current) setControlError("This video could not open. Please try again.");
             })} accessibilityRole="link">
               <Text style={styles.videoActionText}>Open video</Text>

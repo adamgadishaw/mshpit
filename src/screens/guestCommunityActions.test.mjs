@@ -5,6 +5,7 @@ import vm from "node:vm";
 import test from "node:test";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import useIOSCommunityComposer from "../hooks/useIOSCommunityComposer.js";
 
 const require = createRequire(import.meta.url);
 const { transformSync, parseSync } = require("@babel/core");
@@ -49,6 +50,7 @@ function screenFixture(name, session = null, { loungeStatus = "open", provideAut
     "../lib/useLiveChat": (_read, options) => calls.poll.push(options),
     "../lib/useChatScroll": () => ({ scrollRef: { current: null }, onScroll: noop, onContentSizeChange: noop }),
     "../hooks/useScopedRefresh": () => ({ refresh: noop, refreshing: false }),
+    "../hooks/useIOSCommunityComposer": useIOSCommunityComposer,
     "../domain/screenScope.mjs": { accountTargetScope, scopedScreenValue },
     "../domain/scopedRefresh.mjs": { refreshScope },
     "../domain/showSocial.mjs": { normalizeLoungeMeta: (value) => value },

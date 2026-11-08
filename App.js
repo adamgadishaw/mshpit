@@ -239,7 +239,7 @@ const loadPublicRecovery = () => publicRecoveryModule ||= import("./src/features
 function Root() {
   const safeAreaInsets = useSafeAreaInsets();
   const {
-    session, chatAuthEpoch, authReady, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
+    session, chatAuthEpoch, authReady, concertKey, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
     feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
     searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, isFollowing, follow, isBlocked,
     loadPlayHistory, saveQueueAsPlaylist, autoplayQueue, followingCount, resendEmailVerification, completeSignupOnboarding,
@@ -310,6 +310,13 @@ function Root() {
       },
     });
     messageDraftsRef.current.account(session?.id || null, chatAuthEpoch);
+  }
+  const communityDraftsRef = useRef(null);
+  if (Platform.OS === "ios") {
+    if (!communityDraftsRef.current) communityDraftsRef.current = createIOSMessageDrafts({
+      onAvailable: () => { if (messageDraftsMountedRef.current) refreshDraftCapacity(value => value + 1); },
+    });
+    communityDraftsRef.current.account(session?.id || null, chatAuthEpoch);
   }
   const commentDraftsRef = useRef(null);
   if (Platform.OS === "ios") {
@@ -1621,14 +1628,14 @@ function Root() {
   else if (nav.reporting) overlay = <ReportScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.reporting.targetType || "post", nav.reporting.targetId || nav.reporting.id, nav.reporting.mediaUri || null, nav.reporting.ownerId || null]) : undefined} target={nav.reporting} onClose={back} closeGuardRef={Platform.OS === "ios" ? composerCloseGuardRef : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} />;
   else if (nav.editProfile) overlay = <EditProfileScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch]) : undefined} onClose={back} closeGuardRef={Platform.OS === "ios" ? composerCloseGuardRef : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} />;
   else if (nav.venueReview) overlay = <VenueReviewScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.venueReview]) : undefined} venueName={nav.venueReview} onClose={back} closeGuardRef={Platform.OS === "ios" ? composerCloseGuardRef : null} />;
-  else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} draftLease={Platform.OS === "ios" ? messageDraftsRef.current.lease(nav.thread) : null} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
+  else if (nav.thread) overlay = <ThreadScreen isCurrentIOSRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} otherId={nav.thread} draftLease={Platform.OS === "ios" ? messageDraftsRef.current.lease(nav.thread) : null} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (MUSIC_PLAYER_ENABLED && nav.listeningHistory) overlay = <ListeningHistoryScreen onClose={back} onPlay={musicPlayerAction} />;
   else if (nav.notifications) overlay = <NotificationsScreen isCurrentIOSRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} onOpenPlans={ENABLE_CREW ? () => go({ crew: { tab: "plans" } }) : undefined} onOpenArtist={openArtist} />;
   else if (nav.calendar) overlay = <CalendarScreen initialDate={nav.calendarDate} initialView={nav.calendarView} onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} initialSection={nav.profileSection} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} onRequireAuth={openSignIn} />;
-  else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} onRequireAuth={openSignIn} />;
+  else if (nav.fanClub) overlay = <FanClubScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.fanClub]) : undefined} draftOwner={Platform.OS === "ios" ? communityDraftsRef.current : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onMediaPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "status" }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onRequestVerification={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} onPlay={musicPlayerAction} />;
   else if (nav.artistGallery) overlay = <ArtistGalleryScreen artistName={nav.artistGallery.name} artistKey={nav.artistGallery.artistKey} legacyMode={nav.artistGallery.legacyMode === true} onClose={back} onOpenPhotos={openPhotos} />;
   else if (nav.artistPreview) overlay = <ArtistScreen key={artistReturn?.key} artistReturn={artistReturn} artistName={nav.artistPreview} previewAsFan onClose={back} onOpenPost={openPost} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onRequireAuth={openSignIn} />;
@@ -1648,7 +1655,7 @@ function Root() {
   else if (nav.diagnostics && canViewDiagnostics) overlay = <DiagnosticsScreen onClose={back} />;
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
-  else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onOpenFanClub={openFanClub} onReport={openReport} onRequireAuth={openSignIn} />;
+  else if (nav.lounge) overlay = <LoungeScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, concertKey(nav.lounge)]) : undefined} draftOwner={Platform.OS === "ios" ? communityDraftsRef.current : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onOpenFanClub={openFanClub} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} />;
   else if (nav.post) overlay = <PostScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.post.id]) : `${session?.id || "guest"}:${nav.post.id}`} log={nav.post} commentDraft={Platform.OS === "ios" ? commentDraftsRef.current.lease(nav.post.id) : null} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;

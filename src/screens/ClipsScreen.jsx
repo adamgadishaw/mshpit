@@ -296,6 +296,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
   const [done, setDone] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const loadErrorOwnerRef = useRef(null);
   const [refreshError, setRefreshError] = useState("");
   const [reelHeight, setReelHeight] = useState(0);
   const [active, setActive] = useState(0);
@@ -349,6 +350,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
   const { refresh: refreshClips, refreshing } = useScopedRefresh({
     scope: clipsRefreshScope,
     task: async ({ signal }) => {
+      const supersededError = loadErrorOwnerRef.current;
       setRefreshError("");
       loadMoreControllerRef.current?.abort();
       loadMoreControllerRef.current = null;
@@ -366,6 +368,13 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
       setCursor(result.nextCursor);
       setDone(!result.nextCursor);
       setActive(preservedIndex >= 0 ? preservedIndex : 0);
+      // A successful head read supersedes the captured error and its old
+      // cursor, not a newer page failure. Failed/aborted refreshes keep it.
+      if (Platform.OS === "ios" && supersededError
+        && loadErrorOwnerRef.current === supersededError) {
+        loadErrorOwnerRef.current = null;
+        setLoadError("");
+      }
       return result;
     },
     onError: () => setRefreshError("Clips could not refresh. The reel already on screen is still available."),
@@ -374,6 +383,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
+    loadErrorOwnerRef.current = null;
     setLoadError("");
     setRefreshError("");
     setPages([]);
@@ -382,6 +392,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
       const result = await loadClips({ signal: controller.signal });
       if (controller.signal.aborted) return;
       if (!result?.ok) {
+        loadErrorOwnerRef.current = {};
         setLoadError("PIT could not load clips. Check your connection and try again.");
         setLoading(false);
         return;
@@ -403,11 +414,13 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
     loadingMoreRef.current = true;
     const controller = new AbortController();
     loadMoreControllerRef.current = controller;
+    loadErrorOwnerRef.current = null;
     setLoadError("");
     try {
       const result = await loadClips({ before: cursor, signal: controller.signal });
       if (controller.signal.aborted) return;
       if (!result?.ok) {
+        loadErrorOwnerRef.current = {};
         setLoadError("Couldn't load more clips. Tap to retry.");
         return;
       }
