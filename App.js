@@ -149,7 +149,7 @@ import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
 import { createIOSArtistReturnStore } from "./src/domain/iosArtistReturn.mjs";
 import { createBrowseReturnStore } from "./src/domain/iosBrowseReturn.mjs";
 import { createCommentDraftOwner } from "./src/domain/commentDraftOwner";
-import { createIOSMessageDrafts } from "./src/domain/iosMessageDrafts.mjs";
+import { createIOSMessageDrafts } from "./src/domain/messageDraftOwner";
 import { createLinkedNavigationOwner } from "./src/domain/linkedNavigationOwner";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
