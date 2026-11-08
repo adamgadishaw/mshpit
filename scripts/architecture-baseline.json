@@ -14,7 +14,6 @@
       "usePrivateEphemeral:fanClubs:setFanClubs",
       "usePrivateEphemeral:going:setGoing",
       "usePrivateEphemeral:lounge:setLounge",
-      "usePrivateEphemeral:notifications:setNotifications",
       "usePrivateEphemeral:requests:setRequests",
       "useState:adminMemberDirectory:setAdminMemberDirectory",
       "useState:adminMembers:setAdminMembers",
@@ -70,15 +69,16 @@
       "useAccountCommentCache": 1,
       "useContext": 1,
       "useEffect": 29,
+      "useNotificationActivity": 1,
       "usePersisted": 4,
-      "usePrivateEphemeral": 8,
+      "usePrivateEphemeral": 7,
       "useRef": 53,
       "useState": 47
     }
   },
   "legacyApi": {
     "file": "server/api.js",
-    "maxInlineRoutes": 156,
+    "maxInlineRoutes": 154,
     "allowedInlineRoutes": [
       "DELETE /api/admin/catalog/seed",
       "DELETE /api/admin/email/templates/:key",
@@ -134,7 +134,6 @@
       "GET /api/me/blocked",
       "GET /api/me/fanclubs",
       "GET /api/me/following",
-      "GET /api/me/notifications",
       "GET /api/me/plays",
       "GET /api/me/threads",
       "GET /api/media/assets/:id",
@@ -208,7 +207,6 @@
       "POST /api/logout",
       "POST /api/lounges/:key/messages",
       "POST /api/me/analytics-consent",
-      "POST /api/me/notifications/read",
       "POST /api/media/assets",
       "POST /api/media/assets/:id/finalize",
       "POST /api/media/assets/:id/variants",
@@ -424,8 +422,8 @@
       "fingerprint": "01e0028f751a5ee02884"
     },
     "src/store.js": {
-      "count": 96,
-      "fingerprint": "090c2ce4fc9a6a574ae3"
+      "count": 94,
+      "fingerprint": "944c03a37fb3b1a8a634"
     }
   },
   "legacyClientContractShapesByFile": {

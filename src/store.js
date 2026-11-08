@@ -167,6 +167,7 @@ import {
 } from "./domain/artistRequestMutation.mjs";
 import { reconcileConfirmedArtistPostRemoval } from "./domain/artistPostMutation.mjs";
 import { reconcileConfirmedNotificationReads } from "./domain/notificationReadMutation.mjs";
+import useNotificationActivity from "./features/notifications/useNotificationActivity";
 import {
   directMessageUnreadCount,
   latestDirectMessageReadCursor,
@@ -949,11 +950,16 @@ export function StoreProvider({ children }) {
   const chatAuthEpochRef = useRef(0);
   // Notifications / activity, the social heartbeat. Each item is addressed to a
   // recipient (userId) and generated when someone acts on their content/graph.
-  const [notifications, setNotifications] = usePrivateEphemeral("pit.notifications", demoSeed([
-    { id: "nf1", userId: "u_demo", type: "follow", actorId: "u_mara", actorName: "Mara Quinn", actorInitials: "MQ", ts: Date.now() - 3600000, read: false },
-    { id: "nf2", userId: "u_demo", type: "like", actorId: "u_devon", actorName: "Devon Ash", actorInitials: "DA", postId: "log_1", artist: "Turnstile", ts: Date.now() - 7200000, read: false },
-    { id: "nf3", userId: "u_demo", type: "comment", actorId: "u_priya", actorName: "Priya N.", actorInitials: "PN", postId: "log_1", artist: "Turnstile", ts: Date.now() - 10800000, read: true },
-  ], []));
+  const { notifications, setNotifications, notificationActivity, refreshNotifications, loadMoreNotifications, markNotificationsRead } = useNotificationActivity({
+    getIdentity: () => ({ accountId: sessionRef.current?.id || null, epoch: accountMutationEpochRef.current, ready: authReadyRef.current }),
+    getHiddenActorIds: () => [...blockedIdsRef.current, ...blockedIdsRef.mutedIds],
+    demo: ENABLE_DEMO_DATA,
+    seed: demoSeed([
+      { id: "nf1", userId: "u_demo", type: "follow", actorId: "u_mara", actorName: "Mara Quinn", actorInitials: "MQ", ts: Date.now() - 3600000, read: false },
+      { id: "nf2", userId: "u_demo", type: "like", actorId: "u_devon", actorName: "Devon Ash", actorInitials: "DA", postId: "log_1", artist: "Turnstile", ts: Date.now() - 7200000, read: false },
+      { id: "nf3", userId: "u_demo", type: "comment", actorId: "u_priya", actorName: "Priya N.", actorInitials: "PN", postId: "log_1", artist: "Turnstile", ts: Date.now() - 10800000, read: true },
+    ], []),
+  });
   // Album + song ratings (stand-in for stream data) keyed by artist|title
   const [albumRatings, setAlbumRatings] = usePersisted("pit.albumRatings", demoSeed({ "turnstile|glow on": { u_mara: 5, u_devon: 4.5 }, "turnstile|never enough": { u_mara: 4 } }, {}));
   const [songRatings, setSongRatings] = usePersisted("pit.songRatings", demoSeed({ "turnstile|healing": { u_mara: 5, u_demo: 5 } }, {}));
@@ -2674,9 +2680,8 @@ export function StoreProvider({ children }) {
         severity: "warning",
         toast: false,
       }));
-    // Server-backed notifications: replace MY notifications with the authoritative
-    // server list (keep local welcome/system ones), so activity is real cross-device.
-    void refreshNotifications({ accountId: su.id });
+    // Server-backed notifications now hydrate in the account-scoped feature.
+    // It also owns active-app badge freshness without replaying other hydrations.
     // Staff queue hydration uses the same normalized, account-scoped loader as
     // the console. The legacy endpoint remains on the server for old clients.
     if (isMod(su.role)) {
@@ -4083,10 +4088,10 @@ export function StoreProvider({ children }) {
   };
 
   // --- Notifications / activity ---------------------------------------------
-  // Address a notification to a recipient when someone acts on their stuff. Never
-  // notify yourself. (Client-side in this prototype, like the rest of the graph.)
+  // Production notifications are created only by the server. Keep the old
+  // local social fixture behavior confined to explicitly enabled demo mode.
   const notify = (recipientId, type, payload = {}) => {
-    if (!session || !recipientId || recipientId === session.id) return;
+    if (!ENABLE_DEMO_DATA || !session || !recipientId || recipientId === session.id) return;
     const n = {
       id: "n_" + Date.now() + Math.random().toString(36).slice(2, 6),
       userId: recipientId, type,
@@ -4103,60 +4108,9 @@ export function StoreProvider({ children }) {
     ...all,
   ]);
   const myNotifications = () => (session ? notifications.filter((n) => n.userId === session.id).sort((a, b) => b.ts - a.ts) : []);
-  const unreadNotifications = () => myNotifications().filter((n) => !n.read).length;
-  const refreshNotifications = async ({ signal, accountId = sessionRef.current?.id || null } = {}) => {
-    // architecture: allow-ambiguous-result -- this optional activity read preserves the current account snapshot on stale, abort, or offline failure
-    if (!accountId || sessionRef.current?.id !== accountId) return null;
-    try {
-      const { notifications: rows } = await api("/api/me/notifications", {
-        context: "Refreshing activity",
-        silent: true,
-        signal,
-      });
-      if (signal?.aborted || sessionRef.current?.id !== accountId || !Array.isArray(rows)) return null;
-      const mine = rows.map((row) => ({ ...row, userId: accountId }));
-      setNotifications((all) => [
-        ...mine,
-        ...all.filter((notification) => notification.userId !== accountId || notification.type === "welcome"),
-      ]);
-      return mine;
-    } catch (error) {
-      // architecture: allow-ambiguous-result -- this optional activity read preserves the current account snapshot on stale, abort, or offline failure
-      if (signal?.aborted) return null;
-      return false;
-    }
-  };
-  const markNotificationsRead = async ({ signal } = {}) => {
-    const actor = sessionRef.current;
-    const context = "Marking activity as read";
-    if (!actor) return localCommandError("PIT-AUTH-001", context);
-    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
-    // Only rows present when this command began are eligible for the confirmed
-    // local projection. A notification arriving concurrently must stay unread.
-    const notificationIds = notifications
-      .filter((notification) => notification.userId === actor.id && !notification.read)
-      .map((notification) => notification.id);
-    try {
-      const response = await api("/api/me/notifications/read", {
-        method: "POST",
-        context,
-        silent: true,
-        signal,
-      });
-      if (response?.ok !== true) return localCommandError("PIT-API-001", context);
-      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
-        return localCommandError("PIT-AUTH-004", context);
-      }
-      setNotifications((current) => reconcileConfirmedNotificationReads(current, {
-        accountId: actor.id,
-        notificationIds,
-      }));
-      return commandSuccess({ accountId: actor.id, notificationIds });
-    } catch (error) {
-      if (isLoadCancellation(error, signal)) throw error;
-      return commandError(error, context);
-    }
-  };
+  const unreadNotifications = () => session
+    ? notificationActivity.data.unread ?? myNotifications().filter((n) => !n.read).length
+    : 0;
   const postOwner = (postId) => feed.find((l) => l.id === postId)?.userId;
 
   // Social graph. First slice of the SQLite migration (see MIGRATION.md): follow
@@ -4330,7 +4284,7 @@ export function StoreProvider({ children }) {
         setFanClubMsgs((groups) => Object.fromEntries(Object.entries(groups).map(([key, rows]) => [key, rows.filter((row) => row.userId !== id)])));
         setLounge((groups) => Object.fromEntries(Object.entries(groups).map(([key, rows]) => [key, rows.filter((row) => row.userId !== id)])));
         setDms((threads) => { const next = { ...threads }; delete next[dmKey(accountId, id)]; return next; });
-        setNotifications((rows) => rows.filter((notification) => notification.actorId !== id));
+        setNotifications((rows) => rows.filter((notification) => notification.actorId !== id), { refreshSummary: true });
         return { ok: true };
       })
       .catch((error) => {
@@ -4388,6 +4342,9 @@ export function StoreProvider({ children }) {
     try {
       await saveAccountMute(id, true, { expectedAccountId: actor.id });
       if (!isCurrent()) return { ok: false, stale: true };
+      // Fence reads that overlapped the optimistic phase and reconcile the
+      // server total only after the privacy command has durably committed.
+      setNotifications((rows) => rows.filter((notification) => notification.actorId !== id), { refreshSummary: true });
       return { ok: true };
     } catch (error) {
       if (!isCurrent()) return { ok: false, stale: true };
@@ -6491,7 +6448,7 @@ export function StoreProvider({ children }) {
       setNotifications((current) => reconcileConfirmedNotificationReads(current, {
         accountId: actor.id,
         notificationIds: response.notificationIds,
-      }));
+      }), { refreshSummary: true });
       return commandSuccess({ accountId: actor.id, otherId, readCursor: cursor });
     } catch (error) {
       // Keep the badge visible when the server cannot durably save the read.
@@ -7192,7 +7149,7 @@ export function StoreProvider({ children }) {
     chatAuthEpoch, retryChatMessage, cancelChatMessage,
     threadMessages, sendDM, loadThread, loadInboxThreads, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
     track,
-    myNotifications, unreadNotifications, refreshNotifications, markNotificationsRead,
+    myNotifications, unreadNotifications, notificationActivity, refreshNotifications, loadMoreNotifications, markNotificationsRead,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
