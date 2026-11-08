@@ -2,9 +2,9 @@
 
 ## Latest fully verified artifact
 
-Checkpoint 94be923 is preserved at
-.tmp/ios-phone-checkpoints/flagship-94be923/MshpitDev.app with a receipt and exact
-manifest. All 7,516 tests, three platform exports and signed Release compilation
+Checkpoint be4eb3f is preserved at
+.tmp/ios-phone-checkpoints/flagship-be4eb3f/MshpitDev.app with a receipt and exact
+manifest. All 7,561 tests, three platform exports and signed Release compilation
 passed. This is a development-signed, live-linked preview, not installed and not
 App Store distribution. Physical interaction/accessibility/performance are still
 open. Later in-progress slices are not included until separately verified.
@@ -392,3 +392,57 @@ A reproduced run used seed 0x4d534850, 128 sequences, 32,768 operations, 2,925
 accepted claims and 791,060 independent-oracle checks. Six independent negative
 controls were caught by the reviewer. These are ownership/correctness evidence,
 not native performance measurements.
+
+## Feedback and comment accessibility checkpoint, 05:40 UTC
+
+Source be4eb3f1b100877a43c52a030703f43f7eb5750a is now compiled and preserved.
+The iOS feedback host is keyed by account and authentication epoch. Exact notice
+and effect-lifetime ownership prevents old timeout, Dismiss or Details callbacks
+from acting on a replacement. Current diagnostics authorization remains required.
+VoiceOver-enabled or unknown preference state keeps a notice available instead
+of enforcing a seven-second limit; disabling it starts a fresh interval. Copy
+can wrap, and Dismiss/Details stay separate accessible controls. A Suspense effect
+reconnect clears retired notice state rather than leaving inert controls.
+
+Explicit accepted iOS comment Send/Retry actions have a separate scoped outcome
+announcer. It requires positively known VoiceOver-on and foreground state at the
+action, then permanently revokes on reader-off, inactive/background, lease/scope
+change or unmount. One claim owns a queued timer; stale callbacks cannot speak or
+clear a newer timer. Copy contains no authored or raw server text. Success says
+'Comment confirmed'; ambiguous failure never claims a message was not delivered.
+Invalid current and original retry parents use distinct guidance. Delivery still
+settles with the same payload/key even when speech is cancelled. Retained errors
+are not spoken merely on mounting. Android/web resolve an inert hook.
+
+The shared iOS preference owner adds a separate null/false/true confirmed-state
+API without changing existing conservative boolean consumers. Both consumer
+kinds share the same native query/listener and generation/revision fences. No
+Store/API, diagnostics throttling, global speech, permissions or dependencies
+changed. RN cannot retract an announcement already handed to VoiceOver.
+
+Verification:
+- 164 combined host/preference/comment/nearby focused tests passed.
+- Complete suite: 7,561 passed, zero failures, skips or cancellations; 131.402s.
+  Log: /tmp/mshpit-ios-accessibility-full-tests.log.
+- Syntax: 920 Node files. Architecture baseline and whitespace checks passed.
+- Independent reviews passed 42 host tests and 98 Post outcome tests, including
+  five negative-control ownership mutations. These are synthetic JS tests.
+- Reproduced deterministic preference model: seed 0x564f4943, 32,768 operations,
+  131,200 invariant checks, 245 native-subscription lifetimes, all passing.
+  Harness/result: .tmp/ios-flagship-stress/accessibility-preference{.mjs,-results.json}.
+- iOS and Android Hermes exports and web export passed sequentially. Web remains
+  509.1 / 512.0 KiB initial gzip. No native runtime or speed claim follows.
+- Development-signed Release copied and strictly signature-verified, with all
+  52 files/links exactly matching. Artifact: 60,199,786 bytes; JS: 9,692,694 bytes.
+  JS SHA-256: 77ada56552959511c290f0b384f1f9f6ccf51c41cb18adeb1cf704d62b2d7d5e.
+  Manifest SHA-256: f087599dc2c7d342a586a79e991fe6c05a9cbfeb4660007247fc00a521b7269e.
+- Bundle com.mshpit.app.dev, version 1.0.0/build 1, same cached development
+  signing identity/profile, expiry November 14 at 23:50:01 UTC. No install.
+
+Physical VoiceOver output/focus/wrapping, Dynamic Type geometry and final phone
+launch remain unverified. Real Send/Retry tests are not permitted against the
+live-linked preview as synthetic QA. Activity and Thread opening also persist
+notification/message read state, so they require the isolated fixture or a
+separately authorized genuine action. The upstream cross-account diagnostics
+throttle and shared analytics response-adoption issue remain separate proposals.
+Earlier signed checkpoints are preserved, not replaced.

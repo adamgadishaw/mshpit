@@ -11,7 +11,10 @@ the existing nativeReadOnlyReview switch applies only to __DEV__ builds. On that
 preview, use read-only browsing and unsent draft navigation. Do not publish
 synthetic comments/reviews, delete content, switch real accounts, or save/share
 private calendar data to another app merely to certify a test. Genuine owner-
-directed actions and any required approvals remain separate.
+directed actions and any required approvals remain separate. Opening Activity
+marks notifications read; opening a Thread can submit a message read receipt.
+Those routes are not state-neutral reads and belong in the isolated fixture or
+separately authorized genuine use, not a generic live read-only QA tour.
 
 ## Build identity and environment
 
@@ -38,7 +41,8 @@ prove that the embedded version changed. Preserve previous signed artifacts.
 
 Source and unit tests are necessary but do not establish spoken behavior. On the
 final phone build, use VoiceOver without sight to navigate Discover, search,
-show details, feed, drawer, profiles/You, message history and each composer.
+show details, feed, drawer, profiles/You, and unsent composers. Message history/Activity and mutation outcomes
+require the isolated fixture or separately authorized genuine use as above.
 Check focus entering/dismissing a modal, destination changes, back gestures,
 explicit alternatives, failure announcements and text-field labels/values.
 
@@ -136,7 +140,7 @@ phone build is held until the owner reconnects and authorizes installation.
 
 ### Artifact-specific interpretation
 
-The verified 94be923 artifact currently declares portrait and upside-down only.
+The verified be4eb3f artifact currently declares portrait and upside-down only.
 Landscape/iPad floating/split-view cases above are conditional future checks,
 not supported orientations to claim tested now. Performance measurement should
 use the Release JavaScript binary with React Native __DEV__ false and no Metro
