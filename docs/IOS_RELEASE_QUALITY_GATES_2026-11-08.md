@@ -8,7 +8,11 @@ is performed by this document.
 All mutation-path acceptance tests require an authorized isolated fixture
 environment. The current live-linked Release preview is NOT mutation-blocked:
 the existing nativeReadOnlyReview switch applies only to __DEV__ builds. On that
-preview, use read-only browsing and unsent draft navigation. Do not publish
+preview, owner-directed ordinary browsing and unsent draft navigation can be
+reviewed only with its real side effects understood. This is not a strictly
+write-free synthetic QA mode: consented app-open/screen/feed analytics may post
+to the live event endpoint. Use the isolated fixture for repeatable certification,
+without changing consent settings to force a test. Do not publish
 synthetic comments/reviews, delete content, switch real accounts, or save/share
 private calendar data to another app merely to certify a test. Genuine owner-
 directed actions and any required approvals remain separate. Opening Activity

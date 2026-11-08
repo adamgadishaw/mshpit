@@ -446,3 +446,13 @@ notification/message read state, so they require the isolated fixture or a
 separately authorized genuine action. The upstream cross-account diagnostics
 throttle and shared analytics response-adoption issue remain separate proposals.
 Earlier signed checkpoints are preserved, not replaced.
+
+### Live browsing is not a write-free test harness
+
+Source tracing confirms that consenting live accounts can emit app_open,
+screen_view and feed events through the first-party /api/events/batch endpoint
+while simply browsing. Activity and Thread also persist read markers as noted
+above. No such production test actions were performed. The owner's genuine app
+use is separate from synthetic certification; controlled QA remains in the
+outbound-blocked fixture. No analytics consent, event policy or signing setting
+was changed to work around this boundary.
