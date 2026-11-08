@@ -1,5 +1,12 @@
 # iOS Discover Browse
 
+This records the initial Discover presentation checkpoint. Its focused test
+count and byte-comparison evidence are historical, not current whole-app release
+claims. Later browse-return and recovery changes, signed artifacts and remaining
+native acceptance are documented in IOS_FLAGSHIP_HARDENING_2026-11-08.md and
+IOS_RELEASE_QUALITY_GATES_2026-11-08.md. Preserve this initial evidence alongside
+those later checks.
+
 ## Scope
 
 `DiscoverScreen.jsx` retains all existing data loading, filtering, cancellation,
