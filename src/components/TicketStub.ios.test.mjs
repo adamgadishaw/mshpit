@@ -25,6 +25,7 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
     deleteOwnPost: (...args) => calls.push(["deleteFallback", ...args]), refreshFeed: () => calls.push(["refresh"]),
   };
   const modules = { ...domains,
+    "./showIOSPostActions": (options, choose) => sheets.push({ options, choose }),
     react: { useRef: (initial) => { const i = cursor++; return state[i] ||= { current: initial }; },
       useLayoutEffect: (effect) => { const i = cursor++; state[i] ||= { setup: effect, cleanup: effect() }; }, useContext: (value) => value, useMemo: (fn) => fn(), useState: (initial) => {
       const i = cursor++; if (!(i in state)) state[i] = typeof initial === "function" ? initial() : initial;
@@ -33,7 +34,6 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "react-native": { View: "View", Text: "Text", Pressable: "Pressable", Platform: { OS: platform },
       StyleSheet: { create: (value) => value, hairlineWidth: 0.5, absoluteFill: {}, absoluteFillObject: {} },
-      ActionSheetIOS: { showActionSheetWithOptions: (options, choose) => sheets.push({ options, choose }) },
       Alert: { alert: (...args) => calls.push(["alert", ...args]) }, Linking: { openURL: async (url) => { calls.push(["external", url]); } } },
     "expo-image": { Image: "ExpoImage" },
     "../theme": { colors, displayFont: "display", font: "font", mono: "mono", glow: {}, radius: { md: 12, lg: 18, sm: 8, pill: 999 }, shadow: { card: {} }, roleColor: () => null, space: (value) => value * 4 },

@@ -1,6 +1,7 @@
 import { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import SupportingActsLine from "./SupportingActsLine";
-import { View, Text, StyleSheet, Pressable, Alert, ActionSheetIOS, Linking, Platform } from "react-native";
+import showIOSPostActions from "./showIOSPostActions";
+import { View, Text, StyleSheet, Pressable, Alert, Linking, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, font, glow, mono, radius, shadow, roleColor, space } from "../theme";
 import Stars from "./Stars";
@@ -341,7 +342,7 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
     const sheet = {};
     sheetOpen.current = sheet;
     setOpenMenu(null);
-    ActionSheetIOS.showActionSheetWithOptions({
+    showIOSPostActions({
       title: "Post actions", options: [...labels, "Cancel"],
       cancelButtonIndex: labels.length,
       destructiveButtonIndex: labels.includes("Delete post") ? labels.indexOf("Delete post") : undefined,
