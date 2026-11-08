@@ -83,12 +83,11 @@ test("loading invalidates an early snapshot; explicit retry can announce its out
 
 test("Search integration keeps native speech iOS-only and preserves Android live regions", () => {
   const source = readFileSync(new URL("../screens/SearchScreen.jsx", import.meta.url), "utf8");
-  assert.match(source, /IS_IOS && !searchAnnouncements.current/);
-  assert.match(source, /AccessibilityInfo.announceForAccessibilityWithOptions\(message, options\)/);
-  assert.match(source, /if \(!IS_IOS\) return;\s+searchAnnouncements.current.update/);
-  assert.match(source, /return \(\) => searchAnnouncements.current\?\.reset\(\);\s+\}, \[searchAccountScope\]\)/);
+  assert.match(source, /import useIOSSearchAnnouncement from "..\/hooks\/useIOSSearchAnnouncement"/);
+  assert.match(source, /useIOSSearchAnnouncement\(searchAccountScope, chatAuthEpoch\)/);
+  assert.match(source, /visibleResultState === "ready" \? "results"/);
   assert.match(source, /ready: queryIsSettled && !searchLoading && visibleResultState !== "loading"/);
   assert.match(source, /accessibilityLiveRegion=\{visibleSearchError \|\| actionMessage \? "assertive" : "polite"\}/);
-  assert.match(source, /if \(nextQuery !== q.trim\(\).toLowerCase\(\)\) searchAnnouncements.current.request/);
+  assert.match(source, /if \(nextQuery !== q.trim\(\).toLowerCase\(\)\) searchAnnouncements.request/);
   assert.match(source, /onPress=\{retrySearch\}/);
 });

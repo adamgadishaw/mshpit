@@ -1,5 +1,5 @@
 import { Fragment, useMemo, useState, useEffect, useRef } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform, useWindowDimensions, AccessibilityInfo } from "react-native";
+import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform, useWindowDimensions } from "react-native";
 import { colors, focusRing, mono, radius, roleColor } from "../theme";
 import { ratedShows } from "../data";
 import { ingestedArtists } from "../seed/ingested";
@@ -22,7 +22,7 @@ import {
   withoutBlockedPersonSearches,
 } from "../domain/unifiedSearch.mjs";
 import { createBrowseScrollReturn } from "../domain/iosBrowseReturn.mjs";
-import { createIOSSearchAnnouncements } from "../domain/iosSearchAnnouncements.mjs";
+import useIOSSearchAnnouncement from "../hooks/useIOSSearchAnnouncement";
 import { searchLiveAnnouncement } from "../domain/searchAccessibility.mjs";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { createUnifiedEventSearchIndex, searchUnifiedEventIndex } from "../domain/unifiedLocationSearch.mjs";
@@ -186,22 +186,20 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   const { fontScale } = useWindowDimensions();
   const largeText = IS_IOS && fontScale > 1.25;
   const { tourDates, refreshTourDates, searchVenues, artistsAlphabetical, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, track,
-    session, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
+    session, chatAuthEpoch, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
-  const searchAnnouncements = useRef(null);
-  if (IS_IOS && !searchAnnouncements.current) searchAnnouncements.current = createIOSSearchAnnouncements({
-    announce: (message, options) => AccessibilityInfo.announceForAccessibilityWithOptions(message, options),
-  });
   const initialBrowse = useRef(IS_IOS ? browseReturn?.read() : null).current;
   const searchAccountScope = accountTargetScope(session?.id, "search");
+  const searchAnnouncements = useIOSSearchAnnouncement(searchAccountScope, chatAuthEpoch);
   const lookupRequestRef = useRef(null);
   if (!lookupRequestRef.current) lookupRequestRef.current = createArtistLookupController();
   const [queryState, setQueryState] = useState(() => ({ scope: searchAccountScope, value: initialBrowse?.query || "" }));
   const q = scopedScreenValue(queryState, searchAccountScope, "");
   const setQ = (value) => {
+    if (IS_IOS && !searchAnnouncements.isCurrent()) return;
     if (IS_IOS) {
       const nextQuery = String(value || "").trim().toLowerCase();
-      if (nextQuery !== q.trim().toLowerCase()) searchAnnouncements.current.request(searchAccountScope, nextQuery);
+      if (nextQuery !== q.trim().toLowerCase()) searchAnnouncements.request(searchAccountScope, nextQuery);
     }
     lookupRequestRef.current.cancel();
     setQueryState({ scope: searchAccountScope, value: String(value || "") });
@@ -260,6 +258,7 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   }));
   const setActionMessage = (message) => updateLookupState({ message });
   const changeQuery = (value) => {
+    if (IS_IOS && !searchAnnouncements.isCurrent()) return;
     if (IS_IOS) scrollReturn.current.cancel();
     setQ(value);
     // Case-only and whitespace-only edits keep the same normalized scope. Clear
@@ -270,11 +269,13 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
     }
   };
   const clearSearch = () => {
+    if (IS_IOS && !searchAnnouncements.isCurrent()) return;
     changeQuery("");
     setSearchError("");
     searchInputRef.current?.focus?.();
   };
   const cancelSearch = () => {
+    if (IS_IOS && !searchAnnouncements.isCurrent()) return;
     changeQuery("");
     setSearchError("");
     setActiveCategory("all");
@@ -283,14 +284,11 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
     resultScrollRef.current?.scrollTo?.({ y: 0, animated: false });
   };
   const retrySearch = () => {
-    if (IS_IOS) searchAnnouncements.current.request(searchAccountScope, query);
+    if (IS_IOS && !searchAnnouncements.isCurrent()) return;
+    if (IS_IOS) searchAnnouncements.request(searchAccountScope, query);
     setSearchError("");
     setSearchRevision((value) => value + 1);
   };
-  useEffect(() => {
-    searchAnnouncements.current?.reset();
-    return () => searchAnnouncements.current?.reset();
-  }, [searchAccountScope]);
   const peopleScope = unifiedPeopleSearchScope(session?.id, blockedIds);
   const [peopleCache, setPeopleCache] = useState({ scope: null, query: "", rows: [] });
   const fanClubDirectoryLoaderRef = useRef(loadFanClubsDirectory);
@@ -573,13 +571,13 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   const completedSearchAnnouncement = searchLiveAnnouncement({ query, state: visibleResultState, error: visibleSearchError, groups: visibleResultGroups });
   useEffect(() => {
     if (!IS_IOS) return;
-    searchAnnouncements.current.update({
+    searchAnnouncements.update({
       scope: searchAccountScope, query,
       ready: queryIsSettled && !searchLoading && visibleResultState !== "loading",
-      outcome: visibleSearchError ? "error" : visibleResultState,
+      outcome: visibleSearchError ? "error" : visibleResultState === "ready" ? "results" : visibleResultState,
       message: completedSearchAnnouncement,
     });
-  }, [searchAccountScope, query, queryIsSettled, searchLoading, visibleResultState, visibleSearchError, completedSearchAnnouncement]);
+  });
   const previewRows = (rows, category) => showBrowse ? rows : unifiedSearchPreviewRows(rows, {
     activeCategory, category, limit: SEARCH_ALL_PREVIEW_LIMIT,
   });

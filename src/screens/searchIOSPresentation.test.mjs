@@ -68,6 +68,7 @@ test("Clear retains editing; Cancel clears through the guarded query owner then 
     const calls = [];
     const node = callback(name);
     const run = new vm.Script(`(${source.slice(node.start, node.end)})`).runInNewContext({
+      IS_IOS: true, searchAnnouncements: { isCurrent: () => true },
       changeQuery: (value) => calls.push(["query", value]),
       setSearchError: (value) => calls.push(["error", value]),
       setActiveCategory: (value) => calls.push(["category", value]),
