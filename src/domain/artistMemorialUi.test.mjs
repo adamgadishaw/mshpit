@@ -66,7 +66,8 @@ test("artist and show screens fail closed until memorial status is authoritative
   assert.match(showSource, /useCanonicalArtistIdentity\(\{[\s\S]*?artistName: artist,[\s\S]*?artistKey: norm\.artistKey \|\| null/);
   assert.match(showSource, /const legacyMode = isLegacyArtistMemorial\(memorialResource\.data\)/);
   assert.match(showSource, /enabled: showPageAllowed && !!archiveShowKey/);
-  assert.match(showSource, /!showPageAllowed \? \([\s\S]*?<LegacyArtistArchiveGate/);
+  assert.match(showSource, /const archiveGate = <LegacyArtistArchiveGate/);
+  assert.match(showSource, /!showPageAllowed \? \([\s\S]*?\{archiveGate\}<\/ScrollView> : archiveGate/);
   assert.match(showSource, /presentation\.showPostEvent && liveActionsAvailable/);
   assert.match(showSource, /liveActionsAvailable && presentation\.allowTickets/);
   assert.match(showSource, /liveActionsAvailable && lifecycleView\.trusted/);

@@ -74,6 +74,7 @@ function publicEventFixture(os, cancelled = false) {
     ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", Icon: "Icon", ActivityIndicator: "ActivityIndicator", CatalogText: "CatalogText",
     showLifecycleView: () => ({ lifecycle: cancelled ? "cancelled" : "upcoming" }),
     formatDate: (date, fallback) => date || fallback,
+    restrictedShowAvailabilityCopy: () => null, // Unrestricted legacy panel; actual iOS restriction is covered by the screen fixture.
     useIOSTicketAction: () => ({ open: (url) => opened.push(url), error: "" }),
   });
   return { render: module.exports, opened };
