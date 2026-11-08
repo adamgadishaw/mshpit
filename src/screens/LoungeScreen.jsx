@@ -57,6 +57,20 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
     kind: "lounge", target: key, enabled: entered && loungeOpen, isCurrentRoute });
   const { text, sending, unavailable } = iosComposer || localActions;
 
+  const metadataRetryRef = useRef(null);
+  if (iosComposer && metadataRetryRef.current?.meta !== currentGateMeta) {
+    metadataRetryRef.current = { meta: currentGateMeta, claimed: false };
+  }
+  const metadataRetry = metadataRetryRef.current;
+  const retryMetadata = () => {
+    if (!iosComposer?.current() || metadataRetryRef.current !== metadataRetry
+      || metadataRetry?.meta?.status !== "error" || metadataRetry.claimed) return;
+    // One explicit refresh per displayed failure. Repeated or retired controls
+    // cannot restart a read; a later failure presents its own fresh Retry.
+    metadataRetry.claimed = true;
+    setMetaRefresh(value => value + 1);
+  };
+
   const readLoungeMessages = async ({ after, signal, strict = false }) => {
       const result = await loadLounge(key, { after, signal, strict });
       if (result?.closed && !signal?.aborted) {
@@ -214,7 +228,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
             <Text style={{ color: colors.text, fontWeight: "700" }}>{log.artist}</Text> · {log.venue}
           </Text>
           {currentGateMeta?.status === "error" ? (
-            <Pressable style={styles.retryBtn} onPress={() => setMetaRefresh((value) => value + 1)} accessibilityRole="button">
+            <Pressable style={styles.retryBtn} onPress={iosComposer ? retryMetadata : () => setMetaRefresh((value) => value + 1)} accessibilityRole="button" accessibilityLabel={iosComposer ? "Retry Lounge status" : undefined}>
               <Text style={styles.retryTxt}>Try checking the Lounge again</Text>
             </Pressable>
           ) : (
@@ -234,6 +248,18 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   return (
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <ScreenHeader kicker={`Lounge · ${log.venue}`} title={log.artist} onBack={onClose} />
+      {iosComposer && (currentGateMeta?.status === "loading" || currentGateMeta?.status === "error") ? (
+        <View style={styles.iosMetaStatus}>
+          <Text style={styles.iosMetaCopy} accessibilityRole={currentGateMeta.status === "error" ? "alert" : undefined} accessibilityLiveRegion="polite">
+            {currentGateMeta.status === "error" ? "Lounge status could not be confirmed." : "Checking this Lounge…"}
+          </Text>
+          {currentGateMeta.status === "error" ? (
+            <Pressable style={[styles.retryBtn, styles.iosMetaRetry]} onPress={retryMetadata} accessibilityRole="button" accessibilityLabel="Retry Lounge status">
+              <Text style={styles.retryTxt}>Retry</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
       {/* Group plans are for adults only and stay hidden from everyone else. */}
       {ENABLE_CREW && loungeOpen && session?.ageBand === "18_plus" ? (
         <LoungePlans loungeKey={key} session={session} onReport={onReport} onOpenProfile={onOpenProfile} />
@@ -333,6 +359,10 @@ const styles = StyleSheet.create({
   gateNote: { color: colors.textFaint, fontSize: 12, marginTop: 8 },
   retryBtn: { minHeight: 44, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, paddingHorizontal: 18, alignItems: "center", justifyContent: "center", marginTop: 12 },
   retryTxt: { color: colors.amber, fontSize: 14, fontWeight: "800" },
+
+  iosMetaStatus: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  iosMetaCopy: { flex: 1, color: colors.textDim, fontSize: 13, lineHeight: 18 },
+  iosMetaRetry: { minWidth: 72, marginTop: 0 },
 
   chat: { padding: 16, paddingBottom: 24, gap: 12 },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", textAlign: "center", marginTop: 20 },

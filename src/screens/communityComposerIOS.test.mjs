@@ -176,6 +176,7 @@ function fixture({ kind = "fan", platform = "ios", strict = false, capacity = 32
     find: predicate => { const node = f.all().find(predicate); assert.ok(node, "Expected rendered node"); return node; },
     get input() { return f.find(n => n.type === "TextInput"); },
     get send() { return f.find(n => n.type === "Pressable" && n.props.accessibilityLabel?.startsWith("Send message")); },
+    get metadataRetry() { return f.find(n => n.type === "Pressable" && n.props.accessibilityLabel === "Retry Lounge status"); },
     get retry() { return f.find(n => n.type === "Pressable" && n.props.accessibilityLabel?.startsWith("Retry ")); },
     get cancel() { return f.find(n => n.type === "Pressable" && n.props.accessibilityLabel?.startsWith("Cancel failed")); },
     get avatar() { return f.find(n => n.type === "Avatar"); },
@@ -486,4 +487,121 @@ test("Lounge entry readiness waits for fresh metadata after logout before accept
   f.act(() => { edit("retired"); void submit(); }); await f.complete();
   assert.equal(f.requests.length, 1); assert.equal(f.input.props.value, "new private draft");
   f.close();
+});
+
+async function returningLoungeWithPendingMetadata(options = {}) {
+  const f = fixture({ kind: "lounge", autoMeta: false, ...options });
+  f.openMetadata = async (payload = { status: "open", attendeeCount: 3, messageCount: 1 }) => {
+    f.metadata.at(-1).resolve(payload); await f.settle();
+  };
+  await f.openMetadata(); await f.enter(); await f.openMetadata();
+  f.edit("retained recovery draft"); f.navigate("profile"); f.return();
+  await f.openMetadata(); await f.enter();
+  return f;
+}
+const hasLoungeStatus = (f, copy) => f.all().some(n => n.type === "Text" && n.props.children === copy);
+
+for (const strict of [false, true]) test(`Entered Lounge failure Retry preserves entry/draft and dedupes clicks, strict=${strict}`, async () => {
+  const f = await returningLoungeWithPendingMetadata({ strict });
+  const entries = f.entries.length;
+  assert.equal(hasLoungeStatus(f, "Checking this Lounge…"), true);
+  assert.equal(f.input.props.value, "retained recovery draft"); assert.equal(f.input.props.editable, false);
+  f.metadata.at(-1).reject(new Error("Metadata offline")); await f.settle();
+  assert.equal(hasLoungeStatus(f, "Lounge status could not be confirmed."), true);
+  const retry = f.metadataRetry.props.onPress, count = f.metadata.length;
+  const style = Object.assign({}, ...[f.metadataRetry.props.style].flat());
+  assert.ok(style.minHeight >= 44); assert.ok(style.minWidth >= 44);
+  assert.equal(f.metadataRetry.props.accessibilityRole, "button");
+  f.act(() => { retry(); retry(); retry(); });
+  assert.equal(f.metadata.length, count + 1); assert.equal(f.entries.length, entries);
+  assert.equal(f.polling.enabled, false); assert.equal(f.input.props.editable, false);
+  f.act(retry); assert.equal(f.metadata.length, count + 1);
+  f.edit("blocked until confirmed"); assert.equal(f.input.props.value, "retained recovery draft");
+  await f.openMetadata();
+  assert.equal(f.polling.enabled, true); assert.equal(f.input.props.editable, true);
+  assert.equal(f.input.props.value, "retained recovery draft"); assert.equal(f.entries.length, entries);
+  f.act(retry); assert.equal(f.metadata.length, count + 1); assert.equal(f.requests.length, 0); f.close();
+});
+test("Entered Lounge Retry closed response preserves existing closed-room UI", async () => {
+  const f = await returningLoungeWithPendingMetadata(); const entries = f.entries.length;
+  f.metadata.at(-1).reject(new Error("Metadata offline")); await f.settle();
+  f.act(() => f.metadataRetry.props.onPress());
+  await f.openMetadata({ status: "closed", attendeeCount: 3, messageCount: 0 });
+  assert.equal(f.find(n => n.type === "ScreenHeader").props.kicker, "Lounge closed");
+  assert.equal(f.all().some(n => n.type === "TextInput" || n.props?.accessibilityLabel === "Retry Lounge status"), false);
+  assert.equal(f.polling.enabled, false); assert.equal(f.entries.length, entries);
+  assert.equal(f.owner.lease(JSON.stringify(["lounge", "canonical-one"])).read().text, "retained recovery draft"); f.close();
+});
+test("Unknown metadata and repeated failure each expose a fresh bounded explicit Retry", async () => {
+  const f = await returningLoungeWithPendingMetadata(); const entries = f.entries.length;
+  await f.openMetadata({}); assert.equal(f.input.props.editable, false);
+  const firstRetry = f.metadataRetry.props.onPress; f.act(firstRetry);
+  f.metadata.at(-1).reject(new Error("Still offline")); await f.settle();
+  const count = f.metadata.length;
+  f.act(firstRetry); assert.equal(f.metadata.length, count);
+  f.act(() => f.metadataRetry.props.onPress()); await f.openMetadata(null);
+  assert.equal(f.polling.enabled, false); assert.equal(f.input.props.editable, false);
+  assert.equal(f.input.props.value, "retained recovery draft");
+  f.act(() => f.metadataRetry.props.onPress()); await f.openMetadata();
+  assert.equal(f.input.props.editable, true); assert.equal(f.entries.length, entries);
+  assert.equal(f.requests.length, 0); f.close();
+});
+for (const departure of ["before-cleanup", "frame-ABA", "account-ABA", "epoch", "channel-ABA", "layout-unmount"]) test(`Lounge metadata Retry cannot start reads after ${departure}`, async () => {
+  const f = await returningLoungeWithPendingMetadata();
+  f.metadata.at(-1).reject(new Error("Offline")); await f.settle();
+  const retry = f.metadataRetry.props.onPress;
+  if (departure === "before-cleanup") f.navigate("profile", false);
+  else if (departure === "frame-ABA") { const frame = f.navigationRef.current.stack.at(-1); f.navigate("profile", false); f.navigationRef.current.stack.push(frame); }
+  else if (departure === "account-ABA") { f.account("B", 1); f.account("A", 1); }
+  else if (departure === "epoch") f.account("A", 2);
+  else if (departure === "channel-ABA") { f.target("canonical-two"); f.target("canonical-one"); }
+  else f.unmountLayout();
+  const count = f.metadata.length; f.act(retry); assert.equal(f.metadata.length, count); f.close();
+});
+for (const strict of [false, true]) test(`Suspense retires metadata Retry but preserves a usable current failure, strict=${strict}`, async () => {
+  const f = await returningLoungeWithPendingMetadata({ strict });
+  f.metadata.at(-1).reject(new Error("Offline")); await f.settle();
+  const retry = f.metadataRetry.props.onPress, count = f.metadata.length, entries = f.entries.length;
+  f.hide(); f.act(retry); assert.equal(f.metadata.length, count);
+  f.hide(false); await f.settle(); f.act(retry);
+  // StrictMode may replay the existing entry reset/metadata effect on reveal.
+  // A fresh metadata read never grants entry or starts another Going action.
+  if (!f.all().some(n => n.props?.accessibilityLabel === "Retry Lounge status")) {
+    f.metadata.at(-1).reject(new Error("Retry after reveal")); await f.settle();
+  }
+  const currentCount = f.metadata.length;
+  f.act(() => f.metadataRetry.props.onPress()); assert.equal(f.metadata.length, currentCount + 1);
+  await f.openMetadata(); assert.equal(f.entries.length, entries);
+  assert.equal(f.owner.lease(JSON.stringify(["lounge", "canonical-one"])).read().text, "retained recovery draft"); f.close();
+});
+for (const outcome of ["open", "closed", "error"]) test(`Aborted departed metadata Retry cannot adopt a late ${outcome} result`, async () => {
+  const f = await returningLoungeWithPendingMetadata();
+  f.metadata.at(-1).reject(new Error("Offline")); await f.settle(); f.act(() => f.metadataRetry.props.onPress());
+  const old = f.metadata.at(-1), entries = f.entries.length;
+  f.navigate("profile"); assert.equal(old.options.signal.aborted, true); f.return();
+  if (outcome === "error") old.reject(new Error("Retired failure")); else old.resolve({ status: outcome, attendeeCount: 3, messageCount: 1 });
+  await f.settle();
+  assert.equal(f.find(n => n.type === "ScreenHeader").props.kicker, "Lounge");
+  assert.equal(f.polling.enabled, false); assert.equal(f.entries.length, entries);
+  assert.equal(f.all().some(n => n.type === "TextInput" || n.props?.accessibilityLabel === "Retry Lounge status"), false);
+  await f.openMetadata(); await f.enter(); await f.openMetadata();
+  assert.equal(f.input.props.value, "retained recovery draft"); assert.equal(f.entries.length, entries + 1); f.close();
+});
+test("Guest iOS metadata Retry reads only aggregate state without entry or automatic login", async () => {
+  const f = fixture({ kind: "lounge", autoMeta: false }); f.account(null, 2);
+  f.metadata.at(-1).reject(new Error("Public metadata offline")); await f.settle();
+  const count = f.metadata.length; f.act(() => f.metadataRetry.props.onPress()); assert.equal(f.metadata.length, count + 1);
+  f.metadata.at(-1).resolve({ status: "open", attendeeCount: 3, messageCount: 1 }); await f.settle();
+  assert.equal(f.polling.enabled, false); assert.equal(f.entries.length, 0); assert.equal(f.requests.length, 0);
+  assert.equal(f.all().some(n => n.type === "TextInput"), false);
+  assert.equal(hasLoungeStatus(f, "Log in to enter the Lounge"), true); f.close();
+});
+for (const platform of ["android", "web"]) test(`${platform} entered-room metadata feedback and retry path remain unchanged`, async () => {
+  const f = fixture({ kind: "lounge", platform, autoMeta: false });
+  f.metadata.at(-1).resolve({ status: "open", attendeeCount: 3, messageCount: 1 }); await f.settle(); await f.enter();
+  assert.equal(hasLoungeStatus(f, "Checking this Lounge…"), false);
+  f.metadata.at(-1).reject(new Error("Metadata offline")); await f.settle();
+  assert.equal(hasLoungeStatus(f, "Lounge status could not be confirmed."), false);
+  assert.equal(f.all().some(n => n.props?.accessibilityLabel === "Retry Lounge status"), false);
+  assert.equal(f.entries.length, 1); assert.equal(f.requests.length, 0); f.close();
 });
