@@ -27,6 +27,8 @@ function fixture({ native = true, openURL = async () => {} } = {}) {
     }); },
   };
   const modules = {
+    "../NativeTabScroll": { ScrollView: "ScrollView", TextInput: "TextInput" },
+    "../NativeTabSwipeExclusion": "NativeTabSwipeExclusion",
     react, "react/jsx-runtime": { jsx, jsxs: jsx },
     "react-native": { Linking: { openURL }, Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", View: "View", StyleSheet: { create: value => value, absoluteFill: {} } },
     "expo-modules-core": { requireOptionalNativeModule: () => native ? {} : null, requireNativeViewManager: () => "NativeVenueMap" },

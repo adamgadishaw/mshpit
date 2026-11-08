@@ -1,8 +1,9 @@
+import { FlatList, ScrollView } from "../components/NativeTabScroll";
 import useIOSFeedReturn, { FeedReturnProvider } from "../hooks/useIOSFeedReturn";
 import { useFeedHeadStatus } from "../hooks/feedHeadStatus";
 import { nativeFeedCanWork } from "../domain/nativeFeedMediaRetention.mjs";
 import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, FlatList, Platform, Pressable, ScrollView, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, Platform, Pressable, useWindowDimensions } from "react-native";
 import { colors, mono, radius, shadow, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { load, save } from "../lib/persist";
 import TicketStub from "../components/TicketStub";

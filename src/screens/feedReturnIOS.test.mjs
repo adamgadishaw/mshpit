@@ -67,7 +67,7 @@ const branch = find(ast, n => n.type === "ConditionalExpression" && n.test?.name
 assert.ok(branch);
 const names = "retainNativeFeed,session,overlay,NativeFeedMediaLayer,NativeAppHeader,activeTab,switchTab,Platform,iosTabSwipeScope,iosTabSwipeEnabled,isCurrentIOSTabSwipe,openMainMenu,iosMenuOpener,requireVerifiedMutation,go,openProfileManagement,mobileTabBar,Suspense,ScreenLoading,ScreenTransition,screenKey,screenDirection,IosDetailNavigation,iosBackGestureAllowed,nav,linkedNavigationScope,linkedNavigationRef,navigationRef,back,tabScreens";
 const module = { exports: {} };
-const code = transformSync(`export default function RootSlice(p) { const {${names}} = p; return (${app.slice(branch.start, branch.end)}); }`, {
+const code = transformSync(`export default function RootSlice(p) { const {${names}} = p; const nativeTabPage = tabScreens; return (${app.slice(branch.start, branch.end)}); }`, {
   babelrc: false, configFile: false, plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
 }).code;
 new Function("require", "module", "exports", code)(require, module, module.exports);
@@ -104,6 +104,8 @@ function fixture(platform = "ios") {
   };
   const native = { View: "View", Text: "Text", FlatList, Pressable: "Pressable", ScrollView: "ScrollView", Platform: { OS: platform, select: v => v[platform] || v.default }, StyleSheet: { create: v => v, absoluteFill: {} }, useWindowDimensions: () => ({ width, height: 852, fontScale }) };
   const imports = (name, local) => {
+    if (name.endsWith('/NativeTabScroll')) return native;
+    if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
     if (name.endsWith("/useIOSFeedReturn")) return hook;

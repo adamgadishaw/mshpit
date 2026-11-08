@@ -1,5 +1,6 @@
+import { TextInput } from "../NativeTabScroll";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, space } from "../../theme";
 import { countryForCity } from "../../geo";
 import { buildDiscoverVenueCities } from "../../domain/discoverVenues.mjs";

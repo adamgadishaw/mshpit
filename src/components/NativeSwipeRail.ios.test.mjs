@@ -44,9 +44,9 @@ const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 const sleepForever = new Promise(() => {});
 // Actual React, platform-resolved rail and shell components. The native gesture,
 // UI/RN scheduler and actions are synthetic: this does not validate a device.
-function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false } = {}) {
-  const renderer = createRenderer(), gestures = [], queue = [], calls = [], shared = [], reactions = [], springs = [];
-  let props = { enabled: true, active: "feed", onCommit: onCommit || (direction => calls.push(direction)), onChange: onChange || (tab => calls.push(tab)), hint: "Swipe for an action",
+function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "feed", entryDirection = 0, scrollChild = null } = {}) {
+  const renderer = createRenderer(), gestures = [], queue = [], calls = [], shared = [], reactions = [], springs = [], timings = [], animatedStyles = [], appListeners = new Set(), appHistory = [], springCompletions = [];
+  let props = { page, entryDirection, enabled: true, active, onCommit: onCommit || (direction => calls.push(direction)), onChange: onChange || (tab => calls.push(tab)), hint: "Swipe for an action",
     post: { id: "post-A", likes: 0 }, accountId: "account-A", likeInfo: () => ({ liked: false }),
     toggleLike: (...args) => { calls.push(["like", ...args]); return Promise.resolve({ ok: true }); },
     setPostRepost: (...args) => { calls.push(["repost", ...args]); return Promise.resolve({ ok: true }); } };
@@ -59,9 +59,9 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   };
   const modules = {
     react: React, "react/jsx-runtime": require("react/jsx-runtime"),
-    "react-native": { AccessibilityInfo: { announceForAccessibility: noop }, View: "View", Text: "Text", Pressable: "Pressable", StyleSheet: { create: x => x, hairlineWidth: 1 }, useWindowDimensions: () => ({ width: 412, fontScale: 1 }) },
+    "react-native": { AppState: { currentState: "active", addEventListener: (_event, callback) => { appListeners.add(callback); appHistory.push(callback); return { remove: () => appListeners.delete(callback) }; } }, AccessibilityInfo: { announceForAccessibility: noop }, View: "View", Text: "Text", ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Pressable: "Pressable", StyleSheet: { create: x => x, hairlineWidth: 1 }, useWindowDimensions: () => ({ width: 412, fontScale: 1 }) },
     "react-native-reanimated": { __esModule: true, default: { View: "AnimatedView", Text: "AnimatedText" }, ReduceMotion: { System: "system" }, useSharedValue,
-      useAnimatedStyle: f => f(), useAnimatedReaction: (prepare, react) => { reactions.push({ prepare, react }); }, withSpring: (value, config) => { springs.push(config); return value; } },
+      useAnimatedStyle: f => { animatedStyles.push(f); return f(); }, useAnimatedReaction: (prepare, react) => { reactions.push({ prepare, react }); }, withSpring: (value, config, done) => { springs.push(config); springCompletions.push(done); return value; }, withTiming: (value, config, done) => { timings.push({ value, config, done }); return value; } },
     "react-native-worklets": { scheduleOnRN: (fn, ...args) => { queue.push(() => fn(...args)); } },
     "../theme": { colors: { bg: "bg", surface: "surface" }, font: "System" }, "./Icon": "Icon", "./BrandMark": "BrandMark",
     "../hooks/useReducedMotion": () => reduced, "../hooks/useScreenReaderEnabled": { __esModule: true, default: () => reader,
@@ -73,6 +73,8 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
       gestures.push(handlers); return builder;
     } } },
   };
+  modules["react-native-gesture-handler"].Gesture.Manual = modules["react-native-gesture-handler"].Gesture.Pan;
+  modules["react-native-gesture-handler"].Gesture.Native = modules["react-native-gesture-handler"].Gesture.Pan;
   function execute(path) {
     const url = new URL(path, import.meta.url);
     if (!codes.has(path)) codes.set(path, transformSync(readFileSync(url, "utf8"), { filename: url.pathname, babelrc: false, configFile: false,
@@ -94,14 +96,22 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   modules["./NativeTabRail"] = execute("./NativeTabRail.ios.jsx");
   const Component = component === "rail" ? modules["./NativeSwipeRail"].default : component === "tabs" ? modules["./NativeTabRail"].default
     : component === "social" ? execute("./PostSwipeActions.native.jsx").default : component === "bar" ? execute("./IosTabBar.ios.jsx").default : execute("./NativeAppHeader.ios.jsx").default;
+  const Exclusion = execute("./NativeTabSwipeExclusion.ios.jsx").default;
+  modules["./NativeTabSwipeExclusion"] = { default: Exclusion, __esModule: true };
+  const Scroll = execute("./NativeTabScroll.ios.jsx");
+  const Child = () => scrollChild ? React.createElement(scrollChild === "input" ? Scroll.TextInput : Scroll.ScrollView, { horizontal: scrollChild === "horizontal" }, React.createElement("ExplicitButton")) : excludedChild ? React.createElement(Exclusion, null, React.createElement("ExplicitButton")) : React.createElement("ExplicitButton");
   const Layer = execute("./NativeFeedMediaLayer.jsx").default;
   function Gate() { if (suspended) throw sleepForever; return null; }
   const f = {
-    calls, queue, gestures, shared, reactions, springs, confirmedSubscriptions, nativeReaderListeners, nativeReaderHistory,
+    calls, queue, gestures, shared, reactions, springs, timings, animatedStyles,
+    appHistory,
+    finishSpring(success = true) { springCompletions.at(-1)?.(success); },
+    appState(value) { f.act(() => { for (const callback of [...appListeners]) callback(value); }); },
+    finish(index = timings.length - 1, success = true) { timings[index]?.done(success); }, confirmedSubscriptions, nativeReaderListeners, nativeReaderHistory,
     all: () => nodes(renderer.container).filter(node => !node.hidden),
     get gesture() { return f.all().find(node => node.type === "GestureDetector").props.gesture.handlers; },
     render(next = {}, passive = true) { props = { ...props, ...next }; renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null,
-      React.createElement(React.Suspense, { fallback: React.createElement("Fallback") }, (retained ? React.createElement(Layer, { obscured: !!props.obscured, tabBar: React.createElement(Component, { ...props, key: component === "social" ? `${props.accountId || "guest"}:${props.post.id}` : "component" }, React.createElement("ExplicitButton")), media: React.createElement("Gallery") }, React.createElement("FixtureFeed")) : React.createElement(Component, { ...props, key: component === "social" ? `${props.accountId || "guest"}:${props.post.id}` : "component" }, React.createElement("ExplicitButton"))), React.createElement(Gate))), passive); },
+      React.createElement(React.Suspense, { fallback: React.createElement("Fallback") }, (retained ? React.createElement(Layer, { obscured: !!props.obscured, tabBar: React.createElement(Component, { ...props, key: component === "social" ? `${props.accountId || "guest"}:${props.post.id}` : "component" }, React.createElement(Child)), media: React.createElement("Gallery") }, React.createElement("FixtureFeed")) : React.createElement(Component, { ...props, key: component === "social" ? `${props.accountId || "guest"}:${props.post.id}` : "component" }, React.createElement(Child))), React.createElement(Gate))), passive); },
     reader(value) { reader = value; confirmed = value; f.render(); }, reduced(value) { reduced = value; f.render(); },
     suspend(value) { suspended = value; f.render(); },
     act(callback) { renderer.act(callback); },
@@ -355,4 +365,103 @@ for (const platform of ["android", "web"]) test(`${platform} Root tab callbacks 
   const root = rootNavigationFixture({ platform });
   root.app.switchTab("search", () => false);
   assert.equal(root.navigationRef.current.tab, "search");
+});
+
+// Page-motion tests exercise production callbacks but not native recognizer arbitration.
+test("page follows finger with restrained 3D motion, exits then dispatches once", t => {
+  const f = fixture({ component: "tabs", page: true }); t.after(f.close);
+  const g = f.gesture; down(g); g.onUpdate({ absoluteX: 140 });
+  const transform = f.animatedStyles.at(-3)().transform;
+  assert.ok(transform.some(item => item.perspective === 1200));
+  assert.ok(transform.some(item => item.translateX === -120));
+  release(g); assert.equal(f.timings.length, 1); assert.deepEqual(f.calls, []);
+  const manager = down(g); assert.equal(manager.failed, 1, "settling rejects a second gesture");
+  g.onFinalize(); f.finish(); f.flush(); assert.deepEqual(f.calls, ["search"]);
+});
+for (const interruption of ["route", "reader", "background", "reduced", "suspend", "unmount"]) test(`page animation completion is retired by ${interruption}`, t => {
+  const f = fixture({ component: "tabs", page: true }); t.after(f.close); const old = f.gesture;
+  swipe(old); assert.equal(f.timings.length, 1);
+  if (interruption === "route") f.render({ swipeScope: {} });
+  if (interruption === "reader") f.reader(true);
+  if (interruption === "background") { f.appState("background"); f.appState("active"); }
+  if (interruption === "reduced") f.reduced(true);
+  if (interruption === "suspend") { f.suspend(true); f.suspend(false); }
+  if (interruption === "unmount") f.close(false);
+  f.finish(0); f.flush(); assert.deepEqual(f.calls, []);
+});
+test("page cancels unsuccessful motion, reversals and boundary drags", t => {
+  const f = fixture({ component: "tabs", page: true }); t.after(f.close);
+  for (const args of [{ x: 240 }, { x: 110, success: false }, { x: 400 }]) { const g=f.gesture; down(g); release(g,args); g.onFinalize(); }
+  assert.equal(f.timings.length, 0); assert.deepEqual(f.calls, []);
+});
+test("page incoming direction and reduced motion transforms", t => {
+  const f = fixture({ component: "tabs", page: true }); t.after(f.close);
+  f.render({ active: "search", entryDirection: 1 }); assert.ok(f.springs.some(config => config.stiffness === 230));
+  f.reduced(true); const style = f.animatedStyles.at(-3)();
+  assert.ok(style.transform.some(item => item.translateX === 0));
+  assert.ok(style.transform.some(item => item.rotateY === "0deg"));
+  swipe(f.gesture); f.flush(); assert.equal(f.timings.length, 0);
+});
+for (const childFirst of [true, false]) test(`page exclusions preserve child ownership, down child-first=${childFirst}`, t => {
+  const f = fixture({ component: "tabs", page: true, excludedChild: true }); t.after(f.close);
+  const parent = f.gesture, child = f.all().filter(n=>n.type==="GestureDetector")[1].props.gesture.handlers;
+  const manager = { begin() {}, fail() {}, activate() { throw Error("exclusion must never activate"); } };
+  if(childFirst) child.onTouchesDown({},manager);
+  down(parent);
+  if(!childFirst) child.onTouchesDown({},manager);
+  parent.onTouchesMove({ allTouches: [{absoluteX:100,absoluteY:200}],numberOfTouches:1 },manager);
+  child.onTouchesUp({},manager); release(parent); parent.onFinalize();
+  assert.equal(f.timings.length,0); assert.deepEqual(f.calls,[]);
+  // Parent rejects edge first, then child begins; release must clear exclusion.
+  down(parent,{x:5}); parent.onFinalize(); child.onTouchesDown({},manager); child.onTouchesUp({},manager);
+  swipe(parent); f.finish(); f.flush(); assert.deepEqual(f.calls,["search"]);
+});
+
+test("old page move and removed app listener cannot retire a newer drag", t => {
+ const f=fixture({component:"tabs",page:true}); t.after(f.close);
+ const old=f.gesture, removed=f.appHistory.at(-1);
+ f.render({swipeScope:{}}); const current=f.gesture; down(current);
+ old.onTouchesMove({allTouches:[{absoluteX:100,absoluteY:200}],numberOfTouches:1},{fail(){},activate(){}});
+ f.act(()=>removed("background")); release(current); f.finish(); f.flush(); assert.deepEqual(f.calls,["search"]);
+ f.finish(); f.flush(); assert.deepEqual(f.calls,["search"],"completion is consumed once");
+});
+test("passive exclusion is stable across benign same-page renders and cancellation clears it", t=>{
+ const f=fixture({component:"tabs",page:true,excludedChild:true});t.after(f.close);
+ const observer=()=>f.all().filter(n=>n.type==="GestureDetector")[1].props.gesture.handlers;
+ const g=f.gesture, child=observer(); f.render({hint:"new content"}); assert.equal(observer(),child); assert.equal(f.gesture,g);
+ const manager={begin(){},fail(){}};child.onTouchesDown({},manager);down(g);child.onTouchesCancelled({},manager);release(g);g.onFinalize();assert.equal(f.timings.length,0);
+ swipe(g); f.finish();f.flush();assert.deepEqual(f.calls,["search"]);
+});
+
+test("fresh page mount accepts Root direction across the retained Feed host boundary",t=>{
+ const f=fixture({component:"tabs",page:true,active:"search",entryDirection:1});t.after(f.close);
+ assert.ok(f.springs.some(config=>config.stiffness===230));
+});
+test("declined navigation recovery keeps input fenced until its spring rearms",t=>{
+ const f=fixture({component:"tabs",page:true,onChange:()=>{}});t.after(f.close);
+ const old=f.gesture;swipe(old);f.finish();f.flush();
+ assert.equal(down(old).failed,1);f.finishSpring();f.flush();
+ const fresh=f.gesture;assert.notEqual(fresh,old);assert.equal(down(fresh).failed,0);
+ release(fresh);assert.equal(f.timings.length,2);
+});
+for (const kind of ["vertical","horizontal","input"]) test(`native ${kind} adapter retains child layout and owns arbitration`,t=>{
+ const f=fixture({component:"tabs",page:true,scrollChild:kind});t.after(f.close);
+ const detectors=f.all().filter(n=>n.type==="GestureDetector");assert.equal(detectors.length,2);
+ const child=detectors[1].props.gesture.handlers;
+ assert.ok(child.simultaneousWithExternalGesture);
+ assert.equal(detectors[1].children[0].type,kind==="input"?"TextInput":"ScrollView","detector attaches directly, without layout wrapper");
+ if(kind==="vertical") assert.equal(child.onTouchesDown,undefined);
+ else assert.equal(typeof child.onTouchesDown,"function");
+});
+
+test("fresh-mount entry direction is consumed and cannot replay on permission changes",t=>{
+ const f=fixture({component:"tabs",page:true,active:"search",entryDirection:1});t.after(f.close);
+ const count=f.springs.length;f.reader(true);assert.equal(f.springs.length,count);assert.equal(f.shared[3].get(),0);
+ f.reader(false);assert.equal(f.springs.length,count);assert.equal(f.shared[3].get(),0);
+});
+
+test("a later excluded-child touch cannot strand an accepted outgoing transition",t=>{
+ const f=fixture({component:"tabs",page:true,excludedChild:true});t.after(f.close);
+ swipe(f.gesture);const child=f.all().filter(n=>n.type==="GestureDetector")[1].props.gesture.handlers;
+ child.onTouchesDown({},{begin(){},fail(){}});f.finish();f.flush();assert.deepEqual(f.calls,["search"]);
 });

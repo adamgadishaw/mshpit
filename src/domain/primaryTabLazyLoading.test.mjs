@@ -38,6 +38,7 @@ test("secondary primary tabs stay out of the first bundle and warm inside the se
   assert.doesNotMatch(app, /import YouScreen from "\.\/src\/screens\/YouScreen"/);
   assert.match(app, /if \(key === "search"\) SearchScreen\.preload\?\.\(\)/);
   assert.match(app, /if \(key === "you"\) YouScreen\.preload\?\.\(\)/);
-  // The page transition may wrap the tabs, but only inside the boundary.
-  assert.match(app, /<Suspense fallback=\{<ScreenLoading \/>\}>(?:<ScreenTransition [^>]*>)?\{tabScreens\}(?:<\/ScreenTransition>)?<\/Suspense>/);
+  // Only iOS wraps the existing current tab, and the wrapper stays inside Suspense.
+  assert.match(app, /const nativeTabPage = Platform\.OS === "ios" \? <NativeTabRail page[\s\S]*?\{tabScreens\}<\/NativeTabRail> : tabScreens/);
+  assert.match(app, /<Suspense fallback=\{<ScreenLoading \/>\}>(?:<ScreenTransition [^>]*>)?\{nativeTabPage\}(?:<\/ScreenTransition>)?<\/Suspense>/);
 });

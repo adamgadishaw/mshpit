@@ -1,3 +1,4 @@
+import NativeTabSwipeExclusion from "../../components/NativeTabSwipeExclusion";
 import { memo, useCallback, useEffect, useRef } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors } from "../../theme";
@@ -59,7 +60,7 @@ export function useProfileMediaPresentation({ scope, user, gallery: galleryViewe
 
 export function ProfileBannerCover({ uri, name, onOpen, largeText = false }) {
   return (
-    <Pressable testID="profile-banner-open" style={styles.bannerCover} onPress={onOpen} disabled={!onOpen}
+    <NativeTabSwipeExclusion><Pressable testID="profile-banner-open" style={styles.bannerCover} onPress={onOpen} disabled={!onOpen}
       accessibilityRole={onOpen ? "button" : "image"} accessibilityLabel={onOpen ? `View ${name}'s full-size profile banner` : `${name}'s profile banner`}
       accessibilityHint={onOpen ? "Opens the original photo" : undefined}>
       <SmartImage uri={uri} mediaKind="image" style={StyleSheet.absoluteFill} contain={false} accessible={false} />
@@ -67,7 +68,7 @@ export function ProfileBannerCover({ uri, name, onOpen, largeText = false }) {
         <Icon name="photo" size={18} color="#FFFFFF" />
         {!largeText ? <Text style={styles.bannerViewText}>View photo</Text> : null}
       </View> : null}
-    </Pressable>
+    </Pressable></NativeTabSwipeExclusion>
   );
 }
 
@@ -91,7 +92,7 @@ export function ProfileGallery({ items, history, isSelf, name, onOpen, onRefresh
   const preview = items.slice(0, 3);
   const count = items.length || confirmed ? ` · ${items.length}${confirmed ? "" : "+"}` : "";
   return (
-    <View testID="profile-gallery">
+    <NativeTabSwipeExclusion><View testID="profile-gallery">
       <View style={styles.galleryHeader}>
         <Text style={styles.galleryTitle} accessibilityRole="header">Gallery{count}</Text>
         <Pressable testID="profile-gallery-refresh" style={styles.galleryRefresh} onPress={() => request(onRefresh)} disabled={busy}
@@ -125,7 +126,7 @@ export function ProfileGallery({ items, history, isSelf, name, onOpen, onRefresh
           </Pressable>
         ) : null}
       </View>
-    </View>
+    </View></NativeTabSwipeExclusion>
   );
 }
 

@@ -1,5 +1,6 @@
+import { ScrollView, TextInput } from "../NativeTabScroll";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Image } from "expo-image";
 import { colors } from "../../theme";
 import Icon from "../Icon";

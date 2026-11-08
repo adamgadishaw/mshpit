@@ -43,6 +43,7 @@ function fixture() {
       useEffect() {},
     },
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
+    "../components/NativeTabScroll": { ScrollView: "ScrollView", FlatList: "FlatList" },
     "react-native": {
       View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable",
       StyleSheet: { create: (value) => value, absoluteFill: {}, absoluteFillObject: {} },

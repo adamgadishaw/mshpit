@@ -1,5 +1,6 @@
+import { ScrollView } from "../components/NativeTabScroll";
 import { useMemo, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Share, Platform, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, Pressable, Share, Platform, useWindowDimensions } from "react-native";
 import { colors, radius, shadow, displayFont } from "../theme";
 import Icon from "../components/Icon";
 import SmartImage from "../components/SmartImage";

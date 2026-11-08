@@ -1,4 +1,5 @@
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { ScrollView } from "../NativeTabScroll";
+import { StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, space } from "../../theme";
 import CityDirectoryCard from "./CityDirectoryCard";
 import { cityText } from "./cityPresentation.mjs";

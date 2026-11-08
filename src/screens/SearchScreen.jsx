@@ -1,5 +1,7 @@
+import NativeTabSwipeExclusion from "../components/NativeTabSwipeExclusion";
+import { ScrollView } from "../components/NativeTabScroll";
 import { Fragment, useMemo, useState, useEffect, useRef } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform, useWindowDimensions } from "react-native";
+import { ActivityIndicator, View, Text, StyleSheet, TextInput, Pressable, Image, Platform, useWindowDimensions } from "react-native";
 import { colors, focusRing, mono, radius, roleColor } from "../theme";
 import { ratedShows } from "../data";
 import { ingestedArtists } from "../seed/ingested";
@@ -660,7 +662,7 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   const searchHeader = (
       <View style={styles.header}>
         {IS_IOS && <Text style={styles.pageTitle} accessibilityRole="header">Search</Text>}
-        <SearchControls {...(IS_IOS ? { style: [styles.searchControls, largeText && styles.searchControlsReflow] } : {})}>
+        <NativeTabSwipeExclusion><SearchControls {...(IS_IOS ? { style: [styles.searchControls, largeText && styles.searchControlsReflow] } : {})}>
         <View style={[styles.field, focused && styles.fieldFocused, largeText && styles.fieldReflow]}>
           <Icon name="search" size={18} color={focused ? colors.amber : colors.textDim} />
           <TextInput
@@ -688,7 +690,7 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
         {IS_IOS && (focused || !!q) && <Pressable style={styles.cancelSearch} onPress={cancelSearch} accessibilityRole="button" accessibilityLabel="Cancel search" accessibilityHint="Clear the search and dismiss the keyboard">
           <Text style={styles.cancelText}>Cancel</Text>
         </Pressable>}
-        </SearchControls>
+        </SearchControls></NativeTabSwipeExclusion>
         {!!query && (
           <ScrollView
             horizontal

@@ -1,3 +1,4 @@
+import NativeTabSwipeExclusion from "../NativeTabSwipeExclusion";
 import { Component, useEffect, useMemo, useRef, useState } from "react";
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { requireNativeViewManager, requireOptionalNativeModule } from "expo-modules-core";
@@ -99,7 +100,7 @@ export default function DiscoverVenueMap({ venues, selected, onSelect, city }) {
       }
     } finally { if (owner.flight === flight) owner.flight = null; }
   };
-  return <View>
+  return <NativeTabSwipeExclusion><View>
     {!model.points.length ? <View style={styles.unavailable}><Text style={styles.body}>Venue coordinates aren’t available for this selection. You can still view venue details and shows below.</Text></View>
       : !NativeVenueMap ? <MapUnavailable missing />
         : <VenueMapBoundary key={revision} onRetry={retry}><VenueMapSession revision={revision} points={model.nativePoints} selectedId={model.active?.id || null} city={city} onSelect={choose} onRetry={retry} /></VenueMapBoundary>}
@@ -113,7 +114,7 @@ export default function DiscoverVenueMap({ venues, selected, onSelect, city }) {
     </>}
     {!!mapsURL && <Pressable onPress={openMaps} accessibilityRole="link" accessibilityLabel={`Open ${model.active.name} in Apple Maps`} style={styles.button}><Text style={styles.link}>Open {model.active.name} in Maps</Text></Pressable>}
     {linkError?.owner === owner && <Text accessibilityRole="alert" style={styles.caption}>{linkError.message}</Text>}
-  </View>;
+  </View></NativeTabSwipeExclusion>;
 }
 
 const styles = StyleSheet.create({

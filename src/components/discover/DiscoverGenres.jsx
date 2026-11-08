@@ -1,4 +1,5 @@
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ScrollView } from "../NativeTabScroll";
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { memo, useMemo } from "react";
 import { colors, displayFont, font, radius, shadow } from "../../theme";
 import Icon from "../Icon";

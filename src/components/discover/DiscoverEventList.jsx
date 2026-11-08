@@ -1,5 +1,6 @@
+import { ScrollView } from "../NativeTabScroll";
 import { useMemo } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, focusRing, font, radius } from "../../theme";
 import Icon from "../Icon";
 import { PublicPressableLink } from "../PublicWebLinks";

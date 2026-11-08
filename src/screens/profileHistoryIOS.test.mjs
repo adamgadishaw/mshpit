@@ -65,6 +65,8 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = empty,
   const context = React.createContext(null);
   let hook;
   const imports = (name, local) => {
+    if (name.endsWith('/NativeTabScroll')) return native;
+    if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
     if (name === 'react' || name === 'react/jsx-runtime') return require(name);
     if (name === 'react-native') return native;
     if (name.endsWith('/ProfileMediaPresentation')) return { useProfileMediaPresentation: () => ({ retryImages: noop }), ProfileMediaRetryBoundary: ({ children }) => children, ProfileBannerCover: 'ProfileBannerCover', ProfileGallery: 'ProfileGallery' };

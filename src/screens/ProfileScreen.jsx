@@ -1,5 +1,6 @@
+import { ScrollView } from "../components/NativeTabScroll";
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ActionSheetIOS, ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, Platform, useWindowDimensions } from "react-native";
+import { ActionSheetIOS, ActivityIndicator, View, Text, StyleSheet, Pressable, Platform, useWindowDimensions } from "react-native";
 import { colors, mono, radius, roleColor, space, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { useStore } from "../store";
 import Avatar from "../components/Avatar";

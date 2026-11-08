@@ -393,6 +393,7 @@ function Root() {
   const artistReturn = Platform.OS === "ios" ? artistReturnRef.current.lease(nav, nav.artistPreview || nav.artistName) : null;
   const [iosMenuOpen, setIOSMenuOpenState] = useState(false);
   const iosTabSwipeRevisionRef = useRef(0);
+  const iosLastPageRef = useRef(null);
   const [iosTabSwipeRevision, setIOSTabSwipeRevision] = useState(0);
   const setIosMenuOpen = visible => {
     if (visible) setIOSTabSwipeRevision(++iosTabSwipeRevisionRef.current);
@@ -1890,6 +1891,13 @@ function Root() {
             </View>
   );
 
+  const iosPageOrder = ["feed", "search", "discover", "you"];
+  const iosPageEntryDirection = iosLastPageRef.current && iosLastPageRef.current !== activeTab
+    ? Math.sign(iosPageOrder.indexOf(activeTab) - iosPageOrder.indexOf(iosLastPageRef.current)) : 0;
+  useLayoutEffect(() => { iosLastPageRef.current = activeTab; }, [activeTab]);
+  const nativeTabPage = Platform.OS === "ios" ? <NativeTabRail page entryDirection={iosPageEntryDirection} active={activeTab} onChange={switchTab}
+    swipeScope={iosTabSwipeScope} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={isCurrentIOSTabSwipe}>{tabScreens}</NativeTabRail> : tabScreens;
+
   const mobileTabBar = Platform.OS === "ios" ? <IosTabBar active={activeTab} onChange={switchTab} swipeScope={iosTabSwipeScope} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={isCurrentIOSTabSwipe} /> : (
                       <NativeTabRail key={activeTab} active={activeTab} onChange={switchTab}>
 <View style={styles.tabbar}>
@@ -2099,10 +2107,10 @@ function Root() {
                     header={<NativeAppHeader active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn onAccount={() => openProfileManagement()} />}
                     tabBar={mobileTabBar}
                     media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back} presentationKey={Platform.OS === "ios" ? nav : undefined} presentationScope={linkedNavigationScope} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense>}>
-                    <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey="main:feed">{tabScreens}</ScreenTransition></Suspense>
+                    <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey="main:feed">{nativeTabPage}</ScreenTransition></Suspense>
                   </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back} presentationKey={Platform.OS === "ios" ? nav : undefined} presentationScope={linkedNavigationScope} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense> : (
                     <>
-                      <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{tabScreens}</ScreenTransition></Suspense>
+                      <Suspense fallback={<ScreenLoading />}><ScreenTransition key={Platform.OS === "ios" ? "main-tabs" : screenKey} performanceKey={screenKey} direction={screenDirection}>{nativeTabPage}</ScreenTransition></Suspense>
                       {mobileTabBar}
                     </>
                   )}

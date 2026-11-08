@@ -69,6 +69,8 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = [], ba
   const context = React.createContext(null);
   let historyHook, retryHooks, attemptHook, refreshHook, smartImage, presentation, refreshBoundary;
   const imports = (name, local) => {
+    if (name.endsWith('/NativeTabScroll')) return native;
+    if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
     if (name === 'react' || name === 'react/jsx-runtime') return require(name);
     if (name === 'react-native') return native;
     if (name === 'expo-image') return { Image: 'ExpoImage' };

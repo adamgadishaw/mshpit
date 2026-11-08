@@ -142,6 +142,7 @@ function iosYouFixture() {
   const rows = (id) => id === "a" ? [log] : [];
   const jsx = (type, props) => ({ type, props });
   const dependencies = {
+    "../components/NativeTabScroll": { ScrollView: "ScrollView", FlatList: "FlatList" },
     react: { useMemo: (fn) => fn(), useState(initial) { const index = stateIndex++; if (!(index in states)) states[index] = typeof initial === "function" ? initial() : initial; return [states[index], (value) => { states[index] = value; }]; } },
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "react-native": { View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable", Platform: { OS: "ios" }, useWindowDimensions: () => dimensions, Share: {}, StyleSheet: { create: (s) => s, absoluteFill: {} } },

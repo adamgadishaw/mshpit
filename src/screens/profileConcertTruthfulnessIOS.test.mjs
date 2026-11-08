@@ -66,6 +66,8 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = empty,
   const context = React.createContext(null);
   let hook, concertHook, ConcertHistory, ConcertMap;
   const imports = (name, local) => {
+    if (name.endsWith("/NativeTabScroll")) return native;
+    if (name.endsWith("/NativeTabSwipeExclusion")) return { __esModule: true, default: p => p.children };
     // Resolve the actual map module without chunk/Suspense timing; its JSX and hooks remain real.
     if (name === 'react') return { ...React, lazy: () => React.lazy(() => ({ then: resolve => resolve(ConcertMap) })) };
     if (name === 'react/jsx-runtime') return require(name);

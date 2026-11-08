@@ -30,6 +30,8 @@ function fixture({ fontScale = 1, width = 393 } = {}) {
   };
   const fill = { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 };
   const modules = {
+    "../NativeTabScroll": { ScrollView: "ScrollView", TextInput: "TextInput" },
+    "../NativeTabSwipeExclusion": "NativeTabSwipeExclusion",
     "../../domain/iosBrowseReturn.mjs": browseReturn,
     react, "react/jsx-runtime": { jsx, jsxs: jsx },
     "react-native": {

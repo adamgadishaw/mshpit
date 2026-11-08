@@ -1,5 +1,6 @@
+import { ScrollView } from "../components/NativeTabScroll";
 import { Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
 import { countryForCity } from "../geo";

@@ -75,6 +75,8 @@ async function fixture({ platform = "ios", reader = true, restored = false, unkn
   const store = { session: { id: "synthetic" }, chatAuthEpoch: 1, blockedIds: [], tourDates: [], artistsAlphabetical: () => [], searchVenues: () => [], fanClubsDirectory: () => [], fanClubDirectoryStatus: "ready", loadFanClubsDirectory: () => Promise.resolve({ ok: true }), track: noop, isFollowing: () => false, follow: noop, unfollow: noop, searchPeople: () => Promise.resolve([]), searchArtistsApi: (query) => { if (!query) return Promise.resolve([]); const d = deferred(); calls.push({ query, ...d }); return d.promise; }, resolveArtist: () => Promise.resolve(null), recentSearches: [], addRecentSearch: noop, removeRecentSearch: noop, clearRecentSearches: noop, searchSongsApi: () => Promise.resolve([]) };
   let speech, preference;
   const imports = (name, local) => {
+    if (name.endsWith('/NativeTabScroll')) return native;
+    if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
     if (name === "react-native") return native;
     if (name.endsWith("/useIOSSearchAnnouncement")) return speech;
     if (name.endsWith("/useScreenReaderEnabled")) return preference;

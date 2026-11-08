@@ -1,5 +1,6 @@
+import { ScrollView } from "../NativeTabScroll";
 import { useRef } from "react";
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, focusRing, font, radius, space } from "../../theme";
 import Icon from "../Icon";
 import { DISCOVER_PROGRAMME_SECTIONS, discoverProgrammeKeyboardTarget } from "../../domain/discoverProgramme.mjs";

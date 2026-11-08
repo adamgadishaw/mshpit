@@ -1,5 +1,6 @@
+import { ScrollView } from "../../components/NativeTabScroll";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, font, radius, space } from "../../theme";
 import Button from "../../components/Button";
 import FestivalCard from "./FestivalCard";

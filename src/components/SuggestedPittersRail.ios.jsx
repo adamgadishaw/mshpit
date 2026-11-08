@@ -1,4 +1,5 @@
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { ScrollView } from "./NativeTabScroll";
+import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius } from "../theme";
 import { profilePath } from "../domain/urls.mjs";
 import { visibleSuggestedPitters } from "../domain/suggestedPitters.mjs";
