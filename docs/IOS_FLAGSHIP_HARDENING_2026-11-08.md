@@ -2,9 +2,9 @@
 
 ## Latest fully verified artifact
 
-Checkpoint cd06226 is preserved at
-.tmp/ios-phone-checkpoints/flagship-cd06226/MshpitDev.app with a receipt and exact
-manifest. All 7,886 tests, three platform exports and signed Release compilation
+Checkpoint 6461b05 is preserved at
+.tmp/ios-phone-checkpoints/flagship-6461b05/MshpitDev.app with a receipt and exact
+manifest. All 7,963 tests, three platform exports and signed Release compilation
 passed. This is a development-signed, live-linked preview, not installed and not
 App Store distribution. Physical interaction/accessibility/performance are still
 open. Later in-progress slices are not included until separately verified.
@@ -575,3 +575,69 @@ VoiceOver focus/speech, keyboard/Yoga, native image/video and measured Release
 performance remain open. Live-linked browsing may emit consented analytics;
 Activity/Thread may mark read. Mutation certification needs an authorized
 isolated fixture, not synthetic actions against production.
+
+
+## Profile, venue recovery and sign-in feedback checkpoint (6461b05)
+
+- iOS Profile editing now synchronously admits one Save or media command. Native
+  editable/disabled properties and retained callbacks prevent a pending keyboard
+  edit from being lost behind a successful save. No-op edits still release the
+  edit barrier. Existing account-scoped upload, draft, close guard and Store
+  payload semantics remain authoritative. Confirmed work is not submitted again
+  merely because closing the screen fails.
+- iOS Venue fan notes now distinguish loading/failure from a confirmed empty
+  collection. Cached privacy-filtered notes remain visible and an accessible
+  44-point retry is available. Mount, retry and refresh share the current read;
+  account/epoch/venue/privacy changes fence status adoption. This checks the
+  existing Store result contract, not raw-network schema or all offline cases.
+- An accepted iOS login/signup general failure can announce fixed, non-sensitive
+  “could not be confirmed” feedback. Positively known VoiceOver-on and foreground
+  eligibility are captured at action start; interrupted/retired results do not
+  replay. Field errors, forgot/reset, success, credentials and authentication
+  transitions remain unchanged. No global announcer was introduced.
+- Platform-resolved default hooks are inert. No Store, server, dependency,
+  native project, signing permission or production-content changes were made.
+
+Verification: 7,963/7,963 full tests passed, zero failures/skips/cancellations,
+83.508644292 seconds. Integrated targeted regressions passed 190/190. The first
+full integration run found one old genre-validation source-prefix assertion;
+it was updated to require all original gates plus the new command gates. No
+product behavior was weakened to satisfy it. Architecture and syntax gates pass
+(920 Node files). The independent recovery-sensitivity harness passes all three
+actual-component scenarios and catches four intentionally broken in-memory
+variants. Its source SHA256 is
+85299b8b9593584a9ecc8c501fa67d12ff370fe9bf3b43bd96d087773992ce37.
+
+All three exports and signed iPhone Release compilation passed. Web initial
+JavaScript is 509.3/512.0 KiB gzip. Eighty-one web source maps contain 1,161 source
+entries; the three new iOS hook implementations are absent. This is bundle/source
+isolation evidence, not a new Android/web visual certification.
+
+Preserved artifact: .tmp/ios-phone-checkpoints/flagship-6461b05/MshpitDev.app.
+Source 6461b0550024568a4d465e59142d36e92b64e64a; 60,247,414 bytes, 52 exact
+files/links. Strict deep signature and copied-byte verification passed.
+- JS SHA256: b013804ca319d406a202dac12eb38b552f515c8583ab0d1fc86f4ade37b3b7c0.
+- Executable SHA256: b6d221dce07b0be3e9c9d78959d7440210dbe4707b94b485c5f4924e2604a04b.
+- Manifest SHA256: 21b025ae2e8dfd7453524c03a085d070c77f918526f4e959e8c7d5110c337224.
+- Existing development signature/profile unchanged; expiry November 14,
+  2026 at 23:50:01 UTC. Bundle com.mshpit.app.dev, version 1.0.0/build 1,
+  iOS minimum 16.4, iphoneos27.2 SDK, 11 privacy manifests.
+- Receipt created November 8 at 07:06:48.502453 UTC. Live backend unchanged.
+  Not installed. Earlier signed checkpoints remain preserved.
+
+Evidence logs: /tmp/mshpit-ios-79ca509-integrated-full-tests.log (final green
+6461b05 source), /tmp/mshpit-ios-auth-profile-venue-integrated-tests.log,
+/tmp/mshpit-ios-profile-genre-fixture-tests.log, and the ios/android/web export
+and iphone build logs named mshpit-*-6461b05-*.log. The earlier failed full log
+is retained honestly as /tmp/mshpit-ios-auth-profile-venue-full-tests.log.
+
+The native decoder/advisory review is separately recorded in
+IOS_NATIVE_DECODER_REVIEW_2026-11-08.md. A reviewed path-specific mitigation does
+not patch or close the package-level advisory. No decoder was executed and no
+blind binary override was applied.
+
+Native keyboard/IME, VoiceOver timing/focus, real offline recovery, Photos and
+physical dismissal remain uncertified. All behavioral tests used synthetic
+accounts/services. The live-linked artifact must not receive synthetic login,
+profile writes or reviews for QA; use an authorized isolated fixture. Phone
+installation still waits for explicit reconnection.

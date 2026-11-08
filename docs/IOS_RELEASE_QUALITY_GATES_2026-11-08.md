@@ -184,3 +184,15 @@ A zero server-only npm audit result does not clear mobile dependencies or native
 Pods. See IOS_NATIVE_DECODER_REVIEW_2026-11-08.md for the dated installed-chain,
 signed-binary presence and specific AVIF-path mitigation assessment. Preserve
 its limits and recheck native decoder configuration before a dependency update.
+
+
+## Latest compiled checkpoint: profile and recovery
+
+6461b05 supersedes cd06226 as the latest preserved signed preview. Its 7,963-test
+suite, iOS/Android/web exports, 509.3 KiB web budget, and exact signed copy all
+passed. Profile command ownership, Venue failed-read recovery and scoped Auth
+error feedback have synthetic actual-component coverage and independent review.
+The hardening document and receipt hold exact hashes and limitations. No native
+keyboard, VoiceOver, offline, Photos, account-write or installation certification
+is implied. The native decoder dependency remains unpatched despite the reviewed
+AVIF path-specific mitigation; preserve that advisory distinction.
