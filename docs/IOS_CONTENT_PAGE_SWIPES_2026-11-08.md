@@ -31,3 +31,18 @@ Focused page/rail/policy suite: 83 tests pass, independently rerun. Tests use ac
 - Open/close retained Feed gallery, drawer and detail during/after a swipe. Check the 24pt Back edge on details.
 - Background during release and resume; toggle VoiceOver and Reduce Motion mid-drag; verify stable page, no stale navigation, and explicit tabs remain reachable.
 - Confirm Android/web exports retain behavior and budget. No physical pass is implied by JavaScript tests.
+
+## Installed checkpoint and actual iPhone review (2026-11-08)
+
+Signed source eb2ae41 passed 8,462/8,462 serial tests, server-only dependency audit, syntax/architecture, web budget (522,985 / 524,288 gzip bytes), iOS/Android exports, source-map isolation, Release build and deep/strict signature verification. Independent review verified all 52 artifact files (60,395,881 bytes). Only executable, JavaScript bundle and signature CodeResources differ from db93176; all eleven privacy manifests, Info.plist and profile are unchanged.
+
+Installed in place and launched on iPhone 16 Pro Max / iOS 27.2. Existing account/session remained visible. No uninstall, reset, permission change, production deployment or synthetic post/social action. Ordinary live browsing may emit consented analytics. Activity and DM routes were not opened.
+
+Actual Device Hub review:
+- Content drags moved Feed → Search → Discover → You, and You → Discover. Vertical You scrolling worked; the You boundary did not wrap.
+- Holding an own-post body opened native Post actions with Edit/Delete/Cancel. Only Cancel was selected. The inert Manage post strip was absent between/after inspected own cards.
+- Two populated nested rails failed acceptance: drags on Discover Palace hero and Search London/Paris rail opened the touched detail instead of scrolling. No ticket/attendance action was taken. This is observed under Device Hub input; native recognizer cause is under investigation.
+- Staged outgoing/incoming animation showed an empty intermediate capture. Owner explicitly rejected its motion quality. This is preserved checkpoint evidence, not final motion acceptance. Simultaneous incoming/outgoing redesign and nested-scroll correction are in progress.
+- Phone left on Search, no modal. Exact private screenshots retained only in ignored checkpoint.
+
+Remote drags/screenshots do not establish frame rate, tactile quality, VoiceOver, largest Dynamic Type, canceled/multipointer gestures, or complete gallery/map arbitration. These remain checks after correction.
