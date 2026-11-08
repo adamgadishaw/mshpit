@@ -323,3 +323,17 @@ height correction, with 8,324 passing tests and all export/build gates. Check it
 actual reachable target and large-text layout during an authorized native session;
 source style assertions alone are not native hit testing. Prior signed previews
 remain preserved and the phone installation hold remains in force.
+
+
+## Final session-recovery artifact b73d54a
+
+The preserved development-signed Release includes bounded iOS sign-in status
+recovery, with 8,356 passing tests and verified exports/isolation/build. In an
+authorized isolated fixture, exercise cold and strict transient validation
+failure, server Retry-After, explicit single-flight Retry, current success and
+authoritative guest. No private screen may appear before identity is confirmed;
+old controls must not supersede a newer auth action. Ordinary confirmed-session
+refresh failures remain quiet. Check actual large-text reachability, status
+readability and VoiceOver order; synthetic React/transport traces are not native
+accessibility certification. No real sign-out, credential change, or forced
+live-service outage is authorized merely for testing. Installation remains held.

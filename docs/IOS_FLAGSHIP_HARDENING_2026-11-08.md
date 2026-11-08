@@ -2,15 +2,24 @@
 
 ## Latest fully verified artifact
 
-Checkpoint 2f24923 is preserved at
-.tmp/ios-phone-checkpoints/flagship-2f24923/MshpitDev.app with a receipt, exact
-manifest and platform-isolation evidence. All 8,324 tests, three platform exports
-and signed Release compilation passed. This is a development-signed, live-linked
-preview, not installed or App Store distribution. Physical interaction,
-accessibility and performance remain open. Earlier checkpoints, including b907ea8,
-remain preserved. Later candidate work is not included until separately verified.
-The current concise [preview handoff](IOS_PREVIEW_HANDOFF_2026-11-08.md) records
-this artifact and the separate test-before-release workflow.
+Checkpoint b73d54a is preserved at
+.tmp/ios-phone-checkpoints/flagship-b73d54a/MshpitDev.app with receipt, exact
+manifest and platform-isolation evidence. All 8,356 tests, three platform exports
+and signed Release compilation passed. This development-signed, live-linked
+preview is not installed or App Store distribution. Physical interaction,
+accessibility and performance remain open. Earlier checkpoints, including
+2f24923, remain preserved. The current concise [preview handoff](IOS_PREVIEW_HANDOFF_2026-11-08.md)
+records the artifact and separate test-before-release workflow.
+
+The final session-recovery slice observes the existing identity-validation owner
+only on iOS, explains checking/unavailable/server-waiting states and admits one
+explicit Retry. It retains the identity barrier, existing automatic retry policy,
+server Retry-After, account/auth-intent fencing and quiet confirmed refresh.
+Twenty-four automatic traces across all three platforms match the prior owner;
+default platforms retain their original loading component. No extra automatic
+request, credential operation, dependency or permission was added. Only JS,
+executable and signature resources changed in the signed app; Info.plist,
+provisioning and all 11 privacy manifests match 2f24923.
 
 ## Scope and release boundary
 

@@ -34,8 +34,8 @@ The follow-through is more than a visual reskin:
 
 ## Exact preview to use
 
-- Runtime source: `2f24923fe41a04cf6ea238643fb8b6e1061570c2`.
-- Artifact: `.tmp/ios-phone-checkpoints/flagship-2f24923/MshpitDev.app`.
+- Runtime source: `b73d54a0dc9a79398958eb69b9f778a7da6e54e5`.
+- Artifact: `.tmp/ios-phone-checkpoints/flagship-b73d54a/MshpitDev.app`.
 - Receipt and per-file manifest are beside the app. All 52 files/links were
   checked against that manifest, with valid signature and matching receipts.
 - Development-signed **Release configuration**, using the existing identity and
@@ -51,13 +51,13 @@ The follow-through is more than a visual reskin:
   camera/microphone permission, background mode or broader access was added.
 
 The receipt records JS SHA-256
-`a6d3de7b749258ad0ad7f5355c1fcb468183cd7d5874be71fedf8e2a459bb148`
+`8fb2772d63b21975992e33dda909d4e0976bac1b63c92a92c8244e7b304fcbca`
 and executable SHA-256
-`8dd4da5c1f2c521c3ecbe0e9bfda167e1c9bbd7961fcdbe419b5f7af5bba9d05`.
+`ed27406b087bc50774b9706d30123588aecd9c230514c4960ab2e9dd7d9429a2`.
 
 ## Verified now, and what that evidence means
 
-The compiled runtime passed 8,324 tests, syntax/architecture checks, all three
+The compiled runtime passed 8,356 tests, syntax/architecture checks, all three
 platform exports and signed Release compilation. Independent source review and
 actual-React fixtures cover failure recovery, account/presentation boundaries,
 queued gestures, speech ownership and unsent-work preservation. A combined
@@ -66,26 +66,34 @@ retirement in normal and StrictMode lifecycles. Deliberately broken variants are
 detected, not merely green happy paths.
 
 Android and web export maps exclude application `.ios` implementations and the
-three confined iOS draft/Feed-return/Search-announcement domains. Reviewed inert
-defaults are verified where retained. Web initial JavaScript is 521,916 gzip bytes,
-2,372 bytes below the existing 512 KiB budget. Source maps and budget checks are
+four confined iOS draft/Feed-return/Search-announcement/session-status domains. Reviewed inert
+defaults are verified where retained. Web initial JavaScript is 522,193 gzip bytes,
+2,095 bytes below the existing 512 KiB budget. Source maps and budget checks are
 not proof of native behavior, smoothness, or complete platform equivalence.
 
 The offline export checker is tooling only; see
-[the gate usage](IOS_EXPORT_ISOLATION_GATE.md). The current checkpoint includes
-the reviewed iOS Feed Undo/Retry minimum target correction from 36 to 44 points,
-with unchanged callbacks and default-platform dimensions. All 8,324 tests, syntax
-on 923 Node files, architecture, exports and signed build pass. Its Android
-Hermes bundle is byte-identical to b907ea8, and web initial-script budget entries
-are unchanged. The export gate passes with zero issues: one Android map / 2,198
-sources and 81 web maps / 1,169 sources. Native hit testing is still unverified.
+[the gate usage](IOS_EXPORT_ISOLATION_GATE.md). This checkpoint adds iOS session
+validation status and explicit recovery to the existing identity owner. Cold or
+strict validation failures explain that sign-in could not be confirmed instead
+of remaining a generic spinner. Retry is single-flight, may replace client
+backoff, and does not bypass a server Retry-After deadline or reveal private
+screens before identity is authoritative. Confirmed-session transient refreshes
+stay quiet. The earlier Feed Undo/Retry 44-point correction is retained.
+
+All 8,356 tests, syntax on 923 Node files, architecture, exports and signed build
+pass. Twenty-four synthetic automatic-validation traces match the prior owner
+across iOS/Android/web. The default platforms retain the original loading
+presentation; the export gate passes with zero issues: one Android map / 2,200
+sources and 81 web maps / 1,171 sources. Bundles are not claimed byte-identical:
+the new default wrappers and instrumentation are included, with their inert
+contracts verified in the maps. Native fitting and hit testing remain unverified.
 
 The first 14 preserved flagship checkpoints passed a read-only file-integrity and
 signature audit. No artifact was overwritten. The oldest 0fcb4fd receipt hashes
 sorted compact manifest JSON; later receipts hash the physical manifest file.
 Both conventions were verified rather than rewriting historical receipts.
 The dated audit is `.tmp/ios-phone-checkpoints/checkpoint-integrity-review.json`.
-The later 2f24923 artifact was independently preserved and verified against all
+The later b73d54a artifact was preserved and verified against all
 52 manifest entries, valid signature and matching JS/executable receipts.
 
 ## Next phone session
@@ -102,7 +110,8 @@ For an owner-driven or explicitly approved genuine-use session, prioritize
 Discover, Feed, drawer, public Profile and You, followed by unsent draft/keyboard
 navigation, largest Dynamic Type,
 VoiceOver focus and Reduce Motion. Preserve input selection and cursor, reachable
-controls, correct back/close behavior and current Feed position. Final physical
+controls, correct back/close behavior and current Feed position. Test failed
+session validation and Retry only in an authorized isolated fixture. Final physical
 checks have not been completed while the Mac session is locked.
 
 This live-linked build is **not mutation-blocked**. Ordinary use may send consented
