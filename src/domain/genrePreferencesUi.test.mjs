@@ -15,7 +15,7 @@ test("signup and Edit Profile expose the same required one-to-three genre contra
   assert.match(read("./signupForm.mjs"), /genres: profileGenreSelection\(genres\)\.genres/);
   assert.match(auth, /PROFILE_GENRE_MAX/);
   assert.match(editProfile, /profileGenreSelection\(genres\)/);
-  assert.match(editProfile, /disabled: mediaBusy \|\| saving \|\| !genreSelection\.valid/);
+  assert.match(editProfile, /disabled: iosEditor\?\.confirmed \|\| locked \|\| mediaBusy \|\| saving \|\| !genreSelection\.valid \|\| handleInvalid/);
   assert.match(auth, /PROFILE_GENRE_OPTIONS\.map/);
   assert.match(editProfile, /profileGenreOptions\(genres\)/);
   assert.doesNotMatch(auth, /import \{ GENRES \} from "\.\.\/data"/);
