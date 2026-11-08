@@ -44,7 +44,7 @@ const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 const sleepForever = new Promise(() => {});
 // Actual React, platform-resolved rail and shell components. The native gesture,
 // UI/RN scheduler and actions are synthetic: this does not validate a device.
-function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "feed", entryDirection = 0, scrollChild = null } = {}) {
+function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "feed", entryDirection = 0, scrollChild = null, scrollRef = null, scrollProps = {} } = {}) {
   const renderer = createRenderer(), gestures = [], queue = [], calls = [], shared = [], reactions = [], springs = [], timings = [], animatedStyles = [], appListeners = new Set(), appHistory = [], springCompletions = [];
   let props = { page, entryDirection, enabled: true, active, onCommit: onCommit || (direction => calls.push(direction)), onChange: onChange || (tab => calls.push(tab)), hint: "Swipe for an action",
     post: { id: "post-A", likes: 0 }, accountId: "account-A", likeInfo: () => ({ liked: false }),
@@ -69,12 +69,13 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
       subscribeConfirmedScreenReaderEnabled: callback => { const entry = { callback, active: true }; confirmedSubscriptions.push(entry); return () => { entry.active = false; }; } },
     "react-native-gesture-handler": { GestureDetector: "GestureDetector", Gesture: { Pan() {
       const handlers = {};
-      const builder = new Proxy({ handlers }, { get: (target, name) => name === "handlers" ? handlers : value => { handlers[name] = value; return builder; } });
+      const builder = new Proxy({ handlers }, { get: (target, name) => name === "handlers" ? handlers : (...values) => { handlers[name] = values.length > 1 ? values : values[0]; return builder; } });
       gestures.push(handlers); return builder;
     } } },
   };
   modules["react-native-gesture-handler"].Gesture.Manual = modules["react-native-gesture-handler"].Gesture.Pan;
   modules["react-native-gesture-handler"].Gesture.Native = modules["react-native-gesture-handler"].Gesture.Pan;
+  modules["react-native-gesture-handler"].Gesture.Simultaneous = (...gestures) => ({ simultaneous: gestures });
   function execute(path) {
     const url = new URL(path, import.meta.url);
     if (!codes.has(path)) codes.set(path, transformSync(readFileSync(url, "utf8"), { filename: url.pathname, babelrc: false, configFile: false,
@@ -96,10 +97,11 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   modules["./NativeTabRail"] = execute("./NativeTabRail.ios.jsx");
   const Component = component === "rail" ? modules["./NativeSwipeRail"].default : component === "tabs" ? modules["./NativeTabRail"].default
     : component === "social" ? execute("./PostSwipeActions.native.jsx").default : component === "bar" ? execute("./IosTabBar.ios.jsx").default : execute("./NativeAppHeader.ios.jsx").default;
-  const Exclusion = execute("./NativeTabSwipeExclusion.ios.jsx").default;
-  modules["./NativeTabSwipeExclusion"] = { default: Exclusion, __esModule: true };
+  const exclusionModule = execute("./NativeTabSwipeExclusion.ios.jsx");
+  const Exclusion = exclusionModule.default;
+  modules["./NativeTabSwipeExclusion"] = exclusionModule;
   const Scroll = execute("./NativeTabScroll.ios.jsx");
-  const Child = () => scrollChild ? React.createElement(scrollChild === "input" ? Scroll.TextInput : Scroll.ScrollView, { horizontal: scrollChild === "horizontal" }, React.createElement("ExplicitButton")) : excludedChild ? React.createElement(Exclusion, null, React.createElement("ExplicitButton")) : React.createElement("ExplicitButton");
+  const Child = () => scrollChild === "nested" ? React.createElement(Scroll.ScrollView, { testID: "vertical" }, React.createElement(Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: true, testID: "horizontal", snapToInterval: 180 }, React.createElement("Pressable", { onPress: () => calls.push("card") }))) : scrollChild ? React.createElement(scrollChild === "input" ? Scroll.TextInput : Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: scrollChild === "horizontal" }, React.createElement("ExplicitButton")) : excludedChild ? React.createElement(Exclusion, null, React.createElement("ExplicitButton")) : React.createElement("ExplicitButton");
   const Layer = execute("./NativeFeedMediaLayer.jsx").default;
   function Gate() { if (suspended) throw sleepForever; return null; }
   const f = {
@@ -447,11 +449,15 @@ test("declined navigation recovery keeps input fenced until its spring rearms",t
 for (const kind of ["vertical","horizontal","input"]) test(`native ${kind} adapter retains child layout and owns arbitration`,t=>{
  const f=fixture({component:"tabs",page:true,scrollChild:kind});t.after(f.close);
  const detectors=f.all().filter(n=>n.type==="GestureDetector");assert.equal(detectors.length,2);
- const child=detectors[1].props.gesture.handlers;
+ const composition=detectors[1].props.gesture;
+ const child=(composition.simultaneous?.[0] || composition).handlers;
  assert.ok(child.simultaneousWithExternalGesture);
  assert.equal(detectors[1].children[0].type,kind==="input"?"TextInput":"ScrollView","detector attaches directly, without layout wrapper");
  if(kind==="vertical") assert.equal(child.onTouchesDown,undefined);
- else assert.equal(typeof child.onTouchesDown,"function");
+ else if(kind==="horizontal") {
+  assert.equal(composition.simultaneous.length,2);
+  assert.equal(typeof composition.simultaneous[1].handlers.onTouchesDown,"function");
+ } else assert.equal(typeof child.onTouchesDown,"function");
 });
 
 test("fresh-mount entry direction is consumed and cannot replay on permission changes",t=>{
@@ -464,4 +470,37 @@ test("a later excluded-child touch cannot strand an accepted outgoing transition
  const f=fixture({component:"tabs",page:true,excludedChild:true});t.after(f.close);
  swipe(f.gesture);const child=f.all().filter(n=>n.type==="GestureDetector")[1].props.gesture.handlers;
  child.onTouchesDown({},{begin(){},fail(){}});f.finish();f.flush();assert.deepEqual(f.calls,["search"]);
+});
+
+
+test("nested horizontal scroll owns a native handler simultaneous with its vertical ancestor and passive observer", t => {
+ const f=fixture({component:"tabs",page:true,scrollChild:"nested"}); t.after(f.close);
+ const detectors=f.all().filter(n=>n.type==="GestureDetector");assert.equal(detectors.length,3);
+ const page=detectors[0].props.gesture, vertical=detectors[1].props.gesture;
+ const [horizontal,observer]=detectors[2].props.gesture.simultaneous;
+ assert.deepEqual(horizontal.handlers.simultaneousWithExternalGesture,[page,vertical]);
+ assert.deepEqual(observer.handlers.simultaneousWithExternalGesture,[page,horizontal,vertical]);
+ assert.equal(observer.handlers.cancelsTouchesInView,false);
+ assert.equal(detectors[2].children[0].type,"ScrollView");
+ assert.equal(detectors[2].children[0].props.horizontal,true);
+ assert.equal(detectors[2].children[0].props.snapToInterval,180);
+ const manager={begin(){},fail(){},activate(){assert.fail("passive observer must never activate");}};
+ down(f.gesture);observer.handlers.onTouchesDown({},manager);
+ f.gesture.onTouchesMove({allTouches:[{absoluteX:100,absoluteY:200}],numberOfTouches:1},manager);
+ observer.handlers.onTouchesUp({},manager);release(f.gesture);f.gesture.onFinalize();
+ assert.equal(f.timings.length,0);assert.deepEqual(f.calls,[]);
+ const original=detectors[2].props.gesture;f.render({hint:"ordinary data update"});
+ assert.equal(f.all().filter(n=>n.type==="GestureDetector")[2].props.gesture,original);
+ // The adapter does not substitute an onPress for native scroll cancellation.
+ f.all().find(n=>n.type==="Pressable").props.onPress();assert.deepEqual(f.calls,["card"]);
+});
+
+for (const scoped of [false, true]) test(`native scroll adapter preserves host identity, ref and layout/scroll props, scoped=${scoped}`, t => {
+ const ref=React.createRef(), onScroll=()=>{}, style={height:180,marginHorizontal:12}, contentContainerStyle={gap:10};
+ const f=fixture({component:scoped?"tabs":"rail",page:scoped,scrollChild:scoped?"nested":"horizontal",scrollRef:ref,
+  scrollProps:{style,contentContainerStyle,onScroll,scrollEventThrottle:32,keyboardShouldPersistTaps:"handled"}});t.after(f.close);
+ const host=f.all().filter(n=>n.type==="ScrollView").at(-1);assert.equal(ref.current,host);
+ for(const [key,value] of Object.entries({style,contentContainerStyle,onScroll,scrollEventThrottle:32,keyboardShouldPersistTaps:"handled"})) assert.equal(host.props[key],value);
+ assert.equal(f.all().filter(n=>n.type==="GestureDetector").length,scoped?3:1);
+ f.render({hint:"ordinary render"});assert.equal(ref.current,host);
 });

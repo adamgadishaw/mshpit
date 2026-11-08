@@ -6,12 +6,13 @@ import { NativeTabSwipeContext } from "./nativeTabSwipeContext.mjs";
 // Observe on the UI thread without ever activating/capturing child gestures.
 // Keep observing until release so an edge-rejected parent cannot leave a stale
 // exclusion behind. Canceling any observation also retires this touch's swipe.
-export default function NativeTabSwipeExclusion({ children, style, asChild = false }) {
+export function useNativeTabSwipeExclusionGesture({ enabled = true, nativeGesture = null, ancestorGesture = null } = {}) {
   const scope = useContext(NativeTabSwipeContext);
-  const observer = useMemo(() => {
-    if (!scope) return null;
+  return useMemo(() => {
+    if (!scope || !enabled) return null;
     const { excluded, touching, epoch, generation, gesture } = scope;
-    return Gesture.Manual().simultaneousWithExternalGesture(gesture)
+    return Gesture.Manual().cancelsTouchesInView(false)
+      .simultaneousWithExternalGesture(gesture, ...[nativeGesture, ancestorGesture].filter(Boolean))
       .onTouchesDown((_event, manager) => {
         if (epoch.get() !== generation) { manager.fail(); return; }
         excluded.set(true); touching.set(false); manager.begin();
@@ -25,7 +26,11 @@ export default function NativeTabSwipeExclusion({ children, style, asChild = fal
         if (epoch.get() === generation) { touching.set(false); excluded.set(false); }
         manager.fail();
       });
-  }, [scope]);
+  }, [scope, enabled, nativeGesture, ancestorGesture]);
+}
+
+export default function NativeTabSwipeExclusion({ children, style, asChild = false }) {
+  const observer = useNativeTabSwipeExclusionGesture();
   if (!observer) return children;
   if (asChild) return <GestureDetector gesture={observer}>{children}</GestureDetector>;
   return <GestureDetector gesture={observer}><View collapsable={false} style={style}>{children}</View></GestureDetector>;

@@ -1,16 +1,26 @@
-import { forwardRef, useContext, useMemo } from "react";
+import { createContext, forwardRef, useContext, useMemo } from "react";
 import { ScrollView as RNScrollView, FlatList as RNFlatList, TextInput as RNTextInput } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { NativeTabSwipeContext } from "./nativeTabSwipeContext.mjs";
-import NativeTabSwipeExclusion from "./NativeTabSwipeExclusion";
+import NativeTabSwipeExclusion, { useNativeTabSwipeExclusionGesture } from "./NativeTabSwipeExclusion";
+
+// A nested UIScrollView needs its own Native handler. Relating only the page
+// pan to the outer vertical scroll leaves the inner horizontal native pan
+// outside RNGH arbitration and can leave its Pressable child handling release.
+const NativeScrollContext = createContext(null);
 function scroll(Component) {
   return forwardRef(function TabScroll(props, ref) {
     const scope = useContext(NativeTabSwipeContext);
-    const native = useMemo(() => scope ? Gesture.Native().simultaneousWithExternalGesture(scope.gesture) : null, [scope?.gesture]);
+    const ancestor = useContext(NativeScrollContext);
+    const native = useMemo(() => scope ? Gesture.Native()
+      .simultaneousWithExternalGesture(scope.gesture, ...[ancestor].filter(Boolean)) : null, [scope?.gesture, ancestor]);
+    const observer = useNativeTabSwipeExclusionGesture({ enabled: !!props.horizontal, nativeGesture: native, ancestorGesture: ancestor });
+    const composed = useMemo(() => native && observer ? Gesture.Simultaneous(native, observer) : native, [native, observer]);
     const content = <Component {...props} ref={ref} />;
     if (!native) return content;
-    if (props.horizontal) return <NativeTabSwipeExclusion asChild>{content}</NativeTabSwipeExclusion>;
-    return <GestureDetector gesture={native}>{content}</GestureDetector>;
+    return <NativeScrollContext.Provider value={native}>
+      <GestureDetector gesture={composed}>{content}</GestureDetector>
+    </NativeScrollContext.Provider>;
   });
 }
 export const ScrollView = scroll(RNScrollView);
