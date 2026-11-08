@@ -20,6 +20,7 @@ import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import { CommentLikeButton } from "../components/SocialReactionButtons";
 import IOSPostKeyboardView from "../components/IOSPostKeyboardView";
+import useIOSCommentAnnouncement from "../hooks/useIOSCommentAnnouncement";
 
 const PostContainer = Platform.OS === "ios" ? IOSPostKeyboardView : View;
 
@@ -96,7 +97,7 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
 // Post detail — the actual post + its comment thread. This is where like/comment
 // notifications land (not the performance page), and where forum-style replies live.
 export default function PostScreen({ log, commentDraft: suppliedCommentDraft = null, onClose, onRequireAuth, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag }) {
-  const { session, feed, commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, userById, userBadges, setCommentLike } = useStore();
+  const { session, chatAuthEpoch, feed, commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, userById, userBadges, setCommentLike } = useStore();
   const [postLocalOverrides, setPostLocalOverrides] = useState({});
   // Navigation keeps the post that was originally opened. Resolve it against
   // live feed state so an edit made on this screen appears immediately. A
@@ -129,6 +130,8 @@ export default function PostScreen({ log, commentDraft: suppliedCommentDraft = n
     return () => { commentMountedRef.current = false; };
   }, [commentDraft]);
   const retainedDraft = useSyncExternalStore(commentDraft?.subscribe || subscribeEmptyDraft, commentDraft?.read || readEmptyDraft, readEmptyDraft);
+  const commentAnnouncement = useIOSCommentAnnouncement(session?.id, chatAuthEpoch, log.id, commentDraft,
+    JSON.stringify([retainedDraft.parentId, retainedDraft.invalidReply]));
   const [localText, setText] = useState("");
   const [localReplyTo, setReplyTo] = useState(null); // { id, name } or null (= reply to the post)
   const [localSending, setSending] = useState(false);
@@ -253,7 +256,11 @@ export default function PostScreen({ log, commentDraft: suppliedCommentDraft = n
   };
   const changeCommentReply = (value) => {
     if (commentDraft) {
-      if (commentMountedRef.current && commentScopeRef.current === commentScope) commentDraft.reply(value === null ? null : value?.id);
+      if (commentMountedRef.current && commentScopeRef.current === commentScope) {
+        const nextParent = value === null ? null : value?.id;
+        if (nextParent !== commentDraft.read().parentId || commentDraft.read().invalidReply) commentAnnouncement.cancelValidation();
+        commentDraft.reply(nextParent);
+      }
       return;
     }
     if ((value?.id || null) !== commentSubmitRef.current.draft?.parentId) commentSubmitRef.current.intent = null;
@@ -272,13 +279,29 @@ export default function PostScreen({ log, commentDraft: suppliedCommentDraft = n
       if (!commentMountedRef.current || !commentReadyRef.current || commentScopeRef.current !== commentScope) return;
       const currentDraft = commentDraft.read();
       if (currentDraft.retry ? attempt !== commentDraft.failedAttempt() : attempt !== null) return;
+      if (currentDraft.sending || currentDraft.unavailable || (!currentDraft.retry && !currentDraft.text.trim())) return;
       const parentId = currentDraft.retry ? attempt.parentId : currentDraft.parentId;
-      const claim = commentDraft.claim(commentParentsRef.current.some(c => c.id === parentId && !c.deleted && !c.pending));
-      if (!claim) return;
+      const parentAvailable = commentParentsRef.current.some(c => c.id === parentId && !c.deleted && !c.pending);
+      const invalidParent = currentDraft.retry ? !!parentId && !parentAvailable : currentDraft.invalidReply || (!!parentId && !parentAvailable);
+      const claim = commentDraft.claim(parentAvailable);
+      if (!claim) {
+        // Null also means stale, busy, empty or unavailable: only the positively
+        // identified validation failure from this live draft gets speech.
+        if (invalidParent && commentDraft.read() !== currentDraft && commentDraft.read().error) {
+          const announcement = commentAnnouncement.begin(true);
+          commentAnnouncement.finish(announcement, currentDraft.retry ? "retryParentUnavailable" : "parentUnavailable");
+        }
+        return;
+      }
+      const announcement = commentAnnouncement.begin();
       const { intent } = claim;
+      let result;
       try {
-        commentDraft.settle(claim, await addComment(log.id, intent.text, intent.parentId, { clientMutationId: intent.clientMutationId }));
-      } catch { commentDraft.settle(claim, { ok: false }); }
+        result = await addComment(log.id, intent.text, intent.parentId, { clientMutationId: intent.clientMutationId });
+      } catch { result = { ok: false }; }
+      // Delivery always settles, including after navigation/speech revocation.
+      commentDraft.settle(claim, result);
+      commentAnnouncement.finish(announcement, result?.stale ? null : result?.ok ? "confirmed" : "unconfirmed");
       return;
     }
     const t = text.trim();
@@ -318,6 +341,7 @@ export default function PostScreen({ log, commentDraft: suppliedCommentDraft = n
     if (!commentMountedRef.current || commentScopeRef.current !== commentScope) return;
     const attempt = commentDraft?.failedAttempt();
     if (!attempt) return;
+    commentAnnouncement.cancel();
     Alert.alert("Discard previous attempt?", "The previous comment may already be posted; this will not remove it. Check the thread before sending it again. Your current draft will stay here.", [
       { text: "Keep attempt", style: "cancel" },
       { text: "Discard attempt", style: "destructive", onPress: () => { if (commentMountedRef.current && commentScopeRef.current === commentScope) commentDraft.discardAttempt(attempt); } },
@@ -403,7 +427,7 @@ export default function PostScreen({ log, commentDraft: suppliedCommentDraft = n
         </View>
       ) : (
         <View style={styles.composerWrap}>
-          {commentDraft && !commentsUsable && <Text style={styles.signin}>{commentsPending ? "Connecting to comments... Your draft is saved here." : "Reconnect to the thread to send. Your draft is saved here."}</Text>}
+          {commentDraft && !commentsUsable && <Text style={styles.signin}>{commentsPending ? "Connecting to comments... Your draft is still here." : "Reconnect to the thread to send. Your draft is still here."}</Text>}
           {retainedDraft.unavailable && <Text accessibilityRole="alert" style={styles.threadErrorCopy}>Finish or discard an unconfirmed comment in another thread before starting here.</Text>}
           {!!sendError && <Text accessibilityRole="alert" style={styles.threadErrorCopy}>{sendError}</Text>}
           {retryPrevious && <View style={styles.retryActions}>

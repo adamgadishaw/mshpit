@@ -3,23 +3,33 @@
 // outranks an older asynchronous initial read, even when its value is unchanged.
 export function createIOSAccessibilityPreference({ read, listen, initial = true }) {
   let value = initial;
+  let confirmed = null;
   let generation = 0;
   let revision = 0;
   let nativeSubscription = null;
   const listeners = new Set();
+  const confirmedListeners = new Set();
+  const subscribed = () => listeners.size + confirmedListeners.size > 0;
   const publish = (next) => {
     const normalized = !!next;
-    if (normalized === value) return;
+    const changed = normalized !== value;
+    const confirmedChanged = normalized !== confirmed;
     value = normalized;
-    for (const listener of listeners) listener();
+    confirmed = normalized;
+    // Speech observes every knowledge transition synchronously, even if React
+    // batches a false -> true round trip. Existing boolean consumers keep their
+    // conservative default and their original notification behavior.
+    if (confirmedChanged) for (const listener of confirmedListeners) listener();
+    if (changed) for (const listener of listeners) listener();
   };
-  const subscribe = (listener) => {
-    listeners.add(listener);
-    if (listeners.size === 1) {
+  const subscribeTo = (collection, listener) => {
+    const wasSubscribed = subscribed();
+    collection.add(listener);
+    if (!wasSubscribed) {
       const currentGeneration = ++generation;
       const initialRevision = revision;
       nativeSubscription = listen((next) => {
-        if (generation !== currentGeneration || !listeners.size) return;
+        if (generation !== currentGeneration || !subscribed()) return;
         revision++;
         publish(next);
       });
@@ -31,13 +41,20 @@ export function createIOSAccessibilityPreference({ read, listen, initial = true 
       });
     }
     return () => {
-      listeners.delete(listener);
-      if (listeners.size) return;
+      collection.delete(listener);
+      if (subscribed()) return;
       generation++;
       nativeSubscription?.remove?.();
       nativeSubscription = null;
       value = initial;
+      confirmed = null;
     };
   };
-  return { subscribe, getSnapshot: () => value, getServerSnapshot: () => initial };
+  return {
+    subscribe: listener => subscribeTo(listeners, listener),
+    getSnapshot: () => value,
+    getServerSnapshot: () => initial,
+    subscribeConfirmed: listener => subscribeTo(confirmedListeners, listener),
+    getConfirmedSnapshot: () => confirmed,
+  };
 }

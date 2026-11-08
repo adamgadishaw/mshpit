@@ -2080,7 +2080,7 @@ function Root() {
             calendar: () => requireAuth(() => go({ calendar: true })),
           }} />}
 
-        <FeedbackHost canViewDiagnostics={canViewDiagnostics} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} />
+        <FeedbackHost canViewDiagnostics={canViewDiagnostics} key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch]) : undefined} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} />
 
         {MUSIC_PLAYER_ENABLED && status === "ok" && preview && (
           <Animated.View style={[styles.preview, { opacity: fade }]}>
