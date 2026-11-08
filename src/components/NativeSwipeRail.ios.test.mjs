@@ -725,3 +725,17 @@ for (const kind of ["vertical", "horizontal", "nested", "input"]) test(`local pa
     assert.equal(observer.handlers.cancelsTouchesInView, false);
   }
 });
+
+test("fixed Feed navigation and body header contribute one original strip-to-card gap", t => {
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  const flatten = style => Array.isArray(style) ? Object.assign({}, ...style.filter(Boolean).map(flatten)) : style || {};
+  const fixed = f.all().find(node => node.props?.testID === "feed-fixed-navigation");
+  const navigation = flatten(fixed.children[0].props.style);
+  const list = f.lists()[0];
+  const bodyHeader = flatten(list.props.ListHeaderComponent.props.style);
+  const content = flatten(list.props.contentContainerStyle);
+  assert.equal(navigation.marginBottom, 0, "fixed chrome does not duplicate the body gap");
+  assert.equal(navigation.marginBottom + bodyHeader.marginBottom + content.paddingTop, 26);
+  assert.equal(bodyHeader.marginBottom, 22, "optional content retains its existing trailing gap");
+  assert.equal(content.paddingTop, 4);
+});

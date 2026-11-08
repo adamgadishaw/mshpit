@@ -110,7 +110,7 @@ export default function FeedScreen(props) {
 
 export function FeedNavigation({ filter, onSelect, loggedIn }) {
   const { fontScale } = useWindowDimensions();
-  return <View style={styles.head}>
+  return <View style={[styles.head, { marginBottom: 0 }]}>
     <View style={[styles.wordmarkRow, styles.nativeHeaderRow]}><Text style={styles.nativeFeedTitle}>Feed</Text></View>
     {loggedIn && <View style={[styles.segment, fontScale > 1.25 && { flexWrap: "wrap" }]} accessibilityRole="tablist" accessibilityLabel="Feed filters">
       <Seg label="Following" on={filter === "following"} onPress={() => onSelect("following")} />
