@@ -152,9 +152,20 @@ test('non-iOS fallbacks remain inert and drawer pauses feed exposure without rep
  assert.match(app,/enabled=\{Platform.OS === "ios" && iosBackGestureAllowed\(nav\)\}/);
 });
 
-test('iOS flat post action rails preserve campaign colors and other-platform surfaces',()=>{
+test('post action rails match the card surface while preserving campaign colors on every platform',()=>{
  const source=readFileSync(new URL('./TicketStub.jsx',import.meta.url),'utf8');
- assert.equal((source.match(/surfaceColor=\{campaignPresentation \? campaignTreatment.contentSurfaceColor : Platform.OS === "ios" \? colors.bg : colors.surface\}/g)||[]).length,2);
+ const surfaces=[...source.matchAll(/\bsurfaceColor=\{([^}]+)\}/g)].map(match=>match[1]);
+ assert.equal(surfaces.length,2,'Both status and review swipe rails retain an explicit surface');
+ const colors={bg:'screen-background',surface:'card-surface'};
+ const campaignTreatment={contentSurfaceColor:'campaign-surface'};
+ for(const expression of surfaces){
+  const evaluate=new Function('campaignPresentation','campaignTreatment','colors','Platform',`return (${expression});`);
+  for(const OS of ['ios','android','web']){
+   assert.equal(evaluate(null,campaignTreatment,colors,{OS}),colors.surface,`${OS} ordinary rail matches the card`);
+   assert.equal(evaluate({},campaignTreatment,colors,{OS}),campaignTreatment.contentSurfaceColor,`${OS} campaign keeps its own palette`);
+  }
+ }
+ assert.match(source,/\.\.\.\(Platform\.OS === "ios" \? \{\s*card:\s*\{\s*backgroundColor: colors\.surface,/);
 });
 
 test('iOS suggested people retain filtering and actual per-person explanations',()=>{
