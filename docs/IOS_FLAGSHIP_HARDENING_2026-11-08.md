@@ -2,9 +2,9 @@
 
 ## Latest fully verified artifact
 
-Checkpoint 659d1d1 is preserved at
-.tmp/ios-phone-checkpoints/flagship-659d1d1/MshpitDev.app with a receipt and exact
-manifest. All 7,707 tests, three platform exports and signed Release compilation
+Checkpoint cd06226 is preserved at
+.tmp/ios-phone-checkpoints/flagship-cd06226/MshpitDev.app with a receipt and exact
+manifest. All 7,886 tests, three platform exports and signed Release compilation
 passed. This is a development-signed, live-linked preview, not installed and not
 App Store distribution. Physical interaction/accessibility/performance are still
 open. Later in-progress slices are not included until separately verified.
@@ -506,3 +506,72 @@ real reports, blocks, ticket openings, read receipts or native speech. Physical
 layout, gestures, accessibility and Release performance remain unverified. Live
 browsing side effects and the phone-install hold remain unchanged. Prior signed
 artifacts are preserved.
+
+## Gesture and suggestion checkpoint: cd06226
+
+Source commit cd06226dc9c3c97fefba3d5bacd8e3629f983bbb adds iOS-only
+gesture lifetime protection and suggestion draft/receipt protection. Android/web
+fallbacks, Store/API contracts, navigation geometry and existing production
+permissions are unchanged.
+
+- Tab/header swipes, photo paging/down-dismiss and detail edge Back each own a
+  presented lifetime. Both queued RN dispatch and retired UI handlers are
+  fenced, so a previous screen cannot pop or switch a newer destination.
+- Root's current-route predicate also covers the interval before React cleanup
+  and retained Feed beneath a gallery. Opening the drawer retires tab intent
+  synchronously. Deferred editor-close approval rechecks the same gesture claim
+  before navigation or authentication-abort effects.
+- The actual shared confirmed-reader subscription retires interrupted gestures
+  even if React batches VoiceOver on/off into the same final boolean. Fresh
+  gestures recover; a retired subscription cannot revoke a successor. Width
+  changes retire edge geometry; canceled and multi-pointer drags still settle.
+  Same-route benign renders retain valid gestures.
+- SuggestionBox has a private local draft and synchronous pending claim, Root
+  dirty/busy close protection, stale-control fences and normalized receipt
+  confirmation. Anonymous payload and existing idempotency keys are unchanged.
+  An unedited retry retains its key. Local discard cannot withdraw a suggestion
+  already received by the service; uncertain results are described honestly.
+- Report/Suggestion test factories now supply the actual fixture Platform to
+  extracted Root Back. The initial integration ReferenceError was a missing
+  fixture dependency, corrected without weakening assertions or production code.
+
+Verification:
+- Complete suite: 7,886/7,886 passed, zero failures/skips/cancellations,
+  83.429 seconds. Log: /tmp/mshpit-ios-gesture-full-tests.log.
+- Architecture baseline unchanged; Node syntax gate passed for 920 files.
+- Sequential iOS/Android Hermes exports, web export/budget and Release Xcode
+  compilation passed. Web initial JavaScript is 509.2/512.0 KiB gzip.
+- All 81 web source maps (1,158 source entries) exclude the new iOS gesture
+  implementations and iOS suggestion owner.
+- Independent review covered actual React lifecycle, actual Root refs and the
+  real preference owner, including negative controls. The saved five-owner
+  harness mounts tab/gallery/edge plus Post/Thread speech together. StrictMode
+  off/on both pass with one native preference listener, independent revocation,
+  partial-unmount recovery and complete teardown. Three deliberately broken
+  gesture variants are detected. This is synthetic ownership verification,
+  not native recognizer arbitration, UI-thread ordering or performance.
+- Harness: .tmp/ios-flagship-stress/combined-gesture-owners.mjs; output:
+  .tmp/ios-flagship-stress/combined-gesture-owners-results.txt. Harness SHA256:
+  fa4dece8c18eaa0f2a6934bf2b52bd9456222c3a69b73493ab296af587425b60.
+
+Preserved artifact:
+- .tmp/ios-phone-checkpoints/flagship-cd06226/MshpitDev.app
+- Strict deep signature verification and all 52 files/links match the built
+  artifact exactly. Total 60,231,632 bytes; receipt and manifest are beside it.
+- JavaScript SHA256:
+  0192e1f24457852d3e8f721d2a7d40892b13cb95a24004254df7b15301030e6e.
+- Manifest SHA256:
+  abf4887614c46643731a5abe4cb92393e99c34c4f47249ed0fa7056b9e8eb97b.
+- Existing signing authority/profile retained, intended phone included,
+  profile expires November 14 at 23:50:01 UTC. No new signing grants.
+- com.mshpit.app.dev, 1.0.0/build 1, development-signed Release configuration,
+  live backend https://www.mshpit.com. Not installed, pushed or deployed.
+  Previous signed checkpoints remain preserved.
+
+An already-released Like/Repost is not treated as withdrawn merely because a
+photo opens; social action semantics were not broadened. All gesture, suggestion
+and publication effects in tests were synthetic. Physical gesture feel,
+VoiceOver focus/speech, keyboard/Yoga, native image/video and measured Release
+performance remain open. Live-linked browsing may emit consented analytics;
+Activity/Thread may mark read. Mutation certification needs an authorized
+isolated fixture, not synthetic actions against production.

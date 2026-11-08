@@ -144,7 +144,7 @@ phone build is held until the owner reconnects and authorizes installation.
 
 ### Artifact-specific interpretation
 
-The verified 659d1d1 artifact currently declares portrait and upside-down only.
+The verified cd06226 artifact currently declares portrait and upside-down only.
 Landscape/iPad floating/split-view cases above are conditional future checks,
 not supported orientations to claim tested now. Performance measurement should
 use the Release JavaScript binary with React Native __DEV__ false and no Metro
@@ -156,3 +156,24 @@ The existing native-performance-probe.mjs is Android-emulator/Metro-specific;
 it is not an iOS Release benchmark. The Xcode project currently exposes only the
 app target, so an XCTest accessibility/launch suite would need a separate test-
 target setup. Neither of those absent gates has been claimed passed.
+
+## Gesture checkpoint acceptance
+
+The cd06226 source checks do not replace these native fixture checks:
+- Exercise tab/header rails, photo paging/down-dismiss and the 20-point detail
+  Back edge. Interrupt with another destination, cancellation, a second pointer,
+  VoiceOver transitions and background/resume. Verify no wrong destination,
+  extra pop or displaced surface, and preserve Feed offset/gallery index.
+- Confirm VoiceOver reaches explicit alternatives, skips hidden retained Feed,
+  enters/exits drawer and gallery correctly, and does not replay interrupted
+  outcomes. RN cannot retract speech already handed to the operating system.
+- At the largest supported text size with the keyboard visible, verify readable
+  labels/errors and reachable Send/Retry/Clear/Discard, preserving multiline
+  input, selection and cursor. Use the artifact's supported portrait orientations.
+- Observe native image/video/Photos/share recovery and physical Release launch,
+  scroll and memory with recorded device/build/network/thermal conditions.
+  No synthetic timing result establishes native smoothness.
+
+Use authorized isolated data and observe server effects for mutation/read-marker
+acceptance. Do not perform synthetic Send, Report, Block, Follow, Going, read-state
+changes or external saves on the live-linked build merely to certify it.
