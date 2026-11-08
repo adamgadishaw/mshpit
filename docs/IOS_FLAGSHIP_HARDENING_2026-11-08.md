@@ -2,12 +2,12 @@
 
 ## Latest fully verified artifact
 
-Checkpoint a39bdba is preserved at
-.tmp/ios-phone-checkpoints/flagship-a39bdba/MshpitDev.app with a receipt, exact
-manifest and platform-isolation evidence. All 8,268 tests, three platform exports
+Checkpoint 264f9ad is preserved at
+.tmp/ios-phone-checkpoints/flagship-264f9ad/MshpitDev.app with a receipt, exact
+manifest and platform-isolation evidence. All 8,273 tests, three platform exports
 and signed Release compilation passed. This is a development-signed, live-linked
 preview, not installed or App Store distribution. Physical interaction,
-accessibility and performance remain open. Earlier checkpoints, including aa3a29a,
+accessibility and performance remain open. Earlier checkpoints, including a39bdba,
 remain preserved. Later work is not included until separately verified.
 
 ## Scope and release boundary
@@ -919,3 +919,40 @@ See ios-feed-return-continuity-2026-11-08.md for the bounded algorithm and accep
 limits. The preserved sensitivity harness is feed-return-sensitivity.mjs under the
 ignored checkpoint stress directory, SHA-256
 a5d73db27dd37c6aa1a2e3f8a28ac478b809d387937dee115106501b80edd86b.
+
+## Final shared-code isolation audit and checkpoint 264f9ad
+
+A source differential against pre-redesign cce58fa reviewed App navigation/shell,
+shared screens/styles, default helper entries, Store observation, media/cache,
+composers, ticket links and layout helpers. It found nine new explicit accessibility
+annotations in Profile/You and two new preference consumers in Artist/ConcertMemory
+that also reached Android/web. These additions are now iOS-only. Android/web retain
+the baseline omission of those explicit props and import-free, unsubscribed default
+consumers; iOS directly reuses the original hooks and shared subscription owners.
+No visible text, style, handler, data or navigation behavior changed in this cleanup.
+
+The audit found no further concrete Android/web visual/navigation/data/request
+regression in the reviewed differential. This is not proof of complete behavioral
+equivalence or live assistive-technology certification. Shared core/services remain;
+platform-specific presentation and release lanes are not three separate backends.
+
+- Source: 264f9ada1cca4b194d43d0f17733bceaf2bab401.
+- Full integrated suite: 8,273 passed, no failures/skips/cancellations, 88.898 seconds.
+- Focused cleanup: 80 passed; independent review cleared production and final
+  test-only selector correction with unchanged navigation assertions.
+- Actual JSX, Metro resolution, live iOS preference identity/subscription and inert
+  defaults are covered. Syntax 921, architecture and diff checks passed.
+- Three-platform exports and signed Release compilation passed.
+- Artifact: 60,283,748 bytes; 52 files/links.
+- JS SHA-256: 46dcea139324e8e47f9c211595798dac0e4af4c52115490d4ab6f27037dd4b14.
+- Executable SHA-256: 73507611df54aa4a2a1a0e732e20352c3d33c0cb2089aff3e9e358cbd25c4502.
+- Manifest SHA-256: 8618699dda897654d72a9ffd79ba42bc6a6b97b339d2bf438074a4f29b339f7a.
+- Web initial gzip: 521915 bytes; 2373 bytes below budget.
+- Export maps verify inert default Feed/accessibility entries, no app .ios files,
+  and no iOS Feed-return or message-draft domain in Android/web.
+- Info.plist, all 11 privacy manifests and provisioning profile remain byte-identical
+  to a39bdba. Existing signing identity, backend and installation hold unchanged.
+
+No phone installation, production deployment, account/permission change or live QA
+occurred. Actual VoiceOver, keyboard, Dynamic Type, gesture/scroll feel and physical
+Release performance remain the separately authorized fixture/device gates.

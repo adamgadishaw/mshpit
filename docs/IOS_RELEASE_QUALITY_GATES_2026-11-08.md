@@ -284,3 +284,12 @@ an unexpected jump. Repeat with a changed/removed anchor, largest text and the
 existing direct-gallery path. The bounded JS/native-like fixture proves count,
 anchor ownership and finite progression, not native scrolling or performance.
 Do not claim deep Following/News restoration or recovery after process termination.
+
+## Current isolated artifact 264f9ad
+
+The current preserved signed preview includes the bounded Feed return and final
+platform-isolation cleanup, with 8,273 passing tests and all exports/build checks.
+Nine new Profile/You accessibility annotations and two new preference subscriptions
+are now strictly iOS-only. Default platform source checks and mocked component
+execution complement export isolation; real Android/web assistive-technology
+behavior is not certified. Physical iOS gates and the installation hold remain.
