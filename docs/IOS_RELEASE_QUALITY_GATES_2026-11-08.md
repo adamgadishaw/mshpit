@@ -144,7 +144,7 @@ phone build is held until the owner reconnects and authorizes installation.
 
 ### Artifact-specific interpretation
 
-The verified be4eb3f artifact currently declares portrait and upside-down only.
+The verified 659d1d1 artifact currently declares portrait and upside-down only.
 Landscape/iPad floating/split-view cases above are conditional future checks,
 not supported orientations to claim tested now. Performance measurement should
 use the Release JavaScript binary with React Native __DEV__ false and no Metro

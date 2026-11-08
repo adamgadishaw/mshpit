@@ -2,9 +2,9 @@
 
 ## Latest fully verified artifact
 
-Checkpoint be4eb3f is preserved at
-.tmp/ios-phone-checkpoints/flagship-be4eb3f/MshpitDev.app with a receipt and exact
-manifest. All 7,561 tests, three platform exports and signed Release compilation
+Checkpoint 659d1d1 is preserved at
+.tmp/ios-phone-checkpoints/flagship-659d1d1/MshpitDev.app with a receipt and exact
+manifest. All 7,707 tests, three platform exports and signed Release compilation
 passed. This is a development-signed, live-linked preview, not installed and not
 App Store distribution. Physical interaction/accessibility/performance are still
 open. Later in-progress slices are not included until separately verified.
@@ -456,3 +456,53 @@ above. No such production test actions were performed. The owner's genuine app
 use is separate from synthetic certification; controlled QA remains in the
 outbound-blocked fixture. No analytics consent, event policy or signing setting
 was changed to work around this boundary.
+
+## Retired controls and private Report draft checkpoint
+
+Source 659d1d1a0035b3c1eb3e23469d2d24f7a515c471 is compiled and preserved.
+
+- Activity lookups and controls are scoped to the presented account/epoch and
+  Root route generation. A queued row/Avatar/Back action or late lookup cannot
+  navigate after departure, including Root edge Back before React cleanup and
+  a later restoration of the same frame object. Existing transport, notification
+  read marking and refresh behavior are unchanged. No new global lookup owner
+  was added for unsupported entry paths.
+- Report is a private, local iOS form with synchronous single-flight report/block
+  actions and locked edits during submission. Reason/details survive unconfirmed
+  outcomes. Confirmed UI requires explicit success and a nonempty receipt ID.
+  Failure/discard copy does not claim a report was never received or withdrawn.
+  Dirty/busy Root navigation is protected, including Suspense hiding; pending
+  commands retain their barrier through layout reconnects. Old Send, Block,
+  Done and confirmation callbacks cannot act for a new owner. No persistent
+  report cache, automatic retry, moderation-policy or Store change was added.
+- iOS ticket controls reject starts from a retired presentation/scope before
+  calling the existing validator/confirmation/opener. Same-tick dedup, manual
+  retry and the established completion-time speech policy remain. Already-
+  presented confirmations or already-started external opening are not cancelled.
+- Explicit iOS Thread refresh speech now acquires a confirmed-reader/foreground
+  claim at accepted task start, not failure completion. Interruptions revoke it
+  without cancelling data work. Silent polling, read markers and refresh joining
+  are unchanged; stale/aborted outcomes release listeners and stay silent.
+- Android/web preserve their existing behavior. Substantive Activity, Report and
+  Thread speech ownership resolves only on iOS; the ticket path has iOS gates.
+
+Validation: 278 combined focused tests, all 7,707 aggregate tests (137.234s),
+920-file syntax, unchanged architecture baselines, whitespace and sequential
+iOS/Android/web exports passed. Independent reviews passed 65 Activity, 97 Report,
+96 Thread and 23 ticket focused cases. Worker counts overlap and are not additive.
+Full log: /tmp/mshpit-ios-controls-full-tests.log. Web remains 509.1 / 512 KiB gzip.
+
+The development-signed Release is preserved at
+.tmp/ios-phone-checkpoints/flagship-659d1d1/MshpitDev.app with its receipt/manifest.
+All 52 files/links match the built source, and strict signature verification
+passed. Artifact bytes: 60,212,660; JS bytes: 9,705,568.
+JS SHA-256: db24174176c12a4279c9a41c0d855b36245bdbcdeac5fb780a5e8e419fdd33ca.
+Manifest SHA-256: f1fa1be0eb9def10f321d83c365a5cfde7683af48da1ff31d234fc1f5e78e4cf.
+Same existing development signing identity/profile; no permissions changed.
+Bundle com.mshpit.app.dev remains version 1.0.0/build 1, live-linked and not installed.
+
+These tests use synthetic callbacks, React/Worklet seams and local fixtures, not
+real reports, blocks, ticket openings, read receipts or native speech. Physical
+layout, gestures, accessibility and Release performance remain unverified. Live
+browsing side effects and the phone-install hold remain unchanged. Prior signed
+artifacts are preserved.
