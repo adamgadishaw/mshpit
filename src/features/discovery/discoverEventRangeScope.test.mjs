@@ -48,7 +48,7 @@ assert.ok(initialRange, "Use the actual initial range state");
 // Match the real App key: an account switch must remount Discover, including
 // when both accounts have the same saved city and coordinates.
 const app = readFileSync(resolve(root, "App.js"), "utf8");
-let keyExpression, pagerKeyExpression;
+let keyExpression, shellKeyExpression;
 function visit(node) {
   if (!node || typeof node !== "object") return;
   if (node.type === "JSXOpeningElement" && node.name.name === "DiscoverScreen") {
@@ -56,9 +56,9 @@ function visit(node) {
     assert.ok(key, "App must provide Discover's real account key");
     keyExpression = app.slice(key.start, key.end);
   }
-  if (node.type === "JSXOpeningElement" && node.name.name === "NativeTabRail" && node.attributes.some(a => a.name?.name === "page")) {
+  if (node.type === "JSXOpeningElement" && node.name.name === "NativeFeedMediaLayer") {
     const key = node.attributes.find(a => a.name?.name === "key").value.expression;
-    pagerKeyExpression = app.slice(key.start, key.end);
+    shellKeyExpression = app.slice(key.start, key.end);
   }
   for (const value of Object.values(node)) {
     if (Array.isArray(value)) value.forEach(visit);
@@ -69,7 +69,8 @@ visit(parse(app, { sourceType: "module", plugins: ["jsx"] }));
 assert.ok(keyExpression);
 const discoverKey = new Function("session", "discoverReturn", "pager = false", `return (${keyExpression});`);
 
-const pagerKey = new Function("session", "chatAuthEpoch", `return (${pagerKeyExpression});`);
+assert.ok(shellKeyExpression, "Use the actual current native shell lifetime, not the removed main pager");
+const shellKey = new Function("session", "chatAuthEpoch", "Platform", `return (${shellKeyExpression});`);
 const noop = () => {};
 const context = {};
 let priority = 0;
@@ -94,7 +95,7 @@ const renderer = reconciler({
   bindToConsole: (method, args) => console[method].bind(console, ...args),
 });
 
-function fixture({ pager = false } = {}) {
+function fixture({ pager = false, shell = false } = {}) {
   let snapshot;
   const calls = [];
   const browseStore = createBrowseReturnStore();
@@ -122,7 +123,7 @@ function fixture({ pager = false } = {}) {
       browseStore.account(session?.id || null);
       const browseReturn = browseStore.lease("discover");
       if (initialSnapshot) browseReturn.save(initialSnapshot);
-      flush(React.createElement(React.Fragment, { key: pager ? pagerKey(session, authEpoch) : "legacy" },
+      flush(React.createElement(React.Fragment, { key: pager || shell ? shellKey(session, authEpoch, { OS: "ios" }) : "legacy" },
         React.createElement(Probe, { key: discoverKey(session, browseReturn, pager), isTabPreview: preview, session, discoverySidebar, browseReturn, loadDiscoverTourDateRange: load })));
     },
     snapshot: () => snapshot,
@@ -279,15 +280,15 @@ test("pager preview ignores old browse state and promotes the same scoped reques
     assert.deepEqual(f.snapshot().eventRange.rows.map(row => row.id), ["prepared"]);
   } finally { f.close(); }
 });
-test("pager parent key retires pending coordinate reads across account and authentication boundaries", async () => {
-  const f = fixture({ pager: true });
+test("actual native shell parent key retires pending coordinate reads across account and authentication boundaries", async () => {
+  const f = fixture({ shell: true });
   try {
     const a = account(43.6532, -79.3832, { id: "A" });
-    f.render(a, null, null, { preview: true, authEpoch: 1 }); const first = f.snapshot().identity;
-    f.render(account(43.6532, -79.3832, { id: "B" }), null, null, { preview: true, authEpoch: 1 });
+    f.render(a, null, null, { authEpoch: 1 }); const first = f.snapshot().identity;
+    f.render(account(43.6532, -79.3832, { id: "B" }), null, null, { authEpoch: 1 });
     assert.notEqual(f.snapshot().identity, first); assert.equal(f.calls[0].options.signal.aborted, true);
     const second = f.snapshot().identity;
-    f.render(account(43.6532, -79.3832, { id: "B" }), null, null, { preview: true, authEpoch: 2 });
+    f.render(account(43.6532, -79.3832, { id: "B" }), null, null, { authEpoch: 2 });
     assert.notEqual(f.snapshot().identity, second); assert.equal(f.calls[1].options.signal.aborted, true);
     await f.settle(0, ["old-A"]); await f.settle(1, ["old-B-auth"]);
     assert.deepEqual(f.snapshot().eventRange.rows, []);

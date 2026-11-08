@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "@babel/parser";
 import { createBrowseReturnStore } from "./iosBrowseReturn.mjs";
+import { createIOSFeedReturnStore } from "./iosFeedReturn.mjs";
 import { DISCOVER_PROGRAMME_SECTIONS, discoverProgrammeKey, discoverProgrammeKeyboardTarget, restoredDiscoverProgramme } from "./discoverProgramme.mjs";
 
 test("Discover keeps all six destinations without inventing routes or changing area", () => {
@@ -51,18 +52,49 @@ test("Discover restores its in-app destination while explicit directory links ke
   store.reset("discover"); assert.notEqual(keyFor(store.lease("discover"), { id: "A" }), returned, "new directory intent remounts");
   for (const lease of [null, a, store.lease("discover")]) assert.equal(keyFor(lease, { id: "A" }, true), undefined,
     "pager owns the stable surface key across destination promotion and lease reset");
-  const pagerKey = [];
+  const mainPagers = [], shells = [];
   const collect = node => {
     if (!node || typeof node !== "object") return;
-    if (node.type === "JSXOpeningElement" && node.name.name === "NativeTabRail" && node.attributes.some(a => a.name?.name === "page"))
-      pagerKey.push(node.attributes.find(a => a.name?.name === "key").value.expression);
+    if (node.type === "JSXOpeningElement") {
+      if (node.name.name === "NativeTabRail" && node.attributes.some(a => a.name?.name === "page")) mainPagers.push(node);
+      if (node.name.name === "NativeFeedMediaLayer") shells.push(node);
+    }
     for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(collect); else if (value?.type) collect(value);
   };
-  collect(parse(app, { sourceType: "module", plugins: ["jsx"] })); assert.equal(pagerKey.length, 1);
-  const ownerKey = new Function("session", "chatAuthEpoch", `return (${app.slice(pagerKey[0].start, pagerKey[0].end)});`);
-  assert.notEqual(ownerKey({ id: "A" }, 1), ownerKey({ id: "B" }, 1), "parent unmounts all pages across accounts");
-  assert.notEqual(ownerKey({ id: "A" }, 1), ownerKey({ id: "A" }, 2), "same-account reauthentication retires the pager");
-  assert.notEqual(ownerKey(null, 1), ownerKey({ id: "A" }, 1));
+  collect(parse(app, { sourceType: "module", plugins: ["jsx"] }));
+  assert.equal(mainPagers.length, 0, "Root main navigation is tap-only; Discover is not a horizontal Feed destination");
+  assert.match(app, /const nativeTabPage = tabScreens;/);
+  assert.equal(shells.length, 1);
+  const shellKey = shells[0].attributes.find(a => a.name?.name === "key").value.expression;
+  const ownerKey = new Function("session", "chatAuthEpoch", "Platform", `return (${app.slice(shellKey.start, shellKey.end)});`);
+  const iosKey = (session, epoch) => ownerKey(session, epoch, { OS: "ios" });
+  assert.notEqual(iosKey({ id: "A" }, 1), iosKey({ id: "B" }, 1), "shared shell retires local Feed pages across accounts");
+  assert.notEqual(iosKey({ id: "A" }, 1), iosKey({ id: "A" }, 2), "same-account reauthentication retires local Feed pages");
+  assert.notEqual(iosKey(null, 1), iosKey({ id: "A" }, 1));
+
+  // Exercise the actual local selector key with the production Feed return
+  // lease, rather than retaining the superseded Root main-pager key contract.
+  const local = read("../screens/FeedScreen.ios.jsx");
+  const localOpening = [];
+  const walkLocal = node => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "JSXOpeningElement") localOpening.push(node);
+    for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(walkLocal); else if (value?.type) walkLocal(value);
+  };
+  walkLocal(parse(local, { sourceType: "module", plugins: ["jsx"] }));
+  const localKey = localOpening.find(node => node.name.name === "FeedOwner").attributes.find(a => a.name?.name === "key").value.expression;
+  const keyForFeed = new Function("props", `return (${local.slice(localKey.start, localKey.end)});`);
+  const feedStore = createIOSFeedReturnStore(), base = {};
+  const feedKey = (accountId, epoch) => keyForFeed({ accountId, feedReturn: feedStore.reconcile(accountId, epoch, base) });
+  const feedA = feedKey("A", 1);
+  assert.equal(feedKey("A", 1), feedA, "same Feed lifetime keeps its selected filter and current pane");
+  assert.notEqual(feedKey("B", 1), feedA);
+  const feedAAgain = feedKey("A", 1); assert.notEqual(feedAAgain, feedA);
+  assert.notEqual(feedKey("A", 2), feedAAgain, "actual Feed return epoch changes the local owner key");
+  const localPager = localOpening.filter(node => node.name.name === "NativeFeedFilterPager");
+  assert.equal(localPager.length, 1);
+  assert.equal(localPager[0].attributes.find(a => a.name?.name === "active").value.expression.name, "filter");
+
 });
 
 test("a departed render cannot overwrite the URL just restored by browser Back", () => {
