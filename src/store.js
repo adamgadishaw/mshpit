@@ -132,6 +132,7 @@ import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.
 import { saveMemoryPostEdit } from "./features/postEditing/services/memoryPostEditApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
 import { attachArtistSuggestion, fetchArtistSuggestions, fetchResolvedArtist, mergeArtistSearchCacheEntry, refreshArtistCatalogEntry } from "./features/artistSearch/artistSearchApi.mjs";
+import { sessionValidationStatusForOwner } from "./hooks/sessionValidationStatus";
 import { createSessionValidationRetry } from "./domain/sessionValidationRetry.mjs";
 import { useAccountCommentCache } from "./features/comments/useAccountCommentCache";
 import { writeCommentLike, writePostRepost, notifySocialReactionChange } from "./features/socialReactions/socialReactionsApi";
@@ -519,6 +520,7 @@ export function StoreProvider({ children }) {
   const [authReady, setAuthReady] = useState(ENABLE_DEMO_DATA);
   const authReadyRef = useRef(ENABLE_DEMO_DATA);
   const authValidationSequenceRef = useRef(0);
+  const sessionValidationStatus = sessionValidationStatusForOwner(authValidationSequenceRef);
   const accountMutationEpochRef = useRef(0);
   sessionRef.current = session;
   authReadyRef.current = authReady;
@@ -2704,6 +2706,7 @@ export function StoreProvider({ children }) {
     let identityHasBeenConfirmed = authReadyRef.current;
     let coordinator;
     const validationRetry = createSessionValidationRetry();
+    const validationStatus = sessionValidationStatus?.begin();
 
     const lockIdentity = () => {
       const accountId = sessionRef.current?.id || null;
@@ -2711,6 +2714,7 @@ export function StoreProvider({ children }) {
       configureApiIdentity(accountId, { ready: false });
       authReadyRef.current = false;
       setAuthReady(false);
+      validationStatus?.checking();
     };
 
     const publishAuthoritativeGuest = (departingAccountId) => {
@@ -2728,14 +2732,40 @@ export function StoreProvider({ children }) {
     const scheduleRetry = (strict, error) => {
       if (stopped) return;
       if (retryTimer) clearTimeout(retryTimer);
-      retryTimer = setTimeout(() => {
+      const timer = setTimeout(() => {
+        // A deliberately replaced iOS retry cannot dispatch from a stale timer.
+        if (validationStatus && (stopped || retryTimer !== timer)) return;
         retryTimer = null;
         void coordinator.validate({ force: true, strict, reason: "retry" });
       }, validationRetry.next(error));
+      retryTimer = timer;
+      if (validationStatus && !authReadyRef.current) {
+        const sequence = authValidationSequenceRef.current;
+        const intentRevision = authTransitions.revision();
+        const hint = Number(error?.retryAfterMs);
+        // The existing timer owns the bounded server delay. Do not expose
+        // an early action or create a second clock/countdown for that delay.
+        if (Number.isFinite(hint) && hint > 0) { validationStatus.waiting(); return; }
+        validationStatus.unavailable(() => {
+          if (stopped || authReadyRef.current || sequence !== authValidationSequenceRef.current
+            || intentRevision !== authTransitions.revision() || authTransitions.blocked()) return;
+          // Join a settling flight without superseding it or stealing its timer.
+          if (coordinator.snapshot().inFlight) {
+            return coordinator.validate({ force: true, reason: "manual-retry" });
+          }
+          // Only a deliberate iOS tap can replace local backoff. Server hints
+          // stay on the automatic timer; the retry policy itself never resets.
+          if (retryTimer) clearTimeout(retryTimer);
+          retryTimer = null;
+          validationStatus.checking();
+          return coordinator.validate({ force: true, strict, reason: "manual-retry" });
+        });
+      }
     };
 
     const runValidation = async (context) => {
       if (stopped) return { authoritative: false };
+      if (!authReadyRef.current) validationStatus?.checking();
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = null;
@@ -2844,6 +2874,7 @@ export function StoreProvider({ children }) {
       run: async (context) => {
         const result = await runValidation(context);
         if (result.authoritative) validationRetry.reset();
+        if (!stopped && authReadyRef.current) validationStatus?.clear();
         return result;
       },
       onStrictRequest: lockIdentity,
@@ -2884,6 +2915,7 @@ export function StoreProvider({ children }) {
     }
     return () => {
       stopped = true;
+      validationStatus?.dispose();
       stopAuthRetry();
       if (retryTimer) clearTimeout(retryTimer);
       appStateSubscription?.remove?.();
@@ -7114,6 +7146,7 @@ export function StoreProvider({ children }) {
 
   const value = {
     mutedIds, followedArtists: [...(session?.favoriteArtists || []), ...(fanClubs[session?.id] || [])],
+    sessionValidationStatus,
     users, adminMembers, adminMemberDirectory, session, authReady, feed, removedIds, blockedIds, requests, tourDates, reports, moderationConsole, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, switchLinkedAccount, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme, syncAccountTheme,

@@ -57,6 +57,7 @@ function fixture({ confirmed = true, account = confirmed ? member : null, intent
   transport.configureApiIdentity(account?.id, { ready: confirmed });
   const dependencies = {
     ...transport, sessionRef, authReadyRef, authValidationSequenceRef, authTransitions,
+    sessionValidationStatus: null,
     sessionValidationOutcome, createSessionValidationRetry: () => createSessionValidationRetry({ random: () => 0 }),
     createSessionValidationCoordinator: (options) => {
       coordinator = createSessionValidationCoordinator(options);

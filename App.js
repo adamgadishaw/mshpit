@@ -1,3 +1,4 @@
+import SessionValidationPending from "./src/components/SessionValidationPending";
 import NativeAccountLinks from "./src/screens/NativeAccountLinks";
 import { nativeNewsLinkFrame } from "./src/domain/nativeNewsLink.mjs";
 import { publicDiscoveryRailAllowed } from "./src/domain/publicPlacementPolicy.mjs";
@@ -240,7 +241,7 @@ const loadPublicRecovery = () => publicRecoveryModule ||= import("./src/features
 function Root() {
   const safeAreaInsets = useSafeAreaInsets();
   const {
-    session, chatAuthEpoch, authReady, concertKey, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
+    session, chatAuthEpoch, authReady, sessionValidationStatus, concertKey, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
     feedHeadStatus, feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
     searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, isFollowing, follow, isBlocked,
     loadPlayHistory, saveQueueAsPlaylist, autoplayQueue, followingCount, resendEmailVerification, completeSignupOnboarding,
@@ -2029,7 +2030,7 @@ function Root() {
         )}
 
         {landingSurface === "pending" ? (
-          <ScreenLoading />
+          <SessionValidationPending status={sessionValidationStatus} fallback={<ScreenLoading />} />
         ) : landingSurface === "landing" ? (
           <LandingScreen
             session={session}
