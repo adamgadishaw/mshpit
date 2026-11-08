@@ -177,3 +177,10 @@ The cd06226 source checks do not replace these native fixture checks:
 Use authorized isolated data and observe server effects for mutation/read-marker
 acceptance. Do not perform synthetic Send, Report, Block, Follow, Going, read-state
 changes or external saves on the live-linked build merely to certify it.
+
+## Dependency evidence scope
+
+A zero server-only npm audit result does not clear mobile dependencies or native
+Pods. See IOS_NATIVE_DECODER_REVIEW_2026-11-08.md for the dated installed-chain,
+signed-binary presence and specific AVIF-path mitigation assessment. Preserve
+its limits and recheck native decoder configuration before a dependency update.
