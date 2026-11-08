@@ -65,6 +65,7 @@ const app = readFileSync(path.join(root, "App.js"), "utf8");
 const ast = parse(app, { sourceType: "module", plugins: ["jsx"] });
 const branch = find(ast, n => n.type === "ConditionalExpression" && find(n.test, node => node.type === "Identifier" && node.name === "retainNativeFeed").length > 0 && n.consequent?.openingElement?.name?.name === "NativeFeedMediaLayer")[0];
 assert.ok(branch);
+assert.match(app.slice(branch.consequent.start, branch.consequent.end), /performanceKey=\{Platform.OS === "ios" \? screenKey : "main:feed"\}/);
 assert.match(app.slice(branch.test.start, branch.test.end), /retainNativeFeed \|\| \(Platform.OS === "ios" && !overlay\)/);
 const names = "chatAuthEpoch,openSignIn,retainNativeFeed,session,overlay,NativeFeedMediaLayer,NativeAppHeader,activeTab,switchTab,Platform,iosTabSwipeScope,iosTabSwipeEnabled,isCurrentIOSTabSwipe,openMainMenu,iosMenuOpener,requireVerifiedMutation,go,openProfileManagement,mobileTabBar,Suspense,ScreenLoading,ScreenTransition,screenKey,screenDirection,IosDetailNavigation,iosBackGestureAllowed,nav,linkedNavigationScope,linkedNavigationRef,navigationRef,back,tabScreens";
 const module = { exports: {} };
