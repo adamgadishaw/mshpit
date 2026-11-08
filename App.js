@@ -150,6 +150,7 @@ import { createIOSArtistReturnStore } from "./src/domain/iosArtistReturn.mjs";
 import { createBrowseReturnStore } from "./src/domain/iosBrowseReturn.mjs";
 import { createCommentDraftOwner } from "./src/domain/commentDraftOwner";
 import { createIOSMessageDrafts } from "./src/domain/iosMessageDrafts.mjs";
+import { createLinkedNavigationOwner } from "./src/domain/linkedNavigationOwner";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
 import { profileManagementAction, publicIdentityTarget } from "./src/domain/artistAccountIdentity.mjs";
@@ -317,6 +318,17 @@ function Root() {
     });
     commentDraftsRef.current.account(session?.id || null, chatAuthEpoch);
   }
+  const linkedNavigationRef = useRef(null);
+  if (Platform.OS === "ios" && !linkedNavigationRef.current) linkedNavigationRef.current = createLinkedNavigationOwner();
+  // Fence old completions/captured callbacks during render, including A -> B -> A
+  // and reauthentication as the same account, before any effect can run.
+  const linkedNavigationScope = Platform.OS === "ios"
+    ? linkedNavigationRef.current.account(session?.id || null, chatAuthEpoch) : null;
+  useLayoutEffect(() => {
+    const owner = linkedNavigationRef.current;
+    owner?.mount();
+    return () => owner?.unmount();
+  }, []);
   const browseReturnRef = useRef(null);
   if (!browseReturnRef.current) browseReturnRef.current = createBrowseReturnStore();
   // Change ownership during render: an old screen's effect/scroll callback cannot write for the new viewer.
@@ -669,15 +681,31 @@ function Root() {
   // A news story opens only for the latest tap, and any navigation cancels a
   // pending one; a story that cannot load says so with a retry.
   const newsOpenRef = useRef(0);
-  const [newsStoryNotice, setNewsStoryNotice] = useState(null);
+  const newsLinkedClaimRef = useRef(null);
+  const [newsStoryNoticeState, setNewsStoryNotice] = useState(null);
+  // Same-account reauthentication invalidates reads during render too. An old
+  // loading/retry notice must not keep the new session's navigation pending.
+  const newsStoryNotice = Platform.OS === "ios" && newsStoryNoticeState?.scope !== linkedNavigationScope
+    ? null : newsStoryNoticeState;
   const cancelNewsStory = () => {
+    if (Platform.OS === "ios") {
+      linkedNavigationRef.current.release(newsLinkedClaimRef.current);
+      newsLinkedClaimRef.current = null;
+    }
     newsOpenRef.current += 1;
     setNewsStoryNotice(null);
   };
+  const newsStoryNoticeCurrent = () => Platform.OS !== "ios" || (
+    linkedNavigationRef.current.ownsScope(newsStoryNotice?.scope)
+    && newsStoryNotice?.ticket === newsOpenRef.current
+  );
+  const cancelNewsStoryNotice = () => { if (newsStoryNoticeCurrent()) cancelNewsStory(); };
+  const retryNewsStoryNotice = () => { if (newsStoryNoticeCurrent()) openNewsStory(newsStoryNotice.story); };
   // The Android listener stays mounted; read the current notice on each Back.
   const newsStoryBackRef = useRef(null);
   newsStoryBackRef.current = newsStoryNotice ? cancelNewsStory : null;
   const cancelPublicRoute = () => {
+    if (Platform.OS === "ios") linkedNavigationRef.current.invalidate();
     publicLookup.lookup?.cancel();
     publicNavigationPendingRef.current = null;
     publicRouteRequestRef.current?.abort();
@@ -730,8 +758,8 @@ function Root() {
   // Push a fresh screen onto the stack. On web we mirror it into browser history
   // so the hardware/browser Back button pops the same stack the in-app back
   // buttons do (both funnel through popstate below).
-  const runAfterComposerClose = (action, cancel = () => {}) => {
-    const proceed = () => { authNavigationAbortRef.current?.(); action(); };
+  const runAfterComposerClose = (action, cancel = () => {}, current = () => true) => {
+    const proceed = () => { if (!current()) return; authNavigationAbortRef.current?.(); action(); };
     const guard = composerCloseGuardRef.current;
     if (guard) { guard({ proceed, cancel }); return; }
     proceed();
@@ -804,17 +832,30 @@ function Root() {
       if (publicRouteRequestRef.current === controller) publicNavigationPendingRef.current = null;
     }
   };
-  const go = (candidate) => {
+  const go = (candidate, iosLinkedClaim = null) => {
+    if (iosLinkedClaim && !linkedNavigationRef.current.current(iosLinkedClaim)) return;
     const current = stackRef.current[stackRef.current.length - 1];
     if (isComposerFrame(current) && isComposerFrame(candidate)) return;
     const transition = composerNavigationTransition(current);
-    runAfterComposerClose(() => navigateCandidate(candidate, transition));
+    runAfterComposerClose(() => {
+      // A discard prompt may outlive the lookup or its route/account. Consume
+      // only after the existing dirty/busy guard permits this navigation.
+      if (iosLinkedClaim && !linkedNavigationRef.current.consume(iosLinkedClaim)) return;
+      navigateCandidate(candidate, transition);
+    }, () => { if (iosLinkedClaim) linkedNavigationRef.current.release(iosLinkedClaim); },
+    () => !iosLinkedClaim || linkedNavigationRef.current.current(iosLinkedClaim));
   };
   const replace = (frame) => runAfterComposerClose(() => navigateCandidate(frame, "replace"));
   // Keep the current public screen under sign-in; repeated taps must not stack
   // duplicate auth frames. Signing in never replays a guest's attempted action.
-  const openSignIn = () => {
-    if (!stackRef.current[stackRef.current.length - 1]?.auth) go({ auth: true });
+  const openSignIn = (options) => {
+    const iosLinkedClaim = options?.iosLinkedClaim || null;
+    if (iosLinkedClaim && !linkedNavigationRef.current.current(iosLinkedClaim)) return;
+    if (stackRef.current[stackRef.current.length - 1]?.auth) {
+      if (iosLinkedClaim) linkedNavigationRef.current.release(iosLinkedClaim);
+      return;
+    }
+    go({ auth: true }, iosLinkedClaim);
   };
   const requireAuth = (fn) => (session ? fn() : openSignIn());
   // This is an affordance, not the security boundary: the server independently
@@ -1274,8 +1315,31 @@ function Root() {
     return result;
   };
 
-  const openProfile = (id, authoritativeUser = null) => go(publicIdentityFrame(id, authoritativeUser));
+  // Optional linked reads use the same navigation/close guards as direct taps.
+  // Missing/rejected reads leave the route intact; another deliberate tap retries.
+  const openIOSLinkedDestination = async (read, open) => {
+    const owner = linkedNavigationRef.current;
+    const claim = owner.begin(linkedNavigationScope);
+    if (!claim) return;
+    cancelNewsStory();
+    try {
+      const value = await read(claim.signal);
+      if (!owner.current(claim)) return;
+      if (value) open(value, claim);
+      else owner.release(claim);
+    } catch {
+      // architecture: allow-ambiguous-result -- Optional linked reads retain the current route, matching Store's missing-result policy.
+      owner.release(claim);
+    }
+  };
+  const openProfile = (id, authoritativeUser = null, iosLinkedClaim = null) => go(publicIdentityFrame(id, authoritativeUser), iosLinkedClaim);
   const openProfileByHandle = async (h) => {
+    if (Platform.OS === "ios") return openIOSLinkedDestination(async (signal) => {
+      const cached = userByHandle(h);
+      if (cached) return cached;
+      const found = await searchPeople(h, { signal });
+      return (found || []).find((x) => x.handle === h);
+    }, (user, claim) => openProfile(user.id, user, claim));
     const u = userByHandle(h);
     if (u) return openProfile(u.id, u);
     // Unknown handle (an @mention of someone this device never cached): look them
@@ -1284,33 +1348,65 @@ function Root() {
     const hit = (found || []).find((x) => x.handle === h);
     if (hit) openProfile(hit.id, hit);
   };
-  const openPost = (log, analytics = {}) => {
+  const openPost = (log, analytics = {}, iosLinkedClaim = null) => {
     if (!log) return;
-    if (Platform.OS !== "web" && !session && (log.news || String(log.id || "").startsWith("news_"))) { openSignIn(); return; }
+    if (Platform.OS !== "web" && !session && (log.news || String(log.id || "").startsWith("news_"))) {
+      if (iosLinkedClaim) openSignIn({ iosLinkedClaim });
+      else openSignIn();
+      return;
+    }
     track("content_open", {
       postId: log.id,
       surface: analytics.surface || "direct",
       ...(Number.isSafeInteger(analytics.position) ? { position: analytics.position } : {}),
     });
-    go({ post: log });
+    go({ post: log }, iosLinkedClaim);
   };
   // An opener's review linked from the main review: load it, then open it.
   const openPostById = async (postId) => {
+    if (Platform.OS === "ios") {
+      if (!session && String(postId || "").startsWith("news_")) {
+        const claim = linkedNavigationRef.current.begin(linkedNavigationScope);
+        if (claim) { cancelNewsStory(); openSignIn({ iosLinkedClaim: claim }); }
+        return;
+      }
+      return openIOSLinkedDestination((signal) => postId ? loadPostForView(postId, { signal }) : null,
+        (post, claim) => openPost(post, { surface: "linked-review" }, claim));
+    }
     if (Platform.OS !== "web" && !session && String(postId || "").startsWith("news_")) { openSignIn(); return; }
     const post = postId ? await loadPostForView(postId) : null;
     if (post) openPost(post, { surface: "linked-review" });
   };
   // A story from the news panel, strip or News tab opens its post and comments.
   const openNewsStory = async (story) => {
+    if (Platform.OS === "ios" && !session) {
+      const claim = linkedNavigationRef.current.begin(linkedNavigationScope);
+      if (claim) { cancelNewsStory(); openSignIn({ iosLinkedClaim: claim }); }
+      return;
+    }
     if (Platform.OS !== "web" && !session) { openSignIn(); return; }
     if (!story?.postId) return;
+    // News and linked reviews/mentions are competing destination taps on iOS.
+    // Keep the existing news notice/retry policy, sharing only lookup ownership.
+    const iosLinkedClaim = Platform.OS === "ios" ? linkedNavigationRef.current.begin(linkedNavigationScope) : null;
+    if (Platform.OS === "ios" && !iosLinkedClaim) return;
+    if (iosLinkedClaim) newsLinkedClaimRef.current = iosLinkedClaim;
     const ticket = ++newsOpenRef.current;
-    setNewsStoryNotice({ loading: true, story });
-    const post = await loadPostForView(story.postId);
-    if (ticket !== newsOpenRef.current) return;
-    if (!post) { setNewsStoryNotice({ loading: false, story }); return; }
+    const notice = { story, ...(iosLinkedClaim ? { scope: linkedNavigationScope, ticket } : {}) };
+    setNewsStoryNotice({ loading: true, ...notice });
+    const post = iosLinkedClaim
+      ? await loadPostForView(story.postId, { signal: iosLinkedClaim.signal }).catch(() => {
+        // architecture: allow-ambiguous-result -- Optional News failures use the existing visible Retry notice and retain the route.
+        return null;
+      })
+      : await loadPostForView(story.postId);
+    if (ticket !== newsOpenRef.current || (iosLinkedClaim && !linkedNavigationRef.current.current(iosLinkedClaim))) return;
+    if (!post) {
+      if (iosLinkedClaim) linkedNavigationRef.current.release(iosLinkedClaim);
+      setNewsStoryNotice({ loading: false, ...notice }); return;
+    }
     setNewsStoryNotice(null);
-    openPost(post, { surface: "news" });
+    openPost(post, { surface: "news" }, iosLinkedClaim);
   };
   // Ordinary statuses open their discussion. A Going ticket can instead pass
   // the exact performance projection produced by calendarShowFromPost.
@@ -1870,8 +1966,8 @@ function Root() {
         {newsStoryNotice && (
           <View accessibilityLiveRegion="polite" style={{ padding: 12, backgroundColor: colors.bgElev, flexDirection: "row", alignItems: "center", gap: 12 }}>
             <Text style={{ flex: 1, color: colors.text }}>{newsStoryNotice.loading ? "Opening story…" : "This story could not be opened."}</Text>
-            {!newsStoryNotice.loading && <Pressable accessibilityRole="button" onPress={() => openNewsStory(newsStoryNotice.story)} style={{ padding: 10 }}><Text style={{ color: colors.amber }}>Try again</Text></Pressable>}
-            <Pressable accessibilityRole="button" onPress={cancelNewsStory} style={{ padding: 10 }}><Text style={{ color: colors.text }}>Cancel</Text></Pressable>
+            {!newsStoryNotice.loading && <Pressable accessibilityRole="button" onPress={retryNewsStoryNotice} style={{ padding: 10 }}><Text style={{ color: colors.amber }}>Try again</Text></Pressable>}
+            <Pressable accessibilityRole="button" onPress={cancelNewsStoryNotice} style={{ padding: 10 }}><Text style={{ color: colors.text }}>Cancel</Text></Pressable>
           </View>
         )}
 

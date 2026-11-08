@@ -284,3 +284,63 @@ only failure was an older source assertion requiring the image hook to have
 exactly two arguments. It now verifies the same scoped source list plus the
 platform-resolved retry argument and the inert Android/web context, retaining
 all disk-cache, fallback and recycling assertions. A fresh run follows.
+
+## Verified signed continuity checkpoint e873ca5
+
+The frozen continuity source passed all 7,419 tests with zero failures, skips or
+cancellations in 141.5 seconds. Sequential iOS/Android Hermes exports and the web
+export passed; web remained inside its unchanged budget at 508.9/512.0 KiB gzip.
+The signed iPhone Release build passed with the same cached signing authority and
+profile, followed by strict deep verification and an exact 52-entry copy check.
+
+Preserved app: .tmp/ios-phone-checkpoints/flagship-e873ca5/MshpitDev.app
+Receipt and exact manifest: receipt.json and manifest.json alongside it.
+Source: e873ca53d8841686cc996ffcfbedb838b96f1e03.
+Artifact bytes: 60,174,957. Actual version remains 1.0.0, bundle version 1.
+Bundled JavaScript SHA-256:
+bdba7ebeba3a27085c67d21a4a8096e7775aff5066933f62e182525dea44d75b.
+Manifest SHA-256:
+2cbcfb8aee51a3c5bed63472a4c848e35f0ec27894e4258d79ae7e9aec2a2712.
+
+This app includes comment continuity and explicit image recovery. It is still
+held, not installed, and uses the already-approved live backend. Earlier signed
+artifacts are preserved. Profile expiry and native-QA limits remain unchanged.
+
+The subsequent Post composer slice adds an iOS-only measured keyboard container,
+44-point Send/Clear controls, labelled multiline input and wrapping reply/retry
+content. A single keyboard owner measures its actual window bounds rather than
+assuming a fixed safe-area/banner offset. It rejects stale measurements and
+clears on keyboard hide/background; Android/web resolve to a bare View. Return
+adds a newline and explicit Send publishes. All 66 focused actual-component,
+geometry and existing draft tests passed after integration, with independent
+review approval. Actual native keyboard visibility, animation, VoiceOver and
+extreme large-text/small-height fit still require device testing. It is not yet
+part of the signed e873ca5 artifact.
+
+### Linked destinations and Calendar sharing
+
+The next integrated iOS journey slice uses a single Root-owned lookup claim for
+linked posts, profile handles and News. New taps, committed navigation, account
+changes and same-account reauthentication invalidate older lookups. An old
+result or stale notice/dirty-form confirmation cannot change the current route
+or abort a newer sign-in. Claims are consumed only after the existing editor
+close guard permits navigation. Guest auth still deduplicates before side
+effects. Cached authoritative artist identities retain their canonical route;
+missing/rejected optional lookups retain the current route and can be retried by
+a deliberate tap. Store/data ownership and the original Android/web handlers
+remain, with an inert default-platform owner.
+
+Calendar sharing now uses an iOS-only synchronous single-flight claim across
+same-frame presses and an exporter-level presentation gate that survives route
+remounts. Account/auth epoch, unmount and foreground-ended intents cannot open a
+late share sheet. Each export uses its own non-overwritten cache file, cleaned
+up only after the native sharing promise settles. Android/web exporters and
+calendar event/date/content policies are unchanged. Expo cannot cancel an
+already-presented share sheet, and its void result only proves dismissal, not
+saving or Calendar import. The UI reports those limits truthfully.
+
+All 170 combined focused tests passed after integrating Post keyboard, linked
+navigation, Calendar sharing and existing comment/draft behavior. The three
+slices had independent source/test sign-off before integration. The next full
+suite/export/signed checkpoint remains required. No native share sheet or real
+calendar was invoked by the mocked tests.

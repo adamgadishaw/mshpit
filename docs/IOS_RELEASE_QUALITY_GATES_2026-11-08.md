@@ -110,3 +110,18 @@ The Mac session is locked, so interactive testing stopped rather than bypassing
 it. Source tests and local compilation continue. New physical accessibility,
 permission, performance and final-install checks remain explicitly open. The
 phone build is held until the owner reconnects and authorizes installation.
+
+## Additional journey gates after the continuity checkpoint
+
+- With a reply and failed-send attempt retained, test the largest text size,
+  docked and interactive keyboard dismissal, landscape, a visible verification
+  banner/player, and floating/hardware keyboard where supported. Verify input
+  cursor/selection and text survive; Send and Clear remain reachable. Unit
+  geometry checks do not prove actual Yoga/native keyboard behavior.
+- Delay linked Post, profile and News loads, select another destination, and
+  verify the newest intent wins. Cancel a dirty-editor close prompt and ensure
+  the draft stays and no late route or sign-in abort occurs.
+- Open Calendar sharing once, then dismiss or choose Files/Calendar. Verify no
+  duplicate presentation or stuck control. Confirm the chosen app's result
+  separately; the share promise is not an import receipt. Check temporary-file
+  cleanup after actual native completion without deleting unrelated files.

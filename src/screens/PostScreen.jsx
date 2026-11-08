@@ -19,6 +19,9 @@ import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import { CommentLikeButton } from "../components/SocialReactionButtons";
+import IOSPostKeyboardView from "../components/IOSPostKeyboardView";
+
+const PostContainer = Platform.OS === "ios" ? IOSPostKeyboardView : View;
 
 const EMPTY_DRAFT = Object.freeze({});
 const readEmptyDraft = () => EMPTY_DRAFT;
@@ -337,7 +340,7 @@ export default function PostScreen({ log, commentDraft: suppliedCommentDraft = n
   const removePost = async (postId) => { const result = await deleteOwnPost(postId); if (result?.ok) onClose?.(); return result; };
 
   return (
-    <View style={styles.wrap} testID="post-content-shell">
+    <PostContainer style={styles.wrap} testID="post-content-shell">
       <ScreenHeader
         kicker={activeLog.news ? "Mshpit News" : isOnlineReview ? "Online concert review" : activeLog.review ? "Review" : "Post"}
         title={activeLog.news ? "Story" : "Original post"}
@@ -350,7 +353,7 @@ export default function PostScreen({ log, commentDraft: suppliedCommentDraft = n
         onRefresh={refreshPost}
         accessibilityLabel="Refresh post and comments"
       >
-      <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" {...(Platform.OS === "ios" ? { keyboardDismissMode: "interactive", automaticallyAdjustKeyboardInsets: false } : {})}>
         {activeLog.news ? (
           <NewsStoryCard story={activeLog.news} post={activeLog} full accountId={session?.id || null} onOpen={showComments} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onDelete={removePost} onRequireAuth={onRequireAuth} />
         ) : <TicketStub log={activeLog} compactContent={false} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} onRequireAuth={onRequireAuth} onComment={showComments} onOpenPost={showComments} />}
@@ -409,8 +412,8 @@ export default function PostScreen({ log, commentDraft: suppliedCommentDraft = n
           </View>}
           {replyTo && (
             <View style={styles.replyingTo}>
-              <Text style={styles.replyingTxt} numberOfLines={1}>{replyUnavailable ? "Reply target unavailable in this thread" : `Replying to ${replyTo.name || "comment"}`}</Text>
-              <Pressable onPress={() => changeCommentReply(null)} hitSlop={8} accessibilityRole={commentDraft ? "button" : undefined} accessibilityLabel={commentDraft ? "Clear reply target" : undefined}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
+              <Text style={styles.replyingTxt} numberOfLines={Platform.OS === "ios" ? undefined : 1}>{replyUnavailable ? "Reply target unavailable in this thread" : `Replying to ${replyTo.name || "comment"}`}</Text>
+              <Pressable onPress={() => changeCommentReply(null)} hitSlop={Platform.OS === "ios" ? undefined : 8} {...(Platform.OS === "ios" ? { style: styles.clearReply } : {})} accessibilityRole={Platform.OS === "ios" || commentDraft ? "button" : undefined} accessibilityLabel={Platform.OS === "ios" || commentDraft ? "Clear reply target" : undefined}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
             </View>
           )}
           <View style={styles.composer}>
@@ -419,11 +422,12 @@ export default function PostScreen({ log, commentDraft: suppliedCommentDraft = n
               style={styles.input}
               placeholder={replyTo ? "Write a reply..." : "Reply to this post..."}
               placeholderTextColor={colors.textFaint}
+              {...(Platform.OS === "ios" ? { accessibilityLabel: replyTo ? "Reply to comment" : "Comment on post", accessibilityHint: "Write your message, then use Send comment. Return adds a new line." } : {})}
               editable={commentDraft ? !retainedDraft.unavailable : undefined}
               value={text}
               onChangeText={changeCommentText}
-              onSubmitEditing={retryPrevious ? undefined : () => send()}
-              returnKeyType="send"
+              onSubmitEditing={Platform.OS === "ios" || retryPrevious ? undefined : () => send()}
+              returnKeyType={Platform.OS === "ios" ? "default" : "send"}
               multiline
               maxLength={LIMITS.message}
             />
@@ -433,13 +437,13 @@ export default function PostScreen({ log, commentDraft: suppliedCommentDraft = n
           </View>
         </View>
       )}
-    </View>
+    </PostContainer>
   );
 }
 
 const styles = StyleSheet.create({
   retryActions: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
-  retryAction: { minHeight: 44, justifyContent: "center" },
+  retryAction: { minHeight: 44, justifyContent: "center", ...(Platform.OS === "ios" ? { maxWidth: "100%", flexShrink: 1 } : {}) },
   wrap: { flex: 1, minWidth: 0, width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.bg },
   content: { padding: 16, paddingBottom: 24 },
   sectionLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 4, marginBottom: 12 },
@@ -466,10 +470,11 @@ const styles = StyleSheet.create({
   reportBtn: { color: colors.textDim, fontSize: 12.5, fontWeight: "700", marginTop: 6 },
   composerWrap: { borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 },
   replyingTo: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingHorizontal: 6, paddingBottom: 8 },
-  replyingTxt: { color: colors.amber, fontSize: 12.5, fontWeight: "700", flex: 1 },
+  replyingTxt: { color: colors.amber, fontSize: 12.5, fontWeight: "700", flex: 1, ...(Platform.OS === "ios" ? { minWidth: 0, flexShrink: 1 } : {}) },
+  clearReply: { width: 44, height: 44, alignItems: "center", justifyContent: "center", flexShrink: 0 },
   composer: { flexDirection: "row", alignItems: "flex-end", gap: 8 },
-  input: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, maxHeight: 120 },
-  send: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },
+  input: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, maxHeight: 120, ...(Platform.OS === "ios" ? { minHeight: 44, minWidth: 0 } : {}) },
+  send: { width: Platform.OS === "ios" ? 44 : 40, height: Platform.OS === "ios" ? 44 : 40, borderRadius: Platform.OS === "ios" ? 22 : 20, ...(Platform.OS === "ios" ? { flexShrink: 0 } : {}), backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },
   sendOff: { opacity: 0.4 },
   signin: { color: colors.textDim, fontSize: 13, textAlign: "center", paddingVertical: 6 },
   signinButton: { minHeight: 44, justifyContent: "center" },

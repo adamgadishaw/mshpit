@@ -16,6 +16,7 @@ import {
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { calendarAccessibilityLayout } from "./calendarAccessibilityLayout.mjs";
+import useIOSCalendarExport from "../hooks/useIOSCalendarExport";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const REFRESH_RETRY_HINT = Platform.OS === "web"
@@ -46,7 +47,8 @@ const dateFromKey = (key) => {
 // real month grid. "Today" comes from the server clock (GET /api/time) so it's right
 // regardless of the device's clock. Tap a day to see its shows; tap a show to open it.
 export default function CalendarScreen({ initialDate = null, initialView = CALENDAR_SHOW_VIEW.UPCOMING, onClose, onOpen, onOpenArtist }) {
-  const { session, upcomingEvents, goingFor, myAttendance, refreshMyAttendance, refreshTourDates, serverTime } = useStore();
+  const { session, chatAuthEpoch, upcomingEvents, goingFor, myAttendance, refreshMyAttendance, refreshTourDates, serverTime } = useStore();
+  const iosExport = useIOSCalendarExport(session?.id ?? null, chatAuthEpoch);
   const { width: viewportWidth, fontScale } = useWindowDimensions();
   const calendarLayout = calendarAccessibilityLayout(Platform.OS, viewportWidth, fontScale, space(8));
   const largeIOS = calendarLayout.largeText;
@@ -105,11 +107,13 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
   const initial = requestedDate || (byDay[todayKey] ? todayKey : firstEventKey || todayKey);
   const [cursor, setCursor] = useState(() => { const [y, m] = initial.split("-").map(Number); return { y, m: m - 1 }; });
   const [selected, setSelected] = useState(initial);
-  const [calendarNotice, setCalendarNotice] = useState(null);
+  const [legacyCalendarNotice, setCalendarNotice] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState(false);
   const refreshControllerRef = useRef(null);
-  const [exportingKey, setExportingKey] = useState("");
+  const [legacyExportingKey, setExportingKey] = useState("");
+  const calendarNotice = Platform.OS === "ios" ? iosExport.calendarNotice : legacyCalendarNotice;
+  const exportingKey = Platform.OS === "ios" ? iosExport.exportingKey : legacyExportingKey;
   const dayRefs = useRef(new Map());
   const pendingFocusKey = useRef(null);
   const pendingPastPosition = useRef(false);
@@ -206,6 +210,7 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
   const dayGeometry = largeIOS ? { minHeight: calendarLayout.dayMinHeight } : null;
 
   const saveCalendar = async (events, key) => {
+    if (Platform.OS === "ios") return iosExport.saveCalendar(events, key);
     if (exportingKey) return;
     setCalendarNotice(null);
     setExportingKey(key);
