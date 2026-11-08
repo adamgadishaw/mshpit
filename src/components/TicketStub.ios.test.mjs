@@ -26,7 +26,7 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
   };
   const modules = { ...domains,
     react: { useRef: (initial) => { const i = cursor++; return state[i] ||= { current: initial }; },
-      useEffect: (effect) => { const i = cursor++; state[i] ||= { cleanup: effect() }; }, useContext: (value) => value, useMemo: (fn) => fn(), useState: (initial) => {
+      useLayoutEffect: (effect) => { const i = cursor++; state[i] ||= { setup: effect, cleanup: effect() }; }, useContext: (value) => value, useMemo: (fn) => fn(), useState: (initial) => {
       const i = cursor++; if (!(i in state)) state[i] = typeof initial === "function" ? initial() : initial;
       return [state[i], (next) => { state[i] = typeof next === "function" ? next(state[i]) : next; }];
     } },
@@ -53,7 +53,7 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
   const module = { exports: {} };
   new Function("require", "module", "exports", code)((name) => { assert.ok(name in modules, name); return modules[name]; }, module, module.exports);
   const actions = Object.fromEntries(["onOpen", "onOpenShow", "onOpenPost", "onNotInterested", "onComment", "onRequireAuth", "onOpenProfile", "onOpenArtist", "onOpenArtistArchive", "onOpenVenue", "onReport", "onEdit", "onDelete", "onOpenPhotos", "onRemoveMyPostTag"].map((name) => [name, (...args) => calls.push([name, ...args])]));
-  return { calls, actions, store, sheets, unmount: () => state.forEach(value => value?.cleanup?.()), render: (overrides = {}) => { cursor = 0; return module.exports.default({ log: review, compactContent: true, swipeActions: true, ...actions, ...overrides }); } };
+  return { calls, actions, store, sheets, reconnect: () => state.forEach(value => { if (value?.setup) { value.cleanup?.(); value.cleanup = value.setup(); } }), unmount: () => state.forEach(value => value?.cleanup?.()), render: (overrides = {}) => { cursor = 0; return module.exports.default({ log: review, compactContent: true, swipeActions: true, ...actions, ...overrides }); } };
 }
 export const review = { id: "p_review", userId: "author", user: { name: "Reviewer", handle: "reviewer" }, timeAgo: "2h", kind: "review",
   artist: "Main artist", artistPublicSlug: "main-artist", venue: "The venue", city: "Toronto", date: "2026-11-01", review: "The actual review", overall: 4.5,
@@ -403,4 +403,25 @@ test("existing Android delete button still accepts its native press event", () =
   label(f.render(), "Delete post").props.onPress({ nativeEvent: {} });
   f.calls[0][3].find(button => button.style === "destructive").onPress();
   assert.deepEqual(f.calls.at(-1), ["onDelete", review.id]);
+});
+
+test("queued old hold handlers cannot borrow a new post/account action owner", () => {
+  for (const retire of [f => f.render({ log: { ...review, id: "other" } }),
+    f => { f.store.session = { id: "another-viewer" }; f.render(); },
+    f => { f.store.session = null; f.render(); f.store.session = { id: "viewer" }; f.render(); },
+    f => f.unmount()]) {
+    const f = fixture(), hold = f.render().props.onLongPress;
+    retire(f); hold(); assert.equal(f.sheets.length, 0); assert.deepEqual(f.calls, []);
+  }
+  assert.match(source, /useLayoutEffect\(\(\) => \{\s*mounted.current = true;/,
+    "native callback ownership retires during unmount commit, not a later passive effect");
+});
+
+test("layout-effect reconnect retires old native callbacks and publishes a usable hold handler", () => {
+  const f = fixture(), oldHold = f.render().props.onLongPress;
+  oldHold(); f.reconnect();
+  f.sheets[0].choose(1); assert.deepEqual(f.calls, []);
+  oldHold(); assert.equal(f.sheets.length, 1);
+  f.render().props.onLongPress(); assert.equal(f.sheets.length, 2);
+  f.sheets[1].choose(1); assert.deepEqual(f.calls, [["onReport", review]]);
 });

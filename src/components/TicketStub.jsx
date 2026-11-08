@@ -1,4 +1,4 @@
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import SupportingActsLine from "./SupportingActsLine";
 import { View, Text, StyleSheet, Pressable, Alert, ActionSheetIOS, Linking, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
@@ -322,13 +322,19 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
   contextOwner.current.actions = contextActions;
   const mounted = useRef(true);
   const sheetOpen = useRef(false);
-  useEffect(() => {
+  const everMounted = useRef(false);
+  const [, refreshContextOwner] = useState(0);
+  useLayoutEffect(() => {
     mounted.current = true;
+    // Effect reconnects retire old native callbacks and publish fresh handlers.
+    if (everMounted.current) refreshContextOwner(value => value + 1);
+    everMounted.current = true;
     return () => { mounted.current = false; contextOwner.current.generation++; };
   }, []);
+  const renderGeneration = contextOwner.current.generation;
   const openContextActions = () => {
-    if (!mounted.current || sheetOpen.current || !contextActions.length || contextPresentation?.current() === false) return;
-    const generation = contextOwner.current.generation;
+    if (contextOwner.current.generation !== renderGeneration || !mounted.current || sheetOpen.current || !contextActions.length || contextPresentation?.current() === false) return;
+    const generation = renderGeneration;
     const isCurrent = () => mounted.current && contextOwner.current.generation === generation
       && contextPresentation?.current() !== false;
     const labels = contextActions.map(action => action.label);

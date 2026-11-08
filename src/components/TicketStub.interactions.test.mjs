@@ -25,7 +25,7 @@ function fixture(kind = "concert", props = {}) {
   const componentRequire = (name) => {
     if (name === "react") return {
       useRef: initial => { const i = cursor++; return slots[i] ||= { current: initial }; },
-      useEffect: effect => { const i = cursor++; slots[i] ||= { cleanup: effect() }; },
+      useLayoutEffect: effect => { const i = cursor++; slots[i] ||= { cleanup: effect() }; },
       useContext: () => null, useMemo: (create) => create(),
       useState(initial) {
         const index = cursor++;
@@ -198,4 +198,23 @@ test("memoized iOS Feed renderItem refreshes its post presentation when navigati
   const first = { current: () => false }, second = { current: () => true };
   assert.equal(render(first).props.contextPresentation, first);
   assert.equal(render(second).props.contextPresentation, second);
+});
+
+test("iOS own posts omit the dead Manage post strip while Android retains its existing swipe row", () => {
+  const source = readFileSync(new URL("../screens/ProfileScreen.jsx", import.meta.url), "utf8");
+  const declaration = parse(source, { sourceType: "module", plugins: ["jsx"] }).program.body
+    .find(node => node.type === "VariableDeclaration" && node.declarations[0].id.name === "ProfileTicketRow");
+  const component = declaration.declarations[0].init.arguments[0];
+  const code = compile(`const Row = ${source.slice(component.start, component.end)}; export default Row;`);
+  for (const platform of ["ios", "android", "web"]) {
+    const module = { exports: {} };
+    const inputs = { useCallback: callback => callback, useState: value => [value, () => {}], useRef: value => ({ current: value }),
+      Platform: { OS: platform }, TicketStub: "TicketStub", NativeDeleteRow: "NativeDeleteRow", View: "View", Text: "Text", Icon: "Icon", colors: {} };
+    new Function("require", "module", "exports", ...Object.keys(inputs), code)(require, module, module.exports, ...Object.values(inputs));
+    const tree = module.exports.default({ log: { id: "own", userId: "owner" }, accountId: "owner", actionsRef: { current: {} }, capabilities: { edit: true } });
+    const all = nodes(tree), ticket = all.find(node => node.type === "TicketStub");
+    assert.equal(typeof ticket.props.onEdit, "function"); assert.equal(typeof ticket.props.onDelete, "function");
+    assert.equal(all.some(node => node.type === "NativeDeleteRow"), platform === "android");
+    assert.equal(all.some(node => node.type === "Text" && node.props.children === "Manage post"), platform === "android");
+  }
 });
