@@ -1,6 +1,7 @@
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
 import NativeTabSwipeExclusion from "../components/NativeTabSwipeExclusion";
 import { ScrollView } from "../components/NativeTabScroll";
-import { Fragment, useMemo, useState, useEffect, useRef } from "react";
+import { Fragment, useMemo, useState, useEffect, useLayoutEffect, useRef } from "react";
 import { ActivityIndicator, View, Text, StyleSheet, TextInput, Pressable, Image, Platform, useWindowDimensions } from "react-native";
 import { colors, focusRing, mono, radius, roleColor } from "../theme";
 import { ratedShows } from "../data";
@@ -190,7 +191,14 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   const { tourDates, refreshTourDates, searchVenues, artistsAlphabetical, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, track,
     session, chatAuthEpoch, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
-  const initialBrowse = useRef(IS_IOS ? browseReturn?.read() : null).current;
+  const isTabPreview = useNativeTabPreview();
+  const previewRef = useRef(isTabPreview);
+  previewRef.current = isTabPreview;
+  const browseReturnRef = useRef(browseReturn);
+  browseReturnRef.current = browseReturn;
+  const mountedRef = useRef(false);
+  useLayoutEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  const [initialBrowse] = useState(() => IS_IOS && !isTabPreview ? browseReturn?.read() : null);
   const searchAccountScope = accountTargetScope(session?.id, "search");
   const searchAnnouncements = useIOSSearchAnnouncement(searchAccountScope, chatAuthEpoch);
   const lookupRequestRef = useRef(null);
@@ -198,7 +206,7 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   const [queryState, setQueryState] = useState(() => ({ scope: searchAccountScope, value: initialBrowse?.query || "" }));
   const q = scopedScreenValue(queryState, searchAccountScope, "");
   const setQ = (value) => {
-    if (IS_IOS && !searchAnnouncements.isCurrent()) return;
+    if (IS_IOS && (previewRef.current || !searchAnnouncements.isCurrent())) return;
     if (IS_IOS) {
       const nextQuery = String(value || "").trim().toLowerCase();
       if (nextQuery !== q.trim().toLowerCase()) searchAnnouncements.request(searchAccountScope, nextQuery);
@@ -210,12 +218,15 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   const [activeCategory, setActiveCategory] = useState(initialBrowse?.category || "all");
   const resultScrollRef = useRef(null);
   const scrollReturn = useRef(null);
-  if (!scrollReturn.current) scrollReturn.current = createBrowseScrollReturn(initialBrowse?.scrollY, browseReturn?.save);
-  useEffect(() => { if (IS_IOS) browseReturn?.save({ query: q, category: activeCategory }); }, [q, activeCategory, browseReturn]);
+  if (!scrollReturn.current) scrollReturn.current = createBrowseScrollReturn(initialBrowse?.scrollY, (patch) => {
+    if (mountedRef.current && !previewRef.current) browseReturnRef.current?.save(patch);
+  });
+  useEffect(() => { if (IS_IOS && !previewRef.current) browseReturnRef.current?.save({ query: q, category: activeCategory }); }, [q, activeCategory, browseReturn, isTabPreview]);
   const initialAccountScope = useRef(searchAccountScope);
   const searchInputRef = useRef(null);
   const categoryRefs = useRef({});
   const selectCategory = (key) => {
+    if (IS_IOS && previewRef.current) return;
     scrollReturn.current.cancel();
     setActiveCategory(key);
     resultScrollRef.current?.scrollTo?.({ y: 0, animated: false });
@@ -244,6 +255,8 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   }), [session?.id]);
   const lookupScopeRef = useRef(lookupScope);
   lookupScopeRef.current = lookupScope;
+  const authEpochRef = useRef(chatAuthEpoch);
+  authEpochRef.current = chatAuthEpoch;
   const [lookupState, setLookupState] = useState(() => ({ scope: lookupScope, value: EMPTY_LOOKUP_STATE }));
   const { busy: lookupBusy, message: actionMessage } = scopedScreenValue(lookupState, lookupScope, EMPTY_LOOKUP_STATE);
   const [, refreshLookupCooldown] = useState(0);
@@ -260,7 +273,7 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   }));
   const setActionMessage = (message) => updateLookupState({ message });
   const changeQuery = (value) => {
-    if (IS_IOS && !searchAnnouncements.isCurrent()) return;
+    if (IS_IOS && (previewRef.current || !searchAnnouncements.isCurrent())) return;
     if (IS_IOS) scrollReturn.current.cancel();
     setQ(value);
     // Case-only and whitespace-only edits keep the same normalized scope. Clear
@@ -271,13 +284,13 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
     }
   };
   const clearSearch = () => {
-    if (IS_IOS && !searchAnnouncements.isCurrent()) return;
+    if (IS_IOS && (previewRef.current || !searchAnnouncements.isCurrent())) return;
     changeQuery("");
     setSearchError("");
     searchInputRef.current?.focus?.();
   };
   const cancelSearch = () => {
-    if (IS_IOS && !searchAnnouncements.isCurrent()) return;
+    if (IS_IOS && (previewRef.current || !searchAnnouncements.isCurrent())) return;
     changeQuery("");
     setSearchError("");
     setActiveCategory("all");
@@ -286,7 +299,7 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
     resultScrollRef.current?.scrollTo?.({ y: 0, animated: false });
   };
   const retrySearch = () => {
-    if (IS_IOS && !searchAnnouncements.isCurrent()) return;
+    if (IS_IOS && (previewRef.current || !searchAnnouncements.isCurrent())) return;
     if (IS_IOS) searchAnnouncements.request(searchAccountScope, query);
     setSearchError("");
     setSearchRevision((value) => value + 1);
@@ -388,6 +401,9 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
     const requestScope = remoteSearchScope;
     const searchQuery = settledQuery;
     const effectRevision = searchRevision;
+    const requestAuthEpoch = chatAuthEpoch;
+    const mayRecordSearch = () => !IS_IOS || (mountedRef.current && !previewRef.current
+      && lookupScopeRef.current === requestScope && authEpochRef.current === requestAuthEpoch);
     const settleRefreshWaiter = (succeeded) => {
       const waiter = searchRefreshWaiterRef.current;
       if (!waiter || waiter.revision !== effectRevision || waiter.scope !== requestScope) return;
@@ -458,6 +474,7 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
               : "Search could not update. Check your connection and try again.");
         }
         const resultBucket = searchResultBucket(resultCount);
+        if (!mayRecordSearch()) return;
         if (session?.id) {
           track("search", { kind: "all", resultBucket });
         } else if (requestHadSuccess) {
@@ -470,7 +487,7 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
       } catch (error) {
         if (live && !controller.signal.aborted && error?.name !== "AbortError") {
           setSearchError("Search could not update. Check your connection and try again.");
-          if (!session?.id) {
+          if (!session?.id && mayRecordSearch()) {
             void recordGuestSearch({ kind: "all", resultBucket: "unknown", outcome: "failed" }, { signal: controller.signal });
           }
         }
@@ -490,6 +507,7 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   }, [peopleScope, remoteSearchScope, searchRevision, session?.id, settledQuery]);
 
   const refreshSearch = async () => {
+    if (IS_IOS && previewRef.current) return false;
     if (surfaceRefreshControllerRef.current) return false;
     const controller = new AbortController();
     surfaceRefreshControllerRef.current = controller;
@@ -573,6 +591,11 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
   const completedSearchAnnouncement = searchLiveAnnouncement({ query, state: visibleResultState, error: visibleSearchError, groups: visibleResultGroups });
   useEffect(() => {
     if (!IS_IOS) return;
+    if (previewRef.current) {
+      // Revoke an already queued intent too; promotion never replays it.
+      searchAnnouncements.request(null, "");
+      return;
+    }
     searchAnnouncements.update({
       scope: searchAccountScope, query,
       ready: queryIsSettled && !searchLoading && visibleResultState !== "loading",

@@ -14,12 +14,12 @@ import * as initials from "../../domain/artistInitials.mjs";
 
 const require = createRequire(import.meta.url);
 const source = readFileSync(new URL("./DiscoverBrowse.ios.jsx", import.meta.url), "utf8");
-function fixture({ fontScale = 1, width = 393 } = {}) {
+function fixture({ fontScale = 1, width = 393, preview = false } = {}) {
   const state = [], refs = [], dimensions = { width, fontScale };
   let cursor = 0, refCursor = 0, effects = [];
   const jsx = (type, props) => ({ type, props });
   const react = {
-    useMemo: (fn) => fn(), useEffect: (fn) => { effects.push(fn); }, useRef: (value) => {
+    useLayoutEffect: (fn) => { effects.push(fn); }, useMemo: (fn) => fn(), useEffect: (fn) => { effects.push(fn); }, useRef: (value) => {
       const i = refCursor++; return refs[i] ||= { current: value };
     },
     useState: (initial) => {
@@ -30,6 +30,7 @@ function fixture({ fontScale = 1, width = 393 } = {}) {
   };
   const fill = { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 };
   const modules = {
+    "../../hooks/useNativeTabPreview": () => preview,
     "../NativeTabScroll": { ScrollView: "ScrollView", TextInput: "TextInput" },
     "../NativeTabSwipeExclusion": "NativeTabSwipeExclusion",
     "../../domain/iosBrowseReturn.mjs": browseReturn,
@@ -52,7 +53,7 @@ function fixture({ fontScale = 1, width = 393 } = {}) {
   new Function("require", "module", "exports", code)((name) => {
     assert.ok(name in modules, `Unexpected dependency ${name}`); return modules[name];
   }, module, module.exports);
-  return { exports: module.exports, dimensions, flushEffects: () => { const pending = effects; effects = []; pending.forEach((effect) => effect()); }, render: (fn, props) => { cursor = 0; refCursor = 0; effects = []; return fn(props); } };
+  return { exports: module.exports, dimensions, preview: value => { preview = value; }, flushEffects: () => { const pending = effects; effects = []; pending.forEach((effect) => effect()); }, render: (fn, props) => { cursor = 0; refCursor = 0; effects = []; return fn(props); } };
 }
 function nodes(tree) {
   if (!tree) return [];
@@ -417,4 +418,63 @@ test("recovery copy wraps and actions retain 44 point targets at large text", ()
       assert.equal(nodes(control).find(n => n.type === "Text").props.numberOfLines, undefined);
     }
   }
+});
+
+test("preview browse scroll forwards to latest committed lease only", () => {
+  const f = fixture({ preview: true }); const old = [], next = [];
+  const p = props({ browseReturn: { save: patch => old.push(patch) } });
+  let tree = f.render(f.exports.default, p); f.flushEffects();
+  const scroll = nodes(tree).find(n => n.type === "ScrollView" && n.props.onScroll).props;
+  scroll.onScrollBeginDrag(); scroll.onScroll({ nativeEvent: { contentOffset: { y: 32 } } });
+  assert.equal(old.length, 0);
+  f.preview(false); p.browseReturn = { save: patch => next.push(patch) };
+  tree = f.render(f.exports.default, p); f.flushEffects();
+  scroll.onScroll({ nativeEvent: { contentOffset: { y: 76 } } });
+  assert.equal(old.length, 0); assert.ok(next.some(p => p.scrollY === 76));
+  f.preview(true); f.render(f.exports.default, p); f.flushEffects(); const count = next.length;
+  scroll.onScroll({ nativeEvent: { contentOffset: { y: 88 } } }); assert.equal(next.length, count);
+});
+test("preview artwork pauses animation until committed", () => {
+  const f = fixture({ preview: true });
+  const p = { name: "Artist", uri: "https://example.test/photo.gif" };
+  let tree = f.render(f.exports.BrowseArtwork, p);
+  assert.equal(nodes(tree).find(n => n.type === "Image").props.autoplay, false);
+  f.preview(false); tree = f.render(f.exports.BrowseArtwork, p);
+  assert.equal(nodes(tree).find(n => n.type === "Image").props.autoplay, true);
+});
+
+test("Discover parent effects suppress programme and browse persistence until commit", () => {
+  const source = readFileSync(new URL("../../screens/DiscoverScreen.jsx", import.meta.url), "utf8");
+  const fn = parse(source, { sourceType: "module", plugins: ["jsx"] }).program.body.find(n => n.type === "ExportDefaultDeclaration").declaration;
+  const effects = fn.body.body.filter(n => n.type === "ExpressionStatement" && n.expression.callee?.name === "useEffect");
+  const programmeEffect = effects.find(n => source.slice(n.start, n.end).includes("rememberProgramme(programme)"));
+  const browseEffect = effects.find(n => source.slice(n.start, n.end).includes("browseReturn?.save"));
+  assert.ok(programmeEffect); assert.ok(browseEffect);
+  const names = "useEffect,Platform,previewRef,isTabPreview,rememberProgramme,programme,browseReturn,query,selectedGenre,areaChoice,selectedRangeDays,eventView,eventWeek";
+  const run = new Function(names, source.slice(programmeEffect.start, programmeEffect.end) + source.slice(browseEffect.start, browseEffect.end));
+  for (const platform of ["ios", "android", "web"]) {
+    const remembered = [], saved = [], effects = [], previewRef = { current: platform === "ios" };
+    const render = () => run(fn => effects.push(fn), { OS: platform }, previewRef, previewRef.current,
+      value => remembered.push(value), "shows", { save: value => saved.push(value) }, "", null,
+      { region: "Worldwide", scope: "country", touched: false }, 30, "cards", null);
+    render(); effects.splice(0).forEach(fn => fn());
+    assert.equal(remembered.length, platform === "ios" ? 0 : 1); assert.equal(saved.length, 0);
+    previewRef.current = false; render(); effects.splice(0).forEach(fn => fn());
+    assert.equal(remembered.length, platform === "ios" ? 1 : 2); assert.equal(saved.length, platform === "ios" ? 1 : 0);
+    // A queued effect must consult current preview state rather than its render.
+    render(); previewRef.current = true; effects.splice(0).forEach(fn => fn());
+    assert.equal(remembered.length, platform === "ios" ? 1 : 2); assert.equal(saved.length, platform === "ios" ? 1 : 0);
+  }
+});
+test("Discover initial browse snapshot ignores preview leases but restores committed entry", () => {
+  const source = readFileSync(new URL("../../screens/DiscoverScreen.jsx", import.meta.url), "utf8");
+  const fn = parse(source, { sourceType: "module", plugins: ["jsx"] }).program.body.find(n => n.type === "ExportDefaultDeclaration").declaration;
+  const declaration = fn.body.body.find(n => n.type === "VariableDeclaration" && n.declarations[0].id.elements?.[0]?.name === "initialBrowse");
+  assert.ok(declaration);
+  const run = new Function("useState,Platform,isTabPreview,browseReturn", source.slice(declaration.start, declaration.end) + "; return initialBrowse;");
+  let reads = 0; const lease = { read: () => { reads++; return { query: "saved", programme: "artists" }; } };
+  assert.equal(run(fn => [fn()], { OS: "ios" }, true, lease), null); assert.equal(reads, 0);
+  assert.equal(run(fn => [fn()], { OS: "ios" }, false, lease).query, "saved"); assert.equal(reads, 1);
+  for (const OS of ["android", "web"]) assert.equal(run(fn => [fn()], { OS }, false, lease), null);
+  assert.equal(reads, 1);
 });

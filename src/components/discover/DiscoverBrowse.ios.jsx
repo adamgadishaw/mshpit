@@ -1,5 +1,6 @@
+import useNativeTabPreview from "../../hooks/useNativeTabPreview";
 import { ScrollView, TextInput } from "../NativeTabScroll";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Image } from "expo-image";
 import { colors } from "../../theme";
@@ -38,12 +39,13 @@ export function eventFromBrowseSlide(slide) {
 }
 
 export function BrowseArtwork({ uri, name, size = 360, style, contain = false, proxy = false }) {
+  const isTabPreview = useNativeTabPreview();
   const [failedUri, setFailedUri] = useState(null);
   const source = uri ? (proxy && isHttp(uri) ? proxied(uri, Math.ceil(size * 2)) : uri) : null;
   return <View style={[styles.artwork, { backgroundColor: washFor(name) }, style]} accessible={false}>
     <View style={styles.artworkFallback}><Text style={styles.initials}>{artistInitials(name)}</Text></View>
     {source && failedUri !== source ? <Image source={{ uri: source }} style={StyleSheet.absoluteFill}
-      contentFit={contain ? "contain" : "cover"} cachePolicy="memory-disk" enforceEarlyResizing
+      autoplay={!isTabPreview} contentFit={contain ? "contain" : "cover"} cachePolicy="memory-disk" enforceEarlyResizing
       recyclingKey={source} accessible={false} onError={() => setFailedUri(source)} /> : null}
   </View>;
 }
@@ -193,6 +195,13 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
   onOpen, onOpenArtist, onOpenEvents, onOpenTopRated, onOpenCrew, onOpenFanClubs, onOpenLounge,
   loungeRows, panels, recommendations, attendanceRows = [],
 }) {
+  const isTabPreview = useNativeTabPreview();
+  const previewRef = useRef(isTabPreview);
+  previewRef.current = isTabPreview;
+  const browseReturnRef = useRef(browseReturn);
+  browseReturnRef.current = browseReturn;
+  const mountedRef = useRef(false);
+  useLayoutEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   const { width: windowWidth, fontScale } = useWindowDimensions();
   const [measuredWidth, setMeasuredWidth] = useState(0);
   const [areaOpen, setAreaOpen] = useState(false);
@@ -200,8 +209,10 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
   const [genreFocused, setGenreFocused] = useState(initialBrowse?.genreFocused === true);
   const scroll = useRef(null);
   const scrollReturn = useRef(null);
-  if (!scrollReturn.current) scrollReturn.current = createBrowseScrollReturn(initialBrowse?.scrollY, browseReturn?.save);
-  useEffect(() => { browseReturn?.save({ genreFocused }); }, [browseReturn, genreFocused]);
+  if (!scrollReturn.current) scrollReturn.current = createBrowseScrollReturn(initialBrowse?.scrollY, (patch) => {
+    if (mountedRef.current && !previewRef.current) browseReturnRef.current?.save(patch);
+  });
+  useEffect(() => { if (!previewRef.current) browseReturnRef.current?.save({ genreFocused }); }, [browseReturn, genreFocused, isTabPreview]);
   useEffect(() => {
     const overviewReady = ["ready", "error"].includes(overviewStatus);
     const ready = programme === "shows" ? ["ready", "error"].includes(eventStatus) && !rangeLoadingMore

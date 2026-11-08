@@ -54,8 +54,8 @@ function createRenderer(nativeActions = []) {
 
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const walk = n => [n, ...(n.children || []).flatMap(walk)];
-async function fixture({ platform = "ios", reader = true, restored = false, unknown = false, strict = false } = {}) {
-  const nativeActions = [];
+async function fixture({ platform = "ios", reader = true, restored = false, unknown = false, strict = false, preview = false, guest = false } = {}) {
+  const nativeActions = [], analytics = [], saves = [], browseCalls = [];
   const renderer = createRenderer(nativeActions), said = [], calls = [], jobs = [], appListeners = new Set(), readerListeners = new Set();
   const retiredApp = [], retiredReader = [], initialReader = deferred();
   let readCount = 0, hidden = false;
@@ -72,9 +72,11 @@ async function fixture({ platform = "ios", reader = true, restored = false, unkn
     addEventListener: (name, fn) => { readerListeners.add(fn); retiredReader.push(fn); return { remove: () => readerListeners.delete(fn) }; },
   };
   const native = { ActivityIndicator: "ActivityIndicator", View: "View", Text: "Text", ScrollView: "ScrollView", TextInput: "TextInput", Pressable: "Pressable", Image: "Image", Platform: { OS: platform, select: x => x[platform] || x.default }, useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1 }), StyleSheet: { create: x => x }, AccessibilityInfo, AppState };
-  const store = { session: { id: "synthetic" }, chatAuthEpoch: 1, blockedIds: [], tourDates: [], artistsAlphabetical: () => [], searchVenues: () => [], fanClubsDirectory: () => [], fanClubDirectoryStatus: "ready", loadFanClubsDirectory: () => Promise.resolve({ ok: true }), track: noop, isFollowing: () => false, follow: noop, unfollow: noop, searchPeople: () => Promise.resolve([]), searchArtistsApi: (query) => { if (!query) return Promise.resolve([]); const d = deferred(); calls.push({ query, ...d }); return d.promise; }, resolveArtist: () => Promise.resolve(null), recentSearches: [], addRecentSearch: noop, removeRecentSearch: noop, clearRecentSearches: noop, searchSongsApi: () => Promise.resolve([]) };
+  const store = { session: { id: "synthetic" }, chatAuthEpoch: 1, blockedIds: [], tourDates: [], artistsAlphabetical: () => [], searchVenues: () => [], fanClubsDirectory: () => [], fanClubDirectoryStatus: "ready", loadFanClubsDirectory: () => Promise.resolve({ ok: true }), track: (...args) => analytics.push(args), isFollowing: () => false, follow: noop, unfollow: noop, searchPeople: () => Promise.resolve([]), searchArtistsApi: (query) => { if (!query) { browseCalls.push(query); return Promise.resolve([]); } const d = deferred(); calls.push({ query, ...d }); return d.promise; }, resolveArtist: () => Promise.resolve(null), recentSearches: [], addRecentSearch: noop, removeRecentSearch: noop, clearRecentSearches: noop, searchSongsApi: () => Promise.resolve([]) };
+  if (guest) store.session = null;
   let speech, preference;
   const imports = (name, local) => {
+    if (name.endsWith("/useNativeTabPreview")) return { __esModule: true, default: () => platform === "ios" && preview };
     if (name.endsWith('/NativeTabScroll')) return native;
     if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
     if (name === "react-native") return native;
@@ -86,7 +88,7 @@ async function fixture({ platform = "ios", reader = true, restored = false, unkn
     if (name.endsWith("/seed/ingested")) return { ingestedArtists: {} };
     if (name.endsWith("/config/runtime.mjs")) return { ENABLE_DEMO_DATA: false, ENABLE_MUSIC_PLAYER: false };
     if (name.endsWith("/ticketLinks")) return { openTicketLink: () => assert.fail("No external link") };
-    if (name.endsWith("/guestSearchAnalyticsApi.mjs")) return { recordGuestSearch: () => assert.fail("No guest analytics") };
+    if (name.endsWith("/guestSearchAnalyticsApi.mjs")) return { recordGuestSearch: (...args) => analytics.push(args) };
     if (name.endsWith("/artistSearchApi.mjs")) return { artistLookupFailureMessage: () => "Lookup unavailable" };
     if (name.includes("/components/") && !name.endsWith(".mjs") || name.endsWith("/CityDiscoveryTiles")) return { __esModule: true, default: p => React.createElement(name, p, p.children) };
     return local(name);
@@ -94,7 +96,7 @@ async function fixture({ platform = "ios", reader = true, restored = false, unkn
   if (platform === "ios") preference = execute("src/hooks/useScreenReaderEnabled.ios.js", imports);
   speech = execute(`src/hooks/useIOSSearchAnnouncement${platform === "ios" ? ".ios" : ""}.js`, imports);
   const Search = execute("src/screens/SearchScreen.jsx", imports).default;
-  const props = { browseReturn: restored ? { read: () => ({ query: "sza", category: "all" }), save: noop } : undefined };
+  const props = { browseReturn: { read: () => restored ? { query: "sza", category: "all" } : undefined, save: patch => saves.push(patch) } };
   const never = new Promise(noop);
   function Gate() { if (hidden) throw never; return React.createElement(Search, props); }
   const render = () => renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null, React.createElement(React.Suspense, { fallback: React.createElement("Loading") }, React.createElement(Gate))));
@@ -104,7 +106,9 @@ async function fixture({ platform = "ios", reader = true, restored = false, unkn
   const text = value => renderer.act(() => input()(value));
   const press = label => renderer.act(() => { const node = walk(renderer.container).find(n => n.props?.accessibilityLabel === label); assert.ok(node, label); node.props.onPress(); });
   render(); await settle();
-  return { said, calls, jobs, text, input, press, fire, settle, store, render, retiredApp, retiredReader, initialReader, nativeActions,
+  return { said, calls, jobs, text, input, press, fire, settle, store, render, analytics, saves, browseCalls, props,
+    preview: value => { preview = value; render(); },
+    scroll: () => walk(renderer.container).find(n => n.type === "ScrollView" && n.props.onScroll)?.props, retiredApp, retiredReader, initialReader, nativeActions,
     handler: label => walk(renderer.container).find(n => n.props?.accessibilityLabel === label)?.props.onPress,
     value: () => walk(renderer.container).find(n => n.type === "TextInput").props.value,
     readerReads: () => readCount, subscriptions: () => appListeners.size + readerListeners.size,
@@ -130,7 +134,7 @@ for (const mode of ["all", "category", "none", "error", "retry", "category-none"
     if (mode.endsWith("retry")) { f.press("Retry search"); await f.settle(); await result(f, artist); f.fire(450); assert.equal(f.said.length, 2); }
   } finally { f.close(); }
 });
-for (const phase of ["flight", "queued"]) for (const boundary of ["background", "inactive", "reader", "clear", "query", "unmount", "account", "epoch", "suspense"]) test(`actual Search ${phase} ${boundary} permanently revokes speech`, async () => {
+for (const phase of ["flight", "queued"]) for (const boundary of ["background", "inactive", "reader", "clear", "query", "unmount", "account", "epoch", "suspense", "preview"]) test(`actual Search ${phase} ${boundary} permanently revokes speech`, async () => {
   const f = await fixture();
   try {
     await search(f); if (phase === "queued") await result(f);
@@ -142,6 +146,7 @@ for (const phase of ["flight", "queued"]) for (const boundary of ["background", 
     if (boundary === "account") { f.store.session = { id: "other" }; f.render(); f.store.session = { id: "synthetic" }; f.render(); }
     if (boundary === "epoch") { f.store.chatAuthEpoch = 2; f.render(); f.store.chatAuthEpoch = 1; f.render(); }
     if (boundary === "suspense") { f.hide(true); f.hide(false); }
+    if (boundary === "preview") { f.preview(true); f.preview(false); }
     if (phase === "flight") await result(f);
     f.fire(450, true); assert.equal(f.said.length, 0);
   } finally { f.close(); }
@@ -209,4 +214,64 @@ test("current action after an interruption may speak, without replaying its pred
     f.press("Retry search"); await f.settle(); await result(f, artist); f.fire(450, true);
     assert.equal(f.said.length, 1); assert.equal(f.said[0][0], "1 result across 1 category for sza.");
   } finally { f.close(); }
+});
+
+for (const guest of [false, true]) for (const failed of [false, true]) test(`preview ${failed ? "failure" : "success"} suppresses ${guest ? "guest" : "member"} analytics and speech`, async () => {
+  const f = await fixture({ guest });
+  try {
+    await search(f);
+    const oldInput = f.input();
+    f.preview(true);
+    const count = f.saves.length;
+    oldInput("forbidden");
+    await result(f, failed ? [] : artist, failed); f.fire(450, true);
+    assert.equal(f.value(), "sza"); assert.equal(f.analytics.length, 0);
+    assert.equal(f.saves.length, count); assert.equal(f.said.length, 0);
+    f.preview(false); f.fire(450, true);
+    assert.equal(f.analytics.length, 0); assert.equal(f.said.length, 0);
+  } finally { f.close(); }
+});
+test("pending query uses live promotion state, not preview captured at request time", async () => {
+  const f = await fixture();
+  try {
+    await search(f); f.preview(true); f.preview(false);
+    await result(f, artist);
+    assert.equal(f.analytics.length, 1);
+  } finally { f.close(); }
+});
+test("fresh preview reads browse data without restoring or writing a return lease", async () => {
+  const f = await fixture({ preview: true, restored: true });
+  try {
+    assert.equal(f.value(), ""); assert.ok(f.browseCalls.length > 0);
+    assert.equal(f.saves.length, 0); assert.equal(f.analytics.length, 0); assert.equal(f.nativeActions.includes("focus"), false);
+    const captured = f.scroll(); assert.ok(captured);
+    captured.onScrollBeginDrag(); captured.onScroll({ nativeEvent: { contentOffset: { y: 31 } } });
+    assert.equal(f.saves.length, 0);
+    const next = [];
+    f.props.browseReturn = { read: () => undefined, save: patch => next.push(patch) };
+    f.preview(false);
+    captured.onScroll({ nativeEvent: { contentOffset: { y: 72 } } });
+    assert.ok(next.some(p => p.scrollY === 72)); assert.equal(f.saves.length, 0);
+    f.unmount(); const count = next.length;
+    captured.onScroll({ nativeEvent: { contentOffset: { y: 99 } } });
+    assert.equal(next.length, count);
+  } finally { f.close(); }
+});
+for (const boundary of ["account", "epoch", "query", "unmount"]) test(`stale ${boundary} completion cannot record analytics`, async () => {
+  const f = await fixture();
+  try {
+    await search(f);
+    const pending = f.calls.at(-1);
+    if (boundary === "account") { f.store.session = { id: "other" }; f.render(); }
+    if (boundary === "epoch") { f.store.chatAuthEpoch++; f.render(); }
+    if (boundary === "query") f.text("mitski");
+    if (boundary === "unmount") f.unmount();
+    pending.resolve(artist); for (let i = 0; i < 30; i++) await Promise.resolve();
+    assert.equal(f.analytics.length, 0);
+  } finally { f.close(); }
+});
+for (const platform of ["android", "web"]) test(`${platform} retains ordinary analytics with inert preview hook`, async () => {
+  const f = await fixture({ platform, preview: true });
+  try { await search(f); await result(f, artist); assert.equal(f.analytics.length, 1); }
+  finally { f.close(); }
 });

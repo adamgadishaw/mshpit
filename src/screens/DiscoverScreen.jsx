@@ -1,3 +1,4 @@
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
 import { ScrollView } from "../components/NativeTabScroll";
 import { Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
@@ -128,7 +129,10 @@ export default function DiscoverScreen({
     venueDirectoryIndex,
     myAttendance = [],
   } = useStore();
-  const initialBrowse = useRef(Platform.OS === "ios" ? browseReturn?.read() : null).current;
+  const isTabPreview = useNativeTabPreview();
+  const previewRef = useRef(isTabPreview);
+  previewRef.current = isTabPreview;
+  const [initialBrowse] = useState(() => Platform.OS === "ios" && !isTabPreview ? browseReturn?.read() : null);
   const { width } = useWindowDimensions();
   const openCity = useContext(CityNavigationContext);
   const compact = width < 620;
@@ -137,7 +141,7 @@ export default function DiscoverScreen({
   const actionBasis = veryCompact ? "100%" : "48%";
   const [programme, setProgramme] = useState(() => restoredDiscoverProgramme(initialBrowse?.programme || initialProgramme, rememberedProgramme));
   const rememberProgramme = useLatestCallback(onProgrammeChange);
-  useEffect(() => { rememberProgramme(programme); }, [programme, rememberProgramme]);
+  useEffect(() => { if (!previewRef.current) rememberProgramme(programme); }, [programme, rememberProgramme, isTabPreview]);
   const initialProgrammeRef = useRef(initialProgramme);
   useEffect(() => {
     // A snapshot belongs to this exact navigation lease. Only a new explicit
@@ -598,10 +602,10 @@ export default function DiscoverScreen({
   ];
 
   useEffect(() => {
-    if (Platform.OS !== "ios") return;
+    if (Platform.OS !== "ios" || previewRef.current) return;
     browseReturn?.save({ query, programme, genre: selectedGenre, region: areaChoice.region, scope: areaChoice.scope,
       touched: areaChoice.touched, days: selectedRangeDays, eventView, eventWeek });
-  }, [browseReturn, query, programme, selectedGenre, areaChoice, selectedRangeDays, eventView, eventWeek]);
+  }, [browseReturn, query, programme, selectedGenre, areaChoice, selectedRangeDays, eventView, eventWeek, isTabPreview]);
 
   // iOS owns presentation only. Requests, filters, refresh and navigation above
   // remain shared; Metro resolves a no-op entry on Android and web.
