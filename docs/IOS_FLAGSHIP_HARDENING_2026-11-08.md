@@ -9,6 +9,8 @@ and signed Release compilation passed. This is a development-signed, live-linked
 preview, not installed or App Store distribution. Physical interaction,
 accessibility and performance remain open. Earlier checkpoints, including 264f9ad,
 remain preserved. Later work is not included until separately verified.
+The current concise [preview handoff](IOS_PREVIEW_HANDOFF_2026-11-08.md) separates
+this compiled source from the later export-checker tooling checkpoint.
 
 ## Scope and release boundary
 
@@ -999,3 +1001,29 @@ Feed wording clarification: restoration starts no explicit Feed query or automat
 pagination and introduces no request owner. It does not prove identical total
 network/media/analytics activity as current cards mount; those existing owners
 remain intact and native timing has not been measured.
+
+
+## Offline export gate and preserved-artifact verification
+
+Tooling-only commit c414781 adds the reviewed offline export-isolation checker,
+11 hermetic regressions and a usage document. The complete suite passed 8,321
+tests, zero failures/skips/cancellations, in 84.99911525 seconds. Syntax passed
+for 923 Node files; architecture budgets and git diff checks passed. No runtime,
+dependency, build, signing or phone change was made for this tooling checkpoint.
+The signed b907ea8 receipt retains its original 8,310-test result.
+
+The checker passed against the finalized b907ea8 exports: Android one map /
+2,198 sources / 730 application sources; web 81 maps / 1,169 sources / 742
+application sources. No isolation issues; retained reviewed defaults match their
+inert source contracts. Evidence: .tmp/ios-export-gate-b907ea8.json. It checks
+source-map isolation only, not compiled-byte mappings, freshness, performance or
+complete platform behavior. Static web boot scripts outside the Metro subtree
+are explicitly outside its map scan. See IOS_EXPORT_ISOLATION_GATE.md.
+
+A separate read-only integrity review verified all 14 preserved flagship app
+checkpoints against every manifest entry, their JS/executable receipt hashes
+and codesign --verify --deep --strict. No historical artifact was overwritten,
+re-signed, installed or launched. The oldest 0fcb4fd receipt uses sorted compact
+JSON for its manifest hash; the actual file and that serialization were both
+verified, not silently treated as identical. Later receipts hash file bytes.
+The dated report is .tmp/ios-phone-checkpoints/checkpoint-integrity-review.json.

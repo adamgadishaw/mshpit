@@ -3,7 +3,8 @@
 This is a current engineering checklist, not an App Store approval or a claim
 that a connected account is enrolled. Preserve older readiness reports as dated
 history. No submission, production deployment, account change or phone install
-is performed by this document.
+is performed by this document. For the concise current artifact identity and
+next-session plan, read [the preview handoff](IOS_PREVIEW_HANDOFF_2026-11-08.md).
 
 All mutation-path acceptance tests require an authorized isolated fixture
 environment. The current live-linked Release preview is NOT mutation-blocked:
@@ -303,3 +304,13 @@ interrupt the pending result/quiet window by changing query, leaving the screen,
 backgrounding or turning VoiceOver off. Old feedback must not replay afterward,
 while current reader-off controls remain usable. The JS bridge/coexistence tests
 do not certify audible timing or OS queue behavior. The install hold remains.
+
+
+## Reusable offline export check
+
+Run scripts/check-ios-export-isolation.mjs after finalized Android/web exports
+from the same runtime source, alongside the existing web budget. The b907ea8
+exports pass this check; later tooling c414781 passes 8,321 complete-suite cases.
+This tooling does not change or rebuild the signed b907ea8 preview. Missing or
+malformed maps, app iOS module leakage and non-inert retained defaults fail the
+check. Its explicit coverage/limitations are in IOS_EXPORT_ISOLATION_GATE.md.
