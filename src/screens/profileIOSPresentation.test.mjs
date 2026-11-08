@@ -202,10 +202,11 @@ test("a native sheet never turns a stale mute/block selection into its opposite"
 test("iOS no-banner profiles use a shorter accent treatment without shrinking uploaded banners", () => {
   const { styles } = stylesFor(profile, "ios");
   assert.equal(styles.nativeBannerArtwork.height, 128);
-  assert.equal(styles.nativeIdentityWrap.paddingTop, 88);
+  assert.equal(styles.nativeIdentityWrap.paddingTop, 16);
   assert.equal(styles.nativeBannerCompact.height, 48);
   assert.equal(styles.nativeIdentityCompact.paddingTop, 12);
-  assert.match(profile, /user\.banner \? <SmartImage uri=\{user\.banner\} style=\{IS_IOS \? styles\.nativeBannerArtwork : StyleSheet\.absoluteFill\}/);
+  assert.match(profile, /IS_IOS && user\.banner \? <ProfileBannerCover/);
+  assert.match(profile, /user\.banner \? <SmartImage uri=\{user\.banner\} style=\{StyleSheet\.absoluteFill\}/);
   assert.match(profile, /IS_IOS && !user\.banner && styles\.nativeIdentityCompact/);
   assert.match(profile, /styles\.bannerShade, IS_IOS && !user\.banner && styles\.nativeBannerCompact/);
   assert.match(profile, /fallbackTextColor=\{IS_IOS \? colors\.text : undefined\}/);

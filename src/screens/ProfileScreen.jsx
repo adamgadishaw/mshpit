@@ -33,6 +33,7 @@ import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import { PostNavigationContext } from "../components/PostNavigationContext";
 import { profileAccentColor } from "../domain/profileAccents.mjs";
+import { ProfileBannerCover, ProfileGallery, ProfileMediaRetryBoundary, useProfileMediaPresentation } from "../features/profileMedia/ProfileMediaPresentation";
 
 const IS_IOS = Platform.OS === "ios";
 const EMPTY_LIST = Object.freeze([]);
@@ -258,7 +259,9 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
     accountId: session?.id || null, authEpoch: chatAuthEpoch, targetId: userId,
     enabled: authReady && !!session && !!user, mapVisible: user?.concertMapVisible !== false,
   });
-  const historyOwnsLogs = history.posts.length > 0 || history.status === "ready";
+  // A successful empty receipt stays authoritative during refresh/failure.
+  // Falling back to feed rows here could resurrect removed/private media.
+  const historyOwnsLogs = history.posts.length > 0 || history.status === "ready" || (IS_IOS && history.updatedAt != null);
   const cachedLogs = user && !historyOwnsLogs ? logsByUser(user.id) : EMPTY_LIST;
   const logs = session && user ? (historyOwnsLogs ? history.posts : cachedLogs) : EMPTY_LIST;
   const reviews = useMemo(() => selectConcertReviews(logs), [logs]);
@@ -297,6 +300,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
     () => gallery.map((item) => ({ ...item, by: user?.name, ownerId: user?.id })),
     [gallery, user?.id, user?.name],
   );
+  const profileMedia = useProfileMediaPresentation({ scope: `${profileScope}:${chatAuthEpoch}`, user, gallery: galleryViewerItems, onOpenPhotos });
   const canEditPosts = typeof onEditPost === "function";
   const canOpenArtist = typeof onOpenArtist === "function";
   const canOpenArtistArchive = typeof onOpenArtistArchive === "function";
@@ -406,6 +410,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
     enabled: !!userId,
     task: async ({ signal }) => {
       const requestScope = profileScope;
+      if (IS_IOS) profileMedia.retryImages(signal);
       const [outcome, historyOutcome, rewards, concertsOutcome] = await Promise.all([
         loadUser(userId, { signal }),
         session ? history.retry() : null,
@@ -564,6 +569,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         </View>
       ) : null}
 
+      <ProfileMediaRetryBoundary value={profileMedia.retryValue}>
       <VinylRefreshBoundary
         refreshing={profileRefreshing}
         onRefresh={refreshProfile}
@@ -581,8 +587,8 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         )}
         {/* banner + avatar */}
         <View testID="profile-banner" style={[styles.banner, Platform.OS === "web" && { minHeight: user.banner ? webBannerMinHeight : 0 }]}>
-          {user.banner ? <SmartImage uri={user.banner} style={IS_IOS ? styles.nativeBannerArtwork : StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }, IS_IOS && styles.nativeBannerArtwork, IS_IOS && styles.nativeBannerCompact]} />}
-          <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, IS_IOS && !user.banner && styles.nativeBannerCompact, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, ${colors.bg}00 0px, ${colors.bg}30 32px, ${colors.bg}CC 104px, ${colors.bg}F2 220px, ${colors.bg} 340px)` }]} />
+          {IS_IOS && user.banner ? <ProfileBannerCover uri={user.banner} name={user.name} onOpen={canOpenPhotos ? profileMedia.openBanner : undefined} largeText={largeText} /> : user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }, IS_IOS && styles.nativeBannerArtwork, IS_IOS && styles.nativeBannerCompact]} />}
+          {!IS_IOS || !user.banner ? <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, IS_IOS && !user.banner && styles.nativeBannerCompact, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, ${colors.bg}00 0px, ${colors.bg}30 32px, ${colors.bg}CC 104px, ${colors.bg}F2 220px, ${colors.bg} 340px)` }]} /> : null}
           {accentColor && Platform.OS !== "web" && !IS_IOS ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
         <View style={[styles.identityWrap, !user.banner && styles.identityWrapCompact, IS_IOS && styles.nativeIdentityWrap, IS_IOS && !user.banner && styles.nativeIdentityCompact]}>
         <View testID="profile-identity-tile" style={[styles.head, Platform.OS === "web" && styles.integratedHead]}>
@@ -736,7 +742,8 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
 
 
         {/* Media gallery, using the same resilient descriptor pipeline as You. */}
-        {gallery.length > 0 && (
+        {IS_IOS ? <ProfileGallery items={galleryViewerItems} history={history} isSelf={isSelf} name={user.name}
+          onOpen={canOpenPhotos ? profileMedia.openGallery : undefined} onRefresh={refreshProfile} refreshing={profileRefreshing} request={profileMedia.request} /> : gallery.length > 0 && (
           <>
             <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>{IS_IOS ? "Gallery" : "Media"} · {historyCount(gallery.length)}</Text>
             <View style={styles.gallery}>
@@ -861,6 +868,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
 
       </ScrollView>
       </VinylRefreshBoundary>
+      </ProfileMediaRetryBoundary>
     </View>
   );
 }
@@ -1027,7 +1035,7 @@ const iosStyles = IS_IOS ? StyleSheet.create({
   banner: { backgroundColor: colors.bg },
   nativeBannerArtwork: { position: "absolute", left: 20, right: 20, top: 0, height: 128, borderRadius: 18, overflow: "hidden" },
   bannerShade: { position: "absolute", left: 20, right: 20, top: 0, height: 128, borderRadius: 18, backgroundColor: "rgba(0,0,0,0.12)" },
-  nativeIdentityWrap: { paddingHorizontal: 24, paddingTop: 88, paddingBottom: 4, alignItems: "flex-start" },
+  nativeIdentityWrap: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 4, alignItems: "flex-start" },
   nativeBannerCompact: { height: 48, borderRadius: 14 },
   nativeIdentityCompact: { paddingTop: 12 },
   head: { width: "100%", alignItems: "flex-start", padding: 0, borderWidth: 0, backgroundColor: "transparent", shadowOpacity: 0, elevation: 0 },
