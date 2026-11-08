@@ -48,13 +48,17 @@ assert.ok(initialRange, "Use the actual initial range state");
 // Match the real App key: an account switch must remount Discover, including
 // when both accounts have the same saved city and coordinates.
 const app = readFileSync(resolve(root, "App.js"), "utf8");
-let keyExpression;
+let keyExpression, pagerKeyExpression;
 function visit(node) {
   if (!node || typeof node !== "object") return;
   if (node.type === "JSXOpeningElement" && node.name.name === "DiscoverScreen") {
     const key = node.attributes.find((attribute) => attribute.name?.name === "key")?.value?.expression;
     assert.ok(key, "App must provide Discover's real account key");
     keyExpression = app.slice(key.start, key.end);
+  }
+  if (node.type === "JSXOpeningElement" && node.name.name === "NativeTabRail" && node.attributes.some(a => a.name?.name === "page")) {
+    const key = node.attributes.find(a => a.name?.name === "key").value.expression;
+    pagerKeyExpression = app.slice(key.start, key.end);
   }
   for (const value of Object.values(node)) {
     if (Array.isArray(value)) value.forEach(visit);
@@ -63,8 +67,9 @@ function visit(node) {
 }
 visit(parse(app, { sourceType: "module", plugins: ["jsx"] }));
 assert.ok(keyExpression);
-const discoverKey = new Function("session", "discoverReturn", `return (${keyExpression});`);
+const discoverKey = new Function("session", "discoverReturn", "pager = false", `return (${keyExpression});`);
 
+const pagerKey = new Function("session", "chatAuthEpoch", `return (${pagerKeyExpression});`);
 const noop = () => {};
 const context = {};
 let priority = 0;
@@ -89,7 +94,7 @@ const renderer = reconciler({
   bindToConsole: (method, args) => console[method].bind(console, ...args),
 });
 
-function fixture() {
+function fixture({ pager = false } = {}) {
   let snapshot;
   const calls = [];
   const browseStore = createBrowseReturnStore();
@@ -98,9 +103,10 @@ function fixture() {
   };
   const Probe = new Function(...Object.keys(bindings), `
     ${source.slice(initialRange.start, initialRange.end)}
-    return function Probe({session, discoverySidebar, loadDiscoverTourDateRange, browseReturn}) {
+    return function Probe({session, discoverySidebar, loadDiscoverTourDateRange, browseReturn, isTabPreview = false}) {
+      const identity = useRef({}).current;
       ${statements}
-      expose({rangeScopeKey, eventRange, eventWeek, rangeMatchesScene, setAreaChoice});
+      expose({identity, initialBrowse, rangeScopeKey, eventRange, eventWeek, rangeMatchesScene, setAreaChoice});
       return null;
     };`)(...Object.values(bindings));
   const fail = (error) => { throw error; };
@@ -112,11 +118,12 @@ function fixture() {
   });
   return {
     calls,
-    render(session, discoverySidebar = null, initialSnapshot = null) {
+    render(session, discoverySidebar = null, initialSnapshot = null, { preview = false, authEpoch = 1 } = {}) {
       browseStore.account(session?.id || null);
       const browseReturn = browseStore.lease("discover");
       if (initialSnapshot) browseReturn.save(initialSnapshot);
-      flush(React.createElement(Probe, { key: discoverKey(session, browseReturn), session, discoverySidebar, browseReturn, loadDiscoverTourDateRange: load }));
+      flush(React.createElement(React.Fragment, { key: pager ? pagerKey(session, authEpoch) : "legacy" },
+        React.createElement(Probe, { key: discoverKey(session, browseReturn, pager), isTabPreview: preview, session, discoverySidebar, browseReturn, loadDiscoverTourDateRange: load })));
     },
     snapshot: () => snapshot,
     chooseCountry(country) {
@@ -254,5 +261,37 @@ test("return requests the saved range and week once, then a new area resets them
     assert.equal(f.calls.length, 3);
     assert.equal(f.calls[2].options.days, 30);
     assert.equal(f.snapshot().eventWeek, null);
+  } finally { f.close(); }
+});
+
+test("pager preview ignores old browse state and promotes the same scoped request and instance", async () => {
+  const f = fixture({ pager: true });
+  try {
+    const viewer = account(43.6532, -79.3832);
+    f.render(viewer, null, { region: "United States", scope: "country", touched: true, days: 90 }, { preview: true });
+    const identity = f.snapshot().identity;
+    assert.equal(f.snapshot().initialBrowse, null);
+    assert.equal(f.calls.length, 1); assert.equal(f.calls[0].options.local, true);
+    f.render(viewer, null, null, { preview: false });
+    assert.equal(f.snapshot().identity, identity, "promotion does not remount the candidate");
+    assert.equal(f.calls.length, 1, "promotion reuses the intent-triggered read");
+    await f.settle(0, ["prepared"]);
+    assert.deepEqual(f.snapshot().eventRange.rows.map(row => row.id), ["prepared"]);
+  } finally { f.close(); }
+});
+test("pager parent key retires pending coordinate reads across account and authentication boundaries", async () => {
+  const f = fixture({ pager: true });
+  try {
+    const a = account(43.6532, -79.3832, { id: "A" });
+    f.render(a, null, null, { preview: true, authEpoch: 1 }); const first = f.snapshot().identity;
+    f.render(account(43.6532, -79.3832, { id: "B" }), null, null, { preview: true, authEpoch: 1 });
+    assert.notEqual(f.snapshot().identity, first); assert.equal(f.calls[0].options.signal.aborted, true);
+    const second = f.snapshot().identity;
+    f.render(account(43.6532, -79.3832, { id: "B" }), null, null, { preview: true, authEpoch: 2 });
+    assert.notEqual(f.snapshot().identity, second); assert.equal(f.calls[1].options.signal.aborted, true);
+    await f.settle(0, ["old-A"]); await f.settle(1, ["old-B-auth"]);
+    assert.deepEqual(f.snapshot().eventRange.rows, []);
+    await f.settle(2, ["current-B"]);
+    assert.deepEqual(f.snapshot().eventRange.rows.map(row => row.id), ["current-B"]);
   } finally { f.close(); }
 });

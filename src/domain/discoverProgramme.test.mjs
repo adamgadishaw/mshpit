@@ -41,7 +41,7 @@ test("Discover restores its in-app destination while explicit directory links ke
   visit(parse(app, { sourceType: "module", plugins: ["jsx"] }));
   assert.equal(opening.length, 1);
   const key = opening[0].attributes.find((a) => a.name?.name === "key").value.expression;
-  const keyFor = new Function("discoverReturn", "session", `return (${app.slice(key.start, key.end)});`);
+  const keyFor = new Function("discoverReturn", "session", "pager = false", `return (${app.slice(key.start, key.end)});`);
   assert.equal(keyFor(null, { id: "A" }), "A"); assert.equal(keyFor(null, null), "guest");
   const store = createBrowseReturnStore(); store.account("A");
   const a = store.lease("discover"); const before = keyFor(a, { id: "A" });
@@ -49,6 +49,20 @@ test("Discover restores its in-app destination while explicit directory links ke
   store.account("B"); assert.notEqual(keyFor(store.lease("discover"), { id: "B" }), before);
   store.account("A"); const returned = keyFor(store.lease("discover"), { id: "A" }); assert.notEqual(returned, before);
   store.reset("discover"); assert.notEqual(keyFor(store.lease("discover"), { id: "A" }), returned, "new directory intent remounts");
+  for (const lease of [null, a, store.lease("discover")]) assert.equal(keyFor(lease, { id: "A" }, true), undefined,
+    "pager owns the stable surface key across destination promotion and lease reset");
+  const pagerKey = [];
+  const collect = node => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "JSXOpeningElement" && node.name.name === "NativeTabRail" && node.attributes.some(a => a.name?.name === "page"))
+      pagerKey.push(node.attributes.find(a => a.name?.name === "key").value.expression);
+    for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(collect); else if (value?.type) collect(value);
+  };
+  collect(parse(app, { sourceType: "module", plugins: ["jsx"] })); assert.equal(pagerKey.length, 1);
+  const ownerKey = new Function("session", "chatAuthEpoch", `return (${app.slice(pagerKey[0].start, pagerKey[0].end)});`);
+  assert.notEqual(ownerKey({ id: "A" }, 1), ownerKey({ id: "B" }, 1), "parent unmounts all pages across accounts");
+  assert.notEqual(ownerKey({ id: "A" }, 1), ownerKey({ id: "A" }, 2), "same-account reauthentication retires the pager");
+  assert.notEqual(ownerKey(null, 1), ownerKey({ id: "A" }, 1));
 });
 
 test("a departed render cannot overwrite the URL just restored by browser Back", () => {

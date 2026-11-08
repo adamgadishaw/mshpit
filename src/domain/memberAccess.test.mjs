@@ -1,3 +1,4 @@
+import { parse } from "@babel/parser";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
@@ -32,8 +33,19 @@ test("public entity snapshots, search, legal and sign-in routes stay accessible"
 
 test("App never mounts member tabs for guests and applies the restored-overlay boundary", () => {
   const source = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
-  assert.match(source, /activeTab === "feed" && !!session/);
-  assert.match(source, /activeTab === "you" && !!session/);
+  const gates = {};
+  const visit = node => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "LogicalExpression" && ["FeedScreen", "YouScreen"].includes(node.right?.openingElement?.name?.name))
+      gates[node.right.openingElement.name.name] = new Function("pageTab", "session", `return (${source.slice(node.left.start, node.left.end)});`);
+    for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(visit); else if (value?.type) visit(value);
+  };
+  visit(parse(source, { sourceType: "module", plugins: ["jsx"] }));
+  assert.deepEqual(Object.keys(gates).sort(), ["FeedScreen", "YouScreen"]);
+  for (const tab of ["feed", "you", "search", "discover"]) for (const session of [null, { id: "member" }]) {
+    assert.equal(gates.FeedScreen(tab, session), tab === "feed" && !!session);
+    assert.equal(gates.YouScreen(tab, session), tab === "you" && !!session);
+  }
   assert.match(source, /if \(!session && memberTabRequiresAccount\(key\)\) \{ openSignIn\(\); return; \}/);
   assert.match(source, /if \(!session && memberFrameRequiresAccount\(nav, Platform\.OS\)\)/);
   assert.match(source, /<VenueScreen[^\n]+onRequireAuth=\{openSignIn\}/);
