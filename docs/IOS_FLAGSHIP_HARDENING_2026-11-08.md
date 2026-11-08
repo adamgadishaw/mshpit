@@ -2,13 +2,14 @@
 
 ## Latest fully verified artifact
 
-Checkpoint 95df901 is preserved at
-.tmp/ios-phone-checkpoints/flagship-95df901/MshpitDev.app with a receipt, exact
-manifest and platform-isolation record. All 8,183 tests, three platform exports
-and signed Release compilation passed. This is a development-signed, live-linked
-preview, not installed and not App Store distribution. Physical interaction,
-accessibility and performance remain open. Earlier signed checkpoints, including
-79858de, remain preserved. Later work is not included until separately verified.
+Checkpoint 230f0ca is preserved at
+.tmp/ios-phone-checkpoints/flagship-230f0ca/MshpitDev.app with a receipt, exact
+manifest, platform-isolation record and matched bundle comparison. All 8,236
+tests, three platform exports and signed Release compilation passed. This is a
+development-signed, live-linked preview, not installed or App Store distribution.
+Physical interaction, accessibility and performance remain open. Earlier signed
+checkpoints, including 95df901, remain preserved. Later work is not included until
+separately verified.
 
 ## Scope and release boundary
 
@@ -789,3 +790,63 @@ artifact still needs authorized fixture checks of largest text, focus/VoiceOver,
 actual retry controls and physical Release performance. Profile history loaders,
 concert resources/map implementation, calendar/show-time policy, API client,
 dependencies and Pod lock remain unchanged for this checkpoint.
+
+## Show recovery and platform-isolation checkpoint: 230f0ca
+
+Source 230f0cab63893b3724cbf4fd9fbb273a8fe60c08 was compiled and preserved at
+09:08:53 UTC on November 8. Two independently reviewed, bounded changes passed:
+
+- A failed iOS Show refresh no longer discards an already confirmed cancellation
+  or postponement and restores ticket/legacy Going actions from the older row.
+  Only the current same-owner, provider-backed document survives explicitly
+  classified transient network, timeout, retryable service or exact retryable
+  HTTP 429 failures. There is no automatic retry or new request/cache owner.
+- Denial/removal, identity conflicts, suppressed old-account errors, invalid JSON,
+  normalized null/malformed responses, owner/target changes and unmount do not
+  reuse that document. Network-coded body/HTML-intermediary uncertainty is
+  distinct from invalid JSON, following the existing API classifier.
+- The real memorial-status fallback also preserves the restrictions while its
+  own read is pending or fails. Current artist/public recovery controls remain
+  reachable. Typed attendance rules, public cancellation precedence, canonical
+  success replacement, API normalization and date policy remain unchanged.
+- A readable retained-status notice and 44pt explicit Retry use the existing
+  refresh owner. Its JSX/source tests do not certify native focus or speech.
+  Android/web select the inert recovery entry and retain their existing behavior.
+- App's iOS message-draft factory now resolves through a platform boundary. iOS
+  re-exports the exact original function; Android/web select an inert default.
+  Both Root construction guards and all draft/claim semantics are unchanged.
+  This removes unused iOS owner code from the other bundles, not shared backend
+  dependencies or all possible cross-platform faults.
+
+Matched isolated web exports for the draft boundary saved 542 gzip bytes
+(522,098 to 521,556) and 1,453 raw bytes with identical build inputs. The combined
+checkpoint is 521,565 bytes / 509.3 KiB gzip with 2,723 bytes of budget headroom;
+module-layout changes mean its combined total is not the isolated comparison.
+Android's 2,195 source entries and web's 81 maps / 1,166 distinct sources select
+the two default entries, exclude the draft domain and contain no app .ios module.
+
+Evidence:
+- Complete integrated suite: 8,236 passed; zero failed/skipped/cancelled;
+  84.742 seconds. Log: /tmp/mshpit-ios-show-isolation-full-tests.log.
+- Show: 46 added actual-component/real-API-classification cases, including real
+  memorial and attendance children. Draft boundary: seven added identity,
+  installed-Metro resolution and actual Root construction/claim regressions.
+- Independent integrated checks passed 53 selected tests. The preserved
+  show-recovery-sensitivity.mjs passes current source and catches the original
+  baseline plus three targeted regressions. SHA-256:
+  ac72d3117c2d5f5cfa8601f5077cce8cd7c8fe9ff109fba608030aca2ff30c57.
+- Syntax 920, architecture and diff gates passed. iOS/Android Hermes and web
+  exports passed, followed by signed Release compilation and exact-copy checks.
+- Artifact: 60,271,256 bytes; 52 files/links; all 11 privacy manifests and the
+  profile are byte-identical to 95df901. Existing authority and expiry remain.
+- JavaScript SHA-256:
+  109e736bfa100160ba4a9ccf541485c56d8bba11bfe4eabc086c9358eefd4db4
+- Executable SHA-256:
+  0d1bb21cf190b3d9e2f9023cdd9190e6639fd63f319d4ba919a9ffb8fabee1a9
+- Exact artifact manifest SHA-256:
+  6d735acf93b9d095c8fa55e6842e379d6be3d8acae1db576fd52074233e31978
+
+No install, push, deployment, dependency/security change, real attendance/ticket
+operation or native performance/accessibility certification occurred. The existing
+server-only audit wording in the initial scene/visual reviews and the initial
+Discover test receipt are explicitly qualified as historical evidence.

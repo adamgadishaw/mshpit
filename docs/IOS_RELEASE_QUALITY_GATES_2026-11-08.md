@@ -244,3 +244,21 @@ These checks require real layout, focus, VoiceOver and scroll-reachability
 observation. The current live-linked preview is not a mutation-blocked test app;
 keep the existing live-data and installation boundaries. Signing expiry and the
 unpatched native decoder advisory remain unchanged.
+
+
+## Latest compiled checkpoint: Show recovery and platform isolation
+
+230f0ca supersedes 95df901 as the latest preserved signed preview: 8,236 tests,
+platform exports, 509.3 KiB web initial gzip and exact signed-copy checks passed.
+Its default-platform maps exclude the iOS draft owner and select inert Show
+recovery. No native performance gain or complete platform fault isolation is
+implied by the measured payload reduction.
+
+In an authorized fixture, load a confirmed cancelled/postponed show, interrupt
+canonical and artist-status refresh, and verify ticket/legacy Going controls do
+not reappear during loading/failure. Retry must remain reachable, preserve the
+current restriction or adopt a genuinely updated canonical result, and respect
+actual attendance rules. Check largest text and VoiceOver focus on the notice.
+Use fixtures for real attendance/ticket effects; no live synthetic action is
+permitted merely to certify this flow. Installation and all prior native,
+signing, dependency-advisory and privacy acceptance limits remain unchanged.
