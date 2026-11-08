@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Alert, Platform, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius, roleColor, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { useStore } from "../store";
@@ -19,6 +19,10 @@ import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import { CommentLikeButton } from "../components/SocialReactionButtons";
+
+const EMPTY_DRAFT = Object.freeze({});
+const readEmptyDraft = () => EMPTY_DRAFT;
+const subscribeEmptyDraft = () => () => {};
 
 const ago = (ts) => {
   if (!ts) return "";
@@ -88,7 +92,7 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
 
 // Post detail — the actual post + its comment thread. This is where like/comment
 // notifications land (not the performance page), and where forum-style replies live.
-export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag }) {
+export default function PostScreen({ log, commentDraft: suppliedCommentDraft = null, onClose, onRequireAuth, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag }) {
   const { session, feed, commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, userById, userBadges, setCommentLike } = useStore();
   const [postLocalOverrides, setPostLocalOverrides] = useState({});
   // Navigation keeps the post that was originally opened. Resolve it against
@@ -110,11 +114,33 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
       version: result.version,
     }));
   };
+  const commentDraft = Platform.OS === "ios" ? suppliedCommentDraft : null;
   const flat = commentsFor(log.id);
-  const [text, setText] = useState("");
-  const [replyTo, setReplyTo] = useState(null); // { id, name } or null (= reply to the post)
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState("");
+  const commentParentsRef = useRef(flat);
+  commentParentsRef.current = flat;
+  const commentMountedRef = useRef(false);
+  const commentReadyRef = useRef(false);
+  useLayoutEffect(() => {
+    if (!commentDraft) return;
+    commentMountedRef.current = true;
+    return () => { commentMountedRef.current = false; };
+  }, [commentDraft]);
+  const retainedDraft = useSyncExternalStore(commentDraft?.subscribe || subscribeEmptyDraft, commentDraft?.read || readEmptyDraft, readEmptyDraft);
+  const [localText, setText] = useState("");
+  const [localReplyTo, setReplyTo] = useState(null); // { id, name } or null (= reply to the post)
+  const [localSending, setSending] = useState(false);
+  const [localSendError, setSendError] = useState("");
+  const text = commentDraft ? retainedDraft.text : localText;
+  const liveParent = commentDraft && retainedDraft.parentId ? flat.find(c => c.id === retainedDraft.parentId && !c.deleted && !c.pending) : null;
+  const replyUnavailable = !!commentDraft && (retainedDraft.invalidReply || (!!retainedDraft.parentId && !liveParent));
+  const replyTo = commentDraft ? (retainedDraft.parentId || retainedDraft.invalidReply ? {
+    id: retainedDraft.parentId,
+    name: liveParent ? resolvePostAuthor({ userId: liveParent.userId, cached: userById?.(liveParent.userId), embedded: { name: liveParent.name, profileUpdatedAt: liveParent.profileUpdatedAt } }).name : null,
+  } : null) : localReplyTo;
+  const sending = commentDraft ? retainedDraft.sending : localSending;
+  const sendError = commentDraft ? retainedDraft.error : localSendError;
+  const retryAttempt = commentDraft?.failedAttempt();
+  const retryPrevious = !!commentDraft && retainedDraft.retry;
   const commentScope = accountTargetScope(session?.id, `post-comments:${String(log.id || "")}`);
   const [commentRequestVersion, setCommentRequestVersion] = useState(0);
   const [commentResource, setCommentResource] = useState(() => ({
@@ -192,6 +218,8 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
     ? commentResource
     : { scope: commentScope, status: "loading", loaded: flat.length > 0, error: null };
   const commentsUsable = scopedCommentResource.loaded;
+  commentReadyRef.current = commentsUsable;
+  const sendDisabled = sending || retryPrevious || retainedDraft.unavailable || !text.trim() || (!!commentDraft && !commentsUsable);
   const commentsPending = !commentsUsable && scopedCommentResource.status === "loading";
   const commentErrorMessage = scopedCommentResource.error?.userMessage
     || "The comment thread could not be reached. Check your connection and try again.";
@@ -212,22 +240,44 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
 
   const showComments = () => scrollRef.current?.scrollToEnd({ animated: true });
   const changeCommentText = (value) => {
+    if (commentDraft) {
+      if (commentMountedRef.current && commentScopeRef.current === commentScope) commentDraft.edit(value);
+      return;
+    }
     if (value !== commentSubmitRef.current.draft?.text) commentSubmitRef.current.intent = null;
     commentSubmitRef.current.draft = { ...commentSubmitRef.current.draft, text: value };
     setText(value);
   };
   const changeCommentReply = (value) => {
+    if (commentDraft) {
+      if (commentMountedRef.current && commentScopeRef.current === commentScope) commentDraft.reply(value === null ? null : value?.id);
+      return;
+    }
     if ((value?.id || null) !== commentSubmitRef.current.draft?.parentId) commentSubmitRef.current.intent = null;
     commentSubmitRef.current.draft = { ...commentSubmitRef.current.draft, parentId: value?.id || null };
     setReplyTo(value);
   };
   const reply = (comment) => {
+    if (commentDraft && (!commentMountedRef.current || commentScopeRef.current !== commentScope)) return;
     if (!session?.id) { onRequireAuth?.(); return; }
     changeCommentReply({ id: comment.id, name: comment.name || userById?.(comment.userId)?.name });
     inputRef.current?.focus();
   };
-  const send = async () => {
+  const send = async (attempt = null) => {
     if (!session?.id) { onRequireAuth?.(); return; }
+    if (commentDraft) {
+      if (!commentMountedRef.current || !commentReadyRef.current || commentScopeRef.current !== commentScope) return;
+      const currentDraft = commentDraft.read();
+      if (currentDraft.retry ? attempt !== commentDraft.failedAttempt() : attempt !== null) return;
+      const parentId = currentDraft.retry ? attempt.parentId : currentDraft.parentId;
+      const claim = commentDraft.claim(commentParentsRef.current.some(c => c.id === parentId && !c.deleted && !c.pending));
+      if (!claim) return;
+      const { intent } = claim;
+      try {
+        commentDraft.settle(claim, await addComment(log.id, intent.text, intent.parentId, { clientMutationId: intent.clientMutationId }));
+      } catch { commentDraft.settle(claim, { ok: false }); }
+      return;
+    }
     const t = text.trim();
     if (!t || sending || commentSubmitRef.current.active || commentScopeRef.current !== commentScope) return;
     // A synchronous lock covers Enter + tap before React renders the busy state.
@@ -259,6 +309,16 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
     } finally {
       if (isCurrent()) { commentSubmitRef.current.active = null; setSending(false); }
     }
+  };
+
+  const discardCommentAttempt = () => {
+    if (!commentMountedRef.current || commentScopeRef.current !== commentScope) return;
+    const attempt = commentDraft?.failedAttempt();
+    if (!attempt) return;
+    Alert.alert("Discard previous attempt?", "The previous comment may already be posted; this will not remove it. Check the thread before sending it again. Your current draft will stay here.", [
+      { text: "Keep attempt", style: "cancel" },
+      { text: "Discard attempt", style: "destructive", onPress: () => { if (commentMountedRef.current && commentScopeRef.current === commentScope) commentDraft.discardAttempt(attempt); } },
+    ]);
   };
 
   const removeComment = (comment) => {
@@ -334,17 +394,23 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
             <Text style={styles.signin}>Sign in to comment</Text>
           </Pressable>
         </View>
-      ) : !commentsUsable ? (
+      ) : !commentsUsable && !commentDraft ? (
         <View style={styles.composerWrap}>
           <Text style={styles.signin}>{commentsPending ? "Connecting to comments..." : "Reconnect to the thread to comment."}</Text>
         </View>
       ) : (
         <View style={styles.composerWrap}>
+          {commentDraft && !commentsUsable && <Text style={styles.signin}>{commentsPending ? "Connecting to comments... Your draft is saved here." : "Reconnect to the thread to send. Your draft is saved here."}</Text>}
+          {retainedDraft.unavailable && <Text accessibilityRole="alert" style={styles.threadErrorCopy}>Finish or discard an unconfirmed comment in another thread before starting here.</Text>}
           {!!sendError && <Text accessibilityRole="alert" style={styles.threadErrorCopy}>{sendError}</Text>}
+          {retryPrevious && <View style={styles.retryActions}>
+            <Pressable onPress={() => send(retryAttempt)} disabled={!commentsUsable} accessibilityRole="button" accessibilityLabel="Retry previous comment" style={styles.retryAction}><Text style={styles.replyBtn}>Retry previous comment</Text></Pressable>
+            <Pressable onPress={discardCommentAttempt} accessibilityRole="button" accessibilityLabel="Discard previous attempt" style={styles.retryAction}><Text style={styles.deleteBtn}>Discard previous attempt</Text></Pressable>
+          </View>}
           {replyTo && (
             <View style={styles.replyingTo}>
-              <Text style={styles.replyingTxt} numberOfLines={1}>Replying to {replyTo.name || "comment"}</Text>
-              <Pressable onPress={() => changeCommentReply(null)} hitSlop={8}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
+              <Text style={styles.replyingTxt} numberOfLines={1}>{replyUnavailable ? "Reply target unavailable in this thread" : `Replying to ${replyTo.name || "comment"}`}</Text>
+              <Pressable onPress={() => changeCommentReply(null)} hitSlop={8} accessibilityRole={commentDraft ? "button" : undefined} accessibilityLabel={commentDraft ? "Clear reply target" : undefined}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
             </View>
           )}
           <View style={styles.composer}>
@@ -353,14 +419,15 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
               style={styles.input}
               placeholder={replyTo ? "Write a reply..." : "Reply to this post..."}
               placeholderTextColor={colors.textFaint}
+              editable={commentDraft ? !retainedDraft.unavailable : undefined}
               value={text}
               onChangeText={changeCommentText}
-              onSubmitEditing={send}
+              onSubmitEditing={retryPrevious ? undefined : () => send()}
               returnKeyType="send"
               multiline
               maxLength={LIMITS.message}
             />
-            <Pressable style={[styles.send, (!text.trim() || sending) && styles.sendOff]} onPress={send} disabled={!text.trim() || sending} accessibilityRole="button" accessibilityLabel={sending ? "Sending comment" : "Send comment"}>
+            <Pressable style={[styles.send, sendDisabled && styles.sendOff]} onPress={() => send()} disabled={sendDisabled} accessibilityRole="button" accessibilityLabel={sending ? "Sending comment" : "Send comment"}>
               <Icon name="chevron-right" size={18} color="#1A1206" />
             </Pressable>
           </View>
@@ -371,6 +438,8 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
 }
 
 const styles = StyleSheet.create({
+  retryActions: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  retryAction: { minHeight: 44, justifyContent: "center" },
   wrap: { flex: 1, minWidth: 0, width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.bg },
   content: { padding: 16, paddingBottom: 24 },
   sectionLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 4, marginBottom: 12 },

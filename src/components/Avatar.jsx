@@ -5,6 +5,7 @@ import { colors, focusRing, mono } from "../theme";
 import { displaySrc, previewSrc } from "../lib/img";
 import { imageLoadPolicy, versionedImageCacheKey } from "../domain/imageLoadPolicy.mjs";
 import useImageAttempt from "../hooks/useImageAttempt";
+import { useFeedImageRetryPulse } from "../hooks/feedImageRetry";
 
 // Shows the user's uploaded photo if set, else initials on their colour.
 // Tappable to open a profile.
@@ -20,7 +21,7 @@ export default function Avatar({ user, size = 36, onPress, priority = "normal", 
     ].filter(Boolean))];
   }, [previewWidth, rawAvatarUri]);
   const requestScope = JSON.stringify([rawAvatarUri, previewWidth, user?.id || user?.handle, user?.profileUpdatedAt]);
-  const { uri: avatarUri, index: sourceIndex, onError, onDisplay } = useImageAttempt(requestScope, sources);
+  const { uri: avatarUri, index: sourceIndex, onError, onDisplay, nativeAttemptKey } = useImageAttempt(requestScope, sources, useFeedImageRetryPulse());
   const cacheKey = versionedImageCacheKey({
     namespace: "avatar",
     id: user?.id || user?.handle,
@@ -47,7 +48,7 @@ export default function Avatar({ user, size = 36, onPress, priority = "normal", 
       {fallback}
       {!!avatarUri && (
         <ExpoImage
-          key={cacheKey}
+          key={nativeAttemptKey == null ? cacheKey : `${cacheKey}:${nativeAttemptKey}`}
           accessible={false}
           source={source}
           style={StyleSheet.absoluteFill}

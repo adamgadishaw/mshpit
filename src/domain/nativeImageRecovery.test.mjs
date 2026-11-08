@@ -36,6 +36,7 @@ function fixture(name, { reuseNativeView = false, platform = "ios" } = {}) {
     if (dep === 'react/jsx-runtime') return { jsx, jsxs: jsx, Fragment: 'Fragment' };
     if (dep === 'react-native') return { Platform: { OS: platform }, View: 'View', Text: 'Text', Pressable: 'Pressable', PixelRatio: { get: () => 3 }, StyleSheet: { create: v => v, absoluteFill: {} } };
     if (dep === 'expo-image') return { Image: 'NativeImage' };
+    if (dep.endsWith('/feedImageRetry')) return { useFeedImageRetryPulse: () => null };
     if (dep.endsWith('/useImageAttempt')) return { default: hook, __esModule: true };
     if (dep.endsWith('/imageLoadPolicy.mjs')) return policies;
     if (dep.endsWith('/img')) return { displaySrc: uri => uri, previewSrc: uri => 'preview:' + uri, proxied: uri => 'fallback:' + uri, isHttp: () => true, isVideoUrl: () => false };

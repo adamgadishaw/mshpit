@@ -12,6 +12,7 @@ import { nextVisibleMediaPostIds } from "../domain/posterVisibility.mjs";
 import { JOURNEY_TAGLINE } from "../domain/menuJourney.mjs";
 import { HOME_JOURNEY_LINE, homeGuideStorageKey } from "../domain/homeJourney.mjs";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
+import { FeedImageRetryProvider, useFeedImageRetry } from "../hooks/feedImageRetry";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import SuggestedPittersRail from "../components/SuggestedPittersRail";
 import useAppActive from "../lib/useAppActive";
@@ -297,11 +298,14 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       setUndoBusy(false);
     }
   };
+  const imageRetry = useFeedImageRetry(JSON.stringify([accountId, loggedIn, filter]));
   const refresh = async () => {
+    if (!imageRetry.isCurrent()) return false;
     if (refreshControllerRef.current || !onRefresh) return false;
     if (filter === "everyone") introduction.dismiss();
     const controller = new AbortController();
     refreshControllerRef.current = controller;
+    imageRetry.accept(controller.signal);
     setRefreshing(true);
     setRefreshError(false);
     try {
@@ -393,6 +397,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
   return (
+    <FeedImageRetryProvider value={imageRetry.value}>
     <VinylRefreshBoundary
       refreshing={refreshing}
       onRefresh={refresh}
@@ -606,6 +611,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       renderItem={renderFeedItem}
     />
     </VinylRefreshBoundary>
+    </FeedImageRetryProvider>
   );
 }
 

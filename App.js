@@ -148,6 +148,7 @@ import {
 import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
 import { createIOSArtistReturnStore } from "./src/domain/iosArtistReturn.mjs";
 import { createBrowseReturnStore } from "./src/domain/iosBrowseReturn.mjs";
+import { createCommentDraftOwner } from "./src/domain/commentDraftOwner";
 import { createIOSMessageDrafts } from "./src/domain/iosMessageDrafts.mjs";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
@@ -308,6 +309,13 @@ function Root() {
       },
     });
     messageDraftsRef.current.account(session?.id || null, chatAuthEpoch);
+  }
+  const commentDraftsRef = useRef(null);
+  if (Platform.OS === "ios") {
+    if (!commentDraftsRef.current) commentDraftsRef.current = createCommentDraftOwner({
+      onAvailable: () => { if (messageDraftsMountedRef.current) refreshDraftCapacity(value => value + 1); },
+    });
+    commentDraftsRef.current.account(session?.id || null, chatAuthEpoch);
   }
   const browseReturnRef = useRef(null);
   if (!browseReturnRef.current) browseReturnRef.current = createBrowseReturnStore();
@@ -1536,7 +1544,7 @@ function Root() {
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onOpenFanClub={openFanClub} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} />;
-  else if (nav.post) overlay = <PostScreen key={`${session?.id || "guest"}:${nav.post.id}`} log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
+  else if (nav.post) overlay = <PostScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.post.id]) : `${session?.id || "guest"}:${nav.post.id}`} log={nav.post} commentDraft={Platform.OS === "ios" ? commentDraftsRef.current.lease(nav.post.id) : null} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
   else if (nav.festival?.slug) overlay = <FestivalScreen key={`${session?.id || "guest"}:${nav.festival.slug}`} slug={nav.festival.slug} editionId={nav.festival.editionId || null}
     signedIn={!!session} accountId={session?.id || null} author={session ? { name: session.name } : null} onClose={back} onOpenArtist={openArtist} onRequireAuth={openSignIn}

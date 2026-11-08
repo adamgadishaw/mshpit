@@ -224,6 +224,7 @@ function renderAvatar(props, platform = "web") {
     "../lib/img": { previewSrc: (uri) => uri, displaySrc: (uri) => uri },
     "../domain/imageLoadPolicy.mjs": { imageLoadPolicy: () => ({}), versionedImageCacheKey: () => "avatar-key" },
     "../hooks/useImageAttempt": (_, sources) => ({ uri: sources[0], index: 0 }),
+    "../hooks/feedImageRetry": { useFeedImageRetryPulse: () => null },
   };
   const module = { exports: {} };
   new vm.Script(code).runInNewContext({ module, exports: module.exports, require(name) { assert.ok(Object.hasOwn(dependencies, name), name); return dependencies[name]; } });

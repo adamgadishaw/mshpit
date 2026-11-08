@@ -20,6 +20,7 @@ function component(file, platform = "ios") {
     "expo-image": { Image: "Image" }, "../theme": { colors: new Proxy({}, { get: () => "#111" }), mono: "mono" },
     "./Icon": "Icon", "./ClipPoster": "ClipPoster", "../lib/img": { displaySrc: u => u, previewSrc: u => u, isHttp: () => false, proxied: u => u, isVideoUrl: u => u?.endsWith(".mp4") },
     "../domain/imageLoadPolicy.mjs": { imageLoadPolicy: () => ({ priority: "normal", loading: "eager" }) },
+    "../hooks/feedImageRetry": { useFeedImageRetryPulse: () => null },
     "../hooks/useImageAttempt": (_scope, candidates) => ({ uri: candidates[0] }),
     "../domain/clipPoster.mjs": poster, "../domain/posterVisibility.mjs": { posterGenerationEnabled: () => false },
     "../domain/postMediaGridLayout.mjs": { videoPosterContain: () => true },

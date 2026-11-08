@@ -240,3 +240,41 @@ checks remain pending. The simulator remains shut down and keyboard capture off.
 Further comment-continuity and explicit image-recovery work is isolated in
 separate worktrees. It is not included in this signed checkpoint until separately
 reviewed, integrated, tested and rebuilt.
+
+## Comment continuity and explicit image recovery
+
+The next independently reviewed iOS-only slice is now integrated after the
+0fcb4fd signed checkpoint. Root retains bounded, account-and-auth-epoch-scoped
+comment drafts in memory, including the selected reply identifier, revision,
+exact attempted delivery key/payload, pending claim and recoverable error.
+Opening a profile, photo or show no longer inherently discards that local work.
+Pending delivery remains single-flight across remounts; a result only clears
+unchanged submitted text. Failed sends require a deliberate retry with the same
+key or an attempt-specific discard confirmation. Nothing is persisted to disk,
+URLs or telemetry, and no additional comment fetch or automatic resend is added.
+
+Reply context is resolved from the current thread, never from retained parent
+text or profile data. Missing, deleted or still-pending parents block new sends
+and retries; absence means unavailable in the loaded thread, not necessarily
+deleted. Retrying preserves the original attempted parent, even if newer draft
+edits selected another. A deletion between local validation and server commit
+remains an existing backend-contract limitation. Discard does not remove any
+possibly accepted comment and warns the user to check the thread first.
+
+The image slice adds a platform-resolved iOS attempt lifetime so callbacks from
+an old image, including A-to-B-to-A source changes, cannot fail a fresh image.
+An accepted explicit Feed refresh emits one synchronous retry intent. Only
+already exhausted mounted images reset; healthy/in-flight images consume the
+intent without restarting. The native view key changes per attempt, while the
+URI, cache key, proxy inputs, existing cache policy, gallery actions and video
+poster policy stay unchanged. There are no automatic network retries or cache
+clears. Android/web use the inert retry context and their original image hook.
+
+All 100 immediate integrated tests passed, including existing public/private
+profile and Android/web presentation checks. Two profile fixtures initially
+lacked the new Avatar retry-context dependency; the missing inert dependency
+was added without removing assertions. Independent reviews passed 113 related
+comment tests and 48 image/cache tests before integration. A fresh frozen full
+suite, platform exports and signed artifact are required for this new slice.
+Native offline/keyboard/VoiceOver behavior has not been revalidated while the
+Mac is locked, and the held earlier signed build does not contain this slice.
