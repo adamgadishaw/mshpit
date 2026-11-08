@@ -146,6 +146,7 @@ import {
   sanitizeDisabledMusicPlayerNavigationFrame,
 } from "./src/domain/musicPlayerAvailability.mjs";
 import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
+import { createFeedReturnOwner } from "./src/lib/feedReturnOwner";
 import { createIOSArtistReturnStore } from "./src/domain/iosArtistReturn.mjs";
 import { createBrowseReturnStore } from "./src/domain/iosBrowseReturn.mjs";
 import { createCommentDraftOwner } from "./src/domain/commentDraftOwner";
@@ -379,6 +380,12 @@ function Root() {
     return top && Object.keys(top).length ? [{}, top] : [{}];
   });
   const nav = stack[stack.length - 1];
+  const feedReturnRef = useRef(null);
+  if (!feedReturnRef.current) feedReturnRef.current = createFeedReturnOwner();
+  const feedReturn = feedReturnRef.current?.reconcile(
+    session?.id || null, chatAuthEpoch,
+    activeTab === "feed" && stack[0] && !Object.keys(stack[0]).length ? stack[0] : null,
+  ) || null;
   const artistReturnRef = useRef(null);
   if (!artistReturnRef.current) artistReturnRef.current = createIOSArtistReturnStore();
   artistReturnRef.current.reconcile(session?.id || null, chatAuthEpoch, stack);
@@ -1772,6 +1779,11 @@ function Root() {
     && navigationRef.current.stack === stack && navigationRef.current.tab === tab
     && navigationRef.current.landing === landing;
 
+  const feedPresentation = useMemo(() => Platform.OS === "ios" ? {
+    current: () => feedSurfaceVisible && linkedNavigationRef.current.ownsScope(linkedNavigationScope)
+      && navigationRef.current.stack === stack && navigationRef.current.tab === tab
+      && navigationRef.current.landing === landing,
+  } : null, [feedSurfaceVisible, linkedNavigationScope, stack, tab, landing]);
   const retainNativeFeed = retainNativeFeedForMedia({ platform: Platform.OS, wide, accountId: session?.id, tab: activeTab, frames: stack, hasOverlay: !!overlay });
 
   const tabScreens = (
@@ -1779,6 +1791,9 @@ function Root() {
               {activeTab === "feed" && !!session && (
                 <FeedScreen
                   visible={feedSurfaceVisible}
+                  key={feedReturn?.key}
+                  feedReturn={feedReturn}
+                  feedPresentation={feedPresentation}
                   onRequireAuth={openSignIn}
                   onOpenNewsStory={openNewsStory}
                   onOpenNews={() => go({ news: true })}

@@ -1,3 +1,4 @@
+import useIOSFeedReturn, { FeedReturnProvider } from "../hooks/useIOSFeedReturn";
 import { useFeedHeadStatus } from "../hooks/feedHeadStatus";
 import { nativeFeedCanWork } from "../domain/nativeFeedMediaRetention.mjs";
 import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -88,7 +89,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   );
 });
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, headStatusOwner = null, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, headStatusOwner = null, feedReturn = null, feedPresentation = null, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
   const { width, fontScale } = useWindowDimensions();
   const appActive = useAppActive();
   const feedActive = nativeFeedCanWork({ platform: Platform.OS, appActive, visible });
@@ -103,7 +104,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   const filter = filterState.scope === filterScope
     ? filterState.value
     : normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }); // following | local | everyone
-  const [count, setCount] = useState(PAGE);
+  const [count, setCount] = useState(() => feedReturn?.read(filter)?.count || PAGE);
   const [undoItem, setUndoItem] = useState(null);
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoError, setUndoError] = useState(null);
@@ -140,6 +141,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     platform: Platform.OS, enabled: loggedIn && showSuggestedPitters, newsTab,
   }), [baseListData, loggedIn, showSuggestedPitters, newsTab]);
   const listData = discovery.rows;
+  const returnUI = useIOSFeedReturn({ lease: feedReturn, presentation: feedPresentation, filter, count, rows: listData,
+    keyExtractor: feedKeyExtractor, width, fontScale, active: feedActive });
   const openAllNews = () => (loggedIn ? pick("news") : onOpenNews?.());
   const effectiveHasMore = filter === "following" ? !!following.nextCursor : hasMore;
   const effectiveLoading = filter === "following" ? following.status === "loading" : loadingMore;
@@ -157,7 +160,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     setFilterState((current) => current.scope === filterScope
       ? current
       : { scope: filterScope, value: normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }) });
-    setCount(PAGE);
+    setCount(feedReturn?.read(filter)?.count || PAGE);
     setUndoItem(null);
     setUndoError(null);
     setVisibleMediaPostIds(new Set());
@@ -230,6 +233,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
 
   const pick = (f) => {
     if (f === filter) return;
+    returnUI?.cancel();
     const at = Date.now();
     for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
       analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
@@ -305,6 +309,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   const refresh = async () => {
     if (!imageRetry.isCurrent()) return false;
     if (refreshControllerRef.current || !onRefresh) return false;
+    returnUI?.cancel();
     if (filter === "everyone") introduction.dismiss();
     const controller = new AbortController();
     refreshControllerRef.current = controller;
@@ -412,7 +417,9 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       accessibilityLabel="Refresh your feed"
       testID="feed-refresh"
     >
+    <FeedReturnProvider value={returnUI?.provider}>
     <FlatList
+      {...returnUI?.props}
       data={listData}
       extraData={visibleMediaPostIds}
       keyExtractor={feedKeyExtractor}
@@ -631,6 +638,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       )}
       renderItem={renderFeedItem}
     />
+    </FeedReturnProvider>
     </VinylRefreshBoundary>
     </FeedImageRetryProvider>
   );

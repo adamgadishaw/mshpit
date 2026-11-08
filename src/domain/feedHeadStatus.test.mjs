@@ -42,7 +42,7 @@ screenFixture = screenFixture.replace("useRef(value){", "useSyncExternalStore(su
   .replace("if(dep.endsWith('/feedExperience.mjs'))", "if(dep.endsWith('/feedPagination.mjs'))return pagination; if(dep.endsWith('/feedExperience.mjs'))");
 const { fixture, nodes } = new Function("readFileSync", "createRequire", "transformSync", "feedExperience", "placement", "home", "headDomain", "pagination",
   screenFixture + ";return {fixture,nodes};")(readFileSync, createRequire, transformSync, feedExperience, placement, home, {createFeedHeadStatus,hasFeedHeadReceipt}, pagination);
-const list = f => f.tree.props.children.props.children;
+const list = f => f.tree.props.children.props.children.props.children;
 const text = n => nodes(n).flatMap(x => typeof x.props?.children === "string" ? [x.props.children] : []);
 const emptyText = f => text(list(f).props.ListEmptyComponent).join(" ");
 const refreshButton = f => nodes(list(f).props.ListEmptyComponent).find(n => n.props?.label === "Refresh feed");

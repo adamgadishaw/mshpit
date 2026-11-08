@@ -29,6 +29,7 @@ function fixture(platform='ios') {
   const jsx=(type,props,key)=>({type,props,key});
   const feed=run(feedCode,dep=>{
     if(dep==='react')return react;
+    if(dep.endsWith('/useIOSFeedReturn'))return {__esModule:true,default:()=>null,FeedReturnProvider:'FeedReturnProvider'};
     if(dep==='react/jsx-runtime')return {jsx,jsxs:jsx};
     if(dep==='react-native')return {View:'View',Text:'Text',FlatList:'FlatList',Pressable:'Pressable',ScrollView:'ScrollView',Platform:{OS:platform,select:v=>v[platform]||v.default},StyleSheet:{create:v=>v},useWindowDimensions:()=>({width:393,fontScale:1})};
     if(dep.endsWith('/feedImageRetry'))return retry;
@@ -53,7 +54,7 @@ function fixture(platform='ios') {
   render();
   return {props,calls,render,get tree(){return tree;},get refresh(){return tree.props.children.props.onRefresh;},
     subscribe(fn){return tree.props.value?.subscribe(fn);},
-    filter(label){const list=tree.props.children.props.children;nodes(list.props.ListHeaderComponent).find(n=>n.props?.label===label).props.onPress();render();},
+    filter(label){const list=tree.props.children.props.children.props.children;nodes(list.props.ListHeaderComponent).find(n=>n.props?.label===label).props.onPress();render();},
     unmount(){slots.forEach(slot=>slot?.cleanup?.());},
     strictReplay(){slots.forEach(slot=>slot?.cleanup?.());slots.forEach(slot=>{if(slot?.fn)slot.cleanup=slot.fn();});},
   };
@@ -82,9 +83,9 @@ test('actual Feed StrictMode cleanup/setup permits one fresh gesture without emi
  const pending=f.refresh();assert.equal(pulses,1);f.calls[0].resolve(true);await pending;
 });
 for(const platform of ['android','web'])test(`${platform}: default provider and refresh hook are inert and retain list data references`,async()=>{
- const f=fixture(platform),tree=f.tree,list=tree.props.children.props.children;
+ const f=fixture(platform),tree=f.tree,list=tree.props.children.props.children.props.children;
  assert.equal(tree.type(tree.props),tree.props.children);assert.equal(tree.props.value,null);
- f.render();assert.equal(f.tree.props.children.props.children.props.data,list.props.data);
+ f.render();assert.equal(f.tree.props.children.props.children.props.children.props.data,list.props.data);
  const pending=f.refresh();assert.equal(f.calls.length,1);assert.equal(await f.refresh(),false);f.calls[0].resolve(true);assert.equal(await pending,true);
 });
 
