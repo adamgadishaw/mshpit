@@ -4,7 +4,7 @@ import { basename, dirname, join, posix, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const LIMIT = 100;
-const confinedDomains = new Set(['iosMessageDrafts.mjs', 'iosFeedReturn.mjs', 'iosSearchAnnouncements.mjs', 'sessionValidationStatus.mjs']);
+const confinedDomains = new Set(['iosMessageDrafts.mjs', 'iosFeedReturn.mjs', 'iosSearchAnnouncements.mjs', 'iosVenueMap.mjs', 'sessionValidationStatus.mjs']);
 // Validate retained defaults, without requiring tree-shaken modules to survive.
 const inertDefaults = new Map([
   ['src/hooks/sessionValidationStatus.js', 'export const sessionValidationStatusForOwner = () => null;'],

@@ -39,7 +39,7 @@ test('valid exports pass without writes; static public scripts need no Metro map
 test('app .ios implementations and exact confined domains fail on either platform', (t) => {
   const f = fixture(t);
   for (const target of [f.androidMap, f.webMap]) {
-    for (const source of ['src/components/Panel.ios.jsx', 'src/domain/iosMessageDrafts.mjs', 'src/domain/iosFeedReturn.mjs', 'src/domain/iosSearchAnnouncements.mjs', 'iosMessageDrafts.mjs']) {
+    for (const source of ['src/components/Panel.ios.jsx', 'src/domain/iosMessageDrafts.mjs', 'src/domain/iosFeedReturn.mjs', 'src/domain/iosSearchAnnouncements.mjs', 'src/domain/iosVenueMap.mjs', 'iosMessageDrafts.mjs', 'iosVenueMap.mjs']) {
       f.put(target, map([source]));
       const result = f.check();
       assert.equal(result.passed, false, source);
