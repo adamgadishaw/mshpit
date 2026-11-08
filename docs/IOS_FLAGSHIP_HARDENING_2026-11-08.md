@@ -1,5 +1,14 @@
 # iOS flagship hardening, November 8, 2026
 
+## Latest fully verified artifact
+
+Checkpoint 94be923 is preserved at
+.tmp/ios-phone-checkpoints/flagship-94be923/MshpitDev.app with a receipt and exact
+manifest. All 7,516 tests, three platform exports and signed Release compilation
+passed. This is a development-signed, live-linked preview, not installed and not
+App Store distribution. Physical interaction/accessibility/performance are still
+open. Later in-progress slices are not included until separately verified.
+
 ## Scope and release boundary
 
 This continues the iOS redesign on `feat/ios-experience-redesign`. Android and

@@ -5,6 +5,14 @@ that a connected account is enrolled. Preserve older readiness reports as dated
 history. No submission, production deployment, account change or phone install
 is performed by this document.
 
+All mutation-path acceptance tests require an authorized isolated fixture
+environment. The current live-linked Release preview is NOT mutation-blocked:
+the existing nativeReadOnlyReview switch applies only to __DEV__ builds. On that
+preview, use read-only browsing and unsent draft navigation. Do not publish
+synthetic comments/reviews, delete content, switch real accounts, or save/share
+private calendar data to another app merely to certify a test. Genuine owner-
+directed actions and any required approvals remain separate.
+
 ## Build identity and environment
 
 The owner-approved local phone preview uses `com.mshpit.app.dev` and the live
