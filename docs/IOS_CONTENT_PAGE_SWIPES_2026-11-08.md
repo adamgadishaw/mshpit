@@ -1,5 +1,24 @@
 # iOS content page swipes
 
+## Continuous pager revision (integration in progress)
+
+The earlier staged-slide sections below describe the installed eb2ae41 checkpoint, which the owner rejected. They are historical evidence, not the current implementation or acceptance claim.
+
+The replacement iOS pager renders the current page and one real adjacent destination when a deliberate horizontal gesture selects its direction. Both use one continuous full-width track. It does not show an invented screenshot, generic adjacent label or staged blank interval. Destination reads begin during that gesture; there is no idle mounting of every tab. Normal existing read caches are retained, rather than introducing a private screenshot or result cache.
+
+Primary content readiness uses the selected screen/filter's current usable cached data or settled success/empty/error state, not every optional widget. A fast release waits for actual destination layout and bounded primary readiness. After the cap, a real renderable screen can settle with honest loading/retry UI rather than trapping navigation on a slow network. A destination that cannot render is canceled. This cannot guarantee a cold network response before every fast flick.
+
+Preview-specific browse persistence, Search analytics/guest-search recording, announcements/focus and autoplay are gated; Feed does not acquire visible impression/dwell ownership. Profile rewards must wait until selection because that GET can award achievements. Activity/DM routes are not previewed. Existing read-cache fills are not a new preview persistence mechanism.
+
+The same incoming component is promoted on commit and the same outgoing component survives cancel. Absolute tab coordinates stay stable through React promotion; a single epoch-guarded UI worklet rebases origin and drag together. Route/account/auth changes, reader/background intervals and retired gesture/timer callbacks revoke pending work. Reduce Motion avoids page travel; explicit tab controls remain available. Android/web retain their default implementations.
+
+Nested horizontal scroll views now have explicit native recognizers related to their nearest vertical native scroll owner, while retaining exclusion from the page pan. This addresses the observed card-open-on-drag failure, but source tests do not replace replay on the actual phone.
+
+Expanded detail edge Back is documented separately in IOS_DETAIL_GESTURE_EXPANSION_2026-11-08.md. It uses the actual prior route and existing close policy; its outgoing-only animation is not a full previous-detail reveal.
+
+Focused source/React/Worklets tests and independent review pass for the pager. Combined release gates and physical motion/carousel/profile acceptance are still pending. The installed old checkpoint remains preserved and must not be described as the final revised experience.
+
+
 ## Scope
 
 Base: d02c177. No device install, backend mutation, deployment, dependency installation, or neighboring-page data prefetch is part of this change.
