@@ -9,7 +9,7 @@ The current signed preview and installation hold are described in
 
 - **Synthetic local development:** existing loopback backend plus Metro and an
   appropriately configured simulator development app. Invented data only.
-- **Owner's standalone preview:** b907ea8, Mshpit Dev/com.mshpit.app.dev,
+- **Owner's standalone preview:** 2f24923, Mshpit Dev/com.mshpit.app.dev,
   development-signed Release, version 1.0.0/build 1. It uses live MSHPIT data.
 - **EAS preview:** internal distribution configuration, not automatically a
   separate app identity, staging backend, TestFlight build or read-only mode.

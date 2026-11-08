@@ -2,15 +2,15 @@
 
 ## Latest fully verified artifact
 
-Checkpoint b907ea8 is preserved at
-.tmp/ios-phone-checkpoints/flagship-b907ea8/MshpitDev.app with a receipt, exact
-manifest and platform-isolation evidence. All 8,310 tests, three platform exports
+Checkpoint 2f24923 is preserved at
+.tmp/ios-phone-checkpoints/flagship-2f24923/MshpitDev.app with a receipt, exact
+manifest and platform-isolation evidence. All 8,324 tests, three platform exports
 and signed Release compilation passed. This is a development-signed, live-linked
 preview, not installed or App Store distribution. Physical interaction,
-accessibility and performance remain open. Earlier checkpoints, including 264f9ad,
-remain preserved. Later work is not included until separately verified.
-The current concise [preview handoff](IOS_PREVIEW_HANDOFF_2026-11-08.md) separates
-this compiled source from the later export-checker tooling checkpoint.
+accessibility and performance remain open. Earlier checkpoints, including b907ea8,
+remain preserved. Later candidate work is not included until separately verified.
+The current concise [preview handoff](IOS_PREVIEW_HANDOFF_2026-11-08.md) records
+this artifact and the separate test-before-release workflow.
 
 ## Scope and release boundary
 
@@ -1027,3 +1027,25 @@ re-signed, installed or launched. The oldest 0fcb4fd receipt uses sorted compact
 JSON for its manifest hash; the actual file and that serialization were both
 verified, not silently treated as identical. Later receipts hash file bytes.
 The dated report is .tmp/ios-phone-checkpoints/checkpoint-integrity-review.json.
+
+
+## iOS Feed Undo target checkpoint 2f24923
+
+The rendered Undo hidden recommendation / Try again control now has an iOS-only
+minimum height of 44 points instead of 36. Actual Pressable/style tests preserve
+callback identity, busy/disabled state and matching/stale error labels; Android
+and web retain 36. The original-height negative control fails the new assertion.
+Independent review cleared the one-line production delta and regressions.
+
+All 8,324 tests passed with no failure/skip/cancellation in 85.938515125 seconds.
+Syntax 923 files, architecture, diff, all exports, offline export-isolation gate
+and signed Release build passed. Artifact: 60,285,579 bytes / 52 files or links.
+JS SHA-256 a6d3de7b749258ad0ad7f5355c1fcb468183cd7d5874be71fedf8e2a459bb148.
+Executable SHA-256 8dd4da5c1f2c521c3ecbe0e9bfda167e1c9bbd7961fcdbe419b5f7af5bba9d05.
+Manifest SHA-256 5621cbca8dc363f0316f7189e29780b4eae8ead2bf656adf5d29513b9640947c.
+
+Relative to b907ea8, only executable, JS and signature resources change. All 11
+privacy manifests, Info.plist and profile remain byte-identical. Android Hermes
+is byte-identical; web initial-script budget entries remain unchanged at 521916
+gzip bytes with 2372 bytes of headroom. The gate again finds zero app iOS leakage.
+No installation, launch, native hit testing, account change or production action.

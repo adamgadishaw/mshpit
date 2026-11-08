@@ -314,3 +314,12 @@ exports pass this check; later tooling c414781 passes 8,321 complete-suite cases
 This tooling does not change or rebuild the signed b907ea8 preview. Missing or
 malformed maps, app iOS module leakage and non-inert retained defaults fail the
 check. Its explicit coverage/limitations are in IOS_EXPORT_ISOLATION_GATE.md.
+
+
+## Current touch-target artifact 2f24923
+
+The preserved signed preview includes the iOS Feed Undo/Retry 44-point minimum
+height correction, with 8,324 passing tests and all export/build gates. Check its
+actual reachable target and large-text layout during an authorized native session;
+source style assertions alone are not native hit testing. Prior signed previews
+remain preserved and the phone installation hold remains in force.
