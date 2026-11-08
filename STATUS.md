@@ -1,5 +1,19 @@
 # Pit current status
 
+## 2026-11-08 iOS festival presentation (isolated local review)
+
+- New iOS-only festival variants replace spotlight artwork with credited,
+  uncropped existing images and truthful missing/error/retry states. Explicit
+  refresh, cached-read errors, calendar-day expiry, separate official
+  announcements and account-scoped plan controls have 24 new passing tests.
+- Shared loaders, APIs, server ingestion, Android/web and native dependencies
+  are unchanged. This is not a production content refresh or street-map fix.
+  Current production content could not be independently read (HTTP 403).
+- Scope, test limits and physical verification still needed are in
+  `docs/IOS_FESTIVAL_POLISH_2026-11-08.md`. Independent source review cleared
+  the final UTC-day correction; no push, deployment or device work is included.
+
+
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 
 - Local branch `fix/catalog-event-festival-20261027` uses a source snapshot of
