@@ -765,7 +765,8 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         <Text style={styles.sectionLabel} accessibilityRole="header">Upcoming shows{IS_IOS ? historyHeadingCount(planned.length) : ` · ${planned.length}`}</Text>
         {planned.length === 0 && (!IS_IOS || historyConfirmed) && <Text style={styles.empty}>No upcoming shows yet.</Text>}
         {planned.map((p) => {
-          const target = showDateMs(p.date);
+          // Calendar rows carry a normalized day, not a verified doors time.
+          const target = IS_IOS ? null : showDateMs(p.date);
           return (
             <Pressable key={p.calendarKey || p.key || p.postId} style={[styles.showRow, largeText && styles.nativeShowLarge]} onPress={() => onOpenShow?.(p)} accessibilityRole="button" accessibilityLabel={`${p.artist}, ${p.venue}, ${formatDate(p.date, p.date)}`}>
               <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>

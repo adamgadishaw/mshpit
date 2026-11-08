@@ -55,7 +55,12 @@ export default function ConcertHistory({ concerts = EMPTY, status = "loading", c
   const visible = filtered.slice(0, expanded ? limit : previewCount);
   const hasLocalMore = visible.length < filtered.length;
   const hasRemoteMore = !complete;
-  const loading = status === "loading" && !model.concertCount;
+  const loading = (status === "loading" || Platform.OS === "ios" && (status === "idle" || status === "refreshing")) && !model.concertCount;
+  // An unavailable or unfinished read cannot establish a zero total. Real
+  // retained rows still describe known concerts, even while retrying.
+  const unconfirmedEmpty = Platform.OS === "ios" && !model.concertCount
+    && (status !== "ready" || !complete || loadingMore);
+  const showMap = mapVisible && !unconfirmedEmpty;
   const selectRow = (concert) => setSelection((current) => ({ ...current, venueKey: concert.venueIdentity, concertId: concert.id }));
   const selectVenue = (venueKey) => { setSelection({ venueKey, concertId: null, filter: true }); setExpanded(false); setLimit(PAGE_SIZE); };
   const loadMore = () => {
@@ -71,19 +76,19 @@ export default function ConcertHistory({ concerts = EMPTY, status = "loading", c
       <View style={styles.heading}>
         <View style={styles.headingIcon}><Icon name="ticket" size={23} color={colors.amber} /></View>
         <View style={styles.headingText}><Text style={styles.title} accessibilityRole="header">Concert history</Text><Text style={styles.subheading}>Every show you have logged, on a map.</Text></View>
-        <View style={styles.countStamp}><Text style={styles.count}>{model.concertCount.toLocaleString("en")}{complete ? "" : "+"}</Text><Text style={styles.countLabel}>LOGGED</Text></View>
+        {!unconfirmedEmpty ? <View style={styles.countStamp}><Text style={styles.count}>{model.concertCount.toLocaleString("en")}{complete ? "" : "+"}</Text><Text style={styles.countLabel}>LOGGED</Text></View> : null}
       </View>
       <View style={styles.tearLine} />
-      <Text selectable style={styles.summary}>{loading ? "Loading concert history…" : concertHistorySummary(model, complete)}</Text>
-      <View style={[styles.body, desktop && mapVisible && styles.bodyWide]}>
-        {mapVisible ? <View style={[styles.mapColumn, desktop && styles.mapColumnWide]}><HistoryMapBoundary><Suspense fallback={<View style={styles.mapFallback}><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.hint}>Loading the concert map…</Text></View>}><ProfileConcertMap model={model} selectedVenueKey={selectedVenue?.key || null} compact={!desktop} onSelectVenue={selectVenue} onPreviewVenue={selectVenue} /></Suspense></HistoryMapBoundary></View> : null}
+      <Text selectable style={styles.summary}>{loading ? "Loading concert history…" : unconfirmedEmpty ? "Concert count not confirmed." : concertHistorySummary(model, complete)}</Text>
+      <View style={[styles.body, desktop && showMap && styles.bodyWide]}>
+        {showMap ? <View style={[styles.mapColumn, desktop && styles.mapColumnWide]}><HistoryMapBoundary><Suspense fallback={<View style={styles.mapFallback}><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.hint}>Loading the concert map…</Text></View>}><ProfileConcertMap model={model} selectedVenueKey={selectedVenue?.key || null} compact={!desktop} onSelectVenue={selectVenue} onPreviewVenue={selectVenue} /></Suspense></HistoryMapBoundary></View> : null}
         <View style={styles.listColumn}>
           <View style={styles.listHeading}><Text style={styles.listTitle}>{selection.filter && selectedVenue ? selectedVenue.coordinates?.precision === "city" ? "In this city" : selectedVenue.hasVenue ? "At this venue" : "At this location" : "Recent concerts"}</Text>{selection.filter ? <HistoryButton label="All concerts" onPress={() => setSelection((current) => ({ ...current, filter: false }))} /> : null}</View>
           {selectedVenue ? <View style={styles.selectionDetail} accessibilityLiveRegion="polite"><Icon name="pin" size={14} color={colors.amber} /><View style={styles.selectionText}><Text style={styles.selectionTitle}>{selectedVenue.name}</Text><Text style={styles.hint}>{selectedVenue.concerts.length} logged {selectedVenue.concerts.length === 1 ? "concert" : "concerts"}{selectedVenue.city ? ` · ${selectedVenue.city}` : ""}{selectedVenue.coordinates?.precision === "city" ? " · approximate city location" : ""}</Text></View>{!selection.filter ? <HistoryButton label="View here" onPress={() => selectVenue(selectedVenue.key)} /> : null}</View> : null}
           {openingError ? <Text selectable accessibilityRole="alert" style={styles.error}>{openingError}</Text> : null}
           {status === "error" ? <View style={styles.feedback} accessibilityLiveRegion="polite"><Text selectable style={styles.error}>{typeof error === "string" && error ? error : "Concert history could not be loaded. Your saved concerts have not changed."}</Text>{onRetry ? <HistoryButton label="Retry concert history" onPress={onRetry} /> : null}</View> : null}
           {loading ? <View style={styles.feedback} accessibilityLiveRegion="polite"><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.hint}>Finding logged concerts…</Text></View> : null}
-          {!loading && status !== "error" && !model.concertCount ? <View style={styles.empty}><Icon name="ticket" size={27} color={colors.textFaint} /><Text style={styles.emptyTitle}>{complete ? "No concerts logged yet" : "No concerts in this part of the history"}</Text><Text style={styles.hint}>{complete ? "Concert reviews will appear here with their dates and locations." : "Load more history to check for older concert logs."}</Text></View> : null}
+          {!loading && status !== "error" && !model.concertCount && (Platform.OS !== "ios" || status === "ready" && !loadingMore) ? <View style={styles.empty}><Icon name="ticket" size={27} color={colors.textFaint} /><Text style={styles.emptyTitle}>{complete ? "No concerts logged yet" : "No concerts in this part of the history"}</Text><Text style={styles.hint}>{complete ? "Concert reviews will appear here with their dates and locations." : "Load more history to check for older concert logs."}</Text></View> : null}
           <View style={styles.rows}>{visible.map((concert) => <ConcertRow key={concert.id} concert={concert} selected={concert.id === selection.concertId || !selection.concertId && concert.venueIdentity === selection.venueKey} onSelect={() => selectRow(concert)} onOpen={onOpenConcert ? () => onOpenConcert(concert) : undefined} opening={openingId === concert.id || !!openingId && openingId === concert.postId} />)}</View>
           {!expanded && (hasLocalMore || hasRemoteMore) && !loading && (status !== "error" || model.concertCount > 0) ? <HistoryButton label="See all concerts" icon="chevron-down" expanded={false} onPress={expand} style={styles.expandButton} /> : null}
           {expanded ? <View style={styles.listFooter}>{hasLocalMore || hasRemoteMore ? <HistoryButton label={loadingMore ? "Loading more concerts…" : "Load more concerts"} disabled={loadingMore || !hasLocalMore && !onLoadMore} onPress={loadMore} style={styles.loadMoreButton} /> : null}<HistoryButton label="See less" expanded onPress={() => { setExpanded(false); setLimit(PAGE_SIZE); }} /></View> : null}
