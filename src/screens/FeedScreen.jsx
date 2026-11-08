@@ -739,7 +739,7 @@ const styles = StyleSheet.create({
   newsStripRow: { gap: 10, paddingRight: 4 },
   newsStripItem: { width: 270 },
   ...(Platform.OS === "ios" ? {
-    content: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 36 },
+    content: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 36 },
     head: { marginBottom: 22, marginTop: 0 },
     nativeHeaderRow: { minHeight: 50 },
     nativeFeedTitle: { color: colors.text, fontSize: 34, lineHeight: 41, fontWeight: "700", letterSpacing: -1 },
