@@ -425,3 +425,19 @@ test("layout-effect reconnect retires old native callbacks and publishes a usabl
   f.render().props.onLongPress(); assert.equal(f.sheets.length, 2);
   f.sheets[1].choose(1); assert.deepEqual(f.calls, [["onReport", review]]);
 });
+
+test("native sheet callbacks are consumed once and cannot release a newer sheet", () => {
+  for (const firstChoice of [1, 2]) {
+    const f = fixture(); const hold = f.render().props.onLongPress;
+    hold(); const old = f.sheets[0]; old.choose(firstChoice);
+    const expected = firstChoice === 1 ? [["onReport", review]] : [];
+    old.choose(1); assert.deepEqual(f.calls, expected, "selected and canceled sheets cannot run again");
+    hold(); assert.equal(f.sheets.length, 2);
+    old.choose(1); old.choose(2); hold();
+    assert.equal(f.sheets.length, 2, "old callbacks cannot clear the newer sheet's busy owner");
+    assert.deepEqual(f.calls, expected);
+    f.sheets[1].choose(1); f.sheets[1].choose(1);
+    assert.deepEqual(f.calls, [...expected, ["onReport", review]]);
+    hold(); assert.equal(f.sheets.length, 3, "consuming the current sheet permits a fresh hold");
+  }
+});

@@ -321,7 +321,7 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
   contextOwner.current.scope = contextScope;
   contextOwner.current.actions = contextActions;
   const mounted = useRef(true);
-  const sheetOpen = useRef(false);
+  const sheetOpen = useRef(null);
   const everMounted = useRef(false);
   const [, refreshContextOwner] = useState(0);
   useLayoutEffect(() => {
@@ -338,14 +338,17 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
     const isCurrent = () => mounted.current && contextOwner.current.generation === generation
       && contextPresentation?.current() !== false;
     const labels = contextActions.map(action => action.label);
-    sheetOpen.current = true;
+    const sheet = {};
+    sheetOpen.current = sheet;
     setOpenMenu(null);
     ActionSheetIOS.showActionSheetWithOptions({
       title: "Post actions", options: [...labels, "Cancel"],
       cancelButtonIndex: labels.length,
       destructiveButtonIndex: labels.includes("Delete post") ? labels.indexOf("Delete post") : undefined,
     }, index => {
-      sheetOpen.current = false;
+      // A consumed native callback cannot act twice or release a newer sheet.
+      if (sheetOpen.current !== sheet) return;
+      sheetOpen.current = null;
       if (!isCurrent()) return;
       const selected = contextOwner.current.actions[index];
       if (selected && selected.label === labels[index]) {
