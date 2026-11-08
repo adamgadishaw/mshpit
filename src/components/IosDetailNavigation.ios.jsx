@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { StyleSheet, View, useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, { ReduceMotion, useAnimatedStyle, useSharedValue, withSpring } from "react-native-reanimated";
@@ -11,8 +11,18 @@ import { colors } from "../theme";
 export default function IosDetailNavigation({ children, enabled, onBack }) {
   const { width } = useWindowDimensions();
   const reader = useScreenReaderEnabled(), reduced = useReducedMotion();
-  const callback = useRef(onBack); callback.current = onBack;
-  const back = useRef(() => callback.current?.()).current;
+  const callback = useRef(onBack), livePermission = useRef(null);
+  // A queued RN dispatch belongs to this mounted permission interval, not the
+  // next screen or a later enabled/VoiceOver-off interval with the same values.
+  const permission = useMemo(() => ({ allowed: !!enabled && !reader }), [enabled, reader]);
+  useLayoutEffect(() => { callback.current = onBack; }, [onBack]);
+  useLayoutEffect(() => {
+    livePermission.current = permission;
+    return () => { livePermission.current = null; };
+  }, [permission]);
+  const back = useMemo(() => () => {
+    if (permission.allowed && livePermission.current === permission) callback.current?.();
+  }, [permission]);
   const x = useSharedValue(0), startX = useSharedValue(0), startY = useSharedValue(0);
   const gesture = useMemo(() => Gesture.Pan().enabled(!!enabled && !reader).maxPointers(1)
     .activeOffsetX(12).failOffsetY([-12, 12])

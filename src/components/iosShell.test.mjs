@@ -7,12 +7,19 @@ import { journeyMenuModel } from '../domain/menuJourney.mjs';
 import { iosBackSwipeCommits } from '../domain/iosNavigationPolicy.mjs';
 const require = createRequire(import.meta.url);
 const nodes = tree => !tree ? [] : Array.isArray(tree) ? tree.flatMap(nodes) : typeof tree !== 'object' ? [] : [tree, ...nodes(tree.props?.children)];
-function load(name, { reduced = false, reader = false, fontScale = 1 } = {}) {
+function load(name, { reduced = false, reader = false, fontScale = 1, queued = false } = {}) {
   const source = readFileSync(new URL(name, import.meta.url), 'utf8');
   const focus = [], gestures = [], jsx = (type, props) => ({type, props});
   const shared = [];
+  const refs = [], memos = [], effects = [], pending = [], queue = [];
+  let refIndex = 0, memoIndex = 0, effectIndex = 0, sharedIndex = 0;
+  const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const modules = {
-    react: {useMemo: f=>f(), useRef: v=>({current:v})}, 'react/jsx-runtime': {jsx,jsxs:jsx},
+    react: {
+      useMemo: (f, deps) => { const i = memoIndex++; if (!same(memos[i]?.deps, deps)) memos[i] = { deps, value: f() }; return memos[i].value; },
+      useRef: v => refs[refIndex++] ||= {current:v},
+      useLayoutEffect: (create, deps) => { const i = effectIndex++; if (!same(effects[i]?.deps, deps)) pending.push(() => { effects[i]?.cleanup?.(); effects[i] = {deps, create, cleanup:create()}; }); },
+    }, 'react/jsx-runtime': {jsx,jsxs:jsx},
     'react-native': {AccessibilityInfo:{setAccessibilityFocus:n=>focus.push(n)},findNodeHandle:node=>node?.tag,
       Modal:'Modal',Pressable:'Pressable',ScrollView:'ScrollView',Text:'Text',View:'View',
       StyleSheet:{create:x=>x,absoluteFill:{position:'absolute'},hairlineWidth:1},useWindowDimensions:()=>({width:393,fontScale})},
@@ -21,15 +28,21 @@ function load(name, { reduced = false, reader = false, fontScale = 1 } = {}) {
     '../domain/menuJourney.mjs':{journeyMenuModel}, '../domain/iosNavigationPolicy.mjs':{iosBackSwipeCommits},
     './Avatar':'Avatar','./BrandMark':'BrandMark','./Icon':'Icon','./NativeTabRail':'TabRail',
     '../hooks/useReducedMotion':()=>reduced, '../hooks/useScreenReaderEnabled':()=>reader,
-    'react-native-worklets':{scheduleOnRN:(f,...args)=>f(...args)},
+    'react-native-worklets':{scheduleOnRN:(f,...args)=>queued ? queue.push(()=>f(...args)) : f(...args)},
     'react-native-reanimated':{__esModule:true,default:{View:'AnimatedView'},ReduceMotion:{System:'system'},
-      useSharedValue:value=>{const v={get:()=>value,set:x=>{value=x;}};shared.push(v);return v;},useAnimatedStyle:f=>f(),withSpring:x=>x},
+      useSharedValue:value=>{const i=sharedIndex++;return shared[i] ||= {get:()=>value,set:x=>{value=x;}};},useAnimatedStyle:f=>f(),withSpring:x=>x},
     'react-native-gesture-handler':{GestureDetector:'Detector',Gesture:{Pan:()=>{const g={};for(const method of ['enabled','maxPointers','activeOffsetX','failOffsetY','onTouchesDown','onUpdate','onEnd','onFinalize'])g[method]=value=>{g[`${method}Value`]=value;return g;};gestures.push(g);return g;}}},
   };
   const code=transformSync(source,{filename:name,babelrc:false,configFile:false,plugins:[[require('@babel/plugin-transform-react-jsx'),{runtime:'automatic'}],require('@babel/plugin-transform-modules-commonjs')]}).code;
   const module={exports:{}};
   new Function('require','module','exports',code)(key=>{assert.ok(key in modules,key);return modules[key];},module,module.exports);
-  return {render:module.exports.default,focus,gestures,shared};
+  return {
+    render: props => { refIndex=0;memoIndex=0;effectIndex=0;sharedIndex=0;const tree=module.exports.default(props);while(pending.length)pending.shift()();return tree; },
+    setReader: value => { reader=value; },
+    unmount: () => effects.forEach(effect=>effect.cleanup?.()),
+    replayLayoutEffects: () => { effects.forEach(effect=>effect.cleanup?.());effects.forEach(effect=>{effect.cleanup=effect.create();}); },
+    flush: () => { while(queue.length)queue.shift()(); }, queue,focus,gestures,shared,
+  };
 }
 const actions = Object.fromEntries(['near','venues','fanClubs','topRated','news','crew','activity','inbox','suggestion','manageProfile','settings','admin','newsroom','tourDates','requestArtist','calendar','clips','howItWorks'].map(key=>[key,()=>{}]));
 
@@ -41,7 +54,7 @@ test('iOS drawer preserves role-filtered routes and dismisses before navigation'
  for(const title of ['Moderation','Newsroom','Events & tour dates'])assert.ok(!buttons.some(n=>n.props.accessibilityLabel===title));
  buttons.find(n=>n.props.accessibilityLabel==='Inbox, 3 unread').props.onPress();
  assert.deepEqual(called,['close','inbox']);assert.equal(tree.type,'Modal');assert.equal(tree.props.presentationStyle,'overFullScreen');
- tree.props.onDismiss();assert.deepEqual(f.focus,[9]);
+ tree.props.onDismiss();assert.deepEqual(f.focus,[]);
  assert.equal(nodes(tree).find(n=>n.props.accessibilityViewIsModal).props.onAccessibilityEscape,tree.props.onRequestClose);
 });
 
@@ -87,6 +100,45 @@ test('screen readers and protected screens retain explicit back without gesture 
  }
  const f=load('./IosDetailNavigation.ios.jsx',{reduced:true}),tree=f.render({enabled:true,children:'Page'});
  assert.equal(nodes(tree).find(n=>n.type==='AnimatedView').props.style[1].transform[0].translateX,0);
+});
+
+const completeBackDrag = gesture => {
+ gesture.onTouchesDownValue({allTouches:[{absoluteX:10,absoluteY:200}],numberOfTouches:1},{fail:()=>assert.fail('valid touch rejected')});
+ gesture.onEndValue({absoluteX:140,absoluteY:203},true);
+};
+
+for (const interruption of ['unmount','disabled','reader','disabled round trip','reader round trip']) {
+ test(`queued detail Back is revoked by ${interruption}`,()=>{
+  const f=load('./IosDetailNavigation.ios.jsx',{queued:true});let backs=0;
+  const props={enabled:true,onBack:()=>backs++};
+  f.render(props);const oldGesture=f.gestures.at(-1);completeBackDrag(oldGesture);
+  assert.equal(f.queue.length,1);assert.equal(backs,0);
+  if(interruption==='unmount')f.unmount();
+  else if(interruption.startsWith('disabled'))f.render({...props,enabled:false});
+  else {f.setReader(true);f.render(props);}
+  if(interruption.endsWith('round trip')){f.setReader(false);f.render(props);}
+  f.flush();assert.equal(backs,0);
+  // A delayed old worklet must also remain revoked after permissions return.
+  completeBackDrag(oldGesture);f.flush();assert.equal(backs,0);
+  if(interruption.endsWith('round trip')){completeBackDrag(f.gestures.at(-1));f.flush();assert.equal(backs,1);}
+ });
+}
+
+test('queued Back keeps current callback across ordinary rerenders and StrictMode layout replay',()=>{
+ const f=load('./IosDetailNavigation.ios.jsx',{queued:true}),calls=[];
+ f.render({enabled:true,onBack:()=>calls.push('old')});f.replayLayoutEffects();
+ completeBackDrag(f.gestures.at(-1));
+ f.render({enabled:true,onBack:()=>calls.push('current')});f.flush();
+ assert.deepEqual(calls,['current']);
+ completeBackDrag(f.gestures.at(-1));f.flush();assert.deepEqual(calls,['current','current']);
+});
+
+test('a replacement detail mount cannot inherit the outgoing screen queued Back',()=>{
+ const outgoing=load('./IosDetailNavigation.ios.jsx',{queued:true}),incoming=load('./IosDetailNavigation.ios.jsx',{queued:true});
+ const calls=[],onBack=()=>calls.push('pop current route');
+ outgoing.render({enabled:true,onBack});completeBackDrag(outgoing.gestures.at(-1));outgoing.unmount();
+ incoming.render({enabled:true,onBack});outgoing.flush();assert.deepEqual(calls,[]);
+ completeBackDrag(incoming.gestures.at(-1));incoming.flush();assert.deepEqual(calls,['pop current route']);
 });
 
 test('non-iOS fallbacks remain inert and drawer pauses feed exposure without replacing its route',()=>{

@@ -211,16 +211,16 @@ test("iOS no-banner profiles use a shorter accent treatment without shrinking up
   assert.match(profile, /fallbackTextColor=\{IS_IOS \? colors\.text : undefined\}/);
 });
 
-function renderAvatar(props) {
+function renderAvatar(props, platform = "web") {
   const source = readFileSync(new URL("../components/Avatar.jsx", import.meta.url), "utf8");
   const code = transformSync(source, { babelrc: false, configFile: false, plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")] }).code;
   const jsx = (type, props) => ({ type, props });
   const dependencies = {
     react: { useMemo: (compute) => compute() },
     "react/jsx-runtime": { jsx, jsxs: jsx },
-    "react-native": { View: "View", Text: "Text", Pressable: "Pressable", PixelRatio: { get: () => 3 }, StyleSheet: { create: (s) => s, absoluteFill: {} } },
+    "react-native": { Platform: { OS: platform }, View: "View", Text: "Text", Pressable: "Pressable", PixelRatio: { get: () => 3 }, StyleSheet: { create: (s) => s, absoluteFill: {} } },
     "expo-image": { Image: "ExpoImage" },
-    "../theme": { colors: { surfaceAlt: "#1C1C22", amber: "#F2A65A", line: "#2A2A32" }, mono: "mono" },
+    "../theme": { colors: { surfaceAlt: "#1C1C22", amber: "#F2A65A", line: "#2A2A32", text: "#F4EFE7" }, mono: "mono" },
     "../lib/img": { previewSrc: (uri) => uri, displaySrc: (uri) => uri },
     "../domain/imageLoadPolicy.mjs": { imageLoadPolicy: () => ({}), versionedImageCacheKey: () => "avatar-key" },
     "../hooks/useImageAttempt": (_, sources) => ({ uri: sources[0], index: 0 }),
@@ -307,4 +307,20 @@ test("iOS profile actions and taste chips constrain large labels without disabli
   assert.match(profile, /fontScale \} = useWindowDimensions\(\)/);
   assert.match(profile, /const largeText = IS_IOS && fontScale > 1\.25/);
   assert.doesNotMatch(profile, /key=\{[^}]*fontScale|allowFontScaling=\{false\}/);
+});
+
+
+test("iOS avatar initials stay readable while Android/web keep the chosen foreground", () => {
+  const user = { id: "a", name: "Jamie", initials: "JC", avatarColor: "#755552", avatarUri: "https://media.test/avatar.jpg" };
+  const color = tree => nodes(tree).find(node => node.type === "Text").props.style[1].color;
+  assert.equal(color(renderAvatar({ user }, "ios")), "#F4EFE7");
+  for (const platform of ["android", "web"]) assert.equal(color(renderAvatar({ user }, platform)), user.avatarColor);
+  assert.equal(color(renderAvatar({ user, fallbackTextColor: "#EEDDCC" }, "ios")), "#EEDDCC");
+  const ios = nodes(renderAvatar({ user }, "ios"));
+  const web = nodes(renderAvatar({ user }, "web"));
+  const fallback = list => list.find(node => node.type === "View" && Array.isArray(node.props.style)).props.style[1];
+  assert.equal(fallback(ios).backgroundColor, `${user.avatarColor}33`);
+  assert.equal(fallback(ios).borderColor, user.avatarColor);
+  const photo = list => list.find(node => node.type === "ExpoImage").props;
+  assert.deepEqual(JSON.parse(JSON.stringify(photo(ios))), JSON.parse(JSON.stringify(photo(web))));
 });

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { AccessibilityInfo, findNodeHandle, Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, font } from "../theme";
@@ -15,9 +15,35 @@ export default function IosMenuDrawer({ visible, onClose, openerRef, session, un
   const insets = useSafeAreaInsets();
   const reduced = useReducedMotion();
   const closeRef = useRef(null);
+  const liveInterval = useRef(null), mounted = useRef(false);
+  const interval = useMemo(() => ({ visible, reason: null, dismissal: null }), [visible]);
+  useLayoutEffect(() => {
+    // Carry the closing presentation into its hidden render, but never into a
+    // later opening. Native dismissal can arrive after navigation or reopening.
+    if (!interval.visible && liveInterval.current !== interval) interval.dismissal = liveInterval.current;
+    liveInterval.current = interval;
+  }, [interval]);
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const model = journeyMenuModel({ session, inboxUnread: unread, notifications: activity, includeCrew: !!actions.crew });
   const focus = ref => { const node = findNodeHandle(ref?.current); if (node) AccessibilityInfo.setAccessibilityFocus(node); };
-  const choose = action => { onClose(); action?.(); };
+  const close = () => {
+    if (!mounted.current || liveInterval.current !== interval || !interval.visible || interval.reason) return;
+    interval.reason = "cancel";
+    onClose();
+  };
+  const choose = action => {
+    if (!mounted.current || liveInterval.current !== interval || !interval.visible || interval.reason) return;
+    interval.reason = "destination";
+    onClose();
+    action?.();
+  };
+  const dismiss = () => {
+    const owner = interval.visible ? interval : interval.dismissal;
+    const live = liveInterval.current;
+    if (!mounted.current || !owner || !live || (live !== owner && live.dismissal !== owner) || owner.reason !== "cancel") return;
+    owner.reason = "dismissed";
+    focus(openerRef);
+  };
   const group = (title, items) => <View style={styles.group} key={title}>
     <Text style={styles.section} accessibilityRole="header">{title}</Text>
     <View style={styles.rows}>{items.filter(item => actions[item.key]).map((item, index, list) => <Pressable key={item.key} accessibilityRole="button" accessibilityLabel={`${item.title}${item.badge ? `, ${item.badge} unread` : ""}`} onPress={() => choose(actions[item.key])} style={({ pressed }) => [styles.row, index < list.length - 1 && styles.divider, pressed && styles.pressed]}>
@@ -27,11 +53,11 @@ export default function IosMenuDrawer({ visible, onClose, openerRef, session, un
       <Icon name="chevron-right" size={15} color={colors.textFaint} />
     </Pressable>)}</View>
   </View>;
-  return <Modal visible={visible} transparent animationType={reduced ? "none" : "fade"} presentationStyle="overFullScreen" onRequestClose={onClose} onShow={() => focus(closeRef)} onDismiss={() => focus(openerRef)}>
+  return <Modal visible={visible} transparent animationType={reduced ? "none" : "fade"} presentationStyle="overFullScreen" onRequestClose={close} onShow={() => { if (mounted.current && liveInterval.current === interval && interval.visible && !interval.reason) focus(closeRef); }} onDismiss={dismiss}>
     <View style={styles.overlay}>
-      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close side menu" />
-      <View style={[styles.panel, { width: Math.min(390, width - 40), paddingTop: insets.top + 8, paddingBottom: insets.bottom }]} accessibilityViewIsModal onAccessibilityEscape={onClose}>
-        <View style={styles.heading}><View style={styles.brand}><BrandMark size={23} color={colors.amber} /><Text style={styles.wordmark}>MSHPIT</Text></View><Pressable ref={closeRef} onPress={onClose} style={styles.close} accessibilityRole="button" accessibilityLabel="Close side menu"><Icon name="x" size={22} color={colors.textDim} /></Pressable></View>
+      <Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityRole="button" accessibilityLabel="Close side menu" />
+      <View style={[styles.panel, { width: Math.min(390, width - 40), paddingTop: insets.top + 8, paddingBottom: insets.bottom }]} accessibilityViewIsModal onAccessibilityEscape={close}>
+        <View style={styles.heading}><View style={styles.brand}><BrandMark size={23} color={colors.amber} /><Text style={styles.wordmark}>MSHPIT</Text></View><Pressable ref={closeRef} onPress={close} style={styles.close} accessibilityRole="button" accessibilityLabel="Close side menu"><Icon name="x" size={22} color={colors.textDim} /></Pressable></View>
         <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
           <Pressable onPress={() => choose(session ? onProfile : onLogin)} style={styles.identity} accessibilityRole="button" accessibilityLabel={session ? `View ${session.name}'s profile` : "Sign in to Mshpit"}>
             {session ? <Avatar user={session} size={52} /> : <View style={styles.guest}><Icon name="you" size={26} color={colors.amber} /></View>}

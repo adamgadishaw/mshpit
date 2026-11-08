@@ -1,5 +1,5 @@
-import { Suspense, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform } from "react-native";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform, Alert } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
@@ -28,11 +28,12 @@ import { cleanHandle, isHandle } from "../domain/validation.mjs";
 import { PROFILE_ACCENT_OPTIONS, PROFILE_FAVORITE_SHOWS_MAX, PROFILE_PRONOUNS_MAX, pinnableShow, profileAccentColor, toggleFavoriteShow } from "../domain/profileAccents.mjs";
 import { formatDate } from "../domain/dates.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
+import { createEditProfileCloseGuard } from "./editProfileCloseGuard.mjs";
 
 const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar", { platform:Platform.OS });
 const BANNER_IMAGE_HINT = profileImageSelectionHint("banner", { platform:Platform.OS });
 
-export default function EditProfileScreen({ onClose }) {
+export default function EditProfileScreen({ onClose, closeGuardRef }) {
   const { session, updateProfile, locationCenter } = useStore();
   const accountTasks = useAccountTaskScope(session?.id);
   const { uploadProfileImage, imageCropDialog } = useProfileImageUpload();
@@ -64,6 +65,26 @@ export default function EditProfileScreen({ onClose }) {
   const myShows = (Array.isArray(history.posts) ? history.posts : []).filter(pinnableShow);
   const historyLoading = ["idle", "loading", "refreshing"].includes(history.status);
 
+  const editorCloseRef = useRef(null);
+  const draft = { name, handle, bio, avatarUri, banner, genres, home, pronouns, accent, favoriteShows };
+  if (Platform.OS === "ios" && !editorCloseRef.current) {
+    editorCloseRef.current = createEditProfileCloseGuard({ accountId: session?.id, draft, alert: (...args) => Alert.alert(...args) });
+  }
+  const editorClose = editorCloseRef.current;
+  editorClose?.update({ accountId: session?.id, draft, busy: saving || uploadingAvatar || uploadingBanner,
+    dismissPicker: pickingCity ? () => setPickingCity(false) : pickingArtists ? () => setPickingArtists(false) : null });
+  useEffect(() => {
+    if (!editorClose) return undefined;
+    editorClose.mount();
+    const guard = editorClose.guard;
+    if (closeGuardRef) closeGuardRef.current = guard;
+    return () => {
+      editorClose.dispose();
+      if (closeGuardRef?.current === guard) closeGuardRef.current = null;
+    };
+  }, [editorClose, closeGuardRef]);
+  const requestClose = editorClose ? () => editorClose.close(onClose) : onClose;
+
   if (pickingCity) {
     return (
       <LocationPicker
@@ -88,7 +109,7 @@ export default function EditProfileScreen({ onClose }) {
     );
   }
 
-  const pickPhoto = async () => {
+  const pickPhotoTask = async () => {
     if (uploadingAvatar || saving) return;
     const task = accountTasks.begin(session?.id);
     if (!task) return;
@@ -113,7 +134,7 @@ export default function EditProfileScreen({ onClose }) {
       task.finish();
     }
   };
-  const pickBanner = async () => {
+  const pickBannerTask = async () => {
     if (uploadingBanner || saving) return;
     const task = accountTasks.begin(session?.id);
     if (!task) return;
@@ -138,6 +159,9 @@ export default function EditProfileScreen({ onClose }) {
     }
   };
 
+  const pickPhoto = () => editorClose ? editorClose.runBusy(pickPhotoTask) : pickPhotoTask();
+  const pickBanner = () => editorClose ? editorClose.runBusy(pickBannerTask) : pickBannerTask();
+
   const genreOptions = profileGenreOptions(genres);
   const genreSelection = profileGenreSelection(genres);
   const toggleGenre = (genre) => setGenres((current) => {
@@ -154,7 +178,7 @@ export default function EditProfileScreen({ onClose }) {
   });
 
   const mediaBusy = uploadingAvatar || uploadingBanner;
-  const save = async () => {
+  const saveTask = async () => {
     if (mediaBusy || saving) return;
     if (handleInvalid) {
       setSaveError("Use 3–20 letters, numbers, or underscores for your @username.");
@@ -178,7 +202,10 @@ export default function EditProfileScreen({ onClose }) {
         favoriteShows: history.status === "ready" && !history.nextCursor ? favoriteShows.filter((id) => myShows.some((post) => post.id === id)) : favoriteShows,
       }, { expectedAccountId: task.accountId, signal: task.controller.signal }));
       if (!task.isCurrent()) return;
-      if (result?.ok !== false) onClose?.();
+      if (result?.ok !== false) {
+        if (editorClose) editorClose.saved(onClose);
+        else onClose?.();
+      }
       else setSaveError(result?.error?.message || result?.error || "Profile could not be saved. Try again.");
     } catch (error) {
       if (task.isCurrent()) setSaveError(error?.message || "Profile could not be saved. Try again.");
@@ -187,13 +214,14 @@ export default function EditProfileScreen({ onClose }) {
       task.finish();
     }
   };
+  const save = () => editorClose ? editorClose.runBusy(saveTask) : saveTask();
 
   const preview = { ...session, name, avatarUri, initials: (name.trim() || "?").slice(0, 2).toUpperCase() };
 
   return (
     <View style={styles.wrap}>
       {imageCropDialog}
-      <SheetHeader title="Edit your profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : "Save", onPress: save, disabled: mediaBusy || saving || !genreSelection.valid || handleInvalid }} />
+      <SheetHeader title="Edit your profile" onClose={requestClose} action={{ label: saving ? "Saving..." : mediaBusy ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : "Save", onPress: save, disabled: mediaBusy || saving || !genreSelection.valid || handleInvalid }} />
 
       <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"
         {...(Platform.OS === "ios" ? { automaticallyAdjustKeyboardInsets: true, keyboardDismissMode: "interactive" } : {})}>

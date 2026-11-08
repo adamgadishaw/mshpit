@@ -49,9 +49,10 @@ for (const [name, privateSection] of [["ArtistScreen", "community"], ["VenueScre
   test(`${name} private tab opens sign-in once without changing the public section`, () => {
     const source = read(name);
     const node = all(parse(source)).find((entry) => entry.type === "VariableDeclarator" && entry.id?.name === "setActiveSection").init;
-    for (const session of [null, { id: "member" }]) {
-      const calls = { auth: [], select: [], scroll: [] };
+    for (const IS_IOS of [false, true]) for (const session of [null, { id: "member" }]) {
+      const calls = { auth: [], select: [], scroll: [], cancel: [] };
       const action = evaluate(source, node, {
+        IS_IOS, scrollReturn: { current: { cancel: () => calls.cancel.push(true) } },
         session, a: { profileKey: "artist" }, venue: { name: "Room" },
         publicVenue: { resource: { scope: "public-venue:fixture" } },
         onRequireAuth: (...args) => calls.auth.push(args),
@@ -61,7 +62,8 @@ for (const [name, privateSection] of [["ArtistScreen", "community"], ["VenueScre
       action(privateSection);
       assert.equal(calls.auth.length, session ? 0 : 1);
       assert.equal(calls.select.length, session ? 1 : 0);
-      if (!session) assert.deepEqual(calls.auth, [[]]);
+      if (!session) { assert.deepEqual(calls.auth, [[]]); assert.deepEqual(calls.cancel, [], "guest login cannot discard the public return position"); }
+      else if (name === "ArtistScreen") assert.equal(calls.cancel.length, IS_IOS ? 1 : 0);
       calls.auth.length = 0;
       calls.select.length = 0;
       action("shows");

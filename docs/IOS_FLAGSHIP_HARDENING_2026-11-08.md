@@ -136,3 +136,75 @@ must be generated from the later stable source rather than the initial exports.
 All 160 tests in the changed test files passed after the capacity and queued-
 motion review fixes. The independent chat review found no remaining blocker.
 Native interaction remains unverified for the new hardening paths.
+
+## Second hardening slice
+
+- Artist details retain section, scroll position and album/list expansion on a
+  retained navigation frame. A new visit or account/authentication lifetime gets
+  a new bounded lease. Removed release IDs never open a different positional
+  item. Explicit section/expansion/list changes cancel a pending old offset.
+- iOS Artist music controls separate album expansion from rating, expose distinct
+  spoken values and use wrapping text at larger sizes. Follow/fan-club outcomes
+  are announced only for explicit actions; existing mutation owners remain.
+- Thread history now distinguishes loading, failed loading and successful empty
+  history, retaining cached messages and offering explicit retry. Unlike cursor
+  reads are serialized; like requests share one result without stealing another
+  poll's cursor. Android/web keep their prior relationship-loading path.
+- Profile edits get a dirty/busy navigation guard through the existing Root
+  composer contract. Dismissed or stale alerts cannot act in another lifetime;
+  unsuccessful navigation can be retried rather than trapping the editor.
+- Queued edge-Back callbacks require the same committed navigation permission
+  lifetime. Tests reproduced stale navigation after unmount, disable and
+  VoiceOver round trips before the fix. Protected editor routes stay excluded.
+- Drawer cancellation restores its opener once. Selecting another destination
+  does not focus the old screen, and callbacks from an older opening are ignored.
+- Explicit Thread refresh-error speech is scoped to foreground/VoiceOver/lifetime;
+  background changes do not replay a stale error on returning to the app.
+- Default iOS avatar initials use the readable theme foreground. Chosen avatar
+  color/tint, photos and explicit caller overrides remain. Android/web retain
+  their previous foreground. Tested theme/tint contrast is not a guarantee for
+  arbitrary content backgrounds.
+
+The first phase-2 full run completed 7,300 tests: 7,293 passed and seven older
+fixtures failed on changed imports, prop order or newly separated rating controls.
+The fixtures were updated to exercise actual platform-aware callbacks and retain
+all guest/member authorization and recycled-image guarantees, rather than
+changing production behavior to satisfy source formatting. The expanded native
+image fixture now runs on iOS and Android. A later stable-source full run is still
+required before calling this slice regression-complete.
+
+The interim web export remained within the unchanged budget at 508.5 KiB / 512.0
+KiB gzip. It is not a website deployment. The current release-quality checklist
+is in IOS_RELEASE_QUALITY_GATES_2026-11-08.md; it separates the intentionally
+live-linked local preview from a future isolated staging/TestFlight release.
+
+### Venue-review reliability
+
+The iOS venue-review screen now owns one picker/upload/publication operation at
+a time and registers the existing dirty/busy close contract. A confirmed result
+cannot be posted again if navigation fails. Unconfirmed results retain the
+rating, text, photos and deliberate gallery choice, with an explicit warning to
+check the venue before retrying; there is no automatic resend. New success copy
+requires Store's explicit ok:true contract and is not independent raw-server
+receipt validation. The public-gallery switch stays off by default and the
+payload/Store/API owner is unchanged.
+
+The same screen has iOS field/rating labels, keyboard insets/dismissal, accessible
+photo controls and 44-point Post/remove targets. TapStars accepts an optional
+disabled state; existing callers retain their prior default behavior. Native
+interaction remains unverified while the Mac is locked.
+
+The next full run passed 7,369 of 7,370 tests (483 seconds). Its sole failure was
+an older TapStars test requiring literal source text for a now-conditional hint.
+It now executes the real enabled/disabled component and retains the existing
+focus, checked and bounded-value guarantees. The affected shared controls,
+venue/media lifecycle and logging suites passed all 180 focused tests. Syntax
+(920 Node files), architecture baseline and whitespace checks passed. A fresh
+stable-source full run and final artifacts follow this local checkpoint.
+
+An independent deterministic synthetic ownership harness passed nine groups and
+14,114 bounded operations with seed 0x1a0f2026. It exercised an independent draft
+model under capacity pressure, account/epoch changes, retained/replaced frames,
+queued abort/failure, stale alerts/timers and failed navigation. Results remain
+in ignored .tmp/ios-flagship-stress. This is pure JavaScript simulation, not a
+native interaction, transport or performance measurement.

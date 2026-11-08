@@ -152,9 +152,14 @@ test("every artist album/song rating handler requests login for guests and write
   const screen = ast.program.body.find((node) => node.type === "ExportDefaultDeclaration").declaration;
   assert.ok(screen.params[0].properties.some((property) => property.key?.name === "onRequireAuth"),
     "the real screen receives the callback used by its rating handlers");
+  for (const IS_IOS of [false, true]) {
   const handlers = [];
   function visit(node) {
     if (!node || typeof node !== "object") return;
+    if (node.type === "ConditionalExpression" && node.test?.name === "IS_IOS") {
+      visit(IS_IOS ? node.consequent : node.alternate);
+      return;
+    }
     if (node.type === "JSXOpeningElement" && node.name?.name === "TapStars") {
       const attribute = node.attributes.find((entry) => entry.name?.name === "onChange");
       if (attribute?.value?.expression) handlers.push(attribute.value.expression);
@@ -165,7 +170,7 @@ test("every artist album/song rating handler requests login for guests and write
     }
   }
   visit(ast);
-  assert.equal(handlers.length, 4, "every visible artist rating surface is covered");
+  assert.equal(handlers.length, 4, `every visible artist rating surface is covered on ${IS_IOS ? "iOS" : "Android/web"}`);
   for (const handler of handlers) {
     for (const session of [null, undefined, { id: "member" }]) {
       const calls = { auth: [], rating: [] };
@@ -179,5 +184,6 @@ test("every artist album/song rating handler requests login for guests and write
       assert.equal(calls.rating.length, session ? 1 : 0);
       if (session) assert.equal(calls.rating[0][2], 4.5);
     }
+  }
   }
 });

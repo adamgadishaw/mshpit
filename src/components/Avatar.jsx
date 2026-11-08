@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { View, Text, Pressable, StyleSheet, PixelRatio } from "react-native";
+import { View, Text, Pressable, StyleSheet, PixelRatio, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, focusRing, mono } from "../theme";
 import { displaySrc, previewSrc } from "../lib/img";
@@ -37,7 +37,7 @@ export default function Avatar({ user, size = 36, onPress, priority = "normal", 
         { width: size, height: size, borderRadius: size / 2, backgroundColor: (user?.avatarColor || colors.surfaceAlt) + "33", borderColor: user?.avatarColor || colors.line },
       ]}
     >
-      <Text style={[styles.txt, { fontSize: size * 0.34, color: fallbackTextColor || user?.avatarColor || colors.amber }]}>
+      <Text style={[styles.txt, { fontSize: size * 0.34, color: fallbackTextColor || (Platform.OS === "ios" ? colors.text : user?.avatarColor || colors.amber) }]}>
         {user?.initials || "?"}
       </Text>
     </View>

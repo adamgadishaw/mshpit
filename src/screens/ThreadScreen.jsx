@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useSyncExternalStore } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
+import { useState, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, AccessibilityInfo, AppState } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
@@ -13,15 +13,76 @@ import { latestIncomingDirectMessageId } from "../domain/directMessageRead.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import { createIOSThreadLoad } from "../domain/iosThreadLoad.mjs";
+import useScreenReaderEnabled from "../hooks/useScreenReaderEnabled";
 import {
   messageRelationshipChips,
   messageRelationshipSummary,
   normalizeMessageRelationshipContext,
 } from "../domain/messageRelationshipContext.mjs";
 
+const useThreadScreenReader = Platform.OS === "ios" ? useScreenReaderEnabled : () => false;
+const THREAD_READ_ERROR = "Messages could not update. Check your connection and try again.";
 const EMPTY_COMPOSER = Object.freeze({ text: "", sending: false });
 const subscribeLocalComposer = () => () => {};
 const readLocalComposer = () => EMPTY_COMPOSER;
+
+// Only explicit refresh failures schedule speech. State changes never replay it.
+function useThreadFailureAnnouncement(owner, screenReaderEnabled) {
+  const current = useRef(null);
+  current.current = { owner, screenReaderEnabled };
+  const lifecycle = useRef(null);
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    const lifetime = { owner, active: AppState.currentState === "active", readerDisabled: false, timer: null, claim: null };
+    lifecycle.current = lifetime;
+    const cancel = () => {
+      lifetime.claim = null;
+      if (lifetime.timer !== null) clearTimeout(lifetime.timer);
+      lifetime.timer = null;
+    };
+    const subscription = AppState.addEventListener("change", (state) => {
+      lifetime.active = state === "active";
+      if (!lifetime.active) cancel();
+    });
+    const readerSubscription = AccessibilityInfo.addEventListener("screenReaderChanged", (enabled) => {
+      lifetime.readerDisabled = !enabled;
+      if (!enabled) cancel();
+    });
+    return () => {
+      cancel();
+      subscription.remove();
+      readerSubscription.remove();
+      if (lifecycle.current === lifetime) lifecycle.current = null;
+    };
+  }, [owner]);
+  useEffect(() => {
+    if (!screenReaderEnabled && lifecycle.current?.timer != null) {
+      lifecycle.current.claim = null;
+      clearTimeout(lifecycle.current.timer);
+      lifecycle.current.timer = null;
+    }
+  }, [screenReaderEnabled]);
+  return () => {
+    const lifetime = lifecycle.current;
+    if (Platform.OS !== "ios" || !lifetime || lifetime.owner !== owner
+      || current.current.owner !== owner || !owner.alive
+      || !current.current.screenReaderEnabled || lifetime.readerDisabled || !lifetime.active || AppState.currentState !== "active") return;
+    if (lifetime.timer !== null) clearTimeout(lifetime.timer);
+    const claim = {};
+    lifetime.claim = claim;
+    lifetime.timer = setTimeout(() => {
+      // Revoked callbacks must not speak or clear a newer pending timer.
+      if (lifetime.claim !== claim) return;
+      lifetime.claim = null;
+      lifetime.timer = null;
+      if (lifecycle.current !== lifetime || current.current.owner !== owner || !owner.alive
+        || !current.current.screenReaderEnabled || lifetime.readerDisabled || !lifetime.active || AppState.currentState !== "active") return;
+      // Once handed to iOS, queued speech cannot be recalled by this timer.
+      AccessibilityInfo.announceForAccessibilityWithOptions(THREAD_READ_ERROR, { queue: true });
+    }, 120);
+  };
+}
 
 export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
   const {
@@ -29,14 +90,31 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
     cancelChatMessage, loadThread, markThreadRead, loadUser,
   } = useStore();
   const other = userById(otherId);
+  const isIOS = Platform.OS === "ios";
+  const screenReaderEnabled = useThreadScreenReader();
+  const threadRefreshScope = refreshScope(session?.id, "message-thread", `${chatAuthEpoch}:${otherId || ""}`);
   const composerScope = accountTargetScope(session?.id, `dm:${otherId || ""}`);
   const composerScopeRef = useRef(composerScope);
   composerScopeRef.current = composerScope;
   const [composerState, setComposerState] = useState(() => ({ scope: composerScope, value: EMPTY_COMPOSER }));
-  const [relationshipState, setRelationshipState] = useState(() => ({ scope: composerScope, value: null }));
+  const relationshipScope = isIOS ? threadRefreshScope : composerScope;
+  const [relationshipState, setRelationshipState] = useState(() => ({ scope: relationshipScope, value: null }));
   const relationshipScopeRef = useRef(composerScope);
   relationshipScopeRef.current = composerScope;
   const relationshipLoadedRef = useRef(false);
+  const relationshipOwner = useMemo(() => ({ loaded: false, alive: true }), [relationshipScope]);
+  const announceThreadFailure = useThreadFailureAnnouncement(relationshipOwner, screenReaderEnabled);
+  const activeOwner = useRef(relationshipOwner);
+  activeOwner.current = relationshipOwner;
+  const [threadLoad, setThreadLoad] = useState(null);
+  const threadStatus = threadLoad?.owner === relationshipOwner ? threadLoad.status : "loading";
+  const threadLoader = useMemo(() => createIOSThreadLoad((status) => {
+    if (activeOwner.current === relationshipOwner && relationshipOwner.alive) setThreadLoad({ owner: relationshipOwner, status });
+  }), [relationshipOwner]);
+  useEffect(() => {
+    relationshipOwner.alive = true;
+    return () => { relationshipOwner.alive = false; threadLoader.cancel(); };
+  }, [relationshipOwner, threadLoader]);
   const iosDraft = Platform.OS === "ios" ? draftLease : null;
   const retainedComposer = useSyncExternalStore(
     iosDraft?.subscribe || subscribeLocalComposer,
@@ -54,21 +132,40 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
   const messageRelationshipContext = [...messages].reverse()
     .find((message) => message?.relationshipContext)?.relationshipContext || null;
   const relationshipContext = normalizeMessageRelationshipContext(
-    scopedScreenValue(relationshipState, composerScope, null) || messageRelationshipContext,
+    (isIOS
+      ? (relationshipState.owner === relationshipOwner ? relationshipState.value : null)
+      : scopedScreenValue(relationshipState, relationshipScope, null)) || messageRelationshipContext,
   );
   const relationshipChips = messageRelationshipChips(relationshipContext);
   const relationshipSummary = messageRelationshipSummary(relationshipContext);
 
   const loadRelationshipThread = async ({ after, signal, strict = false, forceContext = false } = {}) => {
-    const requestScope = relationshipScopeRef.current;
-    const includeContext = forceContext || !relationshipLoadedRef.current;
+    if (!isIOS) {
+      const requestScope = relationshipScopeRef.current;
+      const includeContext = forceContext || !relationshipLoadedRef.current;
+      const result = await loadThread(otherId, { after, signal, strict, includeContext });
+      if (relationshipScopeRef.current === requestScope
+        && result
+        && Object.prototype.hasOwnProperty.call(result, "relationshipContext")) {
+        relationshipLoadedRef.current = true;
+        setRelationshipState({
+          scope: requestScope,
+          value: normalizeMessageRelationshipContext(result.relationshipContext),
+        });
+      }
+      return result;
+    }
+    const requestScope = relationshipScope;
+    const includeContext = forceContext || !relationshipOwner.loaded;
     const result = await loadThread(otherId, { after, signal, strict, includeContext });
-    if (relationshipScopeRef.current === requestScope
+    if (activeOwner.current === relationshipOwner && relationshipOwner.alive
+      && !signal?.aborted && !result?.stale
       && result
       && Object.prototype.hasOwnProperty.call(result, "relationshipContext")) {
-      relationshipLoadedRef.current = true;
+      relationshipOwner.loaded = true;
       setRelationshipState({
         scope: requestScope,
+        owner: relationshipOwner,
         value: normalizeMessageRelationshipContext(result.relationshipContext),
       });
     }
@@ -77,29 +174,67 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
 
   useEffect(() => {
     setComposerState({ scope: composerScope, value: EMPTY_COMPOSER });
-    setRelationshipState({ scope: composerScope, value: null });
-    relationshipLoadedRef.current = false;
+    if (!isIOS) {
+      setRelationshipState({ scope: composerScope, value: null });
+      relationshipLoadedRef.current = false;
+    }
   }, [composerScope]);
 
   useLiveChat(
-    ({ after, signal }) => loadRelationshipThread({ after, signal }),
+    ({ after, signal }) => isIOS
+      ? threadLoader.run({ after, signal, load: loadRelationshipThread })
+      : loadRelationshipThread({ after, signal }),
     { channelKey: `dm:${chatAuthEpoch}:${session?.id || "guest"}:${otherId}`, enabled: !!session && !!otherId },
   );
-  const threadRefreshScope = refreshScope(session?.id, "message-thread", `${chatAuthEpoch}:${otherId || ""}`);
-  const { refresh: refreshThread, refreshing: threadRefreshing } = useScopedRefresh({
+  const { refresh: runThreadRefresh, refreshing: threadRefreshing } = useScopedRefresh({
     scope: threadRefreshScope,
     enabled: !!session && !!otherId,
     task: async ({ signal }) => {
-      const [threadResult, userResult] = await Promise.all([
-        loadRelationshipThread({ signal, strict: true, forceContext: true }),
-        loadUser(otherId, { signal }),
-      ]);
-      if (userResult?.status === "error") {
-        throw userResult.error instanceof Error ? userResult.error : new Error(userResult.error || "This member could not be refreshed.");
+      try {
+        const reads = [
+          isIOS
+            ? threadLoader.run({ signal, interactive: true, forceContext: true, load: loadRelationshipThread })
+            : loadRelationshipThread({ signal, strict: true, forceContext: true }),
+          loadUser(otherId, { signal }),
+        ];
+        // Let both iOS reads finish before reporting failure so a later history
+        // completion cannot immediately erase a failed member refresh.
+        const outcomes = isIOS ? await Promise.allSettled(reads) : null;
+        const failed = outcomes?.find((outcome) => outcome.status === "rejected");
+        if (failed) throw failed.reason;
+        const [threadResult, userResult] = outcomes
+          ? outcomes.map((outcome) => outcome.value)
+          : await Promise.all(reads);
+        if (userResult?.status === "error") {
+          throw userResult.error instanceof Error ? userResult.error : new Error(userResult.error || "This member could not be refreshed.");
+        }
+        return { threadResult, userResult };
+      } catch (error) {
+        if (!isIOS) throw error;
+        // onError is a current-render callback; keep the originating owner on
+        // the failure as well, including the render-before-effect boundary.
+        throw Object.assign(new Error(error?.message || THREAD_READ_ERROR), {
+          name: error?.name || "Error", threadOwner: relationshipOwner,
+        });
       }
-      return { threadResult, userResult };
     },
+    onError: isIOS ? (error) => {
+      if (error?.threadOwner !== relationshipOwner || activeOwner.current !== relationshipOwner || !relationshipOwner.alive) return;
+      setThreadLoad({ owner: relationshipOwner, status: "error" });
+      if (screenReaderEnabled) announceThreadFailure();
+    } : null,
   });
+  const refreshFlight = useRef(null);
+  const refreshThread = () => {
+    if (!isIOS) return runThreadRefresh();
+    if (refreshFlight.current?.owner === relationshipOwner) return refreshFlight.current.promise;
+    const flight = { owner: relationshipOwner, promise: null };
+    refreshFlight.current = flight;
+    flight.promise = runThreadRefresh().finally(() => {
+      if (refreshFlight.current === flight) refreshFlight.current = null;
+    });
+    return flight.promise;
+  };
   // A DM notification can open a chat with someone this device never cached;
   // fetch them so the name + avatar resolve instead of a nameless "Chat".
   useEffect(() => { if (otherId && !userById(otherId)) loadUser(otherId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [otherId]);
@@ -185,7 +320,20 @@ export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfi
             {!!relationshipSummary && <Text style={styles.relationshipSummary}>{relationshipSummary}</Text>}
           </View>
         )}
-        {messages.length === 0 && <Text style={styles.empty}>Say hi to {other?.name?.split(" ")[0]}.</Text>}
+        {isIOS && session && threadStatus === "loading" && messages.length === 0 && (
+          <View style={styles.readFeedback} accessible accessibilityLabel="Loading messages" accessibilityState={{ busy: true }}>
+            <ActivityIndicator color={colors.amber} /><Text style={styles.readText}>Loading messages…</Text>
+          </View>
+        )}
+        {isIOS && session && threadStatus === "error" && (
+          <View style={styles.readFeedback}>
+            <Text style={styles.readText}>{THREAD_READ_ERROR}</Text>
+            <Pressable style={styles.retryRead} onPress={refreshThread} disabled={threadRefreshing} accessibilityRole="button" accessibilityLabel="Retry loading messages" accessibilityState={{ disabled: threadRefreshing, busy: threadRefreshing }}>
+              <Text style={styles.retryReadText}>Try again</Text>
+            </Pressable>
+          </View>
+        )}
+        {messages.length === 0 && (!isIOS || (session && threadStatus === "ready")) && <Text style={styles.empty}>Say hi to {other?.name?.split(" ")[0]}.</Text>}
         {messages.map((m) => {
           const mine = m.from === session?.id;
           return (
@@ -262,6 +410,10 @@ const styles = StyleSheet.create({
   relationshipChipText: { color: colors.amber, fontSize: 10, fontWeight: "800" },
   relationshipSummary: { color: colors.textDim, fontSize: 12, lineHeight: 17 },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", textAlign: "center", marginTop: 20 },
+  readFeedback: { alignItems: "center", gap: 8, paddingVertical: 16, paddingHorizontal: 12 },
+  readText: { color: colors.textDim, fontSize: 14, textAlign: "center", lineHeight: 20 },
+  retryRead: { minHeight: 44, paddingHorizontal: 18, justifyContent: "center" },
+  retryReadText: { color: colors.amber, fontSize: 14, fontWeight: "800" },
   row: { maxWidth: "82%", alignSelf: "flex-start" },
   rowMine: { alignSelf: "flex-end" },
   bubble: { backgroundColor: colors.surface, borderRadius: 16, borderTopLeftRadius: 4, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 13, paddingVertical: 9 },

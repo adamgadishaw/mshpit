@@ -19,7 +19,7 @@ const children = n => !n || typeof n !== 'object' ? [] : Array.isArray(n) ? n.fl
 // of its native view. Reusing one view for the fallback can route a primary
 // failure into the fallback callback. Model that routing around the actual
 // component and hook, retaining handlers on replaced native instances.
-function fixture(name, { reuseNativeView = false } = {}) {
+function fixture(name, { reuseNativeView = false, platform = "ios" } = {}) {
   const slots = [], targets = new Map(); let cursor = 0, tree, current;
   const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const react = {
@@ -34,7 +34,7 @@ function fixture(name, { reuseNativeView = false } = {}) {
   const component = run(componentCodes[name], dep => {
     if (dep === 'react') return react;
     if (dep === 'react/jsx-runtime') return { jsx, jsxs: jsx, Fragment: 'Fragment' };
-    if (dep === 'react-native') return { View: 'View', Text: 'Text', Pressable: 'Pressable', PixelRatio: { get: () => 3 }, StyleSheet: { create: v => v, absoluteFill: {} } };
+    if (dep === 'react-native') return { Platform: { OS: platform }, View: 'View', Text: 'Text', Pressable: 'Pressable', PixelRatio: { get: () => 3 }, StyleSheet: { create: v => v, absoluteFill: {} } };
     if (dep === 'expo-image') return { Image: 'NativeImage' };
     if (dep.endsWith('/useImageAttempt')) return { default: hook, __esModule: true };
     if (dep.endsWith('/imageLoadPolicy.mjs')) return policies;
@@ -56,25 +56,25 @@ function fixture(name, { reuseNativeView = false } = {}) {
     display(target) { targets.get(target).onDisplay(); render(); } };
 }
 
-for (const name of ['SmartImage', 'Avatar']) {
-  test(`${name}: queued primary failures cannot discard a working native fallback`, () => {
-    const f = fixture(name), primary = f.current;
+for (const name of ['SmartImage', 'Avatar']) for (const platform of ['ios', 'android']) {
+  test(`${name} (${platform}): queued primary failures cannot discard a working native fallback`, () => {
+    const f = fixture(name, { platform }), primary = f.current;
     f.error(primary); const fallback = f.current;
     assert.notEqual(fallback, primary, 'each source owns its native view and callback lifetime');
     f.error(primary); assert.equal(f.current, fallback); assert.ok(f.image);
     f.display(fallback); f.error(primary); assert.equal(f.current, fallback);
     assert.equal(f.image.props.cachePolicy, 'memory-disk');
   });
-  test(`${name}: recycled source changes reject the previous native view's error`, () => {
-    const f = fixture(name), first = f.current;
+  test(`${name} (${platform}): recycled source changes reject the previous native view's error`, () => {
+    const f = fixture(name, { platform }), first = f.current;
     if (name === 'Avatar') f.props.user = { ...f.props.user, avatarUri: 'photo-b' };
     else f.props.uri = 'photo-b';
     f.render(); const second = f.current; assert.notEqual(second, first);
     f.error(first); assert.equal(f.current, second);
     f.render(); assert.equal(f.current, second, 'unrelated renders keep the cached source instance');
   });
-  test(`${name}: negative control reproduces the source-less native event failure when reusing one view`, () => {
-    const f = fixture(name, { reuseNativeView: true }), view = f.current;
+  test(`${name} (${platform}): negative control reproduces the source-less native event failure when reusing one view`, () => {
+    const f = fixture(name, { reuseNativeView: true, platform }), view = f.current;
     f.error(view); assert.ok(f.image);
     f.error(view); assert.equal(f.image, undefined);
   });
