@@ -43,8 +43,8 @@ export default function NativeMainTabPager({ active, onChange, swipeScope, swipe
   }, [pending, owner, swipeEnabled]);
   const index = tabs.indexOf(active);
   const readyDirection = useMemo(() => pending && ready === pending ? { direction: pending.direction, gesture: pending.gesture, contentReady: contentReady === pending } : null, [pending, ready, contentReady]);
-  const renderPages = (x, width) => [active, ...(pending ? [pending.target] : [])].map(tab =>
-    <NativeTabPage key={tab} tab={tab} active={active} offset={tabs.indexOf(tab) - index}
+  const renderPages = (x, width, origin) => [active, ...(pending ? [pending.target] : [])].map(tab =>
+    <NativeTabPage key={tab} tab={tab} active={active} position={tabs.indexOf(tab)} origin={origin}
       x={x} width={width} loading={loading} renderPage={renderPage} onReady={destinationReady} onContentReady={destinationContentReady} />);
   return <NativeSwipeRail page pageKey={active} enabled={swipeEnabled} onCommit={commit}
     canPrevious={index > 0} canNext={index < tabs.length - 1}

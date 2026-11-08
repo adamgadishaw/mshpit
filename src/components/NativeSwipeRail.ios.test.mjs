@@ -50,7 +50,8 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     post: { id: "post-A", likes: 0 }, accountId: "account-A", likeInfo: () => ({ liked: false }),
     toggleLike: (...args) => { calls.push(["like", ...args]); return Promise.resolve({ ok: true }); },
     setPostRepost: (...args) => { calls.push(["repost", ...args]); return Promise.resolve({ ok: true }); } };
-  let suspended = false, confirmed = reader;
+  let suspended = false, confirmed = reader, holdUI = false;
+  const uiQueue = [];
   const confirmedSubscriptions = [], nativeReaderListeners = new Set(), nativeReaderHistory = [];
   const useSharedValue = initial => {
     const ref = React.useRef(null);
@@ -62,7 +63,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     "react-native": { AppState: { currentState: "active", addEventListener: (_event, callback) => { appListeners.add(callback); appHistory.push(callback); return { remove: () => appListeners.delete(callback) }; } }, AccessibilityInfo: { announceForAccessibility: noop }, View: "View", Text: "Text", ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Pressable: "Pressable", StyleSheet: { create: x => x, hairlineWidth: 1 }, useWindowDimensions: () => ({ width: 412, fontScale: 1 }) },
     "react-native-reanimated": { __esModule: true, default: { View: "AnimatedView", Text: "AnimatedText" }, ReduceMotion: { System: "system" }, useSharedValue,
       useAnimatedStyle: f => { animatedStyles.push(f); return { ...f(), __animate: f }; }, useAnimatedReaction: (prepare, react) => { reactions.push({ prepare, react }); }, withSpring: (value, config, done) => { springs.push(config); springCompletions.push(done); return value; }, withTiming: (value, config, done) => { timings.push({ value, config, done }); return value; } },
-    "react-native-worklets": { scheduleOnRN: (fn, ...args) => { queue.push(() => fn(...args)); } },
+    "react-native-worklets": { scheduleOnRN: (fn, ...args) => { queue.push(() => fn(...args)); }, scheduleOnUI: (fn, ...args) => { if (holdUI) uiQueue.push(() => fn(...args)); else fn(...args); } },
     "../theme": { colors: { bg: "bg", surface: "surface" }, font: "System" }, "./Icon": "Icon", "./BrandMark": "BrandMark",
     "../hooks/useReducedMotion": () => reduced, "../hooks/useScreenReaderEnabled": { __esModule: true, default: () => reader,
       getConfirmedScreenReaderEnabled: () => confirmed,
@@ -121,6 +122,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   const componentKey = () => pager ? `${props.accountId}:${props.authEpoch || 0}` : component === "social" ? `${props.accountId || "guest"}:${props.post.id}` : "component";
   const f = {
     calls, queue, gestures, shared, reactions, springs, timings, animatedStyles, unmounted,
+    holdUI(value) { holdUI = value; }, flushUI() { while (uiQueue.length) uiQueue.shift()(); },
     pages: () => f.all().filter(node => node.type === "ActualPage"),
     surface: tab => f.all().find(node => node.props?.testID === `main-tab-page-${tab}`),
     translation: tab => f.surface(tab).props.style[1].__animate().transform[0].translateX,
@@ -684,4 +686,30 @@ test("reserved edge touch cannot strand a canceled candidate", t => {
   const g = dragPage(f); f.flush(); f.ready("search"); release(g, { x: 240 }); g.onFinalize();
   down(f.gesture, { x: 5 }); f.finishSpring(); f.flush();
   assert.equal(f.pages().length, 1); assert.deepEqual(f.calls, []);
+});
+for (const [active, destination, dx] of [["feed", "search", -120], ["discover", "search", 120]]) test(`promotion geometry stays continuous before and after delayed atomic UI rebase ${active} to ${destination}`, t => {
+  const f = fixture({ component: "tabs", page: true, pager: true, active }); t.after(f.close);
+  const g = dragPage(f, dx); f.flush(); f.ready(destination);
+  release(g, { x: 260 + (dx < 0 ? -150 : 150) }); g.onFinalize();
+  assert.equal(f.translation(destination), 0, "end of UI settlement");
+  f.finish(); f.flush(); f.holdUI(true);
+  f.render({ active: destination });
+  assert.equal(f.translation(destination), 0, "React promotion before UI reset must not change the tab coordinate");
+  f.flushUI(); assert.equal(f.translation(destination), 0, "one UI task rebases both origin and drag without an intermediate frame");
+});
+test("retired queued timer setup cannot overwrite current gesture timeout", t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
+  f.render({ contentReady: false }); let g = dragPage(f); release(g); g.onFinalize();
+  const oldTimerSetup = f.queue.pop(); f.flush();
+  f.render({ swipeScope: {} }); g = dragPage(f); f.flush(); f.ready("search"); release(g); g.onFinalize(); f.flush();
+  oldTimerSetup(); t.mock.timers.tick(2500); f.react();
+  assert.equal(f.timings.length, 1); f.finish(); f.flush(); assert.deepEqual(f.calls, ["search"]);
+});
+test("queued superseded direction does not mount an abandoned adjacent page", t => {
+  const f = fixture({ component: "tabs", page: true, pager: true, active: "search" }); t.after(f.close);
+  const g = dragPage(f); g.onUpdate({ absoluteX: 380 });
+  const oldPrepare = f.queue.shift(); f.act(oldPrepare);
+  assert.deepEqual(f.pages().map(page => page.props.tab), ["search"]);
+  f.flush(); assert.deepEqual(f.pages().map(page => page.props.tab), ["search", "feed"]);
 });

@@ -12,9 +12,9 @@ function Ready({ onReady, children }) {
   useLayoutEffect(() => { if (laidOut.current) onReady?.(); }, [onReady]);
   return <View style={styles.fill} onLayout={() => { laidOut.current = true; onReady?.(); }}>{children}</View>;
 }
-export default function NativeTabPage({ tab, active, offset, x, width, renderPage, loading, onReady, onContentReady }) {
+export default function NativeTabPage({ tab, active, position, origin, x, width, renderPage, loading, onReady, onContentReady }) {
   const preview = tab !== active;
-  const motion = useAnimatedStyle(() => ({ transform: [{ translateX: pageTranslation(x.get(), width.get(), offset) }] }));
+  const motion = useAnimatedStyle(() => ({ transform: [{ translateX: pageTranslation(x.get(), width.get(), position - origin.get()) }] }));
   return <Animated.View testID={`main-tab-page-${tab}`} style={[styles.page, motion]}
     pointerEvents={preview ? "none" : "auto"}
     accessibilityElementsHidden={preview} importantForAccessibility={preview ? "no-hide-descendants" : "auto"}>

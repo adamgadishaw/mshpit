@@ -2,7 +2,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AppState, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, { ReduceMotion, useAnimatedReaction, useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
-import { scheduleOnRN } from "react-native-worklets";
+import { scheduleOnRN, scheduleOnUI } from "react-native-worklets";
 import { NativeTabSwipeContext } from "./nativeTabSwipeContext.mjs";
 import { pageSettleDuration } from "../domain/iosPageGeometry.mjs";
 import { releasedPageSwipe } from "../domain/iosPageSwipe.mjs";
@@ -23,6 +23,7 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
   const startX = useSharedValue(0), startY = useSharedValue(0), width = useSharedValue(screenWidth - 32), x = useSharedValue(0);
   const epoch = useSharedValue(0), touching = useSharedValue(false);
   const excluded = useSharedValue(false), settling = useSharedValue(false);
+  const pageOrigin = useSharedValue(["feed", "search", "discover", "you"].indexOf(pageKey));
   const gestureId = useSharedValue(0), waitingRelease = useSharedValue(null);
   const readinessTimer = useRef(null);
   const readyDirection = useSharedValue(null), requestedDirection = useSharedValue(null), dragX = useSharedValue(0);
@@ -44,6 +45,12 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
     if (page && !interactive && next.allowed && !reduced && ((oldIndex >= 0 && newIndex >= 0 && oldIndex !== newIndex) || (!hasPresentedPage.current && entryDirection))) {
       x.set((entryDirection || (newIndex > oldIndex ? 1 : -1)) * screenWidth * 0.26);
       x.set(withSpring(0, { damping: 26, stiffness: 230, mass: 0.8, overshootClamping: true, reduceMotion: ReduceMotion.System }));
+    } else if (interactive) {
+      // React promotion leaves the same tab's absolute coordinate untouched.
+      // Rebase the UI origin and drag in ONE UI task: neither coordinate can
+      // paint independently and kick the promoted surface offscreen.
+      const resetEpoch = next.epoch;
+      scheduleOnUI(() => { 'worklet'; if (epoch.get() !== resetEpoch) return; x.set(0); pageOrigin.set(newIndex); });
     } else x.set(0);
     lastPage.current = pageKey;
     hasPresentedPage.current = true;
@@ -74,9 +81,9 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
       unsubscribe();
       if (live.current !== next) return;
       live.current = null;
-      epoch.set(0); touching.set(false); x.set(0);
+      epoch.set(0); touching.set(false); if (!interactive) x.set(0);
     };
-  }, [enabled, screenReader, permissionRevision, onCommit, screenWidth, epoch, touching, x, page, pageKey, reduced, excluded, settling, interactive]);
+  }, [enabled, screenReader, permissionRevision, onCommit, screenWidth, epoch, touching, x, page, pageKey, reduced, excluded, settling, interactive, pageOrigin]);
   const generation = owner?.allowed ? owner.epoch : 0;
   const rearm = useMemo(() => () => { if (live.current === owner) setPermissionRevision(revision => revision + 1); }, [owner]);
   const commit = useMemo(() => direction => {
@@ -92,12 +99,13 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
   }, [owner, page, settling, x, rearm, interactive]);
   const preparePage = useMemo(() => (direction, gesture) => {
     if (owner?.allowed && live.current === owner && gestureId.get() === gesture
-        && (touching.get() || settling.get())) pageCallbacks.current.onPageIntent?.(direction, gesture);
-  }, [owner, gestureId, touching, settling]);
+        && requestedDirection.get() === direction && (touching.get() || settling.get())) pageCallbacks.current.onPageIntent?.(direction, gesture);
+  }, [owner, gestureId, touching, settling, requestedDirection]);
   const cancelPage = useMemo(() => gesture => {
     if (live.current === owner && (gesture == null || gestureId.get() === gesture)) pageCallbacks.current.onPageCancel?.();
   }, [owner, gestureId]);
   const awaitPage = useMemo(() => gesture => {
+    if (live.current !== owner || gestureId.get() !== gesture || waitingRelease.get()?.gesture !== gesture) return;
     clearTimeout(readinessTimer.current);
     readinessTimer.current = setTimeout(() => {
       if (live.current !== owner || gestureId.get() !== gesture || waitingRelease.get()?.gesture !== gesture) return;
@@ -202,7 +210,7 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
   const pageScope = useMemo(() => ({ gesture: pan, excluded, touching, epoch, generation }), [pan, excluded, touching, epoch, generation]);
   if (interactive) return <NativeTabSwipeContext.Provider value={pageScope}>
     <GestureDetector gesture={pan}><View collapsable={false} testID={testID} style={styles.pageTrack}
-      onLayout={event => width.set(event.nativeEvent.layout.width)}>{renderPages(x, width)}</View></GestureDetector>
+      onLayout={event => width.set(event.nativeEvent.layout.width)}>{renderPages(x, width, pageOrigin)}</View></GestureDetector>
   </NativeTabSwipeContext.Provider>;
   if (page) return <NativeTabSwipeContext.Provider value={pageScope}>
     <View testID={testID} style={styles.pageTrack} onLayout={event => width.set(event.nativeEvent.layout.width)}>
