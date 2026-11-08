@@ -69,6 +69,9 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = empty,
     if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
     if (name === 'react' || name === 'react/jsx-runtime') return require(name);
     if (name === 'react-native') return native;
+    if (name.endsWith('/useNativeTabPreview')) return { __esModule: true, default: () => false };
+    if (name === '../hooks/useNativeTabContentReady') return { __esModule: true, default: () => {} };
+    if (name === '../features/profilePresentation/ProfileHierarchy') return execute(`../features/profilePresentation/ProfileHierarchy${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
     if (name.endsWith('/ProfileMediaPresentation')) return { useProfileMediaPresentation: () => ({ retryImages: noop }), ProfileMediaRetryBoundary: ({ children }) => children, ProfileBannerCover: 'ProfileBannerCover', ProfileGallery: 'ProfileGallery' };
     if (name === './profileHistoryClient.mjs') return { profileHistoryStore: store };
     if (name === '../features/profileHistory/useProfileHistory') return hook;
@@ -78,14 +81,14 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = empty,
     if (name === '../features/concertHistory/ConcertHistory') return 'ConcertHistory';
     if (name === '../components/PostNavigationContext') return { PostNavigationContext: context };
     if (name === '../components/Badge') return { BadgeRow: 'BadgeRow' };
-    if (name === '../theme') return { colors, roleColor: () => '#ffffff', radius: {}, space: x => x * 4, mono: 'mono' };
+    if (name.endsWith('/theme')) return { colors, roleColor: () => '#ffffff', radius: {}, space: x => x * 4, mono: 'mono' };
     if (name === '../store') return { useStore: () => ({ session, authReady: true, chatAuthEpoch: 1,
       userById: () => user, logsByUser: () => cached, goingFor: () => going, myAttendance: attendance,
       isFollowing: () => false, isBlocked: () => false, isMuted: () => false, followerCount: () => 0, followingCount: () => 0,
       userBadges: () => empty, userPoints: () => 0, userAchievements: () => empty, sharedShows: () => ({ shows: empty, artists: empty }),
       loadUser: async () => ({ status: access, user: access === 'missing' ? null : user, favoriteShows }), loadRewards: async () => ({}),
     }) };
-    if (name.startsWith('../components/')) return name.split('/').at(-1);
+    if (name.includes('/components/')) return name.split('/').at(-1);
     if (name === '../lib/confirmOwnPostDelete') return { confirmOwnPostDelete: noop };
     return local(name);
   };

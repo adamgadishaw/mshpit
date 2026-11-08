@@ -23,6 +23,8 @@ import { selectConcertReviews, selectProfileTimeline } from "../domain/profileTi
 import { memberCalendarModel } from "../domain/calendarShows.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import useAppActive from "../lib/useAppActive";
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
+import useNativeTabContentReady from "../hooks/useNativeTabContentReady";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
@@ -34,6 +36,7 @@ import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import { PostNavigationContext } from "../components/PostNavigationContext";
 import { profileAccentColor } from "../domain/profileAccents.mjs";
+import { ProfileSection, ProfileIdentityRow, ProfileOwnerActions, ProfileSectionTabs, hierarchyStyles } from "../features/profilePresentation/ProfileHierarchy";
 import { ProfileBannerCover, ProfileGallery, ProfileMediaRetryBoundary, useProfileMediaPresentation } from "../features/profileMedia/ProfileMediaPresentation";
 
 const IS_IOS = Platform.OS === "ios";
@@ -81,7 +84,7 @@ function FavoriteShows({ shows, accent, isSelf, onOpen, onManage, largeText = fa
     return isSelf && onManage ? (
       <Pressable style={styles.favoriteEmpty} onPress={onManage} accessibilityRole="button" accessibilityLabel="Pin your favorite shows">
         <Icon name="star" size={16} color={colors.amber} />
-        <Text style={styles.favoriteEmptyText}>Pin up to four favorite shows to the top of your profile.</Text>
+        <Text style={styles.favoriteEmptyText}>{IS_IOS ? "Pin up to four favorite shows here." : "Pin up to four favorite shows to the top of your profile."}</Text>
         <Icon name="chevron-right" size={16} color={colors.textDim} />
       </Pressable>
     ) : null;
@@ -218,14 +221,32 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   const largeText = IS_IOS && fontScale > 1.25;
   const webBannerMinHeight = windowWidth >= 900 ? Math.min(420, Math.max(352, windowHeight * 0.38)) : 320;
   const appActive = useAppActive();
+  const nativePreview = useNativeTabPreview();
   const { session, authReady, chatAuthEpoch, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
   const profileScopeRef = useRef(profileScope);
   profileScopeRef.current = profileScope;
   const profileScrollRef = useRef(null);
+  const sectionScope = `${profileScope}:${chatAuthEpoch}:${initialSection || ""}`;
+  const sectionScopeRef = useRef(sectionScope);
+  sectionScopeRef.current = sectionScope;
+  const initialNativeSection = initialSection === "concert-history" ? "shows" : "posts";
+  const [sectionSelection, setSectionSelection] = useState(null);
+  const nativeSection = sectionSelection?.scope === sectionScope ? sectionSelection.key : initialNativeSection;
+  const nativeSectionRef = useRef(nativeSection);
+  nativeSectionRef.current = nativeSection;
   const concertFocusRef = useRef(null);
   const concertLayoutRef = useRef(null);
+  const nativeShowsLayoutRef = useRef(null);
+  const nativeConcertLayoutRef = useRef(null);
   const [concertLayout, setConcertLayout] = useState(null);
+  const publishNativeConcertLayout = useCallback(() => {
+    const section = nativeShowsLayoutRef.current, concert = nativeConcertLayoutRef.current;
+    if (section?.scope !== sectionScope || concert?.scope !== sectionScope || sectionScopeRef.current !== sectionScope || nativeSectionRef.current !== "shows") return;
+    const layout = { scope: profileScope, y: section.y + concert.y };
+    concertLayoutRef.current = layout;
+    setConcertLayout((current) => current?.scope === layout.scope && current.y === layout.y ? current : layout);
+  }, [profileScope, sectionScope]);
   const postActionsRef = useRef({});
   const [profileRevision, setProfileRevision] = useState(0);
   const [profileState, setProfileState] = useState(() => ({ scope: profileScope, value: EMPTY_PROFILE_STATE }));
@@ -267,6 +288,10 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   const logs = session && user ? (historyOwnsLogs ? history.posts : cachedLogs) : EMPTY_LIST;
   const reviews = useMemo(() => selectConcertReviews(logs), [logs]);
   const timeline = useMemo(() => selectProfileTimeline(logs), [logs]);
+  // Prepared pages wait for primary identity/posts, never optional rewards or
+  // map widgets. Terminal primary errors/missing states are honest ready UI.
+  useNativeTabContentReady(!asTab || ["error", "missing"].includes(profileView.status)
+    || !!user && (logs.length > 0 || ["ready", "error"].includes(history.status)));
   const going = user && isSelf ? goingFor(user.id) : EMPTY_LIST;
   const calendarDay = localCalendarIso(Date.now());
   const profileCalendar = useMemo(() => user ? memberCalendarModel({
@@ -345,6 +370,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   };
   useEffect(() => {
     if (initialSection !== "concert-history") { concertFocusRef.current = null; return; }
+    if (IS_IOS && nativeSection !== "shows") return;
     if (!session || !user || concertLayout?.scope !== profileScope) return;
     if (history.status === "idle" || history.status === "loading" || history.status === "refreshing") return;
     const focusKey = `${profileScope}:concert-history`;
@@ -365,13 +391,13 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
       cancelAnimationFrame(firstFrame);
       if (secondFrame !== null) cancelAnimationFrame(secondFrame);
     };
-  }, [initialSection, profileScope, session?.id, user?.id, concertLayout, history.status]);
+  }, [initialSection, nativeSection, profileScope, session?.id, user?.id, concertLayout, history.status]);
   useEffect(() => {
-    if (!session || !userId) return undefined;
+    if (!session || !userId || nativePreview) return undefined;
     const controller = new AbortController();
     void loadRewards(userId, { signal: controller.signal });
     return () => controller.abort();
-  }, [userId, session?.id]);
+  }, [userId, session?.id, nativePreview]);
   // Always refresh from the server: fills real follower counts, and makes profiles
   // we've never cached (a follower from a notification) open instead of blanking.
   useEffect(() => {
@@ -408,14 +434,14 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   const profileRefreshScope = refreshScope(session?.id, "profile", userId);
   const { refresh: refreshProfile, refreshing: profileRefreshing } = useScopedRefresh({
     scope: profileRefreshScope,
-    enabled: !!userId,
+    enabled: !!userId && !nativePreview,
     task: async ({ signal }) => {
       const requestScope = profileScope;
       if (IS_IOS) profileMedia.retryImages(signal);
       const [outcome, historyOutcome, rewards, concertsOutcome] = await Promise.all([
         loadUser(userId, { signal }),
         session ? history.retry() : null,
-        session ? loadRewards(userId, { signal }) : null,
+        session && !nativePreview ? loadRewards(userId, { signal }) : null,
         session ? concertHistory.refresh() : null,
       ]);
       if (signal.aborted || profileScopeRef.current !== requestScope) return { stale: true };
@@ -523,6 +549,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             <Text style={styles.topTitle}>@{user.handle}</Text>
           </>
         )}
+        {IS_IOS && !largeText && isSelf && asTab && ownerTools?.length ? <ProfileOwnerActions actions={ownerTools} scope={`${profileScope}:${chatAuthEpoch}`} /> : null}
         {IS_IOS && session && (isSelf ? asTab && ownerTools?.length : true) ? (
           <ProfileActionMenu actions={profileMenuActions} scope={profileScope} label={isSelf ? "Your account" : "Profile actions"} unread={ownerUnread} />
         ) : asTab && isSelf && ownerTools?.length ? null : session && !isSelf && onReport ? (
@@ -544,6 +571,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           </Pressable>
         ) : <View style={{ width: 40 }} />}
       </View>
+      {IS_IOS && largeText && isSelf && asTab && ownerTools?.length ? <ProfileOwnerActions actions={ownerTools} scope={`${profileScope}:${chatAuthEpoch}`} largeText /> : null}
       {!IS_IOS && asTab && isSelf && ownerTools?.length ? (
         // Your own tools, each with its name under the icon, in one row that
         // fits a 320px phone.
@@ -591,9 +619,14 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           {IS_IOS && user.banner ? <ProfileBannerCover uri={user.banner} name={user.name} onOpen={canOpenPhotos ? profileMedia.openBanner : undefined} largeText={largeText} /> : user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }, IS_IOS && styles.nativeBannerArtwork, IS_IOS && styles.nativeBannerCompact]} />}
           {!IS_IOS || !user.banner ? <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, IS_IOS && !user.banner && styles.nativeBannerCompact, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, ${colors.bg}00 0px, ${colors.bg}30 32px, ${colors.bg}CC 104px, ${colors.bg}F2 220px, ${colors.bg} 340px)` }]} /> : null}
           {accentColor && Platform.OS !== "web" && !IS_IOS ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
-        <View style={[styles.identityWrap, !user.banner && styles.identityWrapCompact, IS_IOS && styles.nativeIdentityWrap, IS_IOS && !user.banner && styles.nativeIdentityCompact]}>
-        <View testID="profile-identity-tile" style={[styles.head, Platform.OS === "web" && styles.integratedHead]}>
+        <View pointerEvents={IS_IOS ? "box-none" : undefined} style={[styles.identityWrap, !user.banner && styles.identityWrapCompact, IS_IOS && styles.nativeIdentityWrap, IS_IOS && !!user.banner && hierarchyStyles.nativeIdentityWithBanner, IS_IOS && !user.banner && styles.nativeIdentityCompact]}>
+        <View testID="profile-identity-tile" pointerEvents={IS_IOS ? "box-none" : undefined} style={[styles.head, Platform.OS === "web" && styles.integratedHead]}>
+          <ProfileIdentityRow>
           <View testID="profile-identity-avatar" style={[styles.avatarWrap, Platform.OS === "web" && styles.integratedAvatar, IS_IOS && accentColor && { borderColor: accentColor }]}><Avatar user={user} size={Platform.OS === "web" || IS_IOS ? 88 : 72} fallbackTextColor={IS_IOS ? colors.text : undefined} /></View>
+          {IS_IOS && isSelf ? <Pressable style={hierarchyStyles.nativeManageButton} onPress={onManageProfile} accessibilityRole="button" accessibilityLabel="Manage profile">
+            <Icon name="edit" size={15} color={colors.amber} /><Text style={styles.editTxt}>Manage profile</Text>
+          </Pressable> : null}
+          </ProfileIdentityRow>
           <View style={[styles.nameRow, Platform.OS === "web" && styles.integratedNameRow]}>
             <Text testID="profile-identity-name" style={[styles.name, Platform.OS === "web" && styles.integratedName]}>{user.name}</Text>
             <BadgeRow badges={userBadges(user)} size={20} />
@@ -611,7 +644,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             />
           )}
 
-          {isSelf ? (
+          {isSelf ? (!IS_IOS ? (
             <Pressable
               style={styles.editBtn}
               onPress={onManageProfile}
@@ -621,7 +654,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
               <Icon name="edit" size={15} color={colors.amber} />
               <Text style={styles.editTxt}>Manage profile</Text>
             </Pressable>
-          ) : session && isBlocked(user.id) ? (
+          ) : null) : session && isBlocked(user.id) ? (
             <View style={styles.blockedBox}>
               <Text style={styles.blockedTxt}>You've blocked this account. They can't message you, follow you, or see your posts.</Text>
               <Pressable style={styles.unblockBtn} onPress={() => unblockUser(user.id)} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `Unblock ${user.name}` } : {})}>
@@ -656,14 +689,14 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         </View>
 
         {/* The owner's private block (the You tab passes concert memories here). */}
-        {isSelf ? children : null}
+        {!IS_IOS && isSelf ? children : null}
 
         <View style={[styles.statsRow, largeText && styles.nativeStatsLarge]}>
           <Stat largeText={largeText} value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
           <Stat largeText={largeText} value={followingCount(user.id)} label={IS_IOS ? "Following" : "People following"} onPress={() => onOpenFollowList?.(user.id, "following")} />
           <Stat largeText={largeText} value={isSelf ? new Set((session?.favoriteArtists || []).map((name) => String(name).trim().toLowerCase())).size : user.artistFollowingCount ?? (user.favoriteArtists || []).length} label={IS_IOS ? "Artists" : "Artists followed"} onPress={() => onOpenFollowList?.(user.id, "artists")} />
         </View>
-        <FavoriteShows shows={profileView.favoriteShows || EMPTY_LIST} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} largeText={largeText} />
+        {!IS_IOS ? <FavoriteShows shows={profileView.favoriteShows || EMPTY_LIST} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} largeText={largeText} /> : null}
         {!session ? (
           <AccountSnapshotPrompt
             title={`Meet ${user.name} on Mshpit`}
@@ -742,6 +775,9 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         )}
 
 
+        <ProfileSectionTabs active={nativeSection} largeText={largeText}
+          onSelect={(key) => { if (sectionScopeRef.current === sectionScope) setSectionSelection({ scope: sectionScope, key }); }} />
+        <ProfileSection section="gallery" active={nativeSection}>
         {/* Media gallery, using the same resilient descriptor pipeline as You. */}
         {IS_IOS ? <ProfileGallery items={galleryViewerItems} history={history} isSelf={isSelf} name={user.name}
           onOpen={canOpenPhotos ? profileMedia.openGallery : undefined} onRefresh={refreshProfile} refreshing={profileRefreshing} request={profileMedia.request} /> : gallery.length > 0 && (
@@ -768,6 +804,13 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
 
 
 
+        </ProfileSection>
+        <ProfileSection section="shows" active={nativeSection} onLayout={(event) => {
+          if (nativeSectionRef.current !== "shows" || sectionScopeRef.current !== sectionScope) return;
+          nativeShowsLayoutRef.current = { scope: sectionScope, y: event.nativeEvent.layout.y };
+          publishNativeConcertLayout();
+        }}>
+        {IS_IOS ? <FavoriteShows shows={profileView.favoriteShows || EMPTY_LIST} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} largeText={largeText} /> : null}
         {/* One calendar projection powers both this summary and Calendar. A
             dated post appears here immediately; plain statuses remain posts. */}
         <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>Upcoming shows{IS_IOS ? historyHeadingCount(planned.length) : ` · ${planned.length}`}</Text>
@@ -795,10 +838,16 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           );
         })}
 
-        <View onLayout={(event) => {
-          const y = event.nativeEvent.layout.y;
-          concertLayoutRef.current = { scope: profileScope, y };
-          setConcertLayout((current) => current?.scope === profileScope && current.y === y ? current : { scope: profileScope, y });
+        <View testID="profile-concert-anchor" onLayout={(event) => {
+          if (IS_IOS) {
+            if (nativeSectionRef.current !== "shows" || sectionScopeRef.current !== sectionScope) return;
+            nativeConcertLayoutRef.current = { scope: sectionScope, y: event.nativeEvent.layout.y };
+            publishNativeConcertLayout();
+          } else {
+            const y = event.nativeEvent.layout.y;
+            concertLayoutRef.current = { scope: profileScope, y };
+            setConcertLayout((current) => current?.scope === profileScope && current.y === y ? current : { scope: profileScope, y });
+          }
         }}>
         <ConcertHistory
             key={concertScope}
@@ -826,6 +875,9 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           <Icon name="chevron-right" size={16} color={colors.textDim} />
         </Pressable> : null}
 
+        {IS_IOS && isSelf ? children : null}
+        </ProfileSection>
+        <ProfileSection section="posts" active={nativeSection}>
         <View style={styles.postsSection}>
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
@@ -865,6 +917,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           </Pressable>
         )}
         </View>
+        </ProfileSection>
         </>}
 
       </ScrollView>
@@ -1025,7 +1078,7 @@ const baseStyles = StyleSheet.create({
 const iosStyles = IS_IOS ? StyleSheet.create({
   topbar: { ...baseStyles.topbar, paddingHorizontal: 20, paddingBottom: 12, paddingTop: 4, minHeight: 56 },
   topTitle: { ...baseStyles.topTitle, fontSize: 17, fontWeight: "600", flexShrink: 1, textAlign: "center" },
-  topTitleTab: { flex: 1, minWidth: 0, fontSize: 34, fontWeight: "700", letterSpacing: -0.8, textAlign: "left" },
+  topTitleTab: { flex: 1, minWidth: 0, fontSize: 30, fontWeight: "700", letterSpacing: -0.8, textAlign: "left" },
   backBtn: { width: 44, minHeight: 44, justifyContent: "center" },
   backCircle: { ...baseStyles.backCircle, width: 44, height: 44, borderRadius: 22, borderWidth: 0 },
   nativeMenu: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceAlt },

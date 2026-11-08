@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 const require = createRequire(import.meta.url);
 const React = require("react"), reconciler = require("react-reconciler");
+const tabContext = require('../components/nativeTabPreviewContext.mjs');
 const { transformSync } = require("@babel/core");
 const codes = new Map(), noop = () => {};
 function execute(path, imports, timers = { setTimeout, clearTimeout }) {
@@ -13,8 +14,8 @@ function execute(path, imports, timers = { setTimeout, clearTimeout }) {
     plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
   }).code);
   const module = { exports: {} };
-  new Function("require", "module", "exports", "setTimeout", "clearTimeout", codes.get(path))(
-    name => imports(name, createRequire(file)), module, module.exports, timers.setTimeout, timers.clearTimeout);
+  new Function("require", "module", "exports", "setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame", codes.get(path))(
+    name => imports(name, createRequire(file)), module, module.exports, timers.setTimeout, timers.clearTimeout, callback => setTimeout(callback, 0), clearTimeout);
   return module.exports;
 }
 function createRenderer() {
@@ -27,11 +28,13 @@ function createRenderer() {
     supportsMutation: true, isPrimaryRenderer: true, supportsPersistence: false, supportsHydration: false,
     getRootHostContext: () => context, getChildHostContext: () => context, getPublicInstance: node => node,
     prepareForCommit: () => null, resetAfterCommit: noop,
-    createInstance: (type, props) => ({ type, props, children: [], focus() {}, scrollToEnd() {} }), createTextInstance: text => ({ text }),
+    createInstance: (type, props) => ({ type, props, children: [], scrolls: [], focus() {}, scrollToEnd() {}, scrollTo(options) { this.scrolls.push(options); } }), createTextInstance: text => ({ text }),
     appendInitialChild: append, appendChild: append, appendChildToContainer: append,
     removeChild: remove, removeChildFromContainer: remove, insertBefore: insert, insertInContainerBefore: insert,
     finalizeInitialChildren: () => false, shouldSetTextContent: () => false,
     commitUpdate: (node, type, oldProps, newProps) => { node.props = newProps; }, commitTextUpdate: (node, oldText, text) => { node.text = text; },
+    hideInstance: node => { node.hidden = true; }, unhideInstance: node => { node.hidden = false; },
+    hideTextInstance: node => { node.hidden = true; }, unhideTextInstance: node => { node.hidden = false; },
     clearContainer: node => { node.children = []; }, resetTextContent: noop, commitMount: noop,
     scheduleTimeout: setTimeout, cancelTimeout: clearTimeout, noTimeout: -1, supportsMicrotasks: true, scheduleMicrotask: queueMicrotask,
     getCurrentUpdatePriority: () => priority, setCurrentUpdatePriority: value => { priority = value; }, resolveUpdatePriority: () => priority || 32,
@@ -58,9 +61,9 @@ const photo = { ...basic, id: 'photo-post', createdAt: 5, photosPublic: true,
 const offline = () => Object.assign(new Error('Synthetic offline'), { name: 'AppError', code: 'PIT-NET-001', retryable: true });
 const flatten = style => Object.assign({}, ...(Array.isArray(style) ? style.flat(Infinity).filter(Boolean) : [style]));
 function fixture({ platform = 'ios', self = true, guest = false, cached = [], banner = 'https://media.test/banner-original.jpg', withViewer = true, now = () => 0 } = {}) {
-  const renderer = createRenderer(), reads = [], opened = [];
+  const renderer = createRenderer(), reads = [], opened = [], rewards = [], readiness = [];
   const user = { id: self ? 'self' : 'target', name: 'Synthetic member', handle: 'fixture', favoriteArtists: [], favoriteGenres: [], banner };
-  const state = { user, session: guest ? null : self ? user : { id: 'viewer', favoriteArtists: [], favoriteGenres: [] }, cached, access: 'ready', epoch: 1, fontScale: 1, withViewer };
+  const state = { user, session: guest ? null : self ? user : { id: 'viewer', favoriteArtists: [], favoriteGenres: [] }, cached, access: 'ready', epoch: 1, fontScale: 1, withViewer, preview: false, initialSection: null, ownerTools: [] };
   const store = createProfileHistoryStore({ now, fetchPage: params => { const r = deferred(); reads.push({ ...r, params }); return r.promise; } });
   const native = { View: 'View', Text: 'Text', Pressable: 'Pressable', ScrollView: 'ScrollView', ActivityIndicator: 'ActivityIndicator', RefreshControl: 'RefreshControl',
     Platform: { OS: platform, select: x => x[platform] || x.default },
@@ -73,6 +76,10 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = [], ba
     if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
     if (name === 'react' || name === 'react/jsx-runtime') return require(name);
     if (name === 'react-native') return native;
+    if (name.endsWith('/useNativeTabPreview')) return execute(`../hooks/useNativeTabPreview${platform === 'ios' ? '.ios' : ''}.js`, imports);
+    if (name === '../hooks/useNativeTabContentReady') return execute(`../hooks/useNativeTabContentReady${platform === 'ios' ? '.ios' : ''}.js`, imports);
+    if (name === '../components/nativeTabPreviewContext.mjs') return tabContext;
+    if (name === '../features/profilePresentation/ProfileHierarchy') return execute(`../features/profilePresentation/ProfileHierarchy${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
     if (name === 'expo-image') return { Image: 'ExpoImage' };
     if (name === './profileHistoryClient.mjs') return { profileHistoryStore: store };
     if (name.endsWith('/useProfileHistory')) return historyHook;
@@ -93,7 +100,7 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = [], ba
       userById: () => state.user, logsByUser: () => state.cached, goingFor: () => empty, myAttendance: empty,
       isFollowing: () => false, isBlocked: () => false, isMuted: () => false, followerCount: () => 0, followingCount: () => 0,
       userBadges: () => empty, userPoints: () => 0, userAchievements: () => empty, sharedShows: () => ({ shows: empty, artists: empty }),
-      loadUser: async () => ({ status: state.access, user: state.access === 'missing' ? null : state.user, favoriteShows: empty }), loadRewards: async () => ({}),
+      loadUser: async () => ({ status: state.access, user: state.access === 'missing' ? null : state.user, favoriteShows: empty }), loadRewards: async (id, options) => { rewards.push({ id, options }); return {}; },
     }) };
     if (name.includes('/components/') || name === './Icon' || name === './ClipPoster') return name.split('/').at(-1);
     if (name.endsWith('/confirmOwnPostDelete')) return { confirmOwnPostDelete: noop };
@@ -107,13 +114,16 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = [], ba
   refreshBoundary = execute('../components/VinylRefreshBoundary.jsx', imports);
   presentation = execute(`../features/profileMedia/ProfileMediaPresentation${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
   const Screen = execute('./ProfileScreen.jsx', imports).default;
-  const render = () => renderer.render(React.createElement(Screen, { userId: state.user.id, asTab: state.session?.id === state.user.id, onManageProfile: noop, onOpenPhotos: state.withViewer ? (...args) => opened.push(args) : undefined }));
+  const reportReady = ready => readiness.push(ready);
+  const render = () => renderer.render(React.createElement(tabContext.NativeTabPreviewContext.Provider, { value: state.preview },
+    React.createElement(tabContext.NativeTabReadinessContext.Provider, { value: reportReady },
+      React.createElement(Screen, { userId: state.user.id, asTab: state.session?.id === state.user.id, initialSection: state.initialSection, ownerTools: state.ownerTools, onManageProfile: noop, onOpenPhotos: state.withViewer ? (...args) => opened.push(args) : undefined }, React.createElement('PrivateMemories', null, 'Private memories')))));
   const all = () => nodes(renderer.container);
   const byId = id => all().find(n => n.props?.testID === id);
   const text = () => all().map(n => n.text || '').join(' ');
   const image = fragment => all().find(n => n.type === 'ExpoImage' && decodeURIComponent(n.props.source.uri).includes(fragment));
   const flush = async () => { for (let i=0; i<6; i++) { await new Promise(r => setImmediate(r)); renderer.act(noop); } };
-  return { state, render, all, byId, text, image, reads, opened, flush, store, act: renderer.act,
+  return { state, render, all, byId, text, image, reads, opened, rewards, readiness, flush, store, act: renderer.act,
     get params() { return { accountId: state.session?.id, targetId: state.user.id }; },
     press: id => renderer.act(() => byId(id).props.onPress()),
     pressLabel: label => renderer.act(() => all().find(n => n.props?.accessibilityLabel === label).props.onPress()),
@@ -293,4 +303,197 @@ for (const platform of ['android', 'web']) test(`${platform} retains the previou
   assert.match(f.text(), /Media/);
   f.pressLabel('A real fixture photo'); assert.equal(f.opened[0][0][0].postId, photo.id);
   assert.equal(f.opened[0][2], photo.id); f.unmount();
+});
+
+
+test('native profile starts with posts and keeps gallery/history mounted but inaccessible until selected', async () => {
+  const f = fixture(); f.render(); await f.flush(); await f.resolve(0, [photo]);
+  const gallery = f.byId('profile-section-gallery'), shows = f.byId('profile-section-shows'), posts = f.byId('profile-section-posts');
+  const tile = f.byId('profile-gallery-item-0');
+  const hidden = (section, value) => {
+    assert.equal(flatten(section.props.style).display === 'none', value);
+    assert.equal(section.props.accessibilityElementsHidden, value);
+    assert.equal(section.props.importantForAccessibility, value ? 'no-hide-descendants' : 'auto');
+  };
+  hidden(posts, false); hidden(gallery, true); hidden(shows, true);
+  assert.ok(nodes(shows).some(n => n.type === 'PrivateMemories'));
+  assert.ok(!nodes(posts).some(n => n.type === 'PrivateMemories'));
+  for (const key of ['gallery', 'shows', 'posts', 'gallery']) {
+    f.press(`profile-tab-${key}`);
+    for (const name of ['posts', 'shows', 'gallery']) {
+      hidden(f.byId(`profile-section-${name}`), name !== key);
+      assert.equal(f.byId(`profile-tab-${name}`).props.accessibilityState.selected, name === key);
+      assert.ok(flatten(f.byId(`profile-tab-${name}`).props.style).minHeight >= 44);
+    }
+    assert.equal(f.byId('profile-gallery-item-0'), tile, 'section switch retains loaded native image host');
+  }
+  assert.equal(f.reads.length, 1, 'section switching must not load additional history');
+  f.press('profile-gallery-item-0'); assert.equal(f.opened[0][2], photo.id);
+  f.unmount();
+});
+
+test('profile section selection resets across target and auth lifetime, and stale tab callbacks are fenced', async () => {
+  const f = fixture(); f.render(); await f.flush();
+  f.press('profile-tab-gallery');
+  const old = f.byId('profile-tab-shows').props.onPress;
+  f.state.epoch++; f.render();
+  assert.equal(f.byId('profile-tab-posts').props.accessibilityState.selected, true);
+  f.act(old); assert.equal(f.byId('profile-tab-posts').props.accessibilityState.selected, true);
+  f.press('profile-tab-shows');
+  f.state.user = { ...f.state.user, id: 'second' }; f.state.session = f.state.user; f.render(); await f.flush();
+  assert.equal(f.byId('profile-tab-posts').props.accessibilityState.selected, true);
+  f.unmount();
+});
+
+test('native primary readiness excludes rewards and preview cannot award achievements or refresh', async () => {
+  const f = fixture(); f.state.preview = true; f.render(); await f.flush();
+  assert.equal(f.rewards.length, 0); assert.equal(f.readiness.at(-1), false);
+  f.press('profile-gallery-refresh'); await f.flush(); assert.equal(f.rewards.length, 0); assert.equal(f.reads.length, 1);
+  await f.resolve(0, [photo]); assert.equal(f.readiness.at(-1), true);
+  f.state.preview = false; f.render(); await f.flush(); assert.equal(f.rewards.length, 1);
+  f.render(); await f.flush(); assert.equal(f.rewards.length, 1, 'rerender is not another reward award');
+  f.unmount();
+  const failed = fixture(); failed.state.preview = true; failed.render(); await failed.flush(); await failed.reject(0);
+  assert.equal(failed.readiness.at(-1), true, 'honest terminal post error can finish the transition');
+  failed.unmount();
+});
+
+test('explicit owner actions preserve badges/current callbacks and refuse obsolete scopes', async () => {
+  const f = fixture(), actions = [];
+  const tools = callback => [
+    { key: 'inbox', label: 'Inbox', icon: 'mail', badge: 4, onPress: callback },
+    { key: 'activity', label: 'Activity', icon: 'bell', badge: 120, onPress: () => actions.push('activity') },
+    { key: 'settings', label: 'Settings', icon: 'menu', onPress: noop },
+  ];
+  f.state.ownerTools = tools(() => actions.push('old')); f.render(); await f.flush();
+  const old = f.byId('profile-owner-inbox').props.onPress;
+  assert.match(f.byId('profile-owner-inbox').props.accessibilityLabel, /4 unread/);
+  assert.match(f.byId('profile-owner-activity').props.accessibilityLabel, /120 unread/);
+  assert.equal(f.byId('profile-owner-settings'), undefined);
+  assert.deepEqual(actions, [], 'rendering shortcuts never opens Inbox or Activity');
+  f.state.ownerTools = tools(() => actions.push('current')); f.render(); f.act(old);
+  assert.deepEqual(actions, ['current']);
+  f.state.fontScale = 3; f.render();
+  assert.ok(flatten(f.byId('profile-owner-inbox').props.style).minHeight >= 44);
+  assert.ok(f.all().filter(n => n.type === 'Text').every(n => n.props.allowFontScaling !== false));
+  const beforeEpoch = f.byId('profile-owner-inbox').props.onPress;
+  f.state.epoch++; f.render(); f.act(beforeEpoch); assert.deepEqual(actions, ['current']);
+  const beforeUnmount = f.byId('profile-owner-inbox').props.onPress;
+  f.unmount(); f.act(beforeUnmount); assert.deepEqual(actions, ['current']);
+});
+
+for (const platform of ['android', 'web']) test(`${platform} has no native section wrappers, tab controls or owner shortcut additions`, async () => {
+  const f = fixture({ platform }); f.render(); await f.flush(); await f.resolve(0, [photo]);
+  assert.equal(f.byId('profile-section-posts'), undefined);
+  assert.equal(f.byId('profile-tab-posts'), undefined);
+  assert.equal(f.byId('profile-owner-inbox'), undefined);
+  assert.ok(f.all().some(n => n.type === 'PrivateMemories'));
+  f.unmount();
+});
+
+
+for (const parentFirst of [true, false]) test(`concert-history entry uses nested content coordinates (${parentFirst ? 'section first' : 'concert first'})`, async () => {
+  const f = fixture(); f.state.initialSection = 'concert-history'; f.render(); await f.flush(); await f.resolve(0, [photo]);
+  assert.equal(f.byId('profile-tab-shows').props.accessibilityState.selected, true);
+  const sectionLayout = () => f.byId('profile-section-shows').props.onLayout({ nativeEvent: { layout: { y: 600 } } });
+  const concertLayout = () => f.byId('profile-concert-anchor').props.onLayout({ nativeEvent: { layout: { y: 120 } } });
+  f.act(parentFirst ? sectionLayout : concertLayout);
+  f.act(parentFirst ? concertLayout : sectionLayout);
+  await new Promise(resolve => setTimeout(resolve, 15)); await f.flush();
+  const scroll = f.all().find(n => n.type === 'ScrollView');
+  assert.equal(scroll.scrolls.at(-1).y, 708);
+  assert.equal(scroll.scrolls.at(-1).animated, false);
+  const completed = scroll.scrolls.length;
+  f.press('profile-tab-posts'); f.press('profile-tab-shows');
+  f.act(sectionLayout); f.act(concertLayout);
+  await new Promise(resolve => setTimeout(resolve, 15)); await f.flush();
+  assert.equal(scroll.scrolls.length, completed, 'returning to Shows does not force a second deep-link scroll');
+  f.unmount();
+});
+
+test('choosing Posts cancels a pending concert-history focus and late hidden layout cannot revive it', async () => {
+  const f = fixture(); f.state.initialSection = 'concert-history'; f.render(); await f.flush(); await f.resolve(0, [photo]);
+  const sectionLayout = f.byId('profile-section-shows').props.onLayout;
+  const concertLayout = f.byId('profile-concert-anchor').props.onLayout;
+  f.act(() => { sectionLayout({ nativeEvent: { layout: { y: 600 } } }); concertLayout({ nativeEvent: { layout: { y: 120 } } }); });
+  f.press('profile-tab-posts');
+  f.act(() => { sectionLayout({ nativeEvent: { layout: { y: 0 } } }); concertLayout({ nativeEvent: { layout: { y: 0 } } }); });
+  await new Promise(resolve => setTimeout(resolve, 15)); await f.flush();
+  assert.equal(f.all().find(n => n.type === 'ScrollView').scrolls.length, 0);
+  f.unmount();
+});
+
+
+test('a later explicit concert-history entry on the same profile can focus again', async () => {
+  const f = fixture(); f.state.initialSection = 'concert-history'; f.render(); await f.flush(); await f.resolve(0, [photo]);
+  const measure = () => f.act(() => {
+    f.byId('profile-section-shows').props.onLayout({ nativeEvent: { layout: { y: 600 } } });
+    f.byId('profile-concert-anchor').props.onLayout({ nativeEvent: { layout: { y: 120 } } });
+  });
+  measure(); await new Promise(resolve => setTimeout(resolve, 15)); await f.flush();
+  const scroll = f.all().find(n => n.type === 'ScrollView'); assert.equal(scroll.scrolls.length, 1);
+  f.state.initialSection = null; f.render();
+  f.state.initialSection = 'concert-history'; f.render(); measure();
+  await new Promise(resolve => setTimeout(resolve, 15)); await f.flush();
+  assert.equal(scroll.scrolls.length, 2); f.unmount();
+});
+
+
+test('owner shortcut handlers belong to one layout presentation across Suspense and account roundtrips', () => {
+  const renderer = createRenderer(), called = [];
+  const native = { View: 'View', Text: 'Text', Pressable: 'Pressable', StyleSheet: { create: x => x } };
+  const { ProfileOwnerActions } = execute('../features/profilePresentation/ProfileHierarchy.ios.jsx', name => {
+    if (name === 'react' || name === 'react/jsx-runtime') return require(name);
+    if (name === 'react-native') return native;
+    if (name.endsWith('/useNativeTabPreview')) return { __esModule: true, default: () => false };
+    if (name.endsWith('/theme')) return { colors: {} };
+    if (name.endsWith('/Icon')) return 'Icon';
+    throw new Error(name);
+  });
+  let suspend = false, scope = 'account-a:1';
+  const pending = new Promise(() => {});
+  function Owner() {
+    if (suspend) throw pending;
+    return React.createElement(ProfileOwnerActions, { scope, actions: [{ key: 'inbox', icon: 'mail', label: 'Inbox', onPress: () => called.push(scope) }] });
+  }
+  const render = () => renderer.render(React.createElement(React.Suspense, { fallback: React.createElement('Loading') }, React.createElement(Owner)));
+  const action = () => nodes(renderer.container).find(n => n.props?.testID === 'profile-owner-inbox').props.onPress;
+  render(); const first = action(); first(); assert.equal(called.length, 1);
+  suspend = true; render(); first(); assert.equal(called.length, 1, 'layout-hidden owner immediately retires its handler');
+  suspend = false; render(); first(); assert.equal(called.length, 1, 'same-scope reconnect does not revive a captured handler');
+  const reconnected = action(); reconnected(); assert.equal(called.length, 2);
+  scope = 'account-b:1'; render(); scope = 'account-a:1'; render();
+  reconnected(); assert.equal(called.length, 2, 'same scope after an account roundtrip is a fresh presentation');
+  const final = action(); renderer.render(null); final(); assert.equal(called.length, 2);
+});
+
+
+test('captured owner shortcuts stay inert during preview and never borrow a later promotion', async () => {
+  const f = fixture(), actions = [];
+  f.state.preview = true;
+  f.state.ownerTools = [{ key: 'inbox', label: 'Inbox', icon: 'mail', onPress: () => actions.push('inbox') }];
+  f.render(); await f.flush(); const previewHandler = f.byId('profile-owner-inbox').props.onPress;
+  f.act(previewHandler); assert.deepEqual(actions, []);
+  f.state.preview = false; f.render(); await f.flush();
+  f.act(previewHandler); assert.deepEqual(actions, [], 'preview callback never gains committed ownership');
+  const committed = f.byId('profile-owner-inbox').props.onPress;
+  f.act(committed); assert.deepEqual(actions, ['inbox']);
+  f.state.preview = true; f.render(); f.act(committed); assert.deepEqual(actions, ['inbox']);
+  f.state.preview = false; f.render(); f.act(committed); assert.deepEqual(actions, ['inbox'], 'old foreground handler cannot borrow the fresh promotion');
+  f.press('profile-owner-inbox'); assert.deepEqual(actions, ['inbox', 'inbox']);
+  f.unmount();
+});
+
+
+test('integrated native identity leaves the transparent banner overlap tappable', async () => {
+  const f = fixture(); f.render(); await f.flush();
+  const identity = f.byId('profile-identity-tile');
+  assert.equal(identity.props.pointerEvents, 'box-none');
+  const row = identity.children.find(n => n.type === 'View' && flatten(n.props.style).justifyContent === 'space-between');
+  assert.equal(row.props.pointerEvents, 'box-none');
+  const outer = f.all().find(n => n.children?.includes(identity));
+  assert.equal(outer.props.pointerEvents, 'box-none');
+  assert.equal(flatten(outer.props.style).marginTop, -32);
+  f.press('profile-banner-open'); assert.equal(f.opened[0][0][0].uri, f.state.user.banner);
+  f.unmount();
 });

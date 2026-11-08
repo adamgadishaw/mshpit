@@ -10,6 +10,7 @@ import { useStore } from "../store";
 import { formatDate } from "../domain/dates.mjs";
 import { concertMemoryShareText, selectConcertMemories, selectedConcertMemoryForAccount } from "../domain/concertMemories.mjs";
 import { concertMemoryGallery } from "../domain/concertMemoryGallery.mjs";
+import useNativeTabContentReady from "../hooks/useNativeTabContentReady";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import { useArtistEventReviews } from "../features/artistEvents/useArtistEventArchive";
 
@@ -19,6 +20,11 @@ import { useArtistEventReviews } from "../features/artistEvents/useArtistEventAr
 const IS_IOS = Platform.OS === "ios";
 const MemoryCollection = IS_IOS ? ScrollView : View;
 const ProfileScreen = lazyWithRetry(() => import("./ProfileScreen"), "ProfileScreen");
+
+function LoggedOutYouReadiness() {
+  useNativeTabContentReady(true);
+  return null;
+}
 
 // The You tab is your own profile: the same page other members see, with your
 // inbox, activity, calendar and settings in its header, and a private block of
@@ -80,6 +86,7 @@ export default function YouScreen({ onLogin, onManageProfile, onSettings, onOpen
   if (!session) {
     return (
       <ScrollView contentContainerStyle={styles.content}>
+        <LoggedOutYouReadiness />
         <View style={styles.loggedOut}>
           <View style={styles.loggedOutAvatar}>
             <Icon name="you" size={28} color={colors.textDim} />

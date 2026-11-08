@@ -124,7 +124,8 @@ test("iOS typography can grow and primary controls meet the 44-point target", ()
 });
 
 test("private memories and all existing profile data remain behind the original guards", () => {
-  assert.match(profile, /\{isSelf \? children : null\}/);
+  assert.match(profile, /\{!IS_IOS && isSelf \? children : null\}/);
+  assert.match(profile, /\{IS_IOS && isSelf \? children : null\}/);
   assert.match(profile, /profileMediaItems\(logs, \{ isSelf \}\)/);
   assert.match(profile, /const going = user && isSelf \? goingFor\(user\.id\) : EMPTY_LIST/);
   assert.match(profile, /text=\{user\.bio\}/);
@@ -151,6 +152,7 @@ function iosYouFixture() {
     "../components/SmartImage": "SmartImage",
     "../components/ConcertMemoryModal": "ConcertMemoryModal",
     "../lib/lazyWithRetry": { lazyWithRetry: () => "ProfileScreen" },
+    "../hooks/useNativeTabContentReady": { __esModule: true, default: () => {} },
     "../store": { useStore: () => ({ session, logsByUser: rows, unreadNotifications: () => 2, inboxUnread: () => 1 }) },
     "../domain/dates.mjs": dates,
     "../domain/concertMemories.mjs": concertMemories,

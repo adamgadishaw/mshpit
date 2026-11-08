@@ -73,6 +73,9 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = empty,
     if (name === 'react/jsx-runtime') return require(name);
     if (name === 'react-native-svg') return { __esModule: true, default: 'Svg', G: 'G', Line: 'Line', Path: 'Path' };
     if (name === 'react-native') return native;
+    if (name.endsWith('/useNativeTabPreview')) return { __esModule: true, default: () => false };
+    if (name === '../hooks/useNativeTabContentReady') return { __esModule: true, default: () => {} };
+    if (name === '../features/profilePresentation/ProfileHierarchy') return execute(`../features/profilePresentation/ProfileHierarchy${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
     if (name.endsWith('/ProfileMediaPresentation')) return { useProfileMediaPresentation: () => ({ retryImages: noop }), ProfileMediaRetryBoundary: ({ children }) => children, ProfileBannerCover: 'ProfileBannerCover', ProfileGallery: 'ProfileGallery' };
     if (name === './profileHistoryClient.mjs') return { profileHistoryStore: store };
     if (name === '../features/profileHistory/useProfileHistory') return hook;
