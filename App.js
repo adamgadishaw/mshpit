@@ -393,7 +393,6 @@ function Root() {
   const artistReturn = Platform.OS === "ios" ? artistReturnRef.current.lease(nav, nav.artistPreview || nav.artistName) : null;
   const [iosMenuOpen, setIOSMenuOpenState] = useState(false);
   const iosTabSwipeRevisionRef = useRef(0);
-  const iosLastPageRef = useRef(null);
   const [iosTabSwipeRevision, setIOSTabSwipeRevision] = useState(0);
   const setIosMenuOpen = visible => {
     if (visible) setIOSTabSwipeRevision(++iosTabSwipeRevisionRef.current);
@@ -1788,12 +1787,12 @@ function Root() {
   } : null, [feedSurfaceVisible, linkedNavigationScope, stack, tab, landing]);
   const retainNativeFeed = retainNativeFeedForMedia({ platform: Platform.OS, wide, accountId: session?.id, tab: activeTab, frames: stack, hasOverlay: !!overlay });
 
-  const tabScreens = (
+  const renderTabScreen = (pageTab = activeTab, preview = false, pager = false) => (
             <View style={styles.screen}>
-              {activeTab === "feed" && !!session && (
+              {pageTab === "feed" && !!session && (
                 <FeedScreen
-                  visible={feedSurfaceVisible}
-                  key={feedReturn?.key}
+                  visible={!preview && feedSurfaceVisible}
+                  key={pager ? undefined : feedReturn?.key}
                   feedReturn={feedReturn}
                   feedPresentation={feedPresentation}
                   onRequireAuth={openSignIn}
@@ -1867,9 +1866,9 @@ function Root() {
                   onRemoveMyPostTag={removePostTag}
                 />
               )}
-              {activeTab === "search" && <SearchScreen key={searchReturn?.key} browseReturn={searchReturn} onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {activeTab === "discover" && <DiscoverScreen key={discoverReturn?.key || session?.id || "guest"} browseReturn={discoverReturn} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
-              {activeTab === "you" && !!session && (
+              {pageTab === "search" && <SearchScreen key={pager ? undefined : searchReturn?.key} browseReturn={searchReturn} onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
+              {pageTab === "discover" && <DiscoverScreen key={pager ? undefined : discoverReturn?.key || session?.id || "guest"} browseReturn={discoverReturn} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
+              {pageTab === "you" && !!session && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}
                   onManageProfile={openProfileManagement}
@@ -1891,12 +1890,11 @@ function Root() {
             </View>
   );
 
-  const iosPageOrder = ["feed", "search", "discover", "you"];
-  const iosPageEntryDirection = iosLastPageRef.current && iosLastPageRef.current !== activeTab
-    ? Math.sign(iosPageOrder.indexOf(activeTab) - iosPageOrder.indexOf(iosLastPageRef.current)) : 0;
-  useLayoutEffect(() => { iosLastPageRef.current = activeTab; }, [activeTab]);
-  const nativeTabPage = Platform.OS === "ios" ? <NativeTabRail page entryDirection={iosPageEntryDirection} active={activeTab} onChange={switchTab}
-    swipeScope={iosTabSwipeScope} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={isCurrentIOSTabSwipe}>{tabScreens}</NativeTabRail> : tabScreens;
+  const tabScreens = renderTabScreen();
+  const nativeTabPage = Platform.OS === "ios" ? <NativeTabRail page key={`${session?.id || "guest"}:${chatAuthEpoch}`}
+    active={activeTab} onChange={switchTab} member={!!session}
+    loading={<ScreenLoading />} renderPage={(pageTab, preview) => renderTabScreen(pageTab, preview, true)}
+    swipeScope={iosTabSwipeScope} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={isCurrentIOSTabSwipe} /> : tabScreens;
 
   const mobileTabBar = Platform.OS === "ios" ? <IosTabBar active={activeTab} onChange={switchTab} swipeScope={iosTabSwipeScope} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={isCurrentIOSTabSwipe} /> : (
                       <NativeTabRail key={activeTab} active={activeTab} onChange={switchTab}>
@@ -2091,7 +2089,7 @@ function Root() {
               </View>
             )}
             <View style={styles.appContent}>
-              {Platform.OS !== "web" && !overlay && !retainNativeFeed && <NativeAppHeader active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
+              {Platform.OS !== "web" && !overlay && !retainNativeFeed && Platform.OS !== "ios" && <NativeAppHeader active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
               {web ? responsiveWeb : (
                 <>
                   {showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
@@ -2103,11 +2101,11 @@ function Root() {
                     onOpenArtist={openArtist}
                     onOpenEvent={openShow}
                   />
-                  {retainNativeFeed ? <NativeFeedMediaLayer key={session.id} obscured={!!overlay}
-                    header={<NativeAppHeader active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn onAccount={() => openProfileManagement()} />}
+                  {(retainNativeFeed || (Platform.OS === "ios" && !overlay)) ? <NativeFeedMediaLayer key={Platform.OS === "ios" ? `${session?.id || "guest"}:${chatAuthEpoch}` : session.id} obscured={!!overlay}
+                    header={<NativeAppHeader active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
                     tabBar={mobileTabBar}
                     media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back} presentationKey={Platform.OS === "ios" ? nav : undefined} presentationScope={linkedNavigationScope} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense>}>
-                    <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey="main:feed">{nativeTabPage}</ScreenTransition></Suspense>
+                    <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey={screenKey}>{nativeTabPage}</ScreenTransition></Suspense>
                   </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back} presentationKey={Platform.OS === "ios" ? nav : undefined} presentationScope={linkedNavigationScope} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense> : (
                     <>
                       <Suspense fallback={<ScreenLoading />}><ScreenTransition key={Platform.OS === "ios" ? "main-tabs" : screenKey} performanceKey={screenKey} direction={screenDirection}>{nativeTabPage}</ScreenTransition></Suspense>

@@ -1,3 +1,4 @@
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
 import { useMemo } from "react";
 import { View, StyleSheet, Pressable, Text } from "react-native";
 import { Image as ExpoImage } from "expo-image";
@@ -18,6 +19,7 @@ import { useFeedImageRetryPulse } from "../hooks/feedImageRetry";
 // tile instead of a broken image in every grid/wall/strip; tapping still opens
 // the viewer, which actually plays them.
 export default function SmartImage({ uri, posterUri = null, mediaKind = null, viewable = null, style, contain = true, onPress, previewWidth = 0, cachePolicy = "memory-disk", priority = "normal", loading = null, accessibilityLabel = "Open image", accessible = true }) {
+  const tabPreview = useNativeTabPreview();
   const original = displaySrc(uri);
   const preview = previewWidth > 0 ? previewSrc(uri, previewWidth) : original;
   const fallback = preview === original && isHttp(uri) ? proxied(uri) : original;
@@ -56,7 +58,7 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
         cachePolicy={cachePolicy}
         priority={policy.priority}
         loading={policy.loading}
-        autoplay={policy.autoplay}
+        autoplay={!tabPreview && policy.autoplay}
         allowDownscaling
         enforceEarlyResizing
         recyclingKey={`smart-image:${src}`}

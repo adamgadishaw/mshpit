@@ -4,6 +4,7 @@ import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, { ReduceMotion, useAnimatedReaction, useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 import { scheduleOnRN } from "react-native-worklets";
 import { NativeTabSwipeContext } from "./nativeTabSwipeContext.mjs";
+import { pageSettleDuration } from "../domain/iosPageGeometry.mjs";
 import { releasedPageSwipe } from "../domain/iosPageSwipe.mjs";
 import { colors } from "../theme";
 import useReducedMotion from "../hooks/useReducedMotion";
@@ -12,13 +13,20 @@ import { releasedSwipe, swipeAxis, swipeThreshold } from "../domain/nativeGestur
 
 // Rails own only their visible controls. Page mode owns main-tab content,
 // with passive native exclusions for child gestures and reserved Back edges.
-export default function NativeSwipeRail({ children, onCommit, positive = "Like", negative = "Repost", hint, enabled = true, testID, surfaceColor = colors.surface, page = false, pageKey, entryDirection = 0, canPrevious = true, canNext = true }) {
+export default function NativeSwipeRail({ children, onCommit, positive = "Like", negative = "Repost", hint, enabled = true, testID, surfaceColor = colors.surface, page = false, pageKey, entryDirection = 0, canPrevious = true, canNext = true, previewPrevious = true, previewNext = true, renderPages, onPageIntent, onPageCancel, pageReady = null }) {
   const { width: screenWidth } = useWindowDimensions();
   const reduced = useReducedMotion(), screenReader = useScreenReaderEnabled();
+  const interactive = page && !!renderPages;
+  const pageCallbacks = useRef(null);
+  pageCallbacks.current = { onPageIntent, onPageCancel };
   const [armed, setArmed] = useState(null);
   const startX = useSharedValue(0), startY = useSharedValue(0), width = useSharedValue(screenWidth - 32), x = useSharedValue(0);
   const epoch = useSharedValue(0), touching = useSharedValue(false);
   const excluded = useSharedValue(false), settling = useSharedValue(false);
+  const gestureId = useSharedValue(0), waitingRelease = useSharedValue(null);
+  const readinessTimer = useRef(null);
+  const readyDirection = useSharedValue(null), requestedDirection = useSharedValue(null), dragX = useSharedValue(0);
+  useLayoutEffect(() => { readyDirection.set(pageReady); }, [pageReady, readyDirection]);
   const lastPage = useRef(pageKey), hasPresentedPage = useRef(false);
   const appActive = useRef(AppState?.currentState !== "background" && AppState?.currentState !== "inactive");
   const live = useRef(null), sequence = useRef(0);
@@ -33,12 +41,13 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
     epoch.set(next.epoch); touching.set(false); excluded.set(false); settling.set(false); setArmed(null);
     const oldIndex = ["feed", "search", "discover", "you"].indexOf(lastPage.current);
     const newIndex = ["feed", "search", "discover", "you"].indexOf(pageKey);
-    if (page && next.allowed && !reduced && ((oldIndex >= 0 && newIndex >= 0 && oldIndex !== newIndex) || (!hasPresentedPage.current && entryDirection))) {
+    if (page && !interactive && next.allowed && !reduced && ((oldIndex >= 0 && newIndex >= 0 && oldIndex !== newIndex) || (!hasPresentedPage.current && entryDirection))) {
       x.set((entryDirection || (newIndex > oldIndex ? 1 : -1)) * screenWidth * 0.26);
       x.set(withSpring(0, { damping: 26, stiffness: 230, mass: 0.8, overshootClamping: true, reduceMotion: ReduceMotion.System }));
     } else x.set(0);
     lastPage.current = pageKey;
     hasPresentedPage.current = true;
+    requestedDirection.set(null); dragX.set(0); waitingRelease.set(null);
     setOwner(next);
     // Native permission events can round trip inside one React batch. Retire
     // immediately and publish a new interval even if the final boolean matches.
@@ -46,6 +55,7 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
       if (live.current !== next || getConfirmedScreenReaderEnabled() !== true) return;
       live.current = null;
       epoch.set(0); touching.set(false); x.set(0);
+      pageCallbacks.current.onPageCancel?.();
       setPermissionRevision(revision => revision + 1);
     });
     let subscribed = true;
@@ -53,28 +63,64 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
       if (!subscribed) return;
       appActive.current = state === "active";
       if (live.current === next) { live.current = null; epoch.set(0); touching.set(false); x.set(0); }
+      pageCallbacks.current.onPageCancel?.();
       setPermissionRevision(revision => revision + 1);
     }) : null;
     return () => {
       subscribed = false;
+      clearTimeout(readinessTimer.current); waitingRelease.set(null);
+      if (interactive) pageCallbacks.current.onPageCancel?.();
       appSubscription?.remove();
       unsubscribe();
       if (live.current !== next) return;
       live.current = null;
       epoch.set(0); touching.set(false); x.set(0);
     };
-  }, [enabled, screenReader, permissionRevision, onCommit, screenWidth, epoch, touching, x, page, pageKey, reduced, excluded, settling]);
+  }, [enabled, screenReader, permissionRevision, onCommit, screenWidth, epoch, touching, x, page, pageKey, reduced, excluded, settling, interactive]);
   const generation = owner?.allowed ? owner.epoch : 0;
   const rearm = useMemo(() => () => { if (live.current === owner) setPermissionRevision(revision => revision + 1); }, [owner]);
   const commit = useMemo(() => direction => {
     if (owner?.allowed && live.current === owner && (!page || !owner.dispatched)) {
+      clearTimeout(readinessTimer.current);
       if (page) owner.dispatched = true;
       owner.onCommit?.(direction);
       // A guarded route callback can decline navigation. Never strand its page
       // offscreen while waiting for a subsequent state update.
-      if (page && live.current === owner) { settling.set(true); x.set(withSpring(0, { duration: 300, dampingRatio: 1, reduceMotion: ReduceMotion.System }, finished => { if (finished) scheduleOnRN(rearm); })); }
+      const recover = () => { if (page && live.current === owner) { settling.set(true); x.set(withSpring(0, { duration: 300, dampingRatio: 1, reduceMotion: ReduceMotion.System }, finished => { if (finished) scheduleOnRN(rearm); })); } };
+      if (interactive) readinessTimer.current = setTimeout(recover, 0); else recover();
     }
-  }, [owner, page, settling, x, rearm]);
+  }, [owner, page, settling, x, rearm, interactive]);
+  const preparePage = useMemo(() => (direction, gesture) => {
+    if (owner?.allowed && live.current === owner && gestureId.get() === gesture
+        && (touching.get() || settling.get())) pageCallbacks.current.onPageIntent?.(direction, gesture);
+  }, [owner, gestureId, touching, settling]);
+  const cancelPage = useMemo(() => gesture => {
+    if (live.current === owner && (gesture == null || gestureId.get() === gesture)) pageCallbacks.current.onPageCancel?.();
+  }, [owner, gestureId]);
+  const awaitPage = useMemo(() => gesture => {
+    clearTimeout(readinessTimer.current);
+    readinessTimer.current = setTimeout(() => {
+      if (live.current !== owner || gestureId.get() !== gesture || waitingRelease.get()?.gesture !== gesture) return;
+      const ready = readyDirection.get();
+      if (ready?.gesture === gesture) { waitingRelease.set({ ...waitingRelease.get(), allowLoading: true }); return; }
+      waitingRelease.set(null); settling.set(false); x.set(0); cancelPage(gesture);
+    }, 2500);
+  }, [owner, gestureId, waitingRelease, settling, x, cancelPage, readyDirection]);
+  // Destination readiness includes its real native layout. Until then the
+  // source covers the viewport. A quick accepted flick waits here rather than
+  // dropping navigation or exposing a blank/lazy fallback.
+  useAnimatedReaction(() => ({ ready: readyDirection.get(), released: waitingRelease.get() }), state => {
+    const next = state.ready;
+    if (!generation || epoch.get() !== generation || !interactive || !next || next.gesture !== gestureId.get() || requestedDirection.get() !== next.direction) return;
+    if (touching.get()) x.set(dragX.get());
+    const released = state.released;
+    if (!released || (!next.contentReady && !released.allowLoading) || released.gesture !== next.gesture || released.direction !== next.direction) return;
+    waitingRelease.set(null);
+    const target = next.direction === "negative" ? -width.get() : width.get();
+    x.set(withTiming(target, { duration: pageSettleDuration(x.get(), width.get(), next.direction, released.velocity), reduceMotion: ReduceMotion.System }, finished => {
+      if (finished && epoch.get() === generation && gestureId.get() === next.gesture) scheduleOnRN(commit, next.direction);
+    }));
+  });
   const showArmed = useMemo(() => value => {
     if (owner?.allowed && live.current === owner) setArmed(value);
   }, [owner]);
@@ -84,6 +130,7 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
       touching.set(false);
       const touch = event.allTouches[0];
       if (!touch || event.numberOfTouches !== 1 || touch.absoluteX < 24 || touch.absoluteX > screenWidth - 24) { manager.fail(); return; }
+      requestedDirection.set(null); dragX.set(0); waitingRelease.set(null); gestureId.set(gestureId.get() + 1);
       startX.set(touch.absoluteX); startY.set(touch.absoluteY); touching.set(true);
     })
     .onTouchesMove((event, manager) => {
@@ -93,27 +140,54 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
       if (!touch || event.numberOfTouches !== 1) { touching.set(false); manager.fail(); return; }
       const axis = swipeAxis(touch.absoluteX - startX.get(), touch.absoluteY - startY.get());
       if (axis === "vertical") { touching.set(false); manager.fail(); }
-      else if (axis === "horizontal") manager.activate();
+      else if (axis === "horizontal") {
+        manager.activate();
+        if (interactive && !reduced) {
+          const direction = touch.absoluteX < startX.get() ? "negative" : "positive";
+          if (requestedDirection.get() !== direction) { requestedDirection.set(direction); scheduleOnRN(preparePage, direction, gestureId.get()); }
+        }
+      }
     })
     .onUpdate(event => { if (!generation || epoch.get() !== generation || !touching.get() || (page && excluded.get())) return; const dx = event.absoluteX - startX.get();
       const boundary = page && ((dx > 0 && !canPrevious) || (dx < 0 && !canNext));
-      x.set(Math.max(page ? -screenWidth : -128, Math.min(page ? screenWidth : 128, boundary ? dx * 0.12 : dx))); })
+      const limit = page ? width.get() : 128;
+      const movement = Math.max(-limit, Math.min(limit, boundary ? dx * 0.12 : dx));
+      dragX.set(movement);
+      if (interactive && !reduced) {
+        const direction = dx < 0 ? "negative" : "positive";
+        if (!boundary && requestedDirection.get() !== direction) { requestedDirection.set(direction); scheduleOnRN(preparePage, direction, gestureId.get()); }
+        const ready = readyDirection.get();
+        x.set(!boundary && ready?.direction === direction && ready?.gesture === gestureId.get() ? movement : 0);
+      } else x.set(interactive && reduced ? 0 : movement); })
     .onEnd((event, success) => {
       if (!generation || epoch.get() !== generation || !touching.get() || (page && excluded.get())) return;
       touching.set(false);
-      const direction = (page ? releasedPageSwipe : releasedSwipe)({ dx: event.absoluteX - startX.get(), dy: event.absoluteY - startY.get(), width: width.get(), startX: startX.get(), screenWidth, canceled: !success, velocityX: event.velocityX, canPrevious, canNext });
+      let direction = (page ? releasedPageSwipe : releasedSwipe)({ dx: event.absoluteX - startX.get(), dy: event.absoluteY - startY.get(), width: width.get(), startX: startX.get(), screenWidth, canceled: !success, velocityX: event.velocityX, canPrevious, canNext });
+      if (interactive && direction && !(direction === "positive" ? previewPrevious : previewNext)) {
+        settling.set(true); scheduleOnRN(commit, direction); return;
+      }
+      if (interactive && !reduced && direction && (direction !== readyDirection.get()?.direction || readyDirection.get()?.gesture !== gestureId.get() || !readyDirection.get()?.contentReady)) {
+        settling.set(true);
+        waitingRelease.set({ direction, gesture: gestureId.get(), velocity: event.velocityX || 0 });
+        if (requestedDirection.get() !== direction) { requestedDirection.set(direction); scheduleOnRN(preparePage, direction, gestureId.get()); }
+        scheduleOnRN(awaitPage, gestureId.get());
+        return;
+      }
       if (direction && page && !reduced) {
         settling.set(true);
-        const target = direction === "negative" ? -screenWidth : screenWidth;
-        const speed = Math.max(850, Math.abs(event.velocityX || 0));
-        const duration = Math.max(110, Math.min(240, Math.abs(target - x.get()) / speed * 1000));
+        const target = direction === "negative" ? -width.get() : width.get();
+        const duration = pageSettleDuration(x.get(), width.get(), direction, event.velocityX || 0);
         x.set(withTiming(target, { duration, reduceMotion: ReduceMotion.System }, finished => {
           if (finished && epoch.get() === generation) scheduleOnRN(commit, direction);
         }));
       } else if (direction) scheduleOnRN(commit, direction);
     })
-    .onFinalize(() => { if (!generation || epoch.get() !== generation) return; touching.set(false); excluded.set(false); if (settling.get()) return; x.set(withSpring(0, { duration: 400, dampingRatio: 1, overshootClamping: true, reduceMotion: ReduceMotion.System })); }),
-  [enabled, screenReader, screenWidth, startX, startY, width, x, epoch, touching, generation, owner, commit, page, canPrevious, canNext, reduced, excluded, settling]);
+    .onFinalize(() => { if (!generation || epoch.get() !== generation) return; touching.set(false); excluded.set(false); if (settling.get()) return;
+      const releasedGesture = gestureId.get();
+      x.set(withSpring(0, { duration: interactive ? 320 : 400, dampingRatio: 1, overshootClamping: true, reduceMotion: ReduceMotion.System }, finished => {
+        if (finished && interactive && epoch.get() === generation) scheduleOnRN(cancelPage, releasedGesture);
+      })); }),
+  [enabled, screenReader, screenWidth, startX, startY, width, x, epoch, touching, generation, owner, commit, page, canPrevious, canNext, reduced, excluded, settling, interactive, requestedDirection, readyDirection, dragX, preparePage, cancelPage, gestureId, waitingRelease, awaitPage, previewPrevious, previewNext]);
   useAnimatedReaction(
     () => Math.abs(x.get()) >= swipeThreshold(width.get()) ? (x.get() > 0 ? "positive" : "negative") : null,
     (next, previous) => { if (hint && next !== previous) scheduleOnRN(showArmed, next); },
@@ -126,6 +200,10 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
   const positiveStyle = useAnimatedStyle(() => ({ opacity: x.get() >= swipeThreshold(width.get()) ? 1 : 0 }));
   const negativeStyle = useAnimatedStyle(() => ({ opacity: x.get() <= -swipeThreshold(width.get()) ? 1 : 0 }));
   const pageScope = useMemo(() => ({ gesture: pan, excluded, touching, epoch, generation }), [pan, excluded, touching, epoch, generation]);
+  if (interactive) return <NativeTabSwipeContext.Provider value={pageScope}>
+    <GestureDetector gesture={pan}><View collapsable={false} testID={testID} style={styles.pageTrack}
+      onLayout={event => width.set(event.nativeEvent.layout.width)}>{renderPages(x, width)}</View></GestureDetector>
+  </NativeTabSwipeContext.Provider>;
   if (page) return <NativeTabSwipeContext.Provider value={pageScope}>
     <View testID={testID} style={styles.pageTrack} onLayout={event => width.set(event.nativeEvent.layout.width)}>
       <View pointerEvents="none" style={styles.pageDestination} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">

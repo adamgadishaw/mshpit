@@ -1,3 +1,4 @@
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
 import { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
 import SupportingActsLine from "./SupportingActsLine";
 import showIOSPostActions from "./showIOSPostActions";
@@ -223,6 +224,7 @@ function PostOverflow({ expanded, onToggle, onClose, onEdit, onDelete, onReport,
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
 export default function TicketStub({ log, mediaViewable = null, contextPresentation = null, compactContent = false, swipeActions = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+  const tabPreview = useNativeTabPreview();
   const onOpenCity = useContext(CityNavigationContext);
   const cityIdentity = cityIdentityForLocation(log);
   const cityHref = cityIdentity ? cityPath(cityIdentity) : null;
@@ -446,7 +448,7 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
             source={{ uri: campaignArtUri }}
             style={StyleSheet.absoluteFill}
             contentFit="cover"
-            autoplay={!reduceMotion}
+            autoplay={!tabPreview && !reduceMotion}
             transition={reduceMotion ? 0 : 180}
             accessible={false}
             accessibilityElementsHidden
