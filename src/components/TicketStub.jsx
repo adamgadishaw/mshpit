@@ -1,6 +1,6 @@
-import { useContext, useMemo, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import SupportingActsLine from "./SupportingActsLine";
-import { View, Text, StyleSheet, Pressable, Alert, Linking, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, Alert, ActionSheetIOS, Linking, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, font, glow, mono, radius, shadow, roleColor, space } from "../theme";
 import Stars from "./Stars";
@@ -221,7 +221,7 @@ function PostOverflow({ expanded, onToggle, onClose, onEdit, onDelete, onReport,
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
-export default function TicketStub({ log, mediaViewable = null, compactContent = false, swipeActions = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+export default function TicketStub({ log, mediaViewable = null, contextPresentation = null, compactContent = false, swipeActions = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const onOpenCity = useContext(CityNavigationContext);
   const cityIdentity = cityIdentityForLocation(log);
   const cityHref = cityIdentity ? cityPath(cityIdentity) : null;
@@ -295,8 +295,10 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
   // route rather than this button, so there is no staff bypass here.
   const canDelete = !!session && session.id === log.userId;
   const canReport = !!onReport && (!session || session.id !== log.userId);
-  const confirmDelete = () => {
-    const run = () => { (onDelete || deleteOwnPost)?.(log.id); };
+  const confirmDelete = (currentGuard) => {
+    // Existing button handlers pass a press event; only sheet callers supply a fence.
+    const isCurrent = typeof currentGuard === "function" ? currentGuard : () => true;
+    const run = () => { if (isCurrent()) (onDelete || deleteOwnPost)?.(log.id); };
     if (Platform.OS === "web") {
       if (typeof window === "undefined" || window.confirm("Delete this post? This can't be undone.")) run();
       return;
@@ -306,6 +308,56 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
       { text: "Delete", style: "destructive", onPress: run },
     ]);
   };
+  const contextActions = [
+    { label: "Not for me", run: onNotInterested ? () => onNotInterested(log) : null },
+    { label: "Edit post", run: canEdit ? () => onEdit(log) : null },
+    { label: "Delete post", run: canDelete ? confirmDelete : null },
+    { label: "Report post", run: canReport ? () => onReport(log) : null },
+  ].filter(action => action.run);
+  // Native sheets can outlive a recycled row or an account/ownership change.
+  const contextScope = JSON.stringify([menuScope, log.userId, contextActions.map(action => action.label)]);
+  const contextOwner = useRef({ scope: contextScope, generation: 0, actions: contextActions });
+  if (contextOwner.current.scope !== contextScope) contextOwner.current.generation++;
+  contextOwner.current.scope = contextScope;
+  contextOwner.current.actions = contextActions;
+  const mounted = useRef(true);
+  const sheetOpen = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; contextOwner.current.generation++; };
+  }, []);
+  const openContextActions = () => {
+    if (!mounted.current || sheetOpen.current || !contextActions.length || contextPresentation?.current() === false) return;
+    const generation = contextOwner.current.generation;
+    const isCurrent = () => mounted.current && contextOwner.current.generation === generation
+      && contextPresentation?.current() !== false;
+    const labels = contextActions.map(action => action.label);
+    sheetOpen.current = true;
+    setOpenMenu(null);
+    ActionSheetIOS.showActionSheetWithOptions({
+      title: "Post actions", options: [...labels, "Cancel"],
+      cancelButtonIndex: labels.length,
+      destructiveButtonIndex: labels.includes("Delete post") ? labels.indexOf("Delete post") : undefined,
+    }, index => {
+      sheetOpen.current = false;
+      if (!isCurrent()) return;
+      const selected = contextOwner.current.actions[index];
+      if (selected && selected.label === labels[index]) {
+        if (selected.label === "Delete post") confirmDelete(isCurrent);
+        else selected.run();
+      }
+    });
+  };
+  // No responder capture: media, links and nested controls retain ownership.
+  // The visible More button remains the tap/VoiceOver alternative.
+  const CardSurface = Platform.OS === "ios" ? Pressable : View;
+  const contextProps = Platform.OS === "ios" ? {
+    accessible: false, delayLongPress: 500,
+    onLongPress: contextActions.length ? openContextActions : undefined,
+  } : {};
+  const bodyContextProps = Platform.OS === "ios" ? {
+    onLongPress: contextProps.onLongPress, delayLongPress: contextProps.delayLongPress,
+  } : {};
   const overflow = (palette = null) => Platform.OS === "ios" ? <PostOverflow
     expanded={menuOpen} onToggle={() => setOpenMenu(menuOpen ? null : menuScope)} onClose={() => setOpenMenu(null)}
     onEdit={canEdit ? () => onEdit(log) : null} onDelete={canDelete ? confirmDelete : null}
@@ -371,7 +423,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
     const campaignTreatment = campaignPresentation?.treatment;
     const campaignArtUri = campaignBackground?.url || campaignBackground?.uri || campaignBackground?.sourceUrl || null;
     return (
-      <View style={[styles.card, statusMedia.length > 0 && !campaignPresentation && styles.mediaStatusCard, campaignPresentation && styles.campaignCard, campaignTreatment && { backgroundColor: campaignTreatment.backgroundColor }]}>
+      <CardSurface {...contextProps} style={[styles.card, statusMedia.length > 0 && !campaignPresentation && styles.mediaStatusCard, campaignPresentation && styles.campaignCard, campaignTreatment && { backgroundColor: campaignTreatment.backgroundColor }]}>
         {statusMedia.length > 0 && !campaignPresentation ? (
           <View style={styles.mediaStatusRegister} pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
             <View style={styles.mediaStatusRegisterAmber} />
@@ -477,7 +529,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
             compact={compactContent}
             toggleTextStyle={campaignPresentation ? { color: campaignTreatment.accentColor } : null}
             renderText={({ text, accessibilityLabel }) => (
-              <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} accessibilityLabel={`${accessibilityLabel}. Open post and comments.`}>
+              <PublicPressableLink {...bodyContextProps} href={canonicalPostHref} onNavigate={openComments} accessibilityLabel={`${accessibilityLabel}. Open post and comments.`}>
                 <Text accessibilityLabel={accessibilityLabel} style={[styles.statusText, campaignPresentation && { color: campaignTreatment.textColor }]}>{text}</Text>
               </PublicPressableLink>
             )}
@@ -500,7 +552,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
             <Icon name="heart" size={18} color={campaignPresentation ? (liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor) : liked ? colors.magenta : colors.textDim} filled={liked} />
             <Text style={[styles.fCount, campaignPresentation && { color: liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor }, !campaignPresentation && liked && { color: colors.magenta }]}>{likeCount}</Text>
           </Pressable>
-          <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} hitSlop={Platform.OS === "web" ? 8 : 2} accessibilityLabel={`Comments, ${commentCount}`}>
+          <PublicPressableLink {...bodyContextProps} href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} hitSlop={Platform.OS === "web" ? 8 : 2} accessibilityLabel={`Comments, ${commentCount}`}>
             <Icon name="comment" size={17} color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textDim} />
             <Text style={[styles.fCount, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}>{commentCount}</Text>
           </PublicPressableLink>
@@ -518,12 +570,12 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         {showComments && <CommentPreview log={log} onOpen={openComments} palette={campaignTreatment} />}
         <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
         </View>
-      </View>
+      </CardSurface>
     );
   }
 
   return (
-    <View style={styles.card}>
+    <CardSurface {...contextProps} style={styles.card}>
       <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
       {/* who + score */}
       <View style={styles.header}>
@@ -671,13 +723,13 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           compact={compactContent}
           containerStyle={[styles.reviewWrap, Platform.OS !== "web" && styles.nativeReviewWrap]}
           renderText={({ text, accessibilityLabel }) => (
-            <PublicPressableLink href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`${accessibilityLabel}. Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}.`}>
+            <PublicPressableLink {...bodyContextProps} href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`${accessibilityLabel}. Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}.`}>
               <Text accessibilityLabel={accessibilityLabel} style={styles.review}>{text}</Text>
             </PublicPressableLink>
           )}
         />
       ) : (
-        <PublicPressableLink href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}`}>
+        <PublicPressableLink {...bodyContextProps} href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}`}>
           <Text style={styles.noReview}>{isOnlineReview ? "Rated this online concert - no review yet. Tap to open." : "Logged this show - no review yet. Tap to open."}</Text>
         </PublicPressableLink>
       )}
@@ -771,7 +823,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
           <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
         </Pressable>
-        <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.commentAction, pressed && styles.controlPressed]} hitSlop={Platform.OS === "web" ? 8 : 2} accessibilityLabel={`Comments, ${commentCount}`}>
+        <PublicPressableLink {...bodyContextProps} href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.commentAction, pressed && styles.controlPressed]} hitSlop={Platform.OS === "web" ? 8 : 2} accessibilityLabel={`Comments, ${commentCount}`}>
           <Icon name="comment" size={17} color={colors.textDim} />
           {Platform.OS === "web" && <Text style={styles.commentActionText}>Comments</Text>}
           <Text style={styles.fCount}>{commentCount}</Text>
@@ -800,7 +852,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
 
       {Platform.OS === "ios" && <ViewTally count={viewCount} />}
       {showComments && <CommentPreview log={log} onOpen={openComments} />}
-    </View>
+    </CardSurface>
   );
 }
 

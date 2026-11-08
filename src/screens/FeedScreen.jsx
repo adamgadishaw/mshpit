@@ -42,7 +42,7 @@ const feedKeyExtractor = (item) => item === IOS_FEED_DISCOVERY_SLOT ? "slot:ios-
 // header state. The ref-backed handlers always call the latest screen props,
 // while stable row callbacks let React skip cards whose post and visibility did
 // not change.
-const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewable, surface, actionsRef, capabilities, accountId = null }) {
+const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewable, contextPresentation, surface, actionsRef, capabilities, accountId = null }) {
   const open = useCallback((_unused) => actionsRef.current.onOpen?.(item, { surface, position: itemIndex }), [actionsRef, item, itemIndex, surface]);
   const openShow = useCallback((show) => actionsRef.current.onOpen?.(show, { surface, position: itemIndex }), [actionsRef, itemIndex, surface]);
   const comment = useCallback((...args) => actionsRef.current.onComment?.(...args), [actionsRef]);
@@ -70,6 +70,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
       swipeActions={Platform.OS !== "web"}
       compactContent
       mediaViewable={mediaViewable}
+      {...(Platform.OS === "ios" ? { contextPresentation } : {})}
       onOpen={open}
       onOpenShow={openShow}
       onOpenPost={capabilities.comment ? comment : undefined}
@@ -400,13 +401,14 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     <FeedTicketRow
       item={item}
       itemIndex={feedPostPosition(itemIndex, discovery.index)}
+      {...(Platform.OS === "ios" ? { contextPresentation: feedPresentation } : {})}
       mediaViewable={feedActive ? (visibleMediaPostIds.has(String(item.id)) ? true : null) : false}
       surface={surface}
       actionsRef={rowActionsRef}
       capabilities={rowCapabilities}
       accountId={accountId}
     />
-  )), [accountId, discovery.index, suggestions, feedActive, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
+  )), [accountId, discovery.index, suggestions, feedActive, feedPresentation, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.

@@ -14,7 +14,7 @@ const domains = Object.fromEntries([
 const colors = new Proxy({}, { get: (_, key) => `color:${String(key)}` });
 const jsx = (type, props, key) => ({ type, props, key });
 export function fixture({ platform = "ios", own = false, loggedIn = true, inputSource = source } = {}) {
-  const calls = [], state = [];
+  const calls = [], state = [], sheets = [];
   let cursor = 0;
   const store = {
     userById: () => null, userBadges: () => [], commentsFor: () => [],
@@ -25,13 +25,15 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
     deleteOwnPost: (...args) => calls.push(["deleteFallback", ...args]), refreshFeed: () => calls.push(["refresh"]),
   };
   const modules = { ...domains,
-    react: { useContext: (value) => value, useMemo: (fn) => fn(), useState: (initial) => {
+    react: { useRef: (initial) => { const i = cursor++; return state[i] ||= { current: initial }; },
+      useEffect: (effect) => { const i = cursor++; state[i] ||= { cleanup: effect() }; }, useContext: (value) => value, useMemo: (fn) => fn(), useState: (initial) => {
       const i = cursor++; if (!(i in state)) state[i] = typeof initial === "function" ? initial() : initial;
       return [state[i], (next) => { state[i] = typeof next === "function" ? next(state[i]) : next; }];
     } },
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "react-native": { View: "View", Text: "Text", Pressable: "Pressable", Platform: { OS: platform },
       StyleSheet: { create: (value) => value, hairlineWidth: 0.5, absoluteFill: {}, absoluteFillObject: {} },
+      ActionSheetIOS: { showActionSheetWithOptions: (options, choose) => sheets.push({ options, choose }) },
       Alert: { alert: (...args) => calls.push(["alert", ...args]) }, Linking: { openURL: async (url) => { calls.push(["external", url]); } } },
     "expo-image": { Image: "ExpoImage" },
     "../theme": { colors, displayFont: "display", font: "font", mono: "mono", glow: {}, radius: { md: 12, lg: 18, sm: 8, pill: 999 }, shadow: { card: {} }, roleColor: () => null, space: (value) => value * 4 },
@@ -51,7 +53,7 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
   const module = { exports: {} };
   new Function("require", "module", "exports", code)((name) => { assert.ok(name in modules, name); return modules[name]; }, module, module.exports);
   const actions = Object.fromEntries(["onOpen", "onOpenShow", "onOpenPost", "onNotInterested", "onComment", "onRequireAuth", "onOpenProfile", "onOpenArtist", "onOpenArtistArchive", "onOpenVenue", "onReport", "onEdit", "onDelete", "onOpenPhotos", "onRemoveMyPostTag"].map((name) => [name, (...args) => calls.push([name, ...args])]));
-  return { calls, actions, store, render: (overrides = {}) => { cursor = 0; return module.exports.default({ log: review, compactContent: true, swipeActions: true, ...actions, ...overrides }); } };
+  return { calls, actions, store, sheets, unmount: () => state.forEach(value => value?.cleanup?.()), render: (overrides = {}) => { cursor = 0; return module.exports.default({ log: review, compactContent: true, swipeActions: true, ...actions, ...overrides }); } };
 }
 export const review = { id: "p_review", userId: "author", user: { name: "Reviewer", handle: "reviewer" }, timeAgo: "2h", kind: "review",
   artist: "Main artist", artistPublicSlug: "main-artist", venue: "The venue", city: "Toronto", date: "2026-11-01", review: "The actual review", overall: 4.5,
@@ -314,4 +316,91 @@ test("details can close and reopen on full posts, while non-tour setlists need n
   assert.equal(type(tree, "SupportingActsLine"), undefined);
   label(tree, "Show details").props.onPress(); tree = f.render(input);
   assert.ok(type(tree, "SupportingActsLine")); assert.deepEqual(f.calls, []);
+});
+
+test("iOS hold opens a visible native sheet without mutation and keeps tap/accessibility alternatives", () => {
+  for (const log of [review, { ...review, kind: "status" }, { ...review, kind: "status", campaign: { version: 1, treatment: "after-dark" } }, { ...review, experienceType: "online" }]) {
+    const f = fixture(); const tree = f.render({ log });
+    assert.equal(tree.type, "Pressable"); assert.equal(tree.props.delayLongPress, 500);
+    assert.equal(tree.props.onPress, undefined); assert.equal(tree.props.accessible, false);
+    assert.equal(tree.props.onStartShouldSetResponderCapture, undefined);
+    tree.props.onLongPress(); tree.props.onLongPress();
+    assert.equal(f.sheets.length, 1); assert.deepEqual(f.calls, []);
+    assert.deepEqual(f.sheets[0].options.options, ["Not for me", "Report post", "Cancel"]);
+    f.sheets[0].choose(2); assert.deepEqual(f.calls, []);
+    label(f.render({ log }), "More post actions").props.onPress();
+    assert.ok(label(f.render({ log }), "Report post"));
+    tree.props.onLongPress(); f.sheets[1].choose(1);
+    assert.deepEqual(f.calls, [["onReport", log]]);
+  }
+});
+
+test("native hold sheet fences recycled rows, account changes, ownership changes and unmount", () => {
+  for (const retire of [f => f.render({ log: { ...review, id: "other" } }),
+    f => { f.store.session = null; f.render(); f.store.session = { id: "author" }; f.render(); },
+    f => f.render({ log: { ...review, userId: "other" } }), f => f.unmount()]) {
+    const f = fixture({ own: true }); f.render().props.onLongPress();
+    retire(f); f.sheets[0].choose(2); assert.deepEqual(f.calls, []);
+  }
+  const owner = fixture({ own: true }); owner.render().props.onLongPress();
+  assert.deepEqual(owner.calls, []); owner.sheets[0].choose(2);
+  assert.equal(owner.calls[0][0], "alert"); assert.equal(owner.calls.length, 1);
+  assert.ok(owner.calls[0][3].find(button => button.style === "cancel"));
+  const guest = fixture({ loggedIn: false }); guest.render().props.onLongPress();
+  assert.deepEqual(guest.sheets[0].options.options, ["Not for me", "Report post", "Cancel"]);
+  assert.deepEqual(guest.calls, []);
+  assert.equal(fixture().render({ onReport: undefined, onNotInterested: undefined }).props.onLongPress, undefined);
+});
+
+test("native sheet uses latest callback and never replaces nested media or non-iOS interactions", () => {
+  const f = fixture(); const tree = f.render(); tree.props.onLongPress();
+  let reported; f.render({ onReport: log => { reported = log; } }); f.sheets[0].choose(1);
+  assert.equal(reported, review); assert.deepEqual(f.calls, []);
+  const opener = { focus() {} }, media = type(tree, "PostMediaGrid");
+  assert.equal(media.props.onLongPress, undefined); media.props.onOpen(0, opener);
+  assert.equal(f.calls[0][0], "onOpenPhotos"); assert.equal(f.calls[0][4], opener);
+  for (const platform of ["web", "android"]) {
+    const other = fixture({ platform }).render();
+    assert.equal(other.type, "View"); assert.equal(other.props.onLongPress, undefined);
+  }
+});
+
+test("body link responders receive the hold handler while ordinary navigation and media remain separate", () => {
+  for (const log of [review, { ...review, kind: "status" }, { ...review, review: "" }, { ...review, experienceType: "online" }]) {
+    const f = fixture(); const tree = f.render({ log });
+    const expandable = type(tree, "ExpandableText");
+    const body = expandable ? expandable.props.renderText({ text: "Review", accessibilityLabel: "Review" })
+      : nodes(tree).find(node => node.type === "PublicPressableLink" && node.props.onLongPress);
+    assert.equal(body.props.onLongPress, tree.props.onLongPress);
+    assert.equal(body.props.delayLongPress, 500);
+    body.props.onLongPress(); assert.equal(f.sheets.length, 1); assert.deepEqual(f.calls, []);
+    f.sheets[0].choose(f.sheets[0].options.cancelButtonIndex);
+    body.props.onNavigate(); assert.equal(f.calls.length, 1, "ordinary taps retain their navigation owner");
+  }
+});
+
+test("retained Feed presentation rejects a sheet and a later delete confirmation after navigation", () => {
+  const f = fixture({ own: true }); let current = true;
+  const contextPresentation = { current: () => current };
+  f.render({ contextPresentation }).props.onLongPress(); current = false;
+  f.sheets[0].choose(2); assert.deepEqual(f.calls, []);
+  f.render({ contextPresentation }).props.onLongPress(); assert.equal(f.sheets.length, 1);
+  current = true; f.render({ contextPresentation }).props.onLongPress(); f.sheets[1].choose(2);
+  assert.equal(f.calls[0][0], "alert"); current = false;
+  f.calls[0][3].find(button => button.style === "destructive").onPress();
+  assert.equal(f.calls.length, 1, "navigation during delete confirmation cannot mutate the retained post");
+});
+
+test("native-sheet deletion confirmation is retired on account switch", () => {
+  const f = fixture({ own: true }); f.render().props.onLongPress(); f.sheets[0].choose(2);
+  f.store.session = { id: "other" }; f.render();
+  f.calls[0][3].find(button => button.style === "destructive").onPress();
+  assert.equal(f.calls.length, 1);
+});
+
+test("existing Android delete button still accepts its native press event", () => {
+  const f = fixture({ platform: "android", own: true });
+  label(f.render(), "Delete post").props.onPress({ nativeEvent: {} });
+  f.calls[0][3].find(button => button.style === "destructive").onPress();
+  assert.deepEqual(f.calls.at(-1), ["onDelete", review.id]);
 });

@@ -24,6 +24,8 @@ function fixture(kind = "concert", props = {}) {
   let cursor = 0, session = null;
   const componentRequire = (name) => {
     if (name === "react") return {
+      useRef: initial => { const i = cursor++; return slots[i] ||= { current: initial }; },
+      useEffect: effect => { const i = cursor++; slots[i] ||= { cleanup: effect() }; },
       useContext: () => null, useMemo: (create) => create(),
       useState(initial) {
         const index = cursor++;
@@ -173,3 +175,27 @@ for (const [path, variable, itemProp] of [
     assert.match(screen, /(?:rowActionsRef|postActionsRef)\.current = \{[\s\S]*?onRequireAuth,/);
   });
 }
+
+test("memoized iOS Feed renderItem refreshes its post presentation when navigation ownership changes", () => {
+  const screen = readFileSync(new URL("../screens/FeedScreen.jsx", import.meta.url), "utf8");
+  const fn = parse(screen, { sourceType: "module", plugins: ["jsx"] }).program.body.find(n => n.type === "ExportDefaultDeclaration").declaration;
+  const declaration = fn.body.body.find(n => n.type === "VariableDeclaration" && n.declarations[0].id.name === "renderFeedItem");
+  const code = compile(`${screen.slice(declaration.start, declaration.end)}; export default renderFeedItem;`);
+  let memo;
+  const useCallback = (callback, deps) => {
+    if (!memo || deps.some((dep, index) => dep !== memo.deps[index])) memo = { callback, deps };
+    return memo.callback;
+  };
+  const stable = { useCallback, accountId: "viewer", discovery: { index: -1 }, suggestions: null, feedActive: true, newsTab: false,
+    onOpenArtist: null, onOpenNewsStory: null, onOpenProfile: null, onReport: null, onEdit: null, onRequireAuth: null,
+    rowCapabilities: {}, surface: "everyone", visibleMediaPostIds: new Set(), rowActionsRef: { current: {} },
+    IOS_FEED_DISCOVERY_SLOT: {}, feedPostPosition: index => index, Platform: { OS: "ios" }, FeedTicketRow: "FeedTicketRow", NewsStoryCard: "NewsStoryCard" };
+  const render = feedPresentation => {
+    const inputs = { ...stable, feedPresentation }, module = { exports: {} };
+    new Function("require", "module", "exports", ...Object.keys(inputs), code)(require, module, module.exports, ...Object.values(inputs));
+    return module.exports.default({ item: { id: "p" }, index: 0 });
+  };
+  const first = { current: () => false }, second = { current: () => true };
+  assert.equal(render(first).props.contextPresentation, first);
+  assert.equal(render(second).props.contextPresentation, second);
+});
