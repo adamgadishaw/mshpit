@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { parse } from "@babel/parser";
+import { transformSync } from "@babel/core";
+import transformJSX from "@babel/plugin-transform-react-jsx";
 
 const source = readFileSync(new URL("./FeedScreen.jsx", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
@@ -31,3 +33,59 @@ test("Feed wrapping does not change Android/web home-action styles", () => {
     assert.equal(styles.homeAction.minHeight, 42);
   }
 });
+
+// Execute the actual Undo Pressable JSX with the screen's evaluated stylesheet.
+// This catches a disconnected style as well as a target-size regression, without
+// mounting the feed or allowing any recommendation/network mutation.
+function findUndoControl(node) {
+  if (!node || typeof node !== "object") return null;
+  if (node.type === "JSXElement" && node.openingElement.name.name === "Pressable"
+    && node.openingElement.attributes.some(attribute => attribute.name?.name === "onPress"
+      && attribute.value?.expression?.name === "undoRecommendation")) return node;
+  for (const value of Object.values(node)) {
+    for (const child of Array.isArray(value) ? value : [value]) {
+      const found = findUndoControl(child);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+const undoControl = findUndoControl(ast.program);
+assert.ok(undoControl, "Feed must retain its actual Undo/Retry control");
+const undoCode = transformSync(source.slice(undoControl.start, undoControl.end), {
+  babelrc: false, configFile: false, plugins: [[transformJSX, { runtime: "classic" }]],
+}).code;
+function undoFor(platform, busy, error) {
+  const callback = () => {};
+  const control = new vm.Script(undoCode).runInNewContext({
+    React: { createElement: (type, props, ...children) => ({ type, props, children }) },
+    Pressable: "Pressable", Text: "Text", styles: stylesFor(platform),
+    undoBusy: busy, undoError: error, undoItem: { id: "hidden-post" }, undoRecommendation: callback,
+  });
+  assert.equal(control.props.onPress, callback);
+  return control;
+}
+for (const platform of ["ios", "android", "web"]) {
+  test(`${platform} actual Undo/Retry target preserves states and platform dimensions`, () => {
+    for (const [busy, error, label] of [
+      [false, null, "Undo"],
+      [true, null, "Restoring..."],
+      [false, { postId: "hidden-post", message: "Try again" }, "Try again"],
+      [false, { postId: "another-post", message: "Try again" }, "Undo"],
+    ]) {
+      const control = undoFor(platform, busy, error);
+      const style = Object.assign({}, ...control.props.style.filter(Boolean));
+      assert.equal(style.minHeight, platform === "ios" ? 44 : 36);
+      assert.equal(style.height, undefined, "Allow larger text to grow the target");
+      assert.equal(style.paddingHorizontal, 14);
+      assert.equal(style.justifyContent, "center");
+      assert.equal(control.props.disabled, busy);
+      assert.equal(control.props.accessibilityState.disabled, busy);
+      assert.equal(control.props.accessibilityState.busy, busy);
+      assert.equal(control.props.accessibilityRole, "button");
+      assert.equal(control.props.accessibilityLabel, error?.postId === "hidden-post"
+        ? "Retry restoring hidden recommendation" : "Undo hidden recommendation");
+      assert.equal(control.children[0].children[0], label);
+    }
+  });
+}

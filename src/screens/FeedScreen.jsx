@@ -728,7 +728,7 @@ const styles = StyleSheet.create({
   undoBar: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 10, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.good, backgroundColor: colors.bgElev },
   undoTitle: { color: colors.text, fontSize: 13, fontWeight: "800" },
   undoSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
-  undoBtn: { minHeight: 36, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.good },
+  undoBtn: { minHeight: Platform.OS === "ios" ? 44 : 36, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.good },
   undoBtnTxt: { color: colors.bg, fontSize: 12.5, fontWeight: "900" },
   empty: { color: colors.textDim, fontSize: 14, lineHeight: 21, fontStyle: "italic", paddingHorizontal: 4 },
   liveCoverage: { paddingTop: 10 },
