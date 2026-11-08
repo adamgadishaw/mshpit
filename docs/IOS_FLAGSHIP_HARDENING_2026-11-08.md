@@ -278,3 +278,9 @@ comment tests and 48 image/cache tests before integration. A fresh frozen full
 suite, platform exports and signed artifact are required for this new slice.
 Native offline/keyboard/VoiceOver behavior has not been revalidated while the
 Mac is locked, and the held earlier signed build does not contain this slice.
+
+The first full continuity run passed 7,418 of 7,419 tests in 155.5 seconds. Its
+only failure was an older source assertion requiring the image hook to have
+exactly two arguments. It now verifies the same scoped source list plus the
+platform-resolved retry argument and the inert Android/web context, retaining
+all disk-cache, fallback and recycling assertions. A fresh run follows.
