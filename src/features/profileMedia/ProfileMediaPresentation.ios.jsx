@@ -78,8 +78,8 @@ const GalleryTile = memo(function GalleryTile({ item, index, items, onOpen }) {
     <Pressable testID={`profile-gallery-item-${index}`} style={styles.galleryCell} onPress={() => onOpen?.(items, index, item.postId)} disabled={!onOpen}
       accessibilityRole="button" accessibilityLabel={authoredAlt || `Open profile ${video ? "video" : "photo"} ${index + 1}`}
       accessibilityState={{ disabled: !onOpen }} accessibilityHint={video ? "Opens the video player" : "Opens the full-size photo"}>
-      {video ? <ClipPoster uri={item.uri} posterUri={mediaPosterUri(item)} style={StyleSheet.absoluteFill} compact accessibilityLabel={authoredAlt || "Concert video preview"} accessible={false} />
-        : <SmartImage uri={item.uri} mediaKind="image" style={StyleSheet.absoluteFill} contain={false} previewWidth={720} accessibilityLabel={authoredAlt || "Concert photo"} accessible={false} />}
+      {video ? <ClipPoster uri={item.uri} posterUri={mediaPosterUri(item)} style={styles.galleryArtwork} compact accessibilityLabel={authoredAlt || "Concert video preview"} accessible={false} />
+        : <SmartImage uri={item.uri} mediaKind="image" style={styles.galleryArtwork} contain={false} previewWidth={720} accessibilityLabel={authoredAlt || "Concert photo"} accessible={false} />}
     </Pressable>
   );
 });
@@ -138,6 +138,10 @@ const styles = StyleSheet.create({
   galleryRefresh: { minHeight: 44, minWidth: 44, justifyContent: "center", paddingHorizontal: 8 },
   gallery: { flexDirection: "row", flexWrap: "wrap", gap: 5, marginHorizontal: 24 },
   galleryCell: { width: "32%", aspectRatio: 1, minWidth: 44, minHeight: 44, backgroundColor: colors.surfaceAlt, borderRadius: 10, overflow: "hidden" },
+  // Yoga can reserve the ratio's row height while measuring an absolute-only
+  // cell at minHeight. An in-flow square gives the cell and its media the same
+  // concrete height; the media component still fills its own image internally.
+  galleryArtwork: { width: "100%", aspectRatio: 1 },
   gallerySeeAll: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8, marginHorizontal: 24, paddingVertical: 10 },
   actionText: { color: colors.amber, fontSize: 15, fontWeight: "600", flexShrink: 1 },
   galleryState: { marginHorizontal: 24, marginTop: 10, gap: 6 },

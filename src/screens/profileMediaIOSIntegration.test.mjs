@@ -267,11 +267,21 @@ test('three preview tiles retain the complete canonical mixed-media payload; lar
   const f = fixture(); f.render(); await f.flush(); await f.resolve(0, [extra]);
   assert.equal(f.all().filter(n => /^profile-gallery-item-/.test(n.props?.testID || '')).length, 3);
   const poster = f.all().find(n => n.type === 'ClipPoster'); assert.equal(poster.props.posterUri, clip.posterUrl);
+  assert.deepEqual(flatten(poster.props.style), { width: '100%', aspectRatio: 1 }, 'video wrapper participates in square cell layout');
+  const photoWrapper = f.byId('profile-gallery-item-0').children.find(n => n.type === 'View');
+  assert.equal(flatten(photoWrapper.props.style).width, '100%');
+  assert.equal(flatten(photoWrapper.props.style).aspectRatio, 1);
+  assert.equal(flatten(photoWrapper.props.style).position, undefined, 'photo wrapper must not collapse as absolute-only content');
   f.press('profile-gallery-item-1'); assert.equal(f.opened[0][0].length, 4); assert.equal(f.opened[0][0][1].id, 'clip'); assert.equal(f.opened[0][1], 1); assert.equal(f.opened[0][2], photo.id);
-  f.state.fontScale = 3; f.render();
-  for (const id of ['profile-banner-open', 'profile-gallery-refresh', 'profile-gallery-item-0']) assert.ok(flatten(f.byId(id).props.style).minHeight >= 44);
-  assert.ok(f.all().filter(n => n.type === 'Text').every(n => n.props.allowFontScaling !== false));
-  assert.equal(flatten(f.byId('profile-banner-open').props.style).aspectRatio, 3); f.unmount();
+  for (const fontScale of [1, 1.6, 3, 1]) {
+    f.state.fontScale = fontScale; f.render();
+    assert.deepEqual(flatten(f.all().find(n => n.type === 'ClipPoster').props.style), { width: '100%', aspectRatio: 1 });
+    assert.equal(flatten(f.byId('profile-gallery-item-0').children.find(n => n.type === 'View').props.style).aspectRatio, 1);
+    for (const id of ['profile-banner-open', 'profile-gallery-refresh', 'profile-gallery-item-0']) assert.ok(flatten(f.byId(id).props.style).minHeight >= 44);
+    assert.ok(f.all().filter(n => n.type === 'Text').every(n => n.props.allowFontScaling !== false));
+    assert.equal(flatten(f.byId('profile-banner-open').props.style).aspectRatio, 3);
+  }
+  f.unmount();
 });
 
 for (const platform of ['android', 'web']) test(`${platform} retains the previous media presentation, callback payload and no image retry provider`, async () => {
