@@ -199,3 +199,20 @@ test("recent attendance still reaches canonical artists without fabricating reco
   assert.equal(rail.props.rows.length, 1); assert.equal(rail.props.rows[0].publicSlug, "real-artist");
   assert.equal(rail.props.rows[0].discoveryReason, "Recently attended");
 });
+
+test("Discover headings reflow live at larger text sizes without replacing browse state", () => {
+  const c = fixture(), select = () => {};
+  const artistTree = c.render(c.exports.ArtistRail, { rows: [{ name: "A long artist name" }], title: "Your favorite artists", action: "See all", onAction: select });
+  const heading = named(artistTree, "SectionHeader");
+  const flatten = (value) => Array.isArray(value) ? Object.assign({}, ...value.filter(Boolean).map(flatten)) : value || {};
+  for (const fontScale of [1, 2, 3.1, 1]) {
+    c.dimensions.fontScale = fontScale;
+    const tree = c.render(heading.type, heading.props);
+    assert.equal(flatten(tree.props.style).flexDirection, fontScale > 1.25 ? "column" : "row");
+    assert.equal(flatten(tree.props.children[0].props.style).flex, fontScale > 1.25 ? 0 : 1, "stacked heading keeps its intrinsic text height");
+    const action = named(tree, "TextAction");
+    assert.equal(action.props.onPress, select);
+    assert.equal(heading.type, named(artistTree, "SectionHeader").type);
+  }
+  assert.doesNotMatch(source, /key=\{[^}]*fontScale/);
+});

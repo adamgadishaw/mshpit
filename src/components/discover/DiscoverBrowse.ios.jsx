@@ -55,8 +55,10 @@ function TextAction({ children, onPress, label, icon = "chevron-right", selected
 }
 
 function SectionHeader({ title, action, onPress, detail }) {
-  return <View style={styles.sectionHeader}>
-    <View style={styles.headingCopy}><Text style={styles.sectionTitle} accessibilityRole="header">{title}</Text>
+  const { fontScale } = useWindowDimensions();
+  const largeText = fontScale > 1.25;
+  return <View style={[styles.sectionHeader, largeText && styles.sectionHeaderLarge]}>
+    <View style={[styles.headingCopy, largeText && styles.sectionHeadingLarge]}><Text style={styles.sectionTitle} accessibilityRole="header">{title}</Text>
       {detail ? <Text style={styles.sectionDetail}>{detail}</Text> : null}</View>
     {action && onPress ? <TextAction onPress={onPress} label={`${action}: ${title}`}>{action}</TextAction> : null}
   </View>;
@@ -328,6 +330,8 @@ const styles = StyleSheet.create({
   categoryTextSelected: { color: colors.bg },
   programme: { gap: 30 }, section: { gap: 12 },
   sectionHeader: { paddingHorizontal: GUTTER, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  sectionHeaderLarge: { flexDirection: "column", alignItems: "stretch", gap: 0 },
+  sectionHeadingLarge: { flex: 0, alignSelf: "stretch" },
   headingCopy: { flex: 1, minWidth: 0, gap: 4 },
   sectionTitle: { color: colors.text, fontFamily: "System", fontSize: 23, fontWeight: "700", letterSpacing: -.45 },
   sectionDetail: { color: colors.textDim, fontFamily: "System", fontSize: 14 },

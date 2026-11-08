@@ -22,7 +22,7 @@ export default function NativeAppHeader({ onHome, onAccount, loggedIn, onMenu, m
 }
 const styles = StyleSheet.create({
   header: { minHeight: 48, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: colors.bg },
-  control: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
-  brand: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7 },
-  wordmark: { fontFamily: font, fontSize: 16, fontWeight: "800", letterSpacing: 1.8, color: colors.text },
+  control: { flexShrink: 0, minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
+  brand: { flexShrink: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7 },
+  wordmark: { flexShrink: 1, fontFamily: font, fontSize: 16, fontWeight: "800", letterSpacing: 1.8, color: colors.text },
 });

@@ -74,7 +74,7 @@ function ProfileActionMenu({ actions, scope, label, unread = 0 }) {
 }
 
 // The member's pinned favorite shows, in their order, near the top.
-function FavoriteShows({ shows, accent, isSelf, onOpen, onManage }) {
+function FavoriteShows({ shows, accent, isSelf, onOpen, onManage, largeText = false }) {
   if (!shows.length) {
     return isSelf && onManage ? (
       <Pressable style={styles.favoriteEmpty} onPress={onManage} accessibilityRole="button" accessibilityLabel="Pin your favorite shows">
@@ -92,11 +92,11 @@ function FavoriteShows({ shows, accent, isSelf, onOpen, onManage }) {
           const title = show.artist || show.onlineTitle || "A show";
           const meta = [show.venue || (show.online ? "Watched online" : show.city), show.date ? formatDate(show.date, show.date) : ""].filter(Boolean).join(" · ");
           return (
-            <Pressable key={show.id} style={[styles.favoriteCard, accent && { borderColor: accent }]} onPress={() => onOpen?.(show.id)} disabled={!onOpen}
+            <Pressable key={show.id} style={[styles.favoriteCard, largeText && styles.nativeFavoriteLarge, accent && { borderColor: accent }]} onPress={() => onOpen?.(show.id)} disabled={!onOpen}
               accessibilityRole="button" accessibilityLabel={`${title}${meta ? `, ${meta}` : ""}. Open the review.`}>
-              {show.photo ? <SmartImage uri={show.photo} style={styles.favoritePhoto} contain={false} accessible={false} />
-                : <View style={[styles.favoritePhoto, styles.favoritePhotoEmpty, accent && { backgroundColor: accent }]}><Icon name="ticket" size={20} color="#FFFFFF" /></View>}
-              <View style={styles.favoriteCopy}>
+              {show.photo ? <SmartImage uri={show.photo} style={[styles.favoritePhoto, largeText && styles.nativeFavoritePhotoLarge]} contain={false} accessible={false} />
+                : <View style={[styles.favoritePhoto, largeText && styles.nativeFavoritePhotoLarge, styles.favoritePhotoEmpty, accent && { backgroundColor: accent }]}><Icon name="ticket" size={20} color="#FFFFFF" /></View>}
+              <View style={[styles.favoriteCopy, largeText && styles.nativeFavoriteCopyLarge]}>
                 <Text style={styles.favoriteArtist} numberOfLines={IS_IOS ? undefined : 1}>{title}</Text>
                 {meta ? <Text style={styles.favoriteMeta} numberOfLines={IS_IOS ? undefined : 1}>{meta}</Text> : null}
                 {show.overall ? <Text style={[styles.favoriteScore, accent && { color: accent }]}>{show.overall.toFixed(1)}</Text> : null}
@@ -110,9 +110,9 @@ function FavoriteShows({ shows, accent, isSelf, onOpen, onManage }) {
 }
 const EMPTY_CALENDAR = Object.freeze({ upcoming: EMPTY_LIST, past: EMPTY_LIST });
 
-function Stat({ value, label, onPress }) {
+function Stat({ value, label, onPress, largeText = false }) {
   return (
-    <Pressable style={styles.stat} onPress={onPress} disabled={!onPress} accessibilityRole={onPress ? "button" : undefined} accessibilityLabel={`${value} ${label}`}>
+    <Pressable style={[styles.stat, largeText && styles.nativeStatLarge]} onPress={onPress} disabled={!onPress} accessibilityRole={onPress ? "button" : undefined} accessibilityLabel={`${value} ${label}`}>
       <Text style={styles.statVal}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </Pressable>
@@ -212,7 +212,8 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
 
 // Public member profile: musical identity, live history, media, plans, and posts.
 export default function ProfileScreen({ userId, initialSection = null, asTab = false, ownerTools = null, children = null, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
-  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+  const { height: windowHeight, width: windowWidth, fontScale } = useWindowDimensions();
+  const largeText = IS_IOS && fontScale > 1.25;
   const webBannerMinHeight = windowWidth >= 900 ? Math.min(420, Math.max(352, windowHeight * 0.38)) : 320;
   const appActive = useAppActive();
   const { session, authReady, chatAuthEpoch, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
@@ -615,7 +616,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             </View>
           ) : (
             session && (
-              <View style={styles.actionRow}>
+              <View style={[styles.actionRow, largeText && styles.nativeActionsLarge]}>
                 <Pressable style={[styles.followBtn, following && styles.followingBtn]} onPress={() => (following ? unfollow(user.id) : follow(user.id))} accessibilityRole="button" accessibilityLabel={`${following ? "Unfollow" : "Follow"} ${user.name}`}>
                   {!following && <Icon name="user-plus" size={15} color="#1A1206" />}
                   <Text style={[styles.followTxt, following && styles.followingTxt]}>{following ? "Following" : "Follow"}</Text>
@@ -643,12 +644,12 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         {/* The owner's private block (the You tab passes concert memories here). */}
         {isSelf ? children : null}
 
-        <View style={styles.statsRow}>
-          <Stat value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
-          <Stat value={followingCount(user.id)} label={IS_IOS ? "Following" : "People following"} onPress={() => onOpenFollowList?.(user.id, "following")} />
-          <Stat value={isSelf ? new Set((session?.favoriteArtists || []).map((name) => String(name).trim().toLowerCase())).size : user.artistFollowingCount ?? (user.favoriteArtists || []).length} label={IS_IOS ? "Artists" : "Artists followed"} onPress={() => onOpenFollowList?.(user.id, "artists")} />
+        <View style={[styles.statsRow, largeText && styles.nativeStatsLarge]}>
+          <Stat largeText={largeText} value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
+          <Stat largeText={largeText} value={followingCount(user.id)} label={IS_IOS ? "Following" : "People following"} onPress={() => onOpenFollowList?.(user.id, "following")} />
+          <Stat largeText={largeText} value={isSelf ? new Set((session?.favoriteArtists || []).map((name) => String(name).trim().toLowerCase())).size : user.artistFollowingCount ?? (user.favoriteArtists || []).length} label={IS_IOS ? "Artists" : "Artists followed"} onPress={() => onOpenFollowList?.(user.id, "artists")} />
         </View>
-        <FavoriteShows shows={profileView.favoriteShows || EMPTY_LIST} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} />
+        <FavoriteShows shows={profileView.favoriteShows || EMPTY_LIST} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} largeText={largeText} />
         {!session ? (
           <AccountSnapshotPrompt
             title={`Meet ${user.name} on Mshpit`}
@@ -657,9 +658,9 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             style={{ marginHorizontal: 16, marginTop: 16 }}
           />
         ) : <>
-        <View style={styles.statsRow}>
-          <Stat value={historyCount(reviews.length)} label="Reviews" />
-          <Stat value={planned.length} label="Upcoming" />
+        <View style={[styles.statsRow, largeText && styles.nativeStatsLarge]}>
+          <Stat largeText={largeText} value={historyCount(reviews.length)} label="Reviews" />
+          <Stat largeText={largeText} value={planned.length} label="Upcoming" />
         </View>
 
         {/* Rewards: points + badges earned, tap for the full legend. */}
@@ -684,7 +685,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
                 <Text style={styles.crossedTitle}>
                   You both logged <Text style={styles.crossedNum}>{crossed.shows.length}</Text> {crossed.shows.length === 1 ? "show" : "shows"}
                 </Text>
-                <Text style={styles.crossedSub} numberOfLines={1}>
+                <Text style={styles.crossedSub} numberOfLines={largeText ? undefined : 1}>
                   {crossed.shows.slice(0, 3).map((s) => s.artist).join(" · ")}{crossed.shows.length > 3 ? " …" : ""}
                 </Text>
               </View>
@@ -693,7 +694,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
                 <Text style={styles.crossedTitle}>
                   You've both seen <Text style={styles.crossedNum}>{crossed.artists.length}</Text> {crossed.artists.length === 1 ? "artist" : "artists"} live
                 </Text>
-                <Text style={styles.crossedSub} numberOfLines={1}>{crossed.artists.slice(0, 3).join(" · ")}</Text>
+                <Text style={styles.crossedSub} numberOfLines={largeText ? undefined : 1}>{crossed.artists.slice(0, 3).join(" · ")}</Text>
               </View>
             )}
             {crossed.shows.length > 0 && <Icon name="chevron-right" size={16} color={colors.textDim} />}
@@ -759,9 +760,9 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         {planned.map((p) => {
           const target = showDateMs(p.date);
           return (
-            <Pressable key={p.calendarKey || p.key || p.postId} style={styles.showRow} onPress={() => onOpenShow?.(p)} accessibilityRole="button" accessibilityLabel={`${p.artist}, ${p.venue}, ${formatDate(p.date, p.date)}`}>
+            <Pressable key={p.calendarKey || p.key || p.postId} style={[styles.showRow, largeText && styles.nativeShowLarge]} onPress={() => onOpenShow?.(p)} accessibilityRole="button" accessibilityLabel={`${p.artist}, ${p.venue}, ${formatDate(p.date, p.date)}`}>
               <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>
-              <View style={{ flex: 1 }}>
+              <View style={largeText ? { alignSelf: "stretch" } : { flex: 1 }}>
                 <Text style={styles.showArtist}>{p.artist}</Text>
                 <Text style={styles.showVenue}>{p.venue} · {formatDate(p.date, p.date)}</Text>
               </View>
@@ -1031,8 +1032,14 @@ const iosStyles = IS_IOS ? StyleSheet.create({
   bio: { color: colors.text, fontSize: 15, lineHeight: 22, marginTop: 12 },
   bioPreview: { width: "100%", alignItems: "flex-start" },
   bioToggle: { alignSelf: "flex-start" },
-  editBtn: { ...baseStyles.editBtn, borderWidth: 0, borderRadius: 12, backgroundColor: colors.surfaceAlt, paddingHorizontal: 16, marginTop: 16 },
-  editTxt: { color: colors.amber, fontSize: 15, fontWeight: "600" },
+  editBtn: { ...baseStyles.editBtn, maxWidth: "100%", borderWidth: 0, borderRadius: 12, backgroundColor: colors.surfaceAlt, paddingHorizontal: 16, marginTop: 16 },
+  editTxt: { flexShrink: 1, color: colors.amber, fontSize: 15, fontWeight: "600" },
+  nativeActionsLarge: { flexDirection: "column", alignItems: "stretch" },
+  nativeStatsLarge: { flexDirection: "column", gap: 16 },
+  nativeStatLarge: { flex: 0, alignSelf: "stretch" },
+  nativeShowLarge: { flexDirection: "column", alignItems: "flex-start" },
+  followTxt: { ...baseStyles.followTxt, flexShrink: 1 },
+  msgTxt: { ...baseStyles.msgTxt, flexShrink: 1 },
   actionRow: { ...baseStyles.actionRow, width: "100%", justifyContent: "flex-start", gap: 10 },
   followBtn: { ...baseStyles.followBtn, flexGrow: 1, minHeight: 44, borderRadius: 12, justifyContent: "center" },
   msgBtn: { ...baseStyles.msgBtn, flexGrow: 1, minHeight: 44, borderWidth: 0, borderRadius: 12, justifyContent: "center", backgroundColor: colors.surfaceAlt },
@@ -1047,6 +1054,9 @@ const iosStyles = IS_IOS ? StyleSheet.create({
   favoriteCard: { flexGrow: 1, flexBasis: "44%", minWidth: 130, maxWidth: 360, gap: 9 },
   favoritePhoto: { width: "100%", aspectRatio: 1, borderRadius: 12, overflow: "hidden", backgroundColor: colors.surfaceAlt },
   favoriteCopy: { minWidth: 0, gap: 3 },
+  nativeFavoriteLarge: { flexBasis: "100%", maxWidth: "100%", flexDirection: "row", alignItems: "flex-start", gap: 14 },
+  nativeFavoritePhotoLarge: { width: 80, height: 80 },
+  nativeFavoriteCopyLarge: { flex: 1 },
   favoriteArtist: { color: colors.text, fontSize: 16, fontWeight: "600" },
   favoriteMeta: { color: colors.textDim, fontSize: 13, lineHeight: 18 },
   favoriteScore: { color: colors.amber, fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"], marginTop: 2 },
@@ -1068,6 +1078,10 @@ const iosStyles = IS_IOS ? StyleSheet.create({
   rewardsSub: { color: colors.textDim, fontSize: 13, marginTop: 4 },
   crossed: { ...baseStyles.crossed, marginHorizontal: 24, borderWidth: 0, backgroundColor: colors.surface, borderRadius: 14 },
   tasteMatch: { ...baseStyles.tasteMatch, marginHorizontal: 24, borderWidth: 0, backgroundColor: colors.surface, borderRadius: 14 },
+  tasteMatchArtistChip: { ...baseStyles.tasteMatchArtistChip, maxWidth: "100%", paddingVertical: 8 },
+  tasteMatchArtistText: { ...baseStyles.tasteMatchArtistText, flexShrink: 1 },
+  tasteMatchGenreChip: { ...baseStyles.tasteMatchGenreChip, maxWidth: "100%", paddingVertical: 6 },
+  tasteMatchGenreText: { ...baseStyles.tasteMatchGenreText, flexShrink: 1 },
   tasteMatchBasis: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
   postsWrap: { paddingHorizontal: 20 },
 }) : {};

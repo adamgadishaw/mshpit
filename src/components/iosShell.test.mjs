@@ -7,7 +7,7 @@ import { journeyMenuModel } from '../domain/menuJourney.mjs';
 import { iosBackSwipeCommits } from '../domain/iosNavigationPolicy.mjs';
 const require = createRequire(import.meta.url);
 const nodes = tree => !tree ? [] : Array.isArray(tree) ? tree.flatMap(nodes) : typeof tree !== 'object' ? [] : [tree, ...nodes(tree.props?.children)];
-function load(name, { reduced = false, reader = false } = {}) {
+function load(name, { reduced = false, reader = false, fontScale = 1 } = {}) {
   const source = readFileSync(new URL(name, import.meta.url), 'utf8');
   const focus = [], gestures = [], jsx = (type, props) => ({type, props});
   const shared = [];
@@ -15,7 +15,7 @@ function load(name, { reduced = false, reader = false } = {}) {
     react: {useMemo: f=>f(), useRef: v=>({current:v})}, 'react/jsx-runtime': {jsx,jsxs:jsx},
     'react-native': {AccessibilityInfo:{setAccessibilityFocus:n=>focus.push(n)},findNodeHandle:node=>node?.tag,
       Modal:'Modal',Pressable:'Pressable',ScrollView:'ScrollView',Text:'Text',View:'View',
-      StyleSheet:{create:x=>x,absoluteFill:{position:'absolute'},hairlineWidth:1},useWindowDimensions:()=>({width:393})},
+      StyleSheet:{create:x=>x,absoluteFill:{position:'absolute'},hairlineWidth:1},useWindowDimensions:()=>({width:393,fontScale})},
     'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:59,bottom:34})},
     '../theme':{colors:new Proxy({},{get:()=> '#888'}),font:'System'},
     '../domain/menuJourney.mjs':{journeyMenuModel}, '../domain/iosNavigationPolicy.mjs':{iosBackSwipeCommits},
@@ -123,4 +123,17 @@ test('iOS feed large text wraps filters and widens people cards instead of cutti
  const rail=readFileSync(new URL('./SuggestedPittersRail.ios.jsx',import.meta.url),'utf8');
  assert.match(rail,/largeText \? Math\.min\(270, width - 52\)/);
  assert.equal((rail.match(/numberOfLines=\{largeText \? undefined : [12]\}/g)||[]).length,3);
+});
+
+
+test('iOS navigation reflows for accessibility text without shrinking type',()=>{
+ const tree=load('./IosTabBar.ios.jsx',{fontScale:2.5}).render({active:'feed',onChange:()=>{}});
+ const list=nodes(tree).find(n=>n.props.accessibilityRole==='tablist');
+ assert.equal(list.props.style[1].flexWrap,'wrap');
+ nodes(tree).filter(n=>n.props.accessibilityRole==='tab').forEach(n=>{const styles=n.props.style({pressed:false});assert.equal(styles[1].flexBasis,'45%');assert.ok(styles[0].minHeight>=44);});
+ for(const name of ['IosTabBar.ios.jsx','NativeAppHeader.ios.jsx','IosMenuDrawer.ios.jsx']) {
+  const source=readFileSync(new URL(name,import.meta.url),'utf8');
+  assert.doesNotMatch(source,/allowFontScaling=\{false\}|maxFontSizeMultiplier|adjustsFontSizeToFit/);
+  assert.match(source,/flexShrink: 1/);
+ }
 });

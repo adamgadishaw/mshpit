@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Share, Platform } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Share, Platform, useWindowDimensions } from "react-native";
 import { colors, radius, shadow, displayFont } from "../theme";
 import Icon from "../components/Icon";
 import SmartImage from "../components/SmartImage";
@@ -25,6 +25,9 @@ const ProfileScreen = lazyWithRetry(() => import("./ProfileScreen"), "ProfileScr
 // (moderation, artist pages, log out) live in Settings, and artist
 // recommendations live in Discover.
 export default function YouScreen({ onLogin, onManageProfile, onSettings, onOpen, onOpenPost, onActivity, onInbox, onCalendar, profile = {} }) {
+  const { width: windowWidth, fontScale } = useWindowDimensions();
+  const largeText = IS_IOS && fontScale > 1.25;
+  const memoryCardWidth = Math.min(largeText ? 420 : 280, Math.max(1, windowWidth - 48));
   const { session, logsByUser, unreadNotifications, inboxUnread } = useStore();
   const history = useProfileHistory({ accountId: session?.id, targetId: session?.id, enabled: !!session });
   const cachedMine = session ? logsByUser(session.id) : [];
@@ -109,7 +112,7 @@ export default function YouScreen({ onLogin, onManageProfile, onSettings, onOpen
               // Only explicit still-image descriptors are used as artwork. Legacy
               // and video-only memories keep the dated ticket fallback.
               const artwork = IS_IOS ? concertMemoryGallery(memory.log, []).find((item) => item.kind === "image") : null;
-              return <View key={memory.id} style={styles.memoryCard}>
+              return <View key={memory.id} style={[styles.memoryCard, IS_IOS && { width: memoryCardWidth }]}>
                 {IS_IOS ? <Pressable style={styles.memoryArtwork} onPress={() => setMemorySelection({ accountId: session.id, memory })} accessibilityRole="button" accessibilityLabel={`Preview concert memory for ${memory.artist}`}>
                   {artwork ? <SmartImage uri={artwork.uri} style={StyleSheet.absoluteFill} contain={false} accessible={false} /> : <View style={styles.memoryArtworkFallback}><Icon name="ticket" size={42} color={colors.amber} /><Text style={styles.memoryYear}>{memory.date.slice(0, 4)}</Text></View>}
                 </Pressable> : null}
@@ -122,7 +125,7 @@ export default function YouScreen({ onLogin, onManageProfile, onSettings, onOpen
                 </View>
                 <Text style={styles.memoryArtist} numberOfLines={IS_IOS ? undefined : 1}>{memory.artist}</Text>
                 <Text style={styles.memoryVenue} numberOfLines={IS_IOS ? undefined : 2}>{memory.venue}{memory.city ? ` · ${memory.city}` : ""} · {formatDate(memory.date, memory.date)}</Text>
-                <View style={styles.memoryActions}>
+                <View style={[styles.memoryActions, largeText && styles.nativeMemoryActionsLarge]}>
                   <Pressable style={styles.memoryAction} onPress={() => setMemorySelection({ accountId: session.id, memory })} accessibilityRole="button" accessibilityLabel={`Open memory for ${memory.artist}`}>
                     <Icon name="ticket" size={13} color={colors.amber} />
                     <Text style={styles.memoryActionText}>Open memory</Text>
@@ -189,7 +192,7 @@ const iosStyles = IS_IOS ? StyleSheet.create({
   primaryTxt: { color: "#1A1206", fontSize: 17, fontWeight: "600" },
   memories: { marginTop: 28 },
   memoriesHeading: { flexDirection: "row", flexWrap: "wrap", gap: 12, alignItems: "center", justifyContent: "space-between", marginHorizontal: 24 },
-  sectionTitle: { color: colors.text, fontSize: 22, fontWeight: "700", letterSpacing: -0.35 },
+  sectionTitle: { flexShrink: 1, maxWidth: "100%", color: colors.text, fontSize: 22, fontWeight: "700", letterSpacing: -0.35 },
   privateLabel: { flexDirection: "row", alignItems: "center", gap: 4 },
   privateLabelText: { color: colors.textDim, fontSize: 12 },
   scopeCopy: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginTop: 5, marginBottom: 16, marginHorizontal: 24 },
@@ -198,7 +201,7 @@ const iosStyles = IS_IOS ? StyleSheet.create({
   memoryCard: { width: 280, gap: 10, padding: 0 },
   memoryArtwork: { width: "100%", aspectRatio: 1.75, backgroundColor: colors.surfaceAlt, borderRadius: 14, overflow: "hidden" },
   memoryArtworkFallback: { flex: 1, padding: 20, flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end" },
-  memoryYear: { color: colors.textDim, fontSize: 36, fontWeight: "300", letterSpacing: -1.5 },
+  memoryYear: { flexShrink: 1, color: colors.textDim, fontSize: 36, fontWeight: "300", letterSpacing: -1.5 },
   memoryTop: { flexDirection: "row", gap: 9, alignItems: "center", marginTop: 2 },
   memoryIcon: { display: "none" },
   memoryKind: { color: colors.amber, fontSize: 12, fontWeight: "600" },
@@ -206,6 +209,7 @@ const iosStyles = IS_IOS ? StyleSheet.create({
   memoryArtist: { color: colors.text, fontSize: 20, fontWeight: "700", letterSpacing: -0.25 },
   memoryVenue: { color: colors.textDim, fontSize: 14, lineHeight: 20 },
   memoryActions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  nativeMemoryActionsLarge: { flexDirection: "column", alignItems: "stretch" },
   memoryAction: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, maxWidth: "100%", paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: colors.surfaceAlt },
   memoryActionText: { flexShrink: 1, color: colors.amber, fontSize: 13, fontWeight: "600" },
   actionStatus: { color: colors.textDim, fontSize: 13, marginTop: 12, marginHorizontal: 24 },

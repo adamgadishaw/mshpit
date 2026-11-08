@@ -46,7 +46,7 @@ function fixture() {
     "react-native": {
       View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable",
       StyleSheet: { create: (value) => value, absoluteFill: {}, absoluteFillObject: {} },
-      Platform: { OS: "web" }, Animated: {}, Easing: {}, Share: { share: unexpectedAction },
+      useWindowDimensions: () => ({ width: 393, fontScale: 1 }), Platform: { OS: "web" }, Animated: {}, Easing: {}, Share: { share: unexpectedAction },
     },
     "../theme": { colors: {}, radius: {}, shadow: {}, mono: "mono", displayFont: "display", space: (value) => value * 4 },
     "../components/Icon": "Icon",

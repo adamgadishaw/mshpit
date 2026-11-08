@@ -97,3 +97,31 @@ Final sequential validation passed:
 - Final git diff whitespace check: clean.
 
 Logs remain under /tmp/mshpit-*review*. No new dependency was added.
+
+## Accessibility continuation and phone update
+
+The owner requested continued accessibility work and installation of the updated
+iOS app on the connected iPhone, preserving the existing app identity and live
+Mshpit backend. This is not authorization to deploy the website or Android app.
+
+Additional iOS-only fixes:
+- Large-text navigation reflows without disabling font scaling; header and
+  drawer branding stay within the available width.
+- Profile actions, stats, favorites and upcoming shows reflow for larger text.
+- You subscribes to live size changes and adjusts memory-card width/actions
+  while preserving the selected memory and stable content keys.
+- Discover section actions stack below large headings. Feed onboarding labels
+  wrap within their buttons.
+
+The full suite passed 7,119 tests with zero failures/skips/cancellations. Syntax
+and architecture checks passed, and git diff whitespace checks remained clean.
+Tests include scale changes 1 to 2 to 3.1 and back to 1 without state resets.
+
+VoiceOver was enabled in the simulator and the app and menu were opened.
+Device Hub intermittently stopped exposing descendants and reliable activation,
+including on Apple's own Settings pages, so spoken-focus/navigation certification
+remains incomplete. No speculative modal-ownership change was made. The original
+simulator VoiceOver-off preference was restored and read back as false, followed
+by a simulator restart. The physical phone's settings were not changed. Runtime
+Reduce Motion, physical shelf gestures and live physical Dynamic Type still need
+hands-on review; their existing logic/guards were not described as runtime-proven.

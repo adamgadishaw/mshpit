@@ -137,13 +137,14 @@ test("private memories and all existing profile data remain behind the original 
 function iosYouFixture() {
   const states = [], requests = [];
   let stateIndex = 0, session = null;
+  const dimensions = { width: 393, fontScale: 1 };
   const log = { id: "review-a", userId: "a", artist: "Private artist", venue: "Memory Hall", date: "2020-01-01", archiveShowKey: "show-a", media: [{ kind: "image", uri: "https://media.test/private.jpg" }] };
   const rows = (id) => id === "a" ? [log] : [];
   const jsx = (type, props) => ({ type, props });
   const dependencies = {
     react: { useMemo: (fn) => fn(), useState(initial) { const index = stateIndex++; if (!(index in states)) states[index] = typeof initial === "function" ? initial() : initial; return [states[index], (value) => { states[index] = value; }]; } },
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
-    "react-native": { View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable", Platform: { OS: "ios" }, Share: {}, StyleSheet: { create: (s) => s, absoluteFill: {} } },
+    "react-native": { View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable", Platform: { OS: "ios" }, useWindowDimensions: () => dimensions, Share: {}, StyleSheet: { create: (s) => s, absoluteFill: {} } },
     "../theme": { colors: {}, radius: {}, shadow: {}, displayFont: "display" },
     "../components/Icon": "Icon",
     "../components/SmartImage": "SmartImage",
@@ -159,7 +160,7 @@ function iosYouFixture() {
   const code = transformSync(you, { babelrc: false, configFile: false, plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")] }).code;
   const module = { exports: {} };
   new vm.Script(code).runInNewContext({ module, exports: module.exports, require(name) { assert.ok(Object.hasOwn(dependencies, name), name); return dependencies[name]; } });
-  return { render(account) { session = account; stateIndex = 0; requests.length = 0; return { tree: module.exports.default({}), request: requests.at(-1) }; } };
+  return { dimensions, render(account) { session = account; stateIndex = 0; requests.length = 0; return { tree: module.exports.default({}), request: requests.at(-1) }; } };
 }
 function nodes(tree) {
   if (Array.isArray(tree)) return tree.flatMap(nodes);
@@ -243,4 +244,67 @@ test("profile initials opt into readable text without changing custom avatar col
   const photo = (list) => list.find((node) => node.type === "ExpoImage").props;
   assert.deepEqual(JSON.parse(JSON.stringify(photo(readable))), JSON.parse(JSON.stringify(photo(original))));
   assert.equal(photo(readable).source.uri, user.avatarUri);
+});
+
+const flattenStyle = (value) => Array.isArray(value) ? Object.assign({}, ...value.filter(Boolean).map(flattenStyle)) : value || {};
+
+test("live iOS text-size changes resize memories without clearing the selected memory", () => {
+  const f = iosYouFixture(), account = { id: "a" };
+  const first = f.render(account);
+  const findCard = (tree) => nodes(tree).find((node) => node.type === "View" && flattenStyle(node.props.style).width === 280);
+  assert.ok(findCard(first.tree));
+  nodes(first.tree).find((node) => node.props.accessibilityLabel === "Open memory for Private artist").props.onPress();
+  const before = nodes(f.render(account).tree).find((node) => node.type === "ConcertMemoryModal").props.memory;
+  for (const [width, fontScale, expectedWidth] of [[393, 2, 345], [320, 3.1, 272], [393, 1, 280]]) {
+    Object.assign(f.dimensions, { width, fontScale });
+    const current = f.render(account);
+    const all = nodes(current.tree);
+    assert.ok(all.some((node) => node.type === "View" && flattenStyle(node.props.style).width === expectedWidth));
+    assert.equal(all.find((node) => node.type === "ConcertMemoryModal").props.memory, before);
+    assert.equal(current.request.showKey, "show-a");
+    const open = all.find((node) => node.props.accessibilityLabel === "Open memory for Private artist");
+    const actionRow = all.find((node) => Array.isArray(node.props.children) && node.props.children.includes(open));
+    assert.equal(flattenStyle(actionRow.props.style).flexDirection, fontScale > 1.25 ? "column" : "row");
+  }
+  assert.doesNotMatch(you, /key=\{[^}]*fontScale|setMemorySelection\([^)]*fontScale/);
+});
+
+test("large-text favorite shows retain routes and gain a full-width, wrapping text column", () => {
+  const declaration = profileAST.program.body.find((node) => node.type === "FunctionDeclaration" && node.id.name === "FavoriteShows");
+  const code = transformSync(profile.slice(declaration.start, declaration.end) + "\nmodule.exports = FavoriteShows;", {
+    babelrc: false, configFile: false,
+    plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
+  }).code;
+  const jsx = (type, props, key) => ({ type, props, key });
+  const module = { exports: {} };
+  new vm.Script(code).runInNewContext({ module, exports: module.exports,
+    require: () => ({ jsx, jsxs: jsx }), IS_IOS: true, styles: stylesFor(profile, "ios").styles, colors: {},
+    View: "View", Text: "Text", Pressable: "Pressable", SmartImage: "SmartImage", Icon: "Icon", formatDate: dates.formatDate,
+  });
+  const opened = [], props = { shows: [{ id: "show-a", artist: "A very long artist name", venue: "Venue", date: "2020-01-01", photo: "https://media.test/art.jpg" }], onOpen: (id) => opened.push(id) };
+  for (const largeText of [false, true, false]) {
+    const all = nodes(module.exports({ ...props, largeText }));
+    const button = all.find((node) => node.type === "Pressable");
+    assert.equal(button.key, "show-a");
+    assert.equal(flattenStyle(button.props.style).flexBasis, largeText ? "100%" : "44%");
+    const image = all.find((node) => node.type === "SmartImage");
+    assert.equal(flattenStyle(image.props.style).width, largeText ? 80 : "100%");
+    assert.ok(all.filter((node) => node.type === "Text").every((node) => node.props.numberOfLines == null));
+    button.props.onPress();
+  }
+  assert.deepEqual(opened, ["show-a", "show-a", "show-a"]);
+});
+
+test("iOS profile actions and taste chips constrain large labels without disabling scaling", () => {
+  const { styles } = stylesFor(profile, "ios");
+  assert.equal(styles.nativeActionsLarge.flexDirection, "column");
+  assert.equal(styles.nativeStatsLarge.flexDirection, "column");
+  assert.equal(styles.nativeStatLarge.flex, 0, "stacked stats must measure intrinsic scaled text height");
+  assert.equal(styles.nativeShowLarge.flexDirection, "column");
+  assert.equal(styles.editBtn.maxWidth, "100%");
+  for (const name of ["editTxt", "followTxt", "msgTxt", "tasteMatchArtistText", "tasteMatchGenreText"]) assert.equal(styles[name].flexShrink, 1, name);
+  for (const name of ["tasteMatchArtistChip", "tasteMatchGenreChip"]) assert.equal(styles[name].maxWidth, "100%", name);
+  assert.match(profile, /fontScale \} = useWindowDimensions\(\)/);
+  assert.match(profile, /const largeText = IS_IOS && fontScale > 1\.25/);
+  assert.doesNotMatch(profile, /key=\{[^}]*fontScale|allowFontScaling=\{false\}/);
 });
