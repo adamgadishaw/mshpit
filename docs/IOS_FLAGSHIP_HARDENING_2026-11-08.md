@@ -208,3 +208,35 @@ model under capacity pressure, account/epoch changes, retained/replaced frames,
 queued abort/failure, stale alerts/timers and failed navigation. Results remain
 in ignored .tmp/ios-flagship-stress. This is pure JavaScript simulation, not a
 native interaction, transport or performance measurement.
+
+## Verified signed checkpoint 0fcb4fd
+
+The frozen committed source passed all 7,370 tests with zero failures, skips or
+cancellations in 478.9 seconds. Sequential iOS and Android Hermes exports passed;
+the web export passed the unchanged budget at 508.6 KiB / 512.0 KiB gzip. These
+are regression/build checks, not an Android/web deployment or device benchmark.
+
+The iPhone Release build succeeded with the existing cached signing authority
+and provisioning profile. Strict deep signature verification passed on the
+built app and the preserved copy; all 52 files/links matched. The artifact is
+60,161,417 bytes, with 11 bundled privacy manifests. Their presence is not a
+substitute for App Store privacy answers or an independent SDK privacy audit.
+
+Preserved app: .tmp/ios-phone-checkpoints/flagship-0fcb4fd/MshpitDev.app
+Receipt and exact manifest: receipt.json and manifest.json alongside it.
+Source: 0fcb4fd6fe418efcd5b44409c2c22f3ed6d1622e.
+Actual app identifier: com.mshpit.app.dev. Version 1.0.0, bundle version 1.
+Minimum OS: iOS 16.4. Built SDK: iPhoneOS 27.2.
+Provisioning expires November 14, 2026 at 23:50:01 UTC.
+Bundled JavaScript: 9,654,325 bytes, SHA-256
+25ed1318fab2fe20a200182c32d9c19bf2c8a598260999a1e7cfd344619ff66c.
+
+This build uses the owner-approved live MSHPIT backend and remains held, not
+installed. Earlier signed checkpoints are untouched. No push, merge, deployment,
+store submission, provisioning update or production-content write occurred.
+The final physical launch, VoiceOver, Dynamic Type, gestures and performance
+checks remain pending. The simulator remains shut down and keyboard capture off.
+
+Further comment-continuity and explicit image-recovery work is isolated in
+separate worktrees. It is not included in this signed checkpoint until separately
+reviewed, integrated, tested and rebuilt.
