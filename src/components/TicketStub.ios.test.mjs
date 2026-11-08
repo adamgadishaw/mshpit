@@ -458,3 +458,45 @@ test("campaign artwork requires committed presentation and motion permission", (
     assert.equal(image.props.accessible, false);
   }
 });
+
+test("iOS footer metadata shares one wrapping row outside the unchanged swipe action region", () => {
+  for (const log of [review, { ...review, kind: "status" }, { ...review, experienceType: "online" },
+    { ...review, kind: "status", campaign: { version: 1, treatment: "after-dark" } }]) {
+    const f = fixture(), tree = f.render({ log: { ...log, recommendation: { personalized: true } } });
+    const row = nodes(tree).find(n => n.type === "View" && style(n.props.style).columnGap === 12 && style(n.props.style).flexWrap === "wrap");
+    assert.ok(row); assert.ok(label(row, "9 member views"));
+    assert.ok(label(row, "Suggested post. Show more information."));
+    assert.equal(nodes(tree).filter(n => n.props?.accessibilityLabel === "9 member views").length, 1);
+    const swipe = type(tree, "PostSwipeActions");
+    assert.equal(label(swipe, "9 member views"), undefined);
+    assert.equal(label(swipe, "Suggested post. Show more information."), undefined);
+    assert.ok(label(swipe, "Like, 3 likes")); assert.ok(label(swipe, "Comments, 0"));
+    assert.ok(type(swipe, "RepostButton")); assert.ok(type(swipe, "SocialShareButton"));
+    assert.ok(label(swipe, "More post actions"));
+    const rail = nodes(swipe).find(n => n.type === "View" && style(n.props.style).borderTopWidth);
+    assert.equal(style(rail.props.style).marginTop, 4); assert.equal(style(rail.props.style).paddingTop, 4);
+    const tallyStyle = style(label(row, "9 member views").props.style);
+    assert.equal(tallyStyle.minHeight, undefined); assert.equal(tallyStyle.maxWidth, "100%");
+  }
+});
+
+test("iOS metadata controls grow and wrap, expanded details remain full-width siblings", () => {
+  const f = fixture(), input = { log: { ...review, recommendation: { personalized: true }, eventAddress: "A long address" } };
+  let tree = f.render(input);
+  for (const text of ["Show details", "Suggested post. Show more information."]) {
+    const control = label(tree, text), controlStyle = style(control.props.style);
+    assert.ok(controlStyle.minHeight >= 44); assert.ok(controlStyle.minWidth >= 44);
+    assert.equal(controlStyle.height, undefined);
+    for (const node of nodes(control).filter(n => n.type === "Text")) {
+      assert.equal(node.props.numberOfLines, undefined); assert.equal(node.props.adjustsFontSizeToFit, undefined);
+      assert.equal(style(node.props.style).flexShrink, 1);
+    }
+    control.props.onPress();
+  }
+  tree = f.render(input);
+  const row = nodes(tree).find(n => n.type === "View" && style(n.props.style).columnGap === 12);
+  assert.equal(label(row, "View Main artist show"), undefined);
+  assert.ok(label(tree, "View Main artist show"));
+  assert.ok(nodes(row).some(n => style(n.props?.style).flexBasis === "100%"));
+  assert.equal(label(tree, "Suggested post. Hide more information.").props.accessibilityState.expanded, true);
+});

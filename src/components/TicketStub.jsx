@@ -91,7 +91,7 @@ function RecommendationWhy({ recommendation, expanded, onToggle, palette = null 
   const accent = palette?.accentColor || colors.amber;
   const text = palette?.textColor || colors.text;
   const muted = palette?.mutedTextColor || colors.textDim;
-  if (Platform.OS === "ios") return <View style={styles.whyWrap}>
+  if (Platform.OS === "ios") return <View style={[styles.whyWrap, expanded && styles.whyWrapExpanded]}>
     <Pressable onPress={onToggle} accessibilityRole="button"
       accessibilityLabel={`${recommendation.label}. ${expanded ? "Hide" : "Show"} more information.`}
       accessibilityState={{ expanded }} style={styles.whyButton}>
@@ -554,7 +554,10 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
         )}
         {convertingNotice}
 
-        <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />
+        {Platform.OS === "ios" ? <View style={styles.metadataRow}>
+          <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />
+          <ViewTally count={viewCount} palette={campaignTreatment} />
+        </View> : <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />}
 
         <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
 <View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
@@ -578,7 +581,6 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
         </View>
 </PostSwipeActions>
 
-        {Platform.OS === "ios" && <ViewTally count={viewCount} palette={campaignTreatment} />}
         {showComments && <CommentPreview log={log} onOpen={openComments} palette={campaignTreatment} />}
         <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
         </View>
@@ -752,15 +754,20 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
       )}
       {convertingNotice}
 
-      {Platform.OS === "ios" && !isOnlineReview && <View style={styles.detailsWrap}>
+      {Platform.OS === "ios" && <View style={styles.detailsWrap}>
+        <View style={styles.metadataRow}>
+        {!isOnlineReview &&
         <Pressable onPress={() => setDetails({ scope: detailScope, expanded: !detailsOpen })}
           accessibilityRole="button" accessibilityLabel={detailsOpen ? "Hide show details" : "Show details"}
           accessibilityState={{ expanded: detailsOpen }}
           style={styles.detailsToggle}>
           <Text style={styles.detailsLabel}>{detailsOpen ? "Hide details" : "Show details"}</Text>
           <Icon name={detailsOpen ? "chevron-down" : "chevron-right"} size={14} color={colors.textDim} />
-        </Pressable>
-        {detailsOpen && <View>
+        </Pressable>}
+        <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
+        <ViewTally count={viewCount} />
+        </View>
+        {!isOnlineReview && detailsOpen && <View>
           <TicketActionRail
             showHref={canonicalPostHref}
             onOpenShow={cityOnlyReview ? openPostDetail : () => (onOpenShow || onOpen)?.(log)}
@@ -824,7 +831,7 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
         <Text style={styles.setBody}>{setlist.join("  ·  ")}</Text>
       )}
 
-      <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
+      {Platform.OS !== "ios" && <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />}
 
       {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
       <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
@@ -862,7 +869,6 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
       </View>
 </PostSwipeActions>
 
-      {Platform.OS === "ios" && <ViewTally count={viewCount} />}
       {showComments && <CommentPreview log={log} onOpen={openComments} />}
     </CardSurface>
   );
@@ -1008,17 +1014,19 @@ const styles = StyleSheet.create({
     scorePill: { minHeight: 44, minWidth: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 4 },
     scorePillOpen: { backgroundColor: colors.bgElev, borderRadius: 8 },
     scoreNum: { color: colors.gold, fontFamily: font, fontSize: 16, fontWeight: "600" },
-    detailsWrap: { marginTop: 8 },
-    detailsToggle: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 8 },
-    detailsLabel: { color: colors.textDim, fontSize: 14, lineHeight: 20 },
+    detailsWrap: { marginTop: 0 },
+    metadataRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 12, rowGap: 0, marginTop: 4 },
+    detailsToggle: { minHeight: 44, minWidth: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 8 },
+    detailsLabel: { flexShrink: 1, color: colors.textDim, fontSize: 14, lineHeight: 20 },
     detailText: { color: colors.textDim, fontSize: 13, lineHeight: 20, marginTop: 8 },
     detailsLineup: { marginTop: 8, borderTopWidth: 0, paddingTop: 0 },
     overflowPanel: { flexBasis: "100%", borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft, paddingTop: 4 },
     overflowAction: { minHeight: 44, justifyContent: "center", paddingVertical: 10 },
-    viewTally: { minHeight: 24, paddingTop: 4 },
+    viewTally: { maxWidth: "100%", marginLeft: "auto", paddingVertical: 4 },
     viewTallyText: { fontSize: 12, fontFamily: font },
-    whyWrap: { marginTop: 0 },
-    whyLabel: { fontSize: 12, fontWeight: "400" },
+    whyWrap: { maxWidth: "100%", marginTop: 0 },
+    whyWrapExpanded: { flexBasis: "100%" },
+    whyLabel: { flexShrink: 1, fontSize: 12, fontWeight: "400" },
     header: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 10 },
     nameRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 },
     name: { flexShrink: 1, color: colors.text, fontFamily: font, fontWeight: "600", fontSize: 16, letterSpacing: -0.2 },
@@ -1030,9 +1038,9 @@ const styles = StyleSheet.create({
     nativeTicketActionRail: { flexDirection: "column", backgroundColor: "transparent", borderWidth: 0, borderTopWidth: 0, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, marginTop: 0 },
     nativeTicketActionText: { flex: 1, fontSize: 14, lineHeight: 20, textAlign: "left", fontWeight: "500" },
     setRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 10, minHeight: 44, paddingVertical: 8 },
-    whyButton: { minHeight: 44, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7, borderRadius: radius.sm },
+    whyButton: { minWidth: 44, minHeight: 44, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7, borderRadius: radius.sm },
     nativeTicketActionDivider: { height: 0 },
-    statusFooter: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 4, rowGap: 4, marginTop: 12, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft },
-    footer: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 4, rowGap: 4, marginTop: 12, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft },
+    statusFooter: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 4, rowGap: 4, marginTop: 4, paddingTop: 4, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft },
+    footer: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 4, rowGap: 4, marginTop: 4, paddingTop: 4, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft },
   } : {}),
 });
