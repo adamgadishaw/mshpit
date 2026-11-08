@@ -2,7 +2,7 @@
 
 Runtime checkpoint: `826cc9e30bacb7724cb6ab0f6ef485bc09014139`.
 Preserved app: `.tmp/ios-phone-checkpoints/flagship-826cc9e/MshpitDev.app`.
-This build is not installed. The previously installed and preserved build is b73d54a.
+Historical initial checkpoint: this build was subsequently installed in place after the owner completed the phone update. See the physical findings and corrected checkpoint below.
 
 ## Requested changes
 
@@ -24,10 +24,23 @@ This build is not installed. The previously installed and preserved build is b73
 
 ## Remaining gates
 
-The Mac is locked and the owner is updating the iPhone. No new build installation or native visual check was attempted during that update. Actual road-tile rendering, native appearance, gestures, keyboard, VoiceOver, large text and performance remain unverified for this artifact. A compile/export/test pass is not App Store readiness or native accessibility certification.
+At the initial checkpoint the phone was updating, so installation and native checks were held. Subsequent authorized physical checks are recorded below. A compile/export/test pass is not App Store readiness or native accessibility certification.
 
 The production festival read returned HTTP 403 and was not retried by another route. Live dates, image supply/delivery and ingestion freshness are not certified. Only existing credited image fields are displayed; absent source media remains a content limitation.
 
-The Release backend remains https://www.mshpit.com and is not mutation-blocked. Use an authorized isolated fixture for synthetic posting, messages, attendance, read-state changes and sharing. Genuine owner-driven preview remains separate from that certification. Wait for confirmation that the phone update is complete before interacting with or installing to it. Keep the previous signed app available.
+The Release backend remains https://www.mshpit.com and is not mutation-blocked. Use an authorized isolated fixture for synthetic posting, messages, attendance, read-state changes and sharing. Genuine owner-driven preview remains separate from that certification. The owner subsequently confirmed reconnection and authorized phone work. Preserve existing app data, avoid interrupting another active phone task, and keep the previous signed app available.
 
 Detailed receipts, manifest, platform source-isolation and native autolinking evidence are stored alongside the preserved app. Test/build logs are recorded in its receipt. No production push, merge, deployment, signing-identity change or phone-data reset occurred.
+
+## Physical findings and correction: ef83fb0
+
+After the phone update, 826cc9e installed in place and launched with the existing account, personalized Feed, profile and gallery intact. Actual phone checks exercised banner opening, gallery Next/horizontal swipe/Close, public-profile edge Back, drawer, Discover and festival layouts. No synthetic posting, attendance, messages, reactions, reports, read-state changes or external sharing occurred. Activity and DM were not opened. Existing browsing analytics may occur. Keyboard capture remained off.
+
+Two concrete defects were reproduced:
+
+- Venue map initialized at the continent camera with no visible venue pins, then timed out. The real Expo/Fabric property path converts nested null to boxed nil; decoding selectedId failed and discarded the whole snapshot. The iOS JS/native boundary now represents no selection as an empty string. The existing native view, geometry, map provider, permissions and Android/web implementations are unchanged. The actual native contract fixture verifies annotation/camera adoption, selection clearing and stale ownership, but injects map readiness and does not certify network tile delivery.
+- You gallery video posters appeared as short strips inside square cells. The bundled RN Yoga layout reproduced absolute-only children yielding a 44pt wrapper. Both iOS preview wrappers now have in-flow width and aspect ratio. The opt-in bundled-Yoga gate covers 144 layouts; media source/cache, private-history ownership and viewer behavior are unchanged.
+
+Corrected runtime source: `ef83fb05a7e8afd6e8a960d5952581b3303426f9`. Preserved app: `.tmp/ios-phone-checkpoints/flagship-ef83fb0/MshpitDev.app`. All 8,422 tests passed serially with zero failures/skips/cancellations, followed by server production dependency audit, syntax, architecture, web export/budget, iOS/Android exports and source-isolation checks. Development-signed Release build and deep/strict signature verification passed. Independent artifact review verified all 52 files (60,382,163 bytes). Only JS bundle, executable and signature resources differ from 826cc9e; Info.plist, all 11 privacy manifests and the provisioning profile are byte-identical. JS SHA-256: `ad5be0187f7ebb8d16efc1954b3d019deb774802db87f9947990f4c3cd1cfa2c`. Manifest SHA-256: `774848fdd70754e0710e31525a16e7767162b5bf16e5786d78e03e9354e137fb`.
+
+At this record, ef83fb0 is not yet installed: the phone is unlocked but the owner is using another app. Actual corrected road tiles/pins and gallery geometry still require the authorized phone retest. Accessibility Inspector produced no usable report in the earlier session; this is not an accessibility pass. VoiceOver speech/focus, largest Dynamic Type and performance remain uncertified. Live festival media supply remains dependent on credited catalogue images. A separate Feed hierarchy polish is being reviewed in an isolated worktree and is not included in ef83fb0.
