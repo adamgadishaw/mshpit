@@ -99,7 +99,7 @@ function FavoriteShows({ shows, accent, isSelf, onOpen, onManage, largeText = fa
               <View style={[styles.favoriteCopy, largeText && styles.nativeFavoriteCopyLarge]}>
                 <Text style={styles.favoriteArtist} numberOfLines={IS_IOS ? undefined : 1}>{title}</Text>
                 {meta ? <Text style={styles.favoriteMeta} numberOfLines={IS_IOS ? undefined : 1}>{meta}</Text> : null}
-                {show.overall ? <Text style={[styles.favoriteScore, accent && { color: accent }]}>{show.overall.toFixed(1)}</Text> : null}
+                {show.overall ? <Text style={[styles.favoriteScore, !IS_IOS && accent && { color: accent }]}>{show.overall.toFixed(1)}</Text> : null}
               </View>
             </Pressable>
           );
@@ -473,7 +473,14 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   }
 
   const historyLoading = history.status === "idle" || history.status === "loading" || history.status === "refreshing";
-  const historyCount = (value) => `${value}${history.complete ? "" : "+"}`;
+  // Only a current, complete receipt can establish absence. Keep real cached
+  // rows (including independent Going/attendance) visible during recovery.
+  const historyConfirmed = history.status === "ready" && history.complete;
+  const historyCount = (value) => IS_IOS && value === 0 && !historyConfirmed
+    ? "Not confirmed"
+    : `${value}${(IS_IOS ? historyConfirmed : history.complete) ? "" : "+"}`;
+  const historyHeadingCount = (value) => IS_IOS && value === 0 && !historyConfirmed
+    ? "" : ` · ${historyCount(value)}`;
   // Shared attendance: shows both accounts intentionally logged, never a claim
   // that the people met or were physically near each other at the venue.
   const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
@@ -660,7 +667,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         ) : <>
         <View style={[styles.statsRow, largeText && styles.nativeStatsLarge]}>
           <Stat largeText={largeText} value={historyCount(reviews.length)} label="Reviews" />
-          <Stat largeText={largeText} value={planned.length} label="Upcoming" />
+          <Stat largeText={largeText} value={IS_IOS ? historyCount(planned.length) : planned.length} label="Upcoming" />
         </View>
 
         {/* Rewards: points + badges earned, tap for the full legend. */}
@@ -755,8 +762,8 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
 
         {/* One calendar projection powers both this summary and Calendar. A
             dated post appears here immediately; plain statuses remain posts. */}
-        <Text style={styles.sectionLabel} accessibilityRole="header">Upcoming shows · {planned.length}</Text>
-        {planned.length === 0 && <Text style={styles.empty}>No upcoming shows yet.</Text>}
+        <Text style={styles.sectionLabel} accessibilityRole="header">Upcoming shows{IS_IOS ? historyHeadingCount(planned.length) : ` · ${planned.length}`}</Text>
+        {planned.length === 0 && (!IS_IOS || historyConfirmed) && <Text style={styles.empty}>No upcoming shows yet.</Text>}
         {planned.map((p) => {
           const target = showDateMs(p.date);
           return (
@@ -813,8 +820,8 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         <View style={styles.postsSection}>
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
-        <Text style={styles.sectionLabel} accessibilityRole="header">{IS_IOS && isSelf ? "Your diary" : isSelf ? "Your posts" : "Posts"} · {historyCount(logs.length)}</Text>
-        {logs.length === 0 && !historyLoading && (
+        <Text style={styles.sectionLabel} accessibilityRole="header">{IS_IOS && isSelf ? "Your diary" : isSelf ? "Your posts" : "Posts"}{historyHeadingCount(logs.length)}</Text>
+        {logs.length === 0 && (IS_IOS ? historyConfirmed : !historyLoading) && (
           <Text style={styles.empty}>{isSelf ? "You haven't posted yet. Tap “Make a post” to log a show or share an update." : "No posts yet."}</Text>
         )}
         {!logs.length && historyLoading && (
