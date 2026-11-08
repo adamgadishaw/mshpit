@@ -58,6 +58,7 @@ test("native module is iOS-only with the existing 16.4 floor and no permission o
   assert.match(view, /mapView\.delegate = window == nil \? nil : self/);
   assert.match(view, /report\(fullyRendered \? "ready" : "partial"\)/);
   assert.match(module, /Prop\("snapshot"\)/);
+  assert.match(module, /@Field var selectedId: String = ""/);
   assert.doesNotMatch(view + module + pod, /request.*Authorization|requestPermissions|CLLocationManager|showsUserLocation\s*=\s*true|setUserTrackingMode|apiKey|Google|Mapbox|\.subviews|attribution.*hidden/i);
   assert.equal(read("../components/discover/DiscoverVenueMap.jsx").includes('export { default } from "./DiscoverVenueMapLegacy"'), true);
   assert.doesNotMatch(read("../components/discover/DiscoverVenueMap.web.jsx"), /iosVenueMap|MshpitVenueMap/);

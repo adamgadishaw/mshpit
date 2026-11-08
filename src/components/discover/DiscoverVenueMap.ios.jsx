@@ -43,7 +43,7 @@ export function VenueMapSession({ revision, points, selectedId, city, onSelect, 
   if (status === "error") return <MapUnavailable onRetry={onRetry} />;
   return <View>
     <View style={styles.map}>
-      <NativeVenueMap style={StyleSheet.absoluteFill} snapshot={{ revision, venues: points, selectedId }}
+      <NativeVenueMap style={StyleSheet.absoluteFill} snapshot={{ revision, venues: points, selectedId: selectedId ?? "" }}
         accessibilityLabel={`Venue street map of ${city || "the selected area"}`}
         onVenueSelect={({ nativeEvent }) => {
           if (state.current.live && state.current.status !== "error" && nativeEvent?.revision === revision) onSelect(nativeEvent);

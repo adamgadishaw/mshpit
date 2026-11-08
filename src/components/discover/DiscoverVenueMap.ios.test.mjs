@@ -84,7 +84,7 @@ test("loading only ends on a matching complete render; partial tile failures sta
   const c = fixture(), props = sessionProps();
   let tree = c.render(props, "VenueMapSession"); c.flush();
   const native = byType(tree, "NativeVenueMap");
-  assert.deepEqual(native.props.snapshot, { revision: props.revision, venues: props.points, selectedId: null });
+  assert.deepEqual(native.props.snapshot, { revision: props.revision, venues: props.points, selectedId: "" });
   native.props.onMapStatus({ nativeEvent: { revision: "old", status: "ready" } });
   assert.equal(c.render(props, "VenueMapSession").props.children[1].props.children.startsWith("Loading"), true);
   native.props.onMapStatus({ nativeEvent: { revision: props.revision, status: "partial" } });
@@ -96,6 +96,17 @@ test("loading only ends on a matching complete render; partial tile failures sta
   assert.ok(byType(c.render(props, "VenueMapSession"), "NativeVenueMap"));
   native.props.onMapStatus({ nativeEvent: { revision: props.revision, status: "partial" } });
   assert.ok(byType(c.render(props, "VenueMapSession"), "NativeVenueMap"), "a functioning map is not removed by overlapping tile failures");
+});
+
+test("native snapshot never sends nested null and keeps selection clear on the same lifetime", () => {
+  const c = fixture(), props = sessionProps();
+  for (const [selectedId, expected] of [[null, ""], ["a", "a"], [null, ""], [undefined, ""], ["a", "a"], ["", ""]]) {
+    const tree = c.render({ ...props, selectedId }, "VenueMapSession"); c.flush();
+    const snapshot = byType(tree, "NativeVenueMap").props.snapshot;
+    assert.deepEqual(snapshot, { revision: props.revision, venues: props.points, selectedId: expected });
+    assert.equal(typeof snapshot.selectedId, "string", "Expo Fabric nested null is not castable by Record");
+    assert.equal(snapshot.venues, props.points, "selection does not replace the venue data");
+  }
 });
 
 test("timeout becomes explicit fallback and fences late ready/selection; cleanup clears timers", () => {

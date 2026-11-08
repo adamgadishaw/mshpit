@@ -12,7 +12,9 @@ struct VenueMapPoint: Record {
 struct VenueMapSnapshot: Record {
   @Field var revision: String = ""
   @Field var venues: [VenueMapPoint] = []
-  @Field var selectedId: String? = nil
+  // Expo Fabric normalizes nested null to a boxed nil that Record cannot cast.
+  // Use an empty string for no selection at this native boundary.
+  @Field var selectedId: String = ""
 }
 
 public final class MshpitVenueMapModule: Module {
