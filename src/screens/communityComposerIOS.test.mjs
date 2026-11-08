@@ -201,7 +201,26 @@ function fixture({ kind = "fan", platform = "ios", strict = false, capacity = 32
     close() { messageDraftsMountedRef.current = false; renderer.render(null); linkedNavigationRef.current.unmount(); },
     async settle() { for (let i = 0; i < 10; i++) await Promise.resolve(); await new Promise(setImmediate); f.act(noop); f.render(); },
     async ready() { await f.settle(); if (kind === "lounge") await f.enter(); },
-    async enter(success = true) { f.act(() => { void f.entry.props.onPress(); }); entries.at(-1).resolve({ ok: success }); await f.settle(); },
+    async enter(success = true, { waitForMetadata = autoMeta } = {}) {
+      const before = metadata.at(-1);
+      f.act(() => { void f.entry.props.onPress(); });
+      entries.at(-1).resolve({ ok: success });
+      await f.settle();
+      if (!success || !waitForMetadata) return;
+      // Committing enteredRoom starts another metadata effect. Its promise may
+      // be resolved before React has adopted it, especially when rendering
+      // yields under suite load. Ready means that fresh owned read has opened
+      // the actual polling gate, not merely that a TextInput exists.
+      for (let attempt = 0; attempt < 10; attempt++) {
+        const current = metadata.at(-1);
+        if (current && current !== before && !current.options.signal.aborted) {
+          await current.promise;
+          await f.settle();
+          if (metadata.at(-1) === current && !current.options.signal.aborted && f.polling.enabled) return;
+        } else await f.settle();
+      }
+      assert.fail("Explicit Lounge entry did not adopt fresh current metadata");
+    },
     async complete(index = requests.length - 1, result = { id: "confirmed" }) { requests[index].resolve(result); await f.settle(); },
     async fail(index = requests.length - 1) { requests[index].reject(new Error("Unknown transport outcome")); await f.settle(); },
     async closed() { const promise = latestPolling.read({ signal: new AbortController().signal }); reads.at(-1).resolve({ closed: true }); await promise; await f.settle(); },
@@ -290,7 +309,8 @@ for (const kind of ["fan", "lounge"]) {
     else if (transition === "epoch") f.account("A", 2);
     else { f.account(null, 2); f.account("A", 3); }
     await f.settle(); if (kind === "lounge") await f.enter();
-    assert.equal(f.input.props.value, ""); f.edit("new private draft");
+    assert.equal(f.input.props.value, ""); assert.equal(f.input.props.editable, true);
+    f.edit("new private draft"); assert.equal(f.input.props.value, "new private draft");
     f.act(() => { edit("retired"); void submit(); }); await f.complete();
     assert.equal(f.requests.length, 1); assert.equal(f.input.props.value, "new private draft"); f.close();
   });
@@ -443,4 +463,27 @@ test("Retained Lounge draft cannot advertise editable/enabled controls during fr
   f.edit("not admitted"); f.submit(); assert.equal(f.requests.length, 0); assert.equal(f.input.props.value, "retained private text");
   await openMeta(); assert.equal(f.input.props.editable, true); assert.equal(f.send.props.disabled, false);
   f.edit("fresh admitted text"); f.submit(); assert.equal(f.requests.length, 1); f.close();
+});
+
+test("Lounge entry readiness waits for fresh metadata after logout before accepting a newer draft", async () => {
+  const f = fixture({ kind: "lounge", autoMeta: false });
+  const openMeta = async () => {
+    f.metadata.at(-1).resolve({ status: "open", attendeeCount: 3, messageCount: 1 }); await f.settle();
+  };
+  await openMeta(); await f.enter(); await openMeta();
+  f.edit("old private draft"); f.submit();
+  const edit = f.input.props.onChangeText, submit = f.input.props.onSubmitEditing;
+  f.account(null, 2); f.account("A", 3); await openMeta();
+  let entered = false;
+  const entering = f.enter(true, { waitForMetadata: true }).then(() => { entered = true; });
+  await f.settle();
+  assert.equal(entered, false, "The helper must not return before consequent metadata is adopted");
+  assert.equal(f.input.props.editable, false); assert.equal(f.polling.enabled, false);
+  f.edit("not yet admitted"); assert.equal(f.input.props.value, "");
+  await openMeta(); await entering;
+  assert.equal(f.input.props.editable, true); assert.equal(f.polling.enabled, true);
+  f.edit("new private draft"); assert.equal(f.input.props.value, "new private draft");
+  f.act(() => { edit("retired"); void submit(); }); await f.complete();
+  assert.equal(f.requests.length, 1); assert.equal(f.input.props.value, "new private draft");
+  f.close();
 });
