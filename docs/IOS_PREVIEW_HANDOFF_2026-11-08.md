@@ -3,9 +3,11 @@
 ## What is ready
 
 The iOS redesign and reliability work is compiled into a preserved local phone
-preview. It has **not** been installed on the phone, pushed, deployed to the
-website, or submitted to TestFlight/the App Store. Installation remains held
-until Adam explicitly reconnects the phone.
+preview. After Adam reconnected and explicitly approved, b73d54a was installed
+over the existing preview and launched on his iPhone 16 Pro Max, iOS 26.6.2.
+Xcode confirmed installation and the running process. No uninstall or data reset
+was performed. Session/content preservation still requires visual verification.
+Nothing was pushed, deployed to the website or submitted to TestFlight/the App Store.
 
 The visible redesign covers Discover, Feed and its closable side menu, public
 profiles and the personal You area. Discover uses image-led browsing and useful
@@ -98,10 +100,15 @@ The later b73d54a artifact was preserved and verified against all
 
 ## Next phone session
 
-After explicit reconnection, first verify the selected phone and this exact
-artifact/profile, then install over the existing preview without deleting its
-container. Verify installation and actual launch separately. A successful build
-or install receipt does not establish that every screen works on the phone.
+Installation and process launch are recorded in the separate dated
+phone-installation receipt beside the preserved artifact; the original build
+receipt remains historical. A successful install/launch does not establish that
+every screen works. Device Hub live screen sharing requires iOS 27 or newer and
+was unavailable on the phone's iOS 26.6.2. Its static Screenshot action did work,
+but captured the owner's update Terms screen rather than the app. No terms were
+accepted by the assistant. Adam began the OS update himself; all phone actions
+are paused until he confirms completion. Then verify connection, actual app
+screen and retained session before continuing permitted checks.
 If a required permission or authentication prompt appears, handle that exact
 prompt under the existing approval policy; do not change signing identities or
 request broader access as a shortcut.
@@ -112,7 +119,8 @@ navigation, largest Dynamic Type,
 VoiceOver focus and Reduce Motion. Preserve input selection and cursor, reachable
 controls, correct back/close behavior and current Feed position. Test failed
 session validation and Retry only in an authorized isolated fixture. Final physical
-checks have not been completed while the Mac session is locked.
+checks have not been completed; the Mac unlock succeeded, but device display
+compatibility and then the owner's OS update interrupted visual verification.
 
 This live-linked build is **not mutation-blocked**. Ordinary use may send consented
 analytics; opening Activity or a message Thread may persist read state. Do not
