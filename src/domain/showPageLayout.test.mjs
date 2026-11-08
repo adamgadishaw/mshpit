@@ -7,7 +7,7 @@ const venuePhotoSource = readFileSync(new URL("../components/VenuePhotoWidget.js
 
 test("the show page uses compact responsive sections and contained review slideshows", () => {
   assert.match(showSource, /function ReviewMediaTile/);
-  assert.match(showSource, /const tabletLayout = width >= 720/);
+  assert.match(showSource, /const tabletLayout = concertDetailWide\(width, fontScale, Platform\.OS, 720\)/);
   assert.match(showSource, /archiveReviewTileStyle/);
   assert.match(showSource, /showSummaryWide/);
   assert.match(showSource, /showSummaryMediaColumnWide/);

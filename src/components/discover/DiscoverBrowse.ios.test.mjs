@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { transformSync } from "@babel/core";
 import { parse } from "@babel/parser";
+import * as browseReturn from "../../domain/iosBrowseReturn.mjs";
 import * as programme from "../../domain/discoverProgramme.mjs";
 import * as range from "../../domain/discoverEventRange.mjs";
 import * as view from "../../domain/discoverView.mjs";
@@ -15,10 +16,10 @@ const require = createRequire(import.meta.url);
 const source = readFileSync(new URL("./DiscoverBrowse.ios.jsx", import.meta.url), "utf8");
 function fixture({ fontScale = 1, width = 393 } = {}) {
   const state = [], refs = [], dimensions = { width, fontScale };
-  let cursor = 0, refCursor = 0;
+  let cursor = 0, refCursor = 0, effects = [];
   const jsx = (type, props) => ({ type, props });
   const react = {
-    useMemo: (fn) => fn(), useEffect: () => {}, useRef: (value) => {
+    useMemo: (fn) => fn(), useEffect: (fn) => { effects.push(fn); }, useRef: (value) => {
       const i = refCursor++; return refs[i] ||= { current: value };
     },
     useState: (initial) => {
@@ -29,6 +30,7 @@ function fixture({ fontScale = 1, width = 393 } = {}) {
   };
   const fill = { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 };
   const modules = {
+    "../../domain/iosBrowseReturn.mjs": browseReturn,
     react, "react/jsx-runtime": { jsx, jsxs: jsx },
     "react-native": {
       ActivityIndicator: "ActivityIndicator", Pressable: "Pressable", ScrollView: "ScrollView", Text: "Text", TextInput: "TextInput", View: "View",
@@ -48,7 +50,7 @@ function fixture({ fontScale = 1, width = 393 } = {}) {
   new Function("require", "module", "exports", code)((name) => {
     assert.ok(name in modules, `Unexpected dependency ${name}`); return modules[name];
   }, module, module.exports);
-  return { exports: module.exports, dimensions, render: (fn, props) => { cursor = 0; refCursor = 0; return fn(props); } };
+  return { exports: module.exports, dimensions, flushEffects: () => { const pending = effects; effects = []; pending.forEach((effect) => effect()); }, render: (fn, props) => { cursor = 0; refCursor = 0; effects = []; return fn(props); } };
 }
 function nodes(tree) {
   if (!tree) return [];
@@ -151,10 +153,10 @@ test("region selection, range recovery, and genre selection call the existing ow
 });
 
 test("weekly list and every secondary destination preserve original components and callbacks", () => {
-  const c = fixture(), open = () => {}, change = () => {}, event = { id: "real", artist: "Artist" };
+  const changes = [], c = fixture(), open = () => {}, change = (value) => changes.push(value), event = { id: "real", artist: "Artist" };
   const tree = c.render(c.exports.default, props({ eventRecovery: null, listView: true, rangeEvents: [event], onOpen: open, onEventWeek: change }));
   const list = nodes(tree).find((node) => node.type === "EventList");
-  assert.equal(list.props.events[0], event); assert.equal(list.props.onOpen, open); assert.equal(list.props.onWeekChange, change);
+  assert.equal(list.props.events[0], event); assert.equal(list.props.onOpen, open); list.props.onWeekChange("2026-11-16"); assert.deepEqual(changes, ["2026-11-16"]);
   for (const destination of ["cities", "venues", "festivals", "photos"]) {
     const panel = { type: "OriginalPanel", props: { destination } };
     const rendered = c.render(c.exports.default, props({ programme: destination, panels: { [destination]: panel } }));
@@ -215,4 +217,89 @@ test("Discover headings reflow live at larger text sizes without replacing brows
     assert.equal(heading.type, named(artistTree, "SectionHeader").type);
   }
   assert.doesNotMatch(source, /key=\{[^}]*fontScale/);
+});
+
+
+test("Shows leads with upcoming dates rather than an unrelated artist fallback", () => {
+  const c = fixture();
+  const tree = c.render(c.exports.default, props({ region: "Canada", local: true, homeCity: "Toronto", selectedRangeDays: 60 }));
+  const all = nodes(tree);
+  const upcoming = all.findIndex(node => node.type?.name === "SectionHeader" && node.props.title === "Upcoming shows");
+  const fallback = all.findIndex(node => node.type?.name === "FeaturedRail");
+  assert.ok(upcoming >= 0 && fallback > upcoming);
+  assert.equal(all[upcoming].props.detail, "Near Toronto · Next 60 days");
+  const radios = all.filter(node => node.props.accessibilityRole === "radio");
+  assert.ok(radios.some(node => node.props.accessibilityLabel === "Near Toronto" && node.props.accessibilityState.checked));
+  assert.match(text(tree), /Near Toronto/);
+});
+
+test("an authentic upcoming hero retains first position and no duplicate artist fallback", () => {
+  const c = fixture(), slides = [{ id: "real", title: "Real show", event: { id: "real", artist: "Real artist" } }];
+  const all = nodes(c.render(c.exports.default, props({ slides })));
+  const hero = all.findIndex(node => node.type?.name === "FeaturedRail");
+  const upcoming = all.findIndex(node => node.type?.name === "SectionHeader" && node.props.title === "Upcoming shows");
+  assert.ok(hero >= 0 && hero < upcoming);
+  assert.equal(all.filter(node => node.type?.name === "FeaturedRail").length, 1);
+  assert.equal(all[hero].props.slides, slides);
+});
+
+
+test("every new Discover filter/layout intent cancels an outstanding return scroll through real controls", () => {
+  const cases = [
+    ["country", { programme: "shows" }, (tree, rerender) => {
+      nodes(tree).find((n) => n.props?.accessibilityLabel?.startsWith("Choose an area to explore." )).props.onPress();
+      nodes(rerender()).find((n) => n.type === "Pressable" && n.props.accessibilityLabel === "Canada").props.onPress();
+    }, "onRegion", "Canada"],
+    ["worldwide recovery", {}, (tree) => named(tree, "Recovery").props.onWorldwide(), "onRegion", "Worldwide"],
+    ["scope", {}, (tree) => nodes(tree).find((n) => n.type === "Pressable" && n.props.accessibilityLabel === "Near you").props.onPress(), "onScope", true],
+    ["date", {}, (tree, rerender) => {
+      nodes(tree).find((n) => n.props?.label?.startsWith("Choose event dates.")).props.onPress();
+      nodes(rerender()).find((n) => n.type === "Pressable" && n.props.accessibilityLabel === "Next 60 days").props.onPress();
+    }, "onRange", 60],
+    ["recovery range", {}, (tree) => named(tree, "Recovery").props.onRange(90), "onRange", 90],
+    ["query", { programme: "artists" }, (tree) => nodes(tree).find((n) => n.type === "TextInput").props.onChangeText("new query"), "onQuery", "new query"],
+    ["clear query", { programme: "artists", query: "old" }, (tree) => nodes(tree).find((n) => n.props?.accessibilityLabel === "Clear artist search").props.onPress(), "onQuery", ""],
+    ["empty query clear", { programme: "artists", query: "no-match" }, (tree) => nodes(tree).find((n) => n.props?.children === "Clear search").props.onPress(), "onQuery", ""],
+    ["cards", { eventRecovery: null }, (tree) => nodes(tree).find((n) => n.props?.accessibilityLabel === "Show events as cards").props.onPress(), "onEventView", "cards"],
+    ["list", { eventRecovery: null }, (tree) => nodes(tree).find((n) => n.props?.accessibilityLabel === "Show events as list").props.onPress(), "onEventList", undefined],
+    ["full list", { eventRecovery: null, rangeHasMore: true }, (tree) => nodes(tree).find((n) => n.props?.children === "Browse the full list").props.onPress(), "onEventList", undefined],
+    ["week", { eventRecovery: null, listView: true }, (tree) => nodes(tree).find((n) => n.type === "EventList").props.onWeekChange("2026-11-16"), "onEventWeek", "2026-11-16"],
+    ["all artists", { programme: "artists" }, (tree) => nodes(tree).find((n) => n.props?.action === "All artists").props.onPress()],
+  ];
+  for (const [label, overrides, action, callback, expected] of cases) {
+    const f = fixture(), scrolled = [], actions = [], saved = [];
+    let input = props({ ...overrides, initialBrowse: { scrollY: 900, genreFocused: true },
+      overviewStatus: "loading", eventStatus: "loading", genreStatus: "loading",
+      browseReturn: { save: (value) => saved.push(value) },
+      ...(callback ? { [callback]: (value) => actions.push(value) } : {}) });
+    const render = () => f.render(f.exports.default, input);
+    let tree = render();
+    const root = nodes(tree).find((n) => n.type === "ScrollView" && n.props.onContentSizeChange);
+    root.props.ref.current = { scrollTo: (value) => scrolled.push(value) };
+    root.props.onLayout({ nativeEvent: { layout: { width: 393, height: 600 } } });
+    root.props.onContentSizeChange(393, 700); f.flushEffects();
+    action(tree, render);
+    assert.ok(saved.some((v) => v.scrollY === 0), `${label} cancels the stored offset`);
+    input = { ...input, overviewStatus: "ready", eventStatus: "ready", genreStatus: "ready" };
+    tree = render(); f.flushEffects();
+    nodes(tree).find((n) => n.type === "ScrollView" && n.props.onContentSizeChange).props.onContentSizeChange(393, 2500);
+    assert.deepEqual(scrolled, [], `${label}: late data must not jump to old scroll offset`);
+    if (callback) assert.deepEqual(actions, [expected], `${label} forwards its original action`);
+  }
+});
+
+
+test("retrying the unchanged Discover range can still restore after results arrive", () => {
+  const f = fixture(), scrolled = [], retry = [];
+  let input = props({ initialBrowse: { scrollY: 900 }, eventStatus: "loading", onRange: (value) => retry.push(value) });
+  let tree = f.render(f.exports.default, input);
+  const root = nodes(tree).find((n) => n.type === "ScrollView" && n.props.onContentSizeChange);
+  root.props.ref.current = { scrollTo: (value) => scrolled.push(value) };
+  root.props.onLayout({ nativeEvent: { layout: { width: 393, height: 600 } } });
+  root.props.onContentSizeChange(393, 700); f.flushEffects();
+  named(tree, "Recovery").props.onRetry();
+  assert.deepEqual(retry, [30]);
+  input = { ...input, eventStatus: "ready" }; tree = f.render(f.exports.default, input); f.flushEffects();
+  nodes(tree).find((n) => n.type === "ScrollView" && n.props.onContentSizeChange).props.onContentSizeChange(393, 2500);
+  assert.deepEqual(scrolled, [{ y: 900, animated: false }]);
 });

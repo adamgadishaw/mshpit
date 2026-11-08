@@ -2058,7 +2058,7 @@ export default function LogScreen({
             <View style={styles.onlineRatingCard}>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.onlineRatingLabel}>YOUR RATING</Text>
-                <TapStars value={onlineRating} onChange={(value) => { setRatingsDirty(true); setOnlineRating(normalizeOnlineRating(value)); }} size={28} gap={5} color={colors.amber} />
+                <TapStars accessibilityLabel={Platform.OS === "ios" ? "Online performance rating" : undefined} value={onlineRating} onChange={(value) => { setRatingsDirty(true); setOnlineRating(normalizeOnlineRating(value)); }} size={28} gap={5} color={colors.amber} />
               </View>
               <Text style={styles.onlineRatingValue}>{onlineRating ? onlineRating.toFixed(1) : "-"}</Text>
             </View>
@@ -2173,7 +2173,7 @@ export default function LogScreen({
         <View style={styles.quickRatingCard}>
           <Text style={styles.onlineRatingLabel}>{isFestival ? "HOW WAS THE FESTIVAL?" : "HOW WAS THE SHOW?"}</Text>
           <View style={styles.quickRatingRow}>
-            <TapStars value={dims.experience} onChange={(value) => setDim("experience", value)} size={32} gap={5} color={colors.amber} />
+            <TapStars accessibilityLabel={Platform.OS === "ios" ? "Overall experience rating" : undefined} value={dims.experience} onChange={(value) => setDim("experience", value)} size={32} gap={5} color={colors.amber} />
             <Text style={styles.onlineRatingValue}>{dims.experience ? dims.experience.toFixed(1) : "—"}</Text>
           </View>
           <Text style={styles.detailHint}>Your overall experience. Leave any detailed scores you don't remember unrated.</Text>
@@ -2192,7 +2192,7 @@ export default function LogScreen({
                   <Text style={styles.factorLabel}>{d.label}</Text>
                   {dims[d.key] > 0 && <Pressable style={styles.clearRating} onPress={() => setDim(d.key, 0)} accessibilityRole="button" accessibilityLabel={`Leave ${d.label.toLowerCase()} unrated`}><Text style={styles.optionalActionText}>Leave unrated</Text></Pressable>}
                 </View>
-                <TapStars value={dims[d.key]} onChange={(v) => setDim(d.key, v)} size={25} gap={4} color={GROUP_COLOR[g]} />
+                <TapStars accessibilityLabel={Platform.OS === "ios" ? `${d.label} rating` : undefined} value={dims[d.key]} onChange={(v) => setDim(d.key, v)} size={25} gap={4} color={GROUP_COLOR[g]} />
               </View>
             ))}
           </View>

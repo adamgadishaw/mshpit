@@ -7,6 +7,7 @@ import TicketStub from "../components/TicketStub";
 import Icon from "../components/Icon";
 import { filteredFeedNextAction } from "../domain/feedPagination.mjs";
 import { feedFilterStorageKey, feedFooterState, normalizeFeedFilter } from "../domain/feedExperience.mjs";
+import { feedDiscoveryPlacement, feedPostPosition, IOS_FEED_DISCOVERY_SLOT } from "../domain/feedDiscoveryPlacement.mjs";
 import { nextVisibleMediaPostIds } from "../domain/posterVisibility.mjs";
 import { JOURNEY_TAGLINE } from "../domain/menuJourney.mjs";
 import { HOME_JOURNEY_LINE, homeGuideStorageKey } from "../domain/homeJourney.mjs";
@@ -31,7 +32,7 @@ const REFRESH_RETRY_HINT = Platform.OS === "web"
   ? "Reload this page to try again."
   : "Pull down to try again.";
 
-const feedKeyExtractor = (item) => String(item.id);
+const feedKeyExtractor = (item) => item === IOS_FEED_DISCOVERY_SLOT ? "slot:ios-people-discovery" : String(item.id);
 
 // Keep mounted feed cards insulated from viewport bookkeeping and unrelated
 // header state. The ref-backed handlers always call the latest screen props,
@@ -130,14 +131,18 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   const full = useMemo(() => newsAwareFeed(filter === "following" ? following.posts : filter === "local" ? localFeed : feed,
     { filter, accountId, followedArtists, introduction: introduction.post }), [filter, accountId, followedArtists, feed, following.posts, localFeed, introduction.post]);
   const data = useMemo(() => full.slice(0, count), [count, full]);
-  const listData = newsTab ? news.stories : data;
+  const baseListData = newsTab ? news.stories : data;
+  const discovery = useMemo(() => feedDiscoveryPlacement(baseListData, {
+    platform: Platform.OS, enabled: loggedIn && showSuggestedPitters, newsTab,
+  }), [baseListData, loggedIn, showSuggestedPitters, newsTab]);
+  const listData = discovery.rows;
   const openAllNews = () => (loggedIn ? pick("news") : onOpenNews?.());
   const effectiveHasMore = filter === "following" ? !!following.nextCursor : hasMore;
   const effectiveLoading = filter === "following" ? following.status === "loading" : loadingMore;
   const filteredPageLoading = effectiveLoading && count >= full.length;
   const surface = filter === "following" ? "following" : filter === "local" ? "local" : filter === "news" ? "news" : "everyone";
   const analyticsRef = useRef({ surface, onImpression, onDwell });
-  analyticsRef.current = { surface, onImpression, onDwell };
+  analyticsRef.current = { surface, onImpression, onDwell, discoveryIndex: discovery.index };
   activityRef.current = feedActive;
 
   useEffect(() => {
@@ -176,7 +181,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
         const impressionKey = String(item.id);
         if (!seenImpressions.current.has(impressionKey)) {
           seenImpressions.current.add(impressionKey);
-          analyticsRef.current.onImpression?.(item, Number.isSafeInteger(token.index) ? token.index : 0, viewedSurface);
+          analyticsRef.current.onImpression?.(item, feedPostPosition(token.index, analyticsRef.current.discoveryIndex), viewedSurface);
         }
       } else {
         const visible = visibleSince.current.get(item.id);
@@ -361,19 +366,29 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     report: canReport,
     requireAuth: canRequireAuth,
   }), [canComment, canEdit, canHideRecommendation, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenProfile, canOpenVenue, canPlay, canPreview, canRemoveMyPostTag, canReport, canRequireAuth]);
-  const renderFeedItem = useCallback(({ item, index: itemIndex }) => (newsTab ? (
+  const suggestions = useMemo(() => <SuggestedPittersRail
+    accountId={accountId}
+    homeCity={homeCity}
+    suggestions={suggestedUsers}
+    loading={suggestedUsersLoading}
+    isFollowing={isFollowing}
+    isBlocked={isBlocked}
+    onFollow={onFollowUser}
+    onOpenProfile={onOpenProfile}
+  />, [accountId, homeCity, suggestedUsers, suggestedUsersLoading, isFollowing, isBlocked, onFollowUser, onOpenProfile]);
+  const renderFeedItem = useCallback(({ item, index: itemIndex }) => item === IOS_FEED_DISCOVERY_SLOT ? suggestions : (newsTab ? (
     <NewsStoryCard story={item} accountId={accountId} onOpen={onOpenNewsStory} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onEdit={onEdit} onRequireAuth={onRequireAuth} />
   ) : (
     <FeedTicketRow
       item={item}
-      itemIndex={itemIndex}
+      itemIndex={feedPostPosition(itemIndex, discovery.index)}
       mediaViewable={feedActive ? (visibleMediaPostIds.has(String(item.id)) ? true : null) : false}
       surface={surface}
       actionsRef={rowActionsRef}
       capabilities={rowCapabilities}
       accountId={accountId}
     />
-  )), [accountId, feedActive, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
+  )), [accountId, discovery.index, suggestions, feedActive, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
@@ -497,18 +512,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             </View>
           ) : null}
 
-          {loggedIn && showSuggestedPitters ? (
-            <SuggestedPittersRail
-              accountId={accountId}
-              homeCity={homeCity}
-              suggestions={suggestedUsers}
-              loading={suggestedUsersLoading}
-              isFollowing={isFollowing}
-              isBlocked={isBlocked}
-              onFollow={onFollowUser}
-              onOpenProfile={onOpenProfile}
-            />
-          ) : null}
+          {discovery.placement === "header" ? suggestions : null}
 
           {!!undoItem && (
             <View style={styles.undoBar} accessibilityRole="alert">

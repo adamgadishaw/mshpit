@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { parse } from "@babel/parser";
+import { defaultDiscoverAreaChoice } from "./discoverArea.mjs";
 
 const read = (path) => readFile(new URL(path, import.meta.url), "utf8");
 
@@ -45,7 +47,21 @@ test("Discover retains upcoming events and deeper discovery alongside its connec
   assert.match(source, /const sceneProjection = useMemo\(\(\) => projectDiscoverScene\(rangeMatchesScene \? eventRange\.rows : tourDates, \{[\s\S]*region,[\s\S]*eventLimit: 12,[\s\S]*venueLimit: 8,[\s\S]*countryForCity,[\s\S]*\}\), \[eventRange\.rows, rangeMatchesScene, region, tourDates\]\)/);
   assert.match(source, /const initialRangeEvents = useMemo\(\(\) => selectDiscoverRangeEvents\([\s\S]*localEvents : sceneProjection\.events/);
   assert.match(source, /worldwideEvents: initialRangeEvents/);
-  assert.match(source, /const \[areaChoice, setAreaChoice\] = useState\(\(\) => defaultDiscoverAreaChoice\(areaContext\)\)/);
+  const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
+  const component = ast.program.body.find((node) => node.type === "ExportDefaultDeclaration").declaration;
+  const area = component.body.body.flatMap((node) => node.declarations || [])
+    .find((node) => node.id.type === "ArrayPattern" && node.id.elements[0]?.name === "areaChoice");
+  assert.equal(area.init.callee.name, "useState", "area remains screen-local state");
+  const initializer = area.init.arguments[0];
+  assert.equal(initializer.type, "ArrowFunctionExpression");
+  const initialize = new Function("initialBrowse", "accountId", "areaContext", "defaultDiscoverAreaChoice",
+    `return (${source.slice(initializer.start, initializer.end)})();`);
+  const context = { accountId: "viewer", homeCity: "Toronto", homeCountry: "Canada" };
+  assert.deepEqual(initialize(null, "viewer", context, defaultDiscoverAreaChoice), defaultDiscoverAreaChoice(context),
+    "a fresh visit, including Android/web, uses the existing account-aware default");
+  assert.deepEqual(initialize({ region: "France", scope: "country", touched: true, accountId: "old" }, "viewer", context, defaultDiscoverAreaChoice),
+    { accountId: "viewer", region: "France", scope: "country", touched: true },
+    "an iOS return restores only area preferences and binds them to the current viewer");
   assert.match(source, /selectDiscoverCountryArea/);
   assert.match(source, /selectDiscoverScopeArea/);
   assert.doesNotMatch(source, /regionChoice|liveScopeChoice/);

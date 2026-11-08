@@ -92,6 +92,7 @@ function useLatestCallback(callback) {
 }
 
 export default function DiscoverScreen({
+  browseReturn,
   initialProgramme,
   rememberedProgramme,
   onProgrammeChange,
@@ -126,18 +127,25 @@ export default function DiscoverScreen({
     venueDirectoryIndex,
     myAttendance = [],
   } = useStore();
+  const initialBrowse = useRef(Platform.OS === "ios" ? browseReturn?.read() : null).current;
   const { width } = useWindowDimensions();
   const openCity = useContext(CityNavigationContext);
   const compact = width < 620;
   const veryCompact = width < 380;
   const wide = width >= 900;
   const actionBasis = veryCompact ? "100%" : "48%";
-  const [programme, setProgramme] = useState(() => restoredDiscoverProgramme(initialProgramme, rememberedProgramme));
+  const [programme, setProgramme] = useState(() => restoredDiscoverProgramme(initialBrowse?.programme || initialProgramme, rememberedProgramme));
   const rememberProgramme = useLatestCallback(onProgrammeChange);
   useEffect(() => { rememberProgramme(programme); }, [programme, rememberProgramme]);
+  const initialProgrammeRef = useRef(initialProgramme);
   useEffect(() => {
-    if (initialProgramme !== undefined) setProgramme(discoverProgrammeKey(initialProgramme));
-  }, [initialProgramme]);
+    // A snapshot belongs to this exact navigation lease. Only a new explicit
+    // directory intent may override the viewer's intervening category choice.
+    if (initialProgramme !== undefined && (!initialBrowse || initialProgrammeRef.current !== initialProgramme)) {
+      setProgramme(discoverProgrammeKey(initialProgramme));
+    }
+    initialProgrammeRef.current = initialProgramme;
+  }, [initialProgramme, initialBrowse]);
   const [areaExpanded, setAreaExpanded] = useState(false);
   const [dateExpanded, setDateExpanded] = useState(false);
   const areaDisclosureRef = useRef(null);
@@ -151,7 +159,7 @@ export default function DiscoverScreen({
   const homeCity = session?.home?.city || discoverySidebar?.location?.city || "";
   const homeCountry = countryForCity(homeCity);
   const areaContext = { accountId, homeCity, homeCountry };
-  const [areaChoice, setAreaChoice] = useState(() => defaultDiscoverAreaChoice(areaContext));
+  const [areaChoice, setAreaChoice] = useState(() => initialBrowse ? { accountId, region: initialBrowse.region, scope: initialBrowse.scope, touched: initialBrowse.touched } : defaultDiscoverAreaChoice(areaContext));
   const resolvedArea = resolveDiscoverAreaChoice(areaChoice, areaContext);
   const region = resolvedArea.region;
   const liveScope = discoverAreaIsLocal(resolvedArea)
@@ -164,20 +172,21 @@ export default function DiscoverScreen({
     ...(liveScope === LIVE_EVENT_SCOPE.LOCAL ? homeCoordinates : []),
   ]);
   const overviewScopeKey = discoverCountryIdentity(region) || "worldwide";
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialBrowse?.query || "");
   const [overviewResults, setOverviewResults] = useState(() => ({}));
   const overview = overviewResults[overviewScopeKey] || EMPTY_OVERVIEW;
   const [overviewRequestState, setOverviewRequestState] = useState({ scopeKey: null, status: "idle" });
-  const [selectedGenre, setSelectedGenre] = useState(null);
+  const [selectedGenre, setSelectedGenre] = useState(initialBrowse?.genre || null);
   const [sceneExpanded, setSceneExpanded] = useState(false);
   const genreScopeKey = JSON.stringify([overviewScopeKey, String(selectedGenre || "").trim().toLowerCase()]);
   const [genreResults, setGenreResults] = useState(() => ({}));
   const genreRows = selectedGenre ? genreResults[genreScopeKey] || [] : [];
   const [genreRequestState, setGenreRequestState] = useState({ scopeKey: null, status: "idle" });
   const [eventRange, setEventRange] = useState(EMPTY_EVENT_RANGE);
-  const [eventView, setEventViewState] = useState(() => rememberedEventView);
-  const setEventView = useCallback((view) => { rememberedEventView = view; setEventViewState(view); }, []);
-  const [eventWeek, setEventWeek] = useState(null);
+  const [eventView, setEventViewState] = useState(() => Platform.OS === "ios" ? initialBrowse?.eventView || "cards" : rememberedEventView);
+  const setEventView = useCallback((view) => { if (Platform.OS !== "ios") rememberedEventView = view; setEventViewState(view); }, []);
+  const [eventWeek, setEventWeek] = useState(initialBrowse?.eventWeek || null);
+  const restoredRangeScope = useRef(rangeScopeKey);
   const requestedCursorRef = useRef(null);
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [pullRefreshError, setPullRefreshError] = useState(false);
@@ -261,7 +270,7 @@ export default function DiscoverScreen({
   }) : liveEvents, [liveEvents, rangeEvents, rangeMatchesScene]);
   const selectedRangeDays = eventRange.scopeKey === rangeScopeKey && eventRange.days
     ? eventRange.days
-    : DISCOVER_RANGE_DAYS[0];
+    : (restoredRangeScope.current === rangeScopeKey ? initialBrowse?.days : null) || DISCOVER_RANGE_DAYS[0];
   // Cards show the first few; the list shows every show in range a week at a time.
   const rangeHasMore = !rangeMatchesScene || rangeEvents.length > visibleLiveEvents.length;
   const rangeLoadingMore = rangeMatchesScene && eventRange.status === "loading" && !!eventRange.nextCursor && eventRange.rows.length < DISCOVER_RANGE_MAX_EVENTS;
@@ -451,8 +460,10 @@ export default function DiscoverScreen({
   }, [eventRange.days, eventRange.nextCursor, eventRange.rows.length, eventRange.status, eventView, rangeMatchesScene, requestEventRange]);
 
   useEffect(() => {
-    setEventWeek(null);
-    requestEventRange(DISCOVER_RANGE_DAYS[0]);
+    const returning = restoredRangeScope.current === rangeScopeKey && initialBrowse;
+    if (!returning) setEventWeek(null);
+    requestEventRange(returning?.days || DISCOVER_RANGE_DAYS[0]);
+    restoredRangeScope.current = null;
     return () => {
       rangeRequestRef.current.controller?.abort();
       rangeRequestRef.current.sequence += 1;
@@ -585,9 +596,16 @@ export default function DiscoverScreen({
     { label: "genres", value: overview.distinctGenres ?? localStats.genres, tint: colors.magenta },
   ];
 
+  useEffect(() => {
+    if (Platform.OS !== "ios") return;
+    browseReturn?.save({ query, programme, genre: selectedGenre, region: areaChoice.region, scope: areaChoice.scope,
+      touched: areaChoice.touched, days: selectedRangeDays, eventView, eventWeek });
+  }, [browseReturn, query, programme, selectedGenre, areaChoice, selectedRangeDays, eventView, eventWeek]);
+
   // iOS owns presentation only. Requests, filters, refresh and navigation above
   // remain shared; Metro resolves a no-op entry on Android and web.
   if (Platform.OS === "ios") return <DiscoverBrowse
+    browseReturn={browseReturn} initialBrowse={initialBrowse}
     programme={programme} onProgramme={(value) => setProgramme(discoverProgrammeKey(value))}
     region={region} homeCity={homeCity} countries={countries} onRegion={pickRegion}
     local={liveScope === LIVE_EVENT_SCOPE.LOCAL} onScope={(local) => pickLiveScope(local ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE)}

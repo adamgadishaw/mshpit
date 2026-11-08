@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { parse } from "@babel/parser";
 
 const read = (path) => readFile(new URL(path, import.meta.url), "utf8");
 
@@ -25,7 +26,21 @@ test("Discover shows four event cards, a week-by-week list, and fetches the sele
   assert.match(screen, /selectDiscoverRangeEvents/);
   assert.match(screen, /mergeDiscoverRangePages/);
   assert.match(screen, /rangeRequestRef\.current\.controller\?\.abort\(\)/);
-  assert.match(screen, /useEffect\(\(\) => \{\s*setEventWeek\(null\);\s*requestEventRange\(DISCOVER_RANGE_DAYS\[0\]\)/);
+  const body = parse(screen, { sourceType: "module", plugins: ["jsx"] }).program.body
+    .find((n) => n.type === "ExportDefaultDeclaration").declaration.body.body;
+  const effect = body.find((n) => n.expression?.callee?.name === "useEffect"
+    && n.expression.arguments[1]?.elements?.some((arg) => arg.name === "rangeScopeKey")
+    && screen.slice(n.start, n.end).includes("rangeRequestRef.current.sequence += 1")).expression.arguments[0];
+  assert.ok(effect, "scope changes own a request effect with cancellation");
+  const run = new Function("restoredRangeScope", "rangeScopeKey", "initialBrowse", "setEventWeek", "requestEventRange", "DISCOVER_RANGE_DAYS", "rangeRequestRef",
+    `return (${screen.slice(effect.start, effect.end)})();`);
+  for (const [snapshot, savedScope, days, clearWeek] of [[null, "scene", 30, true], [{ days: 90 }, "scene", 90, false], [{ days: 90 }, "old-scene", 30, true]]) {
+    const requests = [], weeks = [], scope = { current: savedScope }, owner = { current: { sequence: 0, controller: { abort: () => requests.push("abort") } } };
+    const cleanup = run(scope, "scene", snapshot, (v) => weeks.push(v), (v) => requests.push(v), [30, 60, 90], owner);
+    assert.deepEqual(requests, [days]); assert.deepEqual(weeks, clearWeek ? [null] : []);
+    assert.equal(scope.current, null, "restoration is consumed once"); cleanup();
+    assert.deepEqual(requests, [days, "abort"]); assert.equal(owner.current.sequence, 1);
+  }
   assert.match(screen, /const local = liveScope === LIVE_EVENT_SCOPE\.LOCAL/);
   assert.match(screen, /rangeLoaderRef\.current\(\{[\s\S]*country: requestCountry,[\s\S]*local,[\s\S]*signal: controller\.signal/);
   assert.doesNotMatch(screen, /rangeLoaderRef\.current\(\{[^}]*\bcity\b/);

@@ -69,8 +69,8 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
     value: { ...scopedScreenValue(current, actionScope, EMPTY_FAN_ACTIONS), ...changes },
   }));
   const [gateMeta, setGateMeta] = useState(null);
-  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
   const messages = fanClubAllowed ? fanClubFor(fanClubTarget) : [];
+  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll({ messageCount: messages.length, scopeKey: `${chatAuthEpoch}:${actionScope}` });
   const member = fanClubAllowed && isFanClubMember(fanClubTarget);
   useLiveChat(
     ({ after, signal }) => loadFanClub(fanClubTarget, { after, signal }),

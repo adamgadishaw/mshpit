@@ -44,8 +44,8 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   const entered = !!roomIdentity && enteredRoom === roomIdentity;
   const [gateMeta, setGateMeta] = useState(null);
   const [metaRefresh, setMetaRefresh] = useState(0);
-  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
   const messages = loungeFor(key);
+  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll({ messageCount: messages.length, scopeKey: `${chatAuthEpoch}:${actionScope}` });
   const attendees = attendeesFor(key);
   const currentGateMeta = gateMeta?.key === key ? gateMeta : null;
   const loungeOpen = currentGateMeta?.status === "open";

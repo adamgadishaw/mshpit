@@ -1,3 +1,5 @@
+import { concertDetailStyles, concertDetailWide } from "../components/concertDetailIOSPresentation.mjs";
+import useIOSTicketAction from "../components/useIOSTicketAction";
 import CatalogText from "../features/catalogEditor/CatalogText";
 import usePublicVenueSnapshot from "../features/venuePublic/usePublicVenueSnapshot";
 import { publicVenueArtistTarget, publicVenueUpcomingLabel } from "../domain/publicVenueSnapshot.mjs";
@@ -16,7 +18,6 @@ import { UpcomingEventCard } from "../components/VenueDiscoveryCards";
 import { formatDate } from "../domain/dates.mjs";
 import { venueRowWindow } from "../domain/venueDiscovery.mjs";
 import { VENUE_PAGE_SECTIONS, venuePagePreview, venuePageSectionModel, venuePhotoViewerIndex } from "../domain/venuePageSections.mjs";
-import { openTicketLink } from "../lib/ticketLinks";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
@@ -32,14 +33,15 @@ const HISTORY_BATCH = 12;
 const UPCOMING_BATCH = 6;
 
 export default function VenueScreen({ venueName, venueIdentity = null, onClose, onOpenShow, onOpenArtist, onReviewVenue, onOpenProfile, onOpenPhotos, onReport, onRequireAuth }) {
-  const { width } = useWindowDimensions();
-  const wide = width >= 760;
+  const { width, fontScale } = useWindowDimensions();
+  const wide = concertDetailWide(width, fontScale, Platform.OS, 760);
   const {
     venueSummary, venueReviewsFor, loadVenueReviews, venueRating, venueTopPhotos,
     session, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, userByHandle,
   } = useStore();
   const publicVenue = usePublicVenueSnapshot({ name: venueName, identity: venueIdentity, accountId: session?.id });
   const snapshot = publicVenue.resource.data;
+  const ticketAction = useIOSTicketAction(publicVenue.resource.scope);
   // Community history remains local; public facts/events never inherit a
   // same-name cache entry or the truncated global discovery calendar.
   const venue = { ...venueSummary(venueName), name: snapshot?.venue.name || venueName,
@@ -123,6 +125,10 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
       >
+        {Platform.OS === "ios" ? <View style={styles.iosTitleBlock}>
+          <Text style={styles.iosKicker}>Venue</Text>
+          <Text style={styles.iosTitle} accessibilityRole="header">{venue.name}</Text>
+        </View> : null}
         <View style={styles.heroShell}>
           <VenuePhotoWidget
             photos={photos}
@@ -186,6 +192,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         {sectionModel.showUpcoming ? (
           venue.upcoming.length > 0 ? (
             <Section title="Upcoming shows" count={snapshot?.hasMore || snapshot?.after ? null : venue.upcoming.length}>
+              {ticketAction.error ? <Text style={styles.ticketError} accessibilityRole="alert">{ticketAction.error}</Text> : null}
               <View style={styles.stack}>
                 {visibleUpcoming.map((event) => (
                   <UpcomingEventCard
@@ -193,7 +200,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
                     event={event}
                     onOpenArtist={publicVenueArtistTarget(event) ? () => onOpenArtist?.(publicVenueArtistTarget(event)) : undefined}
                     onOpenEvent={() => onOpenShow?.(event)}
-                    onTickets={() => { void openTicketLink(event.ticketUrl); }}
+                    onTickets={() => { void ticketAction.open(event.ticketUrl); }}
                   />
                 ))}
                 {sectionModel.condensed && venue.upcoming.length > visibleUpcoming.length ? (
@@ -565,7 +572,11 @@ function MoreButton({ label, remaining, onPress }) {
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = {
+  ticketError: { color: colors.danger, fontSize: 15, lineHeight: 22 },
+  iosTitleBlock: { gap: 7, paddingTop: 4 },
+  iosKicker: { fontFamily: "System", fontSize: 13, fontWeight: "600", color: colors.amber },
+  iosTitle: { fontFamily: "System", fontSize: 32, fontWeight: "700", letterSpacing: -0.5, color: colors.text },
   wrap: { flex: 1, backgroundColor: colors.bg },
   content: { width: "100%", maxWidth: 980, minWidth: 0, alignSelf: "center", alignItems: "stretch", paddingHorizontal: space(4), paddingTop: space(4), paddingBottom: 96, gap: 14 },
   heroShell: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch", padding: 7, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
@@ -653,4 +664,6 @@ const styles = StyleSheet.create({
   historyEmpty: { width: "100%", maxWidth: "100%", minWidth: 0, color: colors.textDim, fontSize: 13, fontStyle: "italic", padding: 16, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
   moreButton: { width: "100%", maxWidth: "100%", minWidth: 0, minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 16, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line, ...Platform.select({ web: { cursor: "pointer" } }) },
   moreButtonText: { color: colors.amber, fontFamily: displayFont, fontSize: 13, fontWeight: "900" },
-});
+};
+
+const styles = StyleSheet.create(concertDetailStyles(baseStyles, Platform.OS, "venue", colors));

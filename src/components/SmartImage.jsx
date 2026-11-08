@@ -27,7 +27,7 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
   // reconcile the same cached image whenever a feed card updates its counters.
   const source = useMemo(() => ({ uri: src, cacheKey: src }), [src]);
   if (mediaKind === "video" || (!mediaKind && isVideoUrl(uri))) {
-    const clip = <ClipPoster uri={uri} posterUri={posterUri} viewable={viewable} style={StyleSheet.absoluteFill} contain={contain} compact={!previewWidth} priority={policy.priority} loading={policy.loading} accessible={accessible} />;
+    const clip = <ClipPoster uri={uri} posterUri={posterUri} viewable={viewable} style={StyleSheet.absoluteFill} contain={contain} compact={!previewWidth} priority={policy.priority} loading={policy.loading} cachePolicy={cachePolicy} accessible={accessible} />;
     if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel === "Open image" ? "Play video clip" : accessibilityLabel}>{clip}</Pressable>;
     return <View style={[styles.base, style]}>{clip}</View>;
   }

@@ -9,6 +9,7 @@ import SmartImage from "./SmartImage";
 import Stars from "./Stars";
 import RatingBreakdown from "./RatingBreakdown";
 import RatingSplit from "./RatingSplit";
+import useReducedMotion from "../hooks/useReducedMotion";
 
 const text = (value) => typeof value === "string" ? value.trim() : "";
 
@@ -21,7 +22,10 @@ export default function ConcertMemoryModal({
   onOpenFull,
   onOpenPost,
 }) {
-  const { width } = useWindowDimensions();
+  const { width, fontScale } = useWindowDimensions();
+  const reducedMotion = useReducedMotion();
+  const ios = Platform.OS === "ios";
+  const largeText = ios && fontScale > 1.25;
   const desktop = Platform.OS === "web" && width >= 900;
   const [mediaIndex, setMediaIndex] = useState(0);
 
@@ -54,7 +58,7 @@ export default function ConcertMemoryModal({
   const nextMedia = () => setMediaIndex((current) => (current + 1) % mediaCount);
 
   return (
-    <Modal animationType={Platform.OS === "web" ? "fade" : "slide"} onRequestClose={onClose}
+    <Modal animationType={Platform.OS === "web" ? "fade" : ios && reducedMotion ? "none" : "slide"} onRequestClose={onClose}
       presentationStyle="overFullScreen" statusBarTranslucent transparent visible>
       <View style={[styles.overlay, desktop && styles.overlayDesktop]}>
         <Pressable accessibilityLabel="Close concert memory" accessibilityRole="button"
@@ -74,10 +78,10 @@ export default function ConcertMemoryModal({
           </View>
           <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
             <View style={styles.ticket}>
-              <View style={styles.ticketHead}>
+              <View style={[styles.ticketHead, largeText && styles.iosTicketHeadLarge]}>
                 <View style={styles.ticketMark}><Icon name="ticket" size={17} color="#1A1206" /></View>
-                <Text style={styles.ticketBrand}>MSHPIT MEMORY</Text>
-                <Text numberOfLines={2} style={styles.ticketDate}>{formatDate(memory.date, memory.date)}</Text>
+                <Text style={[styles.ticketBrand, largeText && styles.iosTicketBrandLarge]}>MSHPIT MEMORY</Text>
+                <Text numberOfLines={ios ? undefined : 2} style={[styles.ticketDate, largeText && styles.iosTicketDateLarge]}>{formatDate(memory.date, memory.date)}</Text>
               </View>
               {media ? (
                 <View style={styles.mediaStage}>
@@ -85,9 +89,9 @@ export default function ConcertMemoryModal({
                     <SmartImage accessibilityLabel={mediaLabel} contain={mediaKind !== "image"}
                       mediaKind="image" style={styles.media} uri={mediaUri} />
                   ) : (
-                    <View accessible accessibilityLabel={mediaLabel} accessibilityRole="image" style={styles.videoMemory}>
+                    <View accessible accessibilityLabel={mediaLabel} accessibilityRole="image" style={[styles.videoMemory, ios && styles.iosVideoMemory]}>
                       <View style={styles.videoMemoryIcon}><Icon name="play" size={20} color={colors.amber} /></View>
-                      <Text style={styles.videoMemoryText}>VIDEO FROM THIS NIGHT</Text>
+                      <Text style={[styles.videoMemoryText, ios && styles.iosVideoMemoryText]}>VIDEO FROM THIS NIGHT</Text>
                     </View>
                   )}
                   {mediaCount > 1 ? (
@@ -132,8 +136,8 @@ export default function ConcertMemoryModal({
                   </Text>
                   {onOpenPost && log.id ? (
                     <Pressable accessibilityLabel="Open your original post and comments" accessibilityRole="button"
-                      onPress={() => onOpenPost(log)} style={({ pressed }) => [styles.openPost, pressed && styles.pressed]}>
-                      <Text style={styles.openPostText}>Open your post</Text>
+                      onPress={() => onOpenPost(log)} style={({ pressed }) => [styles.openPost, ios && styles.iosBoundedAction, pressed && styles.pressed]}>
+                      <Text style={[styles.openPostText, ios && styles.iosActionText]}>Open your post</Text>
                       <Icon name="chevron-right" size={15} color={colors.amber} />
                     </Pressable>
                   ) : null}
@@ -149,16 +153,16 @@ export default function ConcertMemoryModal({
               </View>
             </View>
           </ScrollView>
-          <View style={styles.actions}>
+          <View style={[styles.actions, largeText && styles.iosActionsLarge]}>
             <Pressable accessibilityLabel={`Share concert memory for ${memory.artist}`} accessibilityRole="button"
               accessibilityState={{ disabled: !onShare }} disabled={!onShare} onPress={() => onShare?.(memory)}
-              style={({ pressed }) => [styles.secondaryAction, pressed && styles.pressed, !onShare && styles.disabled]}>
-              <Icon name="share" size={16} color={colors.amber} /><Text style={styles.secondaryActionText}>Share</Text>
+              style={({ pressed }) => [styles.secondaryAction, ios && styles.iosBoundedAction, pressed && styles.pressed, !onShare && styles.disabled]}>
+              <Icon name="share" size={16} color={colors.amber} /><Text style={[styles.secondaryActionText, ios && styles.iosActionText]}>Share</Text>
             </Pressable>
             <Pressable accessibilityLabel={`Open the full show breakdown for ${memory.artist}`} accessibilityRole="button"
               accessibilityState={{ disabled: !onOpenFull }} disabled={!onOpenFull} onPress={() => onOpenFull?.(memory.log)}
-              style={({ pressed }) => [styles.primaryAction, pressed && styles.pressed, !onOpenFull && styles.disabled]}>
-              <Text style={styles.primaryActionText}>Full show breakdown</Text><Icon name="chevron-right" size={16} color="#1A1206" />
+              style={({ pressed }) => [styles.primaryAction, ios && styles.iosBoundedAction, largeText && styles.iosPrimaryActionLarge, pressed && styles.pressed, !onOpenFull && styles.disabled]}>
+              <Text style={[styles.primaryActionText, ios && styles.iosActionText]}>Full show breakdown</Text><Icon name="chevron-right" size={16} color="#1A1206" />
             </Pressable>
           </View>
         </SafeAreaView>
@@ -217,4 +221,13 @@ const styles = StyleSheet.create({
   primaryActionText: { color: "#1A1206", fontSize: 13, fontWeight: "900" },
   pressed: { opacity: 0.78 },
   disabled: { opacity: 0.45 },
+  iosBoundedAction: { maxWidth: "100%", paddingVertical: 10 },
+  iosActionText: { flexShrink: 1 },
+  iosActionsLarge: { flexDirection: "column", alignItems: "stretch" },
+  iosPrimaryActionLarge: { flex: 0 },
+  iosTicketHeadLarge: { flexDirection: "column", alignItems: "flex-start", paddingVertical: 14 },
+  iosTicketBrandLarge: { flex: 0, alignSelf: "stretch" },
+  iosTicketDateLarge: { maxWidth: "100%", textAlign: "left" },
+  iosVideoMemory: { height: "auto", minHeight: 150, paddingVertical: 20 },
+  iosVideoMemoryText: { maxWidth: "100%", paddingHorizontal: 16, textAlign: "center" },
 });

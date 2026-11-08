@@ -23,8 +23,18 @@ test("ticket opener presents the canonical hostname on web and native", () => {
 test("every ticket UI sink uses the fail-closed shared opener", () => {
   for (const path of screenPaths) {
     const source = readFileSync(new URL(path, import.meta.url), "utf8");
-    assert.match(source, /import \{ openTicketLink \} from "(?:\.\.\/)+lib\/ticketLinks";/, path);
-    assert.match(source, /openTicketLink\([^)]*ticketUrl/, path);
+    if (/\/(Show|Venue)Screen/.test(path)) {
+      assert.match(source, /import useIOSTicketAction from "\.\.\/components\/useIOSTicketAction";/, path);
+      assert.match(source, /ticketAction\.open\([^)]*ticketUrl/, path);
+      const scopedOpener = readFileSync(new URL("../components/useIOSTicketAction.js", import.meta.url), "utf8");
+      assert.match(scopedOpener, /import \{ openTicketLink \} from "\.\.\/lib\/ticketLinks";/);
+      assert.match(scopedOpener, /await openTicketLink\(url, \{/);
+      assert.match(scopedOpener, /onFailure:/);
+      assert.doesNotMatch(scopedOpener, /Linking\.openURL|window\.open/);
+    } else {
+      assert.match(source, /import \{ openTicketLink \} from "(?:\.\.\/)+lib\/ticketLinks";/, path);
+      assert.match(source, /openTicketLink\([^)]*ticketUrl/, path);
+    }
     assert.doesNotMatch(source, /Linking\.openURL\([^\n)]*ticketUrl/, path);
   }
 });

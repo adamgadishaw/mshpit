@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parse } from "@babel/parser";
+import { createBrowseReturnStore } from "./iosBrowseReturn.mjs";
 import { DISCOVER_PROGRAMME_SECTIONS, discoverProgrammeKey, discoverProgrammeKeyboardTarget, restoredDiscoverProgramme } from "./discoverProgramme.mjs";
 
 test("Discover keeps all six destinations without inventing routes or changing area", () => {
@@ -30,7 +32,23 @@ test("Discover restores its in-app destination while explicit directory links ke
   assert.match(app, /rememberedProgramme=\{rememberedDiscoverProgramme\}/);
   assert.match(app, /onProgrammeChange=\{\(programme\) => setDiscoverDestination/);
   assert.match(app, /discoverDestination\.accountId === \(session\?\.id \|\| null\)/);
-  assert.match(app, /<DiscoverScreen key=\{session\?\.id \|\| "guest"\}/);
+  const opening = [];
+  const visit = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "JSXOpeningElement" && node.name.name === "DiscoverScreen") opening.push(node);
+    for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(visit); else if (value?.type) visit(value);
+  };
+  visit(parse(app, { sourceType: "module", plugins: ["jsx"] }));
+  assert.equal(opening.length, 1);
+  const key = opening[0].attributes.find((a) => a.name?.name === "key").value.expression;
+  const keyFor = new Function("discoverReturn", "session", `return (${app.slice(key.start, key.end)});`);
+  assert.equal(keyFor(null, { id: "A" }), "A"); assert.equal(keyFor(null, null), "guest");
+  const store = createBrowseReturnStore(); store.account("A");
+  const a = store.lease("discover"); const before = keyFor(a, { id: "A" });
+  assert.equal(keyFor(store.lease("discover"), { id: "A" }), before, "detail return retains the same key");
+  store.account("B"); assert.notEqual(keyFor(store.lease("discover"), { id: "B" }), before);
+  store.account("A"); const returned = keyFor(store.lease("discover"), { id: "A" }); assert.notEqual(returned, before);
+  store.reset("discover"); assert.notEqual(keyFor(store.lease("discover"), { id: "A" }), returned, "new directory intent remounts");
 });
 
 test("a departed render cannot overwrite the URL just restored by browser Back", () => {
@@ -46,10 +64,27 @@ test("a departed render cannot overwrite the URL just restored by browser Back",
 const read = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
 test("Discover renders only the selected destination and keeps filter state independent", () => {
   const source = read("../screens/DiscoverScreen.jsx");
-  assert.match(source, /const \[programme, setProgramme\] = useState\(\(\) => restoredDiscoverProgramme\(initialProgramme, rememberedProgramme\)\)/);
+  const body = parse(source, { sourceType: "module", plugins: ["jsx"] }).program.body
+    .find((n) => n.type === "ExportDefaultDeclaration").declaration.body.body;
+  const state = body.flatMap((n) => n.declarations || []).find((n) => n.id.elements?.[0]?.name === "programme");
+  assert.equal(state.init.callee.name, "useState");
+  const initializer = state.init.arguments[0];
+  const initialize = new Function("initialBrowse", "initialProgramme", "rememberedProgramme", "restoredDiscoverProgramme",
+    `return (${source.slice(initializer.start, initializer.end)})();`);
+  assert.equal(initialize(null, "shows", "venues", restoredDiscoverProgramme), "shows");
+  assert.equal(initialize(null, undefined, "venues", restoredDiscoverProgramme), "venues");
+  assert.equal(initialize({ programme: "artists" }, "shows", "venues", restoredDiscoverProgramme), "artists", "return restores the intervening choice in this navigation lease");
   assert.match(source, /const rememberProgramme = useLatestCallback\(onProgrammeChange\)/);
   assert.match(source, /rememberProgramme\(programme\)/);
-  assert.match(source, /if \(initialProgramme !== undefined\) setProgramme\(discoverProgrammeKey\(initialProgramme\)\)/);
+  const effect = body.find((n) => n.expression?.callee?.name === "useEffect"
+    && source.slice(n.start, n.end).includes("initialProgrammeRef.current =" )).expression.arguments[0];
+  const run = new Function("initialBrowse", "initialProgramme", "initialProgrammeRef", "setProgramme", "discoverProgrammeKey",
+    `return (${source.slice(effect.start, effect.end)})();`);
+  const changes = [], ref = { current: "shows" };
+  run({ programme: "artists" }, "shows", ref, (v) => changes.push(v), discoverProgrammeKey);
+  assert.deepEqual(changes, [], "same directory return must not overwrite the saved choice");
+  run({ programme: "artists" }, "venues", ref, (v) => changes.push(v), discoverProgrammeKey);
+  assert.deepEqual(changes, ["venues"], "a newer explicit intent wins");
   assert.match(source, /const \[areaExpanded, setAreaExpanded\] = useState\(false\)/);
   assert.match(source, /const \[dateExpanded, setDateExpanded\] = useState\(false\)/);
   for (const { key } of DISCOVER_PROGRAMME_SECTIONS) {

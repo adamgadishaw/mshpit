@@ -44,8 +44,11 @@ test("shared profile media uses disk caching, recycling, and a visible fallback"
     "initials remain painted underneath a loading or failed network photo");
   assert.match(smartImage, /from "expo-image"/);
   assert.match(smartImage, /cachePolicy = "memory-disk"/);
-  assert.equal((smartImage.match(/cachePolicy=\{cachePolicy\}/g) || []).length, 1,
+  const photoNodes = smartImage.match(/<ExpoImage\b[\s\S]*?\/>/g) || [];
+  assert.equal(photoNodes.length, 1,
     "a shared photo tile owns one decoded image instead of a duplicate blurred request");
+  assert.match(photoNodes[0], /cachePolicy=\{cachePolicy\}/,
+    "the photo renderer retains its caller cache policy independently of the video branch");
   assert.match(smartImage, /recyclingKey=/);
   assert.match(smartImage, /PHOTO UNAVAILABLE/);
   const moderation = read("../components/moderation/ModerationConsole.jsx");

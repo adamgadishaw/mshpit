@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useSyncExternalStore } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
@@ -20,8 +20,10 @@ import {
 } from "../domain/messageRelationshipContext.mjs";
 
 const EMPTY_COMPOSER = Object.freeze({ text: "", sending: false });
+const subscribeLocalComposer = () => () => {};
+const readLocalComposer = () => EMPTY_COMPOSER;
 
-export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
+export default function ThreadScreen({ otherId, draftLease, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
   const {
     session, chatAuthEpoch, userById, threadMessages, sendDM, retryChatMessage,
     cancelChatMessage, loadThread, markThreadRead, loadUser,
@@ -35,13 +37,19 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
   const relationshipScopeRef = useRef(composerScope);
   relationshipScopeRef.current = composerScope;
   const relationshipLoadedRef = useRef(false);
-  const { text, sending } = scopedScreenValue(composerState, composerScope, EMPTY_COMPOSER);
-  const updateComposer = (changes) => setComposerState((current) => ({
+  const iosDraft = Platform.OS === "ios" ? draftLease : null;
+  const retainedComposer = useSyncExternalStore(
+    iosDraft?.subscribe || subscribeLocalComposer,
+    iosDraft?.read || readLocalComposer,
+    readLocalComposer,
+  );
+  const { text, sending, unavailable } = iosDraft ? retainedComposer : scopedScreenValue(composerState, composerScope, EMPTY_COMPOSER);
+  const updateComposer = (changes) => iosDraft ? iosDraft.edit(changes.text) : setComposerState((current) => ({
     scope: composerScope,
     value: { ...scopedScreenValue(current, composerScope, EMPTY_COMPOSER), ...changes },
   }));
-  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
   const messages = threadMessages(otherId);
+  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll({ messageCount: messages.length, scopeKey: `${chatAuthEpoch}:${composerScope}` });
   const incomingReadTarget = latestIncomingDirectMessageId(messages, session?.id);
   const messageRelationshipContext = [...messages].reverse()
     .find((message) => message?.relationshipContext)?.relationshipContext || null;
@@ -105,6 +113,19 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
   }, [incomingReadTarget, otherId, session?.id]);
 
   const send = async () => {
+    if (iosDraft) {
+      // Claim synchronously: keyboard submit + tap cannot enqueue twice, even
+      // before React renders. Completion belongs to the owner across navigation.
+      const claim = iosDraft.claim();
+      if (!claim) return;
+      try {
+        const result = await sendDM(otherId, claim.text);
+        iosDraft.settle(claim, result);
+      } catch {
+        iosDraft.settle(claim, { ok: false });
+      }
+      return;
+    }
     const submitted = text;
     const draft = submitted.trim();
     if (!draft || sending) return;
@@ -118,8 +139,13 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
     });
   };
   const retry = async (message) => {
+    const retainedBefore = iosDraft?.read();
     const requestScope = composerScope;
     const result = await retryChatMessage(message.id);
+    if (iosDraft) {
+      if (result?.ok) iosDraft.clearMatching(retainedBefore, message.text);
+      return;
+    }
     if (result?.ok && composerScopeRef.current === requestScope) {
       setComposerState((current) => {
         const value = scopedScreenValue(current, requestScope, EMPTY_COMPOSER);
@@ -208,7 +234,7 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
 
       {session ? (
         <View style={styles.inputBar}>
-          <TextInput style={styles.input} placeholder={`Message ${other?.name?.split(" ")[0] || ""}…  (use @ to tag)`} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateComposer({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} accessibilityLabel={`Message ${other?.name || "this member"}`} />
+          <TextInput style={styles.input} editable={!unavailable} placeholder={unavailable ? "Wait for another message to finish sending" : `Message ${other?.name?.split(" ")[0] || ""}…  (use @ to tag)`} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateComposer({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} accessibilityLabel={unavailable ? "Wait for another message to finish sending" : `Message ${other?.name || "this member"}`} />
           <Pressable
             style={[styles.sendBtn, sending && { opacity: 0.65 }]}
             onPress={send}

@@ -6,6 +6,7 @@ import Icon from "../Icon";
 import VinylRefreshBoundary from "../VinylRefreshBoundary";
 import DiscoverEventList from "./DiscoverEventList";
 import { PopularLoungeCard } from "../LiveDiscoveryCards";
+import { createBrowseScrollReturn } from "../../domain/iosBrowseReturn.mjs";
 import { DISCOVER_PROGRAMME_SECTIONS } from "../../domain/discoverProgramme.mjs";
 import { DISCOVER_RANGE_DAYS } from "../../domain/discoverEventRange.mjs";
 import { buildDiscoverArtistSpotlight, discoverGenreDistribution, discoverGenreLabel, filterDiscoverRows, rankDiscoverGenres } from "../../domain/discoverView.mjs";
@@ -182,7 +183,7 @@ function ExploreRow({ title, detail, icon, onPress }) {
   </Pressable>;
 }
 
-export default function DiscoverBrowse({ programme, onProgramme, region, homeCity, countries, onRegion, local, onScope,
+export default function DiscoverBrowse({ browseReturn, initialBrowse, programme, onProgramme, region, homeCity, countries, onRegion, local, onScope,
   refreshing, onRefresh, refreshError, chart, overviewStatus, onRetryOverview,
   genres, selectedGenre, genreRows, genreStatus, onGenre, onRetryGenre, query, onQuery,
   slides, events, rangeEvents, eventRecovery, eventStatus, rangeLoadingMore, rangeHasMore, selectedRangeDays,
@@ -194,8 +195,17 @@ export default function DiscoverBrowse({ programme, onProgramme, region, homeCit
   const [measuredWidth, setMeasuredWidth] = useState(0);
   const [areaOpen, setAreaOpen] = useState(false);
   const [datesOpen, setDatesOpen] = useState(false);
-  const [genreFocused, setGenreFocused] = useState(false);
+  const [genreFocused, setGenreFocused] = useState(initialBrowse?.genreFocused === true);
   const scroll = useRef(null);
+  const scrollReturn = useRef(null);
+  if (!scrollReturn.current) scrollReturn.current = createBrowseScrollReturn(initialBrowse?.scrollY, browseReturn?.save);
+  useEffect(() => { browseReturn?.save({ genreFocused }); }, [browseReturn, genreFocused]);
+  useEffect(() => {
+    const overviewReady = ["ready", "error"].includes(overviewStatus);
+    const ready = programme === "shows" ? ["ready", "error"].includes(eventStatus) && !rangeLoadingMore
+      : programme === "artists" ? overviewReady && (!genreFocused || ["ready", "error"].includes(genreStatus)) : overviewReady;
+    scrollReturn.current.update(scroll.current, ready);
+  });
   const width = measuredWidth || Math.min(windowWidth, 840);
   const artistWidth = Math.min(240, Math.max(154, (width - 52) / (fontScale > 1.25 ? 1.4 : 2.1)));
   const popular = chart?.rows || [];
@@ -203,16 +213,31 @@ export default function DiscoverBrowse({ programme, onProgramme, region, homeCit
   const rankedGenres = useMemo(() => discoverGenreDistribution(rankDiscoverGenres(genres, popular), 0, { limit: 12 }).genres, [genres, popular]);
   const attendedArtists = useMemo(() => buildDiscoverArtistSpotlight({ genreRows, fallbackRows: popular, attendanceRows,
     selectedGenre: genreFocused ? selectedGenre : null, limit: 8 }).rows.filter((row) => row.discoveryReason === "Recently attended"), [attendanceRows, genreFocused, genreRows, popular, selectedGenre]);
-  const chooseProgramme = (value) => { setGenreFocused(false); onProgramme(value); scroll.current?.scrollTo?.({ y: 0, animated: false }); };
-  const chooseGenre = (genre) => { onGenre(genre); onQuery(""); onProgramme("artists"); setGenreFocused(true); scroll.current?.scrollTo?.({ y: 0, animated: false }); };
-  const pickRegion = (country) => { setAreaOpen(false); onRegion(country); };
+  const chooseProgramme = (value) => { scrollReturn.current.cancel(); setGenreFocused(false); onProgramme(value); scroll.current?.scrollTo?.({ y: 0, animated: false }); };
+  const chooseGenre = (genre) => { scrollReturn.current.cancel(); onGenre(genre); onQuery(""); onProgramme("artists"); setGenreFocused(true); scroll.current?.scrollTo?.({ y: 0, animated: false }); };
+  // Any new filter or layout intent supersedes a pending Back restoration.
+  // Keep retry-only actions direct so recovery can still restore the same view.
+  const changeView = (action) => (...args) => { scrollReturn.current.cancel(); action(...args); };
+  const pickRegion = changeView((country) => { setAreaOpen(false); onRegion(country); });
+  const pickScope = changeView(onScope);
+  const pickRange = changeView(onRange);
+  const changeQuery = changeView(onQuery);
+  const pickEventView = changeView(onEventView);
+  const openEventList = changeView(onEventList);
+  const pickEventWeek = changeView(onEventWeek);
+  const showAllArtists = changeView(() => setGenreFocused(false));
+  const toggleArea = changeView(() => setAreaOpen((value) => !value));
+  const closeArea = changeView(() => setAreaOpen(false));
+  const toggleDates = changeView(() => setDatesOpen((value) => !value));
   return <VinylRefreshBoundary refreshing={refreshing} onRefresh={onRefresh} accessibilityLabel="Refresh Discover" testID="discover-refresh">
     <ScrollView ref={scroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}
       contentInsetAdjustmentBehavior="automatic" automaticallyAdjustKeyboardInsets keyboardDismissMode="on-drag"
-      directionalLockEnabled keyboardShouldPersistTaps="handled" onLayout={(event) => setMeasuredWidth(event.nativeEvent.layout.width)}>
+      directionalLockEnabled keyboardShouldPersistTaps="handled" onScroll={scrollReturn.current.onScroll} onScrollBeginDrag={scrollReturn.current.onScrollBeginDrag} scrollEventThrottle={32}
+      onContentSizeChange={scrollReturn.current.onContentSizeChange}
+      onLayout={(event) => { setMeasuredWidth(event.nativeEvent.layout.width); scrollReturn.current.onLayout(event); }}>
       <View style={styles.header}>
         <Text style={styles.title} accessibilityRole="header">Discover</Text>
-        <Pressable onPress={() => setAreaOpen((value) => !value)} accessibilityRole="button"
+        <Pressable onPress={toggleArea} accessibilityRole="button"
           accessibilityLabel={`Choose an area to explore. Current area: ${region}`} accessibilityState={{ expanded: areaOpen }}
           style={({ pressed }) => [styles.areaButton, pressed && styles.pressed]}>
           <Icon name={region === "Worldwide" ? "globe" : "pin"} size={16} color={colors.amber} />
@@ -222,7 +247,7 @@ export default function DiscoverBrowse({ programme, onProgramme, region, homeCit
       <BrowseCategories selected={programme} onSelect={chooseProgramme} />
       {areaOpen ? <View style={styles.filterPanel}>
         <Text style={styles.sectionTitle} accessibilityRole="header">Choose an area</Text>
-        <Text style={styles.body}>Artists, shows and venues follow your selection.</Text>
+        <Text style={styles.body}>Explore artists and venues in this area. For shows, choose this area or Near you below.</Text>
         <View accessibilityRole="radiogroup" accessibilityLabel="Choose an area to explore" style={styles.filterWrap}>
           {countries.map((country) => <Pressable key={country.country} onPress={() => pickRegion(country.country)} accessibilityRole="radio"
             accessibilityLabel={country.country} accessibilityState={{ checked: country.country === region }}
@@ -230,28 +255,28 @@ export default function DiscoverBrowse({ programme, onProgramme, region, homeCit
             <Text style={[styles.filterText, country.country === region && styles.selectedText]}>{country.country}</Text>
           </Pressable>)}
         </View>
-        <TextAction onPress={() => setAreaOpen(false)} icon="x">Done</TextAction>
+        <TextAction onPress={closeArea} icon="x">Done</TextAction>
       </View> : null}
       {refreshError || overviewStatus === "error" && popular.length > 0 ? <View style={styles.notice} accessibilityLiveRegion="polite">
         <Text style={styles.body}>Some details couldn’t refresh. Your current results are still here.</Text><TextAction onPress={onRefresh}>Retry</TextAction>
       </View> : null}
       <View nativeID={`discover-panel-${programme}`} style={styles.programme}>
       {programme === "shows" ? <>
-        <FeaturedRail slides={slides} artists={popular} width={width} onOpen={onOpen} onOpenArtist={onOpenArtist} region={region} />
+        {slides.length ? <FeaturedRail slides={slides} width={width} onOpen={onOpen} onOpenArtist={onOpenArtist} region={region} /> : null}
         <View style={styles.section}>
-          <SectionHeader title="Upcoming shows" action="See all" onPress={() => onOpenEvents?.(region)} detail={local ? homeCity ? `Near ${homeCity}` : "Near you" : region} />
+          <SectionHeader title="Upcoming shows" action="See all" onPress={() => onOpenEvents?.(region)} detail={`${local ? homeCity ? `Near ${homeCity}` : "Near you" : region} · Next ${selectedRangeDays} days`} />
           <View style={styles.showControls}>
             <View style={styles.segment} accessibilityRole="radiogroup" accessibilityLabel="Event area">
-              {[[false, region], [true, "Near you"]].map(([value, label]) => <Pressable key={String(value)} accessibilityRole="radio"
+              {[[false, region], [true, homeCity ? `Near ${homeCity}` : "Near you"]].map(([value, label]) => <Pressable key={String(value)} accessibilityRole="radio"
                 accessibilityLabel={value ? homeCity ? `Near ${homeCity}` : "Near you" : region} accessibilityState={{ checked: local === value }}
-                onPress={() => onScope(value)} style={({ pressed }) => [styles.segmentButton, local === value && styles.segmentSelected, pressed && styles.pressed]}>
+                onPress={() => pickScope(value)} style={({ pressed }) => [styles.segmentButton, local === value && styles.segmentSelected, pressed && styles.pressed]}>
                 <Text style={[styles.segmentText, local === value && styles.selectedText]}>{label}</Text>
               </Pressable>)}
             </View>
-            <TextAction onPress={() => setDatesOpen((value) => !value)} icon="chevron-down" label={`Choose event dates. Next ${selectedRangeDays} days`}>{selectedRangeDays} days</TextAction>
+            <TextAction onPress={toggleDates} icon="chevron-down" label={`Choose event dates. Next ${selectedRangeDays} days`}>{selectedRangeDays} days</TextAction>
           </View>
           {datesOpen ? <View style={styles.dateOptions} accessibilityRole="radiogroup" accessibilityLabel="Choose how far ahead to look">
-            {DISCOVER_RANGE_DAYS.map((days) => <Pressable key={days} onPress={() => { onRange(days); setDatesOpen(false); }} accessibilityRole="radio"
+            {DISCOVER_RANGE_DAYS.map((days) => <Pressable key={days} onPress={() => { pickRange(days); setDatesOpen(false); }} accessibilityRole="radio"
               accessibilityLabel={`Next ${days} days`} accessibilityState={{ checked: days === selectedRangeDays }}
               style={[styles.filterChip, days === selectedRangeDays && styles.filterChipSelected]}><Text style={styles.filterText}>{days} days</Text></Pressable>)}
           </View> : null}
@@ -260,15 +285,15 @@ export default function DiscoverBrowse({ programme, onProgramme, region, homeCit
             <View style={styles.viewModes} accessibilityRole="radiogroup" accessibilityLabel="Show events as">
               {[["cards", "Cards", "ticket"], ["list", "List", "menu"]].map(([value, label, icon]) => <Pressable key={value}
                 accessibilityRole="radio" accessibilityLabel={`Show events as ${label.toLowerCase()}`} accessibilityState={{ checked: eventView === value }}
-                onPress={() => value === "list" ? onEventList() : onEventView("cards")}
+                onPress={() => value === "list" ? openEventList() : pickEventView("cards")}
                 style={[styles.viewMode, eventView === value && styles.segmentSelected]}><Icon name={icon} size={16} color={eventView === value ? colors.amber : colors.textDim} /><Text style={styles.segmentText}>{label}</Text></Pressable>)}
             </View>
           </View> : null}
           {["loading", "refreshing"].includes(eventStatus) && events.length > 0 ? <View style={styles.loadingMore} accessibilityLiveRegion="polite"><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.muted}>Updating show dates…</Text></View> : null}
           {eventStatus === "error" && events.length > 0 ? <View style={styles.notice}><Text style={styles.body}>More dates couldn’t load.</Text><TextAction onPress={() => onRange(selectedRangeDays)}>Try again</TextAction></View> : null}
-          <Recovery recovery={eventRecovery} onRetry={() => onRange(selectedRangeDays)} onRange={onRange} onWorldwide={() => pickRegion("Worldwide")}
+          <Recovery recovery={eventRecovery} onRetry={() => onRange(selectedRangeDays)} onRange={pickRange} onWorldwide={() => pickRegion("Worldwide")}
             onArtists={popular.length ? () => chooseProgramme("artists") : null} onCities={() => chooseProgramme("cities")} />
-          {!eventRecovery && listView ? <View style={styles.inset}><DiscoverEventList events={rangeEvents} weekKey={eventWeek} onWeekChange={onEventWeek} loadingMore={rangeLoadingMore} onOpen={onOpen} /></View>
+          {!eventRecovery && listView ? <View style={styles.inset}><DiscoverEventList events={rangeEvents} weekKey={eventWeek} onWeekChange={pickEventWeek} loadingMore={rangeLoadingMore} onOpen={onOpen} /></View>
             : !eventRecovery ? <BrowseRail label="Upcoming shows" cardWidth={Math.min(300, width - 64)} railKey={`${region}:${local}`}>
               {events.map((event) => <Pressable key={event.id || `${event.artist}:${event.venue}:${event.date}`} onPress={() => onOpen?.(event)} accessibilityRole="button"
                 accessibilityLabel={`Open ${liveEventTitle(event)} at ${event.venue || "the venue"}. ${browseDate(event.date)}`}
@@ -278,8 +303,9 @@ export default function DiscoverBrowse({ programme, onProgramme, region, homeCit
                 <View style={styles.showCardFoot}><Text style={styles.actionText}>View show</Text><Icon name="chevron-right" size={17} color={colors.amber} /></View>
               </Pressable>)}
             </BrowseRail> : null}
-          {rangeHasMore && !listView && !eventRecovery ? <View style={styles.inset}><TextAction onPress={onEventList}>Browse the full list</TextAction></View> : null}
+          {rangeHasMore && !listView && !eventRecovery ? <View style={styles.inset}><TextAction onPress={openEventList}>Browse the full list</TextAction></View> : null}
         </View>
+        {!slides.length ? <FeaturedRail artists={popular} width={width} onOpenArtist={onOpenArtist} region={region} /> : null}
         <ArtistRail rows={popular.slice(0, 12)} title={chart?.source === "plays" ? "What fans are playing" : "Popular artists"} cardWidth={artistWidth} onOpen={onOpenArtist} action="See all" onAction={() => chooseProgramme("artists")} />
         <GenreBrowse genres={rankedGenres} width={width} onSelect={chooseGenre} />
         <View style={styles.section}><SectionHeader title="More to explore" /><View style={styles.exploreGroup}>
@@ -292,15 +318,15 @@ export default function DiscoverBrowse({ programme, onProgramme, region, homeCit
         {loungeRows.length ? <View style={styles.section}><SectionHeader title="In the lounges" /><View style={styles.inset}>{loungeRows.map((lounge) => <PopularLoungeCard key={lounge.key} lounge={lounge} compact onPress={() => onOpenLounge?.(lounge)} />)}</View></View> : null}
       </> : programme === "artists" ? <>
         {!query && !genreFocused ? <FeaturedRail artists={popular} width={width} onOpenArtist={onOpenArtist} region={region} /> : null}
-        <View style={styles.searchField}><Icon name="search" size={19} color={colors.textDim} /><TextInput value={query} onChangeText={onQuery}
+        <View style={styles.searchField}><Icon name="search" size={19} color={colors.textDim} /><TextInput value={query} onChangeText={changeQuery}
           placeholder="Artists, genres, or songs" placeholderTextColor={colors.textFaint} accessibilityLabel="Search this artist list"
           autoCorrect={false} autoCapitalize="none" returnKeyType="search" style={styles.searchInput} />
-          {query ? <Pressable onPress={() => onQuery("")} style={styles.clearButton} accessibilityRole="button" accessibilityLabel="Clear artist search"><Icon name="x" size={18} /></Pressable> : null}</View>
+          {query ? <Pressable onPress={() => changeQuery("")} style={styles.clearButton} accessibilityRole="button" accessibilityLabel="Clear artist search"><Icon name="x" size={18} /></Pressable> : null}</View>
         {!genreFocused || query ? (visibleArtists.length ? <ArtistRail rows={visibleArtists} title={query ? "Search results" : chart?.source === "plays" ? "What fans are playing" : "Popular artists"} cardWidth={artistWidth} onOpen={onOpenArtist} />
           : <View style={styles.empty}>{["idle", "loading"].includes(overviewStatus) ? <ActivityIndicator color={colors.amber} /> : null}
             <Text style={styles.emptyTitle}>{query ? `No matches for “${query.trim()}”` : overviewStatus === "error" ? "Artists couldn’t load" : ["idle", "loading"].includes(overviewStatus) ? "Finding artists" : `No artists in ${region} yet`}</Text>
-            {query ? <TextAction onPress={() => onQuery("")}>Clear search</TextAction> : overviewStatus === "error" ? <TextAction onPress={onRetryOverview}>Try again</TextAction> : region !== "Worldwide" ? <TextAction onPress={() => pickRegion("Worldwide")}>Try Worldwide</TextAction> : null}</View>) : null}
-        {!query ? <>{genreFocused ? <SectionHeader title="Artists by genre" action="All artists" onPress={() => setGenreFocused(false)} /> : null}<GenreBrowse genres={rankedGenres} selected={selectedGenre} onSelect={chooseGenre} width={width} />
+            {query ? <TextAction onPress={() => changeQuery("")}>Clear search</TextAction> : overviewStatus === "error" ? <TextAction onPress={onRetryOverview}>Try again</TextAction> : region !== "Worldwide" ? <TextAction onPress={() => pickRegion("Worldwide")}>Try Worldwide</TextAction> : null}</View>) : null}
+        {!query ? <>{genreFocused ? <SectionHeader title="Artists by genre" action="All artists" onPress={showAllArtists} /> : null}<GenreBrowse genres={rankedGenres} selected={selectedGenre} onSelect={chooseGenre} width={width} />
           {selectedGenre ? <View style={styles.section}>
             {genreRows.length ? <ArtistRail rows={genreRows} title={discoverGenreLabel(selectedGenre)} cardWidth={artistWidth} onOpen={onOpenArtist} />
               : <View style={styles.inset}><Text style={styles.sectionTitle} accessibilityRole="header">{discoverGenreLabel(selectedGenre)}</Text>

@@ -19,11 +19,12 @@ const [area, live, range, scene, geo] = await Promise.all([
   domain("discoverScene.mjs"), domain("geo.mjs"),
 ]);
 
+const { createBrowseReturnStore } = await domain("iosBrowseReturn.mjs");
 const source = readFileSync(resolve(root, "src/screens/DiscoverScreen.jsx"), "utf8");
 const tree = parse(source, { sourceType: "module", plugins: ["jsx"] });
 const component = tree.program.body.find((node) => node.type === "ExportDefaultDeclaration").declaration;
 const selected = new Set([
-  "accountId", "homeCity", "homeCountry", "homeCoordinates", "areaContext", "areaChoice",
+  "initialBrowse", "restoredRangeScope", "accountId", "homeCity", "homeCountry", "homeCoordinates", "areaContext", "areaChoice",
   "resolvedArea", "region", "liveScope", "rangeScopeKey", "eventRange", "eventWeek",
   "requestedCursorRef", "rangeLoaderRef", "eventRangeRef", "rangeRequestRef",
   "rangeMatchesScene", "requestEventRange",
@@ -36,9 +37,9 @@ const statements = component.body.body.filter((node) => {
   if (/^(rangeLoaderRef|eventRangeRef)\.current =/.test(code)) return true;
   if (node.type !== "ExpressionStatement" || node.expression.callee?.name !== "useEffect") return false;
   const effect = source.slice(node.expression.arguments[0].start, node.expression.arguments[0].end);
-  return effect.includes("requestEventRange(DISCOVER_RANGE_DAYS[0])") || effect.includes("syncDiscoverAreaChoice(current,");
+  return (node.expression.arguments[1]?.elements?.some((arg) => arg.name === "rangeScopeKey") && effect.includes("rangeRequestRef.current.sequence += 1")) || effect.includes("syncDiscoverAreaChoice(current,");
 }).map((node) => source.slice(node.start, node.end)).join("\n");
-assert.match(statements, /requestEventRange\(DISCOVER_RANGE_DAYS\[0\]\)/);
+assert.match(statements, /requestEventRange\(/);
 assert.match(statements, /rangeRequestRef.current.sequence \+= 1/);
 const initialRange = tree.program.body.find((node) => node.type === "VariableDeclaration"
   && node.declarations.some(({ id }) => id.name === "EMPTY_EVENT_RANGE"));
@@ -62,7 +63,7 @@ function visit(node) {
 }
 visit(parse(app, { sourceType: "module", plugins: ["jsx"] }));
 assert.ok(keyExpression);
-const discoverKey = new Function("session", `return (${keyExpression});`);
+const discoverKey = new Function("session", "discoverReturn", `return (${keyExpression});`);
 
 const noop = () => {};
 const context = {};
@@ -91,14 +92,15 @@ const renderer = reconciler({
 function fixture() {
   let snapshot;
   const calls = [];
-  const bindings = { ...React, ...area, ...live, ...range, ...scene, ...geo,
+  const browseStore = createBrowseReturnStore();
+  const bindings = { Platform: { OS: "ios" }, ...React, ...area, ...live, ...range, ...scene, ...geo,
     expose: (value) => { snapshot = value; },
   };
   const Probe = new Function(...Object.keys(bindings), `
     ${source.slice(initialRange.start, initialRange.end)}
-    return function Probe({session, discoverySidebar, loadDiscoverTourDateRange}) {
+    return function Probe({session, discoverySidebar, loadDiscoverTourDateRange, browseReturn}) {
       ${statements}
-      expose({rangeScopeKey, eventRange, rangeMatchesScene, setAreaChoice});
+      expose({rangeScopeKey, eventRange, eventWeek, rangeMatchesScene, setAreaChoice});
       return null;
     };`)(...Object.values(bindings));
   const fail = (error) => { throw error; };
@@ -110,8 +112,11 @@ function fixture() {
   });
   return {
     calls,
-    render(session, discoverySidebar = null) {
-      flush(React.createElement(Probe, { key: discoverKey(session), session, discoverySidebar, loadDiscoverTourDateRange: load }));
+    render(session, discoverySidebar = null, initialSnapshot = null) {
+      browseStore.account(session?.id || null);
+      const browseReturn = browseStore.lease("discover");
+      if (initialSnapshot) browseReturn.save(initialSnapshot);
+      flush(React.createElement(Probe, { key: discoverKey(session, browseReturn), session, discoverySidebar, browseReturn, loadDiscoverTourDateRange: load }));
     },
     snapshot: () => snapshot,
     chooseCountry(country) {
@@ -225,5 +230,29 @@ test("changing country cancels the old local range, and unmount cancels its repl
     await f.settle(0, ["old-local"]); assert.deepEqual(f.snapshot().eventRange.rows, []);
     f.close(); assert.equal(f.calls[1].options.signal.aborted, true);
     await f.settle(1, ["after-unmount"]);
+  } finally { f.close(); }
+});
+
+test("return requests the saved range and week once, then a new area resets them", async () => {
+  const f = fixture();
+  try {
+    f.render(account(43.6532, -79.3832), null, {
+      region: "Canada", scope: "country", touched: true, days: 90, eventWeek: "2026-11-09",
+    });
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].options.days, 90);
+    assert.equal(f.calls[0].options.local, false);
+    assert.equal(f.snapshot().eventWeek, "2026-11-09");
+    await f.settle(0, ["restored-range"]);
+    f.render(account(43.6532, -79.3832));
+    assert.equal(f.calls.length, 1, "ordinary rerenders do not repeat restoration");
+    f.chooseCountry("United States");
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.calls[1].options.days, 30);
+    assert.equal(f.snapshot().eventWeek, null);
+    f.render(account(43.6532, -79.3832, { id: "other-member" }));
+    assert.equal(f.calls.length, 3);
+    assert.equal(f.calls[2].options.days, 30);
+    assert.equal(f.snapshot().eventWeek, null);
   } finally { f.close(); }
 });

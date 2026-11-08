@@ -195,7 +195,8 @@ export default function EditProfileScreen({ onClose }) {
       {imageCropDialog}
       <SheetHeader title="Edit your profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : "Save", onPress: save, disabled: mediaBusy || saving || !genreSelection.valid || handleInvalid }} />
 
-      <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"
+        {...(Platform.OS === "ios" ? { automaticallyAdjustKeyboardInsets: true, keyboardDismissMode: "interactive" } : {})}>
         <Text style={styles.profileScope}>This is the profile people see for your personal account. Artist page, promotion, and show tools are in Artist HQ.</Text>
         <Pressable
           style={styles.bannerEdit}
@@ -240,7 +241,8 @@ export default function EditProfileScreen({ onClose }) {
         <Text style={styles.avatarFormat}>{AVATAR_IMAGE_HINT}</Text>
 
         <Text style={styles.label}>NAME</Text>
-        <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Your name" placeholderTextColor={colors.textFaint} maxLength={40} />
+        <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Your name" placeholderTextColor={colors.textFaint} maxLength={40}
+          {...(Platform.OS === "ios" ? { accessibilityLabel: "Name" } : {})} />
 
         <Text style={styles.label}>USERNAME</Text>
         <View style={[styles.handleRow, handleInvalid && styles.handleRowBad, handleChanged && !handleInvalid && styles.handleRowGood]}>
@@ -248,6 +250,7 @@ export default function EditProfileScreen({ onClose }) {
           <TextInput
             style={styles.handleInput}
             value={handle}
+            {...(Platform.OS === "ios" ? { accessibilityLabel: "Username" } : {})}
             onChangeText={(value) => { setHandle(cleanHandle(value)); setSaveError(""); }}
             placeholder="username"
             placeholderTextColor={colors.textFaint}
@@ -264,17 +267,20 @@ export default function EditProfileScreen({ onClose }) {
         </Text>
 
         <Text style={styles.label}>HOME CITY</Text>
-        <Pressable style={styles.cityPick} onPress={() => setPickingCity(true)}>
+        <Pressable style={styles.cityPick} onPress={() => setPickingCity(true)}
+          {...(Platform.OS === "ios" ? { accessibilityRole: "button", accessibilityLabel: "Home city", accessibilityValue: { text: home?.city || "Not selected" } } : {})}>
           <Icon name="pin" size={16} color={colors.amber} />
           <Text style={[styles.cityTxt, !home && styles.cityPlaceholder]}>{home?.city || "Pick your city"}</Text>
           <Icon name="chevron-right" size={16} color={colors.textDim} />
         </Pressable>
 
         <Text style={styles.label}>BIO</Text>
-        <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Tell people about yourself" placeholderTextColor={colors.textFaint} multiline maxLength={240} />
+        <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Tell people about yourself" placeholderTextColor={colors.textFaint} multiline maxLength={240}
+          {...(Platform.OS === "ios" ? { accessibilityLabel: "Bio" } : {})} />
 
         <Text style={styles.label}>FAVORITE ARTISTS</Text>
-        <Pressable style={styles.artistsBtn} onPress={() => setPickingArtists(true)}>
+        <Pressable style={styles.artistsBtn} onPress={() => setPickingArtists(true)}
+          {...(Platform.OS === "ios" ? { accessibilityRole: "button", accessibilityLabel: "Favorite artists", accessibilityValue: { text: `${session?.favoriteArtists?.length || 0} selected` }, accessibilityHint: "Choose artists for your feed" } : {})}>
           <Icon name="music" size={16} color={colors.amber} />
           <Text style={styles.artistsBtnTxt}>
             {session?.favoriteArtists?.length ? `${session.favoriteArtists.length} selected · used for your feed` : "Pick favorite artists for your feed"}
@@ -411,7 +417,7 @@ const styles = StyleSheet.create({
   accentPreview: { height: 56, borderRadius: radius.md, overflow: "hidden", borderWidth: 1, borderColor: colors.line, justifyContent: "flex-end", marginBottom: 10 },
   accentPreviewStripe: { height: 6 },
   accentRow: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  accentSwatch: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: "transparent" },
+  accentSwatch: { width: 38, height: 38, borderRadius: 19, ...(Platform.OS === "ios" ? { width: 44, height: 44, borderRadius: 22 } : {}), alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: "transparent" },
   accentNone: { backgroundColor: colors.surface, borderColor: colors.line },
   accentOn: { borderColor: colors.text },
   showList: { gap: 8 },

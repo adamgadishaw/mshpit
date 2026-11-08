@@ -146,6 +146,8 @@ import {
   sanitizeDisabledMusicPlayerNavigationFrame,
 } from "./src/domain/musicPlayerAvailability.mjs";
 import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
+import { createBrowseReturnStore } from "./src/domain/iosBrowseReturn.mjs";
+import { createIOSMessageDrafts } from "./src/domain/iosMessageDrafts.mjs";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
 import { profileManagementAction, publicIdentityTarget } from "./src/domain/artistAccountIdentity.mjs";
@@ -234,7 +236,7 @@ const loadPublicRecovery = () => publicRecoveryModule ||= import("./src/features
 function Root() {
   const safeAreaInsets = useSafeAreaInsets();
   const {
-    session, authReady, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
+    session, chatAuthEpoch, authReady, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
     feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
     searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, isFollowing, follow, isBlocked,
     loadPlayHistory, saveQueueAsPlaylist, autoplayQueue, followingCount, resendEmailVerification, completeSignupOnboarding,
@@ -287,6 +289,31 @@ function Root() {
   // Restore the last tab on reload so a refresh doesn't dump you back on the feed.
   const [tab, setTab] = useState(() => (web && mainTabForPath(window.location.pathname)) || restoredMainTab(web ? load("pit.tab", "feed") : "feed"));
   const activeTab = visibleMainTab(tab, session?.id);
+  const [, refreshDraftCapacity] = useState(0);
+  const messageDraftsRef = useRef(null);
+  const messageDraftsMountedRef = useRef(false);
+  // An already-running send may retain this isolated owner until settlement.
+  // Block Root refreshes after unmount without invalidating leases during a
+  // StrictMode effect cleanup/setup cycle. Auth transitions invalidate above
+  // the screen synchronously through account(), not through effect cleanup.
+  useLayoutEffect(() => {
+    messageDraftsMountedRef.current = true;
+    return () => { messageDraftsMountedRef.current = false; };
+  }, []);
+  if (Platform.OS === "ios") {
+    if (!messageDraftsRef.current) messageDraftsRef.current = createIOSMessageDrafts({
+      onAvailable: () => {
+        if (messageDraftsMountedRef.current) refreshDraftCapacity((value) => value + 1);
+      },
+    });
+    messageDraftsRef.current.account(session?.id || null, chatAuthEpoch);
+  }
+  const browseReturnRef = useRef(null);
+  if (!browseReturnRef.current) browseReturnRef.current = createBrowseReturnStore();
+  // Change ownership during render: an old screen's effect/scroll callback cannot write for the new viewer.
+  browseReturnRef.current.account(session?.id || null);
+  const searchReturn = Platform.OS === "ios" ? browseReturnRef.current.lease("search") : null;
+  const discoverReturn = Platform.OS === "ios" ? browseReturnRef.current.lease("discover") : null;
   // Detail overlays unmount Discover. Keep only its public destination here,
   // scoped to this viewer, so Back does not unexpectedly switch to Shows.
   const [discoverDestination, setDiscoverDestination] = useState(() => ({ accountId: session?.id || null, programme: Platform.OS === "web" ? "shows" : "artists" }));
@@ -699,6 +726,7 @@ function Root() {
   const commitGo = (candidate) => {
     let frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id, Platform.OS);
     if (!frame) return;
+    if (Platform.OS === "ios" && frame.directory) browseReturnRef.current.reset("discover");
     if (frame.auth && stackRef.current[stackRef.current.length - 1]?.auth) {
       // A newer read-only News intent updates the destination without adding
       // another sign-in screen or resetting the form already being filled in.
@@ -722,6 +750,7 @@ function Root() {
   const commitReplace = (candidate) => {
     const frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id, Platform.OS);
     if (!frame) return;
+    if (Platform.OS === "ios" && frame.directory) browseReturnRef.current.reset("discover");
     const previous = stackRef.current;
     const next = replaceNavigationFrame(previous, frame);
     const path = pathForFrame(frame);
@@ -884,6 +913,10 @@ function Root() {
     if (key === "search") SearchScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
     if (key === "discover") DiscoverScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
     if (key === "you") YouScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
+    if (Platform.OS === "ios") {
+      browseReturnRef.current.reset("search");
+      browseReturnRef.current.reset("discover");
+    }
     writeNavigation({ ...navigationRef.current, stack: [{}], tab: key, landing: false }, MAIN_TAB_PATHS[key]);
   });
   const openPublicDirectory = (directory, { region } = {}) => {
@@ -1469,7 +1502,7 @@ function Root() {
   else if (nav.reporting) overlay = <ReportScreen target={nav.reporting} onClose={back} />;
   else if (nav.editProfile) overlay = <EditProfileScreen onClose={back} />;
   else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
-  else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
+  else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} draftLease={Platform.OS === "ios" ? messageDraftsRef.current.lease(nav.thread) : null} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (MUSIC_PLAYER_ENABLED && nav.listeningHistory) overlay = <ListeningHistoryScreen onClose={back} onPlay={musicPlayerAction} />;
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} onOpenPlans={ENABLE_CREW ? () => go({ crew: { tab: "plans" } }) : undefined} onOpenArtist={openArtist} />;
@@ -1677,8 +1710,8 @@ function Root() {
                   onRemoveMyPostTag={removePostTag}
                 />
               )}
-              {activeTab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
+              {activeTab === "search" && <SearchScreen key={searchReturn?.key} browseReturn={searchReturn} onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
+              {activeTab === "discover" && <DiscoverScreen key={discoverReturn?.key || session?.id || "guest"} browseReturn={discoverReturn} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
               {activeTab === "you" && !!session && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}
