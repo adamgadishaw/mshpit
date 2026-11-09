@@ -1,12 +1,12 @@
 # Pit current status
 
-## 2026-11-09 clean iOS navigation candidate
+## 2026-11-09 completed clean iOS navigation and card build
 
-- Isolated branch `ios/navigation-without-notifications` applies reviewed Feed and nested-detail navigation to Discover-only `8060121`; source is `7a8c5cf`. It excludes the held notification runtime and has no new backend rollout dependency. Legacy notification behavior is preserved, not repaired.
-- Independent integration review passes 375 formal tests and 18 production-function cases. Fresh web budget, iOS/Android exports, exact source matching, platform isolation, production dependency audit, syntax, architecture and Blueprint gates pass. Full serial suite and native Release build are pending.
-- Native/dependency copies are independent and path-audited; main and original candidates are unchanged. No navigation build installed or deployed.
-- Preserved Discover-only `8060121` was installed in place and launched. Physical taps briefly worked, but Device Hub gesture control remained unreliable; no continuous-swipe or smoothness acceptance is claimed. No uninstall/reset or credentials entered.
-- Current receipt: `docs/IOS_NAVIGATION_WITHOUT_NOTIFICATIONS_2026-11-09.md`. The next two entries are historical original-candidate records; their notification hold does not describe this clean branch.
+- Validated runtime source `cc04472` combines retained Feed/detail Back and iOS-only content-aware post cards on `8060121`, excluding the held notification feature. Navigation-only `867e38c`, original candidates and main `942e1f3` are preserved.
+- Complete unchanged suite: **8,947/8,947 tests**, all 1,041 discovered files, zero failures/skips/cancellations, in 27 source-frozen resumable serial batches. Earlier interrupted monolithic runs are not passes. Correct actual-iOS composition is covered by the 104-case final review matrix; 60 Yoga cases also pass.
+- Production dependency audit, syntax (927 Node files), architecture, Blueprint, web budget (523,877/524,288), iOS/Android exports and exact source/platform isolation pass. Native Release build, strict signature and native source-map matching pass. Main source/native inputs remain unchanged.
+- Signed artifact `.tmp/ios-phone-checkpoints/flagship-cc04472/MshpitDev.app` is preserved and **uninstalled**. Await phone availability for physical gesture, layout, VoiceOver and performance acceptance. The existing profile expires November 14 at23:50UTC. No backend, provisioning, push or deployment action occurred.
+- Current receipt: `docs/IOS_NAVIGATION_WITHOUT_NOTIFICATIONS_2026-11-09.md`. The next two sections are historical original-candidate records; their notification backend-first hold does not describe this clean build.
 
 ## 2026-11-09 iOS nested detail Back (isolated local candidate)
 
