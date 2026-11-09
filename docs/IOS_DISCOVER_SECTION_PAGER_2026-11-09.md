@@ -33,8 +33,17 @@ The full dependency audit still reports 12 entries: 3 high, 8 moderate and 1 low
 
 ## Device status and remaining acceptance
 
-**This combined build has not been installed.** The user has the phone; no phone actions were performed for this checkpoint. The last agent-installed runtime is `9f8d59a`, whose populated Feed rendering was physically confirmed after repairing the removed React Native style alias. Prior builds remain preserved.
+**This combined build is now installed and launched on the physical iPhone.** After the user reconnected the phone, the preserved `a7a8117` app was installed in place on the iPhone 16 Pro Max/iOS 27.2 at 2026-11-09 01:16:48 UTC, without uninstalling or resetting app data. Launch succeeded at 01:17:12 UTC with PID 3446. Both receipts identify `DF97F059-1A6F-413B-A03A-2C8E232CBA50/MshpitDev.app`. All 52 artifact files, the receipt source/manifest hashes and the deep/strict signature were rechecked before installation. This supersedes the previous installed runtime `9f8d59a`; prior signed builds and the historical build-time hold remain preserved.
 
-Device Hub screenshots and accessibility window controls worked, but coordinate inputs failed with `noWindowsAvailable` in two sessions and after an ordinary Device Hub restart. Consequently, the new Discover layout/motion, Feed incoming-page motion, compact-footer interaction, native accessibility and performance are not certified.
+Actual Device Hub pixels show a populated Feed with **For You** selected, the order **Following → Local → For You → News**, and bottom buttons **Feed, Search, Discover, You**. This confirms physical Feed rendering, not session identity continuity or native performance. Device Hub screenshots and the accessibility Raise action worked. One fresh coordinate tap on the visible Local filter failed with `Computer Use server error -10005: noWindowsAvailable`; the post-attempt screenshot remained on For You. No repeated input recovery, restart, permission/security change or alternate input route was attempted. The same input limitation occurred in the earlier sessions, including after an ordinary Device Hub restart.
+
+Consequently, Discover layout/motion, Feed incoming-page motion, swipe cancellation, nested-rail arbitration, tap alternatives, compact-footer interaction, native accessibility and performance are **not certified**. No Discover, swipe or cancellation check passed in this session. No synthetic live action, Activity/Inbox read-state action or production source change was performed.
+
+Current local evidence:
+- Device: `/tmp/mshpit-a7a8117-phone-devices-20261109T011625Z-95708.json`.
+- Install: `/tmp/mshpit-a7a8117-phone-install-20261109T011648Z-95729.json`.
+- Launch: `/tmp/mshpit-a7a8117-phone-launch-20261109T011712Z-95940.json`.
+- UI outcome: `/tmp/mshpit-a7a8117-phone-ui-20261109T011827598Z.json`.
+- Actual screenshot: `/tmp/mshpit-a7a8117-phone-ui-20261109T011827598Z.jpg`.
 
 For an owner-driven or explicitly approved genuine-use session, verify all six Discover directions, real incoming content, cold/slow/empty/error states, short/reversed/canceled swipes and explicit-tab interruption. Check local rails and maps retain their gestures, vertical scrolling remains natural, and Back returns to the right section/offset. Verify large text, VoiceOver/tap alternatives and Reduce Motion. Use an authorized isolated fixture for any synthetic mutation or read-state test; ordinary Activity/DM opening can mark real content read. Do not infer permission for those actions from installation or reconnection alone.
