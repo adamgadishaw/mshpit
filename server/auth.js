@@ -36,7 +36,10 @@ db.exec(`CREATE TRIGGER IF NOT EXISTS revoke_newsroom_browser_sessions
   BEGIN DELETE FROM newsroom_browser_sessions WHERE user_id=NEW.id; END`);
 // Starting with the feature disabled also invalidates any previously issued rows.
 if (!newsroomSessionsEnabled()) db.prepare("DELETE FROM newsroom_browser_sessions").run();
-const PRIVILEGED_ROLES = new Set(["admin", "moderator"]);
+// Editors can publish to the public Newsroom. Their full-account cookie is a
+// staff credential too; only the separately scoped, opt-in Newsroom cookie
+// keeps its explicitly approved longer lifetime.
+const PRIVILEGED_ROLES = new Set(["admin", "moderator", "editor"]);
 
 export function sessionTtlForRole(role) {
   return PRIVILEGED_ROLES.has(String(role || ""))

@@ -1,6 +1,12 @@
 # Pit security and privacy readiness
 
-Last scoped review: 2026-10-16
+Last scoped review: 2026-11-09
+
+The November account/database follow-up is recorded in
+[`docs/ACCOUNT_DATABASE_FORTIFICATION_2026-11-09.md`](docs/ACCOUNT_DATABASE_FORTIFICATION_2026-11-09.md).
+It corrects the full editor-session lifetime and invalidates independent
+editorial API grants/pairings during offline restore preparation. Deployment and
+operational containment remain separate gates.
 
 The bounded app security/concurrency follow-up, locally corrected defects, and
 unresolved public Git history and capacity risks are recorded in
@@ -41,7 +47,9 @@ to be completed.
   account content, email ownership, and ordinary password recovery remain intact.
   Other administrators retain their role. Password or authority repair revokes
   every session belonging to the selected root.
-- Staff sessions expire after 12 hours. Production cookies use the host-only
+- Staff sessions expire after 12 hours, including full editor sessions. The
+  separately approved, opt-in Newsroom cookie retains its narrower scope and
+  independent lifetime. Production cookies use the host-only
   `__Host-pit_session` name with `Secure`, `HttpOnly`, `SameSite=Lax`, and high
   priority; legacy cookies are cleared but not accepted as active credentials.
 - Browser writes require the exact first-party origin and JSON content type.
@@ -163,6 +171,11 @@ to be completed.
   Calendar exports omit custom ticket links until that exact URL is confirmed.
 
 ### Supply chain and architecture
+
+The dependency figures below preserve the October 16 historical assessment. The
+November 9 follow-up reports zero production-only vulnerabilities and 12 affected
+package entries in the full development/tooling graph (three high, eight moderate,
+one low). See the follow-up report for current dependency paths and limitations.
 
 - The October 16 production-server dependency audit reports zero vulnerabilities.
   The full development/mobile graph reports 19 high findings inherited through
