@@ -225,3 +225,18 @@ test("summary failure retains confirmed count and the next timer retries without
     assert.deepEqual(h.saved, [["pit.notifications", []]]);
   } finally { h.dispose(); }
 });
+
+
+test("lazy runtime preserves the three explicit demo fixtures without transport", async () => {
+  const { service, calls } = serviceHarness();
+  const { createNotificationRuntime } = loadModule(runtimeSource, {
+    "./notificationActivityState.mjs": { createNotificationActivity },
+    "./notificationsApi.js": service, "../../lib/diagnostics": { AppError },
+  });
+  const controller = createNotificationRuntime({ getIdentity: () => identity("u_demo"), demo: true });
+  await controller.load();
+  assert.deepEqual(controller.getSnapshot().data.rows.map(row => row.id), ["nf1", "nf2", "nf3"]);
+  assert.equal(controller.getSnapshot().data.unread, 2);
+  assert.equal(calls.length, 0);
+  controller.unmount();
+});
