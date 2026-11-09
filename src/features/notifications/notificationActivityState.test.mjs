@@ -1,3 +1,4 @@
+import * as notificationPageLoad from "./notificationPageLoad.mjs";
 import * as notificationReadCommand from "./notificationReadCommand.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -285,3 +286,97 @@ test("a failed cold import is recoverable and does not poison queued GET or ackn
   f.writes[0].resolve({ readContract: NOTIFICATION_READ_CONTRACT, notificationIds: ["one"], unread: 0 });
   assert.equal((await retry).ok, true); assert.equal(f.snapshot.data.rows[0].read, true);
 });
+
+function delayedPageCommand() {
+  const imports = [];
+  return { imports, loadPageCommand: () => new Promise((resolve, reject) => imports.push({ resolve, reject })) };
+}
+
+for (const boundary of ["account", "epoch", "logout", "A-B-A", "unmount", "unmount-remount"]) {
+  test(`cold page chunk cannot start transport or adopt data after ${boundary}`, async () => {
+    const loader = delayedPageCommand(), f = fixture({ loadPageCommand: loader.loadPageCommand });
+    const pending = f.controller.load();
+    const rejected = assert.rejects(pending, { name: "AbortError" });
+    await tick();
+    assert.equal(f.snapshot.status, "loading", "loading feedback starts before the chunk is available");
+    assert.equal(loader.imports.length, 1); assert.equal(f.reads.length, 0);
+    if (boundary === "account") f.adopt("B");
+    else if (boundary === "epoch") f.adopt("A", 2);
+    else if (boundary === "logout") f.adopt(null);
+    else if (boundary === "A-B-A") { f.adopt("B"); f.adopt("A"); }
+    else if (boundary === "unmount") f.controller.unmount();
+    else { f.controller.unmount(); f.controller.mount(); }
+    loader.imports[0].resolve(notificationPageLoad);
+    await rejected; await tick();
+    assert.equal(f.reads.length, 0); assert.equal(f.writes.length, 0);
+    assert.deepEqual(f.snapshot.data.rows, []); assert.equal(f.snapshot.updatedAt, null);
+  });
+}
+
+test("failed cold page import retains authorized rows and cursor, then retry recovers", async () => {
+  const loader = delayedPageCommand(), f = fixture({ loadPageCommand: loader.loadPageCommand });
+  const initial = f.controller.load(); await tick(); loader.imports[0].resolve(notificationPageLoad); await tick();
+  f.reads[0].resolve(page([row("cached")], { unread: 5, nextCursor: "older" })); await initial;
+  const pending = f.controller.load(); const rejected = assert.rejects(pending, e => e.retryable === true);
+  await tick(); assert.equal(f.snapshot.status, "refreshing"); assert.equal(f.snapshot.data.rows[0].id, "cached");
+  loader.imports[1].reject(new Error("Page chunk unavailable")); await rejected;
+  assert.equal(f.snapshot.status, "error"); assert.equal(f.snapshot.error.retryable, true);
+  assert.equal(f.snapshot.data.rows[0].id, "cached"); assert.equal(f.snapshot.data.nextCursor, "older");
+  assert.equal(f.snapshot.data.unread, 5); assert.equal(f.reads.length, 1);
+  const retry = f.controller.load(); await tick(); assert.equal(loader.imports.length, 3);
+  loader.imports[2].resolve(notificationPageLoad); await tick();
+  f.reads[1].resolve(page([row("fresh")], { unread: 6 })); await retry;
+  assert.equal(f.snapshot.status, "ready"); assert.equal(f.snapshot.error, null);
+  assert.deepEqual(f.snapshot.data.rows.map(r => r.id), ["fresh"]); assert.equal(f.snapshot.data.unread, 6);
+});
+
+test("duplicate heads share one cold page import and one GET", async () => {
+  const loader = delayedPageCommand(), f = fixture({ loadPageCommand: loader.loadPageCommand });
+  const first = f.controller.load(), second = f.controller.load();
+  await tick(); assert.equal(loader.imports.length, 1); assert.equal(f.reads.length, 0);
+  const third = f.controller.load(); await tick(); assert.equal(loader.imports.length, 1);
+  loader.imports[0].resolve(notificationPageLoad); await tick();
+  assert.equal(f.reads.length, 1); assert.equal(f.reads[0].args.accountId, "A");
+  f.reads[0].resolve(page([row("shared")]));
+  const results = await Promise.all([first, second, third]);
+  for (const result of results) assert.deepEqual(result.map(r => r.id), ["shared"]);
+  assert.equal(f.snapshot.status, "ready"); assert.equal(f.reads.length, 1);
+});
+
+test("observer cancellation during cold page import preserves the account-shared read", async () => {
+  const loader = delayedPageCommand(), f = fixture({ loadPageCommand: loader.loadPageCommand });
+  const caller = new AbortController();
+  const first = f.controller.load({ signal: caller.signal }), second = f.controller.load();
+  const rejected = assert.rejects(first, { name: "AbortError" });
+  await tick(); caller.abort(); await rejected;
+  assert.equal(loader.imports.length, 1); assert.equal(f.reads.length, 0);
+  loader.imports[0].resolve(notificationPageLoad); await tick();
+  assert.equal(f.reads.length, 1); assert.equal(f.reads[0].args.signal.aborted, false);
+  f.reads[0].resolve(page([row("shared-after-cancel")])); await second;
+  assert.equal(f.snapshot.status, "ready"); assert.equal(f.snapshot.data.rows[0].id, "shared-after-cancel");
+});
+
+for (const mutation of ["read", "privacy"]) {
+  test(`helper completion cannot overwrite an external confirmed ${mutation} mutation in the await gap`, async () => {
+    let calls = 0;
+    const f = fixture({ loadPageCommand: async () => ({
+      async loadNotificationPage(args) {
+        const result = await notificationPageLoad.loadNotificationPage(args);
+        if (++calls === 2) {
+          // A controller-owned mutation runs after the helper has projected its
+          // response, but before the awaiting controller resumes. Publication
+          // must already be complete rather than replay this older projection.
+          f.controller.setRows(rows => mutation === "read" ? rows.map(r => ({ ...r, read: true })) : []);
+        }
+        return result;
+      },
+    }) });
+    await f.load([row("dm")]);
+    const refresh = f.controller.load(); await tick();
+    f.reads[1].resolve(page([row("dm")], { unread: 1 })); await refresh;
+    assert.equal(calls, 2); assert.equal(f.snapshot.data.unread, 0);
+    if (mutation === "read") {
+      assert.equal(f.snapshot.data.rows.length, 1); assert.equal(f.snapshot.data.rows[0].read, true);
+    } else assert.deepEqual(f.snapshot.data.rows, []);
+  });
+}

@@ -1,3 +1,4 @@
+import { commandFailure, commandSuccess } from "../../domain/commandResult.mjs";
 import { reconcileConfirmedNotificationReads } from "../../domain/notificationReadMutation.mjs";
 
 const READ_CONTRACT = "notification-ids-v1";
@@ -35,4 +36,18 @@ export async function acknowledgeNotificationRows({ ids, signal, transportSignal
     confirmed.push(...acknowledged);
   }
   return { notificationIds: confirmed, unread: getCurrent().data.unread };
+}
+
+export async function markNotificationRows(options) {
+  const { snapshot, notificationIds, signal, transportSignal, makeError, assertCurrent } = options;
+  assertCurrent();
+  if (signal?.aborted || transportSignal.aborted) throw aborted();
+  if (snapshot.readContract !== READ_CONTRACT) return commandFailure(makeError("Marking activity read is not available on this server yet. Your unread activity is unchanged."));
+  if (!Array.isArray(notificationIds) || notificationIds.length > 1000 || notificationIds.some(id => typeof id !== "string" || !id)) {
+    return commandFailure(makeError("Choose the loaded activity to mark read."));
+  }
+  const loaded = new Set(snapshot.rows.map(row => row.id));
+  const ids = [...new Set(notificationIds)].filter(id => loaded.has(id));
+  if (!ids.length) return commandSuccess({ notificationIds: [], unread: snapshot.unread });
+  return commandSuccess(await acknowledgeNotificationRows({ ...options, ids }));
 }

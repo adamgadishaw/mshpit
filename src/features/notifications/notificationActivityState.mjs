@@ -1,5 +1,5 @@
 import { beginLoadState, createLoadState, isLoadCancellation, rejectLoadState, resolveLoadState } from "../../domain/loadState.mjs";
-import { commandFailure, commandSuccess } from "../../domain/commandResult.mjs";
+import { commandFailure } from "../../domain/commandResult.mjs";
 import { createScopedReadCoordinator } from "../../domain/scopedReadCoordinator.mjs";
 
 export const NOTIFICATION_READ_CONTRACT = "notification-ids-v1";
@@ -27,7 +27,7 @@ function observe(promise, signal) {
 // paging. No disk persistence. Concurrent reads deduplicate and all network
 // reads/acks serialize within an epoch, so an earlier GET cannot undo a later
 // confirmed read. Scope changes abort and synchronously discard everything.
-export function createNotificationActivity({ getIdentity, getHiddenActorIds = () => [], fetchPage, writeReads, makeError, normalizeError, loadReadCommand = () => import("./notificationReadCommand.mjs"), now = Date.now, demo = false, seed = [] }) {
+export function createNotificationActivity({ getIdentity, getHiddenActorIds = () => [], fetchPage, writeReads, makeError, normalizeError, loadReadCommand = () => import("./notificationReadCommand.mjs"), loadPageCommand = () => import("./notificationPageLoad.mjs"), now = Date.now, demo = false, seed = [] }) {
   const coordinator = createScopedReadCoordinator(ownerKey);
   const listeners = new Set();
   let owner = getIdentity(), scope = ownerKey(owner), alive = true;
@@ -50,25 +50,6 @@ export function createNotificationActivity({ getIdentity, getHiddenActorIds = ()
   };
   const valid = expected => alive && sync() === expected && owner.accountId && owner.ready;
   const requireScope = expected => { if (!valid(expected)) throw aborted(); };
-  const project = (payload, previous, more) => {
-    if (!Array.isArray(payload?.notifications) || !Number.isSafeInteger(payload?.unread) || payload.unread < 0
-      || (payload.nextCursor != null && typeof payload.nextCursor !== "string")) throw makeError("Activity returned an invalid response. Try again.");
-    const hiddenActors = new Set(getHiddenActorIds());
-    const rows = payload.notifications.map(row => {
-      if (!row || typeof row.id !== "string" || !row.id || !Number.isFinite(row.ts)) throw makeError("Activity returned an invalid response. Try again.");
-      return { ...row, userId: owner.accountId, read: !!row.read };
-    }).filter(row => !row.actorId || !hiddenActors.has(row.actorId));
-    const retained = more ? previous.rows : previous.rows.filter(row => row.type === "welcome");
-    const combined = uniqueRows([...retained, ...rows]);
-    const historyLimited = combined.length > MAX_NOTIFICATION_ROWS || (combined.length === MAX_NOTIFICATION_ROWS && !!payload.nextCursor);
-    return {
-      rows: combined.slice(0, MAX_NOTIFICATION_ROWS),
-      unread: payload.unread + welcomeUnread(combined),
-      nextCursor: historyLimited ? null : payload.nextCursor || null,
-      readContract: payload.readContract === NOTIFICATION_READ_CONTRACT ? NOTIFICATION_READ_CONTRACT : null,
-      historyLimited,
-    };
-  };
   const enqueue = (key, expected, task) => {
     requireScope(expected);
     if (operations.has(key)) return operations.get(key).promise;
@@ -99,26 +80,24 @@ export function createNotificationActivity({ getIdentity, getHiddenActorIds = ()
       const before = resource;
       if (!summary) publish(beginLoadState(resource, { scope, emptyData: emptyData() }));
       try {
-        let payload;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const revision = mutationRevision;
-          const demoRows = resource.updatedAt == null ? seed.filter(row => row.userId === owner.accountId) : resource.data.rows;
-          payload = demo ? { notifications: demoRows, unread: unreadRows(demoRows), nextCursor: null, readContract: NOTIFICATION_READ_CONTRACT }
-            : await fetchPage({ accountId: owner.accountId, cursor, signal: transportSignal, limit: summary ? 1 : 100 });
+        const { loadNotificationPage } = await loadPageCommand();
+        const assertCurrent = () => {
           requireScope(expectedScope);
           if (transportSignal.aborted || !coordinator.isCurrent(claim, owner)) throw aborted();
-          if (revision === mutationRevision) break;
-          // A confirmed DM read or privacy scrub bypasses this network queue.
-          // Refetch instead of resurrecting the pre-mutation server snapshot.
-          if (attempt === 2) throw makeError("Activity changed while refreshing. Try again.");
-        }
-        requireScope(expectedScope);
-        if (transportSignal.aborted || !coordinator.isCurrent(claim, owner)) throw aborted();
-        const next = project(payload, resource.data, more);
-        if (summary) {
-          publish(createLoadState({ ...resource, data: { ...resource.data, unread: payload.unread + welcomeUnread(resource.data.rows), readContract: next.readContract } }));
-        } else publish(resolveLoadState({ scope, data: next, updatedAt: now() }));
-        return next.rows;
+        };
+        const rows = await loadNotificationPage({
+          cursor, summary, more, demo, seed, fetchPage, makeError, getHiddenActorIds,
+          signal: transportSignal, assertCurrent,
+          getCurrent: () => ({ accountId: owner.accountId, revision: mutationRevision, data: resource.data, updatedAt: resource.updatedAt }),
+          adopt: (next, unread) => {
+            // Project and publish in one synchronous turn. An external confirmed
+            // DM/privacy mutation cannot slip between them across an await.
+            if (summary) publish(createLoadState({ ...resource, data: { ...resource.data, unread: unread + welcomeUnread(resource.data.rows), readContract: next.readContract } }));
+            else publish(resolveLoadState({ scope, data: next, updatedAt: now() }));
+          },
+        });
+        assertCurrent();
+        return rows;
       } catch (error) {
         if (!valid(expectedScope) || transportSignal.aborted || isLoadCancellation(error)) {
           if (valid(expectedScope) && !summary && coordinator.isCurrent(claim, owner)) {
@@ -147,27 +126,21 @@ export function createNotificationActivity({ getIdentity, getHiddenActorIds = ()
   const markRead = async ({ notificationIds, expectedScope = sync(), signal } = {}) => {
     if (!valid(expectedScope)) return commandFailure(makeError("Your account changed. Refresh Activity and try again.", "PIT-AUTH-004"));
     if (signal?.aborted) throw aborted();
-    if (resource.data.readContract !== NOTIFICATION_READ_CONTRACT) return commandFailure(makeError("Marking activity read is not available on this server yet. Your unread activity is unchanged."));
-    if (!Array.isArray(notificationIds) || notificationIds.length > MAX_NOTIFICATION_ROWS || notificationIds.some(id => typeof id !== "string" || !id)) {
-      return commandFailure(makeError("Choose the loaded activity to mark read."));
-    }
-    // The supplied IDs are a deliberate screen snapshot, never a global clear.
-    const loaded = new Set(resource.data.rows.map(row => row.id));
-    const ids = [...new Set(notificationIds)].filter(id => loaded.has(id));
-    if (!ids.length) return commandSuccess({ notificationIds: [], unread: resource.data.unread });
+    // Freeze the loaded set before queueing or downloading command code.
+    const snapshot = resource.data;
+    const requestedIds = Array.isArray(notificationIds) && notificationIds.length <= MAX_NOTIFICATION_ROWS ? [...notificationIds] : null;
     try {
-      const result = await enqueue(`ack:${++writeSequence}`, expectedScope, async transportSignal => {
+      return await enqueue(`ack:${++writeSequence}`, expectedScope, async transportSignal => {
         // Keep the explicit write path out of the web startup bundle. Import
         // inside the queue so loading the chunk cannot reorder reads/writes.
-        const { acknowledgeNotificationRows } = await loadReadCommand();
-        return acknowledgeNotificationRows({
-          ids, signal, transportSignal, demo, writeReads, makeError,
+        const { markNotificationRows } = await loadReadCommand();
+        return markNotificationRows({
+          snapshot, notificationIds: requestedIds, signal, transportSignal, demo, writeReads, makeError,
           assertCurrent: () => requireScope(expectedScope),
           getCurrent: () => ({ accountId: owner.accountId, revision: mutationRevision, data: resource.data }),
           adopt: data => publish(createLoadState({ ...resource, data })),
         });
       });
-      return commandSuccess(result);
     } catch (error) {
       if (isLoadCancellation(error, signal)) throw aborted();
       return commandFailure(normalizeError(error));

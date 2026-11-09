@@ -1,3 +1,4 @@
+import "./notificationPageLoad.mjs";
 import "./notificationReadCommand.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
