@@ -16,7 +16,6 @@ export default function NativeDiscoverSectionPager({ active, onChange, swipeScop
   callbacks.current = { onChange, isCurrentSwipeRoute };
   const [candidate, setCandidate] = useState(null);
   const [ready, setReady] = useState(null);
-  const [contentReady, setContentReady] = useState(null);
   const life = useRef(null), candidateRef = useRef(null);
   const owner = useMemo(() => ({ active, swipeScope, tapRevision }), [active, swipeScope, tapRevision]);
   useLayoutEffect(() => { life.current = owner; return () => { if (life.current === owner) life.current = null; }; }, [owner]);
@@ -31,24 +30,24 @@ export default function NativeDiscoverSectionPager({ active, onChange, swipeScop
   }, [owner, active, swipeEnabled]);
   const cancel = useCallback(() => {
     if (life.current !== owner) return;
-    setCandidate(null); setReady(null); setContentReady(null);
+    setCandidate(null); setReady(null);
   }, [owner]);
   const commit = useCallback(direction => {
-    if (!current()) return;
+    if (!current()) return false;
     const target = adjacentSwipeTab(active, direction, tabs);
-    if (target) callbacks.current.onChange?.(target, callbacks.current.isCurrentSwipeRoute);
+    if (!target || !callbacks.current.onChange) return false;
+    return callbacks.current.onChange(target, callbacks.current.isCurrentSwipeRoute) !== false;
   }, [owner, active, swipeEnabled]);
   const destinationReady = useCallback(() => {
     if (pending && candidateRef.current === pending && current()) setReady(pending);
   }, [pending, owner, swipeEnabled]);
-  const destinationContentReady = useCallback(value => {
-    if (pending && candidateRef.current === pending && current()) setContentReady(value ? pending : null);
-  }, [pending, owner, swipeEnabled]);
   const index = tabs.indexOf(active);
-  const readyDirection = useMemo(() => pending && ready === pending ? { direction: pending.direction, gesture: pending.gesture, contentReady: contentReady === pending } : null, [pending, ready, contentReady]);
+  const readyDirection = useMemo(() => pending && ready === pending ? { direction: pending.direction, gesture: pending.gesture } : null, [pending, ready]);
+  // A readiness update must not rerender the unchanged outgoing Discover tree.
+  const renderSection = useCallback((key, preview) => <NativeTabPreviewContext.Provider value={inheritedPreview || preview}>{renderPage(key, inheritedPreview || preview)}</NativeTabPreviewContext.Provider>, [inheritedPreview, renderPage]);
   const renderPages = (x, width, origin) => [active, ...(pending ? [pending.target] : [])].map(tab =>
     <NativeTabPage key={tab} tab={tab} active={active} position={tabs.indexOf(tab)} origin={origin}
-      x={x} width={width} loading={loading} renderPage={(key, preview) => <NativeTabPreviewContext.Provider value={inheritedPreview || preview}>{renderPage(key, inheritedPreview || preview)}</NativeTabPreviewContext.Provider>} onReady={tab === pending?.target ? destinationReady : undefined} onContentReady={tab === pending?.target ? destinationContentReady : undefined} />);
+      x={x} width={width} loading={loading} renderPage={renderSection} onReady={tab === pending?.target ? destinationReady : undefined} />);
   return <NativeSwipeRail page pageKey={active} pageIndex={index} enabled={swipeEnabled} onCommit={commit}
     canPrevious={index > 0} canNext={index < tabs.length - 1}
     onPageIntent={prepare} onPageCancel={cancel} pageReady={readyDirection}

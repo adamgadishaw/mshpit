@@ -1,4 +1,4 @@
-import { Suspense, useLayoutEffect, useRef } from "react";
+import { memo, Suspense, useLayoutEffect, useRef } from "react";
 import { StyleSheet, View } from "react-native";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { NativeTabPreviewContext, NativeTabReadinessContext } from "./nativeTabPreviewContext.mjs";
@@ -12,7 +12,7 @@ function Ready({ onReady, children }) {
   useLayoutEffect(() => { if (laidOut.current) onReady?.(); }, [onReady]);
   return <View style={styles.fill} onLayout={() => { laidOut.current = true; onReady?.(); }}>{children}</View>;
 }
-export default function NativeTabPage({ tab, active, position, origin, x, width, renderPage, loading, onReady, onContentReady }) {
+function NativeTabPage({ tab, active, position, origin, x, width, renderPage, loading, onReady, onContentReady }) {
   const preview = tab !== active;
   const motion = useAnimatedStyle(() => ({ transform: [{ translateX: pageTranslation(x.get(), width.get(), position - origin.get()) }] }));
   return <Animated.View testID={`main-tab-page-${tab}`} style={[styles.page, motion]}
@@ -23,4 +23,5 @@ export default function NativeTabPage({ tab, active, position, origin, x, width,
     </NativeTabPreviewContext.Provider>
   </Animated.View>;
 }
+export default memo(NativeTabPage);
 const styles = StyleSheet.create({ fill: { flex: 1, minHeight: 0 }, page: { ...StyleSheet.absoluteFill, backgroundColor: colors.bg, minHeight: 0 } });

@@ -38,7 +38,7 @@ export function DiscoverOwner(props) {
     latest.current.browseReturn?.save({ scrollY: 0, genreFocused: false });
     if (value !== latest.current.programme) { initialSection.current = null; latest.current.onProgramme(value); }
   };
-  const commit = useCallback(value => { if (current()) { setGenreFocused(false); initialSection.current = null; latest.current.browseReturn?.save({ scrollY: 0, genreFocused: false }); latest.current.onProgramme(value); } }, [current]);
+  const commit = useCallback(value => { if (!current()) return false; setGenreFocused(false); initialSection.current = null; latest.current.browseReturn?.save({ scrollY: 0, genreFocused: false }); latest.current.onProgramme(value); return true; }, [current]);
   const changeArea = country => { if (!current()) return; setTapRevision(revision => revision + 1); setAreaOpen(false); initialSection.current = null; latest.current.browseReturn?.save({ scrollY: 0 }); props.onRegion(country); };
   return <View style={styles.root}>
     <View testID="discover-fixed-navigation">
@@ -58,7 +58,7 @@ export function DiscoverOwner(props) {
       </ScrollView> : null}
     </View>
     <NativeDiscoverSectionPager active={props.programme} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
-      swipeEnabled={appActive && !inheritedPreview && !areaOpen && props.swipeEnabled !== false} isCurrentSwipeRoute={current}
+      loading={props.loading} swipeEnabled={appActive && !inheritedPreview && !areaOpen && props.swipeEnabled !== false} isCurrentSwipeRoute={current}
       renderPage={(section, preview) => <DiscoverPane {...props} programme={section} localSection
         initialBrowse={section === initialSection.current ? props.initialBrowse : null}
         sectionGenreFocused={section === "artists" && genreFocused} onSectionGenreFocus={setGenreFocused}

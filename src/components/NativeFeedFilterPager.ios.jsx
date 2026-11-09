@@ -31,9 +31,10 @@ export default function NativeFeedFilterPager({ active, onChange, swipeScope, sw
     setCandidate(null); setReady(null); setContentReady(null);
   }, [owner]);
   const commit = useCallback(direction => {
-    if (!current()) return;
+    if (!current()) return false;
     const target = adjacentSwipeTab(active, direction, tabs);
-    if (target) callbacks.current.onChange?.(target, callbacks.current.isCurrentSwipeRoute);
+    if (!target || !callbacks.current.onChange) return false;
+    return callbacks.current.onChange(target, callbacks.current.isCurrentSwipeRoute) !== false;
   }, [owner, active, swipeEnabled]);
   const destinationReady = useCallback(() => {
     if (pending && candidateRef.current === pending && current()) setReady(pending);

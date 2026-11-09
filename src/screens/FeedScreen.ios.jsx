@@ -39,7 +39,7 @@ function FeedOwner(props) {
     setTapRevision(revision => revision + 1);
     if (value !== filter) select(value);
   };
-  const commit = value => { if (selected.current === selection && current()) select(value); };
+  const commit = value => { if (selected.current !== selection || !current()) return false; select(value); return true; };
   const enabled = !!props.loggedIn && !!props.visible && active && props.swipeEnabled !== false;
   return <View style={{ flex: 1, minHeight: 0 }}>
     <View testID="feed-fixed-navigation" style={{ paddingHorizontal: 12, paddingTop: 4 }}>

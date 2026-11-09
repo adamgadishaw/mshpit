@@ -54,7 +54,7 @@ const sleepForever = new Promise(() => {});
 // Actual React, platform-resolved rail and shell components. The native gesture,
 // UI/RN scheduler and actions are synthetic: this does not validate a device.
 function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "following", entryDirection = 0, scrollChild = null, pager = false, shell = false, scrollRef = null, scrollProps = {}, feedScreen = false, discoverScreen = false, selectedFilter = "everyone" } = {}) {
-  const renderer = createRenderer(), gestures = [], queue = [], calls = [], shared = [], reactions = [], springs = [], timings = [], animatedStyles = [], appListeners = new Set(), appHistory = [], springCompletions = [];
+  const renderer = createRenderer(), gestures = [], queue = [], calls = [], shared = [], reactions = [], springs = [], timings = [], animatedStyles = [], appListeners = new Set(), appHistory = [], springCompletions = [], canceledAnimations = [];
   let props = { page, entryDirection, enabled: true, active, onCommit: onCommit || (direction => calls.push(direction)), onChange: onChange || (tab => calls.push(tab)), hint: "Swipe for an action",
     post: { id: "post-A", likes: 0 }, accountId: "account-A", likeInfo: () => ({ liked: false }),
     toggleLike: (...args) => { calls.push(["like", ...args]); return Promise.resolve({ ok: true }); },
@@ -70,7 +70,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   const modules = {
     react: React, "react/jsx-runtime": require("react/jsx-runtime"),
     "react-native": { AppState: { currentState: "active", addEventListener: (_event, callback) => { appListeners.add(callback); appHistory.push(callback); return { remove: () => appListeners.delete(callback) }; } }, AccessibilityInfo: { announceForAccessibility: noop }, View: "View", Text: "Text", ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Pressable: "Pressable", StyleSheet: installedStyleSheet, useWindowDimensions: () => ({ width: 412, fontScale: 1 }) },
-    "react-native-reanimated": { __esModule: true, default: { View: "AnimatedView", Text: "AnimatedText" }, ReduceMotion: { System: "system" }, useSharedValue,
+    "react-native-reanimated": { __esModule: true, default: { View: "AnimatedView", Text: "AnimatedText" }, ReduceMotion: { System: "system" }, useSharedValue, cancelAnimation: value => canceledAnimations.push(value),
       useAnimatedStyle: f => { animatedStyles.push(f); return { ...f(), __animate: f }; }, useAnimatedReaction: (prepare, react) => { reactions.push({ prepare, react }); }, withSpring: (value, config, done) => { springs.push(config); springCompletions.push(done); return value; }, withTiming: (value, config, done) => { timings.push({ value, config, done }); return value; } },
     "react-native-worklets": { scheduleOnRN: (fn, ...args) => { queue.push(() => fn(...args)); }, scheduleOnUI: (fn, ...args) => { if (holdUI) uiQueue.push(() => fn(...args)); else fn(...args); } },
     "../theme": { colors: { bg: "bg", surface: "surface" }, font: "System" }, "./Icon": "Icon", "./BrandMark": "BrandMark",
@@ -127,7 +127,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     return React.createElement("ActualPage", { tab, identity, preview }, React.createElement(Child));
   }
   if (pager) { props.renderPage = tab => React.createElement(ActualPage, { tab }); props.member = true; }
-  const reads = [], writes = [], impressions = [], dwell = [], leaseWrites = [], introductions = [];
+  const reads = [], writes = [], impressions = [], dwell = [], leaseWrites = [], introductions = [], browseRenders = [];
   const persisted = new Map();
   if (feedScreen) {
     const key = require("../domain/feedExperience.mjs").feedFilterStorageKey("account-A");
@@ -203,6 +203,8 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     modules["../LiveDiscoveryCards"] = { PopularLoungeCard: "Lounge" };
     modules["../../lib/img"] = { isHttp: uri => /^http/.test(uri), proxied: uri => uri };
     modules["./DiscoverBrowse.ios"] = execute("./discover/DiscoverBrowse.ios.jsx");
+    const Browse = modules["./DiscoverBrowse.ios"].default;
+    modules["./DiscoverBrowse.ios"].default = p => { browseRenders.push(p.programme); return React.createElement(Browse, p); };
     class AppError extends Error { constructor(message) { super(message); this.name = "AppError"; this.code = "PIT-NET-001"; this.retryable = true; } }
     modules["../../lib/diagnostics"] = { AppError };
     modules["./useFestivalResource"] = execute("../features/festivals/useFestivalResource.js");
@@ -211,6 +213,21 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     modules["../../components/Button"] = "Button";
     modules["./festivalApi.mjs"] = { readFestivals: options => new Promise((resolve, reject) => reads.push({ options, resolve, reject })) };
     const FestivalPanel = execute("../features/festivals/FestivalsPanel.ios.jsx").default;
+    const productionScreen = readFileSync(new URL("../screens/DiscoverScreen.jsx", import.meta.url), "utf8");
+    const tree = parse(productionScreen, { sourceType: "module", plugins: ["jsx"] });
+    const findPanel = node => {
+      if (!node || typeof node !== "object") return null;
+      if (node.type === "JSXAttribute" && node.name?.name === "renderPanel") return node.value.expression;
+      for (const value of Object.values(node)) {
+        const result = Array.isArray(value) ? value.map(findPanel).find(Boolean) : findPanel(value);
+        if (result) return result;
+      }
+      return null;
+    };
+    const panel = findPanel(tree);
+    const panelCode = transformSync(`export default (${productionScreen.slice(panel.start, panel.end)});`, { babelrc: false, configFile: false,
+      plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")] }).code;
+    const DeferredFestival = p => { if (props.festivalSuspended) throw sleepForever; return React.createElement(FestivalPanel, p); };
     modules["./useCityResource"] = execute("../features/cities/useCityResource.js");
     modules["./cityApi.mjs"] = { readCityDirectory: options => new Promise((resolve, reject) => reads.push({ options, resolve, reject, kind: "cities" })) };
     modules["../../components/cities/CityDirectoryTiles"] = "CityTiles";
@@ -233,18 +250,27 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
       browseReturn: { key: "discover-A", save: patch => leaseWrites.push(patch) },
       onProgramme: programme => { calls.push(programme); f.render({ programme }); },
       onRegion: region => f.render({ region }),
-      renderPanel: (section, preview) => section === "festivals" ? React.createElement(FestivalPanel, { region: props.region,
-        registerRefresh: preview ? undefined : fn => introductions.push(fn) })
-        : section === "cities" ? React.createElement(Cities, { country: props.region, registerRefresh: preview ? undefined : fn => introductions.push(fn) })
-        : section === "photos" ? React.createElement(Photos, { region: props.region, accountId: props.accountId })
-        : React.createElement("SectionPanel", { section }),
+      renderPanel: (section, preview) => {
+        const panelModule = { exports: {} };
+        const bindings = { FestivalsPanel: DeferredFestival, CityDiscoveryTiles: Cities, DiscoverPhotoPanel: Photos,
+          DiscoverVenues: p => React.createElement("SectionPanel", { ...p, section: "venues" }),
+          Suspense: React.Suspense, ActivityIndicator: "ActivityIndicator", colors: {}, region: props.region,
+          onOpenFestival: noop, registerFestivalRefresh: fn => introductions.push(fn), registerCityRefresh: fn => introductions.push(fn),
+          openCity: noop, homeCity: null, session: { id: props.accountId }, venueDirectoryIndex: [], tourDates: [],
+          onOpenVenue: noop, onOpen: noop, onOpenVenues: noop, compact: true, width: 412, openPhotos: noop,
+          removedIds: [], blockedIds: [],
+        };
+        new Function("require", "module", "exports", ...Object.keys(bindings), panelCode)(require, panelModule, panelModule.exports, ...Object.values(bindings));
+        return panelModule.exports.default(section, preview);
+      },
     };
   }
   const Layer = execute("./NativeFeedMediaLayer.jsx").default;
   function Gate() { if (suspended) throw sleepForever; return null; }
   const componentKey = () => pager ? `${props.accountId}:${props.authEpoch || 0}` : component === "social" ? `${props.accountId || "guest"}:${props.post.id}` : "component";
   const f = {
-    calls, queue, gestures, shared, reactions, springs, timings, animatedStyles, unmounted, reads, writes, impressions, dwell, leaseWrites, introductions, persisted,
+    calls, queue, gestures, shared, reactions, springs, timings, animatedStyles, unmounted, reads, writes, impressions, dwell, leaseWrites, introductions, persisted, browseRenders, canceledAnimations,
+    springFrame(value) { shared[3].set(value); },
     holdUI(value) { holdUI = value; }, flushUI() { while (uiQueue.length) uiQueue.shift()(); },
     pages: () => f.all().filter(node => node.type === "ActualPage"),
     lists: () => f.all().filter(node => node.type === "FlatList"),
@@ -534,11 +560,11 @@ test("fast release before JS and native layout waits for real ready page, then c
   f.react(); assert.equal(f.timings.length, 1, "readiness cannot dispatch duplicate settle");
   f.finish(); f.flush(); assert.deepEqual(f.calls, ["local"]);
 });
-test("primary data loads during drag and release waits for scoped usable content", t => {
+test("primary data loads during drag without delaying release settlement", t => {
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
   f.render({ contentReady: false }); const g = dragPage(f); f.flush(); f.ready("local");
   assert.equal(f.translation("following"), -120, "real screen is visible during loading");
-  release(g); g.onFinalize(); f.flush(); assert.equal(f.timings.length, 0);
+  release(g); g.onFinalize(); f.flush(); assert.equal(f.timings.length, 1);
   f.render({ contentReady: true }); f.react();
   assert.equal(f.timings.length, 1); f.finish(); f.flush(); assert.deepEqual(f.calls, ["local"]);
 });
@@ -585,11 +611,11 @@ test("real pager reduced motion commits without displacement or preview mount", 
 });
 
 
-test("slow primary GET settles to real loading UI after cap rather than rejecting navigation", t => {
+test("slow primary GET settles immediately to the real loading UI", t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
   f.render({ contentReady: false }); const g = dragPage(f); f.flush(); f.ready("local");
-  release(g); g.onFinalize(); f.flush(); assert.equal(f.timings.length, 0);
+  release(g); g.onFinalize(); f.flush(); assert.equal(f.timings.length, 1);
   t.mock.timers.tick(2500); f.react(); assert.equal(f.timings.length, 1);
   f.finish(); f.flush(); assert.deepEqual(f.calls, ["local"]);
 });
@@ -644,9 +670,9 @@ test("retired queued timer setup cannot overwrite current gesture timeout", t =>
   const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
   f.render({ contentReady: false }); let g = dragPage(f); release(g); g.onFinalize();
   const oldTimerSetup = f.queue.pop(); f.flush();
-  f.render({ swipeScope: {} }); g = dragPage(f); f.flush(); f.ready("local"); release(g); g.onFinalize(); f.flush();
-  oldTimerSetup(); t.mock.timers.tick(2500); f.react();
-  assert.equal(f.timings.length, 1); f.finish(); f.flush(); assert.deepEqual(f.calls, ["local"]);
+  f.render({ swipeScope: {} }); g = dragPage(f); f.flush(); release(g); g.onFinalize(); f.flush();
+  oldTimerSetup(); f.act(() => t.mock.timers.tick(2500)); f.react();
+  assert.equal(f.timings.length, 0); assert.deepEqual(f.calls, []); assert.equal(f.pages().length, 1);
 });
 test("queued superseded direction does not mount an abandoned adjacent page", t => {
   const f = fixture({ component: "tabs", page: true, pager: true, active: "local" }); t.after(f.close);
@@ -828,7 +854,7 @@ test("Discover fixed navigation previews actual Festival read and promotes the s
   const loading = f.all().find(n => n.type === "Text" && n.props.children === "Loading festivals…");
   assert.ok(loading, "actual pending state is visible, not backing artwork");
   f.ready("festivals"); release(g); g.onFinalize(); f.flush();
-  assert.equal(f.timings.length, 0, "layout alone does not qualify data");
+  assert.equal(f.timings.length, 1, "the real loading screen settles without waiting on its GET");
   f.reads[0].resolve({ upcoming: [] }); await f.settle(); f.react();
   assert.equal(f.timings.length, 1); f.finish(); f.flush();
   assert.deepEqual(f.calls, ["festivals"]); assert.equal(f.reads.length, 1, "promotion retains loader instance");
@@ -891,7 +917,7 @@ for (const section of ["cities", "photos"]) test(`Discover ${section} normal rea
   assert.equal(f.reads.length, before + 1);
   const request = f.reads.at(-1); assert.equal(request.kind, section);
   const surface = f.surface(section);
-  release(g); g.onFinalize(); f.flush(); assert.equal(f.timings.length, 0);
+  release(g); g.onFinalize(); f.flush(); assert.equal(f.timings.length, 1);
   request.resolve(section === "cities" ? { cities: [] } : []); await f.settle(); f.react();
   f.finish(); f.flush();
   assert.deepEqual(f.calls, [section]); assert.equal(f.surface(section), surface);
@@ -939,14 +965,14 @@ test("Discover same-section tap cancels a pending detail return restore", t => {
   assert.deepEqual(f.calls, []);
 });
 
-test("Discover slow Festival GET commits only its real loading state after the bounded wait", t => {
+test("Discover slow Festival GET commits its real loading state without a readiness pause", t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = fixture({ discoverScreen: true }); t.after(f.close);
   const g = dragPage(f); f.flush();
   assert.equal(f.translation("shows"), 0, "source is not uncovered before incoming native layout");
   f.ready("festivals"); release(g); g.onFinalize(); f.flush();
-  assert.equal(f.timings.length, 0);
-  f.act(() => t.mock.timers.tick(2500)); f.react(); f.finish(); f.flush();
+  assert.equal(f.timings.length, 1);
+  f.finish(); f.flush();
   assert.deepEqual(f.calls, ["festivals"]);
   assert.ok(f.all().some(n => n.type === "Text" && n.props.children === "Loading festivals…"));
   assert.equal(f.reads.length, 1);
@@ -974,4 +1000,164 @@ test("Discover reversal replaces only intended neighbor and aborts abandoned Fes
   assert.equal(f.all().filter(n => /^main-tab-page-/.test(n.props?.testID || "")).length, 2);
   release(g, { x: 245 }); g.onFinalize(); f.finishSpring(); f.flush();
   assert.deepEqual(f.calls, []); assert.equal(f.surface("artists"), source);
+});
+
+
+test("Discover release starts settlement before its primary network read resolves", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  const g = dragPage(f); f.flush(); f.ready("festivals");
+  assert.equal(f.reads.length, 1);
+  release(g); g.onFinalize(); f.flush();
+  assert.equal(f.timings.length, 1, "real Festival loading UI must not wait on the GET");
+  f.finish(); f.flush();
+  assert.deepEqual(f.calls, ["festivals"]);
+  assert.equal(f.reads.length, 1, "promotion must retain the in-flight request");
+});
+
+test("Discover intent and readiness do not rerender the unchanged outgoing pane", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  const before = f.browseRenders.filter(section => section === "shows").length;
+  dragPage(f); f.flush(); f.ready("festivals");
+  assert.equal(f.browseRenders.filter(section => section === "shows").length, before);
+  f.render({ eventStatus: "loading" });
+  assert.ok(f.browseRenders.filter(section => section === "shows").length > before, "real parent data still reaches source");
+});
+
+
+test("regrabbing a returning page follows its residual offset and retires the old spring", t => {
+  const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
+  let g = dragPage(f); f.flush(); f.ready("local");
+  release(g, { x: 240 }); g.onFinalize();
+  // Synthetic in-flight animation frame, not a device timing measurement.
+  f.springFrame(-60);
+  const before = f.canceledAnimations.length;
+  g = dragPage(f, -20);
+  assert.equal(f.canceledAnimations.length, before + 1);
+  assert.equal(f.translation("following"), -80, "20px movement continues from the -60px spring offset");
+  assert.equal(f.translation("local"), 300);
+  f.flush(); f.react(); f.finishSpring(); f.flush();
+  assert.equal(f.pages().length, 2, "old cancellation cannot remove the regrabbed neighbor");
+  assert.equal(f.translation("following"), -80);
+  release(g, { x: 245 }); g.onFinalize(); f.finishSpring(); f.flush();
+  assert.deepEqual(f.calls, []);
+});
+
+
+test("accepted delayed parent promotion cannot trigger premature source recovery", t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let f;
+  f = fixture({ component: "tabs", page: true, pager: true, onChange: target => {
+    setTimeout(() => f.render({ active: target }), 30); return true;
+  } }); t.after(f.close);
+  const g = dragPage(f); f.flush(); f.ready("local");
+  release(g); g.onFinalize(); f.finish(); f.flush();
+  assert.equal(f.translation("local"), 0);
+  const before = f.springs.length;
+  f.act(() => t.mock.timers.tick(5));
+  assert.equal(f.translation("local"), 0);
+  assert.equal(f.springs.length, before, "accepted navigation cannot spring backward while React is pending");
+  f.act(() => t.mock.timers.tick(25));
+  assert.deepEqual(f.pages().map(p => p.props.tab), ["local"]);
+  assert.equal(f.translation("local"), 0);
+});
+
+test("explicitly declined local selection recovers and permits another gesture", t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture({ component: "tabs", page: true, pager: true, onChange: () => false }); t.after(f.close);
+  let g = dragPage(f); f.flush(); f.ready("local");
+  release(g); g.onFinalize(); f.finish(); f.flush();
+  f.act(() => t.mock.timers.tick(0));
+  assert.equal(f.translation("following"), 0);
+  assert.equal(f.springs.length, 1);
+  f.finishSpring(); f.flush();
+  g = dragPage(f); f.flush(); f.ready("local");
+  assert.equal(f.translation("following"), -120);
+});
+
+test("actual Discover renderPanel cannot advertise a lazy Festival fallback as a ready screen", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  f.render({ festivalSuspended: true });
+  const g = dragPage(f); f.flush();
+  assert.equal(f.reads.length, 0, "suspended module has not mounted its resource");
+  assert.equal(nodes(f.surface("festivals")).filter(n => n.props?.onLayout).length, 0);
+  release(g); g.onFinalize(); f.flush();
+  assert.equal(f.timings.length, 0);
+  assert.equal(f.translation("shows"), 0);
+  f.render({ festivalSuspended: false }); f.ready("festivals");
+  assert.equal(f.reads.length, 1);
+  assert.equal(f.timings.length, 1, "actual module layout, not GET completion, releases the gesture");
+  f.finish(); f.flush();
+  assert.deepEqual(f.calls, ["festivals"]);
+  assert.equal(f.reads.length, 1);
+});
+
+
+test("completed cancellation cannot lend stale layout to a new gesture before its UI clear", t => {
+  const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
+  let g = dragPage(f); f.flush(); f.ready("local");
+  const ready = f.shared.find(value => value.get()?.direction === "negative" && value.get()?.gesture);
+  const setReady = ready.set;
+  const delayedClears = [];
+  ready.set = value => value === null ? delayedClears.push(value) : setReady(value);
+  release(g, { x: 240 }); g.onFinalize(); f.finishSpring(); f.flush();
+  assert.equal(f.pages().length, 1);
+  assert.ok(delayedClears.length > 0, "simulate React native unmount before shared readiness clear");
+  g = dragPage(f, -60);
+  assert.equal(f.translation("following"), 0, "old measured page has already unmounted");
+  ready.set = setReady; setReady(null);
+  f.flush(); f.ready("local");
+  assert.equal(f.translation("following"), -60);
+});
+
+test("vertical and reserved-edge retouches do not grab a returning page animation", t => {
+  const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
+  const g = dragPage(f); f.flush(); f.ready("local");
+  release(g, { x: 240 }); g.onFinalize(); f.springFrame(-60);
+  const before = f.canceledAnimations.length;
+  down(g, { x: 5 });
+  assert.equal(f.canceledAnimations.length, before);
+  const manager = down(g);
+  g.onTouchesMove({ allTouches: [{ absoluteX: 262, absoluteY: 240 }], numberOfTouches: 1 }, manager);
+  assert.equal(manager.failed, 1);
+  assert.equal(f.canceledAnimations.length, before);
+});
+
+
+test("return after a reversed unlaid-out candidate cannot reuse the old neighbor measurement", t => {
+  const f = fixture({ component: "tabs", page: true, pager: true, active: "local" }); t.after(f.close);
+  let g = dragPage(f); f.flush(); f.ready("everyone");
+  const ready = f.shared.find(value => value.get()?.direction === "negative" && value.get()?.gesture);
+  const setReady = ready.set;
+  ready.set = value => { if (value !== null) setReady(value); };
+  g.onUpdate({ absoluteX: 380 }); f.flush();
+  assert.equal(f.surface("everyone"), undefined); assert.ok(f.surface("following"));
+  release(g, { success: false, x: 380 }); g.onFinalize();
+  g = dragPage(f, -20);
+  assert.equal(f.translation("local"), 0, "the old opposite neighbor has been removed");
+  ready.set = setReady; setReady(null);
+});
+
+test("same-direction Discover finger updates stay on the UI path without React or RN dispatch", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  const g = dragPage(f); f.flush(); f.ready("festivals");
+  const renders = f.browseRenders.length, queued = f.queue.length;
+  for (let i = 0; i < 100; i++) g.onUpdate({ absoluteX: 140 - i / 10 });
+  assert.equal(f.queue.length, queued);
+  assert.equal(f.browseRenders.length, renders);
+  assert.equal(f.translation("shows"), -129.9);
+});
+
+test("direction reversal cannot reuse an unmounted same-gesture candidate before its UI clear", t => {
+  const f = fixture({ component: "tabs", page: true, pager: true, active: "local" }); t.after(f.close);
+  const g = dragPage(f); f.flush(); f.ready("everyone");
+  const ready = f.shared.find(value => value.get()?.direction === "negative" && value.get()?.gesture);
+  const setReady = ready.set;
+  ready.set = value => { if (value !== null) setReady(value); };
+  g.onUpdate({ absoluteX: 380 }); f.flush();
+  assert.equal(f.surface("everyone"), undefined); assert.ok(f.surface("following"));
+  g.onUpdate({ absoluteX: 140 });
+  assert.equal(f.translation("local"), 0, "the returning direction needs its new actual candidate layout");
+  ready.set = setReady; setReady(null);
+  f.flush(); f.ready("everyone");
+  assert.equal(f.translation("local"), -120);
 });

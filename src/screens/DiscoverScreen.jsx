@@ -632,10 +632,11 @@ export default function DiscoverScreen({
     onOpenCrew={onOpenCrew} onOpenFanClubs={onOpenFanClubs} onOpenLounge={onOpenLounge} loungeRows={loungeRows}
     recommendations={session ? <ArtistRecommendationsRail resource={artistRecommendations.resource} onOpenArtist={onOpenArtist}
       onOpenProfile={onOpenProfile} onManageTaste={onManageTaste} onRetry={artistRecommendations.retry} /> : null}
+    loading={<ActivityIndicator color={colors.amber} style={{ marginVertical: 40 }} />}
     renderPanel={(section, preview) => ({
       cities: section === "cities" ? <CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} registerRefresh={preview ? undefined : registerCityRefresh} /> : null,
       venues: section === "venues" ? <DiscoverVenues region={region} homeCity={homeCity} session={session} venueDirectoryIndex={venueDirectoryIndex} tourDates={tourDates} onOpenVenue={onOpenVenue} onOpenEvent={onOpen} onOpenVenues={onOpenVenues} /> : null,
-      festivals: section === "festivals" ? <Suspense fallback={<ActivityIndicator color={colors.amber} style={{ marginVertical: 40 }} />}><FestivalsPanel region={region} onOpenFestival={onOpenFestival} registerRefresh={preview ? undefined : registerFestivalRefresh} /></Suspense> : null,
+      festivals: section === "festivals" ? <FestivalsPanel region={region} onOpenFestival={onOpenFestival} registerRefresh={preview ? undefined : registerFestivalRefresh} /> : null,
       photos: section === "photos" ? <DiscoverPhotoPanel region={region} accountId={session?.id || "guest"} compact={compact} width={width} onOpenPhotos={openPhotos} removedIds={removedIds} blockedIds={blockedIds} /> : null,
     })[section]}
   />;
