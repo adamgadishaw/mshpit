@@ -1,3 +1,4 @@
+import useIOSDetailPresentation from "../../hooks/useIOSDetailPresentation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchNewsDeskStories } from "../../lib/newsDeskApi";
 import { useNewsInteractions } from "./NewsInteractionContext";
@@ -6,9 +7,10 @@ import { emptyNewsState, newsPrivacyScope } from "../../domain/newsReaderState.m
 // Latest news desk stories with paging. The iOS variant retains admitted data:
 // admitted rows survive inactivity, but requests and callbacks never do.
 export default function useNewsDeskStories({ enabled = true, limit = 20, artist = null, sort = "latest", retainOnInactive = true } = {}) {
+  const { active, current, guard, token } = useIOSDetailPresentation();
   const { session, blockedIds, removedIds, mutedIds, followedArtists, authReady } = useNewsInteractions();
   const scope = JSON.stringify([newsPrivacyScope({ session, blockedIds, removedIds, mutedIds, followedArtists }), artist, limit, sort]);
-  const ready = !!enabled && !!authReady;
+  const ready = !!enabled && !!authReady && active;
   const admission = useRef(null);
   if (admission.current?.scope !== scope || admission.current?.authReady !== authReady || admission.current?.retainOnInactive !== retainOnInactive) {
     admission.current = { scope, authReady, retainOnInactive, complete: false, cursor: null, retry: null, status: "idle" };
@@ -19,15 +21,15 @@ export default function useNewsDeskStories({ enabled = true, limit = 20, artist 
   const pendingRef = useRef(null);
   const mounted = useRef(true);
   const [state, setState] = useState(() => ({ ...emptyNewsState(scope), data }));
-  if (boundary.current?.data !== data || boundary.current?.ready !== ready) {
+  if (boundary.current?.data !== data || boundary.current?.ready !== ready || boundary.current?.token !== token) {
     controllerRef.current?.abort();
     controllerRef.current = null;
     pendingRef.current = null;
-    boundary.current = { data, ready };
+    boundary.current = { data, ready, token };
   }
   const attempt = boundary.current;
   const load = useCallback(async ({ more = false } = {}) => {
-    if (!mounted.current || boundary.current !== attempt || !attempt.ready || (more && !data.cursor)) return false;
+    if (!current() || !mounted.current || boundary.current !== attempt || !attempt.ready || (more && !data.cursor)) return false;
     // A repeated append must not abort and redispatch the page already loading.
     if (more && pendingRef.current) return false;
     controllerRef.current?.abort();
@@ -35,7 +37,7 @@ export default function useNewsDeskStories({ enabled = true, limit = 20, artist 
     controllerRef.current = controller;
     const operation = { controller };
     pendingRef.current = operation;
-    const valid = () => mounted.current && boundary.current === attempt && controllerRef.current === controller && !controller.signal.aborted;
+    const valid = () => current() && mounted.current && boundary.current === attempt && controllerRef.current === controller && !controller.signal.aborted;
     setState((current) => ({ ...(current.data === data ? current : emptyNewsState(scope)), data, status: "loading" }));
     try {
       const result = await fetchNewsDeskStories({ cursor: more ? data.cursor : null, limit, artist, sort, signal: controller.signal });
@@ -84,5 +86,5 @@ export default function useNewsDeskStories({ enabled = true, limit = 20, artist 
   const visible = authReady && (ready || retainOnInactive) && state.data === data;
   const view = visible ? state : emptyNewsState(scope, ready ? "loading" : "idle");
   const status = retainOnInactive && view.status === "loading" && !pendingRef.current ? data.status : view.status;
-  return { scope, stories: view.stories, nextCursor: view.nextCursor, status, failedMore: status === "error" && data.retry?.more === true, loadMore: () => load({ more: true }), reload: () => load(), retry: () => load({ more: data.retry?.more === true }) };
+  return { scope, stories: view.stories, nextCursor: view.nextCursor, status, failedMore: status === "error" && data.retry?.more === true, loadMore: guard(() => load({ more: true })), reload: guard(() => load()), retry: guard(() => load({ more: data.retry?.more === true })) };
 }

@@ -1,3 +1,4 @@
+import useIOSDetailPresentation from "./useIOSDetailPresentation";
 import { useLayoutEffect, useRef } from "react";
 import { AccessibilityInfo, AppState } from "react-native";
 import { getConfirmedScreenReaderEnabled, subscribeConfirmedScreenReaderEnabled } from "./useScreenReaderEnabled";
@@ -12,6 +13,9 @@ const messages = Object.freeze({
 // Only explicit, accepted composer actions may arm this local announcement.
 // Revocation never touches delivery or the Root-owned draft/attempt.
 export default function useIOSCommentAnnouncement(accountId, authEpoch, postId, lease, replyTarget) {
+  const presentation = useIOSDetailPresentation();
+  const canAct = presentation.canAct || presentation.current;
+  const commandToken = presentation.commandToken ?? presentation.token;
   const context = useRef(null);
   const lifetime = useRef(null);
   const pending = useRef(null);
@@ -21,9 +25,9 @@ export default function useIOSCommentAnnouncement(accountId, authEpoch, postId, 
     if (claim?.timer != null) clearTimeout(claim.timer);
   };
   if (!context.current || context.current.accountId !== accountId || context.current.authEpoch !== authEpoch
-      || context.current.postId !== postId || context.current.lease !== lease) {
+      || context.current.postId !== postId || context.current.lease !== lease || context.current.token !== commandToken) {
     revoke();
-    context.current = { accountId, authEpoch, postId, lease, replyTarget };
+    context.current = { accountId, authEpoch, postId, lease, replyTarget, token: commandToken };
   } else if (context.current.replyTarget !== replyTarget) {
     if (pending.current?.validation) revoke();
     context.current.replyTarget = replyTarget;
@@ -45,7 +49,7 @@ export default function useIOSCommentAnnouncement(accountId, authEpoch, postId, 
       subscription.remove();
     };
   }, []);
-  const eligible = () => lifetime.current && context.current === identity && !!accountId && !!lease
+  const eligible = () => canAct() && lifetime.current && context.current === identity && !!accountId && !!lease
     && AppState.currentState === "active" && getConfirmedScreenReaderEnabled() === true;
   const current = claim => !!claim && pending.current === claim && claim.life === lifetime.current && eligible();
   return {

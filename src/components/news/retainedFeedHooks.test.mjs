@@ -65,6 +65,7 @@ function fixture(kind, platform = "ios") {
     } };
   }, socialApi, socialApi.exports);
   const modules = {
+    "../../hooks/useIOSDetailPresentation": { __esModule: true, default: () => ({ active: true, current: () => true, guard: value => value, token: null }) },
     react,
     "../../lib/newsDeskApi": { fetchNewsDeskStories: read, requestNewsIntroduction: read },
     "./NewsInteractionContext": { useNewsInteractions: () => context },

@@ -9,7 +9,7 @@ function ReactionButton({ scope, selected, count, label, activeLabel, icon, acti
   const owner=useRef({scope,presentation:actionPresentation,generation:0});
   if (owner.current.scope!==scope || owner.current.presentation!==actionPresentation) owner.current={scope,presentation:actionPresentation,generation:owner.current.generation+1};
   const generation=owner.current.generation;
-  const current=()=>owner.current.generation===generation && actionPresentation?.current()!==false;
+  const current=()=>owner.current.generation===generation && (actionPresentation?.canAct || actionPresentation?.current)?.()!==false;
   const pending=useRef(null);
   const scoped=state.scope===scope && (state.generation ?? 0)===generation ? state : {pending:false,error:"",result:null};
   const displayed=scoped.result || {selected,count};
@@ -45,10 +45,10 @@ export function RepostButton({ post, accountId, onRepost, onRequireAuth, actionP
     action={onRepost ? async desired=>{const result=await onRepost(post.id,desired);return {...result,selected:!!result?.reposted,count:Number(result?.reposts)||0};} : null} />;
 }
 
-export function CommentLikeButton({ comment, postId, accountId, onLike, onRequireAuth }) {
+export function CommentLikeButton({ comment, postId, accountId, onLike, onRequireAuth, actionPresentation }) {
   return <ReactionButton key={`${accountId || "guest"}:${comment.id}:${comment.likes || 0}:${!!comment.liked}`}
     scope={`${accountId || "guest"}:${postId}:${comment.id}`} accountId={accountId} selected={!!comment.liked} count={Number(comment.likes)||0}
-    label="Like comment" activeLabel="Unlike comment" icon="heart" onRequireAuth={onRequireAuth}
+    label="Like comment" activeLabel="Unlike comment" icon="heart" onRequireAuth={onRequireAuth} actionPresentation={actionPresentation}
     action={onLike ? async desired=>{const result=await onLike(postId,comment.id,desired);return {...result,selected:!!result?.liked,count:Number(result?.likes)||0};} : null} />;
 }
 

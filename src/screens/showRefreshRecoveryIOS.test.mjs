@@ -106,6 +106,7 @@ function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "act
     writeShowAttendance: () => assert.fail("No attendance write"),
   };
   const imports = (name, local) => {
+    if (name.endsWith("/useIOSDetailPresentation")) return require("./src/hooks/useIOSDetailPresentation.js");
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
     if (name === "./ShowRefreshRecovery") return recovery;
@@ -137,11 +138,11 @@ function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "act
   };
   recovery = execute("src/screens/ShowRefreshRecovery" + (platform === "ios" ? ".ios" : "") + ".jsx", imports);
   refreshHook = execute("src/hooks/useScopedRefresh.js", imports);
-  snapshotHook = execute("src/hooks/usePublicEventSnapshot.js", imports);
+  snapshotHook = execute("src/hooks/usePublicEventSnapshot" + (platform === "ios" ? ".ios" : "") + ".js", imports);
   memorialApi = execute("src/features/artistMemorials/services/artistMemorialApi.mjs", imports);
-  memorialHook = execute("src/features/artistMemorials/useArtistMemorial.js", imports);
-  attendanceControls = execute("src/features/showSocial/ShowAttendanceControls.jsx", imports);
-  const Screen = execute("src/screens/ShowScreen.jsx", imports).default;
+  memorialHook = execute("src/features/artistMemorials/useArtistMemorial" + (platform === "ios" ? ".ios" : "") + ".js", imports);
+  attendanceControls = execute("src/features/showSocial/ShowAttendanceControls" + (platform === "ios" ? ".ios" : "") + ".jsx", imports);
+  const Screen = execute("src/screens/ShowScreen" + (platform === "ios" ? ".ios" : "") + ".jsx", imports).default;
   const render = () => renderer.render(React.createElement(Screen, { log, onClose: noop }));
   const all = () => nodes(renderer.container);
   const retry = () => all().find(node => node.props?.accessibilityLabel === "Retry refreshing show details");

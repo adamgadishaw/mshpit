@@ -45,6 +45,7 @@ const FanClubScreen = lazyWithRetry(() => import("./src/screens/FanClubScreen"),
 const AccountGate = lazyWithRetry(() => import("./src/screens/AccountGate"), "AccountGate");
 const MenuScreen = lazyWithRetry(() => import("./src/screens/MenuScreen"), "MenuScreen");
 import NativeFeedMediaLayer from "./src/components/NativeFeedMediaLayer";
+const NativeDetailStack = Platform.OS === "ios" ? require("./src/components/NativeDetailStack").default : null;
 import { retainNativeFeedForMedia } from "./src/domain/nativeFeedRetention";
 
 const PhotoViewer = lazyWithRetry(() => import("./src/components/PhotoViewer"), "PhotoViewer");
@@ -1994,6 +1995,21 @@ function Root() {
   };
   const playerObscured = nativeAccountLinkActive || !!resetToken || !!ownerApprovalToken || !!welcome || signupOnboardingVisible || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
   const landingSurface = landingRenderSurface({ authReady, session, landing });
+  const singleNativeOverlay = <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back} presentationKey={Platform.OS === "ios" ? nav : undefined} presentationScope={linkedNavigationScope} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense>;
+  const nativeDetailOverlay = Platform.OS === "ios" ? (
+    <NativeDetailStack frames={stack} element={overlay}
+      scope={JSON.stringify([session?.id || null, chatAuthEpoch])}
+      enabled={authReady && !landing && status === "ok" && !nativeAccountLinkActive && !resetToken && !ownerApprovalToken}
+      admitted={appActive && !iosMenuOpen && !acctOpen && !welcome && !resetToken && !unsubToken && !verifyToken && !ownerApprovalToken && !publicNavigationNotice && !newsStoryNotice}
+      isCurrentRoute={(frame, index) => !nativeAccountLinkActiveRef.current && linkedNavigationRef.current.ownsScope(linkedNavigationScope)
+        && navigationRef.current.stack === stack && navigationRef.current.stack.at(-1) === frame && index === stack.length - 1}
+      wrap={({ frame, entry, active, current, gestureScope, children }) => (
+        <Suspense fallback={<ScreenLoading />}><ScreenTransition key={`retained-detail-${entry.occurrence.id}`} performanceKey={screenTransitionKey(frame, activeTab)} direction={screenDirection}>
+          <IosDetailNavigation enabled={active && iosBackGestureAllowed(frame)} onBack={back}
+            presentationKey={entry.occurrence} presentationScope={gestureScope} isCurrentRoute={current}>{children}</IosDetailNavigation>
+        </ScreenTransition></Suspense>
+      )}>{singleNativeOverlay}</NativeDetailStack>
+  ) : singleNativeOverlay;
 
   return (
     <CityNavigationContext.Provider value={openCity}>
@@ -2102,9 +2118,9 @@ function Root() {
                   {(retainNativeFeed || (Platform.OS === "ios" && !overlay)) ? <NativeFeedMediaLayer key={Platform.OS === "ios" ? `${session?.id || "guest"}:${chatAuthEpoch}` : session.id} obscured={!!overlay} frames={activeTab === "feed" ? stack : undefined}
                     header={<NativeAppHeader active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
                     tabBar={mobileTabBar}
-                    media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back} presentationKey={Platform.OS === "ios" ? nav : undefined} presentationScope={linkedNavigationScope} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense>}>
+                    media={nativeDetailOverlay}>
                     <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey={Platform.OS === "ios" ? screenKey : "main:feed"}>{nativeTabPage}</ScreenTransition></Suspense>
-                  </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back} presentationKey={Platform.OS === "ios" ? nav : undefined} presentationScope={linkedNavigationScope} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense> : (
+                  </NativeFeedMediaLayer> : overlay ? nativeDetailOverlay : (
                     <>
                       <Suspense fallback={<ScreenLoading />}><ScreenTransition key={Platform.OS === "ios" ? "main-tabs" : screenKey} performanceKey={screenKey} direction={screenDirection}>{nativeTabPage}</ScreenTransition></Suspense>
                       {mobileTabBar}

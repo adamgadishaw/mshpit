@@ -51,20 +51,24 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
 // Real screen, React, history hook and store. Only transport/native hosts and
 // unrelated resources are mocked; these tests do not claim native layout QA.
 const { createProfileHistoryStore } = require('../features/profileHistory/profileHistoryState.mjs');
+const storeSource = readFileSync(new URL('../store.js', import.meta.url), 'utf8');
+const storeDeclarations = require('@babel/parser').parse(storeSource, { sourceType: 'module', plugins: ['jsx'] }).program.body.flatMap(node => node.type === 'VariableDeclaration' ? node.declarations : []);
 const empty = [];
 const post = { id: 'review', userId: 'self', artist: 'Saved artist', venue: 'Room', date: '2025-01-01', overall: 4, createdAt: 1 };
 const offline = () => Object.assign(new Error('Synthetic offline'), { name: 'AppError', code: 'PIT-NET-001', retryable: true });
-function fixture({ platform = 'ios', self = true, guest = false, cached = empty, going = empty, attendance = empty, access = 'ready', favoriteShows = empty, colors = {}, accent = 'amber' } = {}) {
+function fixture({ copies = 1, platform = 'ios', self = true, guest = false, cached = empty, going = empty, attendance = empty, access = 'ready', favoriteShows = empty, colors = {}, accent = 'amber' } = {}) {
   const renderer = createRenderer(), reads = [];
   const user = { id: self ? 'self' : 'target', name: 'Synthetic member', handle: 'fixture', favoriteArtists: [], favoriteGenres: [], accent };
   const session = guest ? null : self ? user : { id: 'viewer', favoriteArtists: [], favoriteGenres: [] };
-  const store = createProfileHistoryStore({ fetchPage: () => { const r = deferred(); reads.push(r); return r.promise; } });
+  const createStore = platform === "ios" ? require("../features/profileHistory/profileHistoryState.ios.mjs").createProfileHistoryStore : createProfileHistoryStore;
+  let store = createStore({ fetchPage: () => { const r = deferred(); reads.push(r); return r.promise; } });
   const params = { accountId: session?.id, targetId: user.id };
   const native = { View: 'View', Text: 'Text', Pressable: 'Pressable', ScrollView: 'ScrollView', ActivityIndicator: 'ActivityIndicator',
     Platform: { OS: platform, select: x => x[platform] || x.default }, StyleSheet: { create: x => x }, useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1 }) };
   const context = React.createContext(null);
   let hook;
   const imports = (name, local) => {
+    if (name.endsWith("/useIOSDetailPresentation")) return local(name + ".js");
     if (name.endsWith('/NativeTabScroll')) return native;
     if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
     if (name === 'react' || name === 'react/jsx-runtime') return require(name);
@@ -73,7 +77,9 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = empty,
     if (name === '../hooks/useNativeTabContentReady') return { __esModule: true, default: () => {} };
     if (name === '../features/profilePresentation/ProfileHierarchy') return execute(`../features/profilePresentation/ProfileHierarchy${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
     if (name.endsWith('/ProfileMediaPresentation')) return { useProfileMediaPresentation: () => ({ retryImages: noop }), ProfileMediaRetryBoundary: ({ children }) => children, ProfileBannerCover: 'ProfileBannerCover', ProfileGallery: 'ProfileGallery' };
-    if (name === './profileHistoryClient.mjs') return { profileHistoryStore: store };
+    if (name === './services/profileHistoryApi.mjs') return { profileHistoryPageRequest: () => { const r = deferred(); reads.push(r); return r.promise; } };
+    if (name === './services/profileHistoryPrivacyService.ios.js') return { captureApiIdentityCheck: () => () => true, invalidateIOSDetailPrivacy: noop };
+    if (name === './profileHistoryClient.mjs' || name === './profileHistoryClient.ios.mjs') return { profileHistoryStore: store };
     if (name === '../features/profileHistory/useProfileHistory') return hook;
     if (name === '../lib/useAppActive') return { __esModule: true, default: () => true };
     if (name === '../hooks/useScopedRefresh') return { __esModule: true, default: () => ({ refreshing: false, refresh: noop }) };
@@ -92,15 +98,31 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = empty,
     if (name === '../lib/confirmOwnPostDelete') return { confirmOwnPostDelete: noop };
     return local(name);
   };
-  hook = execute('../features/profileHistory/useProfileHistory.js', imports);
-  const Screen = execute('./ProfileScreen.jsx', imports).default;
-  const render = () => renderer.render(React.createElement(Screen, { userId: user.id, asTab: self, onManageProfile: noop }, React.createElement('PrivateMemories', null, 'Private memory')));
+  let storeActions;
+  if (platform === 'ios') {
+    const client = execute('../features/profileHistory/profileHistoryClient.ios.mjs', imports);
+    store = client.profileHistoryStore;
+    const source = storeSource, declarations = storeDeclarations;
+    const names = ['adoptProfileHistoryAccount', 'removeProfileHistoryPost', 'resetProfileHistoryAccount', 'scrubBlockedProfileHistoryPerson', 'upsertProfileHistoryPost'];
+    const selections = names.map(name => {
+      const node = declarations.find(node => node.id.name === name);
+      assert.ok(node, `actual Store binding ${name}`);
+      return `${name}: ${source.slice(node.init.start, node.init.end)}`;
+    });
+    storeActions = new Function('Platform', 'require', `return {${selections.join(',')}}`)({ OS: 'ios' }, path => {
+      assert.equal(path, './features/profileHistory/profileHistoryClient.ios.mjs'); return client;
+    });
+    storeActions.adoptProfileHistoryAccount(session?.id);
+  }
+  hook = execute(`../features/profileHistory/useProfileHistory${platform === 'ios' ? '.ios' : ''}.js`, imports);
+  const Screen = execute(`./ProfileScreen${platform === 'ios' ? '.ios' : ''}.jsx`, imports).default;
+  const render = () => renderer.render(React.createElement(React.Fragment, null, Array.from({ length: copies }, (_, index) => React.createElement(Screen, { key: index, userId: user.id, asTab: self, onManageProfile: noop }, React.createElement('PrivateMemories', null, 'Private memory')))));
   const all = () => nodes(renderer.container);
   const text = () => all().map(n => n.text || '').join(' ');
   const flush = async () => { for (let i=0; i<6; i++) { await new Promise(r => setImmediate(r)); renderer.act(noop); } };
-  return { render, all, text, reads, flush, store, params,
+  return { render, all, text, reads, flush, store, params, storeActions,
     resolve: async (i, posts = [], nextCursor = null) => { reads[i].resolve({ posts, nextCursor }); await flush(); },
-    reject: async i => { reads[i].reject(offline()); await flush(); },
+    reject: async (i, error = offline()) => { reads[i].reject(error); await flush(); },
     retry: () => renderer.act(() => all().find(n => n.props?.accessibilityLabel === 'Retry loading profile posts').props.onPress()),
     unmount: () => renderer.render(null),
   };
@@ -193,4 +215,33 @@ test('public nonempty receipt and retained cache remain usable with a failed ref
   assert.ok(f.all().some(n => n.type === 'TicketStub' && n.props.log.id === post.id));
   assert.ok(f.all().some(n => n.props?.accessibilityLabel === '1+ Reviews'));
   assert.doesNotMatch(f.text(), /No posts yet|Private memory/); f.unmount();
+});
+
+for (const status of [403, 404, 410]) test(`actual duplicate Profiles remove denied ${status} history without cached fallback or auto-read`, async () => {
+  const f = fixture({ copies: 2, self: false, cached: [{ ...post, userId: 'target' }] });
+  f.render(); await f.flush(); await f.resolve(0, [{ ...post, userId: 'target' }]);
+  assert.equal(f.all().filter(n => n.type === 'TicketStub').length, 2);
+  void f.store.refresh(f.params); await f.flush();
+  await f.reject(1, Object.assign(offline(), { status }));
+  assert.equal(f.all().filter(n => n.type === 'TicketStub').length, 0);
+  assert.match(f.text(), /Synthetic member/, 'public profile metadata remains accessible');
+  f.render(); await f.flush(); assert.equal(f.reads.length, 2);
+  f.storeActions.upsertProfileHistoryPost('viewer', 'target', { ...post, id: 'late-receipt', userId: 'target' });
+  await f.flush(); assert.equal(f.all().filter(n => n.type === 'TicketStub').length, 0);
+  f.retry(); await f.flush(); assert.equal(f.reads.length, 3);
+  await f.resolve(2, [{ ...post, id: 'fresh', userId: 'target' }]);
+  assert.deepEqual(f.all().filter(n => n.type === 'TicketStub').map(n => n.props.log.id), ['fresh', 'fresh']);
+  f.unmount();
+});
+test('actual selected Store history bindings share mutation, block scrub and account reset with the iOS hook', async () => {
+  const f = fixture({ self: false }); f.render(); await f.flush(); await f.resolve(0, []);
+  const rows = () => f.all().filter(n => n.type === 'TicketStub').map(n => n.props.log.id);
+  f.storeActions.upsertProfileHistoryPost('viewer', 'target', { ...post, userId: 'target' }); await f.flush();
+  assert.deepEqual(rows(), ['review']);
+  f.storeActions.removeProfileHistoryPost('viewer', 'target', 'review'); await f.flush(); assert.deepEqual(rows(), []);
+  f.storeActions.upsertProfileHistoryPost('viewer', 'target', { ...post, id: 'blocked', userId: 'target' }); await f.flush();
+  f.storeActions.scrubBlockedProfileHistoryPerson('viewer', 'target'); await f.flush(); assert.deepEqual(rows(), []);
+  f.storeActions.upsertProfileHistoryPost('viewer', 'target', { ...post, id: 'reset', userId: 'target' }); await f.flush();
+  f.storeActions.resetProfileHistoryAccount('viewer'); await f.flush(); assert.deepEqual(rows(), []);
+  f.unmount();
 });

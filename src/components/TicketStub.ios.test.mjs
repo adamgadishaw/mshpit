@@ -51,7 +51,12 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
   const hookSource = readFileSync(new URL(`../hooks/useTicketPresentation${platform === "ios" ? ".ios" : ""}.js`, import.meta.url), "utf8");
   const hookCode = transformSync(hookSource, { babelrc: false, configFile: false, plugins: [require("@babel/plugin-transform-modules-commonjs")] }).code;
   const hookModule = { exports: {} };
-  new Function("require", "module", "exports", hookCode)(name => name === "react" ? modules.react : modules["./showIOSPostActions"], hookModule, hookModule.exports);
+  new Function("require", "module", "exports", hookCode)(name => {
+    if (name === "react") return modules.react;
+    if (name === "./useIOSDetailPresentation") return require("../hooks/useIOSDetailPresentation.js");
+    assert.equal(name, "../components/showIOSPostActions");
+    return modules["./showIOSPostActions"];
+  }, hookModule, hookModule.exports);
   modules["../hooks/useTicketPresentation"] = hookModule.exports;
   const code = transformSync(inputSource, { babelrc: false, configFile: false,
     plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],

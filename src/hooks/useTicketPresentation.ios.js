@@ -1,4 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import useIOSDetailPresentation from "./useIOSDetailPresentation";
 import showIOSPostActions from "../components/showIOSPostActions";
 
 function animate(image, play) {
@@ -10,18 +11,23 @@ function animate(image, play) {
 
 // A retained card keeps its view, never a previous presentation's authority.
 export default function useTicketPresentation({ menuScope, userId, contextActions, contextPresentation, mediaViewable, tabPreview, reduceMotion, closeMenu, confirmDelete }) {
-  const presentedCard = contextPresentation != null || mediaViewable != null || tabPreview;
-  const cardVisible = !tabPreview && mediaViewable !== false && contextPresentation?.current() !== false;
+  const detail = useIOSDetailPresentation();
+  const detailCommand = detail.canAct || detail.current;
+  const detailToken = detail.commandToken ?? detail.token;
+  const contextCurrent = () => (contextPresentation?.canAct || contextPresentation?.current)?.call(contextPresentation) !== false;
+  const presentedCard = detail.managed || contextPresentation != null || mediaViewable != null || tabPreview;
+  const cardVisible = !tabPreview && mediaViewable !== false && contextCurrent();
   const scope = JSON.stringify([menuScope, userId, contextActions.map(action => action.label), cardVisible]);
-  const owner = useRef({ scope, presentation: contextPresentation, generation: 0, actions: contextActions });
+  const owner = useRef({ scope, presentation: contextPresentation, generation: 0, detailToken, actions: contextActions });
   const sheetOpen = useRef(null);
-  if (owner.current.scope !== scope || owner.current.presentation !== contextPresentation) {
+  if (owner.current.scope !== scope || owner.current.presentation !== contextPresentation || owner.current.detailToken !== detailToken) {
     owner.current.generation++;
     sheetOpen.current = null;
     closeMenu();
   }
   owner.current.scope = scope;
   owner.current.presentation = contextPresentation;
+  owner.current.detailToken = detailToken;
   owner.current.actions = contextActions;
   const mounted = useRef(true);
   const everMounted = useRef(false);
@@ -34,7 +40,7 @@ export default function useTicketPresentation({ menuScope, userId, contextAction
   }, []);
   const generation = owner.current.generation;
   const current = () => mounted.current && owner.current.generation === generation
-    && cardVisible && contextPresentation?.current() !== false;
+    && cardVisible && detailCommand() && contextCurrent();
   const actionPresentation = useMemo(() => ({ current }), [generation]);
   const campaignImage = useRef(null);
   const motionAllowed = useRef(!reduceMotion);

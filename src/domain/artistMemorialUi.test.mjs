@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(new URL("../screens/ArtistScreen.jsx", import.meta.url), "utf8");
+const source = readFileSync(new URL("../screens/ArtistScreen.ios.jsx", import.meta.url), "utf8");
 const showSource = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
 const artistArchiveSource = readFileSync(new URL("../screens/ArtistArchiveScreen.jsx", import.meta.url), "utf8");
 const tourArchiveSource = readFileSync(new URL("../screens/TourArchiveScreen.jsx", import.meta.url), "utf8");
@@ -13,8 +13,8 @@ test("generic memorial memories never render a dead-end View show action", () =>
 });
 
 test("artist review actions have distinct reload-safe post and concert URLs", () => {
-  assert.match(source, /href=\{postPath\(review\.id\)\}[\s\S]*?onNavigate=\{\(\) => onOpenPost\?\.\(review\)\}/);
-  assert.match(source, /href=\{concertPath\(review\.archiveShowKey\)\}[\s\S]*?onNavigate=\{\(\) => onOpenShow\?\.\(review\)\}/);
+  assert.match(source, /href=\{postPath\(review\.id\)\}[\s\S]*?onNavigate=\{guard\(\(\) => onOpenPost\?\.\(review\)\)\}/);
+  assert.match(source, /href=\{concertPath\(review\.archiveShowKey\)\}[\s\S]*?onNavigate=\{guard\(\(\) => onOpenShow\?\.\(review\)\)\}/);
   assert.match(source, /href=\{concertPath\(show\.key\)\}/);
   assert.doesNotMatch(source, /href=\{eventPath\(show\)\}/);
 });

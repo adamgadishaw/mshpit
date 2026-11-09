@@ -177,7 +177,7 @@ test("every artist album/song rating handler requests login for guests and write
     for (const session of [null, undefined, { id: "member" }]) {
       const calls = { auth: [], rating: [] };
       const action = vm.runInNewContext(`(${source.slice(handler.start, handler.end)})`, {
-        session, a: { name: "Example" }, al: { title: "Album" }, t: { title: "Track" }, s: { title: "Song" },
+        guard: value => value, session, a: { name: "Example" }, al: { title: "Album" }, t: { title: "Track" }, s: { title: "Song" },
         onRequireAuth: (...args) => calls.auth.push(args),
         rateAlbum: (...args) => calls.rating.push(args), rateSong: (...args) => calls.rating.push(args),
       });

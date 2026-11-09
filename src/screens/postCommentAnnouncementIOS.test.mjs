@@ -28,7 +28,7 @@ function createRenderer() {
     supportsMutation: true, isPrimaryRenderer: true, supportsPersistence: false, supportsHydration: false,
     getRootHostContext: () => context, getChildHostContext: () => context, getPublicInstance: node => node,
     prepareForCommit: () => null, resetAfterCommit: noop,
-    createInstance: (type, props) => ({ type, props, children: [], focus() {}, scrollToEnd() {} }), createTextInstance: text => ({ text }),
+    createInstance: (type, props) => ({ type, props, children: [], focus() { this.focuses = (this.focuses || 0) + 1; }, scrollToEnd() { this.scrolled = true; } }), createTextInstance: text => ({ text }),
     appendInitialChild: append, appendChild: append, appendChildToContainer: append,
     removeChild: remove, removeChildFromContainer: remove, insertBefore: insert, insertInContainerBefore: insert,
     finalizeInitialChildren: () => false, shouldSetTextContent: () => false,
@@ -51,12 +51,31 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
 
 // Real Post handlers, React hooks, shared preference and retained-draft owner.
 // Native speech/events and timers are synthetic; this does not verify VoiceOver.
-function fixture({ platform = "ios", strict = false, reader = true, ready = true, unavailable = false, keyed = true, hookOnly = false, announceOnMount = false } = {}) {
+function fixture({ initialDraft = "", commentReadResult = null, logFields = {}, managed = false, ownComment = false, platform = "ios", strict = false, reader = true, ready = true, unavailable = false, keyed = true, hookOnly = false, announceOnMount = false } = {}) {
   const renderer = createRenderer(), listeners = new Map(), captured = new Map();
-  const timers = [], speech = [], requests = [], alerts = [], queries = [];
+  const timers = [], speech = [], requests = [], alerts = [], queries = [], reads = [], mutations = [], removals = [], closed = [], opened = [];
+  const privacyState = { feed: [], removedIds: [], blockedIds: [], removedPhotos: new Set() };
+  const isPhotoRemoved = uri => privacyState.removedPhotos.has(uri);
+  const detailContext = require("../components/iosDetailPresentationContext.mjs");
+  const privacy = require('../domain/iosDetailPrivacyEpoch.mjs').createIOSDetailPrivacyEpoch();
+  let admission = null, life = null;
+  const publishCommands = () => {
+    const revision = privacy.getSnapshot(), current = admission.current;
+    const canAct = () => current() && privacy.getSnapshot() === revision;
+    admission = { ...admission, canAct, commandToken: Object.freeze({}),
+      guard: callback => typeof callback === 'function' ? (...args) => canAct() ? callback(...args) : undefined : callback };
+  };
+  const admit = active => {
+    if (life) life.live = false;
+    const state = { live: active }; life = state;
+    admission = { managed: true, active, current: () => state.live, token: Object.freeze({}), scope: 'post-occurrence', preview: !active };
+    publishCommands();
+  };
+  if (managed) admit(true);
   const owner = createIOSCommentDrafts(); owner.account("A", 1);
-  let account = "A", epoch = 1, post = "post", rows = ready ? [{ id: "parent", userId: "author", text: "Private parent text" }] : [];
+  let account = "A", epoch = 1, post = "post", rows = ready ? [{ id: "parent", userId: ownComment ? "A" : "author", text: "Private parent text" }] : [];
   let lease = unavailable ? unavailableCommentDraft : owner.lease(post), hook;
+  if (initialDraft) lease.edit(initialDraft);
   const clock = { setTimeout(callback, delay) { const timer = { callback, delay, cleared: false }; timers.push(timer); return timer; }, clearTimeout(timer) { timer.cleared = true; } };
   const listen = (name, callback) => {
     const active = listeners.get(name) || new Set(); active.add(callback); listeners.set(name, active);
@@ -75,6 +94,8 @@ function fixture({ platform = "ios", strict = false, reader = true, ready = true
   };
   let preference, announcement;
   const imports = (name, local) => {
+    if (name.endsWith("/useIOSDetailPresentation")) return execute("../hooks/useIOSDetailPresentation.ios.js", imports);
+    if (name === "../components/iosDetailPresentationContext.mjs") return detailContext;
     if (name === "react") return React;
     if (name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
@@ -83,19 +104,31 @@ function fixture({ platform = "ios", strict = false, reader = true, ready = true
     if (name === "../hooks/useScopedRefresh") return () => ({ refreshing: false, refresh() {} });
     if (name === "../theme") return { colors: {}, radius: {}, roleColor: () => null };
     if (name === "../store") return { useStore: () => ({
-      session: account ? { id: account } : null, chatAuthEpoch: epoch, feed: [], commentsFor: () => rows,
-      userById: () => null, userBadges: () => [], loadComments: async () => ready ? { ok: true } : { ok: false },
+      session: account ? { id: account } : null, chatAuthEpoch: epoch, ...privacyState, isPhotoRemoved, commentsFor: () => rows,
+      userById: () => null, userBadges: () => [], loadComments: async (...args) => {
+        reads.push(args);
+        if (commentReadResult) {
+          const result = commentReadResult;
+          if (result.denied) { rows = []; privacy.invalidate(); queueMicrotask(() => { publishCommands(); f.render(); }); }
+          return result;
+        }
+        return ready ? { ok: true } : { ok: false };
+      },
+      setCommentLike: async (...args) => { mutations.push(["like", ...args]); return { ok: true, liked: true, likes: 1 }; },
+      deleteOwnComment: async (...args) => { mutations.push(["comment-delete", ...args]); return { ok: true }; },
+      deleteOwnPost: (...args) => { const request = { ...deferred(), args }; removals.push(request); return request.promise; },
       addComment: (...args) => { const request = { ...deferred(), args }; requests.push(request); return request.promise; },
     }) };
     if (name === "../components/Badge") return { BadgeRow: "BadgeRow" };
     if (name === "../components/PublicWebLinks") return { PublicTextLink: "PublicTextLink" };
-    if (name === "../components/SocialReactionButtons") return { CommentLikeButton: "CommentLikeButton" };
+    if (name === "../components/SocialReactionButtons") return execute(`../components/SocialReactionButtons${platform === "ios" ? ".ios" : ""}.jsx`, imports);
+    if (name === "./Icon") return "Icon";
     if (name.startsWith("../components/")) return name.split("/").at(-1);
     return local(name);
   };
   if (platform === "ios") preference = execute("../hooks/useScreenReaderEnabled.ios.js", imports);
   announcement = execute(`../hooks/useIOSCommentAnnouncement${platform === "ios" ? ".ios" : ""}.js`, imports, clock);
-  const Post = execute("./PostScreen.jsx", imports).default;
+  const Post = execute(`./PostScreen${platform === "ios" ? ".ios" : ""}.jsx`, imports).default;
   function HookHarness() {
     hook = announcement.default(account, epoch, post, lease, "target");
     React.useLayoutEffect(() => {
@@ -108,7 +141,7 @@ function fixture({ platform = "ios", strict = false, reader = true, ready = true
     return null;
   }
   const f = {
-    timers, speech, requests, alerts, queries, captured, listeners, owner,
+    timers, speech, requests, alerts, queries, captured, listeners, owner, reads, mutations, removals, closed, opened, privacyState,
     get lease() { return lease; }, get hook() { return hook; },
     all: () => nodes(renderer.container), find: predicate => { const node = f.all().find(predicate); assert.ok(node); return node; },
     get input() { return f.find(n => n.type === "TextInput"); },
@@ -117,10 +150,18 @@ function fixture({ platform = "ios", strict = false, reader = true, ready = true
     press(label) { let result; f.act(() => { result = f.button(label).props.onPress(); }); return result; },
     edit(text) { f.act(() => f.input.props.onChangeText(text)); },
     render() { renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null,
-      React.createElement(hookOnly ? HookHarness : Post, { key: keyed ? JSON.stringify([account, epoch, post]) : "same", log: { id: post, review: "Post" }, commentDraft: lease }))); },
+      React.createElement(detailContext.IOSDetailPresentationContext.Provider, { value: admission },
+        React.createElement(hookOnly ? HookHarness : Post, { key: keyed ? JSON.stringify([account, epoch, post]) : "same", log: { id: post, review: "Post", ...logFields }, commentDraft: lease, onClose: () => closed.push(post), onOpenPhotos: (...args) => opened.push(args), onOpenShow: (...args) => opened.push(args) })))); },
+    cover() { admit(false); f.render(); },
+    reveal() { admit(true); f.render(); },
+    revoke() { life.live = false; },
+    invalidatePrivacy() { privacy.invalidate(); },
+    commitPrivacy() { publishCommands(); f.render(); },
+    get presentation() { return admission; },
     scope(id, nextEpoch = epoch, nextPost = post) { account = id; epoch = nextEpoch; post = nextPost; owner.account(account, epoch); lease = owner.lease(post); f.render(); },
     replaceLease(next) { lease = next; f.render(); },
     rows(next) { rows = next; f.render(); },
+    readResult(next) { commentReadResult = next; },
     rawState(value) { native.AppState.currentState = value; },
     reader(value) { f.act(() => { for (const callback of [...listeners.get("screenReaderChanged") || []]) callback(value); }); },
     state(value) { native.AppState.currentState = value; f.act(() => { for (const callback of [...listeners.get("change") || []]) callback(value); }); },
@@ -270,4 +311,135 @@ test("foreground check revokes rather than suspends before the AppState event ar
     f.rawState("active"); f.hook.finish(claim, "confirmed"); for (const timer of f.timers) f.tick(timer);
     assert.deepEqual(f.speech, []);
   }
+});
+
+
+for (const strict of [false, true]) test(`retained Post (${strict ? "StrictMode" : "normal"}) keeps exact input/scroll/draft and never revives captured actions`, async t => {
+  const f = fixture({ managed: true, strict, ownComment: true }); t.after(f.close); await f.settle();
+  f.edit("Keep my typed reply"); f.press("Reply to comment");
+  const input = f.input, scroll = f.find(n => n.type === "ScrollView");
+  input.selection = { start: 3, end: 5 }; scroll.offset = 521;
+  const edit = input.props.onChangeText, send = f.button("Send comment").props.onPress;
+  const reply = f.button("Reply to comment").props.onPress, clear = f.button("Clear reply target").props.onPress;
+  const like = f.button("Like comment, 0").props.onPress;
+  f.act(() => f.find(n => n.type === "Pressable" && n.children?.some(c => c.children?.some(v => v.text === "Delete"))).props.onPress());
+  const confirmDelete = f.alerts.at(-1)[2][1].onPress;
+  const reads = f.reads.length, focuses = input.focuses;
+  for (const transition of [() => f.cover(), () => f.reveal()]) {
+    transition(); await f.settle();
+    f.act(() => { edit("Stale replacement"); clear(); reply(); confirmDelete(); void send(); void like(); });
+    assert.equal(f.input, input); assert.equal(f.find(n => n.type === "ScrollView"), scroll);
+    assert.deepEqual(input.selection, { start: 3, end: 5 }); assert.equal(scroll.offset, 521);
+    assert.equal(f.lease.read().text, "Keep my typed reply"); assert.equal(f.lease.read().parentId, "parent");
+    assert.equal(input.focuses, focuses); assert.equal(f.requests.length, 0); assert.deepEqual(f.mutations, []);
+  }
+  assert.equal(f.reads.length, reads, "Back does not reset a loaded thread");
+  void f.press("Send comment"); assert.equal(f.requests.length, 1); await f.complete();
+  assert.equal(f.lease.read().text, "");
+});
+
+test("retained Post accepted delivery settles once while covered; speech and late post removal cannot touch successor", async t => {
+  const f = fixture({ managed: true }); t.after(f.close); await f.settle();
+  f.edit("Accepted before push"); void f.press("Send comment");
+  f.edit("New draft before navigation");
+  const card = f.find(n => n.type === "TicketStub");
+  assert.equal(card.props.contextPresentation.current(), true);
+  const removePost = card.props.onDelete;
+  const removal = removePost("post"); assert.equal(f.removals.length, 1);
+  f.cover(); await f.complete();
+  assert.equal(f.lease.read().sending, false); assert.equal(f.lease.read().text, "New draft before navigation");
+  assert.equal(f.timers.length, 0); assert.deepEqual(f.speech, []);
+  f.reveal(); f.removals[0].resolve({ ok: true }); await removal;
+  assert.deepEqual(f.closed, [], "old removal cannot pop the newer presentation after Back");
+  await removePost("post"); assert.equal(f.removals.length, 1);
+  f.edit("Fresh admission"); void f.press("Send comment"); await f.complete(); f.tick();
+  assert.equal(f.speech.length, 1);
+});
+
+test("covered Post discards and comment likes require a fresh admission after Back", async t => {
+  const f = fixture({ managed: true }); t.after(f.close); await f.settle();
+  f.edit("Unconfirmed"); void f.press("Send comment"); await f.complete({ ok: false });
+  f.press("Discard previous attempt"); const discard = f.alerts.at(-1)[2][1].onPress;
+  const retry = f.button("Retry previous comment").props.onPress;
+  f.cover(); f.reveal(); f.act(() => { discard(); void retry(); });
+  assert.equal(f.lease.read().retry, true); assert.equal(f.requests.length, 1);
+  void f.press("Like comment, 0"); await f.settle(); assert.equal(f.mutations.length, 1);
+  f.press("Discard previous attempt"); f.act(() => f.alerts.at(-1)[2][1].onPress());
+  assert.equal(f.lease.read().retry, false);
+});
+
+
+test('privacy epoch fences Post commands before commit but preserves earned delivery and same-occurrence removal', async t => {
+  const f = fixture({ managed: true, ownComment: true }); t.after(f.close); await f.settle();
+  f.edit('Earned comment'); void f.press('Send comment'); f.edit('Newer draft');
+  const input = f.input, edit = input.props.onChangeText, reply = f.button('Reply to comment').props.onPress;
+  const like = f.button('Like comment, 0').props.onPress;
+  const removePost = f.find(n => n.type === 'TicketStub').props.onDelete;
+  const removal = removePost('post');
+  f.act(() => f.find(n => n.type === 'Pressable' && n.children?.some(c => c.children?.some(v => v.text === 'Delete'))).props.onPress());
+  const confirm = f.alerts.at(-1)[2][1].onPress, admission = f.presentation;
+  f.invalidatePrivacy();
+  assert.equal(admission.current(), true); assert.equal(admission.canAct(), false);
+  for (const committed of [false, true]) {
+    if (committed) f.commitPrivacy();
+    f.act(() => { edit('Obsolete text'); reply(); void like(); confirm(); void removePost('post'); });
+    await f.settle();
+    assert.equal(f.lease.read().text, 'Newer draft'); assert.equal(f.lease.read().parentId, null);
+    assert.deepEqual(f.mutations, []); assert.equal(f.removals.length, 1);
+  }
+  await f.complete(); assert.equal(f.lease.read().sending, false); assert.equal(f.lease.read().text, 'Newer draft');
+  for (const timer of f.timers) f.tick(timer); assert.deepEqual(f.speech, []);
+  f.removals[0].resolve({ ok: true }); await removal; assert.deepEqual(f.closed, ['post']);
+  f.edit('Fresh command'); void f.press('Send comment'); await f.complete(); f.tick();
+  assert.equal(f.speech.length, 1); assert.equal(f.lease.read().text, '');
+});
+
+
+for (const reason of ['removed post', 'blocked author']) test(`active Post hides ${reason} fallback, preserves draft and settles accepted delivery`, async t => {
+  const f = fixture({ managed: true, logFields: { userId: 'writer', review: 'Private removed review', photos: ['https://media.test/withdrawn.jpg'] } }); t.after(f.close); await f.settle();
+  f.edit('Accepted'); void f.press('Send comment'); f.edit('Keep this newer draft');
+  const oldOpen = f.find(n => n.type === 'TicketStub').props.onOpenPhotos;
+  const oldInput = f.input, edit = oldInput.props.onChangeText, reads = f.reads.length;
+  f.invalidatePrivacy();
+  if (reason === 'removed post') f.privacyState.removedIds = ['post']; else f.privacyState.blockedIds = ['writer'];
+  f.act(() => { oldOpen(['https://media.test/withdrawn.jpg']); edit('Discard newer'); });
+  assert.deepEqual(f.opened, []); assert.equal(f.lease.read().text, 'Keep this newer draft');
+  f.commitPrivacy(); await f.settle();
+  assert.equal(f.presentation.canAct(), true, 'fresh command token cannot resurrect the source');
+  assert.equal(f.all().some(n => n.type === 'TicketStub' || n.type === 'TextInput' || n.type === 'CommentLikeButton'), false);
+  assert.match(f.all().map(n => n.text || '').join(' '), /This post is no longer available/);
+  assert.doesNotMatch(f.all().map(n => n.text || '').join(' '), /Private removed review|Private parent text/);
+  f.act(() => oldOpen(['https://media.test/withdrawn.jpg'])); assert.deepEqual(f.opened, []);
+  await f.complete(); assert.equal(f.lease.read().text, 'Keep this newer draft'); assert.equal(f.lease.read().sending, false);
+  assert.equal(f.reads.length, reads); assert.deepEqual(f.speech, []);
+});
+
+for (const descriptorsOnly of [false, true]) test(`withdrawn Post photo cannot survive ${descriptorsOnly ? 'descriptor-only' : 'legacy plus descriptor'} projection or new command admission`, async t => {
+  const withdrawn = 'https://media.test/withdrawn.jpg', kept = 'https://media.test/allowed.jpg';
+  const f = fixture({ managed: true, logFields: { userId: 'writer', photos: descriptorsOnly ? [] : [withdrawn, kept], media: [{ uri: withdrawn, kind: 'image' }, { uri: kept, kind: 'image' }] } }); t.after(f.close); await f.settle();
+  f.edit('Keep draft'); const oldOpen = f.find(n => n.type === 'TicketStub').props.onOpenPhotos, input = f.input;
+  f.invalidatePrivacy(); f.privacyState.removedPhotos.add(withdrawn);
+  f.act(() => oldOpen([{ uri: withdrawn }])); assert.deepEqual(f.opened, []);
+  f.commitPrivacy(); await f.settle();
+  const card = f.find(n => n.type === 'TicketStub');
+  assert.equal(JSON.stringify(card.props.log).includes(withdrawn), false); assert.deepEqual(card.props.log.photos, [kept]);
+  assert.deepEqual(card.props.log.media.map(item => item.uri), [kept]); assert.equal(f.input, input);
+  f.act(() => { oldOpen([{ uri: withdrawn }]); card.props.onOpen(); });
+  assert.equal(f.opened.length, 1); assert.equal(JSON.stringify(f.opened).includes(withdrawn), false);
+  f.privacyState.removedPhotos.add(kept); f.invalidatePrivacy(); f.commitPrivacy(); await f.settle();
+  const emptyCard = f.find(n => n.type === 'TicketStub'); assert.deepEqual(emptyCard.props.log.photos, []); assert.deepEqual(emptyCard.props.log.media, []);
+  assert.equal(f.lease.read().text, 'Keep draft');
+});
+
+for (const status of [403, 404, 410]) test(`actual Post comment ${status} denial keeps the post/draft but removes the private thread and gates sending`, async t => {
+  const f = fixture({ managed: true, initialDraft: 'Saved private draft', commentReadResult: { ok: false, denied: true, error: Object.assign(new Error('Denied'), { status }) } });
+  t.after(f.close); await f.settle();
+  assert.equal(f.lease.read().text, 'Saved private draft');
+  assert.ok(f.all().some(n => n.type === 'TicketStub'), 'comment denial does not declare the whole post deleted');
+  assert.equal(f.all().some(n => n.text === 'Private parent text'), false);
+  assert.equal(f.button('Send comment').props.disabled, true);
+  const reads = f.reads.length; f.commitPrivacy(); await f.settle(); assert.equal(f.reads.length, reads, 'no privacy read loop');
+  f.readResult({ ok: true }); f.press('Retry loading comments'); await f.settle();
+  assert.equal(f.reads.length, reads + 1); assert.equal(f.button('Send comment').props.disabled, false);
+  assert.equal(f.lease.read().text, 'Saved private draft');
 });

@@ -163,7 +163,7 @@ test("staff can follow artists; only the artist's own account has no Follow butt
   const wrapper = nodes.find(node => node.type === "VariableDeclarator" && node.id?.name === "announceFollow").init;
   for (const IS_IOS of [false, true]) for (const session of [null, { id: "staff", role: "admin" }, { id: "member", role: "user" }]) for (const followHidden of [false, true]) {
     const calls = [];
-    const context = { IS_IOS, session, followHidden, followUi: { toggleFollow: () => calls.push("follow") },
+    const context = { guard: value => value, current: () => true, canAct: () => true, IS_IOS, session, followHidden, followUi: { toggleFollow: () => calls.push("follow") },
       onRequireAuth: () => calls.push("auth"), announcements: { current: { request: () => calls.push("announce") } } };
     context.announceFollow = vm.runInNewContext(`(${artist.slice(wrapper.start, wrapper.end)})`, context);
     const action = vm.runInNewContext(`(${artist.slice(expression.start, expression.end)})`, context);

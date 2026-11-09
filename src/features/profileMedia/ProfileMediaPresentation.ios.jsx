@@ -5,11 +5,14 @@ import Icon from "../../components/Icon";
 import SmartImage from "../../components/SmartImage";
 import ClipPoster from "../../components/ClipPoster";
 import { mediaDisplayKind, mediaPosterUri } from "../../domain/postMediaDisplay.mjs";
+import useIOSDetailPresentation from "../../hooks/useIOSDetailPresentation";
 import { FeedImageRetryProvider, useFeedImageRetry } from "../../hooks/feedImageRetry";
 
 export const ProfileMediaRetryBoundary = FeedImageRetryProvider;
 
 export function useProfileMediaPresentation({ scope, user, gallery: galleryViewerItems, onOpenPhotos }) {
+  const presentation = useIOSDetailPresentation();
+  const canAct = presentation.canAct || presentation.current;
   // Native event callbacks can arrive after a profile/account or its media
   // changes. Never open an obsolete descriptor (including revoked photos).
   const mediaScope = scope;
@@ -28,33 +31,33 @@ export function useProfileMediaPresentation({ scope, user, gallery: galleryViewe
   }, []);
   const openIOSGallery = useCallback((items, index, postId) => {
     const current = mediaActionsRef.current;
-    if (!mediaMountedRef.current || current.lifetime !== mediaLifetime || current.gallery !== items) return;
+    if (!canAct() || !mediaMountedRef.current || current.lifetime !== mediaLifetime || current.gallery !== items) return;
     current.onOpenPhotos?.(items, index, postId);
-  }, [mediaLifetime]);
+  }, [mediaLifetime, presentation]);
   const bannerUri = user?.banner;
   const bannerAlt = `${user?.name || "Member"}'s profile banner`;
   const openIOSBanner = useCallback(() => {
     const current = mediaActionsRef.current;
-    if (!mediaMountedRef.current || current.lifetime !== mediaLifetime || current.banner !== bannerUri || !bannerUri) return;
+    if (!canAct() || !mediaMountedRef.current || current.lifetime !== mediaLifetime || current.banner !== bannerUri || !bannerUri) return;
     // A profile banner is not a post attachment. No inherited post ID, owner
     // report target, or reaction identity belongs in this viewer payload.
     current.onOpenPhotos?.([{ uri: bannerUri, kind: "image", altText: bannerAlt }], 0, null);
-  }, [bannerAlt, bannerUri, mediaLifetime]);
+  }, [bannerAlt, bannerUri, mediaLifetime, presentation]);
   const requestIOSGallery = useCallback((action) => {
-    if (!mediaMountedRef.current || mediaActionsRef.current.lifetime !== mediaLifetime) return;
+    if (!canAct() || !mediaMountedRef.current || mediaActionsRef.current.lifetime !== mediaLifetime) return;
     if (mediaRequestRef.current?.lifetime === mediaLifetime) return mediaRequestRef.current.promise;
     const request = { lifetime: mediaLifetime, promise: null };
     mediaRequestRef.current = request;
     request.promise = Promise.resolve().then(() => {
-      if (!mediaMountedRef.current || mediaActionsRef.current.lifetime !== mediaLifetime) return;
+      if (!canAct() || !mediaMountedRef.current || mediaActionsRef.current.lifetime !== mediaLifetime) return;
       return action();
     });
     const settle = () => { if (mediaRequestRef.current === request) mediaRequestRef.current = null; };
     void request.promise.then(settle, settle);
     return request.promise;
-  }, [mediaLifetime]);
+  }, [mediaLifetime, presentation]);
   const imageRetry = useFeedImageRetry(scope);
-  return { openBanner: openIOSBanner, openGallery: openIOSGallery, request: requestIOSGallery, retryImages: imageRetry.accept, retryValue: imageRetry.value };
+  return { openBanner: openIOSBanner, openGallery: openIOSGallery, request: requestIOSGallery, retryImages: presentation.guard(imageRetry.accept), retryValue: imageRetry.value };
 }
 
 export function ProfileBannerCover({ uri, name, onOpen, largeText = false }) {

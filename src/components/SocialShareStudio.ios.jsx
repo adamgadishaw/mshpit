@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Modal, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, radius, space } from "../theme";
 import { loadChunk } from "../lib/lazyWithRetry";
 import Icon from "./Icon";
+import useIOSDetailPresentation from "../hooks/useIOSDetailPresentation";
 
 // One dynamic importer keeps the editor out of Metro's eager shared chunk.
 // Cache only public component code; never an account, model or prepared PNG.
@@ -33,12 +34,31 @@ export function SocialShareButton({
   actionPresentation = null,
   style,
 }) {
-  const [open, setOpen] = useState(false);
+  const detail = useIOSDetailPresentation();
+  const detailCommand = detail.canAct || detail.current;
+  const identity = shareScope(accountId, model);
+  const admission = useMemo(() => ({ current: () => detailCommand() && actionPresentation?.current() !== false }),
+    [detailCommand, detail.commandToken, actionPresentation, identity]);
+  const [open, setOpen] = useState(null);
+  const activeOpen = useRef(null);
+  const openSequence = useRef(0);
+  const show = () => {
+    if (!admission.current() || (activeOpen.current?.admission === admission && activeOpen.current.current())) return;
+    const owner = Object.freeze({ admission, id: ++openSequence.current,
+      current: () => activeOpen.current === owner && admission.current() });
+    activeOpen.current = owner;
+    setOpen(owner);
+  };
+  const dismiss = (owner) => {
+    if (activeOpen.current !== owner) return;
+    activeOpen.current = null;
+    setOpen(null);
+  };
   if (!model) return null;
   return (
     <>
       <Pressable
-        onPress={() => { if (actionPresentation?.current() !== false) setOpen(true); }}
+        onPress={show}
         accessibilityRole="button"
         accessibilityLabel={`Share ${model.kind === "review" ? "review" : model.kind === "news" ? "this story" : model.kind + " status"}`}
         accessibilityHint="Preview a branded card and choose where to share it"
@@ -47,47 +67,75 @@ export function SocialShareButton({
         <Icon name="share" size={17} color={color} />
         {showLabel ? <Text style={[styles.shareTriggerText, { color }]}>{label}</Text> : null}
       </Pressable>
-      {open && actionPresentation?.current() !== false ? (
-        <SocialShareStudio key={shareScope(accountId, model)} accountId={accountId} model={model} onClose={() => setOpen(false)} />
+      {open?.admission === admission && open.current() ? (
+        <SocialShareStudio key={open.id} accountId={accountId} model={model} actionPresentation={open} onClose={() => dismiss(open)} />
       ) : null}
     </>
   );
 }
 
-export default function SocialShareStudio({ accountId = null, model, onClose }) {
+export default function SocialShareStudio({ accountId = null, model, onClose, actionPresentation = null }) {
+  const detail = useIOSDetailPresentation();
+  const detailCommand = detail.canAct || detail.current;
+  const initialCommand = useRef(detail.commandToken ?? detail.token);
+  const identity = shareScope(accountId, model);
+  const scope = useMemo(() => Object.freeze({}), [identity]);
+  const latestScope = useRef(scope);
+  latestScope.current = scope;
+  const mounted = useRef(null);
+  const [lifetime, setLifetime] = useState(null);
+  useLayoutEffect(() => {
+    const owner = Object.freeze({});
+    mounted.current = owner;
+    setLifetime(owner);
+    return () => { if (mounted.current === owner) mounted.current = null; };
+  }, []);
+  const current = useMemo(() => () => !!lifetime && mounted.current === lifetime && latestScope.current === scope
+    && initialCommand.current === (detail.commandToken ?? detail.token)
+    && detailCommand() && actionPresentation?.current() !== false,
+  [lifetime, scope, detailCommand, detail.commandToken, detail.token, actionPresentation]);
+  const admission = useMemo(() => ({ current }), [current]);
+  const close = () => {
+    if (!current()) return;
+    // Retire loading controls before the parent commits its dismissal. An old
+    // native close or Retry event must never borrow a later open's lifetime.
+    mounted.current = null;
+    setLifetime(null);
+    onClose?.();
+  };
   const [Editor, setEditor] = useState(() => loadedModal);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const enabled = !!model;
+  const enabled = !!model && current();
   useEffect(() => {
-    if (!enabled || Editor) return undefined;
+    if (!enabled || !current() || Editor) return undefined;
     let active = true;
     setFailed(false);
     // Dynamic imports cannot be aborted. Stop adopting their result on close,
     // and turn a stalled network load into a visible retry instead of a trap.
-    const timeout = setTimeout(() => { active = false; setFailed(true); }, 15_000);
+    const timeout = setTimeout(() => { active = false; if (current()) setFailed(true); }, 15_000);
     void loadModal().then((Component) => {
-      if (active) setEditor(() => Component);
+      if (active && current()) setEditor(() => Component);
     }).catch(() => {
-      if (active) setFailed(true);
+      if (active && current()) setFailed(true);
     }).finally(() => clearTimeout(timeout));
     return () => { active = false; clearTimeout(timeout); };
-  }, [enabled, Editor, attempt]);
+  }, [enabled, Editor, attempt, current]);
 
-  if (!model) return null;
-  if (Editor) return <Editor key={shareScope(accountId, model)} accountId={accountId} model={model} onClose={onClose} />;
+  if (!enabled) return null;
+  if (Editor) return <Editor key={shareScope(accountId, model)} accountId={accountId} model={model} onClose={close} actionPresentation={admission} />;
   return (
-    <Modal transparent visible animationType={Platform.OS === "web" ? "fade" : "slide"} onRequestClose={onClose}>
+    <Modal transparent visible animationType={Platform.OS === "web" ? "fade" : "slide"} onRequestClose={close}>
       <View style={styles.loadingOverlay}>
-        <Pressable accessibilityRole="button" accessibilityLabel="Close share preview" onPress={onClose} style={StyleSheet.absoluteFill} />
-        <View accessibilityViewIsModal onAccessibilityEscape={onClose} accessibilityLabel="Share preview" style={styles.loadingSheet}>
+        <Pressable accessibilityRole="button" accessibilityLabel="Close share preview" onPress={close} style={StyleSheet.absoluteFill} />
+        <View accessibilityViewIsModal onAccessibilityEscape={close} accessibilityLabel="Share preview" style={styles.loadingSheet}>
           <Text accessibilityRole={failed ? "alert" : "status"} accessibilityLiveRegion="polite" style={styles.loadingText}>
             {failed ? "The share editor could not load. Try again, or close and reopen it." : "Opening share preview…"}
           </Text>
-          {failed ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading share preview" onPress={() => setAttempt(value => value + 1)} style={styles.loadingButton}>
+          {failed ? <Pressable accessibilityRole="button" accessibilityLabel="Retry loading share preview" onPress={() => { if (current()) setAttempt(value => value + 1); }} style={styles.loadingButton}>
             <Text style={styles.loadingButtonText}>Try again</Text>
           </Pressable> : null}
-          <Pressable accessibilityRole="button" accessibilityLabel="Close share preview" onPress={onClose} style={styles.loadingButton}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Close share preview" onPress={close} style={styles.loadingButton}>
             <Text style={styles.loadingButtonText}>Close</Text>
           </Pressable>
         </View>

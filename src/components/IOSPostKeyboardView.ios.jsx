@@ -1,3 +1,4 @@
+import useIOSDetailPresentation from "../hooks/useIOSDetailPresentation";
 import { useLayoutEffect, useRef, useState } from "react";
 import { AppState, Dimensions, Keyboard, View, useWindowDimensions } from "react-native";
 
@@ -7,6 +8,8 @@ import { AppState, Dimensions, Keyboard, View, useWindowDimensions } from "react
 // verification-banner or player height. RN's iOS keyboard coordinates are also
 // converted to this window by RCTKeyboardObserver.
 export default function IOSPostKeyboardView({ children, style, ...props }) {
+  const presentation = useIOSDetailPresentation();
+  const canAct = presentation.canAct || presentation.current;
   const view = useRef(null);
   const measure = useRef(() => {});
   const [bottom, setBottom] = useState(0);
@@ -14,12 +17,13 @@ export default function IOSPostKeyboardView({ children, style, ...props }) {
   useWindowDimensions(); // Rotation, split-view resizing and Dynamic Type.
 
   useLayoutEffect(() => {
+    if (!presentation.active || !canAct()) return;
     let alive = true;
     let active = AppState.currentState === "active";
     let frame = active ? Keyboard.metrics() : null;
     let generation = 0;
     const update = (next, event) => {
-      if (!alive || appliedBottom.current === next) return;
+      if (!canAct() || !alive || appliedBottom.current === next) return;
       appliedBottom.current = next;
       if (event) Keyboard.scheduleLayoutAnimation(event);
       setBottom(next);
@@ -27,9 +31,9 @@ export default function IOSPostKeyboardView({ children, style, ...props }) {
     const inspect = (event) => {
       const request = ++generation;
       const target = view.current;
-      if (!alive || !active || !frame) { update(0, event); return; }
+      if (!canAct() || !alive || !active || !frame) { update(0, event); return; }
       target?.measureInWindow((x, y, width, height) => {
-        if (!alive || !active || request !== generation || target !== view.current) return;
+        if (!canAct() || !alive || !active || request !== generation || target !== view.current) return;
         const window = Dimensions.get("window");
         const k = frame;
         // Only a docked keyboard owns bottom space. Hardware/floating keyboards
@@ -43,11 +47,11 @@ export default function IOSPostKeyboardView({ children, style, ...props }) {
     };
     measure.current = () => inspect();
     const show = (event) => {
-      if (!alive || !active || event.isEventFromThisApp === false) return;
+      if (!canAct() || !alive || !active || event.isEventFromThisApp === false) return;
       frame = event.endCoordinates;
       inspect(event);
     };
-    const hide = (event) => { frame = null; generation++; update(0, event); };
+    const hide = (event) => { if (!canAct()) return; frame = null; generation++; update(0, event); };
     const subscriptions = [
       Keyboard.addListener("keyboardWillShow", show),
       Keyboard.addListener("keyboardDidShow", show),
@@ -68,10 +72,10 @@ export default function IOSPostKeyboardView({ children, style, ...props }) {
       measure.current = () => {};
       subscriptions.forEach(subscription => subscription.remove());
     };
-  }, []);
+  }, [presentation.active, canAct]);
 
   // An ancestor can move without changing this view's local layout. Check on
   // parent renders as well as native layout, without replacing any descendants.
   useLayoutEffect(() => { measure.current(); });
-  return <View {...props} ref={view} collapsable={false} onLayout={() => measure.current()} style={[style, { paddingBottom: bottom }]}>{children}</View>;
+  return <View {...props} ref={view} collapsable={false} onLayout={presentation.guard(() => measure.current())} style={[style, { paddingBottom: bottom }]}>{children}</View>;
 }

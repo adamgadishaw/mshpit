@@ -1,5 +1,22 @@
 # Pit current status
 
+## 2026-11-09 iOS nested detail Back (isolated local candidate)
+
+- Extends verified Feed candidate `48d3bd8` with up to six actual retained
+  Artist/Profile/Show/Post occurrences and cancellable previous-page reveal.
+  Other destinations remain fallback/barriers; this is not all-route completion.
+- Explicit lifecycle, command, privacy and inner-Suspense ownership preserve
+  state while retiring hidden actions. Current private denials revoke older
+  retained data; explicit retry recovers without automatic denial loops.
+- Independent review clears the four-family scope. All 9,033 tests pass in the
+  complete serial check chain, with dependency/syntax/architecture, web budget,
+  Blueprint and whitespace checks. Final iOS/Android Hermes exports and exact
+  source-map isolation/matching also pass.
+- No phone, install, push, backend, dependency or native-project change. Main
+  remains `942e1f3`; prior `48d3bd8` and Discover-only `8060121` are preserved.
+  The notification backend-first hold and physical-device acceptance remain.
+- Details: `docs/IOS_RETAINED_DETAIL_BACK_2026-11-09.md`.
+
 ## 2026-11-09 iOS retained Feed Back reveal (isolated local candidate)
 
 - A signed-in Feed now remains beneath readable details for a cancellable,

@@ -1,9 +1,16 @@
+const claimIOSCommentRead = Platform.OS === "ios" ? require("./lib/iosCommentReadFence.ios.js").claimIOSCommentRead : null;
 import { createFeedHeadStatus, hasFeedHeadReceipt } from "./hooks/feedHeadStatus";
+const invalidateIOSDetailPrivacy = Platform.OS === "ios" ? require("./lib/iosDetailPrivacy").invalidateIOSDetailPrivacy : null;
 import { nativeVenueCoordinates } from "./domain/nativeVenueCoordinates.mjs";
 import { nativeNearbyVenues } from "./domain/nativeNearbyVenues.mjs";
 import { nativeVenueLookupCache } from "./domain/nativeVenueLookupCache.mjs";
 import { createContext, useContext, useState, useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
+const claimIOSProfileRead = Platform.OS === "ios" ? require("./lib/iosProfileReadFence.ios.js").claimIOSProfileRead : null;
+const createIOSArtistPhotoLoader = Platform.OS === "ios" ? require("./features/artistReviews/services/artistPhotoPrivacyService.ios.js").createIOSArtistPhotoLoader : null;
+const projectIOSArtistPhotos = Platform.OS === "ios" ? require("./features/artistReviews/services/artistPhotoPrivacyService.ios.js").projectIOSArtistPhotos : null;
+const createIOSArtistSeenCount = Platform.OS === "ios" ? require("./features/artistOverview/artistDetailReadsService.ios.js").createIOSArtistSeenCount : null;
+const createIOSArtistRatingLoader = Platform.OS === "ios" ? require("./features/artistOverview/artistDetailReadsService.ios.js").createIOSArtistRatingLoader : null;
 import { seedFeed, ratedShows, haversineKm, installDemoCatalogShows } from "./data";
 import { memberBadgeTypes } from "./domain/memberBadges.mjs";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
@@ -140,12 +147,17 @@ import { useAccountArtistPageCache } from "./features/artistPage/useAccountArtis
 import { artistMemorialPreparationName } from "./domain/artistMemorialCandidate.mjs";
 import { prepareArtistMemorialCandidate } from "./features/artistMemorials/services/artistMemorialApi.mjs";
 import {
-  adoptProfileHistoryAccount,
-  removeProfileHistoryPost,
-  resetProfileHistoryAccount,
-  scrubBlockedProfileHistoryPerson,
-  upsertProfileHistoryPost,
+  adoptProfileHistoryAccount as defaultAdoptProfileHistoryAccount,
+  removeProfileHistoryPost as defaultRemoveProfileHistoryPost,
+  resetProfileHistoryAccount as defaultResetProfileHistoryAccount,
+  scrubBlockedProfileHistoryPerson as defaultScrubBlockedProfileHistoryPerson,
+  upsertProfileHistoryPost as defaultUpsertProfileHistoryPost,
 } from "./features/profileHistory/profileHistoryClient.mjs";
+const adoptProfileHistoryAccount = Platform.OS === "ios" ? require("./features/profileHistory/profileHistoryClient.ios.mjs").adoptProfileHistoryAccount : defaultAdoptProfileHistoryAccount;
+const removeProfileHistoryPost = Platform.OS === "ios" ? require("./features/profileHistory/profileHistoryClient.ios.mjs").removeProfileHistoryPost : defaultRemoveProfileHistoryPost;
+const resetProfileHistoryAccount = Platform.OS === "ios" ? require("./features/profileHistory/profileHistoryClient.ios.mjs").resetProfileHistoryAccount : defaultResetProfileHistoryAccount;
+const scrubBlockedProfileHistoryPerson = Platform.OS === "ios" ? require("./features/profileHistory/profileHistoryClient.ios.mjs").scrubBlockedProfileHistoryPerson : defaultScrubBlockedProfileHistoryPerson;
+const upsertProfileHistoryPost = Platform.OS === "ios" ? require("./features/profileHistory/profileHistoryClient.ios.mjs").upsertProfileHistoryPost : defaultUpsertProfileHistoryPost;
 import { artistGalleryIdentityKey, mergeArtistGalleryMedia, postMatchesArtistGallery } from "./domain/artistGalleryMedia.mjs";
 import {
   deleteMediaDraftsForOwner,
@@ -738,6 +750,7 @@ export function StoreProvider({ children }) {
   const staffStateScopeRef = useRef(staffScopeFor(session));
 
   const resetStaffState = () => {
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     staffReadsRef.current.reset();
     adminMembersRef.current = [];
     adminStatsRef.current = emptyAdminStats();
@@ -771,7 +784,9 @@ export function StoreProvider({ children }) {
   const setMutedIds = (updater) => {
     const current = blockedIdsRef.mutedIds;
     const next = typeof updater === "function" ? updater(current) : updater;
-    blockedIdsRef.mutedIds = Array.isArray(next) ? next : [];
+    const normalized = Array.isArray(next) ? next : [];
+    if (Platform.OS === "ios" && (current.length !== normalized.length || current.some((id) => !normalized.includes(id)))) invalidateIOSDetailPrivacy();
+    blockedIdsRef.mutedIds = normalized;
     setBlockedIds((ids) => [...ids]);
   };
   if (blockedIdsRef.accountId === undefined) blockedIdsRef.accountId = session?.id || null;
@@ -848,7 +863,10 @@ export function StoreProvider({ children }) {
   const setArtistProfiles = artistPageCache.updateProfiles;
   const setArtistPosts = artistPageCache.updatePosts;
   const adoptArtistPageAccount = artistPageCache.adoptAccount;
-  const invalidateArtistPageCache = artistPageCache.invalidate;
+  const invalidateArtistPageCache = Platform.OS === "ios" ? () => {
+    invalidateIOSDetailPrivacy();
+    artistPageCache.invalidate();
+  } : artistPageCache.invalidate;
   // Venue reviews are public, but the visible snapshot is personalized by
   // blocks/moderation. Keep each account's bounded cache separate so a shared
   // device cannot carry account A's hidden/visible rows into account B.
@@ -889,6 +907,7 @@ export function StoreProvider({ children }) {
     accountId = sessionRef.current?.id || null,
     blockGraphAuthoritative = venuePhotoCacheRef.current.privacy.blockGraphAuthoritative,
   } = {}) => {
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     const previousPrivacy = venuePhotoCacheRef.current.privacy;
     venuePhotoCacheRef.current.privacyEpoch += 1;
     const revision = previousPrivacy.revision + 1;
@@ -1383,6 +1402,7 @@ export function StoreProvider({ children }) {
       if (signal?.aborted || (sessionRef.current?.id || null) !== accountId) return null;
       const invalid = new Set(Array.isArray(invalidPostIds) ? invalidPostIds : []);
       if (invalid.size) {
+        if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
         feedMutationRevisionRef.current += 1;
         setFeed((current) => current.filter((post) => !invalid.has(post.id)));
         setRemovedIds((current) => [...new Set([...current, ...invalid])]);
@@ -1627,7 +1647,10 @@ export function StoreProvider({ children }) {
       read, sessionRef.current?.id, accountMutationEpochRef.current, { signal, error },
     );
     const cachedAtStart = !!userById(id) || sessionRef.current?.id === id;
+    const profileRead = Platform.OS === "ios" ? claimIOSProfileRead(accountMutationEpochRef, id) : null;
     const quarantine = () => {
+      profileRead?.quarantine();
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       setUsers((current) => withoutUnavailableProfile(current, id));
       setFeed((current) => withoutUnavailableProfilePosts(current, id));
       setUserStats((current) => {
@@ -1661,6 +1684,9 @@ export function StoreProvider({ children }) {
       return outcome;
     }
 
+    // An authoritative denial may have arrived from another same-target read.
+    // Its older success cannot repopulate the quarantined directory or pins.
+    if (profileRead && !profileRead.current()) return unavailableProfileOutcome("superseded-privacy");
     absorbUsers([su]);
     setUserStats((m) => ({ ...m, [su.id]: { followers: followers || 0, following: following || 0 } }));
     // Sync my follow state for this person (another device may have followed).
@@ -2023,7 +2049,7 @@ export function StoreProvider({ children }) {
 
   // How many times the signed-in user has logged this artist (artist profile
   // "you've been in the pit with them" counter). Cached per session per artist.
-  const artistSeenCount = async (name) => {
+  const artistSeenCount = Platform.OS === "ios" ? createIOSArtistSeenCount({ sessionRef, accountMutationEpochRef, seenCountCache, accountTargetScope, norm, captureAccountMutation, accountMutationIsCurrent, api }) : async (name) => {
     const accountId = sessionRef.current?.id || null;
     if (!accountId || !name) return null;
     const key = accountTargetScope(accountId, `artist-seen:${norm(name)}`);
@@ -2172,6 +2198,8 @@ export function StoreProvider({ children }) {
 
   const moderateReport = async ({ action, reportId, reason = "" } = {}) => {
     const actionScope = staffScopeFor(sessionRef.current);
+    if (Platform.OS === "ios") assertStaffMutation(actionScope);
+    if (Platform.OS === "ios" && (action !== "dismiss")) invalidateIOSDetailPrivacy();
     const result = await staffApi("/api/admin/moderation/actions", {
       method: "POST",
       body: { action, reportId, ...(reason ? { reason } : {}) },
@@ -2180,6 +2208,7 @@ export function StoreProvider({ children }) {
     // The server may have committed just before this account signed out. Do not
     // repopulate the next session with the previous staff member's result.
     assertStaffMutation(actionScope);
+    if (Platform.OS === "ios" && (action !== "dismiss")) invalidateIOSDetailPrivacy();
     staffReadsRef.current.invalidate("moderation", sessionRef.current);
     const status = action === "dismiss" ? "dismissed" : "actioned";
     setReports((current) => current.map((report) => report.id === reportId ? { ...report, status } : report));
@@ -2709,6 +2738,7 @@ export function StoreProvider({ children }) {
     const validationStatus = sessionValidationStatus?.begin();
 
     const lockIdentity = () => {
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       const accountId = sessionRef.current?.id || null;
       configureProductAnalytics(null);
       configureApiIdentity(accountId, { ready: false });
@@ -3173,6 +3203,7 @@ export function StoreProvider({ children }) {
   };
 
   const logout = () => {
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     authValidationSequenceRef.current += 1;
     accountMutationEpochRef.current += 1;
     feedRefreshRef.current.headStatus?.reset();
@@ -3300,6 +3331,7 @@ export function StoreProvider({ children }) {
     if (!confirmedDeleted) return { ok: false, unknown: true, error: "Pit could not confirm account deletion." };
     if (!accountMutationIsCurrent(deletionMutation, sessionRef.current?.id, accountMutationEpochRef.current)) return { ok: false, stale: true, error: "Your account changed. Reopen account settings." };
 
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     const devicePrivacy = accountPrivatePayloadsAfterLogout({
       accountId: deleted.id,
       drafts: draftsRef.current,
@@ -3484,6 +3516,7 @@ export function StoreProvider({ children }) {
     const changedExtras = ["nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows"].filter((key) => key in safe);
     if (changedExtras.length) body.extras = Object.fromEntries(changedExtras.map((key) => [key, safe[key]]));
     if (!Object.keys(body).length) return Promise.resolve({ ok: true, patch: safe });
+    if (Platform.OS === "ios" && ("concertMapVisible" in safe)) invalidateIOSDetailPrivacy();
 
     if (optimistic) {
       sessionRef.current = { ...sessionRef.current, ...safe };
@@ -3499,6 +3532,7 @@ export function StoreProvider({ children }) {
           return { ok: false, stale: true };
         }
         if (user?.id !== actor.id) throw new Error("Mshpit could not confirm the profile save. Please try again.");
+        if (Platform.OS === "ios" && ("concertMapVisible" in safe)) invalidateIOSDetailPrivacy();
         const confirmedFields = new Set(Object.keys(safe));
         if ("handle" in safe) { confirmedFields.add("handleChangeAvailableAt"); confirmedFields.add("pendingSignupHandle"); }
         const confirmed = Object.fromEntries([...confirmedFields].filter((key) => Object.hasOwn(user, key)).map((key) => [key, user[key]]));
@@ -3906,12 +3940,15 @@ export function StoreProvider({ children }) {
   };
   const moderateContent = async (type, id, removed) => {
     const scope = staffScopeFor(sessionRef.current);
+    if (Platform.OS === "ios") assertStaffMutation(scope);
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     const result = await staffApi(`/api/admin/content/${type}/${id}`, {
       method: "POST",
       body: { removed },
       context: removed ? "Removing community content" : "Restoring community content",
     });
     assertStaffMutation(scope);
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     if (staffMutationStillOwned(scope)) {
       staffReadsRef.current.invalidate("moderation", sessionRef.current);
       loadModerationConsole().catch(() => {});
@@ -3971,6 +4008,7 @@ export function StoreProvider({ children }) {
       }
       setRequests((current) => reconcileConfirmedArtistRequestDecision(current, { requestId: reqId, status: decision }));
       if (decision === "approved") {
+        if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
         setUsers((current) => current.map((account) => (account.id === request.userId
           ? { ...account, role: "artist", artistName: request.artistName, verified: true }
           : account)));
@@ -4257,11 +4295,13 @@ export function StoreProvider({ children }) {
     // Do not replace an optimistic block/unblock with a pre-mutation snapshot.
     // Leave an explicit retry state when a mutation supersedes this read.
     const stalePrivacyResult = () => {
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       blockedIdsRef.status = "error";
       setBlockedIds((current) => [...current]);
       return { ok: false, stale: true };
     };
     if (privacyChanged()) return stalePrivacyResult();
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     blockedIdsRef.accountId = accountId;
     blockedIdsRef.status = "loading";
     setBlockedIds((current) => [...current]);
@@ -4285,6 +4325,7 @@ export function StoreProvider({ children }) {
       return { ok: true, users: list };
     } catch (error) {
       if (!isCurrent()) return { ok: false, stale: true };
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       blockedIdsRef.accountId = accountId;
       blockedIdsRef.status = "error";
       setBlockedIds((current) => [...current]);
@@ -4388,6 +4429,7 @@ export function StoreProvider({ children }) {
     try {
       await saveAccountMute(id, true, { expectedAccountId: actor.id });
       if (!isCurrent()) return { ok: false, stale: true };
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       return { ok: true };
     } catch (error) {
       if (!isCurrent()) return { ok: false, stale: true };
@@ -4404,6 +4446,7 @@ export function StoreProvider({ children }) {
     try {
       await saveAccountMute(id, false, { expectedAccountId: actor.id });
       if (!isCurrent()) return { ok: false, stale: true };
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       return { ok: true };
     } catch (error) {
       if (!isCurrent()) return { ok: false, stale: true };
@@ -4483,6 +4526,7 @@ export function StoreProvider({ children }) {
   const adoptAccountPreference = (actor, mutation, user, field, cachePublic = false) => {
     if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
       || user?.id !== actor.id || !Object.prototype.hasOwnProperty.call(user, field)) return null;
+    if (Platform.OS === "ios" && (field === "profileAudience" || field === "ageBand")) invalidateIOSDetailPrivacy();
     const patch = { [field]: user[field] };
     const merged = { ...sessionRef.current, ...patch };
     if (cachePublic) setUsers((all) => all.map((entry) => entry.id === actor.id
@@ -4527,6 +4571,7 @@ export function StoreProvider({ children }) {
   const setAgeBandClassification = async (ageBand) => {
     const actor = currentMutationActor();
     if (!actor || (actor.ageBand || "unknown") !== "unknown" || !["13_17", "18_plus"].includes(ageBand)) return { ok: false };
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
       const { user } = await writeAccountPreference(actor, mutation, "ageBand", () => classifyAccountAgeBand(ageBand, { expectedAccountId: actor.id }));
@@ -4540,6 +4585,7 @@ export function StoreProvider({ children }) {
   const setProfileAudience = async (audience) => {
     const actor = currentMutationActor();
     if (!actor || !["everyone", "members", "only_me"].includes(audience)) return { ok: false };
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
       const { user } = await writeAccountPreference(actor, mutation, "profileAudience", () => updateProfileAudience(audience, { expectedAccountId: actor.id }));
@@ -4586,6 +4632,7 @@ export function StoreProvider({ children }) {
       return Promise.resolve({ ok: true, cached: true });
     }
     const readRevision=accountMutationEpochRef.commentRevision || 0;
+    const privateRead = Platform.OS === "ios" ? claimIOSCommentRead(accountMutationEpochRef, id, () => commentClaimIsCurrent(claim) && readRevision === (accountMutationEpochRef.commentRevision || 0), signal) : null;
     const request = api(`/api/posts/${id}/comments?limit=${safeLimit}`, {
       silent: true,
       context: "Loading comments",
@@ -4596,6 +4643,7 @@ export function StoreProvider({ children }) {
         if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
         if (readRevision !== (accountMutationEpochRef.commentRevision || 0)) return { ok:false,stale:true };
         if (!Array.isArray(rows)) throw new Error("The comment response was invalid.");
+        if (Platform.OS === "ios" && !privateRead.accept(rows, commentsFor(id))) return { ok: false, stale: true };
         commentCache.markRequestFresh(requestKey);
         setComments((m) => {
           const existing = m[id] || [];
@@ -4604,7 +4652,13 @@ export function StoreProvider({ children }) {
         });
         return { ok: true };
       })
-      .catch((error) => commentClaimIsCurrent(claim) ? { ok: false, error } : { ok: false, stale: true })
+      .catch((error) => {
+        if (Platform.OS === "ios") {
+          const outcome = privateRead.reject(error, () => setComments(m => ({ ...m, [id]: [] })));
+          return outcome === "stale" ? { ok: false, stale: true } : { ok: false, error, denied: outcome === "denied" };
+        }
+        return commentClaimIsCurrent(claim) ? { ok: false, error } : { ok: false, stale: true };
+      })
       .finally(() => {
         commentCache.releaseRequest(requestKey, request);
       });
@@ -4675,6 +4729,7 @@ export function StoreProvider({ children }) {
       expectedAccountId: claim.accountId,
     })).then(({ tombstone }) => {
       if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       accountMutationEpochRef.commentRevision=(accountMutationEpochRef.commentRevision || 0)+1;
       setComments((all) => {
         const current = all[postId] || [];
@@ -4721,6 +4776,7 @@ export function StoreProvider({ children }) {
     if (!actor || !postId) return Promise.resolve({ ok: false });
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     let removed = null;
     let removedIndex = -1;
     feedMutationRevisionRef.current += 1;
@@ -4733,12 +4789,14 @@ export function StoreProvider({ children }) {
     return api(`/api/posts/${postId}`, { method: "DELETE", context: "Deleting your post", expectedAccountId: actor.id })
       .then(() => {
         if (!isCurrent()) return { ok: false, stale: true };
+        if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
         track("delete_post", { postId });
         setRemovedIds((ids) => ids.includes(postId) ? ids : [...ids, postId]);
         return { ok: true };
       })
       .catch((error) => {
         if (!isCurrent()) return { ok: false, stale: true, error };
+        if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
         // Restore at the original position, not just at the top of the feed.
         if (removed) {
           feedMutationRevisionRef.current += 1;
@@ -5279,7 +5337,7 @@ export function StoreProvider({ children }) {
   const claimRatingTicket = (key) => ratingTicketsRef.current.claim(key);
   const ratingTicketIsCurrent = (key, ticket) => ratingTicketsRef.current.isCurrent(key, ticket);
 
-  const loadRating = (kind, artist, title) => {
+  const loadRating = Platform.OS === "ios" ? createIOSArtistRatingLoader({ sessionRef, accountMutationEpochRef, ratingAggregateKey, claimRatingTicket, rKey, ratingTicketIsCurrent, setRatingAgg, captureAccountMutation, accountMutationIsCurrent, api }) : (kind, artist, title) => {
     const accountId = sessionRef.current?.id || null;
     const mutation = captureAccountMutation(accountId, accountMutationEpochRef.current);
     const aggregateKey = ratingAggregateKey(accountId, kind, artist, title);
@@ -5557,6 +5615,14 @@ export function StoreProvider({ children }) {
         ts: ago(post.createdAt),
         ...(post.contributor ? { contributor: post.contributor } : {}),
       }));
+      // Successful snapshots can also withdraw a previously cached post or
+      // owner overlay. Unchanged/enriched reads do not break retained pages.
+      if (Platform.OS === "ios") {
+        const previousProfile = artistProfiles[artistKey] || {};
+        if ((artistPosts[artistKey] || []).some((post) => !normalizedPosts.some((next) => next.id === post.id))
+          || (Object.keys(previousProfile).length > 0 && Object.keys(normalizedProfile).length === 0)
+          || (previousProfile.feedEnabled === true && normalizedProfile.feedEnabled === false)) invalidateIOSDetailPrivacy();
+      }
       // This is an authoritative moderation-aware snapshot. Replacing it also
       // removes a post that staff hid since this device last opened the page.
       const committed = artistPageCache.resolveRefresh(
@@ -5576,9 +5642,10 @@ export function StoreProvider({ children }) {
         loadedAt: Date.now(),
       });
     } catch (error) {
-      if (artistPageAccessDenied(error) && (sessionRef.current?.id || null) === accountId) {
+      if ((Platform.OS !== "ios" || !signal?.aborted) && artistPageAccessDenied(error) && (sessionRef.current?.id || null) === accountId) {
         // Transport failures may keep the same viewer's content, but an access
         // denial revokes that artist's owner overlay and policy proof.
+        if (Platform.OS === "ios" && (artistPageCache.isCurrent(claim, accountId))) invalidateIOSDetailPrivacy();
         artistPageCache.resolveRefresh(artistKey, { ok: true, profile: {}, posts: [] }, { claim });
       }
       return commandError(error, context);
@@ -5722,6 +5789,7 @@ export function StoreProvider({ children }) {
         || !stillOwnsTarget) {
         return localCommandError("PIT-AUTH-004", context);
       }
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       setArtistPosts((current) => reconcileConfirmedArtistPostRemoval(current, { artistKey, postId: id }));
       return commandSuccess({ artistKey, postId: id });
     } catch (error) {
@@ -5732,6 +5800,7 @@ export function StoreProvider({ children }) {
 
   // --- Ban / suspend (staff) ---
   const patchStaffMember = (id, patch, { publicPatch = null } = {}) => {
+    if (Platform.OS === "ios" && (["role", "isBanned", "suspendedUntil"].some((field) => Object.hasOwn(patch, field)))) invalidateIOSDetailPrivacy();
     const previous = adminMembersRef.current.find((member) => member.id === id);
     const reconciled = reconcileMemberMutationPage(
       adminMembersRef.current,
@@ -5993,6 +6062,10 @@ export function StoreProvider({ children }) {
     const claim = commentCache.capture();
     return commitStaffAction(() => moderateContent("comment", cId, true), () => {
         if (!commentClaimIsCurrent(claim)) return;
+        if (Platform.OS === "ios") {
+          accountMutationEpochRef.commentRevision = (accountMutationEpochRef.commentRevision || 0) + 1;
+          invalidateIOSDetailPrivacy();
+        }
         setComments((m) => ({ ...m, [logId]: (m[logId] || []).filter((c) => c.id !== cId) }));
       });
   };
@@ -7073,8 +7146,14 @@ export function StoreProvider({ children }) {
 
   // --- Per-image moderation (reactive, with backfill) ------------------------
   const isPhotoRemoved = (uri) => removedPhotos.includes(uri);
-  const removePhoto = (uri) => setRemovedPhotos((r) => (r.includes(uri) ? r : [...r, uri]));
-  const restorePhoto = (uri) => setRemovedPhotos((r) => r.filter((x) => x !== uri));
+  const removePhoto = (uri) => {
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
+    setRemovedPhotos((r) => (r.includes(uri) ? r : [...r, uri]));
+  };
+  const restorePhoto = (uri) => {
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
+    setRemovedPhotos((r) => r.filter((x) => x !== uri));
+  };
 
   // Top fan photos for an artist's page - only from reviewers who opted in,
   // ranked by the review's likes so the best shots rise (and unknown ones don't).
@@ -7083,7 +7162,10 @@ export function StoreProvider({ children }) {
   // so a just-posted photo appears instantly before the next server load.
   const [artistPhotosSrv, setArtistPhotosSrv] = useState({});
   const artistPhotoCacheKey = (name, artistKey = null) => artistGalleryIdentityKey(name, artistKey);
-  const loadArtistPhotos = async (name, artistKey = null, { signal } = {}) => {
+  const loadArtistPhotos = Platform.OS === "ios" ? createIOSArtistPhotoLoader({
+    sessionRef, accountMutationEpochRef, artistPhotoCacheKey, setArtistPhotosSrv,
+    captureAccountMutation, accountMutationIsCurrent, artistPageAccessDenied, isLoadCancellation, AppError, commandError, api,
+  }) : async (name, artistKey = null, { signal } = {}) => {
     const k = artistPhotoCacheKey(name, artistKey);
     if (!k) return { ok: false, missing: true };
     const accountId = sessionRef.current?.id || null;
@@ -7116,6 +7198,10 @@ export function StoreProvider({ children }) {
         && (l.photos?.length || l.media?.length))
       .flatMap((l) => mediaDisplayItems(l).map((item) => ({ ...item, uri: item.uri, by: l.user?.name, postId: l.id, ownerId: l.userId, source: "fan" })));
     const srv = artistPhotosSrv[k] || [];
+    if (Platform.OS === "ios") return projectIOSArtistPhotos({
+      owner: accountMutationEpochRef, key: k, local, server: srv, removedIds, blockedIds, removedPhotos,
+      isPhotoRemoved, mergeArtistGalleryMedia,
+    });
     return mergeArtistGalleryMedia(local, srv, { blockedIds, removedUris: removedPhotos });
   };
 

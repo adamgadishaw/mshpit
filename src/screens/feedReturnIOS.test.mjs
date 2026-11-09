@@ -68,9 +68,18 @@ const branch = find(ast, n => n.type === "ConditionalExpression" && find(n.test,
 assert.ok(branch);
 assert.match(app.slice(branch.consequent.start, branch.consequent.end), /performanceKey=\{Platform.OS === "ios" \? screenKey : "main:feed"\}/);
 assert.match(app.slice(branch.test.start, branch.test.end), /retainNativeFeed \|\| \(Platform.OS === "ios" && !overlay\)/);
-const names = "stack,chatAuthEpoch,openSignIn,retainNativeFeed,session,overlay,NativeFeedMediaLayer,NativeAppHeader,activeTab,switchTab,Platform,iosTabSwipeScope,iosTabSwipeEnabled,isCurrentIOSTabSwipe,openMainMenu,iosMenuOpener,requireVerifiedMutation,go,openProfileManagement,mobileTabBar,Suspense,ScreenLoading,ScreenTransition,screenKey,screenDirection,IosDetailNavigation,iosBackGestureAllowed,nav,linkedNavigationScope,linkedNavigationRef,navigationRef,back,tabScreens";
+// Root now names its shared detail subtree before choosing the Feed retention
+// branch. Evaluate those exact declarations too; a fabricated overlay value
+// would stop this fixture from checking the checked-in Root composition.
+const overlayDeclarations = ["singleNativeOverlay", "nativeDetailOverlay"].map(name => {
+  const declarations = find(ast, node => node.type === "VariableDeclarator" && node.id?.name === name);
+  assert.equal(declarations.length, 1, `Expected one Root ${name} declaration`);
+  const initializer = declarations[0].init;
+  return `const ${name} = ${app.slice(initializer.start, initializer.end)};`;
+}).join("\n");
+const names = "stack,chatAuthEpoch,openSignIn,retainNativeFeed,session,overlay,NativeFeedMediaLayer,NativeAppHeader,activeTab,switchTab,Platform,iosTabSwipeScope,iosTabSwipeEnabled,isCurrentIOSTabSwipe,openMainMenu,iosMenuOpener,requireVerifiedMutation,go,openProfileManagement,mobileTabBar,Suspense,ScreenLoading,ScreenTransition,screenKey,screenDirection,IosDetailNavigation,iosBackGestureAllowed,nav,linkedNavigationScope,linkedNavigationRef,navigationRef,back,tabScreens,NativeDetailStack,authReady,landing,status,nativeAccountLinkActive,nativeAccountLinkActiveRef,resetToken,ownerApprovalToken,appActive,iosMenuOpen,acctOpen,welcome,unsubToken,verifyToken,publicNavigationNotice,newsStoryNotice,screenTransitionKey";
 const module = { exports: {} };
-const code = transformSync(`export default function RootSlice(p) { const {${names}} = p; const nativeTabPage = tabScreens; return (${app.slice(branch.start, branch.end)}); }`, {
+const code = transformSync(`export default function RootSlice(p) { const {${names}} = p; const nativeTabPage = tabScreens; ${overlayDeclarations} return (${app.slice(branch.start, branch.end)}); }`, {
   babelrc: false, configFile: false, plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
 }).code;
 new Function("require", "module", "exports", code)(require, module, module.exports);
@@ -146,6 +155,13 @@ function fixture(platform = "ios", options = {}) {
     const overlay = frames.length > 1 ? React.createElement("Detail") : null;
     const retain = (platform === "ios" ? retainIOSMedia : retainLegacyMedia)({ platform, accountId: account, tab, frames, hasOverlay: !!overlay });
     renderer.render(React.createElement(RootSlice, { stack: frames, chatAuthEpoch: epoch, openSignIn: noop, retainNativeFeed: retain, session: { id: account }, overlay, NativeFeedMediaLayer: Layer, NativeAppHeader: "Header", activeTab: tab, switchTab: noop, Platform: native.Platform, iosTabSwipeEnabled: false, isCurrentIOSTabSwipe: () => true, openMainMenu: noop, requireVerifiedMutation: noop, go: noop, openProfileManagement: noop, mobileTabBar: React.createElement("Tabs"), Suspense: React.Suspense, ScreenLoading: "Loading", ScreenTransition: pass, screenKey: overlay ? "detail" : "main:feed", screenDirection: "forward", IosDetailNavigation: pass, iosBackGestureAllowed: () => false, nav: frames.at(-1), linkedNavigationScope: {}, linkedNavigationRef: { current: { ownsScope: () => true } }, navigationRef: { current: { stack: frames } }, back: noop,
+      // Detail content remains synthetic in this Feed/list suite, as before.
+      // retainedDetailStackIOS.test.mjs covers the actual detail host and hooks.
+      NativeDetailStack: pass, authReady: true, landing: false, status: "ok", nativeAccountLinkActive: false,
+      nativeAccountLinkActiveRef: { current: false }, resetToken: null, ownerApprovalToken: null, appActive: true,
+      iosMenuOpen: false, acctOpen: false, welcome: null, unsubToken: null, verifyToken: null,
+      publicNavigationNotice: null, newsStoryNotice: null,
+      screenTransitionKey: require("./src/domain/screenTransition.mjs").screenTransitionKey,
       tabScreens: tab === "feed" ? React.createElement("View", null, React.createElement(Feed, { key: lease?.key, feedReturn: lease, feedPresentation: presentation, feed: rows, localFeed: rows, loggedIn: true, accountId: account, visible: !overlay && !primary.preview, hasMore: false, onRefresh: async () => true, onLoadMore: () => assert.fail("No service reads") })) : React.createElement("OtherTab") }));
   };
   const press = label => { const node = all().find(n => n.props?.accessibilityLabel === label); assert.ok(node, label); renderer.act(() => node.props.onPress()); };

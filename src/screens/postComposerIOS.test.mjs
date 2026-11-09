@@ -21,7 +21,7 @@ function execute(path, imports) {
 const noop = () => {};
 function createRenderer(measurements) {
   const context = {}, container = { children: [] };
-  let priority = 0;
+  let priority = 0, focusedInput = null;
   const append = (parent, child) => parent.children.push(child);
   const remove = (parent, child) => {
     const index = parent.children.indexOf(child);
@@ -33,7 +33,8 @@ function createRenderer(measurements) {
     getRootHostContext: () => context, getChildHostContext: () => context, getPublicInstance: (node) => node,
     prepareForCommit: () => null, resetAfterCommit: noop,
     createInstance: (type, props) => ({
-      type, props, children: [], measureInWindow: callback => measurements.push(callback), focus() {}, scrollToEnd() {},
+      type, props, children: [], measureInWindow: callback => measurements.push(callback), focus() { if (focusedInput) focusedInput.focused = false; focusedInput = this; this.focused = true; },
+      blur() { this.focused = false; this.blurs = (this.blurs || 0) + 1; if (focusedInput === this) focusedInput = null; }, scrollToEnd() {},
     }), createTextInstance: (text) => ({ text }),
     appendInitialChild: append, appendChild: append, appendChildToContainer: append,
     removeChild: remove, removeChildFromContainer: remove, insertBefore: insert, insertInContainerBefore: insert,
@@ -45,6 +46,8 @@ function createRenderer(measurements) {
     supportsMicrotasks: true, scheduleMicrotask: queueMicrotask,
     getCurrentUpdatePriority: () => priority, setCurrentUpdatePriority: (value) => { priority = value; },
     resolveUpdatePriority: () => priority || 32, shouldAttemptEagerTransition: () => false,
+    hideInstance: node => { node.hidden = true; }, unhideInstance: node => { node.hidden = false; },
+    hideTextInstance: node => { node.hidden = true; }, unhideTextInstance: node => { node.hidden = false; },
     detachDeletedInstance: noop, maySuspendCommit: () => false, preloadInstance: () => true,
     startSuspendingCommit: noop, suspendInstance: noop, waitForCommitToBeReady: () => null,
     NotPendingTransition: null, HostTransitionContext: React.createContext(null), resetFormInstance: noop,
@@ -59,7 +62,7 @@ function createRenderer(measurements) {
     }
   };
   return {
-    container,
+    container, focusedInput: () => focusedInput,
     render(element) { renderer.updateContainerSync(element, root, null, null); flush(); },
     act(callback) { renderer.flushSyncFromReconciler(callback); flush(); },
   };
@@ -70,8 +73,17 @@ const flattenStyle = value => Array.isArray(value) ? Object.assign({}, ...value.
 const keyboardFrame = { screenX: 0, screenY: 510, width: 390, height: 334 };
 // Real React/component/hooks and draft owner, synthetic native events and bounds.
 // This cannot establish actual iOS animation, Yoga text layout or VoiceOver output.
-function fixture({ platform = "ios", metrics = null, strict = false, failure = false, guest = false } = {}) {
+function fixture({ managed = false, platform = "ios", metrics = null, strict = false, failure = false, guest = false } = {}) {
   const measurements = [], listeners = new Map(), animations = [], sends = [];
+  const detailContext = require("../components/iosDetailPresentationContext.mjs");
+  let admission = null;
+  const admit = active => {
+    if (admission) admission.token.live = false;
+    const token = { live: active }, current = () => token.live;
+    admission = { managed: true, active, current, token, scope: "post-occurrence", preview: !active,
+      guard: callback => typeof callback === "function" ? (...args) => current() ? callback(...args) : undefined : callback };
+  };
+  if (managed) admit(true);
   const renderer = createRenderer(measurements);
   let window = { width: 390, height: 844, fontScale: 1 };
   let currentMetrics = metrics;
@@ -90,6 +102,8 @@ function fixture({ platform = "ios", metrics = null, strict = false, failure = f
     Keyboard: { metrics: () => currentMetrics, addListener: listen, scheduleLayoutAnimation: event => animations.push(event) },
   };
   const imports = (name, local) => {
+    if (name.endsWith("/useIOSDetailPresentation")) return execute("../hooks/useIOSDetailPresentation.ios.js", imports);
+    if (name === "../components/iosDetailPresentationContext.mjs") return detailContext;
     if (name === "react") return React;
     if (name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
@@ -107,8 +121,11 @@ function fixture({ platform = "ios", metrics = null, strict = false, failure = f
     return local(name);
   };
   const KeyboardView = execute(platform === "ios" ? "../components/IOSPostKeyboardView.ios.jsx" : "../components/IOSPostKeyboardView.jsx", imports);
-  const Post = execute("./PostScreen.jsx", imports);
+  const Post = execute(`./PostScreen${platform === "ios" ? ".ios" : ""}.jsx`, imports);
   const props = { log: { id: "post", review: "Review" }, commentDraft: lease };
+  let suspended = false, successor = false;
+  const pending = new Promise(noop);
+  function Content() { if (suspended) throw pending; return React.createElement(Post, props); }
   const f = {
     measurements, listeners, sends, animations, lease, owner,
     all: () => nodes(renderer.container),
@@ -118,7 +135,14 @@ function fixture({ platform = "ios", metrics = null, strict = false, failure = f
     get bottom() { return flattenStyle(f.shell.props.style).paddingBottom || 0; },
     button: label => f.find(n => n.type === "Pressable" && n.props.accessibilityLabel === label),
     act: callback => renderer.act(callback),
-    render: () => renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null, React.createElement(Post, props))),
+    render: () => renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null,
+      React.createElement(detailContext.IOSDetailPresentationContext.Provider, { value: admission },
+        React.createElement(React.Suspense, { fallback: React.createElement("Loading") }, React.createElement(Content)),
+        successor ? React.createElement("TextInput", { testID: "successor-input" }) : null))),
+    get focusedInput() { return renderer.focusedInput(); },
+    suspend(value) { suspended = value; f.render(); },
+    showSuccessor() { successor = true; f.render(); return f.find(n => n.props?.testID === "successor-input"); },
+    cover() { admit(false); f.render(); }, reveal() { admit(true); f.render(); },
     event(name, frame = keyboardFrame) {
       if (name === "keyboardDidShow") currentMetrics = frame;
       if (name === "keyboardDidHide") currentMetrics = null;
@@ -262,4 +286,38 @@ test("foreign-app notifications and invalid bounds cannot claim keyboard space; 
 test("platform resolution leaves Android/web with a bare native View and no keyboard implementation", () => {
   assert.equal(readFileSync(new URL("../components/IOSPostKeyboardView.jsx", import.meta.url), "utf8").trim(), 'export { View as default } from "react-native";');
   assert.ok(readFileSync(new URL("./PostScreen.jsx", import.meta.url), "utf8").includes('from "../components/IOSPostKeyboardView"'));
+});
+
+
+for (const strict of [false, true]) test(`retained keyboard (${strict ? "StrictMode" : "normal"}) pauses hidden measurement and rejects old native callbacks after Back`, async t => {
+  const f = fixture({ managed: true, strict }); t.after(f.close); await f.settle();
+  f.event("keyboardDidShow"); f.measure();
+  const input = f.input, shell = f.shell, inset = f.bottom;
+  assert.ok(inset > 0);
+  const show = [...f.listeners.get("keyboardDidShow")][0], hide = [...f.listeners.get("keyboardDidHide")][0];
+  const oldLayout = shell.props.onLayout;
+  f.event("keyboardDidShow"); const pending = f.measurements.at(-1);
+  f.cover(); const count = f.measurements.length;
+  f.act(() => { show({ endCoordinates: keyboardFrame }); hide({}); oldLayout(); pending(0, 0, 390, 700); });
+  assert.equal(f.measurements.length, count); assert.equal(f.bottom, inset); assert.equal(f.input, input);
+  f.reveal(); f.measure(); const returned = f.bottom, freshCount = f.measurements.length;
+  f.act(() => { oldLayout(); hide({}); show({ endCoordinates: keyboardFrame }); pending(0, 0, 390, 700); });
+  assert.equal(f.measurements.length, freshCount); assert.equal(f.bottom, returned); assert.equal(f.shell, shell); assert.equal(f.input, input);
+  f.event("keyboardDidHide"); assert.equal(f.bottom, 0);
+});
+
+
+for (const strict of [false, true]) test(`retained Post responder (${strict ? 'StrictMode' : 'normal'}) blurs only its own native input on cover and Suspense`, async t => {
+  const f = fixture({ managed: true, strict }); t.after(f.close); await f.settle();
+  const input = f.input; f.act(() => { input.props.onChangeText('Keep native draft'); input.focus(); });
+  assert.equal(f.focusedInput, input); const initial = input.blurs || 0;
+  f.cover(); assert.equal(input.focused, false); assert.equal(input.blurs, initial + 1);
+  const next = f.showSuccessor(); next.focus(); f.render();
+  assert.equal(f.focusedInput, next); assert.equal(f.lease.read().text, 'Keep native draft');
+  f.reveal(); input.focus(); assert.equal(f.focusedInput, input);
+  const beforeSuspend = input.blurs;
+  f.suspend(true); assert.equal(input.focused, false); assert.equal(input.blurs, beforeSuspend + 1);
+  next.focus(); f.render(); assert.equal(f.focusedInput, next);
+  f.suspend(false); assert.equal(f.find(n => n.type === 'TextInput' && !n.props.testID), input);
+  assert.equal(f.lease.read().text, 'Keep native draft'); assert.equal(f.focusedInput, next);
 });

@@ -55,17 +55,29 @@ const { createProfileHistoryStore } = require('../features/profileHistory/profil
 const empty = [];
 const post = { id: 'review', userId: 'self', artist: 'Saved artist', venue: 'Room', date: '2025-01-01', overall: 4, createdAt: 1 };
 const offline = () => Object.assign(new Error('Synthetic offline'), { name: 'AppError', code: 'PIT-NET-001', retryable: true });
-function fixture({ platform = 'ios', self = true, guest = false, cached = empty, going = empty, attendance = empty, access = 'ready', favoriteShows = empty, colors = {}, accent = 'amber', mapVisible = false } = {}) {
+function fixture({ managed = false, strict = false, platform = 'ios', self = true, guest = false, cached = empty, going = empty, attendance = empty, access = 'ready', favoriteShows = empty, colors = {}, accent = 'amber', mapVisible = false } = {}) {
   const renderer = createRenderer(), reads = [], concertReads = [], opened = []; let concertState;
+  const detailContext = require('../components/iosDetailPresentationContext.mjs');
+  let admission = null;
+  const admit = active => {
+    if (admission) admission.token.live = false;
+    const token = { live: active }, current = () => token.live;
+    admission = { managed: true, active, current, token, scope: 'profile-occurrence', preview: !active,
+      guard: callback => typeof callback === 'function' ? (...args) => current() ? callback(...args) : undefined : callback };
+  };
+  if (managed) admit(true);
   const user = { id: self ? 'self' : 'target', name: 'Synthetic member', handle: 'fixture', favoriteArtists: [], favoriteGenres: [], accent, concertMapVisible: mapVisible };
   const session = guest ? null : self ? user : { id: 'viewer', favoriteArtists: [], favoriteGenres: [] };
-  const store = createProfileHistoryStore({ fetchPage: () => { const r = deferred(); reads.push(r); return r.promise; } });
+  const createStore = platform === "ios" ? require("../features/profileHistory/profileHistoryState.ios.mjs").createProfileHistoryStore : createProfileHistoryStore;
+  const store = createStore({ fetchPage: () => { const r = deferred(); reads.push(r); return r.promise; } });
   const params = { accountId: session?.id, targetId: user.id };
   const native = { View: 'View', Text: 'Text', Pressable: 'Pressable', ScrollView: 'ScrollView', ActivityIndicator: 'ActivityIndicator',
     Platform: { OS: platform, select: x => x[platform] || x.default }, StyleSheet: { create: x => x }, useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1 }) };
   const context = React.createContext(null);
   let hook, concertHook, ConcertHistory, ConcertMap;
   const imports = (name, local) => {
+    if (name.endsWith("/useIOSDetailPresentation")) return execute('../hooks/useIOSDetailPresentation.ios.js', imports);
+    if (name === '../components/iosDetailPresentationContext.mjs') return detailContext;
     if (name.endsWith("/NativeTabScroll")) return native;
     if (name.endsWith("/NativeTabSwipeExclusion")) return { __esModule: true, default: p => p.children };
     // Resolve the actual map module without chunk/Suspense timing; its JSX and hooks remain real.
@@ -77,11 +89,14 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = empty,
     if (name === '../hooks/useNativeTabContentReady') return { __esModule: true, default: () => {} };
     if (name === '../features/profilePresentation/ProfileHierarchy') return execute(`../features/profilePresentation/ProfileHierarchy${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
     if (name.endsWith('/ProfileMediaPresentation')) return { useProfileMediaPresentation: () => ({ retryImages: noop }), ProfileMediaRetryBoundary: ({ children }) => children, ProfileBannerCover: 'ProfileBannerCover', ProfileGallery: 'ProfileGallery' };
-    if (name === './profileHistoryClient.mjs') return { profileHistoryStore: store };
+    if (name === './profileHistoryClient.mjs' || name === './profileHistoryClient.ios.mjs') return { profileHistoryStore: store };
     if (name === '../features/profileHistory/useProfileHistory') return hook;
     if (name === '../lib/useAppActive') return { __esModule: true, default: () => true };
     if (name === '../hooks/useScopedRefresh') return { __esModule: true, default: () => ({ refreshing: false, refresh: noop }) };
     if (name === '../features/concertHistory/useConcertHistory') return { useConcertHistory: props => { concertState = concertHook.useConcertHistory(props); return concertState; } };
+    if (name === './services/concertHistoryPrivacy.ios.js') return execute('../features/concertHistory/services/concertHistoryPrivacy.ios.js', imports);
+    if (name === '../../../lib/api') return { captureApiIdentityCheck: () => () => true };
+    if (name === '../../../lib/iosDetailPrivacy') return { invalidateIOSDetailPrivacy: noop };
     if (name === './services/concertHistoryApi.mjs') return { requestConcertHistoryPage: options => { const r = { ...deferred(), options }; concertReads.push(r); return r.promise; }, readConcertHistoryPost: async id => ({ id }) };
     if (name === '../features/concertHistory/ConcertHistory') return ConcertHistory;
     if (name === '../components/PostNavigationContext') return { PostNavigationContext: context };
@@ -97,22 +112,27 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = empty,
     if (name === '../lib/confirmOwnPostDelete') return { confirmOwnPostDelete: noop };
     return local(name);
   };
-  hook = execute('../features/profileHistory/useProfileHistory.js', imports);
-  concertHook = execute('../features/concertHistory/useConcertHistory.js', imports);
-  ConcertMap = execute('../features/concertHistory/ProfileConcertMap.jsx', imports);
-  ConcertHistory = execute('../features/concertHistory/ConcertHistory.jsx', imports);
-  const Screen = execute('./ProfileScreen.jsx', imports).default;
-  const render = () => renderer.render(React.createElement(Screen, { userId: user.id, asTab: self, onManageProfile: noop, onOpenPost: row => opened.push(row), onOpenShow: row => opened.push(row) }, React.createElement('PrivateMemories', null, 'Private memory')));
+  hook = execute(`../features/profileHistory/useProfileHistory${platform === 'ios' ? '.ios' : ''}.js`, imports);
+  concertHook = execute(`../features/concertHistory/useConcertHistory${platform === 'ios' ? '.ios' : ''}.js`, imports);
+  ConcertMap = execute(`../features/concertHistory/${platform === 'ios' ? 'ProfileConcertMapView.ios' : 'ProfileConcertMap'}.jsx`, imports);
+  ConcertHistory = execute(`../features/concertHistory/ConcertHistory${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
+  const Screen = execute(`./ProfileScreen${platform === 'ios' ? '.ios' : ''}.jsx`, imports).default;
+  const render = () => renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null,
+    React.createElement(detailContext.IOSDetailPresentationContext.Provider, { value: admission },
+      React.createElement(Screen, { userId: user.id, asTab: self, onManageProfile: noop, onOpenPost: row => opened.push(row), onOpenShow: row => opened.push(row) }, React.createElement('PrivateMemories', null, 'Private memory')))));
   const all = () => nodes(renderer.container);
   const text = () => all().map(n => n.text || '').join(' ');
   const flush = async () => { for (let i=0; i<6; i++) { await new Promise(r => setImmediate(r)); renderer.act(noop); } };
   return { render, all, text, reads, concertReads, opened, flush, store, params,
+    act: renderer.act,
+    cover() { admit(false); render(); }, reveal() { admit(true); render(); },
+    get concertState() { return concertState; },
     concertRefresh: () => { void concertState.refresh(); },
     concertResolve: async (i, concerts = [], nextCursor = null) => { concertReads[i].resolve({ concerts, nextCursor, complete: !nextCursor, hasMore: !!nextCursor, mapVisible }); await flush(); },
     concertReject: async (i, error = offline()) => { concertReads[i].reject(error); await flush(); },
     press: label => renderer.act(() => all().find(n => n.props?.accessibilityLabel === label).props.onPress()),
     resolve: async (i, posts = [], nextCursor = null) => { reads[i].resolve({ posts, nextCursor }); await flush(); },
-    reject: async i => { reads[i].reject(offline()); await flush(); },
+    reject: async (i, error = offline()) => { reads[i].reject(error); await flush(); },
     retry: () => renderer.act(() => all().find(n => n.props?.accessibilityLabel === 'Retry loading profile posts').props.onPress()),
     unmount: () => renderer.render(null),
   };
@@ -206,4 +226,36 @@ test('real nonempty map remains during recovery, partial-empty map does not clai
 for (const platform of ['android', 'web']) test(`${platform} keeps original empty-map prompt on unavailable history`, async () => {
   const f = fixture({ platform, mapVisible: true }); f.render(); await f.flush(); await f.concertReject(0);
   assert.match(childText(f), /Log a show to put it on the map/); f.unmount();
+});
+
+
+for (const strict of [false, true]) test(`retained concert resource (${strict ? "StrictMode" : "normal"}) pauses requests without replacing real map/list state`, async () => {
+  const f = fixture({ managed: true, strict, mapVisible: true }); f.render(); await f.flush();
+  await f.concertResolve(f.concertReads.length - 1, [concert], 'page2');
+  const pending = f.concertReads.at(-1), count = f.concertReads.length;
+  const history = child(f), map = f.all().find(n => n.props?.testID === 'profile-concert-map');
+  assert.ok(map);
+  f.press('Zoom in concert map'); f.press('See all concerts');
+  const zoomOut = f.all().find(n => n.props?.accessibilityLabel === 'Zoom out concert map');
+  assert.equal(zoomOut.props.disabled, false);
+  const oldZoomOut = zoomOut.props.onPress;
+  const oldCollapse = f.all().find(n => n.props?.accessibilityLabel === 'See less').props.onPress;
+  const oldOpen = f.all().find(n => n.props?.accessibilityLabel === 'Open review for Known artist at Known room').props.onPress;
+  const oldRefresh = f.concertState.refresh;
+  f.cover(); assert.equal(pending.options.signal.aborted, true);
+  pending.resolve({ concerts: [{ ...concert, id: 'late', artist: 'Forbidden late page' }], nextCursor: 'page3', complete: false, hasMore: true, mapVisible: true }); await f.flush();
+  assert.equal(f.concertReads.length, count, 'no page3 starts while covered');
+  for (const back of [false, true]) {
+    if (back) { f.reveal(); await f.flush(); }
+    f.act(() => { oldZoomOut(); oldCollapse(); oldOpen(); void oldRefresh(); }); await f.flush();
+    assert.equal(child(f), history); assert.equal(f.all().find(n => n.props?.testID === 'profile-concert-map'), map);
+    assert.ok(f.all().find(n => n.props?.accessibilityLabel === 'See less'));
+    assert.equal(f.all().find(n => n.props?.accessibilityLabel === 'Zoom out concert map').props.disabled, false);
+    assert.equal(f.concertReads.length, count); assert.deepEqual(f.opened, []);
+    assert.match(childText(f), /Known artist/); assert.doesNotMatch(childText(f), /Forbidden late page/);
+  }
+  f.press('Load more concerts'); await f.flush(); assert.equal(f.concertReads.length, count + 1);
+  assert.equal(f.concertReads.at(-1).options.before, 'page2');
+  await f.concertResolve(count); f.press('Open review for Known artist at Known room'); await f.flush(); assert.equal(f.opened.length, 1);
+  f.unmount();
 });

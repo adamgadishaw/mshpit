@@ -1,3 +1,4 @@
+import { claimIOSProfileRead } from "../lib/iosProfileReadFence.ios.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -100,7 +101,9 @@ function profileHarness() {
   const calls = [];
   const load = (id, options) => {
     const dependencies = {
-      sessionRef, accountMutationEpochRef, captureAccountMutation, assertCurrentProfileRead,
+    Platform: { OS: "ios" },
+    invalidateIOSDetailPrivacy: () => 0,
+      claimIOSProfileRead, sessionRef, accountMutationEpochRef, captureAccountMutation, assertCurrentProfileRead,
       unavailableProfileOutcome, profileFailureOutcome, withoutUnavailableProfile, withoutUnavailableProfilePosts,
       session: sessionRef.current, follows: state.follows,
       userById: (target) => state.users.find((user) => user.id === target),
@@ -160,4 +163,46 @@ test("cancelled or identity-changed profile requests do not downgrade a cached p
     await assert.rejects(read, { name: "AbortError" });
     assert.deepEqual(h.state, before);
   }
+});
+
+
+test("iOS profile success cannot resurrect a newer authoritative quarantine, while a fresh read recovers", async () => {
+  for (const denial of [403, 404, 410, "missing"]) {
+    const h = profileHarness();
+    const old = h.load("u_target"), denied = h.load("u_target");
+    if (denial === "missing") h.calls[1].resolve({ user: null });
+    else h.calls[1].reject({ status: denial });
+    assert.equal((await denied).status, "missing");
+    const quarantined = structuredClone(h.state);
+    h.calls[0].resolve({ user: { id: "u_target", avatarUri: "private.jpg" }, favoriteShows: [{ id: "private-show" }] });
+    const stale = await old;
+    assert.equal(stale.status, "missing");
+    assert.equal(stale.user, null);
+    assert.equal(stale.favoriteShows, undefined);
+    assert.deepEqual(h.state, quarantined);
+    const fresh = h.load("u_target");
+    h.calls[2].resolve({ user: { id: "u_target", name: "Newly authorized" }, favoriteShows: [] });
+    assert.equal((await fresh).status, "ready");
+    assert.equal(h.state.users.find(user => user.id === "u_target").name, "Newly authorized");
+  }
+});
+
+test("iOS profile denial fence is target-, Store-, and account-scoped with bounded pending ownership", () => {
+  const owner = { current: 1 }, otherOwner = { current: 1 };
+  const a = claimIOSProfileRead(owner, "a"), b = claimIOSProfileRead(owner, "b");
+  const other = claimIOSProfileRead(otherOwner, "a");
+  a.quarantine();
+  assert.equal(a.current(), false); assert.equal(b.current(), true); assert.equal(other.current(), true);
+  const replacement = claimIOSProfileRead(owner, "a");
+  assert.equal(replacement.current(), true);
+  owner.current++;
+  const account = claimIOSProfileRead(owner, "a");
+  replacement.quarantine();
+  assert.equal(account.current(), true); assert.equal(replacement.current(), false);
+  for (let i = 0; i < 129; i++) claimIOSProfileRead(owner, `bounded-${i}`);
+  assert.equal(account.current(), false, "bounded eviction cannot leave an old receipt authorized");
+  const reintroduced = claimIOSProfileRead(owner, "a");
+  account.quarantine();
+  assert.equal(reintroduced.current(), false, "a genuine same-account denial still revokes an evicted/reintroduced target");
+  assert.equal(claimIOSProfileRead(owner, "a").current(), true, "an explicit read after that denial may recover");
 });

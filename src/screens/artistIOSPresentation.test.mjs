@@ -4,13 +4,13 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import vm from "node:vm";
 import { parse } from "@babel/parser";
-import { iosArtistLayout } from "../domain/iosArtistPresentation.mjs";
+import { iosArtistLayout } from "../domain/iosArtistPresentation.ios.mjs";
 import { artistPageSectionsForMode } from "../domain/artistPageSections.mjs";
 import { createIOSArtistReturnStore } from "../domain/iosArtistReturn.mjs";
 import { createBrowseScrollReturn } from "../domain/iosBrowseReturn.mjs";
 const require = createRequire(import.meta.url);
 const { transformSync } = require("@babel/core");
-const source = readFileSync(new URL("./ArtistScreen.jsx", import.meta.url), "utf8");
+const source = readFileSync(new URL("./ArtistScreen.ios.jsx", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
 const nodes = [];
 function visit(node) { if (!node || typeof node !== "object") return; if (node.type) nodes.push(node); for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(visit); else if (value && typeof value === "object") visit(value); }
@@ -19,7 +19,7 @@ const jsx = (type, props) => ({ type, props });
 function evaluate(body, context) {
   const module = { exports: {} };
   const code = transformSync(body, { babelrc: false, configFile: false, plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")] }).code;
-  new vm.Script(code).runInNewContext({ module, exports: module.exports, require: () => ({ jsx, jsxs: jsx }), ...context });
+  new vm.Script(code).runInNewContext({ module, exports: module.exports, require: () => ({ jsx, jsxs: jsx }), ratingSignal: () => undefined, guard: value => value, useIOSDetailPresentation: () => ({ guard: value => value, current: () => true }), ...context });
   return module.exports;
 }
 function descendants(tree) { if (!tree || typeof tree !== "object") return []; return [tree, ...[tree.props?.children].flat(Infinity).flatMap(descendants)]; }

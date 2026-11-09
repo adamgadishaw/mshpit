@@ -56,6 +56,7 @@ function fixture({ confirmed = true, account = confirmed ? member : null, intent
   const transport = new Function(...Object.keys(transportBindings), `${apiBody}\nreturn { api, configureApiIdentity };`)(...Object.values(transportBindings));
   transport.configureApiIdentity(account?.id, { ready: confirmed });
   const dependencies = {
+    invalidateIOSDetailPrivacy: () => 0,
     ...transport, sessionRef, authReadyRef, authValidationSequenceRef, authTransitions,
     sessionValidationStatus: null,
     sessionValidationOutcome, createSessionValidationRetry: () => createSessionValidationRetry({ random: () => 0 }),

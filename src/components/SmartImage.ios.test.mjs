@@ -57,6 +57,7 @@ function fixture() {
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return { View: "View", Text: "Text", Pressable: "Pressable", StyleSheet: { create: value => value, absoluteFill: {} } };
     if (name === "expo-image") return { Image: NativeImage };
+    if (name.endsWith("/useIOSDetailPresentation")) return { __esModule: true, default: () => ({ active: true, current: () => true, token: null, scope: null }) };
     if (name === "../hooks/useNativeTabPreview") return () => preview;
     if (name === "../hooks/useReducedMotion") return () => reduced;
     if (name === "../lib/useAppActive") return () => active;

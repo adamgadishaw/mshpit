@@ -60,18 +60,39 @@ const photo = { ...basic, id: 'photo-post', createdAt: 5, photosPublic: true,
   photos: ['https://media.test/original.jpg'], media: [{ id: 'asset-a', uri: 'https://media.test/original.jpg', kind: 'image', width: 2000, height: 1500, altText: 'A real fixture photo' }] };
 const offline = () => Object.assign(new Error('Synthetic offline'), { name: 'AppError', code: 'PIT-NET-001', retryable: true });
 const flatten = style => Object.assign({}, ...(Array.isArray(style) ? style.flat(Infinity).filter(Boolean) : [style]));
-function fixture({ platform = 'ios', self = true, guest = false, cached = [], banner = 'https://media.test/banner-original.jpg', withViewer = true, now = () => 0 } = {}) {
-  const renderer = createRenderer(), reads = [], opened = [], rewards = [], readiness = [];
+function fixture({ managed = false, strict = false, platform = 'ios', self = true, guest = false, cached = [], banner = 'https://media.test/banner-original.jpg', withViewer = true, now = () => 0 } = {}) {
+  const renderer = createRenderer(), reads = [], opened = [], rewards = [], readiness = [], profileReads = [], mutations = [], sheets = [];
+  const detailContext = require('../components/iosDetailPresentationContext.mjs');
+  const privacy = require('../domain/iosDetailPrivacyEpoch.mjs').createIOSDetailPrivacyEpoch();
+  let admission = null, life = null;
+  const publishCommands = () => {
+    const revision = privacy.getSnapshot(), current = admission.current;
+    const canAct = () => current() && privacy.getSnapshot() === revision;
+    admission = { ...admission, canAct, commandToken: Object.freeze({}),
+      guard: callback => typeof callback === 'function' ? (...args) => canAct() ? callback(...args) : undefined : callback };
+  };
+  const admit = active => {
+    if (life) life.live = false;
+    const state = { live: active }; life = state;
+    admission = { managed: true, active, current: () => state.live, token: Object.freeze({}), scope: 'profile-occurrence', preview: !active };
+    publishCommands();
+  };
+  if (managed) admit(true);
   const user = { id: self ? 'self' : 'target', name: 'Synthetic member', handle: 'fixture', favoriteArtists: [], favoriteGenres: [], banner };
-  const state = { user, session: guest ? null : self ? user : { id: 'viewer', favoriteArtists: [], favoriteGenres: [] }, cached, access: 'ready', epoch: 1, fontScale: 1, withViewer, preview: false, initialSection: null, ownerTools: [] };
+  const state = { user, session: guest ? null : self ? user : { id: 'viewer', favoriteArtists: [], favoriteGenres: [] }, cached, access: 'ready', epoch: 1, fontScale: 1, withViewer, preview: false, initialSection: null, ownerTools: [], removedIds: [], blockedIds: [], removedPhotos: new Set(), directoryMissing: false, favoriteShows: empty, concerts: empty };
+  const isPhotoRemoved = uri => state.removedPhotos.has(uri);
   const store = createProfileHistoryStore({ now, fetchPage: params => { const r = deferred(); reads.push({ ...r, params }); return r.promise; } });
   const native = { View: 'View', Text: 'Text', Pressable: 'Pressable', ScrollView: 'ScrollView', ActivityIndicator: 'ActivityIndicator', RefreshControl: 'RefreshControl',
+    ActionSheetIOS: { showActionSheetWithOptions: (options, choose) => sheets.push({ options, choose }) },
     Platform: { OS: platform, select: x => x[platform] || x.default },
     StyleSheet: { create: x => x, absoluteFill: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0 }, hairlineWidth: .5 },
     useWindowDimensions: () => ({ width: 320, height: 852, fontScale: state.fontScale }) };
   const context = React.createContext(null);
-  let historyHook, retryHooks, attemptHook, refreshHook, smartImage, presentation, refreshBoundary;
+  let historyHook, baseHistoryHook, retryHooks, attemptHook, refreshHook, smartImage, presentation, refreshBoundary;
   const imports = (name, local) => {
+    if (name.endsWith("/useIOSDetailPresentation")) return execute('../hooks/useIOSDetailPresentation.ios.js', imports);
+    if (name === '../components/iosDetailPresentationContext.mjs') return detailContext;
+    if (name === './useProfileHistory.js') return baseHistoryHook;
     if (name.endsWith('/NativeTabScroll')) return native;
     if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
     if (name === 'react' || name === 'react/jsx-runtime') return require(name);
@@ -81,7 +102,7 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = [], ba
     if (name === '../components/nativeTabPreviewContext.mjs') return tabContext;
     if (name === '../features/profilePresentation/ProfileHierarchy') return execute(`../features/profilePresentation/ProfileHierarchy${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
     if (name === 'expo-image') return { Image: 'ExpoImage' };
-    if (name === './profileHistoryClient.mjs') return { profileHistoryStore: store };
+    if (name === './profileHistoryClient.mjs' || name === './profileHistoryClient.ios.mjs') return { profileHistoryStore: store };
     if (name.endsWith('/useProfileHistory')) return historyHook;
     if (name.endsWith('/feedImageRetry')) return retryHooks;
     if (name.endsWith('/useImageAttempt')) return attemptHook;
@@ -91,39 +112,56 @@ function fixture({ platform = 'ios', self = true, guest = false, cached = [], ba
     if (name.endsWith('/useAppActive')) return { __esModule: true, default: () => true };
     if (name.endsWith('/useScopedRefresh')) return refreshHook;
     if (name.endsWith('/img')) return local(name + '.js');
-    if (name.endsWith('/useConcertHistory')) return { useConcertHistory: () => ({ concerts: empty, status: 'ready', complete: true, mapVisible: true, refresh: async () => ({}) }) };
+    if (name.endsWith('/useConcertHistory')) return { useConcertHistory: () => ({ concerts: state.concerts, status: 'ready', complete: true, mapVisible: true, refresh: async () => ({}) }) };
     if (name.endsWith('/ConcertHistory')) return 'ConcertHistory';
     if (name.endsWith('/PostNavigationContext')) return { PostNavigationContext: context };
     if (name.endsWith('/Badge')) return { BadgeRow: 'BadgeRow' };
     if (name.endsWith('/theme')) return { colors: {}, roleColor: () => '#ffffff', radius: {}, space: x => x * 4, mono: 'mono' };
     if (name === '../store') return { useStore: () => ({ session: state.session, authReady: true, chatAuthEpoch: state.epoch,
-      userById: () => state.user, logsByUser: () => state.cached, goingFor: () => empty, myAttendance: empty,
-      isFollowing: () => false, isBlocked: () => false, isMuted: () => false, followerCount: () => 0, followingCount: () => 0,
+      removedIds: state.removedIds, blockedIds: state.blockedIds, isPhotoRemoved,
+      userById: () => state.directoryMissing ? null : state.user, logsByUser: () => state.cached, goingFor: () => empty, myAttendance: empty,
+      isFollowing: () => false, isBlocked: id => state.blockedIds.includes(id), isMuted: () => false, followerCount: () => 0, followingCount: () => 0,
       userBadges: () => empty, userPoints: () => 0, userAchievements: () => empty, sharedShows: () => ({ shows: empty, artists: empty }),
-      loadUser: async () => ({ status: state.access, user: state.access === 'missing' ? null : state.user, favoriteShows: empty }), loadRewards: async (id, options) => { rewards.push({ id, options }); return {}; },
+      loadUser: async (...args) => {
+        const request = { args, ...deferred() }; profileReads.push(request);
+        return state.deferProfile ? request.promise : { status: state.access, user: state.access === 'missing' ? null : state.user, favoriteShows: state.favoriteShows };
+      },
+      follow: id => mutations.push(['follow', id]), unfollow: id => mutations.push(['unfollow', id]),
+      blockUser: id => mutations.push(['block', id]), unblockUser: id => mutations.push(['unblock', id]),
+      muteUser: id => mutations.push(['mute', id]), unmuteUser: id => mutations.push(['unmute', id]),
+      deleteOwnPost: async id => { mutations.push(['delete', id]); return { ok: true }; }, loadRewards: async (id, options) => { rewards.push({ id, options }); return {}; },
     }) };
     if (name.includes('/components/') || name === './Icon' || name === './ClipPoster') return name.split('/').at(-1);
     if (name.endsWith('/confirmOwnPostDelete')) return { confirmOwnPostDelete: noop };
     return local(name);
   };
-  historyHook = execute('../features/profileHistory/useProfileHistory.js', imports);
+  baseHistoryHook = execute('../features/profileHistory/useProfileHistory.js', imports);
+  historyHook = platform === 'ios' ? execute('../features/profileHistory/useProfileHistory.ios.js', imports) : baseHistoryHook;
   retryHooks = execute(`../hooks/feedImageRetry${platform === 'ios' ? '.ios' : ''}.js`, imports);
   attemptHook = execute(`../hooks/useImageAttempt${platform === 'ios' ? '.ios' : ''}.js`, imports);
   refreshHook = execute('../hooks/useScopedRefresh.js', imports);
   smartImage = execute('../components/SmartImage.jsx', imports);
   refreshBoundary = execute('../components/VinylRefreshBoundary.jsx', imports);
   presentation = execute(`../features/profileMedia/ProfileMediaPresentation${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
-  const Screen = execute('./ProfileScreen.jsx', imports).default;
+  const Screen = execute(`./ProfileScreen${platform === 'ios' ? '.ios' : ''}.jsx`, imports).default;
   const reportReady = ready => readiness.push(ready);
-  const render = () => renderer.render(React.createElement(tabContext.NativeTabPreviewContext.Provider, { value: state.preview },
-    React.createElement(tabContext.NativeTabReadinessContext.Provider, { value: reportReady },
-      React.createElement(Screen, { userId: state.user.id, asTab: state.session?.id === state.user.id, initialSection: state.initialSection, ownerTools: state.ownerTools, onManageProfile: noop, onOpenPhotos: state.withViewer ? (...args) => opened.push(args) : undefined }, React.createElement('PrivateMemories', null, 'Private memories')))));
+  const render = () => renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null,
+    React.createElement(detailContext.IOSDetailPresentationContext.Provider, { value: admission },
+      React.createElement(tabContext.NativeTabPreviewContext.Provider, { value: state.preview },
+        React.createElement(tabContext.NativeTabReadinessContext.Provider, { value: reportReady },
+          React.createElement(Screen, { userId: state.user.id, asTab: state.session?.id === state.user.id, initialSection: state.initialSection, ownerTools: state.ownerTools, onManageProfile: noop,
+            onOpenPost: (...args) => opened.push(args), onOpenShow: (...args) => opened.push(args), onOpenPhotos: state.withViewer ? (...args) => opened.push(args) : undefined }, React.createElement('PrivateMemories', null, 'Private memories')))))));
   const all = () => nodes(renderer.container);
   const byId = id => all().find(n => n.props?.testID === id);
   const text = () => all().map(n => n.text || '').join(' ');
   const image = fragment => all().find(n => n.type === 'ExpoImage' && decodeURIComponent(n.props.source.uri).includes(fragment));
   const flush = async () => { for (let i=0; i<6; i++) { await new Promise(r => setImmediate(r)); renderer.act(noop); } };
-  return { state, render, all, byId, text, image, reads, opened, rewards, readiness, flush, store, act: renderer.act,
+  return { state, render, all, byId, text, image, reads, opened, rewards, readiness, flush, store, act: renderer.act, profileReads, mutations, sheets,
+    invalidatePrivacy() { privacy.invalidate(); },
+    commitPrivacy() { publishCommands(); render(); },
+    get presentation() { return admission; },
+    cover() { admit(false); state.preview = true; render(); },
+    reveal() { admit(true); state.preview = false; render(); },
     get params() { return { accountId: state.session?.id, targetId: state.user.id }; },
     press: id => renderer.act(() => byId(id).props.onPress()),
     pressLabel: label => renderer.act(() => all().find(n => n.props?.accessibilityLabel === label).props.onPress()),
@@ -445,6 +483,7 @@ test('owner shortcut handlers belong to one layout presentation across Suspense 
   const { ProfileOwnerActions } = execute('../features/profilePresentation/ProfileHierarchy.ios.jsx', name => {
     if (name === 'react' || name === 'react/jsx-runtime') return require(name);
     if (name === 'react-native') return native;
+    if (name.endsWith('/useIOSDetailPresentation')) return require('../hooks/useIOSDetailPresentation.js');
     if (name.endsWith('/useNativeTabPreview')) return { __esModule: true, default: () => false };
     if (name.endsWith('/theme')) return { colors: {} };
     if (name.endsWith('/Icon')) return 'Icon';
@@ -496,4 +535,117 @@ test('integrated native identity leaves the transparent banner overlap tappable'
   assert.equal(flatten(outer.props.style).marginTop, -32);
   f.press('profile-banner-open'); assert.equal(f.opened[0][0][0].uri, f.state.user.banner);
   f.unmount();
+});
+
+
+for (const strict of [false, true]) test(`retained Profile (${strict ? "StrictMode" : "normal"}) preserves section/scroll/media and permanently fences captured menu/gallery/card actions`, async () => {
+  const f = fixture({ managed: true, strict, self: false }); f.render(); await f.flush();
+  await f.resolve(f.reads.length - 1, [photo], 'earlier');
+  const scroll = f.all().find(n => n.type === 'ScrollView'); scroll.offset = 884;
+  const banner = f.image('/banner-original.jpg'), gallery = f.image('/original.jpg');
+  const oldBanner = f.byId('profile-banner-open').props.onPress;
+  const oldGallery = f.byId('profile-gallery-item-0').props.onPress;
+  const oldEarlier = f.byId('profile-gallery-load-earlier').props.onPress;
+  const oldRefresh = scroll.props.refreshControl.props.onRefresh;
+  const oldTab = f.byId('profile-tab-posts').props.onPress;
+  const follow = f.all().find(n => n.props?.accessibilityLabel === 'Follow Synthetic member').props.onPress;
+  const card = f.all().find(n => n.type === 'TicketStub');
+  const oldPost = card.props.onOpenPost, oldDelete = card.props.onDelete;
+  f.press('profile-action-menu'); const sheet = f.sheets.at(-1);
+  f.press('profile-tab-gallery');
+  const reads = f.reads.length, profileReads = f.profileReads.length, rewards = f.rewards.length;
+  f.cover(); await f.flush();
+  assert.equal(f.reads.length, reads); assert.equal(f.profileReads.length, profileReads); assert.equal(f.rewards.length, rewards);
+  for (const back of [false, true]) {
+    if (back) { f.reveal(); await f.flush(); }
+    f.act(() => { oldBanner(); oldGallery(); oldEarlier(); oldRefresh(); oldTab(); follow(); oldPost(photo); void oldDelete(photo.id); sheet.choose(0); });
+    await f.flush();
+    assert.equal(f.all().find(n => n.type === 'ScrollView'), scroll); assert.equal(scroll.offset, 884);
+    assert.equal(f.image('/banner-original.jpg'), banner); assert.equal(f.image('/original.jpg'), gallery);
+    assert.equal(f.byId('profile-tab-gallery').props.accessibilityState.selected, true);
+    assert.deepEqual(f.mutations, []); assert.deepEqual(f.opened, []); assert.equal(f.reads.length, reads);
+  }
+  assert.equal(f.profileReads.length, profileReads, 'Back keeps the confirmed profile receipt');
+  f.press('profile-gallery-item-0'); assert.equal(f.opened.length, 1);
+  f.pressLabel('Follow Synthetic member'); assert.deepEqual(f.mutations, [['follow', 'target']]);
+  f.press('profile-gallery-load-earlier'); await f.flush(); assert.equal(f.reads.length, reads + 1);
+  f.unmount();
+});
+
+
+test('real privacy epoch revokes captured Profile media/menu/commands before render and fresh commands recover', async () => {
+  const f = fixture({ managed: true, self: false }); f.render(); await f.flush(); await f.resolve(0, [photo], 'earlier');
+  const admission = f.presentation, token = admission.token, commandToken = admission.commandToken;
+  assert.equal(Object.isFrozen(token), true); assert.equal(Object.isFrozen(commandToken), true);
+  const banner = f.byId('profile-banner-open').props.onPress, gallery = f.byId('profile-gallery-item-0').props.onPress;
+  const earlier = f.byId('profile-gallery-load-earlier').props.onPress;
+  const follow = f.all().find(n => n.props?.accessibilityLabel === 'Follow Synthetic member').props.onPress;
+  const card = f.all().find(n => n.type === 'TicketStub'); const openPost = card.props.onOpenPost, remove = card.props.onDelete;
+  f.press('profile-action-menu'); const choose = f.sheets.at(-1).choose;
+  const count = f.reads.length;
+  f.invalidatePrivacy();
+  assert.equal(admission.current(), true, 'read settlement still owns the top occurrence');
+  assert.equal(admission.canAct(), false, 'commands retire synchronously before React');
+  for (const committed of [false, true]) {
+    if (committed) f.commitPrivacy();
+    f.act(() => { banner(); gallery(); earlier(); follow(); openPost(photo); void remove(photo.id); choose(0); });
+    await f.flush(); assert.deepEqual(f.opened, []); assert.deepEqual(f.mutations, []); assert.equal(f.reads.length, count);
+  }
+  assert.equal(f.presentation.token, token); assert.notEqual(f.presentation.commandToken, commandToken);
+  f.press('profile-banner-open'); f.press('profile-gallery-item-0'); f.pressLabel('Follow Synthetic member');
+  assert.equal(f.opened.length, 2); assert.deepEqual(f.mutations, [['follow', 'target']]);
+  f.unmount();
+});
+
+test('Profile adopts an in-flight authoritative denial across privacy rotation without abort/reload loops', async () => {
+  const f = fixture({ managed: true, self: false }); f.state.deferProfile = true; f.render(); await f.flush();
+  assert.equal(f.profileReads.length, 1);
+  const read = f.profileReads[0], token = f.presentation.token, current = f.presentation.current;
+  f.invalidatePrivacy(); f.commitPrivacy(); await f.flush();
+  assert.equal(f.presentation.token, token); assert.equal(f.presentation.current, current);
+  assert.equal(read.args[1].signal.aborted, false, 'privacy command rotation must not cancel the admitted read');
+  read.resolve({ status: 'missing', user: null, favoriteShows: [] }); await f.flush();
+  assert.match(f.text(), /This account isn't available/); assert.equal(f.byId('profile-banner-open'), undefined);
+  f.invalidatePrivacy(); f.commitPrivacy(); await f.flush();
+  assert.equal(f.profileReads.length, 1); assert.match(f.text(), /This account isn't available/);
+  f.unmount();
+});
+
+
+for (const reason of ['blocked author', 'directory quarantine']) test(`active Profile hides retained identity/media/history after ${reason}`, async () => {
+  const f = fixture({ managed: true, self: false }); f.render(); await f.flush(); await f.resolve(0, [photo]);
+  const oldBanner = f.byId('profile-banner-open').props.onPress;
+  const oldGallery = f.byId('profile-gallery-item-0').props.onPress;
+  const follow = f.all().find(n => n.props?.accessibilityLabel === 'Follow Synthetic member').props.onPress;
+  const reads = f.profileReads.length;
+  f.invalidatePrivacy();
+  if (reason === 'blocked author') f.state.blockedIds = ['target']; else f.state.directoryMissing = true;
+  f.act(() => { oldBanner(); oldGallery(); follow(); }); assert.deepEqual(f.opened, []); assert.deepEqual(f.mutations, []);
+  f.commitPrivacy(); await f.flush();
+  assert.match(f.text(), /This account isn't available/); assert.doesNotMatch(f.text(), /Synthetic member|Saved artist/);
+  assert.equal(f.byId('profile-gallery'), undefined); assert.equal(f.byId('profile-banner-open'), undefined);
+  assert.equal(f.all().some(n => n.type === 'TicketStub' || n.type === 'ConcertHistory'), false);
+  f.act(() => { oldBanner(); oldGallery(); follow(); }); assert.deepEqual(f.opened, []); assert.deepEqual(f.mutations, []);
+  assert.equal(f.profileReads.length, reads, 'quarantine does not create a read loop'); f.unmount();
+});
+
+test('active Profile projects removed posts and photos out of history, pins, map and banner without resurrection', async () => {
+  const withdrawn = 'https://media.test/original.jpg', banner = 'https://media.test/banner-original.jpg';
+  const f = fixture({ managed: true, self: false });
+  f.state.favoriteShows = [{ ...photo, photo: withdrawn }];
+  f.state.concerts = [{ id: 'concert', postId: photo.id, artist: 'Saved artist', photo: withdrawn }];
+  f.render(); await f.flush(); await f.resolve(0, [photo]);
+  const oldGallery = f.byId('profile-gallery-item-0').props.onPress;
+  f.invalidatePrivacy(); f.state.removedPhotos.add(withdrawn); f.state.removedPhotos.add(banner);
+  f.act(oldGallery); assert.deepEqual(f.opened, []);
+  f.commitPrivacy(); await f.flush();
+  assert.equal(f.byId('profile-gallery-item-0'), undefined); assert.equal(f.byId('profile-banner-open'), undefined);
+  const card = f.all().find(n => n.type === 'TicketStub'); assert.deepEqual(card.props.log.photos, []); assert.deepEqual(card.props.log.media, []);
+  assert.equal(f.all().find(n => n.type === 'ConcertHistory').props.concerts[0].photo, null);
+  assert.equal(f.all().some(n => n.type === 'SmartImage' && n.props.uri === withdrawn), false);
+  f.state.removedIds = [photo.id]; f.invalidatePrivacy(); f.commitPrivacy(); await f.flush();
+  assert.equal(f.all().some(n => n.type === 'TicketStub'), false);
+  assert.deepEqual(f.all().find(n => n.type === 'ConcertHistory').props.concerts, []);
+  assert.equal(f.all().some(n => n.props?.accessibilityLabel?.startsWith('Saved artist')), false);
+  f.act(oldGallery); assert.deepEqual(f.opened, []); f.unmount();
 });

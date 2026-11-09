@@ -290,9 +290,9 @@ test("the shared Store deletion path removes posts from dedicated profile histor
 
 test("the shared Store rotates profile history at auth boundaries and scrubs it after a confirmed block", () => {
   const source = readFileSync(new URL("../../store.js", import.meta.url), "utf8");
-  assert.match(source, /adoptProfileHistoryAccount,/);
-  assert.match(source, /resetProfileHistoryAccount,/);
-  assert.match(source, /scrubBlockedProfileHistoryPerson,/);
+  assert.match(source, /adoptProfileHistoryAccount(?: as defaultAdoptProfileHistoryAccount)?,/);
+  assert.match(source, /resetProfileHistoryAccount(?: as defaultResetProfileHistoryAccount)?,/);
+  assert.match(source, /scrubBlockedProfileHistoryPerson(?: as defaultScrubBlockedProfileHistoryPerson)?,/);
 
   const adoptStart = source.indexOf("const adoptFeedAccount =");
   const adoptEnd = source.indexOf("useEffect(() => {", adoptStart);

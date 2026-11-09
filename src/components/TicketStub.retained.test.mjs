@@ -68,10 +68,19 @@ const review = { id: "fixture-post", userId: "author", user: { name: "Author", h
 
 // Run actual production components and platform hook through React commits.
 // Native effects, store writes, timers, and network boundaries are synthetic.
-function fixture({ strict = false, own = false, guest = false, detail = false, composed = false, log = review } = {}) {
+function fixture({ strict = false, own = false, guest = false, detail = false, composed = false, managed = false, log = review } = {}) {
   const renderer = createRenderer();
   const Preview = React.createContext(false), City = React.createContext(null);
   let reducedMotion = false;
+  let privacy = 0;
+  const lifecycleToken = Object.freeze({});
+  const detailCurrent = () => true;
+  const makeDetail = () => {
+    const revision = privacy;
+    return { managed, active: true, current: detailCurrent, token: lifecycleToken,
+      canAct: () => privacy === revision, commandToken: Object.freeze({}) };
+  };
+  let detailPresentation = makeDetail();
   const calls = [], saves = [], tags = [], retries = [], checks = [], sheets = [], speech = [], alerts = [], shareLoads = [], timers = new Set();
   const pending = (list, args) => new Promise((resolve, reject) => list.push({ args, resolve, reject }));
   const store = { session: guest ? null : { id: own ? "author" : "viewer" }, userById: () => null, userBadges: () => [], commentsFor: () => [],
@@ -82,6 +91,7 @@ function fixture({ strict = false, own = false, guest = false, detail = false, c
   const color = new Proxy({}, { get: (_, key) => String(key) });
   const modules = {
     react: React, "react/jsx-runtime": require("react/jsx-runtime"),
+    "./useIOSDetailPresentation": () => detailPresentation, "../hooks/useIOSDetailPresentation": () => detailPresentation,
     "react-native": { View: "View", Text: "Text", Pressable: "Pressable", Modal: "Modal", ActivityIndicator: "ActivityIndicator", Platform: { OS: "ios" },
       StyleSheet: { create: value => value, absoluteFill: {}, absoluteFillObject: {}, hairlineWidth: 0.5 },
       Alert: { alert: (...args) => alerts.push(args) }, AccessibilityInfo: { announceForAccessibility: value => speech.push(value) }, Linking: { openURL: url => calls.push(["external", url]) } },
@@ -145,6 +155,9 @@ function fixture({ strict = false, own = false, guest = false, detail = false, c
     obscure() { presentation.active = false; presentation = { active: false, current() { return this.active; } }; preview = true; f.render({ mediaViewable: false, contextPresentation: presentation }); },
     reveal() { presentation.active = false; presentation = { active: true, current() { return this.active; } }; preview = false; f.render({ mediaViewable: true, contextPresentation: presentation }); },
     retireWithoutRender() { presentation.active = false; },
+    privacyRevoke() { privacy++; },
+    freshPrivacy() { detailPresentation = makeDetail(); f.render(); },
+    detailCurrent,
     motion(value) { reducedMotion = value; f.render(); },
     async settle(callback) { await React.act(async () => { renderer.act(callback); for (let i = 0; i < 6; i++) await Promise.resolve(); }); },
     close: () => React.act(() => renderer.render(null)),
@@ -337,4 +350,24 @@ test("production Feed admission starts campaign animation after parent layout an
   assert.equal(node.props.autoplay, true); assert.equal(node.animations.at(-1), "play");
   f.obscure(); assert.equal(node.props.autoplay, false); assert.equal(node.animations.at(-1), "stop");
   f.reveal(); assert.equal(node.props.autoplay, true); assert.equal(node.animations.at(-1), "play");
+});
+
+
+test("actual retained Ticket rejects privacy-stale commands while receipt current remains true", t => {
+  const f = fixture({ managed: true }); t.after(f.close);
+  const oldLike = f.button("Like,").props.onPress;
+  f.privacyRevoke(); assert.equal(f.detailCurrent(), true);
+  f.act(oldLike); assert.deepEqual(f.calls, []);
+  f.freshPrivacy(); f.act(oldLike); assert.deepEqual(f.calls, []);
+  f.act(f.button("Like,").props.onPress); assert.equal(f.calls.length, 1);
+});
+test("actual share modal closes across privacy commands and never reopens from a stale trigger", t => {
+  const f = fixture({ managed: true }); t.after(f.close);
+  const open = f.button("Share review").props.onPress;
+  f.act(open); assert.ok(f.all().some(node => node.type === "Modal"));
+  f.privacyRevoke(); f.freshPrivacy();
+  assert.ok(!f.all().some(node => node.type === "Modal"));
+  f.act(open); assert.ok(!f.all().some(node => node.type === "Modal"));
+  f.act(f.button("Share review").props.onPress);
+  assert.ok(f.all().some(node => node.type === "Modal"));
 });

@@ -37,6 +37,8 @@ function fixture() {
   const accountMutationEpochRef = { current: 1 };
   const calls = [], writes = [], pendingState = [];
   const dependencies = {
+    Platform: { OS: "ios" },
+    invalidateIOSDetailPrivacy: () => 0,
     session: initial, authReadyRef: { current: true },
     sessionRef, accountMutationEpochRef, captureAccountMutation, accountMutationIsCurrent,
     clean, cleanName, cleanHandle, isHandle, LIMITS, profileGenreSelection, publicProfileCacheEntry,

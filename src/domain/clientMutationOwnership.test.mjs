@@ -1,3 +1,4 @@
+import { createIOSArtistSeenCount, createIOSArtistRatingLoader } from "../features/artistOverview/artistDetailReadsService.ios.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -53,6 +54,9 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
   const update = (key) => (value) => { writes.push(key); state[key] = typeof value === "function" ? value(state[key]) : value; };
   const request = (name) => (...args) => new Promise((resolve, reject) => calls.push({ name, args, resolve, reject }));
   const dependencies = {
+    createIOSArtistSeenCount, createIOSArtistRatingLoader,
+    Platform: { OS: "ios" },
+    invalidateIOSDetailPrivacy: () => 0,
     session: actor, sessionRef, authReadyRef, accountMutationEpochRef,
     captureAccountMutation, accountMutationIsCurrent, clean, clampRating, LIMITS, createChatClientMutationId, createAccountPreferenceWrites,
     ENABLE_DEMO_DATA: demo, MEDIA_POST_MAX_ATTACHMENTS: 20,

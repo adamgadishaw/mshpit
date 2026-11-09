@@ -102,6 +102,7 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
   const imports = (name, local) => {
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
+    if (name.endsWith("/useIOSDetailPresentation")) return require("./src/hooks/useIOSDetailPresentation.js");
     if (actualCards) {
       if (name === "expo-image") return { Image: "ExpoImage" };
       if (name.endsWith("/TicketStub")) return load("src/components/TicketStub.jsx");

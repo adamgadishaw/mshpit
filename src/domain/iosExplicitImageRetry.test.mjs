@@ -31,7 +31,7 @@ function fixture(name, { reuseNativeView = false, platform = "ios", store = null
     useCallback(callback, deps) { const i = cursor++; if (!same(slots[i]?.deps, deps)) slots[i] = { value: callback, deps }; return slots[i].value; },
   };
   const run = (code, resolver) => { const module = { exports: {} }; new Function('require', 'module', 'exports', code)(resolver, module, module.exports); return module.exports; };
-  const hook = run(hookCode, dep => dep === 'react' ? react : attempts).default;
+  const hook = run(hookCode, dep => dep === 'react' ? react : dep.endsWith('/useIOSDetailPresentation') ? { __esModule: true, default: () => ({ active: true, current: () => true, token: null, scope: null }) } : attempts).default;
   const jsx = (type, props, key) => ({ type, props, key });
   const component = run(componentCodes[name], dep => {
     if (dep.endsWith('/useNativeTabPreview')) return require('../hooks/useNativeTabPreview.js');

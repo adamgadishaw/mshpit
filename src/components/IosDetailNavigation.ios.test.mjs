@@ -6,6 +6,7 @@ import test from "node:test";
 import { parse } from "@babel/parser";
 import { createIOSCommentDrafts } from "../domain/iosCommentDrafts.mjs";
 import { createIOSLinkedNavigation } from "../domain/iosLinkedNavigation.mjs";
+import { iosDetailCanRetain } from "../domain/iosDetailRetention.mjs";
 const require = createRequire(import.meta.url);
 const React = require("react"), reconciler = require("react-reconciler");
 const { transformSync } = require("@babel/core");
@@ -55,14 +56,19 @@ function rootNavigationFixture(platform = "ios", frames) {
   const source = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
   const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
   const names = ["cancelNewsStory", "cancelPublicRoute", "applyNavigation", "runAfterComposerClose", "popStack", "requestComposerPop", "back"];
-  const declarations = new Map(); let predicate; const edgeCallbacks = [], predicates = [];
+  const declarations = new Map(); let retainedPredicate; const edgeCallbacks = [], predicates = [];
   function walk(node) {
     if (!node || typeof node !== "object") return;
     if (node.type === "VariableDeclarator" && names.includes(node.id?.name)) declarations.set(node.id.name,
       `const ${node.id.name} = ${source.slice(node.init.start, node.init.end)};`);
     if (node.type === "JSXOpeningElement" && node.name?.name === "IosDetailNavigation") {
       const value = node.attributes.find(attribute => attribute.name?.name === "isCurrentRoute").value.expression;
-      predicate = source.slice(value.start, value.end); predicates.push(predicate);
+      predicates.push(source.slice(value.start, value.end));
+    }
+    if (node.type === "JSXOpeningElement" && node.name?.name === "NativeDetailStack") {
+      const value = node.attributes.find(attribute => attribute.name?.name === "isCurrentRoute").value.expression;
+      assert.equal(retainedPredicate, undefined, "Only one Root retained-stack route predicate is expected");
+      retainedPredicate = source.slice(value.start, value.end);
     }
     if (node.type === "JSXOpeningElement" && node.name?.name === "IosDetailNavigation") {
       edgeCallbacks.push(node.attributes.find(attribute => attribute.name?.name === "onBack").value.expression.name);
@@ -72,14 +78,22 @@ function rootNavigationFixture(platform = "ios", frames) {
       else if (value && typeof value === "object") walk(value);
     }
   }
-  walk(ast); assert.equal(predicates.length, 2); assert.equal(predicates[0], predicates[1]); assert.ok(predicate); assert.ok(edgeCallbacks.length); assert.ok(edgeCallbacks.every(name => name === "back"));
+  walk(ast); assert.equal(predicates.length, 2); assert.equal(predicates.filter(value => value === "current").length, 1);
+  const standalonePredicate = predicates.find(value => value !== "current");
+  assert.ok(standalonePredicate); assert.ok(retainedPredicate); assert.ok(edgeCallbacks.length); assert.ok(edgeCallbacks.every(name => name === "back"));
   for (const name of names) assert.ok(declarations.has(name), `Missing Root callback ${name}`);
   const owner = createIOSLinkedNavigation(); const scope = owner.account("A", 1); owner.mount();
   const nav = frames?.at(-1) || { venueName: "fixture" }, stack = frames || [{}, { profileId: "fixture" }, nav], queued = [];
+  // The retained wrapper receives an occurrence-owned `current`; its Root part
+  // is the exact NativeDetailStack predicate. The full immutable host admission
+  // is covered by retainedDetailStackIOS.test.mjs. Unretained routes still use
+  // the exact singleNativeOverlay predicate, including Android's undefined one.
+  const predicate = platform === "ios" && iosDetailCanRetain(nav)
+    ? `() => (${retainedPredicate})(nav, stack.length - 1)` : standalonePredicate;
   let aborts = 0;
   const stackRef = { current: stack }, navigationRef = { current: { stack, tab: "feed", landing: false } };
   const bindings = {
-    Platform: { OS: platform }, web: false, nav, linkedNavigationScope: scope,
+    Platform: { OS: platform }, web: false, nav, stack, linkedNavigationScope: scope, nativeAccountLinkActiveRef: { current: false },
     linkedNavigationRef: { current: owner }, navigationRef, stackRef,
     newsLinkedClaimRef: { current: null }, newsOpenRef: { current: 0 }, setNewsStoryNotice: noop,
     publicLookup: {}, publicNavigationPendingRef: { current: null }, publicRouteRequestRef: { current: null }, setPublicNavigationNotice: noop,
@@ -341,9 +355,9 @@ test('inline editor remains blocked through Suspense reconnect and reader interr
   assert.equal(f.pans.at(-1).enabled, false);
   f.block(false); f.queueBack(); f.queue.shift()(); assert.equal(f.root.queued.at(-1).length, 2); f.close();
 });
-for (const [file, keys] of [
-  ['ArtistScreen.jsx', ['reportingSong', 'reportingBusy']],
-  ['ShowScreen.jsx', ['goingTicketPrompt', 'goingBusy']],
+for (const [file, keys, context] of [
+  ['ArtistScreen.ios.jsx', ['reportingSong', 'reportingBusy'], {}],
+  ['ShowScreen.ios.jsx', ['goingTicketPrompt', 'goingBusy'], { sourceRevoked: false }],
 ]) {
   test(`actual ${file} inline draft/busy expressions revoke queued Back`, () => {
     const source = readFileSync(new URL(`../screens/${file}`, import.meta.url), 'utf8');
@@ -358,7 +372,8 @@ for (const [file, keys] of [
       }
     }
     walk(ast); assert.equal(calls.length, 1);
-    const predicate = new Function(...keys, `return ${source.slice(calls[0].start, calls[0].end)};`);
+    const expression = new Function(...Object.keys(context), ...keys, `return ${source.slice(calls[0].start, calls[0].end)};`);
+    const predicate = (...values) => expression(...Object.values(context), ...values);
     assert.equal(predicate(...keys.map(() => false)), false);
     for (const key of keys) {
       const f = fixture(); f.queueBack(); f.block(predicate(...keys.map(candidate => candidate === key)));
@@ -368,7 +383,7 @@ for (const [file, keys] of [
 }
 
 test('Artist report Cancel restores edge even when the canceled local input remains', () => {
-  const source = readFileSync(new URL('../screens/ArtistScreen.jsx', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../screens/ArtistScreen.ios.jsx', import.meta.url), 'utf8');
   const ast = parse(source, { sourceType: 'module', plugins: ['jsx'] });
   let cancelSource, predicateSource;
   function walk(node) {
@@ -385,7 +400,8 @@ test('Artist report Cancel restores edge even when the canceled local input rema
   }
   walk(ast); assert.ok(cancelSource); assert.ok(predicateSource);
   let song = { key: 'song' };
-  const cancel = new Function('setReportingSong', `return ${cancelSource};`)(value => { song = value; });
+  const ordinary = require('../hooks/useIOSDetailPresentation.js').default();
+  const cancel = new Function('setReportingSong', 'guard', `return ${cancelSource};`)(value => { song = value; }, ordinary.guard);
   const blocked = new Function('reportingSong', 'reportingBusy', 'reportUrl', 'reportNote', `return ${predicateSource};`);
   const f = fixture(); f.block(blocked(song, false, 'typed URL', 'typed note'));
   assert.equal(f.pans.at(-1).enabled, false);
