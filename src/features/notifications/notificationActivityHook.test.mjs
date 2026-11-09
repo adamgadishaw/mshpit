@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { createNotificationActivity } from "./notificationActivityState.mjs";
+import { createNotificationActivityBootstrap } from "./notificationActivityBootstrap.mjs";
 import { isLoadCancellation } from "../../domain/loadState.mjs";
 
 const require = createRequire(import.meta.url);
@@ -13,6 +14,7 @@ const compile = name => require("@babel/core").transformSync(readFileSync(new UR
 }).code;
 const hookSource = compile("./useNotificationActivity.js");
 const serviceSource = compile("./notificationsApi.js");
+const runtimeSource = compile("./notificationRuntime.mjs");
 class AppError extends Error {
   constructor(message, options = {}) { super(message); this.name = "AppError"; Object.assign(this, options); }
 }
@@ -41,6 +43,10 @@ function serviceHarness() {
 // The hook, service, controller and domain transitions are production code.
 function harness(initial = identity()) {
   const { service, calls } = serviceHarness();
+  const runtime = loadModule(runtimeSource, {
+    "./notificationActivityState.mjs": { createNotificationActivity },
+    "./notificationsApi.js": service, "../../lib/diagnostics": { AppError },
+  });
   let current = initial, active = true, refIndex = 0, effectIndex = 0;
   const refs = [], effects = [], pending = [], timers = new Map(), saved = [];
   let timerId = 0;
@@ -57,9 +63,11 @@ function harness(initial = identity()) {
   };
   const hook = loadModule(hookSource, {
     react, "../../lib/useAppActive": { __esModule: true, default: () => active },
-    "../../lib/diagnostics": { AppError }, "../../lib/persist": { save: (...args) => saved.push(args) },
+    "../../lib/diagnostics": { toAppError: (error, options) => error instanceof AppError ? error : new AppError(options.message, options) }, "../../lib/persist": { save: (...args) => saved.push(args) },
     "../../domain/loadState.mjs": { isLoadCancellation },
-    "./notificationActivityState.mjs": { createNotificationActivity }, "./notificationsApi": service,
+    "./notificationActivityBootstrap.mjs": { createNotificationActivityBootstrap: options => createNotificationActivityBootstrap({
+      ...options, loadRuntime: async () => runtime,
+    }) },
   }, {
     setInterval: (fn, delay) => { const id = ++timerId; timers.set(id, { fn, delay }); return id; },
     clearInterval: id => timers.delete(id),

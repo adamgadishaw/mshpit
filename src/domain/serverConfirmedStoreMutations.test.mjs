@@ -56,11 +56,13 @@ test("artist update deletion is server-first and exposes scoped retry feedback",
 test("notification read lives in the scoped feature and only sends explicit IDs", () => {
   const state = readFileSync(new URL("../features/notifications/notificationActivityState.mjs", import.meta.url), "utf8");
   const transport = readFileSync(new URL("../features/notifications/notificationsApi.js", import.meta.url), "utf8");
+  const command = readFileSync(new URL("../features/notifications/notificationReadCommand.mjs", import.meta.url), "utf8");
   assert.match(store, /useNotificationActivity/);
   assert.doesNotMatch(store, /api\("\/api\/me\/notifications\/read"/);
-  assert.match(state, /await writeReads\(/);
-  assert.ok(state.indexOf("reconcileConfirmedNotificationReads(previous") > state.indexOf("await writeReads("));
-  assert.match(state, /response\.notificationIds/);
+  assert.match(state, /markNotificationRows\(/);
+  assert.match(command, /await writeReads\(/);
+  assert.ok(command.indexOf("reconcileConfirmedNotificationReads(previous") > command.indexOf("await writeReads("));
+  assert.match(command, /response\.notificationIds/);
   assert.match(transport, /\/api\/me\/notifications\/read\/scoped/);
   assert.match(notifications, /await markNotificationsRead\(\{ notificationIds:/);
   assert.match(notifications, /notificationReadState\?\.scope === notificationReadScope/);

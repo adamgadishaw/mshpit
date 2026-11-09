@@ -1,3 +1,5 @@
+import * as pageLoad from "./notificationPageLoad.mjs";
+import * as readCommand from "./notificationReadCommand.mjs";
 import { beginLoadState, createLoadState, isLoadCancellation, rejectLoadState, resolveLoadState } from "../../domain/loadState.mjs";
 import { commandFailure } from "../../domain/commandResult.mjs";
 import { createScopedReadCoordinator } from "../../domain/scopedReadCoordinator.mjs";
@@ -27,7 +29,7 @@ function observe(promise, signal) {
 // paging. No disk persistence. Concurrent reads deduplicate and all network
 // reads/acks serialize within an epoch, so an earlier GET cannot undo a later
 // confirmed read. Scope changes abort and synchronously discard everything.
-export function createNotificationActivity({ getIdentity, getHiddenActorIds = () => [], fetchPage, writeReads, makeError, normalizeError, loadReadCommand = () => import("./notificationReadCommand.mjs"), loadPageCommand = () => import("./notificationPageLoad.mjs"), now = Date.now, demo = false, seed = [] }) {
+export function createNotificationActivity({ getIdentity, getHiddenActorIds = () => [], fetchPage, writeReads, makeError, normalizeError, loadReadCommand = async () => readCommand, loadPageCommand = async () => pageLoad, now = Date.now, demo = false, seed = [] }) {
   const coordinator = createScopedReadCoordinator(ownerKey);
   const listeners = new Set();
   let owner = getIdentity(), scope = ownerKey(owner), alive = true;
@@ -78,7 +80,7 @@ export function createNotificationActivity({ getIdentity, getHiddenActorIds = ()
       if (more && resource.data.nextCursor !== cursor) throw aborted();
       const claim = coordinator.claim("activity", owner);
       const before = resource;
-      if (!summary) publish(beginLoadState(resource, { scope, emptyData: emptyData() }));
+      if (!summary) publish(beginLoadState(resource, { scope, emptyData: resource.data }));
       try {
         const { loadNotificationPage } = await loadPageCommand();
         const assertCurrent = () => {
@@ -106,7 +108,7 @@ export function createNotificationActivity({ getIdentity, getHiddenActorIds = ()
           throw aborted();
         }
         const failure = normalizeError(error);
-        if (!summary) publish(rejectLoadState(resource, { scope, error: failure, emptyData: emptyData() }));
+        if (!summary) publish(rejectLoadState(resource, { scope, error: failure, emptyData: resource.data }));
         throw failure;
       }
     });
@@ -131,8 +133,8 @@ export function createNotificationActivity({ getIdentity, getHiddenActorIds = ()
     const requestedIds = Array.isArray(notificationIds) && notificationIds.length <= MAX_NOTIFICATION_ROWS ? [...notificationIds] : null;
     try {
       return await enqueue(`ack:${++writeSequence}`, expectedScope, async transportSignal => {
-        // Keep the explicit write path out of the web startup bundle. Import
-        // inside the queue so loading the chunk cannot reorder reads/writes.
+        // The whole runtime is lazy. Resolve the command inside the queue so
+        // injected/deferred adapters cannot reorder reads and writes.
         const { markNotificationRows } = await loadReadCommand();
         return markNotificationRows({
           snapshot, notificationIds: requestedIds, signal, transportSignal, demo, writeReads, makeError,

@@ -954,11 +954,6 @@ export function StoreProvider({ children }) {
     getIdentity: () => ({ accountId: sessionRef.current?.id || null, epoch: accountMutationEpochRef.current, ready: authReadyRef.current }),
     getHiddenActorIds: () => [...blockedIdsRef.current, ...blockedIdsRef.mutedIds],
     demo: ENABLE_DEMO_DATA,
-    seed: demoSeed([
-      { id: "nf1", userId: "u_demo", type: "follow", actorId: "u_mara", actorName: "Mara Quinn", actorInitials: "MQ", ts: Date.now() - 3600000, read: false },
-      { id: "nf2", userId: "u_demo", type: "like", actorId: "u_devon", actorName: "Devon Ash", actorInitials: "DA", postId: "log_1", artist: "Turnstile", ts: Date.now() - 7200000, read: false },
-      { id: "nf3", userId: "u_demo", type: "comment", actorId: "u_priya", actorName: "Priya N.", actorInitials: "PN", postId: "log_1", artist: "Turnstile", ts: Date.now() - 10800000, read: true },
-    ], []),
   });
   // Album + song ratings (stand-in for stream data) keyed by artist|title
   const [albumRatings, setAlbumRatings] = usePersisted("pit.albumRatings", demoSeed({ "turnstile|glow on": { u_mara: 5, u_devon: 4.5 }, "turnstile|never enough": { u_mara: 4 } }, {}));
@@ -4088,19 +4083,7 @@ export function StoreProvider({ children }) {
   };
 
   // --- Notifications / activity ---------------------------------------------
-  // Production notifications are created only by the server. Keep the old
-  // local social fixture behavior confined to explicitly enabled demo mode.
-  const notify = (recipientId, type, payload = {}) => {
-    if (!ENABLE_DEMO_DATA || !session || !recipientId || recipientId === session.id) return;
-    const n = {
-      id: "n_" + Date.now() + Math.random().toString(36).slice(2, 6),
-      userId: recipientId, type,
-      actorId: session.id, actorName: session.name, actorInitials: session.initials,
-      actorColor: session.avatarColor, actorUri: session.avatarUri,
-      ts: Date.now(), read: false, ...payload,
-    };
-    setNotifications((all) => [n, ...all].slice(0, 300));
-  };
+  // Cross-account activity is created by the server, never the local cache.
   // A system "welcome" notification so a new account's Activity isn't empty and
   // the first thing they see guides them into the product.
   const pushWelcome = (uid) => setNotifications((all) => [
@@ -4111,7 +4094,6 @@ export function StoreProvider({ children }) {
   const unreadNotifications = () => session
     ? notificationActivity.data.unread ?? myNotifications().filter((n) => !n.read).length
     : 0;
-  const postOwner = (postId) => feed.find((l) => l.id === postId)?.userId;
 
   // Social graph. First slice of the SQLite migration (see MIGRATION.md): follow
   // state is still cached locally + persisted, but mutations now WRITE THROUGH to
@@ -4134,7 +4116,7 @@ export function StoreProvider({ children }) {
     return api(`/api/users/${id}/follow`, { method: "POST", body: { following: true }, context: "Following this fan", expectedAccountId: actor.id })
       .then(() => {
         if (!isCurrent()) return { ok: false, stale: true };
-        track("follow"); notify(id, "follow");
+        track("follow");
         notifySocialReactionChange(actor.id);
         return { ok: true };
       })
@@ -4609,10 +4591,8 @@ export function StoreProvider({ children }) {
               ? commentCount : (Number(post.comments) || 0) + (duplicate ? 0 : 1),
           };
         }));
-        const owner = postOwner(id);
         if (!duplicate) {
           track("interaction", { postId: id, action: "comment", surface: "afterparty" });
-          if (owner) notify(owner, "comment", { postId: id, artist: feed.find((l) => l.id === id)?.artist, text: t.slice(0, 60) });
         }
         return { ok: true, id: sid, duplicate: !!duplicate };
       })
@@ -4745,7 +4725,7 @@ export function StoreProvider({ children }) {
         feedMutationRevisionRef.current += 1;
         if (typeof result?.liked === "boolean") setMyLikes((m) => ({ ...m, [id]: result.liked }));
         track("interaction", { postId: id, action: liked ? "like" : "unlike", surface: "feed" });
-        if (liked) { track("like", { postId: id }); const o = postOwner(id); if (o) notify(o, "like", { postId: id, artist: feed.find((l) => l.id === id)?.artist }); }
+        if (liked) track("like", { postId: id });
         return { ok: true, liked: typeof result?.liked === "boolean" ? result.liked : liked };
       })
       .catch((error) => {

@@ -1,19 +1,16 @@
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import useAppActive from "../../lib/useAppActive";
-import { AppError } from "../../lib/diagnostics";
+import { toAppError } from "../../lib/diagnostics";
 import { save } from "../../lib/persist";
 import { isLoadCancellation } from "../../domain/loadState.mjs";
-import { createNotificationActivity } from "./notificationActivityState.mjs";
-import { fetchNotificationPage, writeNotificationReads } from "./notificationsApi";
+import { createNotificationActivityBootstrap } from "./notificationActivityBootstrap.mjs";
 
 export default function useNotificationActivity({ getIdentity, getHiddenActorIds = () => [], demo = false, seed = [] }) {
   const identity = useRef({ getIdentity, getHiddenActorIds }); identity.current = { getIdentity, getHiddenActorIds };
   const ref = useRef(null);
-  if (!ref.current) ref.current = createNotificationActivity({
+  if (!ref.current) ref.current = createNotificationActivityBootstrap({
     getIdentity: () => identity.current.getIdentity(), getHiddenActorIds: () => identity.current.getHiddenActorIds(), demo, seed,
-    fetchPage: fetchNotificationPage, writeReads: writeNotificationReads,
-    makeError: (message, code = "PIT-API-001") => new AppError(message, { code, context: "Loading activity", source: "notifications", retryable: true }),
-    normalizeError: error => error instanceof AppError ? error : new AppError("Activity could not be loaded. Check your connection and try again.", { code: "PIT-NET-001", cause: error, source: "notifications", retryable: true }),
+    normalizeError: error => toAppError(error, { code: "PIT-NET-001", message: "Activity could not be loaded. Try again.", source: "notifications", retryable: true }),
   });
   const controller = ref.current;
   const scope = controller.scope();

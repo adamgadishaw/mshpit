@@ -1,6 +1,6 @@
 # Activity reliability candidate
 
-Scope: local cross-platform client/server fix, based on ef83fb0. No push delivery,
+Scope: local cross-platform client/server fix, rebased onto the reviewed app/security checkpoint 1487a72. No push delivery,
 production notification mutation, deployment or device installation is included.
 
 ## Behavior and rollout
@@ -24,9 +24,18 @@ production notification mutation, deployment or device installation is included.
   to 1,000 loaded rows, with an explicit UI limit notice. A refresh resets paging.
 - Background/hidden tabs stop optional badge polling; active apps poll a one-row
   summary every 60 seconds without replacing expanded history. This is not push.
-- The explicit acknowledgement command loads on demand inside its reserved queue
-  operation. Chunk loading cannot reorder commands; scope/cancellation checks run
-  again before any write, and a failed chunk load remains retryable.
+- The notification runtime loads on demand behind a small account/epoch/lifecycle
+  facade. The facade retains at most 1,000 account-owned local rows, clears them
+  synchronously on account changes, and forwards requests into the runtime's
+  single queue. Failed loading is retryable. Pre-load welcome rows survive.
+- Projection and adoption remain synchronous together; a confirmed DM/privacy
+  mutation cannot be overwritten across an awaited helper return. Captured read
+  IDs are copied before deferred code can run.
+- Demo notification fixtures live in the lazy runtime. Cross-account client
+  notification generation was removed; the server is the source of those events.
+- Metro retains Expo's minifier settings and adds a second compression pass.
+  The 512 KiB startup budget is unchanged. This applies to production bundles
+  across platforms and must pass web/iOS/Android validation before integration.
 
 ## Architecture decision: migrate the notification Store seam
 

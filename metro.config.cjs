@@ -1,6 +1,12 @@
 const path = require('node:path');
 const { getDefaultConfig } = require('expo/metro-config');
 const config = getDefaultConfig(__dirname);
+// Reuse Expo's minifier policy, with a second compression pass. Keep the
+// existing safety options and web-size guard unchanged.
+config.transformer.minifierConfig = {
+  ...config.transformer.minifierConfig,
+  compress: { ...config.transformer.minifierConfig.compress, passes: 2 },
+};
 // Windows can exhaust file handles reading thousands of persistent transform-cache entries
 // during lazy screen compilation. The running graph still reuses warm modules.
 // Limit this workaround to the explicitly local Windows development session.
