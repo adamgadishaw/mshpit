@@ -99,3 +99,11 @@ native build and physical Activity UX testing when authorized, and separately
 approve deployment. No signed native build or physical notification runtime QA
 was performed for this candidate. Push delivery remains a separate feature.
 The server-first, all-instances rollout requirement above remains mandatory.
+
+## Integrated local checkpoint (2026-11-09 UTC)
+
+The frozen isolated receipt above is retained as history. The reviewed candidate was merged locally as runtime `6569968744734f7162b3e828767964c8f6239cf8`. Its actual integrated checkout subsequently passed the full 8,661-test serial suite, all aggregate checks, strict web budget (523,910 / 524,288 bytes; 378 bytes headroom), iOS/Android exports and source-map isolation, and a development-signed generic-device iOS Release build. The runtime/test/configuration files are identical to the isolated candidate.
+
+The signed app is preserved at `.tmp/ios-phone-checkpoints/flagship-6569968/` with an all-file manifest, receipt and copied gate evidence. An independent read-only review verified it and the unchanged older checkpoints. See the [combined release receipt](ios-combined-notification-release-2026-11-09.md) for exact hashes and gates. This later documentation-only record does not change the built runtime source.
+
+**The combined build is rollout-held, uninstalled, and not install-ready.** The server-first, every-serving-instance requirement above remains mandatory and was not executed. Physical Activity/Discover testing, safe installation coordination, and deployment approval remain separate pending work. Preserved uninstalled `8060121` remains the simpler Discover-only retest candidate.
