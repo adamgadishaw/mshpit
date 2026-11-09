@@ -233,7 +233,7 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
   </View>;
 }
 const styles = StyleSheet.create({
-  pageDestination: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
+  pageDestination: { ...StyleSheet.absoluteFill, alignItems: "center", justifyContent: "center" },
   destinationTitle: { position: "absolute", color: colors.textDim, fontSize: 24, fontWeight: "600" },
   pageTrack: { flex: 1, minHeight: 0, overflow: "hidden" },
   page: { flex: 1, minHeight: 0, shadowColor: "#000", shadowRadius: 18, shadowOffset: { width: 0, height: 0 } },

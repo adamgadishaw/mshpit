@@ -23,4 +23,4 @@ export default function NativeTabPage({ tab, active, position, origin, x, width,
     </NativeTabPreviewContext.Provider>
   </Animated.View>;
 }
-const styles = StyleSheet.create({ fill: { flex: 1, minHeight: 0 }, page: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.bg, minHeight: 0 } });
+const styles = StyleSheet.create({ fill: { flex: 1, minHeight: 0 }, page: { ...StyleSheet.absoluteFill, backgroundColor: colors.bg, minHeight: 0 } });

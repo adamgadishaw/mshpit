@@ -8,6 +8,15 @@ import { createIOSLinkedNavigation } from "../domain/iosLinkedNavigation.mjs";
 const require = createRequire(import.meta.url);
 const React = require("react"), reconciler = require("react-reconciler");
 const { transformSync } = require("@babel/core");
+// Execute the installed RN StyleSheet export (with inert unrelated imports),
+// rather than inventing removed APIs in the native fixture.
+const styleFile = realpathSync(new URL("../../node_modules/react-native/Libraries/StyleSheet/StyleSheetExports.js", import.meta.url));
+const styleCode = transformSync(readFileSync(styleFile, "utf8"), { filename: styleFile, babelrc: false, configFile: false,
+  presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: false } }).code;
+const styleModule = { exports: {} };
+new Function("require", "module", "exports", "__DEV__", styleCode)(name => name.startsWith("@babel/") ? require(name) : name.includes("PixelRatio")
+  ? { default: { roundToNearestPixel: () => 0.5, get: () => 2 } } : {}, styleModule, styleModule.exports, false);
+const installedStyleSheet = styleModule.exports.default;
 const noop = () => {}, codes = new Map();
 function createRenderer() {
   const context = {}, container = { children: [] };
@@ -60,7 +69,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   };
   const modules = {
     react: React, "react/jsx-runtime": require("react/jsx-runtime"),
-    "react-native": { AppState: { currentState: "active", addEventListener: (_event, callback) => { appListeners.add(callback); appHistory.push(callback); return { remove: () => appListeners.delete(callback) }; } }, AccessibilityInfo: { announceForAccessibility: noop }, View: "View", Text: "Text", ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Pressable: "Pressable", StyleSheet: { create: x => x, hairlineWidth: 1 }, useWindowDimensions: () => ({ width: 412, fontScale: 1 }) },
+    "react-native": { AppState: { currentState: "active", addEventListener: (_event, callback) => { appListeners.add(callback); appHistory.push(callback); return { remove: () => appListeners.delete(callback) }; } }, AccessibilityInfo: { announceForAccessibility: noop }, View: "View", Text: "Text", ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Pressable: "Pressable", StyleSheet: installedStyleSheet, useWindowDimensions: () => ({ width: 412, fontScale: 1 }) },
     "react-native-reanimated": { __esModule: true, default: { View: "AnimatedView", Text: "AnimatedText" }, ReduceMotion: { System: "system" }, useSharedValue,
       useAnimatedStyle: f => { animatedStyles.push(f); return { ...f(), __animate: f }; }, useAnimatedReaction: (prepare, react) => { reactions.push({ prepare, react }); }, withSpring: (value, config, done) => { springs.push(config); springCompletions.push(done); return value; }, withTiming: (value, config, done) => { timings.push({ value, config, done }); return value; } },
     "react-native-worklets": { scheduleOnRN: (fn, ...args) => { queue.push(() => fn(...args)); }, scheduleOnUI: (fn, ...args) => { if (holdUI) uiQueue.push(() => fn(...args)); else fn(...args); } },
@@ -147,7 +156,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
       return React.createElement("FlatList", { ...p, instance }, p.ListHeaderComponent,
         p.data.length ? p.data.map((item, index) => React.createElement(React.Fragment, { key: item.id }, p.renderItem({ item, index }))) : p.ListEmptyComponent, p.ListFooterComponent);
     };
-    Object.assign(modules["react-native"], { FlatList, Platform: { OS: "ios" }, StyleSheet: { create: x => x, absoluteFillObject: {}, hairlineWidth: 1 } });
+    Object.assign(modules["react-native"], { FlatList, Platform: { OS: "ios" }, StyleSheet: installedStyleSheet });
     modules["../components/NativeTabScroll"] = { FlatList, ScrollView: "ScrollView" };
     modules["../hooks/useNativeTabPreview"] = execute("../hooks/useNativeTabPreview.ios.js");
     modules["../hooks/useNativeTabContentReady"] = execute("../hooks/useNativeTabContentReady.ios.js");
@@ -738,4 +747,18 @@ test("fixed Feed navigation and body header contribute one original strip-to-car
   assert.equal(navigation.marginBottom + bodyHeader.marginBottom + content.paddingTop, 26);
   assert.equal(bodyHeader.marginBottom, 22, "optional content retains its existing trailing gap");
   assert.equal(content.paddingTop, 4);
+});
+
+
+test("installed RN absolute fill gives every real local pane native viewport bounds", t => {
+  assert.equal(installedStyleSheet.absoluteFillObject, undefined, "RN 0.86 removed the legacy property");
+  assert.deepEqual(installedStyleSheet.absoluteFill, { position: "absolute", left: 0, right: 0, top: 0, bottom: 0 });
+  const f = fixture({ component: "tabs", page: true, pager: true, active: "everyone" }); t.after(f.close);
+  const check = key => {
+    const style = f.surface(key).props.style[0];
+    for (const [property, value] of Object.entries(installedStyleSheet.absoluteFill)) assert.equal(style[property], value, `${key} ${property}`);
+  };
+  check("everyone"); dragPage(f); f.flush(); check("news");
+  const track = f.all().find(node => node.props?.testID === "feed-filter-swipe-rail");
+  assert.equal(track.props.style.flex, 1); assert.equal(track.props.style.overflow, "hidden");
 });
