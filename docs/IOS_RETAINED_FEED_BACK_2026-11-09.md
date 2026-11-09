@@ -1,5 +1,9 @@
 # iOS retained Feed Back reveal
 
+## Historical candidate record
+
+This audit records the original combined-runtime candidate and its original verification. The current clean branch starts from `8060121` and excludes the notification feature; its original backend-first hold does not apply here. See [the clean integration receipt](IOS_NAVIGATION_WITHOUT_NOTIFICATIONS_2026-11-09.md) for current source, gates and device limits. Historical test counts below are not a substitute for clean-branch validation.
+
 ## Scope and release status
 
 Isolated local branch `ios/retained-feed-back`, based on `942e1f3` (the combined runtime checkpoint is `6569968`). This candidate is not installed, pushed or deployed. The existing phone, main checkout, signed app checkpoints, dependencies, native project and backend are untouched.

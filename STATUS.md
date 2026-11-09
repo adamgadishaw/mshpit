@@ -1,5 +1,13 @@
 # Pit current status
 
+## 2026-11-09 clean iOS navigation candidate
+
+- Isolated branch `ios/navigation-without-notifications` applies reviewed Feed and nested-detail navigation to Discover-only `8060121`; source is `7a8c5cf`. It excludes the held notification runtime and has no new backend rollout dependency. Legacy notification behavior is preserved, not repaired.
+- Independent integration review passes 375 formal tests and 18 production-function cases. Fresh web budget, iOS/Android exports, exact source matching, platform isolation, production dependency audit, syntax, architecture and Blueprint gates pass. Full serial suite and native Release build are pending.
+- Native/dependency copies are independent and path-audited; main and original candidates are unchanged. No navigation build installed or deployed.
+- Preserved Discover-only `8060121` was installed in place and launched. Physical taps briefly worked, but Device Hub gesture control remained unreliable; no continuous-swipe or smoothness acceptance is claimed. No uninstall/reset or credentials entered.
+- Current receipt: `docs/IOS_NAVIGATION_WITHOUT_NOTIFICATIONS_2026-11-09.md`. The next two entries are historical original-candidate records; their notification hold does not describe this clean branch.
+
 ## 2026-11-09 iOS nested detail Back (isolated local candidate)
 
 - Extends verified Feed candidate `48d3bd8` with up to six actual retained
