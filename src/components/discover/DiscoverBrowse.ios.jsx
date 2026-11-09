@@ -193,7 +193,8 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
   slides, events, rangeEvents, eventRecovery, eventStatus, rangeLoadingMore, rangeHasMore, selectedRangeDays,
   onRange, eventView, onEventView, listView, onEventList, eventWeek, onEventWeek,
   onOpen, onOpenArtist, onOpenEvents, onOpenTopRated, onOpenCrew, onOpenFanClubs, onOpenLounge,
-  loungeRows, panels, recommendations, attendanceRows = [],
+  loungeRows, panels, renderPanel, recommendations, attendanceRows = [],
+  localSection = false, sectionGenreFocused, onSectionGenreFocus, navigationRevision = 0,
 }) {
   const isTabPreview = useNativeTabPreview();
   const previewRef = useRef(isTabPreview);
@@ -206,13 +207,21 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
   const [measuredWidth, setMeasuredWidth] = useState(0);
   const [areaOpen, setAreaOpen] = useState(false);
   const [datesOpen, setDatesOpen] = useState(false);
-  const [genreFocused, setGenreFocused] = useState(initialBrowse?.genreFocused === true);
+  const [localGenreFocused, setLocalGenreFocused] = useState(initialBrowse?.genreFocused === true);
+  const genreFocused = sectionGenreFocused ?? localGenreFocused;
+  const setGenreFocused = onSectionGenreFocus || setLocalGenreFocused;
   const scroll = useRef(null);
   const scrollReturn = useRef(null);
   if (!scrollReturn.current) scrollReturn.current = createBrowseScrollReturn(initialBrowse?.scrollY, (patch) => {
     if (mountedRef.current && !previewRef.current) browseReturnRef.current?.save(patch);
   });
   useEffect(() => { if (!previewRef.current) browseReturnRef.current?.save({ genreFocused }); }, [browseReturn, genreFocused, isTabPreview]);
+  const navigationRef = useRef(navigationRevision);
+  useLayoutEffect(() => {
+    if (previewRef.current || navigationRef.current === navigationRevision) return;
+    navigationRef.current = navigationRevision;
+    scrollReturn.current.cancel(); scroll.current?.scrollTo?.({ y: 0, animated: false });
+  }, [navigationRevision, isTabPreview]);
   useEffect(() => {
     const overviewReady = ["ready", "error"].includes(overviewStatus);
     const ready = programme === "shows" ? ["ready", "error"].includes(eventStatus) && !rangeLoadingMore
@@ -250,7 +259,7 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
       directionalLockEnabled keyboardShouldPersistTaps="handled" onScroll={scrollReturn.current.onScroll} onScrollBeginDrag={scrollReturn.current.onScrollBeginDrag} scrollEventThrottle={32}
       onContentSizeChange={scrollReturn.current.onContentSizeChange}
       onLayout={(event) => { setMeasuredWidth(event.nativeEvent.layout.width); scrollReturn.current.onLayout(event); }}>
-      <View style={styles.header}>
+      {!localSection ? <><View style={styles.header}>
         <Text style={styles.title} accessibilityRole="header">Discover</Text>
         <Pressable onPress={toggleArea} accessibilityRole="button"
           accessibilityLabel={`Choose an area to explore. Current area: ${region}`} accessibilityState={{ expanded: areaOpen }}
@@ -272,6 +281,7 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
         </View>
         <TextAction onPress={closeArea} icon="x">Done</TextAction>
       </View> : null}
+      </> : null}
       {refreshError || overviewStatus === "error" && popular.length > 0 ? <View style={styles.notice} accessibilityLiveRegion="polite">
         <Text style={styles.body}>Some details couldn’t refresh. Your current results are still here.</Text><TextAction onPress={onRefresh}>Retry</TextAction>
       </View> : null}
@@ -358,7 +368,7 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
           </View> : null}
           <ArtistRail rows={attendedArtists} title="From shows you attended" cardWidth={artistWidth} onOpen={onOpenArtist} />
           {recommendations ? <View style={styles.inset}>{recommendations}</View> : null}</> : null}
-      </> : <View style={styles.inset}>{panels[programme]}</View>}
+      </> : <View style={styles.inset}>{renderPanel ? renderPanel(programme, isTabPreview) : panels[programme]}</View>}
       </View>
       <View style={styles.endMark} accessible={false}><View style={styles.endLine} /><Icon name="music" size={16} color={colors.amber} /><View style={styles.endLine} /></View>
     </ScrollView>
@@ -387,7 +397,7 @@ const styles = StyleSheet.create({
   textAction: { minHeight: 44, paddingVertical: 10, flexDirection: "row", alignItems: "center", justifyContent: "flex-start", gap: 3, flexShrink: 1 },
   actionText: { color: colors.amber, fontFamily: "System", fontSize: 15, fontWeight: "600", flexShrink: 1 },
   selectedText: { color: colors.amber }, rail: { flexGrow: 0 }, railContent: { paddingHorizontal: GUTTER, gap: GAP, alignItems: "flex-start" },
-  artwork: { overflow: "hidden" }, artworkFallback: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
+  artwork: { overflow: "hidden" }, artworkFallback: { ...StyleSheet.absoluteFill, alignItems: "center", justifyContent: "center" },
   initials: { color: "rgba(255,255,255,0.55)", fontFamily: "System", fontSize: 46, fontWeight: "700", letterSpacing: -1 },
   feature: { borderRadius: 18, borderCurve: "continuous", overflow: "hidden", backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.line },
   featureArtwork: { width: "100%", aspectRatio: 1.6, overflow: "hidden" },

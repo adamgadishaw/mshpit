@@ -1,3 +1,4 @@
+import useNativeTabContentReady from "../../hooks/useNativeTabContentReady";
 import { ScrollView } from "../../components/NativeTabScroll";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
@@ -14,6 +15,7 @@ export default function FestivalsPanel({ region = "Worldwide", onOpenFestival, r
   const country = region === "Worldwide" ? "" : region;
   const load = useCallback(signal => readFestivals({ country, signal }), [country]);
   const resource = useFestivalResource(`festivals:${country}`, load);
+  useNativeTabContentReady(!!resource.data || !!resource.error);
   const today = useFestivalDay();
   const [monthKey, setMonthKey] = useState(null);
   useEffect(() => { registerRefresh?.(resource.refresh); return () => registerRefresh?.(null); }, [registerRefresh, resource.refresh]);

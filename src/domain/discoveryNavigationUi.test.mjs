@@ -40,7 +40,7 @@ test("Discover retains upcoming events and deeper discovery alongside its connec
   assert.match(source, /accessibilityLabel="Browse all events"/);
   assert.equal((legacy.match(/<DiscoverVenues/g) || []).length, 1, "The map and list are one coherent explorer on Android/web");
   assert.match(source, /if \(Platform\.OS === "ios"\) return <DiscoverBrowse/);
-  assert.match(source, /venues: programme === "venues" \? <DiscoverVenues region=\{region\}/, "iOS owns the same single venue explorer in its conditional slot");
+  assert.match(source, /venues: section === "venues" \? <DiscoverVenues region=\{region\}/, "iOS owns the same single venue explorer in its bounded section factory");
   assert.match(explorer, /mapOpen && <VenueMap venues=\{venues\} selected=\{chosenVenue\} onSelect=\{selectMapVenue\}/);
   assert.match(explorer, /onPress=\{\(\) => onOpenVenue\?\.\(venue\)\}/);
   assert.equal((source.match(/title="Find venues"/g) || []).length, 0, "Venues already owns a full section");

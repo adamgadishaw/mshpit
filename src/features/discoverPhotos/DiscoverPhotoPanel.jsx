@@ -1,3 +1,4 @@
+import useNativeTabContentReady from "../../hooks/useNativeTabContentReady";
 import { useMemo } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, focusRing, font, radius } from "../../theme";
@@ -9,6 +10,7 @@ export default function DiscoverPhotoPanel({
   region = "Worldwide", city = "", accountId = null, removedIds = [], blockedIds = [], compact, width, onOpenPhotos,
 }) {
   const gallery = useDiscoverPhotos({ region, city, accountId });
+  useNativeTabContentReady(gallery.status === "ready" || gallery.status === "error");
   const photos = useMemo(() => visibleDiscoverPhotos(gallery.photos, { removedIds, blockedIds }),
     [gallery.photos, removedIds, blockedIds]);
   const location = city || (region === "Worldwide" ? "around the world" : `in ${region}`);

@@ -30,7 +30,7 @@ function createRenderer() {
     hideTextInstance: node => { node.hidden = true; }, unhideTextInstance: node => { node.hidden = false; }, isPrimaryRenderer: true, supportsPersistence: false, supportsHydration: false,
     getRootHostContext: () => context, getChildHostContext: () => context, getPublicInstance: node => node,
     prepareForCommit: () => null, resetAfterCommit: noop,
-    createInstance: (type, props) => ({ type, props, children: [], focus() {}, scrollToEnd() {} }), createTextInstance: text => ({ text }),
+    createInstance: (type, props) => ({ type, props, children: [], focus() {}, scrollToEnd() {}, scrollTo(options) { this.scrollTarget = options; } }), createTextInstance: text => ({ text }),
     appendInitialChild: append, appendChild: append, appendChildToContainer: append,
     removeChild: remove, removeChildFromContainer: remove, insertBefore: insert, insertInContainerBefore: insert,
     finalizeInitialChildren: () => false, shouldSetTextContent: () => false,
@@ -53,7 +53,7 @@ const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 const sleepForever = new Promise(() => {});
 // Actual React, platform-resolved rail and shell components. The native gesture,
 // UI/RN scheduler and actions are synthetic: this does not validate a device.
-function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "following", entryDirection = 0, scrollChild = null, pager = false, shell = false, scrollRef = null, scrollProps = {}, feedScreen = false, selectedFilter = "everyone" } = {}) {
+function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "following", entryDirection = 0, scrollChild = null, pager = false, shell = false, scrollRef = null, scrollProps = {}, feedScreen = false, discoverScreen = false, selectedFilter = "everyone" } = {}) {
   const renderer = createRenderer(), gestures = [], queue = [], calls = [], shared = [], reactions = [], springs = [], timings = [], animatedStyles = [], appListeners = new Set(), appHistory = [], springCompletions = [];
   let props = { page, entryDirection, enabled: true, active, onCommit: onCommit || (direction => calls.push(direction)), onChange: onChange || (tab => calls.push(tab)), hint: "Swipe for an action",
     post: { id: "post-A", likes: 0 }, accountId: "account-A", likeInfo: () => ({ liked: false }),
@@ -185,6 +185,59 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
       swipeEnabled: true, swipeScope: {}, feedPresentation: { current: () => props.routeCurrent !== false }, isCurrentSwipeRoute: () => props.routeCurrent !== false,
       feedReturn: { key: "lease-A", current: () => props.routeCurrent !== false, read: () => null, save: value => leaseWrites.push(value), clear: () => leaseWrites.push("clear") },
       onImpression: (...args) => impressions.push(args), onDwell: (...args) => dwell.push(args), onLoadMore: () => assert.fail("Preview must not paginate"),
+    };
+  }
+  if (discoverScreen) {
+    Object.assign(modules["react-native"], { ActivityIndicator: "ActivityIndicator", Platform: { OS: "ios" } });
+    modules["../hooks/useNativeTabPreview"] = execute("../hooks/useNativeTabPreview.ios.js");
+    modules["../../hooks/useNativeTabPreview"] = modules["../hooks/useNativeTabPreview"];
+    modules["../../hooks/useNativeTabContentReady"] = execute("../hooks/useNativeTabContentReady.ios.js");
+    modules["../NativeDiscoverSectionPager.ios"] = execute("./NativeDiscoverSectionPager.ios.jsx");
+    modules["../../lib/useAppActive"] = () => props.appActive !== false;
+    modules["../../theme"] = { colors: {}, radius: {}, shadow: {}, space: n => n * 4 };
+    modules["../Icon"] = "Icon"; modules["../../components/Icon"] = "Icon";
+    modules["../NativeTabScroll"] = Scroll; modules["../../components/NativeTabScroll"] = Scroll;
+    modules["expo-image"] = { Image: "Image" };
+    modules["../VinylRefreshBoundary"] = p => React.createElement("RefreshBoundary", p, p.children);
+    modules["./DiscoverEventList"] = "EventList";
+    modules["../LiveDiscoveryCards"] = { PopularLoungeCard: "Lounge" };
+    modules["../../lib/img"] = { isHttp: uri => /^http/.test(uri), proxied: uri => uri };
+    modules["./DiscoverBrowse.ios"] = execute("./discover/DiscoverBrowse.ios.jsx");
+    class AppError extends Error { constructor(message) { super(message); this.name = "AppError"; this.code = "PIT-NET-001"; this.retryable = true; } }
+    modules["../../lib/diagnostics"] = { AppError };
+    modules["./useFestivalResource"] = execute("../features/festivals/useFestivalResource.js");
+    modules["./useFestivalDay"] = () => "2026-11-09";
+    modules["./FestivalCard"] = "FestivalCard";
+    modules["../../components/Button"] = "Button";
+    modules["./festivalApi.mjs"] = { readFestivals: options => new Promise((resolve, reject) => reads.push({ options, resolve, reject })) };
+    const FestivalPanel = execute("../features/festivals/FestivalsPanel.ios.jsx").default;
+    modules["./useCityResource"] = execute("../features/cities/useCityResource.js");
+    modules["./cityApi.mjs"] = { readCityDirectory: options => new Promise((resolve, reject) => reads.push({ options, resolve, reject, kind: "cities" })) };
+    modules["../../components/cities/CityDirectoryTiles"] = "CityTiles";
+    modules["../../components/cities/CityDirectoryRail"] = "CityRail";
+    const Cities = execute("../features/cities/CityDiscoveryTiles.jsx").default;
+    modules["./discoverPhotosClientApi"] = { loadDiscoverPhotos: options => new Promise((resolve, reject) => reads.push({ options, resolve, reject, kind: "photos" })) };
+    modules["./useDiscoverPhotos"] = execute("../features/discoverPhotos/useDiscoverPhotos.js");
+    modules["../../components/discover/DiscoverCommunity"] = { DiscoverPhotos: "PhotoGallery" };
+    modules["./DiscoverPhotoPanel.jsx"] = execute("../features/discoverPhotos/DiscoverPhotoPanel.jsx");
+    modules["../../components/NativeTabSwipeExclusion"] = exclusionModule;
+    const Photos = execute("../features/discoverPhotos/DiscoverPhotoPanel.ios.jsx").default;
+    const Browser = execute("./discover/DiscoverSectionBrowser.ios.jsx").default;
+    Component = p => React.createElement(previewContext.Provider, { value: !!p.outerPreview }, React.createElement(Browser, p));
+    props = { ...props, programme: "shows", region: "Worldwide", countries: [{ country: "Worldwide" }],
+      chart: { rows: [{ name: "Actual cached artist", genre: "rock" }] }, overviewStatus: "ready", genres: [],
+      selectedGenre: null, genreRows: [], genreStatus: "idle", query: "", slides: [], events: [], rangeEvents: [],
+      eventRecovery: { kind: "empty", message: "No shows listed" }, eventStatus: "ready", selectedRangeDays: 30,
+      eventView: "cards", listView: false, loungeRows: [], swipeScope: {}, swipeEnabled: true,
+      isCurrentSwipeRoute: () => props.routeCurrent !== false,
+      browseReturn: { key: "discover-A", save: patch => leaseWrites.push(patch) },
+      onProgramme: programme => { calls.push(programme); f.render({ programme }); },
+      onRegion: region => f.render({ region }),
+      renderPanel: (section, preview) => section === "festivals" ? React.createElement(FestivalPanel, { region: props.region,
+        registerRefresh: preview ? undefined : fn => introductions.push(fn) })
+        : section === "cities" ? React.createElement(Cities, { country: props.region, registerRefresh: preview ? undefined : fn => introductions.push(fn) })
+        : section === "photos" ? React.createElement(Photos, { region: props.region, accountId: props.accountId })
+        : React.createElement("SectionPanel", { section }),
     };
   }
   const Layer = execute("./NativeFeedMediaLayer.jsx").default;
@@ -761,4 +814,164 @@ test("installed RN absolute fill gives every real local pane native viewport bou
   check("everyone"); dragPage(f); f.flush(); check("news");
   const track = f.all().find(node => node.props?.testID === "feed-filter-swipe-rail");
   assert.equal(track.props.style.flex, 1); assert.equal(track.props.style.overflow, "hidden");
+});
+
+test("Discover fixed navigation previews actual Festival read and promotes the same resource instance", async t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  const heading = f.all().find(n => n.props?.testID === "discover-fixed-navigation");
+  const before = f.leaseWrites.length;
+  const g = dragPage(f); f.flush();
+  assert.equal(f.reads.length, 1); assert.equal(f.introductions.length, 0, "preview cannot register refresh");
+  assert.equal(f.leaseWrites.length, before, "preview cannot persist scroll or genre");
+  assert.equal(f.surface("festivals").props.pointerEvents, "none");
+  assert.equal(f.surface("festivals").props.accessibilityElementsHidden, true);
+  const loading = f.all().find(n => n.type === "Text" && n.props.children === "Loading festivals…");
+  assert.ok(loading, "actual pending state is visible, not backing artwork");
+  f.ready("festivals"); release(g); g.onFinalize(); f.flush();
+  assert.equal(f.timings.length, 0, "layout alone does not qualify data");
+  f.reads[0].resolve({ upcoming: [] }); await f.settle(); f.react();
+  assert.equal(f.timings.length, 1); f.finish(); f.flush();
+  assert.deepEqual(f.calls, ["festivals"]); assert.equal(f.reads.length, 1, "promotion retains loader instance");
+  assert.ok(f.introductions.some(x => typeof x === "function"));
+  assert.equal(f.all().find(n => n.props?.testID === "discover-fixed-navigation"), heading);
+  assert.ok(f.leaseWrites.some(p => p.scrollY === 0));
+});
+
+test("Discover canceled real Festival read aborts without selection or preference writes", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  const before = f.leaseWrites.length, g = dragPage(f); f.flush(); f.ready("festivals");
+  const signal = f.reads[0].options.signal;
+  release(g, { x: 245 }); g.onFinalize(); f.finishSpring(); f.flush();
+  assert.equal(signal.aborted, true); assert.deepEqual(f.calls, []);
+  assert.equal(f.leaseWrites.length, before); assert.equal(f.surface("festivals"), undefined);
+});
+
+for (const kind of ["empty", "error", "cached", "refreshing"]) test(`Discover Artists ${kind} is ready without an unselected genre request`, t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  f.render({ programme: "venues", chart: { rows: ["cached", "refreshing"].includes(kind) ? [{ name: "Actual cached artist" }] : [] }, overviewStatus: kind === "error" ? "error" : kind === "refreshing" ? "refreshing" : "ready" });
+  const g = dragPage(f, 120); f.flush(); f.ready("artists");
+  release(g, { x: 410 }); g.onFinalize(); f.finish(); f.flush();
+  assert.deepEqual(f.calls, ["artists"]); assert.equal(f.reads.length, 0);
+});
+
+for (const change of ["account", "route", "filter", "tap", "background"]) test(`Discover queued section commit retires across ${change}`, async t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  const g = dragPage(f); f.flush(); f.ready("festivals");
+  f.reads[0].resolve({ upcoming: [] }); await f.settle(); f.react();
+  release(g); g.onFinalize();
+  if (change === "account") f.render({ accountId: "B" });
+  if (change === "route") f.render({ swipeScope: {}, routeCurrent: false });
+  if (change === "filter") f.render({ selectedRangeDays: 60 });
+  if (change === "tap") f.press("Shows");
+  if (change === "background") f.appState("background");
+  f.finish(); f.flush(); assert.deepEqual(f.calls, []);
+});
+
+test("Discover return snapshot is consumed once and a new selection resets source offset", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  f.render({ accountId: "restored", initialBrowse: { programme: "shows", scrollY: 900 }, programme: "shows" });
+  f.press("Artists"); f.press("Shows");
+  assert.ok(f.leaseWrites.some(p => p.scrollY === 0));
+  const activeScroll = nodes(f.surface("shows")).find(n => n.type === "ScrollView" && !n.props.horizontal);
+  f.act(() => activeScroll.props.onLayout({ nativeEvent: { layout: { width: 412, height: 500 } } }));
+  f.act(() => activeScroll.props.onContentSizeChange(412, 1800));
+  f.render();
+  assert.deepEqual(activeScroll.scrollTarget, { y: 0, animated: false }, "returning to a previously visited section must not replay 900px");
+  f.act(() => activeScroll.props.onScroll({ nativeEvent: { contentOffset: { y: 31 } } }));
+  assert.equal(f.leaseWrites.at(-1).scrollY, 31);
+});
+
+for (const section of ["cities", "photos"]) test(`Discover ${section} normal read starts during intent and survives promotion`, async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  f.render({ programme: section === "cities" ? "venues" : "cities" });
+  f.act(() => t.mock.timers.tick(1));
+  const before = f.reads.length, g = dragPage(f); f.flush();
+  f.act(() => t.mock.timers.tick(1)); f.ready(section);
+  assert.equal(f.reads.length, before + 1);
+  const request = f.reads.at(-1); assert.equal(request.kind, section);
+  const surface = f.surface(section);
+  release(g); g.onFinalize(); f.flush(); assert.equal(f.timings.length, 0);
+  request.resolve(section === "cities" ? { cities: [] } : []); await f.settle(); f.react();
+  f.finish(); f.flush();
+  assert.deepEqual(f.calls, [section]); assert.equal(f.surface(section), surface);
+  assert.equal(f.reads.length, before + 1);
+});
+
+test("Discover failed Festival read settles to truthful error instead of blank content", async t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  const g = dragPage(f); f.flush(); f.ready("festivals");
+  release(g); g.onFinalize(); f.flush();
+  f.reads[0].reject(new Error("fixture offline")); await f.settle(); f.react(); f.finish(); f.flush();
+  assert.deepEqual(f.calls, ["festivals"]);
+  assert.ok(f.all().some(n => n.type === "Text" && /Festivals could not load/.test(n.props.children)));
+});
+
+test("Discover local pager preserves an inherited preview and cannot write or navigate", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  const before = f.leaseWrites.length;
+  f.render({ outerPreview: true });
+  swipe(f.gesture); f.flush(); f.press("Artists");
+  assert.deepEqual(f.calls, []); assert.equal(f.leaseWrites.length, before);
+  assert.ok(f.all().filter(n => n.type === "Image").every(n => n.props.autoplay === false));
+});
+
+test("Discover artist carousels keep their own horizontal gesture ahead of section paging", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  const observers = f.all().filter(n => n.type === "GestureDetector").map(n => n.props.gesture)
+    .filter(g => Array.isArray(g.simultaneous)).map(g => g.simultaneous.at(-1));
+  assert.ok(observers.length > 0);
+  const manager = { begin: noop, fail: noop, activate: () => assert.fail("exclusion must remain passive") };
+  down(f.gesture); observers[0].handlers.onTouchesDown({}, manager);
+  f.gesture.onTouchesMove({ allTouches: [{ absoluteX: 100, absoluteY: 200 }], numberOfTouches: 1 }, manager);
+  observers[0].handlers.onTouchesUp({}, manager); release(f.gesture); f.gesture.onFinalize(); f.flush();
+  assert.deepEqual(f.calls, []); assert.equal(f.reads.length, 0);
+});
+
+test("Discover same-section tap cancels a pending detail return restore", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  f.render({ accountId: "restored", initialBrowse: { programme: "shows", scrollY: 900 } });
+  const scroll = nodes(f.surface("shows")).find(n => n.type === "ScrollView" && !n.props.horizontal);
+  f.press("Shows");
+  f.act(() => scroll.props.onLayout({ nativeEvent: { layout: { width: 412, height: 500 } } }));
+  f.act(() => scroll.props.onContentSizeChange(412, 1800)); f.render();
+  assert.deepEqual(scroll.scrollTarget, { y: 0, animated: false });
+  assert.deepEqual(f.calls, []);
+});
+
+test("Discover slow Festival GET commits only its real loading state after the bounded wait", t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  const g = dragPage(f); f.flush();
+  assert.equal(f.translation("shows"), 0, "source is not uncovered before incoming native layout");
+  f.ready("festivals"); release(g); g.onFinalize(); f.flush();
+  assert.equal(f.timings.length, 0);
+  f.act(() => t.mock.timers.tick(2500)); f.react(); f.finish(); f.flush();
+  assert.deepEqual(f.calls, ["festivals"]);
+  assert.ok(f.all().some(n => n.type === "Text" && n.props.children === "Loading festivals…"));
+  assert.equal(f.reads.length, 1);
+});
+
+test("Discover tab tap interrupts waiting release and stale load completion cannot navigate", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  const g = dragPage(f); f.flush(); f.ready("festivals"); release(g); g.onFinalize(); f.flush();
+  f.press("Artists");
+  assert.equal(f.reads[0].options.signal.aborted, true);
+  f.reads[0].resolve({ upcoming: [] }); await f.settle();
+  f.act(() => t.mock.timers.tick(2500)); f.react(); f.finish(); f.flush();
+  assert.deepEqual(f.calls, ["artists"]); assert.equal(f.surface("festivals"), undefined);
+});
+
+test("Discover reversal replaces only intended neighbor and aborts abandoned Festival reads", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close); f.render({ programme: "artists" });
+  const source = f.surface("artists"), g = dragPage(f); f.flush(); f.ready("venues");
+  g.onUpdate({ absoluteX: 380 }); f.flush(); f.ready("festivals");
+  assert.equal(f.surface("venues"), undefined); assert.equal(f.reads.length, 1);
+  g.onUpdate({ absoluteX: 140 }); f.flush(); f.ready("venues");
+  assert.equal(f.surface("festivals"), undefined); assert.equal(f.reads[0].options.signal.aborted, true);
+  assert.equal(f.surface("artists"), source);
+  assert.equal(f.all().filter(n => /^main-tab-page-/.test(n.props?.testID || "")).length, 2);
+  release(g, { x: 245 }); g.onFinalize(); f.finishSpring(); f.flush();
+  assert.deepEqual(f.calls, []); assert.equal(f.surface("artists"), source);
 });

@@ -8,7 +8,7 @@ import { useStore } from "../store";
 import { countryForCity } from "../geo";
 import Icon from "../components/Icon";
 import DiscoverChart from "../components/discover/DiscoverChart";
-import DiscoverBrowse from "../components/discover/DiscoverBrowse";
+import DiscoverBrowse from "../components/discover/DiscoverSectionBrowser";
 import DiscoverGenres from "../components/discover/DiscoverGenres";
 import DiscoverVenues from "../components/discover/DiscoverVenues";
 import DiscoverPhotoPanel from "../features/discoverPhotos/DiscoverPhotoPanel";
@@ -96,6 +96,7 @@ function useLatestCallback(callback) {
 
 export default function DiscoverScreen({
   browseReturn,
+  swipeScope, swipeEnabled, isCurrentSwipeRoute,
   initialProgramme,
   rememberedProgramme,
   onProgrammeChange,
@@ -615,6 +616,7 @@ export default function DiscoverScreen({
   // remain shared; Metro resolves a no-op entry on Android and web.
   if (Platform.OS === "ios") return <DiscoverBrowse
     browseReturn={browseReturn} initialBrowse={initialBrowse}
+    accountId={accountId} swipeScope={swipeScope} swipeEnabled={swipeEnabled} isCurrentSwipeRoute={isCurrentSwipeRoute}
     programme={programme} onProgramme={(value) => setProgramme(discoverProgrammeKey(value))}
     region={region} homeCity={homeCity} countries={countries} onRegion={pickRegion}
     local={liveScope === LIVE_EVENT_SCOPE.LOCAL} onScope={(local) => pickLiveScope(local ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE)}
@@ -630,12 +632,12 @@ export default function DiscoverScreen({
     onOpenCrew={onOpenCrew} onOpenFanClubs={onOpenFanClubs} onOpenLounge={onOpenLounge} loungeRows={loungeRows}
     recommendations={session ? <ArtistRecommendationsRail resource={artistRecommendations.resource} onOpenArtist={onOpenArtist}
       onOpenProfile={onOpenProfile} onManageTaste={onManageTaste} onRetry={artistRecommendations.retry} /> : null}
-    panels={{
-      cities: programme === "cities" ? <CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} registerRefresh={registerCityRefresh} /> : null,
-      venues: programme === "venues" ? <DiscoverVenues region={region} homeCity={homeCity} session={session} venueDirectoryIndex={venueDirectoryIndex} tourDates={tourDates} onOpenVenue={onOpenVenue} onOpenEvent={onOpen} onOpenVenues={onOpenVenues} /> : null,
-      festivals: programme === "festivals" ? <Suspense fallback={<ActivityIndicator color={colors.amber} style={{ marginVertical: 40 }} />}><FestivalsPanel region={region} onOpenFestival={onOpenFestival} registerRefresh={registerFestivalRefresh} /></Suspense> : null,
-      photos: programme === "photos" ? <DiscoverPhotoPanel region={region} accountId={session?.id || "guest"} compact={compact} width={width} onOpenPhotos={openPhotos} removedIds={removedIds} blockedIds={blockedIds} /> : null,
-    }}
+    renderPanel={(section, preview) => ({
+      cities: section === "cities" ? <CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} registerRefresh={preview ? undefined : registerCityRefresh} /> : null,
+      venues: section === "venues" ? <DiscoverVenues region={region} homeCity={homeCity} session={session} venueDirectoryIndex={venueDirectoryIndex} tourDates={tourDates} onOpenVenue={onOpenVenue} onOpenEvent={onOpen} onOpenVenues={onOpenVenues} /> : null,
+      festivals: section === "festivals" ? <Suspense fallback={<ActivityIndicator color={colors.amber} style={{ marginVertical: 40 }} />}><FestivalsPanel region={region} onOpenFestival={onOpenFestival} registerRefresh={preview ? undefined : registerFestivalRefresh} /></Suspense> : null,
+      photos: section === "photos" ? <DiscoverPhotoPanel region={region} accountId={session?.id || "guest"} compact={compact} width={width} onOpenPhotos={openPhotos} removedIds={removedIds} blockedIds={blockedIds} /> : null,
+    })[section]}
   />;
 
   return (

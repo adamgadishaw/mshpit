@@ -1,3 +1,4 @@
+import useNativeTabPreview from "../../hooks/useNativeTabPreview";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Image } from "expo-image";
@@ -6,6 +7,7 @@ import useImageAttempt from "../../hooks/useImageAttempt";
 import { creditedFestivalImage } from "./festivalPresentation.ios.mjs";
 
 export default function FestivalArtwork({ edition, compact = false, onOpen }) {
+  const preview = useNativeTabPreview();
   const image = creditedFestivalImage(edition);
   const [retry, setRetry] = useState(0);
   const attempt = useImageAttempt(JSON.stringify([edition?.id || edition?.festivalSlug, retry]), image ? [image.uri] : []);
@@ -20,7 +22,7 @@ export default function FestivalArtwork({ edition, compact = false, onOpen }) {
   return <View style={styles.root}>
     <View style={[styles.frame, compact && styles.compact, !attempt.uri && styles.failedFrame]}>
       {attempt.uri ? <Pressable disabled={!onOpen} onPress={onOpen} style={StyleSheet.absoluteFill} accessibilityRole={onOpen ? "button" : "image"} accessibilityLabel={onOpen ? `Open ${edition.name}` : `${edition.name} festival artwork`}><Image key={attempt.nativeAttemptKey} source={{ uri: attempt.uri }} style={StyleSheet.absoluteFill}
-        recyclingKey={`${edition.id}:${attempt.nativeAttemptKey}`} contentFit="contain" cachePolicy="disk" transition={0}
+        autoplay={!preview} recyclingKey={`${edition.id}:${attempt.nativeAttemptKey}`} contentFit="contain" cachePolicy="disk" transition={0}
         accessible={false} accessibilityIgnoresInvertColors
         onError={attempt.onError} onDisplay={attempt.onDisplay} /></Pressable> : <View style={styles.failure}>
         <Text style={styles.muted} accessibilityLiveRegion="polite">Festival image could not load.</Text>
