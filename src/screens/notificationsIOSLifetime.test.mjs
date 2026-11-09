@@ -59,29 +59,33 @@ const row = (id, type = "comment", extra = {}) => ({ id, type, actorId: `actor-$
 
 // Actual NotificationsScreen JSX/handlers + React lifecycle + iOS destination
 // hook and domain owners. Store/API/native boundaries are entirely synthetic:
-// mounting the real screen normally marks notifications read, so never use a
-// signed-in production session for this regression suite.
-function fixture({ platform = "ios", strict = false, mountLookup = false, routeCurrent } = {}) {
+// all reads and explicit acknowledgement commands are mocked.
+function fixture({ platform = "ios", strict = false, mountLookup = false, routeCurrent, readResult, refreshResult, olderResult, resource, initialRows } = {}) {
   const renderer = createRenderer(), requests = [], navigations = [], readCalls = [], refreshCalls = [];
   let account = "A", epoch = 1, navigation;
-  let rows = [row("one"), row("two"), row("follow", "follow"), row("dm", "dm"), row("plans", "plan_join"),
+  let rows = initialRows || [row("one"), row("two"), row("follow", "follow"), row("dm", "dm"), row("plans", "plan_join"),
     row("artist", "artist_update", { artist: "Fixture Artist" }), row("cached"), row("none", "welcome"), row("missing", "like", { postId: null })];
+  let activity = resource || { status: "ready", data: { readContract: "notification-ids-v1" }, error: null };
+  const listeners = new Set(), olderCalls = [];
   const api = (path, options) => { const request = { path, options, ...deferred() }; requests.push(request); return request.promise; };
   const native = { View: "View", Text: "Text", Pressable: "Pressable", ScrollView: "ScrollView", ActivityIndicator: "ActivityIndicator",
+    AppState: { addEventListener: (_, listener) => { listeners.add(listener); return { remove: () => listeners.delete(listener) }; } },
     Platform: { OS: platform }, StyleSheet: { create: value => value } };
   const imports = (name, local) => {
     if (name === "react") return React;
     if (name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
     if (name === "../hooks/useIOSActivityNavigation") return navigation;
-    if (name === "../hooks/useScopedRefresh") return () => ({ refreshing: false, refresh: noop });
+    if (name === "../hooks/useScopedRefresh") return execute("../hooks/useScopedRefresh.js", imports);
     if (name === "../lib/api") return { api };
     if (name === "../theme") return { colors: {}, radius: {}, mono: {}, space: value => value };
     if (name === "../store") return { useStore: () => ({
       session: account ? { id: account } : null, chatAuthEpoch: epoch,
+      notificationActivity: activity,
+      loadMoreNotifications: options => { olderCalls.push(options); return olderResult ? olderResult(options) : Promise.resolve([]); },
       feed: [{ id: "cached", review: "Fixture cached review" }], myNotifications: () => rows,
-      refreshNotifications: (...args) => { refreshCalls.push(args); return Promise.resolve([]); },
-      markNotificationsRead: options => { readCalls.push(options); return Promise.resolve({ ok: true }); },
+      refreshNotifications: (...args) => { refreshCalls.push(args); return refreshResult ? refreshResult(...args) : Promise.resolve([]); },
+      markNotificationsRead: options => { readCalls.push(options); return readResult ? readResult(options) : Promise.resolve({ ok: true, value: {} }); },
     }) };
     if (name.startsWith("../components/")) return name.split("/").at(-1);
     // Only pure domain modules may reach the real require boundary.
@@ -103,7 +107,11 @@ function fixture({ platform = "ios", strict = false, mountLookup = false, routeC
     return null;
   }
   const f = {
-    requests, navigations, readCalls, refreshCalls,
+    requests, navigations, readCalls, refreshCalls, olderCalls,
+    foreground() { for (const listener of listeners) listener("active"); },
+    updateResource(value, nextRows = rows) { activity = value; rows = nextRows; f.render(); },
+    button(label) { return f.find(n => n.type === "Pressable" && n.props.accessibilityLabel === label).props.onPress; },
+    text() { return f.all().filter(n => n.text).map(n => n.text).join(" "); },
     get hook() { return hook; },
     all: () => nodes(renderer.container),
     find: predicate => { const found = f.all().find(predicate); assert.ok(found, "Expected rendered node"); return found; },
@@ -250,12 +258,14 @@ test("StrictMode cleanup revokes a pre-cleanup lookup even after setup resumes",
 });
 
 for (const platform of ["ios", "android", "web"]) {
-  test(`${platform} initial read marking stays unchanged and no refresh is added`, async () => {
+  test(`${platform} entry and foreground refresh never mark unseen notifications read`, async () => {
     const f = fixture({ platform }); await f.settle();
-    assert.equal(f.readCalls.length, 1); assert.equal(f.refreshCalls.length, 0); assert.equal(f.requests.length, 0);
-    f.render(); await f.settle(); assert.equal(f.readCalls.length, 1);
-    f.scope("B", 2); await f.settle(); assert.equal(f.readCalls.length, 2);
-    f.scope("B", 3); await f.settle(); assert.equal(f.readCalls.length, 2);
+    assert.equal(f.readCalls.length, 0); assert.equal(f.refreshCalls.length, 1); assert.equal(f.requests.length, 0);
+    f.render(); await f.settle(); assert.equal(f.refreshCalls.length, 1);
+    f.foreground(); await f.settle(); assert.equal(f.refreshCalls.length, 2);
+    f.scope("B", 2); await f.settle(); assert.equal(f.refreshCalls.length, 3);
+    f.scope("B", 3); await f.settle(); assert.equal(f.refreshCalls.length, 4);
+    assert.equal(f.readCalls.length, 0); f.close();
   });
 }
 
@@ -369,3 +379,100 @@ test("Root route/account retirement also fences captured Activity notice control
   assert.equal(f.requests.length, 1); assert.notEqual(f.notice, null);
   assert.deepEqual(f.navigations, []);
 });
+
+for (const platform of ["ios", "android", "web"]) {
+  test(`${platform} explicit mark snapshots loaded unread IDs and never waits before navigation`, async () => {
+    const pending = deferred();
+    const f = fixture({ platform, initialRows: [row("one"), row("two", "comment", { read: true })], readResult: () => pending.promise });
+    await f.settle(); f.act(f.button("Mark loaded activity as read"));
+    assert.deepEqual(f.readCalls[0].notificationIds, ["one"]);
+    f.press("one"); await f.complete(); assert.equal(f.navigations.length, 1);
+    assert.equal(f.readCalls[0].signal.aborted, true);
+    f.act(f.button("Mark loaded activity as read")); assert.equal(f.readCalls.length, 1);
+    pending.resolve({ ok: true, value: {} }); await f.settle(); f.close();
+  });
+}
+test("read retry preserves original IDs despite newer arrivals", async () => {
+  const f = fixture({ initialRows: [row("one")], readResult: () => Promise.resolve({ ok: false, error: { retryable: true, userMessage: "Offline" } }) });
+  await f.settle(); f.act(f.button("Mark loaded activity as read")); await f.settle();
+  assert.match(f.text(), /Some activity could not be marked read. Only confirmed items have been updated./);
+  assert.doesNotMatch(f.text(), /unread badge is unchanged/);
+  f.updateResource({ status: "ready", data: { readContract: "notification-ids-v1" } }, [row("new"), row("one")]);
+  f.act(f.button("Retry marking activity read")); await f.settle();
+  assert.deepEqual(f.readCalls.map(call => call.notificationIds), [["one"], ["one"]]); f.close();
+});
+for (const boundary of ["unmount", "account", "epoch", "round-trip", "route"]) {
+  test(`explicit read controls are fenced across ${boundary}`, async () => {
+    let current = true; const pending = deferred();
+    const f = fixture({ routeCurrent: () => current, readResult: () => pending.promise }); await f.settle();
+    const mark = f.button("Mark loaded activity as read"); f.act(mark);
+    if (boundary === "unmount") f.unmountLayout();
+    if (boundary === "account") f.scope("B", 2);
+    if (boundary === "epoch") f.scope("A", 2);
+    if (boundary === "round-trip") { f.scope("B", 2); f.scope("A", 3); }
+    if (boundary === "route") current = false;
+    mark(); assert.equal(f.readCalls.length, 1);
+    if (boundary !== "route") assert.equal(f.readCalls[0].signal.aborted, true);
+    pending.resolve({ ok: false, error: { userMessage: "Stale error" } }); await f.settle();
+    assert.doesNotMatch(f.text(), /Stale error/); f.close();
+  });
+}
+test("Activity distinguishes loading, true empty and offline while retaining loaded rows", async () => {
+  const f = fixture({ initialRows: [], resource: { status: "loading", data: null } }); await f.settle();
+  assert.match(f.text(), /Loading activity/); assert.doesNotMatch(f.text(), /No activity yet/);
+  f.updateResource({ status: "error", error: { userMessage: "Offline" } });
+  assert.match(f.text(), /Offline/); assert.doesNotMatch(f.text(), /No activity yet/);
+  f.updateResource({ status: "ready", data: {} }); assert.match(f.text(), /No activity yet/);
+  f.updateResource({ status: "error", error: { userMessage: "Offline" }, data: {} }, [row("one")]);
+  assert.ok(f.row("one")); assert.match(f.text(), /previously loaded/); f.close();
+});
+test("legacy server cannot expose unsafe read button and older pages load without marking", async () => {
+  const f = fixture({ resource: { status: "ready", data: { nextCursor: "cursor" } } }); await f.settle();
+  assert.ok(!f.all().some(n => n.props?.accessibilityLabel === "Mark loaded activity as read"));
+  assert.match(f.text(), /temporarily unavailable/);
+  f.act(f.button("Load older activity")); await f.settle();
+  assert.equal(f.olderCalls.length, 1); assert.equal(f.readCalls.length, 0); f.close();
+});
+
+test("capped history shows a clear limit instead of an endless older-page control", async () => {
+  const f = fixture({ resource: { status: "ready", data: { historyLimited: true, nextCursor: null } } });
+  await f.settle(); assert.match(f.text(), /latest 1,000 activities/);
+  assert.ok(!f.all().some(n => n.props?.accessibilityLabel === "Load older activity")); f.close();
+});
+
+for (const name of ["AbortError", "Error"]) {
+  test(`refresh and pagination ${name} settle without acknowledgement or unhandled failure`, async () => {
+    const error = Object.assign(new Error("Synthetic failure"), { name });
+    const f = fixture({ refreshResult: () => Promise.reject(error), olderResult: () => Promise.reject(error),
+      resource: { status: "ready", data: { nextCursor: "older", readContract: "notification-ids-v1" } } });
+    await f.settle();
+    f.act(f.find(n => n.type === "VinylRefreshBoundary").props.onRefresh); await f.settle();
+    f.act(f.button("Load older activity")); await f.settle();
+    assert.equal(f.readCalls.length, 0);
+    assert.equal(f.find(n => n.type === "VinylRefreshBoundary").props.refreshing, false);
+    assert.equal(f.find(n => n.props?.accessibilityLabel === "Load older activity").props.disabled, false); f.close();
+  });
+}
+test("Digest and Recent only acknowledge when explicitly requested", async () => {
+  const f = fixture(); await f.settle();
+  f.act(f.button("Digest activity view")); await f.settle();
+  assert.equal(f.readCalls.length, 0);
+  f.act(f.button("Recent activity view")); f.press("one"); await f.fail();
+  assert.equal(f.readCalls.length, 0); f.close();
+});
+
+for (const boundary of ["account", "epoch", "round-trip"]) {
+  test(`Activity read controls recover after leave and ${boundary} without reviving old callbacks`, async () => {
+    const f = fixture(); await f.settle();
+    const oldMark = f.button("Mark loaded activity as read");
+    f.press("follow"); await f.settle();
+    f.act(oldMark); assert.equal(f.readCalls.length, 0);
+    if (boundary === "account") f.scope("B", 2);
+    if (boundary === "epoch") f.scope("A", 2);
+    if (boundary === "round-trip") { f.scope("B", 2); f.scope("A", 3); }
+    await f.settle();
+    f.act(oldMark); assert.equal(f.readCalls.length, 0);
+    f.act(f.button("Mark loaded activity as read")); await f.settle();
+    assert.equal(f.readCalls.length, 1); f.close();
+  });
+}

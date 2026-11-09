@@ -53,14 +53,20 @@ test("artist update deletion is server-first and exposes scoped retry feedback",
   assert.match(artistHub, /This artist post was not removed, so it is still visible/);
 });
 
-test("notification read is server-first and never clears uncaptured rows", () => {
-  const source = mutationSlice("const markNotificationsRead =", "const postOwner =");
-  assertServerFirst(source, "setNotifications(");
-  assert.match(source, /reconcileConfirmedNotificationReads/);
-  assert.match(source, /const notificationIds = notifications/);
-  assert.match(notifications, /await markNotificationsRead\(\{ signal: controller\.signal \}\)/);
-  assert.match(notifications, /notificationReadState\.scope === notificationReadScope/);
-  assert.match(notifications, /unread badge is unchanged/);
+test("notification read lives in the scoped feature and only sends explicit IDs", () => {
+  const state = readFileSync(new URL("../features/notifications/notificationActivityState.mjs", import.meta.url), "utf8");
+  const transport = readFileSync(new URL("../features/notifications/notificationsApi.js", import.meta.url), "utf8");
+  const command = readFileSync(new URL("../features/notifications/notificationReadCommand.mjs", import.meta.url), "utf8");
+  assert.match(store, /useNotificationActivity/);
+  assert.doesNotMatch(store, /api\("\/api\/me\/notifications\/read"/);
+  assert.match(state, /markNotificationRows\(/);
+  assert.match(command, /await writeReads\(/);
+  assert.ok(command.indexOf("reconcileConfirmedNotificationReads(previous") > command.indexOf("await writeReads("));
+  assert.match(command, /response\.notificationIds/);
+  assert.match(transport, /\/api\/me\/notifications\/read\/scoped/);
+  assert.match(notifications, /await markNotificationsRead\(\{ notificationIds:/);
+  assert.match(notifications, /notificationReadState\?\.scope === notificationReadScope/);
+  assert.match(notifications, /Only confirmed items have been updated/);
 });
 
 test("a post response cannot enter a different account's local feed", () => {
