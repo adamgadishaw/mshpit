@@ -1,6 +1,6 @@
 # Activity reliability candidate
 
-Scope: local cross-platform client/server fix, rebased onto the reviewed app/security checkpoint 1487a72. No push delivery,
+Scope: local cross-platform client/server fix, rebased onto reviewed Discover runtime 80601219641f7f49bc3df02eb96a834f66480708. No push delivery,
 production notification mutation, deployment or device installation is included.
 
 ## Behavior and rollout
@@ -58,3 +58,44 @@ Concurrent/unseen/older notifications; owned and visible acknowledgements;
 legacy/mixed-version servers; retries and partial batches; account/epoch changes
 including A-B-A; cancelled observers and remounts; external confirmed DM reads
 or privacy scrubs racing GET responses; pagination/cap; explicit-only UI writes.
+
+
+## Frozen validation receipt (2026-11-09 UTC)
+
+Runtime/test source: `c569d3a9ca898366024767fa0b145aa2e1022cab` on
+`fix/notification-reliability`. All nine stages of the serial isolated pipeline
+completed successfully at 02:14 UTC. An independent read-only review verified
+source ancestry, clean tracked files and the test/export receipts.
+
+- Full suite: 8,661 tests passed; zero failures, cancellations or skips. Run with
+  Node 24 and `node scripts/run-tests.mjs --test-concurrency=1`.
+- `npm run build:web`: catalog split, export and unchanged startup budget passed.
+  Initial JavaScript is 523,912 / 524,288 gzip bytes (511.6 / 512 KiB), leaving
+  only 376 bytes of headroom. Paused music-player labels were absent. Recheck
+  this tight budget after integration and any future startup changes.
+- Syntax: 929 Node files passed. Architecture: 144/144 Store hooks, 47/47 state
+  hooks and 154/154 inline API routes; no allowance was increased.
+- Render Blueprint schema/reference checks passed. This does not validate live
+  deployment configuration or secret presence.
+- Production dependency audit: zero reported vulnerabilities.
+- Expo production exports for iOS and Android passed with external source maps.
+  Export-source isolation passed with zero issues (Android and web checked).
+- `git diff --check` passed. No main checkout, deployment, production read state,
+  notification setting or phone operation was changed by this validation.
+
+Exported Hermes bundle SHA-256 values:
+
+- iOS: `e7c3091d282fa65b437a407d984880e5a711db96c6535da6713884d7c6f9485d`
+- Android: `d3b1ded57cf5fabdd79c164f984a3d4f532e7cf3b3c03ffbdac55a1b4d62e78c`
+
+The pipeline status is `/tmp/mshpit-notifications-current-status.json`; sibling
+`/tmp/mshpit-notifications-current-*.log` files contain individual results.
+The web report is `dist/web-bundle-budget.json`, and the isolation receipt is
+`/tmp/mshpit-notifications-isolation-c569d3a.json`. Temporary logs/exports are
+local evidence, not a deployed artifact or a permanent release archive.
+
+Remaining release work: revalidate the actual integrated main revision, perform
+native build and physical Activity UX testing when authorized, and separately
+approve deployment. No signed native build or physical notification runtime QA
+was performed for this candidate. Push delivery remains a separate feature.
+The server-first, all-instances rollout requirement above remains mandatory.
