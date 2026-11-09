@@ -1,0 +1,824 @@
+// iOS post presentation. Shared action ownership and domain projections remain
+// canonical; Android/web keep TicketStub.jsx unchanged.
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
+import { useContext, useMemo, useState } from "react";
+import SupportingActsLine from "./SupportingActsLine";
+import useTicketPresentation from "../hooks/useTicketPresentation";
+import { View, Text, StyleSheet, Pressable, Alert, Linking, useWindowDimensions } from "react-native";
+import { Image as ExpoImage } from "expo-image";
+import { colors, font, glow, mono, radius, roleColor, space } from "../theme";
+import Icon from "./Icon";
+import Avatar from "./Avatar";
+import RatingBars from "./RatingBars";
+import SpinStar from "./SpinStar";
+import CommentPreview from "./AfterpartyPreview";
+import ExpandableText from "./ExpandableText";
+import { POST_CONTENT_PREVIEW_LIMIT } from "../domain/contentPreview.mjs";
+import PostMediaGrid from "./PostMediaGrid";
+import ConvertingClipNotice from "./ConvertingClipNotice";
+import SongAttachment from "./SongAttachment";
+import usePostCardData from "../hooks/usePostCardData.ios";
+import PostSwipeActions from "./PostSwipeActions";
+import { RepostButton, RepostAttribution } from "./SocialReactionButtons";
+import { BadgeRow } from "./Badge";
+import { formatDate, relativeTime } from "../domain/dates.mjs";
+import { mediaDisplayItems } from "../domain/postMediaDisplay.mjs";
+import { recommendationDisclosure } from "../domain/feedExperience.mjs";
+import { artistCampaignPresentation } from "../domain/artistCampaignPost.mjs";
+import { normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
+import { ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
+import useReducedMotion from "../hooks/useReducedMotion";
+import { PublicPressableLink, PublicTextLink } from "./PublicWebLinks";
+import { artistPath, cityPath, profilePath, venuePath } from "../domain/urls.mjs";
+import { cityIdentityForLocation } from "../cityIdentity.js";
+import { isCityOnlyReview } from "../domain/showNavigation.mjs";
+import { CityNavigationContext } from "./cities/CityNavigationContext";
+import { buildAttendanceTicketPreview } from "../domain/attendanceTicket.mjs";
+import { calendarShowFromPost } from "../domain/calendarShows.mjs";
+import ConcertTicketCard from "./ConcertTicketCard";
+import { SocialShareButton } from "./SocialShareStudio";
+import { concertPostContext } from "../domain/concertPostContext.mjs";
+import { canonicalYouTubeReviewUrl, ONLINE_REVIEW_EXPERIENCE, reviewCardPerformance, youtubeReviewThumbnailUrl } from "../domain/onlineReview.mjs";
+import { buildPostShareModel } from "../domain/socialShareCard.mjs";
+import { postCardPresentation } from "../domain/postCardPresentation.ios.mjs";
+import { reviewRatingSummary } from "../domain/reviewRatingSummary.mjs";
+
+// "3rd time in the pit" needs a real ordinal, not "3th".
+const ordinal = n => {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+  return `${n}${["th", "st", "nd", "rd"][Math.min(n % 10, 4)] || "th"}`;
+};
+function TaggedPeopleRow({
+  people,
+  onOpenProfile,
+  selfId,
+  onRemoveSelf,
+  palette = null,
+  concertContext = false
+}) {
+  const tagged = normalizeTaggedPeople(people);
+  if (!tagged.length) return null;
+  const textColor = palette?.textColor || colors.text;
+  const borderColor = palette?.accentColor ? palette.accentColor + "70" : colors.line;
+  return <View style={styles.taggedPeopleRow} accessibilityLabel={`With ${tagged.map(person => person.name).join(", ")}`}>
+      <Icon name="you" size={14} color={palette?.accentColor || colors.amber} />
+      <Text style={[styles.taggedPeopleLead, {
+      color: palette?.mutedTextColor || colors.textDim
+    }]}>{concertContext ? "went with" : "with"}</Text>
+      {tagged.map(person => <View key={person.id} style={[styles.taggedPersonChip, {
+      borderColor
+    }]}>
+          <PublicPressableLink href={person.handle ? profilePath(person.handle) : null} onNavigate={onOpenProfile ? () => onOpenProfile(person.id) : undefined} style={styles.taggedPersonProfile} disabled={!onOpenProfile} accessibilityLabel={onOpenProfile ? `Open ${person.name}'s profile` : person.name}>
+            <Avatar user={person} size={22} />
+            <Text style={[styles.taggedPersonText, {
+          color: textColor
+        }]} numberOfLines={1}>@{person.handle || person.name}</Text>
+          </PublicPressableLink>
+          {person.id === selfId && onRemoveSelf && <Pressable style={styles.taggedPersonRemove} onPress={() => onRemoveSelf(person)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Remove your tag from this post`}>
+              <Icon name="x" size={12} color={palette?.mutedTextColor || colors.textDim} />
+            </Pressable>}
+        </View>)}
+    </View>;
+}
+function RecommendationWhy({
+  recommendation,
+  expanded,
+  onToggle,
+  palette = null
+}) {
+  if (!recommendation) return null;
+  const accent = palette?.accentColor || colors.amber;
+  const text = palette?.textColor || colors.text;
+  const muted = palette?.mutedTextColor || colors.textDim;
+  return <View style={[styles.whyWrap, expanded && styles.whyWrapExpanded]}>
+    <Pressable onPress={onToggle} accessibilityRole="button" accessibilityLabel={`${recommendation.label}. ${expanded ? "Hide" : "Show"} more information.`} accessibilityState={{
+      expanded
+    }} style={styles.whyButton}>
+      <Text style={[styles.whyLabel, {
+        color: muted
+      }]}>Suggested · {expanded ? "Hide" : "Why?"}</Text>
+    </Pressable>
+    {expanded && <Text style={[styles.whyDetail, {
+      color: muted
+    }]} accessibilityLiveRegion="polite">{recommendation.detail}</Text>}
+  </View>;
+}
+function ViewTally({
+  count,
+  palette = null
+}) {
+  const value = Math.max(0, Math.trunc(Number(count) || 0));
+  const color = palette?.mutedTextColor || colors.textFaint;
+  return <View style={styles.viewTally} accessible accessibilityRole="text" accessibilityLabel={`${value} member ${value === 1 ? "view" : "views"}`}>
+      
+      <Text style={[styles.viewTallyText, {
+      color
+    }]}>{`${value} ${value === 1 ? "view" : "views"}`}</Text>
+    </View>;
+}
+function TicketActionRail({
+  showHref,
+  onOpenShow,
+  compareHref,
+  onCompare,
+  artist,
+  reviewOnly = false,
+  palette = null
+}) {
+  if (!showHref && !compareHref) return null;
+  const accent = palette?.accentColor || colors.amber;
+  const secondary = palette?.accentColor || colors.cool;
+  const textColor = palette?.textColor || colors.text;
+  return <View style={[styles.ticketActionRail, styles.nativeTicketActionRail, palette && {
+    backgroundColor: palette.contentSurfaceColor,
+    borderColor: palette.accentColor + "72"
+  }]} accessibilityLabel="Show links">
+      {showHref ? <PublicPressableLink href={showHref} onNavigate={onOpenShow} style={({
+      pressed
+    }) => [styles.ticketAction, styles.nativeTicketAction, pressed && styles.ticketActionPressed]} accessibilityLabel={reviewOnly ? `Open ${artist || "concert"} review` : `View ${artist || "this"} show`}>
+          <Icon name="ticket" size={15} color={accent} />
+          <Text style={[styles.ticketActionText, styles.nativeTicketActionText, {
+        color: textColor
+      }]} numberOfLines={undefined}>{reviewOnly ? "Open review" : "View this show"}</Text>
+          <Icon name="chevron-right" size={13} color={accent} />
+        </PublicPressableLink> : null}
+      {showHref && compareHref ? <View style={[styles.ticketActionDivider, styles.nativeTicketActionDivider, palette && {
+      backgroundColor: palette.accentColor + "52"
+    }]} /> : null}
+      {compareHref ? <PublicPressableLink href={compareHref} onNavigate={onCompare} style={({
+      pressed
+    }) => [styles.ticketAction, styles.nativeTicketAction, pressed && styles.ticketActionPressed]} accessibilityLabel={`Compare scores across ${artist} concerts`}>
+          <Icon name="archive" size={15} color={secondary} />
+          <Text style={[styles.ticketActionText, styles.nativeTicketActionText, {
+        color: textColor
+      }]} numberOfLines={undefined}>Compare {artist} shows</Text>
+          <Icon name="chevron-right" size={13} color={secondary} />
+        </PublicPressableLink> : null}
+    </View>;
+}
+function PostOverflow({
+  expanded,
+  onToggle,
+  onClose,
+  onEdit,
+  onDelete,
+  onReport,
+  onNotInterested,
+  palette
+}) {
+  const actions = [["Not for me. Hide this recommendation.", "Not for me", onNotInterested], ["Edit post", "Edit post", onEdit], ["Delete post", "Delete post", onDelete], ["Report post", "Report post", onReport]].filter(([,, action]) => action);
+  if (!actions.length) return null;
+  const color = palette?.mutedTextColor || colors.textDim;
+  return <>
+    <Pressable onPress={onToggle} accessibilityRole="button" accessibilityLabel="More post actions" accessibilityState={{
+      expanded
+    }} style={styles.fBtn}>
+      <Text style={{
+        color,
+        fontSize: 22
+      }}>···</Text>
+    </Pressable>
+    {expanded && <View style={styles.overflowPanel} accessibilityLabel="Post actions">
+      {actions.map(([label, title, action]) => <Pressable key={label} accessibilityRole="button" accessibilityLabel={label} style={styles.overflowAction} onPress={() => {
+        onClose();
+        action();
+      }}>
+        <Text style={{
+          color: label === "Delete post" ? colors.danger : color,
+          fontSize: 14
+        }}>{title}</Text>
+      </Pressable>)}
+      <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close post actions" style={styles.overflowAction}>
+        <Text style={{
+          color,
+          fontSize: 14
+        }}>Cancel</Text>
+      </Pressable>
+    </View>}
+  </>;
+}
+
+// Review-forward feed card: the review is the centerpiece. Artist / venue / date
+// sit on a ticket-stub line below, the score reads at a glance, and the footer
+// opens the post's comments. Lounge is reserved for the exact show's shared
+// conversation so the two spaces never look like duplicate features.
+export default function TicketStub({
+  log,
+  mediaViewable = null,
+  contextPresentation = null,
+  compactContent = false,
+  swipeActions = false,
+  onOpen,
+  onOpenShow,
+  onOpenPost,
+  onNotInterested,
+  onComment,
+  onRequireAuth,
+  onPreview,
+  onOpenProfile,
+  onOpenArtist,
+  onOpenArtistArchive,
+  onOpenVenue,
+  onReport,
+  onEdit,
+  onDelete,
+  onOpenPhotos,
+  onPlay,
+  onRemoveMyPostTag,
+  onSelfTagRemoved,
+  showComments = true
+}) {
+  const tabPreview = useNativeTabPreview();
+  const {
+    width,
+    fontScale
+  } = useWindowDimensions();
+  let onOpenCity = useContext(CityNavigationContext);
+  const cityIdentity = cityIdentityForLocation(log);
+  const cityHref = cityIdentity ? cityPath(cityIdentity) : null;
+  const avatarPriority = mediaViewable === true ? "high" : "normal";
+  const openPostDetail = () => (onOpenPost || onComment || onOpen)?.(log);
+  // Comments are public post navigation, never a fallback to artist/show detail.
+  // Leave the callback absent when unavailable so the canonical web href works.
+  const openComments = onComment || onOpenPost ? () => (onComment || onOpenPost)(log) : undefined;
+  const { author, session, badges, likeCount, liked, commentCount, viewCount, convertingClips,
+    likeInfo, toggleLike, deleteOwnPost, refreshFeed, setPostRepost } = usePostCardData(log);
+  const authorHref = author?.handle ? profilePath(author.handle) : null;
+  const postContext = useMemo(() => concertPostContext(log), [log]);
+  const canonicalPostHref = postContext.showHref;
+  const isOnlineReview = (log.experienceType || log.experience_type) === ONLINE_REVIEW_EXPERIENCE;
+  const cityOnlyReview = isCityOnlyReview(log);
+  const youtubeUrl = isOnlineReview ? canonicalYouTubeReviewUrl(log.youtubeUrl || log.youtube_url, log.youtubeVideoId || log.youtube_video_id) : "";
+  const youtubeThumbnailUrl = isOnlineReview ? youtubeReviewThumbnailUrl(youtubeUrl) : "";
+  const artistHref = log.artist ? artistPath(log.artist, log.artistPublicSlug || log.artist_public_slug || null) : null;
+  const venueHref = log.venue ? venuePath({
+    name: log.venue,
+    providerVenueId: log.providerVenueId || log.venue_provider_id || null,
+    source: log.source || null
+  }) : null;
+  const canCompareArtistShows = !!postContext.artistConcertsHref && !!onOpenArtistArchive;
+  const openArtistShows = () => onOpenArtistArchive?.(postContext.artist, postContext.artistKey, postContext.artistPublicSlug);
+  // Recycled rows and account changes get a fresh disclosure state. Same-post
+  // rerenders and retained Back keep the choices, without leaking to another post.
+  const detailScope = JSON.stringify([log.id, session?.id || "guest", compactContent, log.kind]);
+  const [disclosure, setDisclosure] = useState(null);
+  const disclosureValues = disclosure?.scope === detailScope ? disclosure : {
+    scope: detailScope,
+    details: !compactContent
+  };
+  if (disclosure && disclosure.scope !== detailScope) setDisclosure(null);
+  const detailsOpen = !!disclosureValues.details;
+  const whyOpen = !!disclosureValues.why;
+  const statsOpen = !!disclosureValues.score;
+  const iosSetlistRevealed = !log.inTourWindow || !!disclosureValues.spoilers;
+  const toggleDisclosure = key => {
+    if (currentCard()) setDisclosure(previous => {
+      const current = previous?.scope === detailScope ? previous : { scope: detailScope, details: !compactContent };
+      return { ...current, [key]: !current[key] };
+    });
+  };
+  const menuScope = `${log.id}:${session?.id || "guest"}`;
+  const [openMenu, setOpenMenu] = useState(null);
+  const menuOpen = openMenu === menuScope;
+  // A recycled cell or account switch must not reopen an old action list.
+  if (openMenu !== null && !menuOpen) setOpenMenu(null);
+  const reduceMotion = useReducedMotion();
+  const recommendation = useMemo(() => recommendationDisclosure(log.recommendation), [log.recommendation]);
+  // Editing is the author's alone. Admins moderate (remove/mute/ban); they
+  // never rewrite someone's review, so no admin bypass here.
+  const canEdit = !!onEdit && !!session && session.id === log.userId && !log.attendanceTicket;
+  // Delete is the author's own. Like edit, admins moderate through their own
+  // route rather than this button, so there is no staff bypass here.
+  const canDelete = !!session && session.id === log.userId;
+  const canReport = !!onReport && (!session || session.id !== log.userId);
+  const confirmDelete = currentGuard => {
+    // Existing button handlers pass a press event; only sheet callers supply a fence.
+    const isCurrent = () => currentCard() && (typeof currentGuard !== "function" || currentGuard());
+    if (!isCurrent()) return;
+    const run = () => {
+      if (isCurrent()) (onDelete || deleteOwnPost)?.(log.id);
+    };
+    Alert.alert("Delete post?", "This can't be undone.", [{
+      text: "Cancel",
+      style: "cancel"
+    }, {
+      text: "Delete",
+      style: "destructive",
+      onPress: run
+    }]);
+  };
+  const contextActions = [{
+    label: "Not for me",
+    run: onNotInterested ? () => onNotInterested(log) : null
+  }, {
+    label: "Edit post",
+    run: canEdit ? () => onEdit(log) : null
+  }, {
+    label: "Delete post",
+    run: canDelete ? confirmDelete : null
+  }, {
+    label: "Report post",
+    run: canReport ? () => onReport(log) : null
+  }].filter(action => action.run);
+  const {
+    current: currentCard,
+    guard,
+    cardVisible,
+    actionProps,
+    shareKey,
+    campaignImageProps,
+    openContextActions
+  } = useTicketPresentation({
+    menuScope,
+    userId: log.userId,
+    contextActions,
+    contextPresentation,
+    mediaViewable,
+    tabPreview,
+    reduceMotion,
+    closeMenu: () => setOpenMenu(null),
+    confirmDelete
+  });
+  {
+    onOpen = guard(onOpen);
+    onOpenShow = guard(onOpenShow);
+    onOpenPost = guard(onOpenPost);
+    onComment = guard(onComment);
+    onRequireAuth = guard(onRequireAuth);
+    onPreview = guard(onPreview);
+    onOpenProfile = guard(onOpenProfile);
+    onOpenArtist = guard(onOpenArtist);
+    onOpenArtistArchive = guard(onOpenArtistArchive);
+    onOpenVenue = guard(onOpenVenue);
+    onOpenCity = guard(onOpenCity);
+    onOpenPhotos = guard(onOpenPhotos);
+    onPlay = guard(onPlay);
+    onNotInterested = guard(onNotInterested);
+    onReport = guard(onReport);
+    onEdit = guard(onEdit);
+    onDelete = guard(onDelete);
+    onRemoveMyPostTag = guard(onRemoveMyPostTag);
+    onSelfTagRemoved = guard(onSelfTagRemoved);
+  }
+  const convertingNotice = convertingClips.length > 0 ? <ConvertingClipNotice {...actionProps} clips={convertingClips} onReady={() => {
+    if (currentCard()) void refreshFeed?.();
+  }} /> : null;
+  const pressLike = event => {
+    event?.stopPropagation?.();
+    event?.nativeEvent?.stopPropagation?.();
+    if (!currentCard()) return;
+    if (!session) {
+      onRequireAuth?.();
+      return;
+    }
+    toggleLike(log.id, log.likes || 0);
+  };
+  // No responder capture: media, links and nested controls retain ownership.
+  // The visible More button remains the tap/VoiceOver alternative.
+  const CardSurface = Pressable;
+  const contextProps = {
+    accessible: false,
+    delayLongPress: 500,
+    onLongPress: contextActions.length ? openContextActions : undefined
+  };
+  const bodyContextProps = {
+    onLongPress: contextProps.onLongPress,
+    delayLongPress: contextProps.delayLongPress
+  };
+  const overflow = (palette = null) => <PostOverflow expanded={menuOpen && cardVisible} onToggle={guard(() => setOpenMenu(menuOpen ? null : menuScope))} onClose={guard(() => setOpenMenu(null))} onEdit={canEdit ? () => onEdit(log) : null} onDelete={canDelete ? confirmDelete : null} onReport={canReport ? () => onReport(log) : null} onNotInterested={onNotInterested ? () => onNotInterested(log) : null} palette={palette} />;
+  const isStaffViewer = session && (session.role === "admin" || session.role === "moderator");
+  const setlist = useMemo(() => Array.isArray(log.setlist) ? log.setlist : [], [log.setlist]);
+  const timeLabel = log.timeAgo || relativeTime(log.createdAt);
+  const taggedPeople = useMemo(() => normalizeTaggedPeople(log.taggedPeople), [log.taggedPeople]);
+  const removeSelfTag = async () => {
+    if (!currentCard()) return;
+    const result = await onRemoveMyPostTag?.(log.id);
+    if (!currentCard()) return;
+    if (result?.ok === false) Alert.alert("Tag not removed", result.error?.message || "Refresh the post and try again.");else if (result?.ok) onSelfTagRemoved?.(result);
+  };
+  const postMedia = useMemo(() => mediaDisplayItems(log).map(item => ({
+    ...item,
+    by: log.user?.name,
+    postId: log.id,
+    ownerId: log.userId
+  })), [log]);
+  const campaignPresentation = useMemo(() => artistCampaignPresentation(log.campaign, postMedia), [log.campaign, postMedia]);
+  const campaignBackground = campaignPresentation?.background || null;
+  const campaignBackgroundIndex = campaignBackground ? postMedia.findIndex(item => (item.id || item.assetId) === (campaignBackground.id || campaignBackground.assetId)) : -1;
+  const statusMedia = useMemo(() => campaignBackground ? postMedia.filter((_, index) => index !== campaignBackgroundIndex) : postMedia, [campaignBackground, campaignBackgroundIndex, postMedia]);
+  const attendanceTicketCard = useMemo(() => log.attendanceTicket?.kind === "attendance-ticket" ? log.attendanceTicket : log.attendanceTicket ? buildAttendanceTicketPreview({
+    author,
+    show: log.attendanceTicket,
+    seatLocation: log.attendanceTicket.seat || log.attendanceTicket.seatLocation,
+    shareSeatLocation: !!(log.attendanceTicket.seat || log.attendanceTicket.seatLocation)
+  }) : null, [author, log.attendanceTicket]);
+  const attendanceTicketShow = useMemo(() => log.attendanceTicket?.tourDateId ? calendarShowFromPost(log) : null, [log]);
+  const shareModel = useMemo(() => buildPostShareModel(log, {
+    author
+  }), [author, log]);
+  const {
+    band,
+    room,
+    overall,
+    factors,
+    hasDimensions
+  } = reviewRatingSummary(log);
+  const performance = useMemo(() => reviewCardPerformance(log), [log]);
+  const performanceTitle = performance.primary;
+  const titledPerformance = performance.showArtistInMeta;
+  const cardPresentation = postCardPresentation(log, {
+    showHref: canonicalPostHref,
+    compareHref: canCompareArtistShows ? postContext.artistConcertsHref : null,
+    online: isOnlineReview,
+    width,
+    fontScale
+  });
+  const ratingAvailable = overall > 0 || !!factors;
+  const ratingLabel = overall > 0 ? `Overall ${overall.toFixed(1)} out of 5.` : "No overall rating.";
+  const scoreControl = ratingAvailable ? <Pressable style={[styles.scorePill, cardPresentation.stackContext && styles.scoreStack, statsOpen && styles.scorePillOpen]} onPress={guard(() => toggleDisclosure("score"))} accessibilityRole="button" accessibilityState={{
+    expanded: statsOpen
+  }} accessibilityLabel={`${ratingLabel} ${statsOpen ? "Hide" : "Show"} the rating breakdown.`}>
+    <Icon name="star" size={14} color={colors.gold} />
+    <Text style={styles.scoreNum}>{overall > 0 ? overall.toFixed(1) : "Ratings"}</Text>
+    <Icon name={statsOpen ? "chevron-down" : "chevron-right"} size={12} color={colors.textDim} />
+  </Pressable> : null;
+
+  // A plain status update: a Facebook/Twitter-style social card (no ticket stub,
+  // no score, no artist/venue line) with the comment section preloaded below.
+  if (log.kind === "status") {
+    const campaignTreatment = campaignPresentation?.treatment;
+    const campaignArtUri = campaignBackground?.url || campaignBackground?.uri || campaignBackground?.sourceUrl || null;
+    return <CardSurface {...contextProps} style={[styles.card, campaignPresentation && styles.campaignCard, campaignTreatment && {
+      backgroundColor: campaignTreatment.backgroundColor
+    }]}>
+        {campaignArtUri && <ExpoImage {...campaignImageProps} source={{
+        uri: campaignArtUri
+      }} style={StyleSheet.absoluteFill} contentFit="cover" autoplay={!tabPreview && !reduceMotion && cardVisible} transition={reduceMotion ? 0 : 180} accessible={false} accessibilityElementsHidden />}
+        {campaignPresentation && !campaignArtUri && <View style={styles.campaignBackdrop} pointerEvents="none" accessibilityElementsHidden>
+            <View style={[styles.campaignGlowLarge, {
+          backgroundColor: campaignTreatment.accentColor + "2E"
+        }]} />
+            <View style={[styles.campaignGlowSmall, {
+          backgroundColor: campaignTreatment.accentColor + "22"
+        }]} />
+          </View>}
+        {campaignPresentation && <View style={[StyleSheet.absoluteFill, {
+        backgroundColor: campaignTreatment.scrimColor
+      }]} pointerEvents="none" accessibilityElementsHidden />}
+        {campaignPresentation && <View style={[styles.campaignTopline, !!campaignArtUri && styles.campaignArtTopline]}>
+            <View style={[styles.campaignBadge, {
+          borderColor: campaignTreatment.accentColor + "80"
+        }]}>
+              <Icon name="star" size={12} color={campaignTreatment.accentColor} />
+              <Text style={[styles.campaignBadgeText, {
+            color: campaignTreatment.accentColor
+          }]}>{campaignTreatment.eyebrow.toUpperCase()}</Text>
+            </View>
+            {campaignBackground && onOpenPhotos && campaignBackgroundIndex >= 0 && <Pressable style={styles.campaignArtworkButton} onPress={() => onOpenPhotos(postMedia, campaignBackgroundIndex, log.id)} accessibilityRole="button" accessibilityLabel={`Open featured artist post background${campaignBackground.altText ? `, ${campaignBackground.altText}` : ""}`}>
+                <Icon name="photo" size={12} color="#FFF8EE" />
+                <Text style={styles.campaignArtworkText}>View artwork</Text>
+              </Pressable>}
+          </View>}
+        <View style={campaignPresentation ? [styles.campaignContent, {
+        backgroundColor: campaignTreatment.contentSurfaceColor
+      }] : null}>
+        <View style={styles.header}>
+          <Avatar user={author} size={40} priority={avatarPriority} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
+          <Pressable style={styles.authorIdentity} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
+            <View style={styles.nameRow}>
+              <Text style={[styles.name, campaignPresentation && {
+                color: campaignTreatment.textColor
+              }]}>{author.name}</Text>
+              <BadgeRow badges={badges} size={14} />
+            </View>
+            <Text style={[styles.sub, campaignPresentation && {
+              color: campaignTreatment.mutedTextColor
+            }]}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={campaignPresentation ? {
+                color: campaignTreatment.accentColor,
+                fontWeight: "800"
+              } : roleColor(author.role) ? {
+                color: roleColor(author.role),
+                fontWeight: "800"
+              } : null}>@{author.handle}</PublicTextLink> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
+          </Pressable>
+
+        </View>
+
+        {isStaffViewer && log.flags > 0 && <View style={styles.flaggedChip} accessibilityLabel={`Reported content, ${log.flags} open ${log.flags === 1 ? "report" : "reports"}`}>
+            <Icon name="flag" size={11} color={colors.danger} />
+            <Text style={styles.flaggedTxt}>REPORTED · {log.flags}</Text>
+          </View>}
+
+        {attendanceTicketCard ? <>
+            <ConcertTicketCard ticket={attendanceTicketCard} style={styles.attendanceTicketCard} onPress={attendanceTicketShow && onOpenShow ? () => onOpenShow(attendanceTicketShow) : undefined} accessibilityHint={attendanceTicketShow && onOpenShow ? "Open the exact show or event page" : undefined} />
+            <TicketActionRail showHref={canonicalPostHref} onOpenShow={attendanceTicketShow && onOpenShow ? () => onOpenShow(attendanceTicketShow) : () => onOpen?.(log)} compareHref={canCompareArtistShows ? postContext.artistConcertsHref : null} onCompare={openArtistShows} artist={postContext.artist} palette={campaignTreatment} />
+          </> : null}
+
+        {!!log.review && <ExpandableText key={`status-copy:${log.id}`} text={log.review} limit={POST_CONTENT_PREVIEW_LIMIT} compact={compactContent} containerStyle={styles.reviewWrap} toggleTextStyle={campaignPresentation ? {
+          color: campaignTreatment.accentColor
+        } : null} renderText={({
+          text,
+          accessibilityLabel
+        }) => <PublicPressableLink {...bodyContextProps} href={canonicalPostHref} onNavigate={openComments} accessibilityLabel={`${accessibilityLabel}. Open post and comments.`}>
+                <Text accessibilityLabel={accessibilityLabel} style={[styles.review, campaignPresentation && {
+            color: campaignTreatment.textColor
+          }]}>{text}</Text>
+              </PublicPressableLink>} />}
+        <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} palette={campaignTreatment} concertContext={!!attendanceTicketCard} />
+        {!!log.song && <SongAttachment song={log.song} onPlay={ENABLE_MUSIC_PLAYER ? onPlay : undefined} />}
+        {statusMedia.length > 0 && <PostMediaGrid media={statusMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, postMedia.indexOf(statusMedia[i]), log.id, opener) : undefined} />}
+        {convertingNotice}
+
+        {<View style={styles.metadataRow}>
+          <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={guard(() => toggleDisclosure("why"))} palette={campaignTreatment} />
+          <ViewTally count={viewCount} palette={campaignTreatment} />
+        </View>}
+
+        <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} {...actionProps} enabled={swipeActions && cardVisible} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
+<View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
+          <RepostButton {...actionProps} post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
+          
+          <Pressable style={({
+              pressed
+            }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={pressLike} hitSlop={2} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
+            <Icon name="heart" size={18} color={campaignPresentation ? liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor : liked ? colors.magenta : colors.textDim} filled={liked} />
+            <Text style={[styles.fCount, campaignPresentation && {
+                color: liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor
+              }, !campaignPresentation && liked && {
+                color: colors.magenta
+              }]}>{likeCount}</Text>
+          </Pressable>
+          <PublicPressableLink {...bodyContextProps} href={canonicalPostHref} onNavigate={openComments} style={({
+              pressed
+            }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} hitSlop={2} accessibilityLabel={`Comments, ${commentCount}`}>
+            <Icon name="comment" size={17} color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textDim} />
+            <Text style={[styles.fCount, campaignPresentation && {
+                color: campaignTreatment.mutedTextColor
+              }]}>{commentCount}</Text>
+          </PublicPressableLink>
+          
+          <SocialShareButton key={shareKey} {...actionProps} accountId={session?.id || null} color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textDim} model={shareModel} />
+          {overflow(campaignTreatment)}
+        </View>
+</PostSwipeActions>
+
+        {showComments && <CommentPreview log={log} onOpen={openComments} palette={campaignTreatment} />}
+        <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
+        </View>
+      </CardSurface>;
+  }
+  return <CardSurface {...contextProps} style={styles.card}>
+      <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
+      {/* Identity, concert, content, then controls: one consistent reading order. */}
+      <View style={styles.header}>
+        <Avatar user={author} size={38} priority={avatarPriority} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
+        <Pressable style={styles.authorIdentity} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
+          <View style={styles.nameRow}>
+            <Text style={styles.name}>{author.name}</Text>
+            <BadgeRow badges={badges} size={14} />
+          </View>
+          <Text style={styles.sub}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={roleColor(author.role) ? {
+            color: roleColor(author.role),
+            fontWeight: "800"
+          } : null}>@{author.handle}</PublicTextLink> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
+        </Pressable>
+      </View>
+
+      {isStaffViewer && log.flags > 0 && <View style={styles.flaggedChip} accessibilityLabel={`Reported content, ${log.flags} open ${log.flags === 1 ? "report" : "reports"}`}>
+          <Icon name="flag" size={11} color={colors.danger} />
+          <Text style={styles.flaggedTxt}>REPORTED · {log.flags}</Text>
+        </View>}
+
+      <View style={styles.concertContext}>
+        <View style={[styles.contextTitleRow, cardPresentation.stackContext && styles.contextTitleStack]}>
+          <View style={[styles.contextIdentity, cardPresentation.stackContext && styles.contextIdentityStack]}>
+            <Text style={styles.performanceTitle} accessibilityRole="header">
+              {performance.primaryIsArtist ? <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceTitle}>{performanceTitle}</PublicTextLink> : performanceTitle}
+            </Text>
+            {!!performance.secondary && <Text style={styles.performanceSubtitle}>{performance.secondary}</Text>}
+          </View>
+          {scoreControl}
+        </View>
+        {isOnlineReview ? <Text style={styles.performanceMeta}>Watched online</Text> : <>
+          {titledPerformance || log.venue || log.city ? <Text style={styles.performanceMeta}>
+            {titledPerformance && <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink>}
+            {titledPerformance && (log.venue || log.city) ? " · " : ""}
+            {!!log.venue && <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.performanceVenue}>{log.venue}</PublicTextLink>}
+            {log.venue && log.city ? " · " : ""}
+            {!!log.city && <PublicTextLink href={cityHref} onNavigate={cityIdentity && onOpenCity ? () => onOpenCity(cityIdentity) : undefined} style={styles.dim}>{log.city}</PublicTextLink>}
+          </Text> : null}
+          {!!log.date && <Text style={styles.performanceDate}>{formatDate(log.date, log.date)}{performance.festival && log.endDate && log.endDate > log.date ? ` to ${formatDate(log.endDate, log.endDate)}` : ""}</Text>}
+        </>}
+      </View>
+
+      {isOnlineReview && youtubeUrl ? <View style={styles.contextActions}>
+            <PublicPressableLink href={youtubeUrl} onNavigate={guard(() => {
+        void Linking.openURL(youtubeUrl).catch(() => {
+          if (currentCard()) Alert.alert("Link not opened", "YouTube could not be opened on this device.");
+        });
+      })} style={({
+        pressed
+      }) => [styles.youtubePreview, pressed && styles.contextActionPressed]} accessibilityLabel="Watch this online concert on YouTube" accessibilityHint="Opens YouTube outside Mshpit">
+              <ExpoImage source={{
+          uri: youtubeThumbnailUrl
+        }} style={styles.youtubeThumbnail} contentFit="cover" cachePolicy="memory-disk" priority={avatarPriority} transition={reduceMotion ? 0 : 160} accessible={false} accessibilityElementsHidden />
+              <View style={styles.youtubePreviewScrim} pointerEvents="none" />
+              <View style={styles.youtubePreviewAction} pointerEvents="none">
+                <Icon name="external" size={15} color="#FFFFFF" />
+                <Text style={styles.youtubePreviewActionText}>Watch on YouTube</Text>
+              </View>
+            </PublicPressableLink>
+        </View> : null}
+
+      {/* Score analytics: the template every review shares. The twirling star +
+          per-dimension bars show exactly why the night earned its score. */}
+      {statsOpen && <View style={styles.statsPanel}>
+          <View style={styles.statsHead}>
+            <SpinStar size={40} />
+            <View style={{
+          flex: 1
+        }}>
+              <Text style={styles.statsScore}>{overall > 0 ? <>{overall.toFixed(1)} <Text style={styles.statsOutOf}>/ 5</Text></> : "Rating details"}</Text>
+              <Text style={styles.statsSub}>{isOnlineReview ? "Online concert score" : hasDimensions && factors ? "Rated details" : factors ? "Band vs room" : "Overall score"}</Text>
+            </View>
+          </View>
+          {!isOnlineReview && !!factors && <Text style={styles.factors}>{factors}</Text>}
+          {isOnlineReview ? <Text style={styles.onlineRatingNote}>Rating for the online concert</Text> : <RatingBars dims={log.dims} band={band} room={room} />}
+        </View>}
+
+      {/* THE REVIEW - the main event */}
+      {log.review ? <ExpandableText key={`review-copy:${log.id}`} text={log.review} limit={POST_CONTENT_PREVIEW_LIMIT} compact={compactContent} containerStyle={styles.reviewWrap} renderText={({
+      text,
+      accessibilityLabel
+    }) => <PublicPressableLink {...bodyContextProps} href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`${accessibilityLabel}. Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}.`}>
+              <Text accessibilityLabel={accessibilityLabel} style={styles.review}>{text}</Text>
+            </PublicPressableLink>} /> : <PublicPressableLink {...bodyContextProps} href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}`}>
+          <Text style={styles.noReview}>{isOnlineReview ? "Open online review" : "Open concert post"}</Text>
+        </PublicPressableLink>}
+      <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} concertContext={!isOnlineReview} />
+      {!!log.song && <SongAttachment song={log.song} onPlay={ENABLE_MUSIC_PLAYER ? onPlay : undefined} />}
+      {postMedia.length > 0 && <PostMediaGrid media={postMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />}
+      {convertingNotice}
+
+      {<View style={styles.detailsWrap}>
+        <View style={styles.metadataRow}>
+        {cardPresentation.hasDetails && <Pressable onPress={guard(() => toggleDisclosure("details"))} accessibilityRole="button" accessibilityLabel={detailsOpen ? "Hide show details" : "Show details"} accessibilityState={{
+          expanded: detailsOpen
+        }} style={styles.detailsToggle} accessibilityHint={cardPresentation.detailsSummary || undefined}>
+          <View style={styles.detailsSummary}>
+            <Text style={styles.detailsLabel}>{detailsOpen ? "Hide details" : "Show details"}</Text>
+            {!!cardPresentation.detailsSummary && <Text style={styles.detailsSummaryText}>{cardPresentation.detailsSummary}</Text>}
+          </View>
+          <Icon name={detailsOpen ? "chevron-down" : "chevron-right"} size={14} color={colors.textDim} />
+        </Pressable>}
+        <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={guard(() => toggleDisclosure("why"))} />
+        <ViewTally count={viewCount} />
+        </View>
+        {cardPresentation.hasDetails && detailsOpen && <View style={styles.expandedDetails}>
+          <TicketActionRail showHref={canonicalPostHref} onOpenShow={cityOnlyReview ? openPostDetail : () => (onOpenShow || onOpen)?.(log)} reviewOnly={cityOnlyReview} compareHref={canCompareArtistShows ? postContext.artistConcertsHref : null} onCompare={openArtistShows} artist={postContext.artist} />
+          {!!log.eventAddress && <Text selectable style={styles.detailText}>Event address: {log.eventAddress}</Text>}
+          {log.seen > 1 && <Text style={styles.detailText}>{ordinal(log.seen)} time in the pit</Text>}
+          <SupportingActsLine key={`lineup:${log.id}`} post={log} onOpenArtist={onOpenArtist} compact={false} style={styles.detailsLineup} />
+          {setlist.length > 0 && <>
+            <Text accessibilityRole="header" style={styles.detailText}>Setlist · {setlist.length}{log.inTourWindow && !iosSetlistRevealed ? " · Spoilers" : ""}</Text>
+            {log.inTourWindow && !iosSetlistRevealed ? <Pressable onPress={guard(() => toggleDisclosure("spoilers"))} accessibilityRole="button" accessibilityLabel={`Reveal setlist spoilers. ${setlist.length} songs`} style={styles.detailsToggle}>
+              <Text style={styles.detailsLabel}>Reveal setlist</Text>
+            </Pressable> : <Text style={styles.setBody}>{setlist.join("  ·  ")}</Text>}
+          </>}
+        </View>}
+      </View>}
+
+      {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
+      <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} {...actionProps} enabled={swipeActions && cardVisible} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
+<View style={styles.footer}>
+        <RepostButton {...actionProps} post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
+        
+        <Pressable style={({
+          pressed
+        }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={pressLike} hitSlop={2} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
+          <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
+          <Text style={[styles.fCount, liked && {
+            color: colors.magenta
+          }]}>{likeCount}</Text>
+        </Pressable>
+        <PublicPressableLink {...bodyContextProps} href={canonicalPostHref} onNavigate={openComments} style={({
+          pressed
+        }) => [styles.commentAction, pressed && styles.controlPressed]} hitSlop={2} accessibilityLabel={`Comments, ${commentCount}`}>
+          <Icon name="comment" size={17} color={colors.textDim} />
+          
+          <Text style={styles.fCount}>{commentCount}</Text>
+        </PublicPressableLink>
+        
+        <SocialShareButton key={shareKey} {...actionProps} accountId={session?.id || null} model={shareModel} style={styles.nativeFooterButton} />
+        <View style={{
+          flex: 1
+        }} />
+        {overflow()}
+
+      </View>
+</PostSwipeActions>
+
+      {showComments && <CommentPreview log={log} onOpen={openComments} />}
+    </CardSurface>;
+}
+
+const styles = StyleSheet.create({
+  campaignCard: { overflow: "hidden", padding: 12, borderColor: colors.line, boxShadow: "none" },
+  campaignBackdrop: { ...StyleSheet.absoluteFillObject, overflow: "hidden" },
+  campaignGlowLarge: { position: "absolute", width: 390, height: 390, borderRadius: 195, left: -150, top: -170, ...glow },
+  campaignGlowSmall: { position: "absolute", width: 250, height: 250, borderRadius: 125, right: -90, bottom: -100, ...glow },
+  campaignTopline: { zIndex: 2, flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 12 },
+  campaignBadge: { flexDirection: "row", alignItems: "center", gap: 6, maxWidth: "100%", minHeight: 34, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.pill, backgroundColor: "rgba(5,6,10,0.82)", borderWidth: 1 },
+  campaignBadgeText: { flexShrink: 1, fontFamily: font, fontSize: 12, fontWeight: "600" },
+  campaignArtworkButton: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill, backgroundColor: "rgba(5,6,10,0.82)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)" },
+  campaignArtworkText: { flexShrink: 1, color: "#FFF8EE", fontSize: 13, lineHeight: 19, fontWeight: "500" },
+  campaignContent: { zIndex: 2, padding: 12, borderRadius: radius.md, borderCurve: "continuous" },
+  attendanceTicketCard: { marginTop: space(5) },
+  flaggedChip: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 5, marginTop: 10, paddingHorizontal: 9, paddingVertical: 4, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, backgroundColor: "rgba(224,108,108,0.10)" },
+  flaggedTxt: { color: colors.danger, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1 },
+  statsPanel: { marginTop: 12, backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 12 },
+  statsHead: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
+  statsScore: { color: colors.gold, fontFamily: mono, fontSize: 22, fontWeight: "900", lineHeight: 24 },
+  statsOutOf: { color: colors.textFaint, fontSize: 13, fontWeight: "700" },
+  statsSub: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 2 },
+  onlineRatingNote: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
+  taggedPeopleRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 12 },
+  taggedPeopleLead: { fontSize: 11.5, fontWeight: "700" },
+  taggedPersonChip: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: radius.pill, backgroundColor: "rgba(0,0,0,0.12)" },
+  taggedPersonProfile: { minHeight: 44, maxWidth: 190, flexDirection: "row", alignItems: "center", gap: 6, paddingLeft: 8, paddingRight: 10 },
+  taggedPersonText: { flexShrink: 1, fontSize: 11.5, fontWeight: "800" },
+  taggedPersonRemove: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderLeftWidth: 1, borderLeftColor: colors.lineSoft },
+  nativeTicketAction: { flex: 0, justifyContent: "flex-start", minHeight: 48, paddingHorizontal: 0, gap: 9 },
+  performanceSubtitle: { color: colors.textDim, fontFamily: font, fontSize: 14, lineHeight: 20, marginTop: 3 },
+  performanceMeta: { color: colors.textDim, fontFamily: font, fontSize: 14, lineHeight: 21, marginTop: 4 },
+  performanceArtist: { color: colors.textDim, fontWeight: "500" },
+  performanceVenue: { color: colors.textDim, fontWeight: "500" },
+  contextActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
+  ticketActionRail: { minHeight: 48, flexDirection: "row", alignItems: "stretch", marginTop: -1, overflow: "hidden", borderWidth: 1, borderTopWidth: 0, borderColor: colors.line, borderBottomLeftRadius: radius.md, borderBottomRightRadius: radius.md, backgroundColor: colors.surfaceAlt },
+  ticketAction: { minWidth: 0, minHeight: 48, flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 7 },
+  ticketActionDivider: { width: 1, marginVertical: 8, backgroundColor: colors.line },
+  ticketActionText: { minWidth: 0, flexShrink: 1, color: colors.text, fontSize: 11.5, lineHeight: 15, fontWeight: "900", textAlign: "center" },
+  ticketActionPressed: { opacity: 0.78, backgroundColor: colors.bgElev },
+  youtubePreview: { width: "100%", maxWidth: 640, aspectRatio: 16 / 9, overflow: "hidden", borderRadius: radius.lg, borderWidth: 1, borderColor: "#FF003380", backgroundColor: colors.surfaceAlt },
+  youtubeThumbnail: { width: "100%", height: "100%", backgroundColor: colors.bgElev },
+  youtubePreviewScrim: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "rgba(4,4,8,0.18)" },
+  youtubePreviewAction: { position: "absolute", left: 12, bottom: 12, minHeight: 40, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 13, borderRadius: radius.pill, backgroundColor: "rgba(12,10,13,0.88)", borderWidth: 1, borderColor: "rgba(255,255,255,0.28)" },
+  youtubePreviewActionText: { color: "#FFFFFF", fontSize: 12, fontWeight: "900" },
+  contextActionPressed: { opacity: 0.8, transform: [{ scale: 0.98 }] },
+  reviewWrap: { marginTop: 12 },
+  noReview: { color: colors.textDim, fontSize: 14, lineHeight: 20, minHeight: 44, paddingTop: 12 },
+  campaignFooter: { borderTopColor: "rgba(255,255,255,0.12)" },
+  campaignTouchTarget: { minWidth: 44, minHeight: 44 },
+  campaignControlPressed: { backgroundColor: "rgba(255,255,255,0.10)", transform: [{ scale: 0.96 }] },
+  dim: { color: colors.textDim },
+  factors: { color: colors.textDim, fontSize: 13, lineHeight: 20, marginTop: 4 },
+  setBody: { color: colors.textDim, fontSize: 14, lineHeight: 21, marginTop: 8 },
+  fBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 44, minHeight: 48, paddingHorizontal: 4, borderRadius: radius.sm },
+  nativeFooterButton: { minWidth: 44, minHeight: 48 },
+  commentAction: { minWidth: 44, minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, borderRadius: radius.sm },
+  fCount: { color: colors.textDim, fontSize: 13, fontFamily: mono },
+  whyDetail: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 7 },
+  controlPressed: { backgroundColor: colors.surfaceAlt, transform: [{ scale: 0.96 }] },
+  card: { backgroundColor: colors.surface, borderRadius: 18, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, padding: 14, marginBottom: 16, boxShadow: "none" },
+  scorePill: { minHeight: 44, minWidth: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", alignSelf: "flex-start", gap: 4, paddingHorizontal: 4, marginTop: -6 },
+  scorePillOpen: { backgroundColor: colors.bgElev, borderRadius: 8 },
+  scoreNum: { color: colors.gold, fontFamily: font, fontSize: 16, fontWeight: "600" },
+  detailsWrap: { marginTop: 0 },
+  metadataRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 12, rowGap: 0, marginTop: 4 },
+  detailsToggle: { minHeight: 44, minWidth: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 8 },
+  detailsLabel: { flexShrink: 1, color: colors.textDim, fontSize: 14, lineHeight: 20 },
+  detailText: { color: colors.textDim, fontSize: 13, lineHeight: 20, marginTop: 8 },
+  detailsLineup: { marginTop: 8, borderTopWidth: 0, paddingTop: 0 },
+  overflowPanel: { flexBasis: "100%", borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft, paddingTop: 4 },
+  overflowAction: { minHeight: 44, justifyContent: "center", paddingVertical: 10 },
+  viewTally: { maxWidth: "100%", marginLeft: "auto", paddingVertical: 4 },
+  viewTallyText: { fontSize: 12, fontFamily: font },
+  whyWrap: { maxWidth: "100%", marginTop: 0 },
+  whyWrapExpanded: { flexBasis: "100%" },
+  whyLabel: { flexShrink: 1, fontSize: 12, fontWeight: "400" },
+  header: { flexDirection: "row", alignItems: "center", gap: 10 },
+  nameRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 4 },
+  name: { flexShrink: 1, color: colors.text, fontFamily: font, fontWeight: "600", fontSize: 15, lineHeight: 20 },
+  sub: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 18, marginTop: 2 },
+  review: { color: colors.text, fontFamily: font, fontSize: 16, lineHeight: 24, fontWeight: "400" },
+  performanceDate: { color: colors.textDim, fontFamily: font, fontSize: 13, lineHeight: 20, marginTop: 2 },
+  performanceTitle: { color: colors.text, fontFamily: font, fontSize: 20, lineHeight: 26, fontWeight: "700", letterSpacing: -0.3 },
+  nativeTicketActionRail: { flexDirection: "column", backgroundColor: "transparent", borderWidth: 0, borderTopWidth: 0, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, marginTop: 0 },
+  nativeTicketActionText: { flex: 1, fontSize: 14, lineHeight: 20, textAlign: "left", fontWeight: "500" },
+  whyButton: { minWidth: 44, minHeight: 44, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 7, borderRadius: radius.sm },
+  nativeTicketActionDivider: { height: 0 },
+  statusFooter: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 4, rowGap: 4, marginTop: 4, paddingTop: 4, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft },
+  footer: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 4, rowGap: 4, marginTop: 4, paddingTop: 4, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft },
+  authorIdentity: { flex: 1, minWidth: 0, minHeight: 44, justifyContent: "center" },
+  concertContext: { marginTop: 14, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.lineSoft },
+  contextTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  contextTitleStack: { flexDirection: "column", gap: 4 },
+  contextIdentityStack: { flex: 0, alignSelf: "stretch" },
+  scoreStack: { marginTop: 0 },
+  contextIdentity: { flex: 1, minWidth: 0 },
+  detailsSummary: { flexShrink: 1, flexDirection: "row", flexWrap: "wrap", alignItems: "baseline", columnGap: 8, rowGap: 2 },
+  detailsSummaryText: { flexShrink: 1, color: colors.textDim, fontSize: 12, lineHeight: 18 },
+  expandedDetails: { paddingHorizontal: 12, paddingBottom: 12, backgroundColor: colors.bgElev, borderRadius: 12 },
+  campaignArtTopline: { minHeight: 120, alignItems: "flex-start" },
+});

@@ -6,14 +6,15 @@ import test from "node:test";
 import { transformSync } from "@babel/core";
 
 const require = createRequire(import.meta.url);
-const source = readFileSync(new URL("./TicketStub.jsx", import.meta.url), "utf8");
+const defaultSource = readFileSync(new URL("./TicketStub.jsx", import.meta.url), "utf8");
+const source = readFileSync(new URL("./TicketStub.ios.jsx", import.meta.url), "utf8");
 const domains = Object.fromEntries([
   "dates", "postMediaDisplay", "feedExperience", "artistCampaignPost", "postFriendTags", "urls", "showNavigation",
   "attendanceTicket", "calendarShows", "concertPostContext", "postAuthor", "onlineReview", "socialShareCard", "reviewRatingSummary",
 ].map((name) => [`../domain/${name}.mjs`, require(`../domain/${name}.mjs`)]));
 const colors = new Proxy({}, { get: (_, key) => `color:${String(key)}` });
 const jsx = (type, props, key) => ({ type, props, key });
-export function fixture({ platform = "ios", own = false, loggedIn = true, inputSource = source, preview = false, reduceMotion = false } = {}) {
+export function fixture({ platform = "ios", own = false, loggedIn = true, inputSource = platform === "ios" ? source : defaultSource, preview = false, reduceMotion = false, width = 390, fontScale = 1 } = {}) {
   const calls = [], state = [], sheets = [];
   let cursor = 0;
   const store = {
@@ -32,7 +33,8 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
       return [state[i], (next) => { state[i] = typeof next === "function" ? next(state[i]) : next; }];
     } },
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
-    "react-native": { View: "View", Text: "Text", Pressable: "Pressable", Platform: { OS: platform },
+    "../domain/postCardPresentation.ios.mjs": require("../domain/postCardPresentation.ios.mjs"),
+    "react-native": { useWindowDimensions: () => ({ width, fontScale }), View: "View", Text: "Text", Pressable: "Pressable", Platform: { OS: platform },
       StyleSheet: { create: (value) => value, hairlineWidth: 0.5, absoluteFill: {}, absoluteFillObject: {} },
       Alert: { alert: (...args) => calls.push(["alert", ...args]) }, Linking: { openURL: async (url) => { calls.push(["external", url]); } } },
     "expo-image": { Image: "ExpoImage" },
@@ -58,6 +60,12 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
     return modules["./showIOSPostActions"];
   }, hookModule, hookModule.exports);
   modules["../hooks/useTicketPresentation"] = hookModule.exports;
+  const dataCode = transformSync(readFileSync(new URL("../hooks/usePostCardData.ios.js", import.meta.url), "utf8"), {
+    babelrc: false, configFile: false, plugins: [require("@babel/plugin-transform-modules-commonjs")],
+  }).code;
+  const dataModule = { exports: {} };
+  new Function("require", "module", "exports", dataCode)(name => { assert.ok(name in modules, name); return modules[name]; }, dataModule, dataModule.exports);
+  modules["../hooks/usePostCardData.ios"] = dataModule.exports;
   const code = transformSync(inputSource, { babelrc: false, configFile: false,
     plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
   }).code;
@@ -509,4 +517,74 @@ test("iOS metadata controls grow and wrap, expanded details remain full-width si
   assert.ok(label(tree, "View Main artist show"));
   assert.ok(nodes(row).some(n => style(n.props?.style).flexBasis === "100%"));
   assert.equal(label(tree, "Suggested post. Hide more information.").props.accessibilityState.expanded, true);
+});
+
+test("iOS score belongs to the concert context, never author identity, and stacks at large text", () => {
+  for (const options of [{ width: 390, fontScale: 1 }, { width: 320, fontScale: 1 }, { width: 430, fontScale: 2 }]) {
+    const tree = fixture(options).render({ log: { ...review, artist: "A very long concert headliner with an unusually long name" } });
+    const score = nodes(tree).find(n => /^Overall 4.5/.test(n.props?.accessibilityLabel || ""));
+    const row = nodes(tree).find(n => n.type === "View" && Array.isArray(n.props.children) && n.props.children.includes(score));
+    assert.ok(row);
+    assert.equal(type(row, "Avatar"), undefined);
+    assert.equal(style(row.props.style).flexDirection, options.width === 390 ? "row" : "column");
+    const title = nodes(row).find(n => n.props?.accessibilityRole === "header");
+    assert.ok(title); assert.equal(title.props.numberOfLines, undefined);
+    assert.equal(style(title.props.style).fontSize, 20);
+    assert.equal(style(score.props.style).height, undefined);
+    assert.ok(style(score.props.style).minHeight >= 44);
+  }
+});
+
+test("sparse reviews do not invent zero-star ratings or a missing-review paragraph", () => {
+  const f = fixture(); const input = { log: { ...review, review: "", photos: [], overall: null, band: null, room: null, lineup: [], setlist: [] } };
+  const tree = f.render(input);
+  assert.equal(nodes(tree).some(n => /^Overall 0/.test(n.props?.accessibilityLabel || "")), false);
+  assert.equal(strings(tree).some(s => s.includes("no review yet")), false);
+  assert.equal(type(tree, "PostMediaGrid"), undefined);
+  assert.ok(label(tree, "Open Main artist"));
+  const rated = { log: { ...input.log, band: 4 } };
+  label(f.render(rated), "No overall rating. Show the rating breakdown.").props.onPress();
+  assert.equal(type(f.render(rated), "RatingBars").props.band, 4);
+  assert.equal(strings(f.render(rated)).includes("0.0"), false);
+});
+
+test("campaign layout grows with content, reserving an art window only when artwork exists", () => {
+  const campaign = { ...review, kind: "status", photos: [], review: "New release.", campaign: { version: 1, treatment: "after-dark" } };
+  const plain = fixture().render({ log: campaign });
+  assert.equal(style(plain.props.style).minHeight, undefined);
+  const badge = nodes(plain).find(n => style(n.props?.style).marginBottom === 12 && style(n.props?.style).zIndex === 2);
+  assert.ok(badge); assert.equal(style(badge.props.style).minHeight, undefined);
+  assert.equal(style(badge.props.style).flexWrap, "wrap");
+  const uri = "https://example.test/art.jpg";
+  const artwork = fixture().render({ log: { ...campaign, photos: [uri], media: [{ id: "ma_art_fixture", kind: "image", status: "ready", uri }],
+    campaign: { ...campaign.campaign, backgroundAssetId: "ma_art_fixture" } } });
+  assert.ok(nodes(artwork).some(n => style(n.props?.style).minHeight === 120));
+  assert.equal(type(artwork, "ExpoImage").props.accessible, false);
+});
+
+test("all disclosure choices reset on row or account replacement and retain current-post rerenders", () => {
+  const f = fixture(); const input = { log: { ...review, recommendation: { personalized: true } } };
+  let tree = f.render(input);
+  for (const name of ["Show details", "Overall 4.5 out of 5. Show the rating breakdown.", "Suggested post. Show more information."]) label(tree, name).props.onPress();
+  tree = f.render(input);
+  assert.ok(type(tree, "SupportingActsLine")); assert.ok(type(tree, "RatingBars"));
+  assert.ok(label(tree, "Suggested post. Hide more information."));
+  label(tree, "Reveal setlist spoilers. 2 songs").props.onPress();
+  assert.ok(strings(f.render(input)).includes("First song  ·  Last song"));
+  f.render({ log: { ...input.log, id: "new-post" } });
+  tree = f.render(input);
+  assert.equal(type(tree, "RatingBars"), undefined); assert.equal(type(tree, "SupportingActsLine"), undefined);
+  assert.ok(label(tree, "Suggested post. Show more information."));
+  label(tree, "Show details").props.onPress();
+  assert.ok(label(f.render(input), "Reveal setlist spoilers. 2 songs"));
+  f.store.session = { id: "different-viewer" }; tree = f.render(input);
+  assert.equal(type(tree, "SupportingActsLine"), undefined);
+});
+
+test("status and concert cards share a boundary without a weaker photo-only border", () => {
+  const f = fixture(), concert = style(f.render().props.style);
+  const status = style(f.render({ log: { ...review, kind: "status" } }).props.style);
+  for (const key of ["backgroundColor", "borderColor", "borderWidth", "borderRadius", "padding", "marginBottom"])
+    assert.equal(status[key], concert[key]);
+  assert.equal(nodes(f.render({ log: { ...review, kind: "status" } })).some(n => style(n.props?.style).height === 4), false);
 });

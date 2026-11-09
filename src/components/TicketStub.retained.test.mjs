@@ -92,7 +92,7 @@ function fixture({ strict = false, own = false, guest = false, detail = false, c
   const modules = {
     react: React, "react/jsx-runtime": require("react/jsx-runtime"),
     "./useIOSDetailPresentation": () => detailPresentation, "../hooks/useIOSDetailPresentation": () => detailPresentation,
-    "react-native": { View: "View", Text: "Text", Pressable: "Pressable", Modal: "Modal", ActivityIndicator: "ActivityIndicator", Platform: { OS: "ios" },
+    "react-native": { useWindowDimensions: () => ({ width: 390, fontScale: 1 }), View: "View", Text: "Text", Pressable: "Pressable", Modal: "Modal", ActivityIndicator: "ActivityIndicator", Platform: { OS: "ios" },
       StyleSheet: { create: value => value, absoluteFill: {}, absoluteFillObject: {}, hairlineWidth: 0.5 },
       Alert: { alert: (...args) => alerts.push(args) }, AccessibilityInfo: { announceForAccessibility: value => speech.push(value) }, Linking: { openURL: url => calls.push(["external", url]) } },
     "expo-image": { Image: "ExpoImage" },
@@ -110,7 +110,7 @@ function fixture({ strict = false, own = false, guest = false, detail = false, c
     "react-native-gesture-handler": { Gesture: {}, GestureDetector: "GestureDetector" },
     "./nativeTabSwipeContext.mjs": require("./nativeTabSwipeContext.mjs"),
   };
-  const real = { "../hooks/useTicketPresentation": "../hooks/useTicketPresentation.ios.js",
+  const real = { "../hooks/usePostCardData.ios": "../hooks/usePostCardData.ios.js", "../hooks/useTicketPresentation": "../hooks/useTicketPresentation.ios.js",
     "./RetainedPostSwipeActions.ios.jsx": "./RetainedPostSwipeActions.ios.jsx", "./NativeTabSwipeExclusion": "./NativeTabSwipeExclusion.ios.jsx",
     "./SocialReactionButtons": "./SocialReactionButtons.ios.jsx", "./PostSwipeActions": "./PostSwipeActions.ios.jsx",
     "./ConvertingClipNotice": "./ConvertingClipNotice.ios.jsx", "./SocialShareStudio": "./SocialShareStudio.ios.jsx" };
@@ -127,7 +127,7 @@ function fixture({ strict = false, own = false, guest = false, detail = false, c
       (moduleRequire, module, module.exports, timer, token => timers.delete(token), timer, token => timers.delete(token));
     return module.exports;
   };
-  const TicketStub = load("./TicketStub.jsx").default;
+  const TicketStub = load("./TicketStub.ios.jsx").default;
   const useFeedPresentation = composed ? load("../hooks/useFeedPresentation.ios.js").default : null;
   let presentation = { active: true, current() { return this.active; } };
   let props = { log, compactContent: true, swipeActions: true,
