@@ -105,7 +105,8 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
     if (name.endsWith("/useIOSDetailPresentation")) return require("./src/hooks/useIOSDetailPresentation.js");
     if (actualCards) {
       if (name === "expo-image") return { Image: "ExpoImage" };
-      if (name.endsWith("/TicketStub")) return load("src/components/TicketStub.jsx");
+      if (name.endsWith("/TicketStub")) return load("src/components/TicketStub.ios.jsx");
+      if (name.endsWith("/usePostCardData.ios")) return load("src/hooks/usePostCardData.ios.js");
       if (name.endsWith("/NewsStoryCard")) return load("src/components/news/NewsStoryCard.ios.jsx");
       if (name.endsWith("/NewsPostActions")) return load("src/components/news/NewsPostActions.ios.jsx");
       if (name.endsWith("/useTicketPresentation")) return load("src/hooks/useTicketPresentation.ios.js");
