@@ -12,7 +12,7 @@ The isolated Xcode Release build completed at **2026-11-09 23:05:50 UTC**; stric
 
 Checkpoint: `.tmp/ios-phone-checkpoints/flagship-cc04472/MshpitDev.app`, with `receipt.json`, `manifest.json` and `validation-evidence.json`. Final gate evidence is `.tmp/resumable-cc04472/`; native evidence is `.tmp/native-cc04472-r3/`. The completed resumable runner exited zero at **23:09:25 UTC**. After the build, all 2,723 main tracked files and 9,935 non-derived native/generated files still match the preflight snapshot; main remains clean at `942e1f3`.
 
-**Build validation is complete. The new app is not installed or launched, and physical acceptance remains open.** Wait for current phone availability before device review. Finger-driven continuity, cancellation/reversal, large-text rendering, VoiceOver and performance are not certified by source, synthetic tests or compilation. The retained-route scope remains bounded as described below; this is not all-route completion.
+**Build validation is complete. The exact new app was installed in place and launched around 23:43 UTC after renewed phone availability; physical interaction acceptance remains open.** The new Feed card is visibly present. Device Hub input fails as recorded below. Finger-driven continuity, cancellation/reversal, large-text rendering, VoiceOver and performance are not certified by screenshots, source, synthetic tests or compilation. The retained-route scope remains bounded as described below; this is not all-route completion.
 
 ## Source and boundary
 
@@ -42,9 +42,19 @@ The main native project contains absolute generated write paths. This candidate 
 
 Before relocation, 47,669 dependency entries and 23,957 copied native entries matched main byte-for-byte with no shared regular-file inodes. Exactly 1,467 path references across 123 copied generated files were relocated. Exact-boundary path and symlink audits found no references escaping to main, no broken symlinks, and matching Pod lockfiles. Before/after hashes confirmed main's tracked files, dependencies and all 71,494 native/build entries remained unchanged.
 
-Preparation receipt: `.tmp/native-prep-20261109T193055Z/summary.json` and its evidence manifest. Final native Release/signature/source verification and artifact preservation passed as recorded above. No navigation candidate has been installed.
+Preparation receipt: `.tmp/native-prep-20261109T193055Z/summary.json` and its evidence manifest. Final native Release/signature/source verification and artifact preservation passed as recorded above. The exact combined candidate was subsequently installed as recorded below.
 
 ## Phone outcome and acceptance limits
+
+### Current combined candidate: 23:42–23:51 UTC
+
+After the user renewed phone availability, the connected physical iPhone 16 Pro Max on iOS 27.2 was verified. All 52 preserved `cc04472` artifact files again matched the manifest and strict/deep signature verification passed. CoreDevice installed `com.mshpit.app.dev` in place and launched it successfully (launch PID 2277). No uninstall, reset, provisioning change or backend deployment occurred. The app visibly showed Feed / For You with the new content-aware review card: author, event title, inline 4.0 score, artist/venue/city/date, truncated review, See more and a media preview. No login or onboarding screen was observed; this is not independent proof that every saved account datum was preserved.
+
+Actual profile taps failed with `Computer Use server error -10005: noWindowsAvailable`. Fresh actual-device selection, raising/resizing the Device Hub window, and a separate supported compact-window attempt did not restore coordinate input. Zero phone coordinate inputs succeeded in this pass. This is a control-path blocker, not an offline-device diagnosis. A CoreDevice screen-record command returned explicit unsupported capability error 1001. Accessibility Inspector could select the physical phone and Mshpit Dev, but produced no completed audit or element hierarchy. No accessibility pass is claimed.
+
+Evidence is `.tmp/ios-phone-checkpoints/flagship-cc04472/phone-review-20261109T2342/`, including the successful install and launch JSON, before/after installed-app metadata, unsupported recording result and `review.json`. The original `receipt.json` remains the historical pre-install build receipt; this dated review supersedes its then-current install hold. Gesture reveal, cancellation/reversal, route/state continuity, native large-text/VoiceOver and performance remain unverified. No public post, like, follow or other account mutation was performed. The exact installed source excludes the held notification feature.
+
+### Earlier Discover-only checkpoint
 
 The separately preserved Discover-only `8060121` was verified across all 52 artifact files, passed strict/deep code-signature verification, then installed in place and launched successfully on the connected physical iPhone 16 Pro Max. No uninstall or reset occurred. Discover populated normally. The OS changed the data-container UUID during the update; complete saved-account/data preservation has not been independently established.
 
@@ -52,4 +62,4 @@ Device Hub briefly accepted physical Search/Discover taps and artist Back. Subse
 
 The separate Apple iPhone Mirroring app was an irrelevant locked window; it was not the working Device Hub route. No credentials were entered. Protected Mac authentication was not bypassed, and no further credential handoff is needed for this task.
 
-The installed `8060121` does not contain the new retained navigation. The final clean combined navigation/card candidate now has a verified signed native build and still requires its own real-device acceptance. Historical combined notification `6569968` remains uninstalled and backend-first held.
+The earlier `8060121` install did not contain retained navigation; it has now been updated in place to the verified clean combined candidate described above. Its physical interaction acceptance remains open. Historical combined notification `6569968` remains uninstalled and backend-first held.
