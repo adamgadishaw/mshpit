@@ -191,7 +191,7 @@ test("memoized iOS Feed renderItem refreshes its post presentation when navigati
     rowCapabilities: {}, surface: "everyone", visibleMediaPostIds: new Set(), rowActionsRef: { current: {} },
     IOS_FEED_DISCOVERY_SLOT: {}, feedPostPosition: index => index, Platform: { OS: "ios" }, FeedTicketRow: "FeedTicketRow", NewsStoryCard: "NewsStoryCard" };
   const render = feedPresentation => {
-    const inputs = { ...stable, feedPresentation }, module = { exports: {} };
+    const inputs = { ...stable, feedPresentation, cardPresentation: feedPresentation }, module = { exports: {} };
     new Function("require", "module", "exports", ...Object.keys(inputs), code)(require, module, module.exports, ...Object.values(inputs));
     return module.exports.default({ item: { id: "p" }, index: 0 });
   };

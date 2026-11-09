@@ -11,20 +11,22 @@ const compile = path => transformSync(readFileSync(new URL(path, import.meta.url
   plugins:[[require('@babel/plugin-transform-react-jsx'),{runtime:'automatic'}],require('@babel/plugin-transform-modules-commonjs')] }).code;
 const feedCode = compile('../screens/FeedScreen.jsx');
 const retryCodes = { ios: compile('../hooks/feedImageRetry.ios.js'), android: compile('../hooks/feedImageRetry.js'), web: compile('../hooks/feedImageRetry.js') };
+const presentationCodes = { ios: compile('../hooks/useFeedPresentation.ios.js'), android: compile('../hooks/useFeedPresentation.js'), web: compile('../hooks/useFeedPresentation.js') };
 const run = (code, resolver) => { const module = {exports:{}}; new Function('require','module','exports',code)(resolver,module,module.exports); return module.exports; };
 const nodes = n => !n || typeof n !== 'object' ? [] : Array.isArray(n) ? n.flatMap(nodes) : [n,...nodes(n.props?.children)];
 function fixture(platform='ios') {
-  const slots=[], pending=[], calls=[], persisted=new Map(); let cursor=0, tree;
+  const slots=[], pending=[], calls=[], persisted=new Map(); let cursor=0, tree, dirty=false;
   const same=(a,b)=>a&&b&&a.length===b.length&&a.every((v,i)=>Object.is(v,b[i]));
   const effect=(fn,deps)=>{const i=cursor++;if(!same(slots[i]?.deps,deps))pending.push(()=>{slots[i]?.cleanup?.();slots[i]={deps,fn,cleanup:fn()};});};
   const react={
     useRef(value){const i=cursor++;return slots[i] ||= {current:value};},
-    useState(value){const i=cursor++;if(!(i in slots))slots[i]=typeof value==='function'?value():value;return [slots[i],next=>slots[i]=typeof next==='function'?next(slots[i]):next];},
+    useState(value){const i=cursor++;if(!(i in slots))slots[i]=typeof value==='function'?value():value;return [slots[i],next=>{const value=typeof next==='function'?next(slots[i]):next;if(!Object.is(value,slots[i]))dirty=true;slots[i]=value;}];},
     useMemo(fn,deps){const i=cursor++;if(!same(slots[i]?.deps,deps))slots[i]={deps,value:fn()};return slots[i].value;},
     useCallback(fn,deps){return react.useMemo(()=>fn,deps);},useEffect:effect,useLayoutEffect:effect,memo:fn=>fn,
     createContext:()=>({Provider:'Provider'}),createElement:(type,props,children)=>({type,props:{...props,children}}),
   };
   const retry=run(retryCodes[platform],()=>react);
+  const presentation=run(presentationCodes[platform],()=>react);
   const request = signal => new Promise(resolve=>calls.push({signal,resolve}));
   const jsx=(type,props,key)=>({type,props,key});
   const feed=run(feedCode,dep=>{
@@ -35,6 +37,7 @@ function fixture(platform='ios') {
     if(dep==='react/jsx-runtime')return {jsx,jsxs:jsx};
     if(dep==='react-native')return {View:'View',Text:'Text',FlatList:'FlatList',Pressable:'Pressable',ScrollView:'ScrollView',Platform:{OS:platform,select:v=>v[platform]||v.default},StyleSheet:{create:v=>v},useWindowDimensions:()=>({width:393,fontScale:1})};
     if(dep.endsWith('/feedImageRetry'))return retry;
+    if(dep.endsWith('/useFeedPresentation'))return presentation;
     if(dep.endsWith('/feedHeadStatus'))return {useFeedHeadStatus:()=>null};
     if(dep.endsWith('/theme'))return {colors:{},radius:{},shadow:{}};
     if(dep.endsWith('/persist'))return {load:(key,fallback)=>persisted.get(key)??fallback,save:(key,value)=>persisted.set(key,value)};
@@ -52,7 +55,7 @@ function fixture(platform='ios') {
     return dep;
   }).default;
   const props={feed:[],localFeed:[],loggedIn:true,visible:true,accountId:'a',onRefresh:({signal})=>request(signal)};
-  const render=(flush=true)=>{cursor=0;const selected=feed(props);tree=selected.type(selected.props);if(flush)while(pending.length)pending.shift()();return tree;};
+  const render=(flush=true)=>{let turns=0;do{dirty=false;cursor=0;const selected=feed(props);tree=selected.type(selected.props);if(flush)while(pending.length)pending.shift()();}while(flush&&dirty&&++turns<10);return tree;};
   render();
   return {props,calls,render,get tree(){return tree;},get refresh(){return tree.props.children.props.onRefresh;},
     subscribe(fn){return tree.props.value?.subscribe(fn);},
@@ -81,7 +84,7 @@ test('actual Feed cancellation and unmount do not replay accepted pulses or leav
  const next=f.refresh;f.unmount();assert.equal(await next(),false);assert.equal(f.calls.length,1);
 });
 test('actual Feed StrictMode cleanup/setup permits one fresh gesture without emitting on setup',async()=>{
- const f=fixture();let pulses=0;f.subscribe(()=>pulses++);f.strictReplay();assert.equal(pulses,0);
+ const f=fixture();let pulses=0;f.subscribe(()=>pulses++);const retired=f.refresh;f.strictReplay();assert.equal(pulses,0);assert.equal(await retired(),false);f.render();
  const pending=f.refresh();assert.equal(pulses,1);f.calls[0].resolve(true);await pending;
 });
 for(const platform of ['android','web'])test(`${platform}: default provider and refresh hook are inert and retain list data references`,async()=>{

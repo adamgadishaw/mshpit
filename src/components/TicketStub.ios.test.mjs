@@ -48,6 +48,11 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
     "../domain/contentPreview.mjs": require("../domain/contentPreview.mjs"),
   };
   for (const name of ["SupportingActsLine", "Stars", "Icon", "Avatar", "RatingBars", "SpinStar", "AfterpartyPreview", "ExpandableText", "PostMediaGrid", "ConvertingClipNotice", "SongAttachment", "PostSwipeActions", "ConcertTicketCard"]) modules[`./${name}`] = name;
+  const hookSource = readFileSync(new URL(`../hooks/useTicketPresentation${platform === "ios" ? ".ios" : ""}.js`, import.meta.url), "utf8");
+  const hookCode = transformSync(hookSource, { babelrc: false, configFile: false, plugins: [require("@babel/plugin-transform-modules-commonjs")] }).code;
+  const hookModule = { exports: {} };
+  new Function("require", "module", "exports", hookCode)(name => name === "react" ? modules.react : modules["./showIOSPostActions"], hookModule, hookModule.exports);
+  modules["../hooks/useTicketPresentation"] = hookModule.exports;
   const code = transformSync(inputSource, { babelrc: false, configFile: false,
     plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
   }).code;
@@ -414,7 +419,7 @@ test("queued old hold handlers cannot borrow a new post/account action owner", (
     const f = fixture(), hold = f.render().props.onLongPress;
     retire(f); hold(); assert.equal(f.sheets.length, 0); assert.deepEqual(f.calls, []);
   }
-  assert.match(source, /useLayoutEffect\(\(\) => \{\s*mounted.current = true;/,
+  assert.match(readFileSync(new URL("../hooks/useTicketPresentation.ios.js", import.meta.url), "utf8"), /useLayoutEffect\(\(\) => \{\s*mounted.current = true;/,
     "native callback ownership retires during unmount commit, not a later passive effect");
 });
 

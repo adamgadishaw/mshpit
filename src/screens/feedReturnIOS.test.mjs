@@ -54,7 +54,8 @@ function createRenderer() {
 
 const { parse } = require("@babel/parser");
 const { createIOSFeedReturnStore } = require("./src/domain/iosFeedReturn.mjs");
-const { retainNativeFeedForMedia } = require("./src/domain/nativeFeedMediaRetention.mjs");
+const { retainNativeFeedForMedia: retainLegacyMedia } = require("./src/domain/nativeFeedMediaRetention.mjs");
+const { retainNativeFeedForMedia: retainIOSMedia } = require("./src/domain/nativeFeedRetention.ios.js");
 const walk = node => [node, ...(node.children || []).flatMap(walk)];
 function find(n, predicate) {
   if (!n || typeof n !== "object") return [];
@@ -67,7 +68,7 @@ const branch = find(ast, n => n.type === "ConditionalExpression" && find(n.test,
 assert.ok(branch);
 assert.match(app.slice(branch.consequent.start, branch.consequent.end), /performanceKey=\{Platform.OS === "ios" \? screenKey : "main:feed"\}/);
 assert.match(app.slice(branch.test.start, branch.test.end), /retainNativeFeed \|\| \(Platform.OS === "ios" && !overlay\)/);
-const names = "chatAuthEpoch,openSignIn,retainNativeFeed,session,overlay,NativeFeedMediaLayer,NativeAppHeader,activeTab,switchTab,Platform,iosTabSwipeScope,iosTabSwipeEnabled,isCurrentIOSTabSwipe,openMainMenu,iosMenuOpener,requireVerifiedMutation,go,openProfileManagement,mobileTabBar,Suspense,ScreenLoading,ScreenTransition,screenKey,screenDirection,IosDetailNavigation,iosBackGestureAllowed,nav,linkedNavigationScope,linkedNavigationRef,navigationRef,back,tabScreens";
+const names = "stack,chatAuthEpoch,openSignIn,retainNativeFeed,session,overlay,NativeFeedMediaLayer,NativeAppHeader,activeTab,switchTab,Platform,iosTabSwipeScope,iosTabSwipeEnabled,isCurrentIOSTabSwipe,openMainMenu,iosMenuOpener,requireVerifiedMutation,go,openProfileManagement,mobileTabBar,Suspense,ScreenLoading,ScreenTransition,screenKey,screenDirection,IosDetailNavigation,iosBackGestureAllowed,nav,linkedNavigationScope,linkedNavigationRef,navigationRef,back,tabScreens";
 const module = { exports: {} };
 const code = transformSync(`export default function RootSlice(p) { const {${names}} = p; const nativeTabPage = tabScreens; return (${app.slice(branch.start, branch.end)}); }`, {
   babelrc: false, configFile: false, plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
@@ -114,6 +115,7 @@ function fixture(platform = "ios", options = {}) {
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
     if (name.endsWith("/useIOSFeedReturn")) return hook;
+    if (name.endsWith("/useFeedPresentation")) return execute("src/hooks/useFeedPresentation" + (platform === "ios" ? ".ios" : "") + ".js", imports);
     if (name.endsWith("/feedHeadStatus")) return { useFeedHeadStatus: () => primary.head };
     if (name.endsWith("/useNativeTabPreview")) return { __esModule: true, default: () => !!primary.preview };
     if (name.endsWith("/useNativeTabContentReady")) return { __esModule: true, default: ready => { readiness.push(ready); } };
@@ -142,8 +144,8 @@ function fixture(platform = "ios", options = {}) {
       presentation = { frames, account, epoch, tab, current: () => admitted && frames === currentFrames && account === currentAccount && epoch === currentEpoch && tab === currentTab && frames.length === 1 };
     }
     const overlay = frames.length > 1 ? React.createElement("Detail") : null;
-    const retain = retainNativeFeedForMedia({ platform, accountId: account, tab, frames, hasOverlay: !!overlay });
-    renderer.render(React.createElement(RootSlice, { chatAuthEpoch: epoch, openSignIn: noop, retainNativeFeed: retain, session: { id: account }, overlay, NativeFeedMediaLayer: Layer, NativeAppHeader: "Header", activeTab: tab, switchTab: noop, Platform: native.Platform, iosTabSwipeEnabled: false, isCurrentIOSTabSwipe: () => true, openMainMenu: noop, requireVerifiedMutation: noop, go: noop, openProfileManagement: noop, mobileTabBar: React.createElement("Tabs"), Suspense: React.Suspense, ScreenLoading: "Loading", ScreenTransition: pass, screenKey: overlay ? "detail" : "main:feed", screenDirection: "forward", IosDetailNavigation: pass, iosBackGestureAllowed: () => false, nav: frames.at(-1), linkedNavigationScope: {}, linkedNavigationRef: { current: { ownsScope: () => true } }, navigationRef: { current: { stack: frames } }, back: noop,
+    const retain = (platform === "ios" ? retainIOSMedia : retainLegacyMedia)({ platform, accountId: account, tab, frames, hasOverlay: !!overlay });
+    renderer.render(React.createElement(RootSlice, { stack: frames, chatAuthEpoch: epoch, openSignIn: noop, retainNativeFeed: retain, session: { id: account }, overlay, NativeFeedMediaLayer: Layer, NativeAppHeader: "Header", activeTab: tab, switchTab: noop, Platform: native.Platform, iosTabSwipeEnabled: false, isCurrentIOSTabSwipe: () => true, openMainMenu: noop, requireVerifiedMutation: noop, go: noop, openProfileManagement: noop, mobileTabBar: React.createElement("Tabs"), Suspense: React.Suspense, ScreenLoading: "Loading", ScreenTransition: pass, screenKey: overlay ? "detail" : "main:feed", screenDirection: "forward", IosDetailNavigation: pass, iosBackGestureAllowed: () => false, nav: frames.at(-1), linkedNavigationScope: {}, linkedNavigationRef: { current: { ownsScope: () => true } }, navigationRef: { current: { stack: frames } }, back: noop,
       tabScreens: tab === "feed" ? React.createElement("View", null, React.createElement(Feed, { key: lease?.key, feedReturn: lease, feedPresentation: presentation, feed: rows, localFeed: rows, loggedIn: true, accountId: account, visible: !overlay && !primary.preview, hasMore: false, onRefresh: async () => true, onLoadMore: () => assert.fail("No service reads") })) : React.createElement("OtherTab") }));
   };
   const press = label => { const node = all().find(n => n.props?.accessibilityLabel === label); assert.ok(node, label); renderer.act(() => node.props.onPress()); };
@@ -167,7 +169,7 @@ function fixture(platform = "ios", options = {}) {
     batches() { for (let batch = 0; batch < 15 && pendingBatch; batch++) { pendingBatch = false; highest = Math.min(highest + 2, list().props.data.length - 1); render(); measure();
       if (rowY(highest + 1) < currentOffset + 852 * 2 && highest < list().props.data.length - 1) pendingBatch = true;
     } },
-    depart(frame = { post: { id: "post20" } }) { frames = [frames[0], frame]; render(); },
+    depart(frame = { reporting: { id: "post20" } }) { frames = [frames[0], frame]; render(); },
     back() { frames = [frames[0]]; highest = 2; render(); },
     scope(id, value = epoch) { account = id; epoch = value; render(); },
     tab(value) { tab = value; render(); },
@@ -177,14 +179,13 @@ function fixture(platform = "ios", options = {}) {
   };
 }
 for (const [kind, frame] of [["Post", { post: { id: "p" } }], ["Profile", { profileId: "other" }], ["Show", { openLog: { id: "show" } }]]) {
-  test(`actual Root/Feed ${kind} return restores 24 cached Local rows and measured deep anchor`, () => {
+  test(`actual Root/Feed ${kind} return retains the exact list and 24 cached Local rows`, () => {
     const f = fixture(); f.reveal(); f.capture(); const instance = f.instance;
-    f.depart(frame); assert.equal(f.list(), undefined); f.back();
-    assert.notEqual(f.instance, instance); assert.equal(f.list().props.data.length, 24);
+    f.depart(frame); assert.ok(f.list()); assert.equal(f.instance, instance); f.back();
+    assert.equal(f.instance, instance); assert.equal(f.list().props.data.length, 24);
     assert.equal(f.list().props.initialNumToRender, 3); assert.equal(f.list().props.maxToRenderPerBatch, 2); assert.equal(f.list().props.updateCellsBatchingPeriod, 75);
     f.layout(); f.batches();
-    assert.equal(f.scrolls.at(-1)?.requested, 6440, JSON.stringify({scrolls:f.scrolls,attempts:f.attempts,measurements:f.measurements})); assert.equal(f.scrolls.at(-1)?.exact, true);
-    assert.ok(f.attempts.length <= 6); assert.ok(f.measurements.length > 0); f.close();
+    assert.equal(f.attempts.length, 0); assert.equal(f.scrolls.length, 0); assert.ok(f.measurements.length > 0); f.close();
   });
 }
 test("direct gallery retains exact list instance and cached rows", () => {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -108,11 +109,11 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   modules["./NativeFeedFilterPager.ios"] = execute("./NativeFeedFilterPager.ios.jsx");
   modules["./NativeTabRail"] = execute("./NativeTabRail.ios.jsx");
   let Component = component === "rail" ? modules["./NativeSwipeRail"].default : component === "tabs" ? (pager ? modules["./NativeFeedFilterPager.ios"].default : modules["./NativeTabRail"].default)
-    : component === "social" ? execute("./PostSwipeActions.native.jsx").default : component === "bar" ? execute("./IosTabBar.ios.jsx").default : execute("./NativeAppHeader.ios.jsx").default;
+    : component === "social" ? execute("./RetainedPostSwipeActions.ios.jsx").default : component === "bar" ? execute("./IosTabBar.ios.jsx").default : execute("./NativeAppHeader.ios.jsx").default;
   const exclusionModule = execute("./NativeTabSwipeExclusion.ios.jsx");
   const Exclusion = exclusionModule.default;
   modules["./NativeTabSwipeExclusion"] = exclusionModule;
-  if (component === "social-ios") { modules["./PostSwipeActions.native.jsx"] = execute("./PostSwipeActions.native.jsx"); Component = execute("./PostSwipeActions.ios.jsx").default; }
+  if (component === "social-ios") { modules["./RetainedPostSwipeActions.ios.jsx"] = execute("./RetainedPostSwipeActions.ios.jsx"); Component = execute("./PostSwipeActions.ios.jsx").default; }
   const Scroll = execute("./NativeTabScroll.ios.jsx");
   const Child = () => scrollChild === "nested" ? React.createElement(Scroll.ScrollView, { testID: "vertical" }, React.createElement(Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: true, testID: "horizontal", snapToInterval: 180 }, React.createElement("Pressable", { onPress: () => calls.push("card") }))) : scrollChild ? React.createElement(scrollChild === "input" ? Scroll.TextInput : Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: scrollChild === "horizontal" }, React.createElement("ExplicitButton")) : excludedChild ? React.createElement(Exclusion, null, React.createElement("ExplicitButton")) : React.createElement("ExplicitButton", { onPress: () => calls.push("explicit") });
   const useContentReady = execute("../hooks/useNativeTabContentReady.ios.js").default;
@@ -1160,4 +1161,23 @@ test("direction reversal cannot reuse an unmounted same-gesture candidate before
   ready.set = setReady; setReady(null);
   f.flush(); f.ready("everyone");
   assert.equal(f.translation("local"), -120);
+});
+
+
+test("retained swipe controller is iOS-only and the Android native implementation remains byte-identical", () => {
+  const native = readFileSync(new URL("./PostSwipeActions.native.jsx", import.meta.url));
+  assert.equal(createHash("sha256").update(native).digest("hex"), "a17d0593e0e58a340d3436b40d2b955cb26a6fe49a9544e137417aed05bf9c90",
+    "retained Feed ownership must not alter Android's original native swipe behavior");
+  const wrapper = readFileSync(new URL("./PostSwipeActions.ios.jsx", import.meta.url), "utf8");
+  assert.match(wrapper, /import Component from "\.\/RetainedPostSwipeActions\.ios\.jsx"/);
+  assert.doesNotMatch(wrapper, /PostSwipeActions\.native/);
+  const { resolve } = require("metro-resolver");
+  const context = { originModulePath: fileURLToPath(new URL("../../App.js", import.meta.url)), assetExts: new Set(), sourceExts: ["js", "jsx", "json", "ts", "tsx"],
+    mainFields: ["react-native", "browser", "main"], getPackageForModule: () => null,
+    fileSystemLookup(path) { try { const stat = statSync(path); return { exists: true, type: stat.isDirectory() ? "d" : "f", realPath: realpathSync(path) }; } catch { return { exists: false }; } },
+  };
+  for (const [platform, suffix] of [["ios", ".ios"], ["android", ".native"], ["web", ""]]) {
+    const resolved = resolve({ ...context, preferNativePlatform: platform !== "web" }, "./src/components/PostSwipeActions", platform);
+    assert.equal(resolved.filePath, fileURLToPath(new URL(`./PostSwipeActions${suffix}.jsx`, import.meta.url)));
+  }
 });

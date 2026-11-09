@@ -114,6 +114,8 @@ test("the shared post renderer owns ticket presentation and disables generic edi
   assert.doesNotMatch(card, /onPress=\{\(\) => onOpen\?\.\(log\)\}\s*accessibilityHint="Open this Going post and its comments"/);
   assert.match(feed, /const openShow = useCallback\(\(show\) => actionsRef\.current\.onOpen\?\.\(show, \{ surface, position: itemIndex \}\)/);
   assert.match(feed, /onOpenShow=\{openShow\}/);
+  assert.match(card, /if \(Platform\.OS === "ios"\) \{[\s\S]*?onOpenShow = guard\(onOpenShow\);/,
+    "the iOS card fences exact-show callbacks without changing shared row routing");
   assert.match(post, /onOpenShow=\{isOnlineReview \? undefined : onOpenShow\}/);
   assert.match(profile, /onOpenShow=\{capabilities\.openShow \? openShow : undefined\}/);
   assert.match(app, /log\.kind === "status" && log\.performanceEvent !== true/);

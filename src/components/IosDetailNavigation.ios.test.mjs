@@ -10,6 +10,7 @@ const require = createRequire(import.meta.url);
 const React = require("react"), reconciler = require("react-reconciler");
 const { transformSync } = require("@babel/core");
 const codes = new Map(), noop = () => {};
+const FeedBackContext = React.createContext(false);
 function execute(path, imports) {
   const file = new URL(path, import.meta.url);
   if (!codes.has(path)) codes.set(path, transformSync(readFileSync(file, "utf8"), {
@@ -95,9 +96,10 @@ function rootNavigationFixture(platform = "ios", frames) {
 
 function fixture(frames) {
   const renderer = createRenderer(), root = rootNavigationFixture("ios", frames), queue = [], pans = [], listeners = new Set(), shared = [], confirmedListeners = [];
-  let hidden = false, enabled = true, reduced = false, callback = root.back, presentationKey, width = 412, blocked = false, secondBlocked = false;
+  let hidden = false, enabled = true, reduced = false, backdrop = false, callback = root.back, presentationKey, width = 412, blocked = false, secondBlocked = false;
   const never = new Promise(() => {});
-  const native = { View: 'View', StyleSheet: { create: x => x }, useWindowDimensions: () => ({ width }), AccessibilityInfo: {
+  const appListeners = new Set(), animations = [];
+  const native = { AppState: { currentState: "active", addEventListener: (_event, callback) => { appListeners.add(callback); return { remove: () => appListeners.delete(callback) }; } }, View: 'View', StyleSheet: { create: x => x }, useWindowDimensions: () => ({ width }), AccessibilityInfo: {
     isScreenReaderEnabled: () => never, addEventListener: (_name, cb) => { listeners.add(cb); return { remove: () => listeners.delete(cb) }; },
   } };
   const useSharedValue = initial => {
@@ -112,8 +114,9 @@ function fixture(frames) {
     if (name === 'react/jsx-runtime') return require(name);
     if (name === 'react-native') return native;
     if (name === 'react-native-gesture-handler') return { Gesture, GestureDetector: 'GestureDetector' };
-    if (name === 'react-native-reanimated') return { __esModule: true, default: { View: 'AnimatedView' }, ReduceMotion: { System: 'system' }, useSharedValue, useAnimatedStyle: cb => cb(), withSpring: v => v };
+    if (name === 'react-native-reanimated') return { __esModule: true, default: { View: 'AnimatedView' }, ReduceMotion: { System: 'system' }, useSharedValue, useAnimatedStyle: cb => cb(), cancelAnimation: noop, withSpring: v => v, withTiming: (v, config, done) => { animations.push({ v, config, done }); return v; } };
     if (name === 'react-native-worklets') return { scheduleOnRN: (cb, ...args) => queue.push(() => cb(...args)) };
+    if (name === './nativeFeedBackContext.mjs') return { NativeFeedBackContext: FeedBackContext };
     if (name === '../hooks/useIOSDetailBackBlock') return blockModule;
     if (name === '../hooks/useScreenReaderEnabled') return preference;
     if (name === '../hooks/useReducedMotion') return () => reduced;
@@ -128,8 +131,10 @@ function fixture(frames) {
   const Detail = execute('./IosDetailNavigation.ios.jsx', imports).default;
   function Editor({ active }) { blockModule.default(active); return React.createElement('Editor'); }
   function Gate() { if (hidden) throw never; return null; }
-  const f = { root, queue, pans, shared, renderer, confirmedListeners,
-    render() { renderer.render(React.createElement(React.Suspense, { fallback: React.createElement('Fallback') }, React.createElement(Detail, { enabled, onBack: callback, isCurrentRoute: root.isCurrentRoute, presentationKey }, React.createElement('Venue'), React.createElement(Editor, { active: blocked }), React.createElement(Editor, { active: secondBlocked })), React.createElement(Gate))); },
+  const f = { root, queue, pans, shared, renderer, confirmedListeners, animations,
+    backdrop() { backdrop = true; f.render(); },
+    app(state) { native.AppState.currentState = state; renderer.act(() => { for (const callback of appListeners) callback(state); }); },
+    render() { renderer.render(React.createElement(FeedBackContext.Provider, { value: backdrop }, React.createElement(React.Suspense, { fallback: React.createElement('Fallback') }, React.createElement(Detail, { enabled, onBack: callback, isCurrentRoute: root.isCurrentRoute, presentationKey }, React.createElement('Venue'), React.createElement(Editor, { active: blocked }), React.createElement(Editor, { active: secondBlocked })), React.createElement(Gate)))); },
     reader(value) { for (const cb of [...listeners]) cb(value); },
     queueBack(pan = pans.at(-1), success = true) {
       pan.onTouchesDown({ allTouches: [{ absoluteX: 10, absoluteY: 100 }], numberOfTouches: 1 }, { fail: noop });
@@ -387,4 +392,64 @@ test('Artist report Cancel restores edge even when the canceled local input rema
   cancel(); f.block(blocked(song, false, 'typed URL', 'typed note'));
   assert.equal(f.pans.at(-1).enabled, true); f.queueBack(); f.queue.shift()();
   assert.equal(f.root.queued.at(-1).length, 2); f.close();
+});
+
+
+test('real retained backdrop enables full-width motion and settles before Root Back', () => {
+  const f = fixture(); f.backdrop(); const pan = f.pans.at(-1);
+  pan.onTouchesDown({ allTouches: [{ absoluteX: 10, absoluteY: 100 }], numberOfTouches: 1 }, { fail: noop });
+  pan.onUpdate({ absoluteX: 330 }); assert.equal(f.shared[2].get(), 320);
+  pan.onEnd({ absoluteX: 330, absoluteY: 101, velocityX: 200 }, true);
+  pan.onFinalize();
+  assert.equal(f.animations.length, 1); assert.equal(f.animations[0].v, 412);
+  assert.equal(f.shared[2].get(), 412); assert.equal(f.queue.length, 0);
+  f.animations[0].done(true); assert.equal(f.queue.length, 1);
+  f.queue.shift()(); assert.equal(f.root.queued.at(-1).length, 2); f.close();
+});
+
+for (const release of [{ canceled: true }, { velocityX: -100 }, { absoluteX: 60 }]) {
+  test(`retained backdrop cancels without navigating: ${JSON.stringify(release)}`, () => {
+    const f = fixture(); f.backdrop(); const pan = f.pans.at(-1);
+    pan.onTouchesDown({ allTouches: [{ absoluteX: 10, absoluteY: 100 }], numberOfTouches: 1 }, { fail: noop });
+    pan.onUpdate({ absoluteX: 250 });
+    pan.onEnd({ absoluteX: 250, absoluteY: 101, velocityX: 0, ...release }, !release.canceled);
+    pan.onFinalize(); assert.equal(f.shared[2].get(), 0);
+    assert.equal(f.animations.length, 0); assert.equal(f.queue.length, 0); f.close();
+  });
+}
+for (const boundary of ['background', 'reader', 'resize', 'inline editor', 'unmount']) {
+  test(`retained settle cannot pop after ${boundary}`, () => {
+    const f = fixture(); f.backdrop(); f.queueBack(); assert.equal(f.animations.length, 1);
+    if (boundary === 'background') { f.app('inactive'); f.app('active'); }
+    else if (boundary === 'reader') f.renderer.act(() => { f.reader(true); f.reader(false); });
+    else if (boundary === 'resize') f.resize(600);
+    else if (boundary === 'inline editor') f.block(true);
+    else f.close();
+    f.animations[0].done(true); f.queue.splice(0).forEach(callback => callback());
+    assert.equal(f.root.queued.length, 0); f.close();
+  });
+}
+test('background interrupts queued non-reveal Back before RN dispatch', () => {
+  const f = fixture(); f.queueBack(); f.app('background'); f.app('active');
+  f.queue.shift()(); assert.equal(f.root.queued.length, 0);
+  f.queueBack(); f.queue.shift()(); assert.equal(f.root.queued.at(-1).length, 2); f.close();
+});
+test('retained reduced-motion Back does not translate or wait for settlement', () => {
+  const f = fixture(); f.backdrop(); f.reduce(); f.queueBack();
+  assert.equal(f.animations.length, 0); assert.equal(f.queue.length, 1);
+  f.queue.shift()(); assert.equal(f.root.queued.at(-1).length, 2); f.close();
+});
+test('a new deliberate Back retires an older deferred close guard', () => {
+  const f = fixture(); const guards = [];
+  f.root.bindings.composerCloseGuardRef.current = guard => guards.push(guard);
+  f.queueBack(); f.queue.shift()(); assert.equal(guards.length, 1);
+  f.queueBack(); f.queue.shift()(); assert.equal(guards.length, 2);
+  guards[0].proceed(); assert.equal(f.root.queued.length, 0);
+  guards[1].proceed(); assert.equal(f.root.queued.at(-1).length, 2); f.close();
+});
+
+test('Suspense reconnect reads current OS state instead of a missed AppState event', () => {
+  const f = fixture(); f.hide(); f.app('inactive'); f.show();
+  assert.equal(f.pans.at(-1).enabled, false);
+  f.app('active'); f.queueBack(); f.queue.shift()(); assert.equal(f.root.queued.at(-1).length, 2); f.close();
 });

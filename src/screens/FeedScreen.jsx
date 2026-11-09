@@ -21,6 +21,7 @@ import { FeedImageRetryProvider, useFeedImageRetry } from "../hooks/feedImageRet
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import SuggestedPittersRail from "../components/SuggestedPittersRail";
 import useAppActive from "../lib/useAppActive";
+import useFeedPresentation from "../hooks/useFeedPresentation";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import useNewsDeskStories from "../components/news/useNewsDeskStories";
 import useNewsIntroduction from "../components/news/useNewsIntroduction";
@@ -63,7 +64,7 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
 
   // A Mshpit News story posted from @news_mod.
   if (item.news) {
-    return <NewsStoryCard story={item.news} post={item} accountId={accountId} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onEdit={capabilities.edit ? edit : undefined} onRequireAuth={requireAuth} />;
+    return <NewsStoryCard {...(Platform.OS === "ios" ? { contextPresentation } : {})} story={item.news} post={item} accountId={accountId} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onEdit={capabilities.edit ? edit : undefined} onRequireAuth={requireAuth} />;
   }
 
   return (
@@ -136,22 +137,37 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState(false);
   const refreshControllerRef = useRef(null);
+  const { followedArtists = [], blockedIds = [], mutedIds = [], removedIds = [] } = useNewsInteractions();
   const rowActionsRef = useRef({});
   const guideScope = homeGuideStorageKey(accountId);
   const [guideState, setGuideState] = useState(() => ({ scope: guideScope, dismissed: load(guideScope, false) }));
   const guideDismissed = guideState.scope === guideScope ? guideState.dismissed : load(guideScope, false);
   const visibleSince = useRef(new Map());
+  const flushDwell = (at = Date.now(), allowed = true) => {
+    for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
+      if (allowed) analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
+    }
+    visibleSince.current.clear();
+  };
+  const { current: actionCurrent, currentRef: actionCurrentRef } = useFeedPresentation({
+    active: feedActive && !tabPreview && readEnabled, presentation: feedPresentation,
+    scope: JSON.stringify([accountId, loggedIn, filter, blockedIds, mutedIds, removedIds, followedArtists]), refreshControllerRef,
+    onRetire: flushDwell,
+    onPause: () => { setRefreshing(false); setUndoBusy(false); },
+  });
+  const cardPresentation = useMemo(() => Platform.OS === "ios" ? { current: actionCurrent } : feedPresentation,
+    [actionCurrent, feedPresentation]);
   const seenImpressions = useRef(new Set());
   const activityRef = useRef(feedActive);
   const dismissGuide = () => {
+    if (!actionCurrent()) return;
     setGuideState({ scope: guideScope, dismissed: true });
     save(guideScope, true);
   };
   const headStatus = useFeedHeadStatus(headStatusOwner);
   const primaryHead = headStatus && (filter === "everyone" || filter === "local") ? headStatus : null;
   const newsTab = filter === "news";
-  const { followedArtists = [], blockedIds = [], mutedIds = [], removedIds = [] } = useNewsInteractions();
-  const following = useFollowingFeed({ accountId, enabled: readEnabled && filter === "following" && loggedIn && (visible || tabPreview) && appActive,
+  const following = useFollowingFeed({ accountId, presentation: feedPresentation, enabled: readEnabled && filter === "following" && loggedIn && (visible || tabPreview) && appActive,
     privacyScope: JSON.stringify([blockedIds,mutedIds,removedIds]) });
   const news = useNewsDeskStories({ limit: 20, enabled: newsTab && readEnabled });
   // The phone strip shows top stories; the News tab lists the newest.
@@ -206,12 +222,12 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
   }, [filterScope, guideScope, loggedIn]);
 
   const onMediaViewableItemsChanged = useRef(({ changed }) => {
-    if (!activityRef.current) return;
+    if (!activityRef.current || !actionCurrentRef.current()) return;
     setVisibleMediaPostIds((current) => nextVisibleMediaPostIds(current, changed));
   }).current;
 
   const onQualifiedViewableItemsChanged = useRef(({ changed }) => {
-    if (!activityRef.current) return;
+    if (!activityRef.current || !actionCurrentRef.current()) return;
     const at = Date.now();
     for (const token of changed || []) {
       // News tab rows are stories; their view belongs to the story's post.
@@ -250,11 +266,7 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
 
   useEffect(() => {
     if (feedActive) return;
-    const at = Date.now();
-    for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
-      analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
-    }
-    visibleSince.current.clear();
+    flushDwell();
     setVisibleMediaPostIds(new Set());
   }, [feedActive]);
 
@@ -266,42 +278,35 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
   }, [localNavigation, feedActive]);
 
   useEffect(() => () => {
-    const at = Date.now();
-    for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
-      analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
-    }
-    visibleSince.current.clear();
+    flushDwell();
   }, []);
 
   const pick = (f) => {
+    if (!actionCurrent()) return;
     if (localNavigation) { onSelectFilter(f); return; }
     if (f === filter) return;
     returnUI?.cancel();
-    const at = Date.now();
-    for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
-      analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
-    }
-    visibleSince.current.clear();
+    flushDwell();
     setVisibleMediaPostIds(new Set());
     onSelectFilter(f);
     setCount(PAGE);
   };
   const loadMore = async () => {
-    if (localNavigation && !feedActive) return;
+    if (!actionCurrent() || (localNavigation && !feedActive)) return;
     if (count < full.length) setCount((c) => c + PAGE);
     // Following/Local are projections of the pages already loaded. Letting an
     // empty projection paginate the global feed can cascade through every page
     // without a user scroll, especially on a slow phone connection.
     else if (filter === "everyone" && hasMore && !loadingMore) {
       const loaded = await onLoadMore?.();
-      if (loaded) setCount((c) => c + PAGE);
+      if (loaded && actionCurrent()) setCount((c) => c + PAGE);
     }
   };
   const loadOlderFiltered = async () => {
-    if (localNavigation && !feedActive) return;
+    if (!actionCurrent() || (localNavigation && !feedActive)) return;
     if (filter === "following") {
       if (count < full.length) setCount(current => current + PAGE);
-      else if (following.status !== "loading" && following.nextCursor && await following.loadMore()) setCount(current => current + PAGE);
+      else if (following.status !== "loading" && following.nextCursor && await following.loadMore() && actionCurrent()) setCount(current => current + PAGE);
       return;
     }
     const action = filteredFeedNextAction({
@@ -321,37 +326,37 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
     }
     if (action !== "fetch") return;
     const loaded = await onLoadMore?.();
-    if (loaded) setCount((c) => c + PAGE);
+    if (loaded && actionCurrent()) setCount((c) => c + PAGE);
   };
   const footer = feedFooterState({ visibleCount: count, loadedCount: full.length, hasMore: effectiveHasMore, loading: filteredPageLoading });
   const advanceFeed = filter === "everyone" ? loadMore : loadOlderFiltered;
   const hideRecommendation = async (log) => {
-    if (!log?.id || !onNotInterested) return;
+    if (!actionCurrent() || !log?.id || !onNotInterested) return;
     setUndoItem(log);
     setUndoError(null);
     try {
       await onNotInterested(log);
     } catch {
-      setUndoItem((current) => (current?.id === log.id ? null : current));
+      if (actionCurrent()) setUndoItem((current) => (current?.id === log.id ? null : current));
     }
   };
   const undoRecommendation = async () => {
-    if (!undoItem?.id || !onUndoNotInterested || undoBusy) return;
+    if (!actionCurrent() || !undoItem?.id || !onUndoNotInterested || undoBusy) return;
     const restoring = undoItem;
     setUndoBusy(true);
     setUndoError(null);
     try {
       await onUndoNotInterested(restoring);
-      setUndoItem((current) => (current?.id === restoring.id ? null : current));
+      if (actionCurrent()) setUndoItem((current) => (current?.id === restoring.id ? null : current));
     } catch {
-      setUndoError({ postId: restoring.id, message: "Couldn't restore this yet. Try again." });
+      if (actionCurrent()) setUndoError({ postId: restoring.id, message: "Couldn't restore this yet. Try again." });
     } finally {
-      setUndoBusy(false);
+      if (actionCurrent()) setUndoBusy(false);
     }
   };
   const imageRetry = useFeedImageRetry(JSON.stringify([accountId, loggedIn, filter]));
   const refresh = async () => {
-    if (!imageRetry.isCurrent()) return false;
+    if (!actionCurrent() || !imageRetry.isCurrent()) return false;
     if (refreshControllerRef.current || !onRefresh) return false;
     returnUI?.cancel();
     if (filter === "everyone") introduction.dismiss();
@@ -362,13 +367,13 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
     setRefreshError(false);
     try {
       const result = newsTab ? await news.reload() : filter === "following" ? await following.reload() : await onRefresh({ signal: controller.signal });
-      if (controller.signal.aborted || refreshControllerRef.current !== controller) return false;
+      if (!actionCurrent() || controller.signal.aborted || refreshControllerRef.current !== controller) return false;
       const failed = result === false || result == null;
       setRefreshError(failed);
       return !failed;
     } catch {
       // architecture: allow-ambiguous-result -- this UI refresh keeps the current feed visible and reports its optional revalidation failure in place
-      if (!controller.signal.aborted && refreshControllerRef.current === controller) setRefreshError(true);
+      if (actionCurrent() && !controller.signal.aborted && refreshControllerRef.current === controller) setRefreshError(true);
       return false;
     } finally {
       if (refreshControllerRef.current === controller) {
@@ -438,19 +443,19 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
     onOpenProfile={onOpenProfile}
   />, [accountId, homeCity, suggestedUsers, suggestedUsersLoading, isFollowing, isBlocked, onFollowUser, onOpenProfile]);
   const renderFeedItem = useCallback(({ item, index: itemIndex }) => item === IOS_FEED_DISCOVERY_SLOT ? suggestions : (newsTab ? (
-    <NewsStoryCard story={item} accountId={accountId} onOpen={onOpenNewsStory} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onEdit={onEdit} onRequireAuth={onRequireAuth} />
+    <NewsStoryCard {...(Platform.OS === "ios" ? { contextPresentation: cardPresentation } : {})} story={item} accountId={accountId} onOpen={onOpenNewsStory} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onEdit={onEdit} onRequireAuth={onRequireAuth} />
   ) : (
     <FeedTicketRow
       item={item}
       itemIndex={feedPostPosition(itemIndex, discovery.index)}
-      {...(Platform.OS === "ios" ? { contextPresentation: feedPresentation } : {})}
+      {...(Platform.OS === "ios" ? { contextPresentation: cardPresentation } : {})}
       mediaViewable={feedActive ? (visibleMediaPostIds.has(String(item.id)) ? true : null) : false}
       surface={surface}
       actionsRef={rowActionsRef}
       capabilities={rowCapabilities}
       accountId={accountId}
     />
-  )), [accountId, discovery.index, suggestions, feedActive, feedPresentation, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
+  )), [cardPresentation, accountId, discovery.index, suggestions, feedActive, feedPresentation, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
@@ -524,7 +529,7 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
 
           {loggedIn && showHomeCountdown && countdownPlan ? (
             <View style={styles.countdownTop}>
-              <Suspense fallback={<Text style={styles.tag}>Loading your next show…</Text>}><HomeShowCountdown plan={countdownPlan} onOpen={onOpenCountdown} onViewAll={onViewAllCountdown} /></Suspense>
+              <Suspense fallback={<Text style={styles.tag}>Loading your next show…</Text>}><HomeShowCountdown active={Platform.OS !== "ios" || feedActive} plan={countdownPlan} onOpen={onOpenCountdown} onViewAll={onViewAllCountdown} /></Suspense>
             </View>
           ) : null}
 
@@ -565,8 +570,8 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
             </View>
           )}
 
-          {introduction.error ? <Pressable onPress={introduction.retry} accessibilityRole="button" style={{ padding: 12 }}><Text style={{ color: colors.textDim }}>News from your artists couldn't load. Try again.</Text></Pressable> : null}
-          {newsTab ? <View style={styles.liveCoverage}><Suspense fallback={<Text style={styles.tag}>Loading live coverage…</Text>}><LiveCoverageCard enabled={readEnabled} /></Suspense></View> : null}
+          {introduction.error ? <Pressable onPress={() => actionCurrent() && introduction.retry()} accessibilityRole="button" style={{ padding: 12 }}><Text style={{ color: colors.textDim }}>News from your artists couldn't load. Try again.</Text></Pressable> : null}
+          {newsTab ? <View style={styles.liveCoverage}><Suspense fallback={<Text style={styles.tag}>Loading live coverage…</Text>}><LiveCoverageCard enabled={readEnabled} {...(Platform.OS === "ios" ? { presentation: feedPresentation } : {})} /></Suspense></View> : null}
           {phone && newsTab && topNews.stories.length ? (
             <View style={styles.newsStrip} accessibilityLabel="Music news">
               <View style={styles.newsStripHead}>
@@ -578,7 +583,7 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.newsStripRow}>
                 {topNews.stories.slice(0, 6).map((story) => (
                   <View key={story.id} style={styles.newsStripItem}>
-                    <NewsStoryCard compact story={story} onOpen={onOpenNewsStory} />
+                    <NewsStoryCard {...(Platform.OS === "ios" ? { contextPresentation: cardPresentation } : {})} compact story={story} onOpen={onOpenNewsStory} />
                   </View>
                 ))}
               </ScrollView>
@@ -647,14 +652,14 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
         </View>
       )}
       ListFooterComponent={newsTab ? (news.nextCursor ? (
-        <Pressable style={[styles.olderBtn, news.status === "loading" && styles.olderBtnOff]} onPress={news.loadMore}
+        <Pressable style={[styles.olderBtn, news.status === "loading" && styles.olderBtnOff]} onPress={() => actionCurrent() && news.loadMore()}
           disabled={news.status === "loading"} accessibilityRole="button" accessibilityLabel="Load older stories">
           <Text style={styles.olderTxt}>{news.status === "loading" ? "Loading..." : "Load older stories"}</Text>
         </Pressable>
       ) : null) : primaryHead && count >= full.length && (!primaryHead.verified || primaryHead.status === "loading") ? null : (
         <View>
           {following.status === "error" && filter === "following" ? (
-            <Pressable style={styles.olderBtn} onPress={following.reload} accessibilityRole="button" accessibilityLabel="Retry Following feed"><Text style={styles.olderTxt}>Try again</Text></Pressable>
+            <Pressable style={styles.olderBtn} onPress={() => actionCurrent() && following.reload()} accessibilityRole="button" accessibilityLabel="Retry Following feed"><Text style={styles.olderTxt}>Try again</Text></Pressable>
           ) : footer.kind === "reveal" || footer.kind === "fetch" || footer.kind === "loading" ? (
             <Pressable
               style={[styles.olderBtn, filteredPageLoading && styles.olderBtnOff]}
@@ -677,7 +682,7 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
           ) : null}
           {loggedIn && showHomeCountdown && !countdownPlan ? (
             <View style={styles.countdownBottom}>
-              <Suspense fallback={<Text style={styles.tag}>Loading show suggestions…</Text>}><HomeShowCountdown compact onFindShow={onOpenDiscover} /></Suspense>
+              <Suspense fallback={<Text style={styles.tag}>Loading show suggestions…</Text>}><HomeShowCountdown active={Platform.OS !== "ios" || feedActive} compact onFindShow={onOpenDiscover} /></Suspense>
             </View>
           ) : null}
         </View>

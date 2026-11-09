@@ -1,4 +1,4 @@
-import { memo, Suspense, useLayoutEffect, useRef } from "react";
+import { memo, Suspense, useContext, useLayoutEffect, useRef } from "react";
 import { StyleSheet, View } from "react-native";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
 import { NativeTabPreviewContext, NativeTabReadinessContext } from "./nativeTabPreviewContext.mjs";
@@ -13,13 +13,16 @@ function Ready({ onReady, children }) {
   return <View style={styles.fill} onLayout={() => { laidOut.current = true; onReady?.(); }}>{children}</View>;
 }
 function NativeTabPage({ tab, active, position, origin, x, width, renderPage, loading, onReady, onContentReady }) {
-  const preview = tab !== active;
+  const inheritedPreview = useContext(NativeTabPreviewContext);
+  const candidate = tab !== active;
+  // A nested current page must not erase its obscured ancestor's effect fence.
+  const preview = inheritedPreview || candidate;
   const motion = useAnimatedStyle(() => ({ transform: [{ translateX: pageTranslation(x.get(), width.get(), position - origin.get()) }] }));
   return <Animated.View testID={`main-tab-page-${tab}`} style={[styles.page, motion]}
     pointerEvents={preview ? "none" : "auto"}
     accessibilityElementsHidden={preview} importantForAccessibility={preview ? "no-hide-descendants" : "auto"}>
     <NativeTabPreviewContext.Provider value={preview}>
-      <NativeTabReadinessContext.Provider value={preview ? onContentReady : null}><Suspense fallback={preview ? null : loading}><Ready onReady={preview ? onReady : null}>{renderPage(tab, preview)}</Ready></Suspense></NativeTabReadinessContext.Provider>
+      <NativeTabReadinessContext.Provider value={candidate ? onContentReady : null}><Suspense fallback={candidate ? null : loading}><Ready onReady={candidate ? onReady : null}>{renderPage(tab, preview)}</Ready></Suspense></NativeTabReadinessContext.Provider>
     </NativeTabPreviewContext.Provider>
   </Animated.View>;
 }

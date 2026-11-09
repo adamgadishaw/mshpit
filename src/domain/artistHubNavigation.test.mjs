@@ -121,12 +121,12 @@ test("Artist HQ launches the artist-only campaign composer and the feed renders 
   assert.match(composer, /backgroundAssetId: isCampaignBackground \? undefined : backgroundAssetId/);
   assert.match(composer, /media: publishedMedia/);
   assert.match(feedCard, /artistCampaignPresentation\(log\.campaign, postMedia\)/);
-  assert.match(feedCard, /autoplay=\{!tabPreview && !reduceMotion\}/);
-  // Both presentation owners must permit animation, independently.
+  assert.match(feedCard, /autoplay=\{!tabPreview && !reduceMotion && cardVisible\}/);
+  // Preview, motion preference, and retained-card visibility each gate playback.
   const autoplay = feedCard.match(/autoplay=\{([^}]+)\}/)[1];
-  const evaluateAutoplay = new Function("tabPreview", "reduceMotion", `return (${autoplay});`);
-  for (const preview of [false, true]) for (const reduced of [false, true]) {
-    assert.equal(evaluateAutoplay(preview, reduced), !preview && !reduced);
+  const evaluateAutoplay = new Function("tabPreview", "reduceMotion", "cardVisible", `return (${autoplay});`);
+  for (const preview of [false, true]) for (const reduced of [false, true]) for (const visible of [false, true]) {
+    assert.equal(evaluateAutoplay(preview, reduced, visible), !preview && !reduced && visible);
   }
   assert.match(feedCard, /FEATURED ARTIST POST|campaignTreatment\.eyebrow\.toUpperCase\(\)/);
   assert.match(feedCard, /campaignTouchTarget: \{ minWidth: 44, minHeight: 44 \}/);

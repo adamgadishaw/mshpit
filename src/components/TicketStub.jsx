@@ -1,7 +1,7 @@
 import useNativeTabPreview from "../hooks/useNativeTabPreview";
-import { useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useContext, useMemo, useState } from "react";
 import SupportingActsLine from "./SupportingActsLine";
-import showIOSPostActions from "./showIOSPostActions";
+import useTicketPresentation from "../hooks/useTicketPresentation";
 import { View, Text, StyleSheet, Pressable, Alert, Linking, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, font, glow, mono, radius, shadow, roleColor, space } from "../theme";
@@ -225,7 +225,7 @@ function PostOverflow({ expanded, onToggle, onClose, onEdit, onDelete, onReport,
 // conversation so the two spaces never look like duplicate features.
 export default function TicketStub({ log, mediaViewable = null, contextPresentation = null, compactContent = false, swipeActions = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const tabPreview = useNativeTabPreview();
-  const onOpenCity = useContext(CityNavigationContext);
+  let onOpenCity = useContext(CityNavigationContext);
   const cityIdentity = cityIdentityForLocation(log);
   const cityHref = cityIdentity ? cityPath(cityIdentity) : null;
   const avatarPriority = mediaViewable === true ? "high" : "normal";
@@ -238,15 +238,6 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
   // a cached card can never show it to someone else on a shared device.
   const convertingClips = Array.isArray(log.convertingMedia) && session?.id && log.userId === session.id
     ? log.convertingMedia : [];
-  const convertingNotice = convertingClips.length > 0
-    ? <ConvertingClipNotice clips={convertingClips} onReady={() => { void refreshFeed?.(); }} />
-    : null;
-  const pressLike = (event) => {
-    event?.stopPropagation?.();
-    event?.nativeEvent?.stopPropagation?.();
-    if (!session) { onRequireAuth?.(); return; }
-    toggleLike(log.id, log.likes || 0);
-  };
   const cachedAuthor = userById?.(log.userId);
   const author = useMemo(
     () => resolvePostAuthor({ userId: log.userId, cached: cachedAuthor, embedded: log.user }),
@@ -300,7 +291,8 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
   const canReport = !!onReport && (!session || session.id !== log.userId);
   const confirmDelete = (currentGuard) => {
     // Existing button handlers pass a press event; only sheet callers supply a fence.
-    const isCurrent = typeof currentGuard === "function" ? currentGuard : () => true;
+    const isCurrent = () => currentCard() && (typeof currentGuard !== "function" || currentGuard());
+    if (!isCurrent()) return;
     const run = () => { if (isCurrent()) (onDelete || deleteOwnPost)?.(log.id); };
     if (Platform.OS === "web") {
       if (typeof window === "undefined" || window.confirm("Delete this post? This can't be undone.")) run();
@@ -317,48 +309,27 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
     { label: "Delete post", run: canDelete ? confirmDelete : null },
     { label: "Report post", run: canReport ? () => onReport(log) : null },
   ].filter(action => action.run);
-  // Native sheets can outlive a recycled row or an account/ownership change.
-  const contextScope = JSON.stringify([menuScope, log.userId, contextActions.map(action => action.label)]);
-  const contextOwner = useRef({ scope: contextScope, generation: 0, actions: contextActions });
-  if (contextOwner.current.scope !== contextScope) contextOwner.current.generation++;
-  contextOwner.current.scope = contextScope;
-  contextOwner.current.actions = contextActions;
-  const mounted = useRef(true);
-  const sheetOpen = useRef(null);
-  const everMounted = useRef(false);
-  const [, refreshContextOwner] = useState(0);
-  useLayoutEffect(() => {
-    mounted.current = true;
-    // Effect reconnects retire old native callbacks and publish fresh handlers.
-    if (everMounted.current) refreshContextOwner(value => value + 1);
-    everMounted.current = true;
-    return () => { mounted.current = false; contextOwner.current.generation++; };
-  }, []);
-  const renderGeneration = contextOwner.current.generation;
-  const openContextActions = () => {
-    if (contextOwner.current.generation !== renderGeneration || !mounted.current || sheetOpen.current || !contextActions.length || contextPresentation?.current() === false) return;
-    const generation = renderGeneration;
-    const isCurrent = () => mounted.current && contextOwner.current.generation === generation
-      && contextPresentation?.current() !== false;
-    const labels = contextActions.map(action => action.label);
-    const sheet = {};
-    sheetOpen.current = sheet;
-    setOpenMenu(null);
-    showIOSPostActions({
-      title: "Post actions", options: [...labels, "Cancel"],
-      cancelButtonIndex: labels.length,
-      destructiveButtonIndex: labels.includes("Delete post") ? labels.indexOf("Delete post") : undefined,
-    }, index => {
-      // A consumed native callback cannot act twice or release a newer sheet.
-      if (sheetOpen.current !== sheet) return;
-      sheetOpen.current = null;
-      if (!isCurrent()) return;
-      const selected = contextOwner.current.actions[index];
-      if (selected && selected.label === labels[index]) {
-        if (selected.label === "Delete post") confirmDelete(isCurrent);
-        else selected.run();
-      }
-    });
+  const { current: currentCard, guard, cardVisible, actionProps, shareKey, campaignImageProps, openContextActions } = useTicketPresentation({
+    menuScope, userId: log.userId, contextActions, contextPresentation, mediaViewable, tabPreview, reduceMotion,
+    closeMenu: () => setOpenMenu(null), confirmDelete,
+  });
+  if (Platform.OS === "ios") {
+    onOpen = guard(onOpen); onOpenShow = guard(onOpenShow); onOpenPost = guard(onOpenPost);
+    onComment = guard(onComment); onRequireAuth = guard(onRequireAuth); onPreview = guard(onPreview);
+    onOpenProfile = guard(onOpenProfile); onOpenArtist = guard(onOpenArtist); onOpenArtistArchive = guard(onOpenArtistArchive);
+    onOpenVenue = guard(onOpenVenue); onOpenCity = guard(onOpenCity); onOpenPhotos = guard(onOpenPhotos); onPlay = guard(onPlay);
+    onNotInterested = guard(onNotInterested); onReport = guard(onReport); onEdit = guard(onEdit); onDelete = guard(onDelete);
+    onRemoveMyPostTag = guard(onRemoveMyPostTag); onSelfTagRemoved = guard(onSelfTagRemoved);
+  }
+  const convertingNotice = convertingClips.length > 0
+    ? <ConvertingClipNotice {...actionProps} clips={convertingClips} onReady={() => { if (currentCard()) void refreshFeed?.(); }} />
+    : null;
+  const pressLike = (event) => {
+    event?.stopPropagation?.();
+    event?.nativeEvent?.stopPropagation?.();
+    if (!currentCard()) return;
+    if (!session) { onRequireAuth?.(); return; }
+    toggleLike(log.id, log.likes || 0);
   };
   // No responder capture: media, links and nested controls retain ownership.
   // The visible More button remains the tap/VoiceOver alternative.
@@ -371,7 +342,7 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
     onLongPress: contextProps.onLongPress, delayLongPress: contextProps.delayLongPress,
   } : {};
   const overflow = (palette = null) => Platform.OS === "ios" ? <PostOverflow
-    expanded={menuOpen} onToggle={() => setOpenMenu(menuOpen ? null : menuScope)} onClose={() => setOpenMenu(null)}
+    expanded={menuOpen && cardVisible} onToggle={guard(() => setOpenMenu(menuOpen ? null : menuScope))} onClose={guard(() => setOpenMenu(null))}
     onEdit={canEdit ? () => onEdit(log) : null} onDelete={canDelete ? confirmDelete : null}
     onReport={canReport ? () => onReport(log) : null}
     onNotInterested={onNotInterested ? () => onNotInterested(log) : null} palette={palette} /> : null;
@@ -380,7 +351,9 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
   const timeLabel = log.timeAgo || relativeTime(log.createdAt);
   const taggedPeople = useMemo(() => normalizeTaggedPeople(log.taggedPeople), [log.taggedPeople]);
   const removeSelfTag = async () => {
+    if (!currentCard()) return;
     const result = await onRemoveMyPostTag?.(log.id);
+    if (!currentCard()) return;
     if (result?.ok === false) Alert.alert("Tag not removed", result.error?.message || "Refresh the post and try again.");
     else if (result?.ok) onSelfTagRemoved?.(result);
   };
@@ -444,11 +417,11 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
           </View>
         ) : null}
         {campaignArtUri && (
-          <ExpoImage
+          <ExpoImage {...campaignImageProps}
             source={{ uri: campaignArtUri }}
             style={StyleSheet.absoluteFill}
             contentFit="cover"
-            autoplay={!tabPreview && !reduceMotion}
+            autoplay={!tabPreview && !reduceMotion && cardVisible}
             transition={reduceMotion ? 0 : 180}
             accessible={false}
             accessibilityElementsHidden
@@ -559,9 +532,9 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
           <ViewTally count={viewCount} palette={campaignTreatment} />
         </View> : <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />}
 
-        <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
+        <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} {...actionProps} enabled={swipeActions && cardVisible} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
 <View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
-          <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
+          <RepostButton {...actionProps} post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
           {Platform.OS !== "ios" && <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} palette={campaignTreatment} />}
           <Pressable style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={pressLike} hitSlop={Platform.OS === "web" ? 8 : 2} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
             <Icon name="heart" size={18} color={campaignPresentation ? (liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor) : liked ? colors.magenta : colors.textDim} filled={liked} />
@@ -572,7 +545,7 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
             <Text style={[styles.fCount, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}>{commentCount}</Text>
           </PublicPressableLink>
           {Platform.OS !== "ios" && <ViewTally count={viewCount} palette={campaignTreatment} />}
-          <SocialShareButton
+          <SocialShareButton key={shareKey} {...actionProps}
             accountId={session?.id || null}
             color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textDim}
             model={shareModel}
@@ -834,9 +807,9 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
       {Platform.OS !== "ios" && <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />}
 
       {/* Post reactions and comments. Show-wide conversation lives in Lounge. */}
-      <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} enabled={swipeActions} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
+      <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} {...actionProps} enabled={swipeActions && cardVisible} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
 <View style={styles.footer}>
-        <RepostButton post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
+        <RepostButton {...actionProps} post={log} accountId={session?.id} onRepost={setPostRepost} onRequireAuth={onRequireAuth} />
         {Platform.OS !== "ios" && <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />}
         <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={pressLike} hitSlop={Platform.OS === "web" ? 8 : 2} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
@@ -848,7 +821,7 @@ export default function TicketStub({ log, mediaViewable = null, contextPresentat
           <Text style={styles.fCount}>{commentCount}</Text>
         </PublicPressableLink>
         {Platform.OS !== "ios" && (Platform.OS === "web" || isOnlineReview) && <ViewTally count={viewCount} />}
-        <SocialShareButton accountId={session?.id || null} model={shareModel} style={Platform.OS !== "web" ? styles.nativeFooterButton : undefined} />
+        <SocialShareButton key={shareKey} {...actionProps} accountId={session?.id || null} model={shareModel} style={Platform.OS !== "web" ? styles.nativeFooterButton : undefined} />
         <View style={{ flex: 1 }} />
         {overflow()}
         {Platform.OS !== "ios" && canEdit && (

@@ -1,0 +1,116 @@
+import { useEffect, useRef, useState } from "react";
+import { readFollowingFeed, subscribeSocialReactionChanges } from "./socialReactionsApi";
+import { beginLoadState, createLoadState, isLoadCancellation, projectLoadState, rejectLoadState, resolveLoadState } from "../../domain/loadState.mjs";
+import { toAppError } from "../../lib/diagnostics";
+
+const emptyFeed = () => ({ posts: [], nextCursor: null });
+export default function useFollowingFeed({ accountId, enabled, privacyScope, retainOnInactive = true, presentation = null }) {
+  const scope = JSON.stringify([accountId || null, privacyScope]);
+  const admission = useRef(null);
+  if (admission.current?.scope !== scope || admission.current?.retainOnInactive !== retainOnInactive) {
+    // A fresh identity prevents an A -> B -> A privacy round trip from admitting
+    // the first A's resource, even when its serialized query scope matches again.
+    const identity = {};
+    admission.current = { scope, identity, retainOnInactive, complete: false, revision: 0, reconciledRevision: 0,
+      settled: createLoadState({ scope: identity, data: emptyFeed() }) };
+  }
+  const data = admission.current;
+  const [resource, setResource] = useState(() => createLoadState({ scope: data.identity, status: "loading", data: emptyFeed() }));
+  const mounted = useRef(true);
+  const current = useRef(null);
+  if (current.current?.data !== data || current.current?.enabled !== enabled || current.current?.presentation !== presentation) {
+    current.current?.request?.controller.abort();
+    current.current = { data, accountId, enabled, presentation, resource: null, request: null, refreshQueued: false };
+  }
+  const owner = current.current;
+  const scoped = projectLoadState(resource, data.identity, emptyFeed());
+  owner.resource = retainOnInactive && ["loading", "refreshing"].includes(scoped.status) && !owner.request ? data.settled : scoped;
+  const admitted = () => mounted.current && current.current === owner && owner.enabled && owner.presentation?.current() !== false;
+  const request = async (more = false) => {
+    if (!admitted() || !owner.accountId || owner.request || (more && !owner.resource.data.nextCursor)) return false;
+    const token = { controller: new AbortController(), revision: data.revision };
+    owner.request = token;
+    owner.resource = beginLoadState(owner.resource, { scope: data.identity, emptyData: emptyFeed() });
+    setResource(owner.resource);
+    const valid = () => admitted() && owner.request === token && !token.controller.signal.aborted;
+    try {
+      const result = await readFollowingFeed({ accountId: owner.accountId, cursor: more ? owner.resource.data.nextCursor : null, signal: token.controller.signal });
+      if (!valid()) return false;
+      if (!Array.isArray(result?.posts)) throw toAppError(null, { code: "PIT-API-001", context: "Loading Following feed", source: "api" });
+      const previousPosts = more ? owner.resource.data.posts : [];
+      const byId = new Map(previousPosts.map(post => [post.id, post]));
+      for (const post of result.posts) byId.set(post.id, post);
+      const next = resolveLoadState({ scope: data.identity, data: { posts: [...byId.values()], nextCursor: result.nextCursor || null } });
+      owner.resource = next;
+      data.complete = true;
+      if (!more) data.reconciledRevision = token.revision;
+      data.settled = next;
+      setResource(next);
+      return true;
+    } catch (error) {
+      // architecture: allow-ambiguous-result -- retained feed rows remain usable; the visible scoped error offers a retry
+      if (valid()) {
+        // Cancellation is lifecycle control, not a failed resource. Preserve the
+        // last settled canonical state, including a previous retryable error.
+        const next = isLoadCancellation(error, token.controller.signal) ? data.settled : rejectLoadState(owner.resource, {
+          scope: data.identity,
+          error: toAppError(error, { status: error?.status, context: "Loading Following feed", source: "api" }),
+          emptyData: emptyFeed(),
+          retainData: ![401, 403, 404, 410].includes(Number(error?.status)),
+        });
+        owner.resource = next;
+        if (!isLoadCancellation(error, token.controller.signal)) data.complete = true;
+        data.settled = next;
+        setResource(next);
+      }
+      return false;
+    } finally {
+      if (current.current === owner && owner.request === token) {
+        owner.request = null;
+        // Several completed mutations during pagination need one fresh read,
+        // not a lost invalidation or an unbounded queue of duplicate requests.
+        const refresh = owner.refreshQueued;
+        owner.refreshQueued = false;
+        if (refresh && admitted()) void requestRef.current();
+      }
+    }
+  };
+  const requestRef = useRef(request);
+  requestRef.current = request;
+  useEffect(() => {
+    mounted.current = true;
+    if (!enabled || !accountId) return () => { mounted.current = false; };
+    if (!retainOnInactive || !data.complete || data.revision !== data.reconciledRevision) void requestRef.current();
+    // Do not collapse expanded history on polling or retained native re-entry.
+    const timer = setInterval(() => {
+      if (admitted() && owner.resource.data.posts.length <= 30) void requestRef.current();
+    }, 45_000);
+    return () => {
+      mounted.current = false;
+      clearInterval(timer);
+      owner.request?.controller.abort();
+      owner.request = null;
+      owner.refreshQueued = false;
+    };
+  }, [owner, data, enabled, accountId, retainOnInactive]);
+  const listen = !!accountId && (retainOnInactive || enabled);
+  useEffect(() => {
+    if (!listen) return undefined;
+    // A paused retained Feed still hears local mutation invalidations. It only
+    // records a version while hidden; the next admitted entry reconciles once,
+    // even when expanded history is too large for periodic head polling.
+    return subscribeSocialReactionChanges((changed) => {
+      const live = current.current;
+      if (!mounted.current || admission.current !== data || live?.data !== data || changed !== accountId) return;
+      data.revision++;
+      if (!live.enabled || live.presentation?.current() === false) return;
+      if (live.request) live.refreshQueued = true;
+      else void requestRef.current();
+    });
+  }, [data, accountId, listen]);
+  const view = owner.resource;
+  // Keep the screen's established presentation API while the owned resource is
+  // canonical: a refresh is its existing spinner, and loaded means admitted data.
+  return { scope, posts: view.data.posts, nextCursor: view.data.nextCursor, status: view.status === "refreshing" ? "loading" : view.status,
+    loaded: view.updatedAt != null, reload: () => request(false), loadMore: () => request(true) };
+}

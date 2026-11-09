@@ -17,23 +17,25 @@ function load(name, { reduced = false, reader = false, fontScale = 1, queued = f
   const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const modules = {
     react: {
+      useContext: () => false,
       useState: initial => { const i = stateIndex++; if (!(i in states)) states[i] = initial; return [states[i], value => { states[i] = value; dirty = true; }]; },
       useMemo: (f, deps) => { const i = memoIndex++; if (!same(memos[i]?.deps, deps)) memos[i] = { deps, value: f() }; return memos[i].value; },
       useRef: v => refs[refIndex++] ||= {current:v},
       useLayoutEffect: (create, deps) => { const i = effectIndex++; if (!same(effects[i]?.deps, deps)) pending.push(() => { effects[i]?.cleanup?.(); effects[i] = {deps, create, cleanup:create()}; }); },
     }, 'react/jsx-runtime': {jsx,jsxs:jsx},
-    'react-native': {AccessibilityInfo:{setAccessibilityFocus:n=>focus.push(n)},findNodeHandle:node=>node?.tag,
+    'react-native': {AppState:{currentState:'active',addEventListener:()=>({remove:()=>{}})},AccessibilityInfo:{setAccessibilityFocus:n=>focus.push(n)},findNodeHandle:node=>node?.tag,
       Modal:'Modal',Pressable:'Pressable',ScrollView:'ScrollView',Text:'Text',View:'View',
       StyleSheet:{create:x=>x,absoluteFill:{position:'absolute'},hairlineWidth:1},useWindowDimensions:()=>({width:393,fontScale})},
     'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:59,bottom:34})},
     '../hooks/useIOSDetailBackBlock': { IOSDetailBackContext: { Provider: 'DetailBackProvider' } },
     '../theme':{colors:new Proxy({},{get:()=> '#888'}),font:'System'},
     '../domain/menuJourney.mjs':{journeyMenuModel}, '../domain/iosNavigationPolicy.mjs':{iosBackSwipeCommits},
+    './nativeFeedBackContext.mjs':{NativeFeedBackContext:{}},
     './Avatar':'Avatar','./BrandMark':'BrandMark','./Icon':'Icon','./NativeTabRail':'TabRail',
     '../hooks/useReducedMotion':()=>reduced, '../hooks/useScreenReaderEnabled':{__esModule:true,default:()=>reader,getConfirmedScreenReaderEnabled:()=>reader,subscribeConfirmedScreenReaderEnabled:()=>()=>{}},
     'react-native-worklets':{scheduleOnRN:(f,...args)=>queued ? queue.push(()=>f(...args)) : f(...args)},
     'react-native-reanimated':{__esModule:true,default:{View:'AnimatedView'},ReduceMotion:{System:'system'},
-      useSharedValue:value=>{const i=sharedIndex++;return shared[i] ||= {get:()=>value,set:x=>{value=x;}};},useAnimatedStyle:f=>f(),withSpring:x=>x},
+      useSharedValue:value=>{const i=sharedIndex++;return shared[i] ||= {get:()=>value,set:x=>{value=x;}};},useAnimatedStyle:f=>f(),cancelAnimation:()=>{},withTiming:x=>x,withSpring:x=>x},
     'react-native-gesture-handler':{GestureDetector:'Detector',Gesture:{Pan:()=>{const g={};for(const method of ['enabled','maxPointers','activeOffsetX','failOffsetY','onTouchesDown','onUpdate','onEnd','onFinalize'])g[method]=value=>{g[`${method}Value`]=value;return g;};gestures.push(g);return g;}}},
   };
   const code=transformSync(source,{filename:name,babelrc:false,configFile:false,plugins:[[require('@babel/plugin-transform-react-jsx'),{runtime:'automatic'}],require('@babel/plugin-transform-modules-commonjs')]}).code;

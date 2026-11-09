@@ -45,7 +45,7 @@ const FanClubScreen = lazyWithRetry(() => import("./src/screens/FanClubScreen"),
 const AccountGate = lazyWithRetry(() => import("./src/screens/AccountGate"), "AccountGate");
 const MenuScreen = lazyWithRetry(() => import("./src/screens/MenuScreen"), "MenuScreen");
 import NativeFeedMediaLayer from "./src/components/NativeFeedMediaLayer";
-import { retainNativeFeedForMedia } from "./src/domain/nativeFeedMediaRetention.mjs";
+import { retainNativeFeedForMedia } from "./src/domain/nativeFeedRetention";
 
 const PhotoViewer = lazyWithRetry(() => import("./src/components/PhotoViewer"), "PhotoViewer");
 const LogScreen = lazyWithRetry(() => import("./src/screens/LogScreen"), "LogScreen");
@@ -2099,7 +2099,7 @@ function Root() {
                     onOpenArtist={openArtist}
                     onOpenEvent={openShow}
                   />
-                  {(retainNativeFeed || (Platform.OS === "ios" && !overlay)) ? <NativeFeedMediaLayer key={Platform.OS === "ios" ? `${session?.id || "guest"}:${chatAuthEpoch}` : session.id} obscured={!!overlay}
+                  {(retainNativeFeed || (Platform.OS === "ios" && !overlay)) ? <NativeFeedMediaLayer key={Platform.OS === "ios" ? `${session?.id || "guest"}:${chatAuthEpoch}` : session.id} obscured={!!overlay} frames={activeTab === "feed" ? stack : undefined}
                     header={<NativeAppHeader active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
                     tabBar={mobileTabBar}
                     media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back} presentationKey={Platform.OS === "ios" ? nav : undefined} presentationScope={linkedNavigationScope} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined}>{overlay}</IosDetailNavigation></ScreenTransition></Suspense>}>

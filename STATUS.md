@@ -1,5 +1,24 @@
 # Pit current status
 
+## 2026-11-09 iOS retained Feed Back reveal (isolated local candidate)
+
+- A signed-in Feed now remains beneath readable details for a cancellable,
+  real-page Back reveal. The exact list is retained. Nested detail-to-detail
+  reveals remain out of scope; protected editors and account boundaries keep
+  their existing unmount protection.
+- Hidden resource reads, timers, animated images and queued actions are fenced.
+  Fresh initial/Back controls, privacy changes, Following invalidation and
+  Suspense reconnects are covered through actual Feed/Ticket/News composition.
+- Independent review clears the final source. The complete check chain passes
+  with all 8,782 tests run serially, plus dependency/syntax/architecture checks,
+  native exports, web budget, Blueprint and source isolation. Two unchanged
+  default-parallel fixture failures are disclosed rather than hidden.
+- No push, backend deployment, phone operation, dependency or native-project
+  change. Main remains at `942e1f3`. The combined notification client's
+  backend-first rollout hold remains in place; `8060121` is preserved.
+- Scope, implementation, validation and remaining physical-device acceptance
+  are recorded in `docs/IOS_RETAINED_FEED_BACK_2026-11-09.md`.
+
 ## 2026-11-08 iOS festival presentation (isolated local review)
 
 - New iOS-only festival variants replace spotlight artwork with credited,
