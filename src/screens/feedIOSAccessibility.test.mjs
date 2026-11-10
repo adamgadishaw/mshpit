@@ -5,6 +5,7 @@ import vm from "node:vm";
 import { parse } from "@babel/parser";
 import { transformSync } from "@babel/core";
 import transformJSX from "@babel/plugin-transform-react-jsx";
+import { unreadBadgeCount, unreadBadgeText } from "../domain/unreadBadge.mjs";
 
 const source = readFileSync(new URL("./FeedScreen.jsx", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
@@ -98,7 +99,7 @@ const activityNode = nativeAst.program.body.find(node => node.type === "ExportNa
 const activityCode = transformSync(nativeSource.slice(activityNode.start, activityNode.end), { babelrc: false, configFile: false, plugins: [[transformJSX, { runtime: "classic" }]] }).code;
 const activityTree = (fontScale, overrides = {}) => new vm.Script(activityCode + "\nFeedActivityControls(props);").runInNewContext({
   React: { createElement: (type, props, ...children) => ({ type, props, children }) },
-  Pressable: "Pressable", Text: "Text", View: "View", Icon: "Icon", colors: {}, styles: nativeStyles,
+  Pressable: "Pressable", Text: "Text", View: "View", Icon: "Icon", colors: {}, styles: nativeStyles, unreadBadgeCount, unreadBadgeText,
   useWindowDimensions: () => ({ fontScale }), props: { enabled: true, hasInbox: true, hasNotifications: true, unread: 0, notifications: 0, ...overrides },
 });
 const activityNodes = node => !node ? [] : Array.isArray(node) ? node.flatMap(activityNodes) : typeof node !== "object" ? [] : [node, ...activityNodes(node.children)];

@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import Icon from "../components/Icon";
 import { colors, font } from "../theme";
+import { unreadBadgeCount, unreadBadgeText } from "../domain/unreadBadge.mjs";
 import { FeedContent, FeedNavigation, useFeedSelection } from "./FeedScreen.jsx";
 import NativeFeedFilterPager from "../components/NativeFeedFilterPager.ios";
 import useAppActive from "../lib/useAppActive";
@@ -96,10 +97,9 @@ function FeedPane({ preview, feedReturn, visible, ...props }) {
 // They remain in place during swipes and never mark activity read themselves.
 export function FeedActivityControls({ unread, notifications, enabled, onOpenInbox, onOpenNotifications, hasInbox, hasNotifications }) {
   const { fontScale } = useWindowDimensions();
-  const count = value => Number.isFinite(Number(value)) ? Math.max(0, Math.trunc(Number(value))) : 0;
   const items = [
-    ...(hasInbox ? [{ title: "Messages", icon: "mail", count: count(unread), press: onOpenInbox }] : []),
-    ...(hasNotifications ? [{ title: "Notifications", icon: "bell", count: count(notifications), press: onOpenNotifications }] : []),
+    ...(hasInbox ? [{ title: "Messages", icon: "mail", count: unreadBadgeCount(unread), press: onOpenInbox }] : []),
+    ...(hasNotifications ? [{ title: "Notifications", icon: "bell", count: unreadBadgeCount(notifications), press: onOpenNotifications }] : []),
   ];
   if (!items.length) return null;
   return <View style={styles.activity} testID="feed-activity-controls">
@@ -108,7 +108,10 @@ export function FeedActivityControls({ unread, notifications, enabled, onOpenInb
       accessibilityState={{ disabled: !enabled }} style={({ pressed }) => [styles.activityButton, fontScale > 1.25 && styles.activityButtonLarge, pressed && styles.activityPressed]}>
       <Icon name={item.icon} size={19} color={colors.amber} />
       <Text style={styles.activityLabel}>{item.title}</Text>
-      {item.count > 0 && <Text style={styles.activityBadge}>{item.count > 99 ? "99+" : item.count}</Text>}
+      {item.count > 0 && <View style={styles.activityBadge} testID={`feed-activity-badge-${item.title.toLowerCase()}`}
+        accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+        <Text style={styles.activityBadgeText}>{unreadBadgeText(item.count)}</Text>
+      </View>}
     </Pressable>)}
   </View>;
 }
@@ -117,6 +120,7 @@ const styles = StyleSheet.create({
   activityButton: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 12, backgroundColor: colors.surface },
   activityButtonLarge: { flexBasis: "100%" },
   activityLabel: { flexShrink: 1, minWidth: 0, fontFamily: font, fontSize: 14, color: colors.text },
-  activityBadge: { flexShrink: 0, fontSize: 12, fontWeight: "700", color: colors.amber },
+  activityBadge: { flexShrink: 0, minWidth: 21, minHeight: 20, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 5, backgroundColor: "#BD1734", alignItems: "center", justifyContent: "center" },
+  activityBadgeText: { fontSize: 12, fontWeight: "700", color: "#FFFFFF", fontVariant: ["tabular-nums"] },
   activityPressed: { backgroundColor: colors.surfaceAlt },
 });

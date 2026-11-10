@@ -117,7 +117,9 @@ function fixture(platform = "ios", options = {}) {
       ...props.data.slice(0, highest + 1).map((item, index) => props.CellRendererComponent
         ? React.createElement(props.CellRendererComponent, { key: props.keyExtractor(item), cellKey: props.keyExtractor(item), index, item, onFocusCapture: noop, style: { flexDirection: "column" }, onLayout: () => measurements.push(index) }, React.createElement("Row")) : null));
   };
-  const native = { View: "View", Text: "Text", FlatList, Pressable: "Pressable", ScrollView: "ScrollView", Platform: { OS: platform, select: v => v[platform] || v.default }, StyleSheet: { create: v => v, absoluteFill: {} }, useWindowDimensions: () => ({ width, height: 852, fontScale }) };
+  const animation = () => ({ start() {}, stop() {} });
+  class AnimatedValue { constructor(value) { this.value = value; } setValue(value) { this.value = value; } interpolate(config) { return { value: this, config }; } }
+  const native = { Animated: { Value: AnimatedValue, View: "AnimatedView", timing: animation, sequence: animation, loop: animation }, Easing: { linear: "linear" }, View: "View", Text: "Text", FlatList, Pressable: "Pressable", ScrollView: "ScrollView", RefreshControl: "RefreshControl", Platform: { OS: platform, select: v => v[platform] || v.default }, StyleSheet: { create: v => v, absoluteFill: {} }, useWindowDimensions: () => ({ width, height: 852, fontScale }) };
   const imports = (name, local) => {
     if (name.endsWith('/NativeTabScroll')) return native;
     if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
@@ -131,6 +133,7 @@ function fixture(platform = "ios", options = {}) {
     if (name.endsWith("/feedImageRetry")) return { useFeedImageRetry: () => ({ value: null, isCurrent: () => true, accept: noop }), FeedImageRetryProvider: p => p.children };
     if (name.endsWith("/theme")) return { colors: {}, radius: {}, shadow: {}, space: v => v * 4 };
     if (name.endsWith("/persist")) return { load: (key, value) => persisted.get(key) ?? value, save: (key, value) => persisted.set(key, value) };
+    if (name.endsWith("/useReducedMotion")) return { __esModule: true, default: () => false };
     if (name.endsWith("/useAppActive")) return { __esModule: true, default: () => true };
     if (name.endsWith("/useFollowingFeed")) return { __esModule: true, default: args => { followingReads.push(args); return primary.following; } };
     if (name.endsWith("/useNewsDeskStories")) return { __esModule: true, default: () => primary.news };
@@ -138,6 +141,7 @@ function fixture(platform = "ios", options = {}) {
     if (name.endsWith("/NewsInteractionContext")) return { useNewsInteractions: () => ({}) };
     if (name.endsWith("/lazyWithRetry")) return { lazyWithRetry: () => "Lazy" };
     if (name.endsWith(".mjs")) return local(name);
+    if (name.endsWith("/VinylRefreshBoundary") && options.nativeBoundary) return execute("src/components/VinylRefreshBoundary.ios.jsx", imports);
     if (name.startsWith("../components/")) return { __esModule: true, default: name.split("/").at(-1) };
     return local(name);
   };
@@ -162,7 +166,7 @@ function fixture(platform = "ios", options = {}) {
       iosMenuOpen: false, acctOpen: false, welcome: null, unsubToken: null, verifyToken: null,
       publicNavigationNotice: null, newsStoryNotice: null,
       screenTransitionKey: require("./src/domain/screenTransition.mjs").screenTransitionKey,
-      tabScreens: tab === "feed" ? React.createElement("View", null, React.createElement(Feed, { key: lease?.key, feedReturn: lease, feedPresentation: presentation, feed: rows, localFeed: rows, loggedIn: true, accountId: account, visible: !overlay && !primary.preview, hasMore: false, onRefresh: async () => true, onLoadMore: () => assert.fail("No service reads") })) : React.createElement("OtherTab") }));
+      tabScreens: tab === "feed" ? React.createElement("View", null, React.createElement(Feed, { key: lease?.key, feedReturn: lease, feedPresentation: presentation, feed: rows, localFeed: rows, loggedIn: true, accountId: account, visible: !overlay && !primary.preview, hasMore: false, onRefresh: options.onRefresh || (async () => true), onLoadMore: () => assert.fail("No service reads") })) : React.createElement("OtherTab") }));
   };
   const press = label => { const node = all().find(n => n.props?.accessibilityLabel === label); assert.ok(node, label); renderer.act(() => node.props.onPress()); };
   const measure = () => {
@@ -403,4 +407,46 @@ test("News preview waits for its scoped stories or terminal result, not unrelate
   f.primary({ news: { stories: [], status: "error" } }); assert.equal(f.readiness.at(-1), true);
   f.primary({ news: { stories: [{ id: "story" }], status: "loading" } }); assert.equal(f.readiness.at(-1), true);
   f.close();
+});
+
+
+test("real Feed refresh reaches the native list through its real context provider, retains rows on failed read and allows retry", async t => {
+  const requests = [];
+  const f = fixture("ios", { nativeBoundary: true, onRefresh: options => new Promise(resolve => requests.push({ ...options, resolve })) });
+  t.after(f.close);
+  f.reveal(); const instance = f.instance;
+  const control = () => f.list().props.refreshControl;
+  assert.equal(control().type, "RefreshControl");
+  f.act(() => { control().props.onRefresh(); control().props.onRefresh(); });
+  assert.equal(requests.length, 1); assert.equal(control().props.refreshing, true);
+  requests[0].resolve(false); for (let i = 0; i < 6; i++) { await new Promise(setImmediate); f.act(() => {}); }
+  assert.equal(control().props.refreshing, false); assert.equal(f.instance, instance); assert.equal(f.list().props.data.length, 24);
+  assert.ok(f.all().some(n => n.text?.includes("feed could not refresh")));
+  f.act(control().props.onRefresh); assert.equal(requests.length, 2);
+  f.rows([{ id: "latest-server-row" }]); requests[1].resolve(true); for (let i = 0; i < 6; i++) { await new Promise(setImmediate); f.act(() => {}); }
+  assert.equal(f.list().props.data[0].id, "latest-server-row"); assert.equal(f.instance, instance); assert.equal(control().props.refreshing, false);
+});
+test("real Feed refresh aborts outgoing account reads and does not settle the next account spinner", async t => {
+  const requests = [];
+  const f = fixture("ios", { nativeBoundary: true, onRefresh: options => new Promise(resolve => requests.push({ ...options, resolve })) });
+  t.after(f.close);
+  f.act(f.list().props.refreshControl.props.onRefresh);
+  f.scope("B"); assert.equal(requests[0].signal.aborted, true);
+  f.act(f.list().props.refreshControl.props.onRefresh); assert.equal(requests.length, 2);
+  requests[0].resolve(true); await new Promise(setImmediate); f.act(() => {});
+  assert.equal(f.list().props.refreshControl.props.refreshing, true);
+  requests[1].resolve(true); for (let i = 0; i < 6; i++) { await new Promise(setImmediate); f.act(() => {}); }
+  assert.equal(f.list().props.refreshControl.props.refreshing, false);
+});
+
+
+test("actual iOS refresh control cannot replay after retained gallery hides and returns", t => {
+  const requests = [];
+  const f = fixture("ios", { nativeBoundary: true, onRefresh: () => { requests.push(true); return Promise.resolve(true); } });
+  t.after(f.close); const instance = f.instance;
+  const captured = f.list().props.refreshControl.props.onRefresh;
+  f.depart({ photos: { images: [{ uri: "synthetic.jpg" }] } }); f.back();
+  assert.equal(f.instance, instance);
+  f.act(captured); assert.deepEqual(requests, []);
+  f.act(f.list().props.refreshControl.props.onRefresh); assert.deepEqual(requests, [true]);
 });

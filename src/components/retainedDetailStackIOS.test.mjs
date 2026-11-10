@@ -109,7 +109,17 @@ function fixture({ strict = false, frames: initialFrames, realPost = false, lazy
     addComment: (...args) => { const request = { args, ...deferred() }; writes.push(request); return request.promise; },
     deleteOwnPost: (...args) => { const request = { args, ...deferred() }; writes.push(request); return request.promise; },
     deleteOwnComment: async () => ({ ok: true }), setCommentLike: async () => ({ ok: true }) };
-  const native = { Platform: { OS: "ios", select: value => value.ios || value.default }, View: "View", Text: "Text", TextInput: "TextInput",
+  const animation = () => ({ start: noop, stop: noop });
+  const Animated = {
+    View: "AnimatedView",
+    Value: class {
+      constructor(value) { this.value = value; }
+      setValue(value) { this.value = value; }
+      interpolate(config) { return { value: this, ...config }; }
+    },
+    timing: animation, loop: animation, sequence: animation,
+  };
+  const native = { Animated, Easing: { linear: value => value }, Platform: { OS: "ios", select: value => value.ios || value.default }, View: "View", Text: "Text", TextInput: "TextInput",
     ScrollView: "ScrollView", Pressable: "Pressable", Modal: "Modal", ActivityIndicator: "ActivityIndicator", RefreshControl: "RefreshControl",
     StyleSheet: { create: value => value, absoluteFill: { position: "absolute" }, absoluteFillObject: {}, hairlineWidth: .5 },
     useWindowDimensions: () => ({ width, height: 852, fontScale: 1 }), Dimensions: { get: () => ({ width, height: 852 }) },

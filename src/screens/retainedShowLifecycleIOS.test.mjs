@@ -81,7 +81,17 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
     isGoing: () => false, isGoingBusy: () => false, toggleGoing: pending("legacyGoing"), loungeFor: () => [], artistSummary: () => null,
     remoteArtistMeta: () => ({ artistKey: log.artistKey, name: log.artist }), resolveArtist: () => assert.fail("No lookup needed"), addLog: pending("post"),
   };
-  const native = { AppState: { currentState: "active" }, Platform: { OS: "ios", select: choices => choices.ios || choices.default },
+  const animation = () => ({ start: noop, stop: noop });
+  const Animated = {
+    View: "AnimatedView",
+    Value: class {
+      constructor(value) { this.value = value; }
+      setValue(value) { this.value = value; }
+      interpolate(config) { return { value: this, ...config }; }
+    },
+    timing: animation, loop: animation, sequence: animation,
+  };
+  const native = { Animated, Easing: { linear: value => value }, AppState: { currentState: "active" }, Platform: { OS: "ios", select: choices => choices.ios || choices.default },
     View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", RefreshControl: "RefreshControl",
     StyleSheet: { create: value => value, absoluteFill: {} }, useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1 }),
     Linking: { openURL: url => { const request = { kind: "link", url, ...deferred() }; opens.push(request);
@@ -102,6 +112,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
     if (name.endsWith("/iosDetailPresentationContext.mjs")) return context;
     if (name.endsWith("/useIOSDetailBackBlock")) return () => {};
     if (name.endsWith("/useScreenReaderEnabled")) return () => true;
+    if (name.endsWith("/useReducedMotion")) return () => false;
     if (name.endsWith("/useAppActive")) return () => true;
     if (name.endsWith("/theme")) return { colors: {}, radius: {}, shadow: {}, space: value => value * 4 };
     if (name.endsWith("/iosDetailPrivacy")) return { getIOSDetailPrivacySnapshot: privacy.getSnapshot, subscribeIOSDetailPrivacy: privacy.subscribe, invalidateIOSDetailPrivacy: privacy.invalidate };

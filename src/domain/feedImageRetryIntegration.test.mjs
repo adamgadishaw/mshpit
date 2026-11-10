@@ -44,7 +44,7 @@ function fixture(platform='ios') {
     if(dep.endsWith('/feedExperience.mjs'))return feedExperience;
     if(dep.endsWith('/feedDiscoveryPlacement.mjs'))return placement;
     if(dep.endsWith('/homeJourney.mjs'))return home;
-    if(dep.endsWith('/nativeFeedMediaRetention.mjs'))return {nativeFeedCanWork:()=>true};
+    if(dep.endsWith('/nativeFeedMediaRetention.mjs'))return {nativeFeedCanWork:({visible})=>visible};
     if(dep.endsWith('/lazyWithRetry'))return {lazyWithRetry:()=> 'Lazy'};
     if(dep.endsWith('/newsReaderState.mjs'))return {newsAwareFeed:feed=>feed};
     if(dep.endsWith('/NewsInteractionContext'))return {useNewsInteractions:()=>({})};
@@ -57,7 +57,7 @@ function fixture(platform='ios') {
   const props={feed:[],localFeed:[],loggedIn:true,visible:true,accountId:'a',onRefresh:({signal})=>request(signal)};
   const render=(flush=true)=>{let turns=0;do{dirty=false;cursor=0;const selected=feed(props);tree=selected.type(selected.props);if(flush)while(pending.length)pending.shift()();}while(flush&&dirty&&++turns<10);return tree;};
   render();
-  return {props,calls,render,get tree(){return tree;},get refresh(){return tree.props.children.props.onRefresh;},
+  return {props,calls,render,get tree(){return tree;},get refresh(){return tree.props.children.props.children.props.onRefresh;},
     subscribe(fn){return tree.props.value?.subscribe(fn);},
     filter(label){const list=tree.props.children.props.children.props.children;nodes(list.props.ListHeaderComponent).find(n=>n.props?.label===label).props.onPress();render();},
     unmount(){slots.forEach(slot=>slot?.cleanup?.());},
@@ -98,4 +98,29 @@ test('new image subscribers never replay a past accepted refresh',async()=>{
  const f=fixture();const first=f.refresh();f.calls[0].resolve(true);await first;
  let pulses=0;const unsubscribe=f.subscribe(()=>pulses++);assert.equal(pulses,0);
  const second=f.refresh();assert.equal(pulses,1);unsubscribe();f.calls[1].resolve(true);await second;
+});
+
+
+for (const label of ["For You", "Local", "Following", "News"]) test(`explicit ${label} refresh waits for fresh server counts as well as visible content`, async () => {
+ const f=fixture(); const counts=[]; f.props.onRefreshCounts=options=>new Promise(resolve=>counts.push({...options,resolve})); f.render(); f.filter(label);
+ const pending=f.refresh(); assert.equal(counts.length,1); assert.equal(counts[0].signal.aborted,false);
+ assert.equal(f.calls.length,label==="News"?2:1,"News also revalidates its visible top-story strip");
+ for(const read of f.calls)read.resolve(true);
+ await Promise.resolve();f.render(); assert.equal(nodes(f.tree).find(n=>n.props?.testID==="feed-refresh").props.refreshing,true);
+ counts[0].resolve(false); assert.equal(await pending,false); f.render();
+ assert.equal(nodes(f.tree).find(n=>n.props?.testID==="feed-refresh").props.refreshing,false);
+ assert.ok(nodes(f.tree.props.children.props.children.props.children.props.ListHeaderComponent).some(n=>typeof n.props?.children==="string"&&n.props.children.includes("feed could not refresh")));
+});
+
+
+test('retained and superseded iOS Feed callbacks cannot start refresh or counts reads', async () => {
+ const f=fixture(); let counts=0, current=true; f.props.onRefreshCounts=()=>{counts++;return true;}; f.props.feedPresentation={current:()=>current};f.render();
+ const captured=f.refresh; current=false; assert.equal(await captured(),false);assert.equal(f.calls.length,0);assert.equal(counts,0);
+ current=true; f.props.visible=false;f.render();assert.equal(await captured(),false);assert.equal(f.calls.length,0);
+ assert.equal(nodes(f.tree).find(n=>n.props?.testID==="feed-refresh").props.enabled,false);
+  f.props.visible=true;f.props.readEnabled=false;f.render();assert.equal(await f.refresh(),false);assert.equal(await captured(),false);assert.equal(f.calls.length,0);
+ f.props.readEnabled=true;f.render();assert.equal(await captured(),false);assert.equal(f.calls.length,0);
+});
+for(const platform of ['android','web'])test(`${platform} News keeps its existing one-source refresh`,async()=>{
+ const f=fixture(platform);f.filter('News');const pending=f.refresh();assert.equal(f.calls.length,1);f.calls[0].resolve(true);assert.equal(await pending,true);
 });

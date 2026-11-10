@@ -109,10 +109,10 @@ export default function FeedScreen(props) {
   return <FeedContent {...props} filter={selection.filter} onSelectFilter={selection.select} />;
 }
 
-export function FeedNavigation({ filter, onSelect, loggedIn }) {
+export function FeedNavigation({ filter, onSelect, loggedIn, hideTitle = false }) {
   const { fontScale } = useWindowDimensions();
   return <View style={[styles.head, { marginBottom: 0 }]}>
-    <View style={[styles.wordmarkRow, styles.nativeHeaderRow]}><Text style={styles.nativeFeedTitle}>Feed</Text></View>
+    {!hideTitle && <View style={[styles.wordmarkRow, styles.nativeHeaderRow]}><Text style={styles.nativeFeedTitle}>Feed</Text></View>}
     {loggedIn && <View style={[styles.segment, fontScale > 1.25 && { flexWrap: "wrap" }]} accessibilityRole="tablist" accessibilityLabel="Feed filters">
       <Seg label="Following" on={filter === "following"} onPress={() => onSelect("following")} />
       <Seg label="Local" on={filter === "local"} onPress={() => onSelect("local")} />
@@ -122,11 +122,14 @@ export function FeedNavigation({ filter, onSelect, loggedIn }) {
   </View>;
 }
 
-export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, headStatusOwner = null, feedReturn = null, feedPresentation = null, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews , filter, onSelectFilter, localNavigation = false, readEnabled = true }) {
+export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onRefreshCounts, onLoadMore, headStatusOwner = null, feedReturn = null, feedPresentation = null, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews , filter, onSelectFilter, localNavigation = false, readEnabled = true }) {
   const { width, fontScale } = useWindowDimensions();
   const tabPreview = useNativeTabPreview();
   const appActive = useAppActive();
   const feedActive = nativeFeedCanWork({ platform: Platform.OS, appActive, visible });
+  const refreshAdmission = useMemo(() => ({ feedActive, readEnabled, tabPreview, feedPresentation }), [feedActive, readEnabled, tabPreview, feedPresentation]);
+  const refreshAdmissionRef = useRef(refreshAdmission);
+  refreshAdmissionRef.current = refreshAdmission;
   const phone = width < 700;
   const filterScope = feedFilterStorageKey(accountId);
   const [count, setCount] = useState(() => feedReturn?.read(filter)?.count || PAGE);
@@ -357,6 +360,8 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
   const imageRetry = useFeedImageRetry(JSON.stringify([accountId, loggedIn, filter]));
   const refresh = async () => {
     if (!actionCurrent() || !imageRetry.isCurrent()) return false;
+    if (Platform.OS === "ios" && (refreshAdmissionRef.current !== refreshAdmission || !activityRef.current || !readEnabled || tabPreview
+      || (feedPresentation && !feedPresentation.current()))) return false;
     if (refreshControllerRef.current || !onRefresh) return false;
     returnUI?.cancel();
     if (filter === "everyone") introduction.dismiss();
@@ -366,9 +371,12 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
     setRefreshing(true);
     setRefreshError(false);
     try {
-      const result = newsTab ? await news.reload() : filter === "following" ? await following.reload() : await onRefresh({ signal: controller.signal });
+      const requests = [newsTab ? news.reload() : filter === "following" ? following.reload() : onRefresh({ signal: controller.signal })];
+      if (Platform.OS === "ios" && newsTab && phone) requests.push(topNews.reload());
+      if (typeof onRefreshCounts === "function") requests.push(onRefreshCounts({ signal: controller.signal }));
+      const results = await Promise.allSettled(requests);
       if (!actionCurrent() || controller.signal.aborted || refreshControllerRef.current !== controller) return false;
-      const failed = result === false || result == null;
+      const failed = results.some(result => result.status === "rejected" || result.value === false || result.value == null);
       setRefreshError(failed);
       return !failed;
     } catch {
@@ -461,13 +469,14 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
   // image decoding and comment-preview mounts do not all hit one frame.
   return (
     <FeedImageRetryProvider value={imageRetry.value}>
+    <FeedReturnProvider value={returnUI?.provider}>
     <VinylRefreshBoundary
       refreshing={refreshing}
       onRefresh={refresh}
+      enabled={Platform.OS !== "ios" || (feedActive && readEnabled && !tabPreview)}
       accessibilityLabel="Refresh your feed"
       testID="feed-refresh"
     >
-    <FeedReturnProvider value={returnUI?.provider}>
     <FlatList
       {...returnUI?.props}
       {...(localNavigation ? { ref: bindList } : {})}
@@ -689,8 +698,8 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
       )}
       renderItem={renderFeedItem}
     />
-    </FeedReturnProvider>
     </VinylRefreshBoundary>
+    </FeedReturnProvider>
     </FeedImageRetryProvider>
   );
 }

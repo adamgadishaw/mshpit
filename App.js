@@ -244,7 +244,7 @@ function Root() {
   const {
     session, chatAuthEpoch, authReady, sessionValidationStatus, concertKey, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
     feedHeadStatus, feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
-    searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, isFollowing, follow, isBlocked,
+    searchPeople, inboxUnread, accountStatus, track, unreadNotifications, refreshNotifications, recordPlay, playHistory, isFollowing, follow, isBlocked,
     loadPlayHistory, saveQueueAsPlaylist, autoplayQueue, followingCount, resendEmailVerification, completeSignupOnboarding,
     topArtists, artistsAlphabetical, upcomingEvents, discoverySidebar, discoverySidebarStatus, refreshDiscoverySidebar, refreshTourDates, tourDates, goingFor, myAttendance, refreshMyAttendance,
     remoteArtistMeta,
@@ -1812,6 +1812,7 @@ function Root() {
                   hideHeaderActions={wide}
                   newUser={!!session && feed.filter((l) => l.userId === session.id).length === 0}
                   onRefresh={refreshHomeFeedData}
+                  onRefreshCounts={Platform.OS === "ios" && session ? refreshNotifications : undefined}
                   onLoadMore={loadMoreFeed}
                   headStatusOwner={feedHeadStatus}
                   hasMore={feedHasMore}

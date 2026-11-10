@@ -1444,3 +1444,30 @@ test("a visited Feed preview is ready after a resize and reversal without losing
   assert.equal(nodes(f.surface("local")).find(node => node.type === "FlatList").props.instance, source);
   assert.ok(f.reads.filter(read => read.kind === "following").every(read => read.args.signal.aborted));
 });
+
+test("iOS Feed exposes distinct notification/message badges capped visually at 99+ with exact accessible totals", t => {
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  const opened = [];
+  f.render({ notifUnread: 3, unread: 124, onOpenNotifications: () => opened.push("activity"), onOpenInbox: () => opened.push("inbox") });
+  const bell = f.all().find(n => n.props?.accessibilityLabel === "Notifications, 3 unread");
+  const mail = f.all().find(n => n.props?.accessibilityLabel === "Messages, 124 unread");
+  assert.ok(bell); assert.ok(mail); assert.ok(f.all().some(n => n.text === "99+"));
+  for (const action of [bell, mail]) {
+    const style = Object.assign({}, ...action.props.style({ pressed: false }).filter(Boolean));
+    assert.ok(style.minHeight >= 44);
+    assert.equal(style.flex, 1, "The installed full-label activity actions retain their equal-width layout");
+    const badge = nodes(action).find(node => node.props?.testID?.startsWith("feed-activity-badge-"));
+    assert.ok(badge);
+    assert.equal(badge.props.style.backgroundColor, "#BD1734");
+    assert.equal(badge.props.style.borderRadius, 5);
+    assert.equal(badge.props.accessibilityElementsHidden, true);
+    assert.equal(badge.children[0].props.style.color, "#FFFFFF");
+  }
+  f.act(bell.props.onPress); f.act(mail.props.onPress); assert.deepEqual(opened, ["activity", "inbox"]);
+  f.render({ notifUnread: 0, unread: 0 });
+  assert.ok(f.all().some(n => n.props?.accessibilityLabel === "Notifications"));
+  assert.ok(f.all().some(n => n.props?.accessibilityLabel === "Messages"));
+  assert.ok(!f.all().some(n => n.text === "99+"));
+  assert.ok(!f.all().some(n => n.props?.testID?.startsWith("feed-activity-badge-")));
+  f.render({ routeCurrent: false }); f.act(bell.props.onPress); assert.equal(opened.length, 2);
+});
