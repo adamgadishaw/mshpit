@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useReducer, useRef } from "react";
 import { createEndlessFeed } from "../domain/endlessFeed.mjs";
 
-export default function useEndlessFeed({ scope, listProps = {}, ...options }) {
+export default function useEndlessFeed({ scope, listProps = {}, head = null, ...input }) {
+  // Cached rows remain readable before verification and during a background
+  // head refresh. Only an admitted head can authorize older-page transport.
+  const headReady = !head || head.verified && head.status !== "loading";
+  const options = { ...input, ready: input.ready && (input.visibleCount < input.loadedCount || headReady), hasMore: input.hasMore && headReady };
   const viewportHeight = useRef(0);
   const [, update] = useReducer(value => value + 1, 0);
   const owner = useMemo(() => createEndlessFeed({ changed: update }), [scope]);

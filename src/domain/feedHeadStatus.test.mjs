@@ -9,6 +9,7 @@ import * as feedExperience from "./feedExperience.mjs";
 import * as placement from "./feedDiscoveryPlacement.mjs";
 import * as home from "./homeJourney.mjs";
 import * as inert from "../hooks/feedHeadStatus.js";
+import * as endlessDomain from "./endlessFeed.mjs";
 
 // Reuse the existing isolated actual-reader fixture without importing its test
 // registrations. No replacement reader logic or network client is used.
@@ -40,16 +41,17 @@ screenFixture = screenFixture.replace("useRef(value){", "useSyncExternalStore(su
   .replace("const retry=run(retryCodes[platform],()=>react);", "const retry=run(retryCodes[platform],()=>react); const head=run(compile(platform==='ios'?'../hooks/feedHeadStatus.ios.js':'../hooks/feedHeadStatus.js'),dep=>dep==='react'?react:headDomain);")
   .replace("return {useFeedHeadStatus:()=>null};", "return head;")
   .replace("if(dep.endsWith('/feedExperience.mjs'))", "if(dep.endsWith('/feedPagination.mjs'))return pagination; if(dep.endsWith('/feedExperience.mjs'))");
-const { fixture, nodes } = new Function("readFileSync", "createRequire", "transformSync", "feedExperience", "placement", "home", "headDomain", "pagination",
-  screenFixture + ";return {fixture,nodes};")(readFileSync, createRequire, transformSync, feedExperience, placement, home, {createFeedHeadStatus,hasFeedHeadReceipt}, pagination);
+const { fixture, nodes } = new Function("readFileSync", "createRequire", "transformSync", "feedExperience", "placement", "home", "headDomain", "pagination", "endlessDomain", "assert",
+  screenFixture + ";return {fixture,nodes};")(readFileSync, createRequire, transformSync, feedExperience, placement, home, {createFeedHeadStatus,hasFeedHeadReceipt}, pagination, endlessDomain, assert);
 const list = f => f.tree.props.children.props.children.props.children;
 const text = n => nodes(n).flatMap(x => typeof x.props?.children === "string" ? [x.props.children] : []);
 const emptyText = f => text(list(f).props.ListEmptyComponent).join(" ");
+const assertNoFooterControls = f => { assert.equal(nodes(list(f).props.ListFooterComponent).some(node => node.type === "Pressable"), false); assert.doesNotMatch(text(list(f).props.ListFooterComponent).join(" "), /caught up|older posts/i); };
 const refreshButton = f => nodes(list(f).props.ListEmptyComponent).find(n => n.props?.label === "Refresh feed");
 function screen(h, platform = "ios") {
   const f = fixture(platform);
   Object.assign(f.props, { headStatusOwner: h.owner, feed: h.state.posts, hasMore: h.state.hasMore, loadingMore: h.state.loading,
-    onLoadMore: () => h.render().loadMoreFeed(), onRefresh: options => h.render().hydrateFeed(options) });
+    onLoadMore: options => h.render().loadMoreFeed(options), onRefresh: options => h.render().hydrateFeed(options) });
   const sync = () => { Object.assign(f.props, { feed: h.state.posts, hasMore: h.state.hasMore, loadingMore: h.state.loading }); f.render(); };
   sync();
   return Object.assign(f, { sync });
@@ -83,16 +85,16 @@ test("actual admitted initial head marks loading, duplicate/guest/preaborted rea
 });
 test("actual cold failure renders error and Refresh, never the cursorless older dead end; successful refresh confirms empty",async()=>{
   const h=harness(), f=screen(h);const pending=h.render().hydrateFeed();f.sync();
-  assert.match(emptyText(f),/Loading your feed/);assert.equal(list(f).props.ListFooterComponent,null);
+  assert.match(emptyText(f),/Loading your feed/);assertNoFooterControls(f);
   await failHead(h);assert.equal(await pending,false);f.sync();assert.match(emptyText(f),/Your feed could not load/);
-  assert.equal(list(f).props.ListFooterComponent,null); assert.ok(refreshButton(f));
+  assertNoFooterControls(f); assert.ok(refreshButton(f));
   const retry=refreshButton(f).props.onPress();assert.equal(h.calls.length,3);f.sync();assert.match(emptyText(f),/Loading your feed/);
   h.calls[2].resolve(good);await retry;f.sync();assert.match(emptyText(f),/No posts to show yet/);
   assert.doesNotMatch(emptyText(f),/No shows logged yet|could not load/);
 });
 test("Local uses the same head failure and retry, not an empty projection claim",async()=>{
   const h=harness(),f=screen(h);f.filter("Local");const pending=h.render().hydrateFeed();await failHead(h);await pending;f.sync();
-  assert.match(emptyText(f),/Your feed could not load/);assert.doesNotMatch(emptyText(f),/No recent posts|Nothing in/);assert.equal(list(f).props.ListFooterComponent,null);
+  assert.match(emptyText(f),/Your feed could not load/);assert.doesNotMatch(emptyText(f),/No recent posts|Nothing in/);assertNoFooterControls(f);
 });
 test("actual failed refresh retains cached cards and prior receipt, then succeeds without moving the request owner",async()=>{
   const h=harness({cold:false}),f=screen(h);let pending=h.render().hydrateFeed();
@@ -106,14 +108,14 @@ test("actual failed refresh retains cached cards and prior receipt, then succeed
 test("truthy malformed head payload never produces verified empty despite legacy Store acceptance",async()=>{
   const h=harness(), f=screen(h);const pending=h.render().hydrateFeed();h.calls[0].resolve({posts:[],nextCursor:3});
   assert.equal(await pending,true);assert.equal(status(h),"error");assert.equal(h.owner.getSnapshot().verified,false);f.sync();
-  assert.match(emptyText(f),/could not load/);assert.equal(list(f).props.ListFooterComponent,null);
+  assert.match(emptyText(f),/could not load/);assertNoFooterControls(f);
 });
 test("actual cancellation and mutation-obsolete null receipts end loading without verifying cold emptiness",async()=>{
   for(const cause of ["abort","mutation"]) {
     const h=harness(),controller=new AbortController();const pending=h.render().hydrateFeed({signal:controller.signal});
     if(cause==="abort")controller.abort();else h.refs.feedMutationRevisionRef.current++;
     h.calls[0].resolve(good);assert.equal(await pending,null);assert.equal(status(h),"idle");assert.equal(h.owner.getSnapshot().verified,false);
-    const f=screen(h);assert.match(emptyText(f),/Refresh your feed/);assert.ok(refreshButton(f));assert.equal(list(f).props.ListFooterComponent,null);
+    const f=screen(h);assert.match(emptyText(f),/Refresh your feed/);assert.ok(refreshButton(f));assertNoFooterControls(f);
   }
 });
 test("stale error does not run fallback or overwrite replacement account/epoch status",async()=>{
@@ -193,11 +195,18 @@ test("a captured retry does not run sibling refresh loaders once the existing he
   h.calls[0].resolve(good);await pending;
 });
 
-test("unverified or refreshing cached rows remain revealable without an older-page request", async () => {
-  const h=harness({cold:false});h.state.posts=Array.from({length:12},(_,i)=>({id:"p_"+i}));const f=screen(h);
-  const footer=()=>nodes(list(f).props.ListFooterComponent).find(n=>n.type==="Pressable");
-  assert.match(text(list(f).props.ListFooterComponent).join(" "),/Show more posts/);
-  const pending=h.render().hydrateFeed();assert.match(text(list(f).props.ListFooterComponent).join(" "),/Show more posts/);
-  await footer().props.onPress();f.sync();assert.equal(list(f).props.data.length,12);assert.equal(h.calls.length,1);
-  await failHead(h);await pending;f.sync();assert.equal(list(f).props.data.length,12);assert.equal(list(f).props.ListFooterComponent,null);
+test("unverified or refreshing cached rows automatically reveal without an older-page request", async () => {
+  for (const state of ["unverified", "refreshing", "verified-refreshing"]) {
+    const duringRefresh=state!=="unverified";
+    const h=harness({cold:false});h.state.posts=Array.from({length:12},(_,i)=>({id:"p_"+i}));
+    if(state==="verified-refreshing")h.owner.settle(h.owner.begin(),"ready");
+    const f=screen(h);
+    const pending=duringRefresh?h.render().hydrateFeed():null;
+    assertNoFooterControls(f);
+    f.endReached();f.tickPage();f.sync();assert.equal(list(f).props.data.length,12);
+    assert.equal(h.calls.length,duringRefresh?1:0,"cached reveal never starts an older-page request");
+    f.endReached();assert.equal(f.pagingTimers.size,0,"head verification gates transport after all cached rows are visible");
+    if(pending){await failHead(h);await pending;f.sync();}
+    assert.equal(list(f).props.data.length,12);assertNoFooterControls(f);f.unmount();
+  }
 });

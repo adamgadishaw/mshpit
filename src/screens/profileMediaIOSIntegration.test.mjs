@@ -89,7 +89,26 @@ function fixture({ guidance = false, managed = false, strict = false, platform =
     useWindowDimensions: () => ({ width: 320, height: 852, fontScale: state.fontScale }) };
   const context = React.createContext(null);
   let historyHook, baseHistoryHook, retryHooks, attemptHook, refreshHook, smartImage, presentation, refreshBoundary;
+  // Mount the real title/provider tree; native animation execution is covered
+  // by NativeSwipeRail.ios.test.mjs. Keep these profile resource/lifetime tests
+  // independent of Reanimated's native runtime without stubbing away children.
+  let largeTitle;
+  const titleAnimation = { __esModule: true, default: { View: 'AnimatedView' },
+    useSharedValue(initial) {
+      const ref = React.useRef(null);
+      if (!ref.current) { let value = initial; ref.current = { get: () => value, set: next => { value = next; } }; }
+      return ref.current;
+    },
+    useDerivedValue(callback) {
+      const ref = React.useRef(callback); ref.current = callback;
+      return React.useMemo(() => ({ get: () => ref.current() }), []);
+    },
+    useAnimatedStyle: callback => callback(),
+  };
   const imports = (name, local) => {
+    if (name.endsWith('/NativeLargeTitle.ios')) return largeTitle ||= execute('../components/NativeLargeTitle.ios.jsx', imports);
+    if (name === 'react-native-reanimated') return titleAnimation;
+    if (name.endsWith('/useReducedMotion') || name.endsWith('/useScreenReaderEnabled')) return { __esModule: true, default: () => false };
     if (name.endsWith("/useIOSDetailPresentation")) return execute('../hooks/useIOSDetailPresentation.ios.js', imports);
     if (name === '../components/iosDetailPresentationContext.mjs') return detailContext;
     if (name === './useProfileHistory.js') return baseHistoryHook;

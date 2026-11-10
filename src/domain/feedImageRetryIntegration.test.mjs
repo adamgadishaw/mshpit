@@ -6,27 +6,32 @@ import { transformSync } from '@babel/core';
 import * as feedExperience from './feedExperience.mjs';
 import * as placement from './feedDiscoveryPlacement.mjs';
 import * as home from './homeJourney.mjs';
+import * as endlessDomain from './endlessFeed.mjs';
 const require = createRequire(import.meta.url);
 const compile = path => transformSync(readFileSync(new URL(path, import.meta.url), 'utf8'), { filename: path, babelrc:false, configFile:false,
   plugins:[[require('@babel/plugin-transform-react-jsx'),{runtime:'automatic'}],require('@babel/plugin-transform-modules-commonjs')] }).code;
 const feedCode = compile('../screens/FeedScreen.jsx');
 const retryCodes = { ios: compile('../hooks/feedImageRetry.ios.js'), android: compile('../hooks/feedImageRetry.js'), web: compile('../hooks/feedImageRetry.js') };
 const presentationCodes = { ios: compile('../hooks/useFeedPresentation.ios.js'), android: compile('../hooks/useFeedPresentation.js'), web: compile('../hooks/useFeedPresentation.js') };
+const endlessCodes = { ios: compile('../hooks/useEndlessFeed.ios.js'), android: compile('../hooks/useEndlessFeed.js'), web: compile('../hooks/useEndlessFeed.js') };
 const run = (code, resolver) => { const module = {exports:{}}; new Function('require','module','exports',code)(resolver,module,module.exports); return module.exports; };
 const nodes = n => !n || typeof n !== 'object' ? [] : Array.isArray(n) ? n.flatMap(nodes) : [n,...nodes(n.props?.children)];
 function fixture(platform='ios') {
-  const slots=[], pending=[], calls=[], persisted=new Map(); let cursor=0, tree, dirty=false;
+  const slots=[], pending=[], calls=[], persisted=new Map(), pagingTimers=new Map(); let cursor=0, tree, dirty=false;
   const same=(a,b)=>a&&b&&a.length===b.length&&a.every((v,i)=>Object.is(v,b[i]));
   const effect=(fn,deps)=>{const i=cursor++;if(!same(slots[i]?.deps,deps))pending.push(()=>{slots[i]?.cleanup?.();slots[i]={deps,fn,cleanup:fn()};});};
   const react={
     useRef(value){const i=cursor++;return slots[i] ||= {current:value};},
     useState(value){const i=cursor++;if(!(i in slots))slots[i]=typeof value==='function'?value():value;return [slots[i],next=>{const value=typeof next==='function'?next(slots[i]):next;if(!Object.is(value,slots[i]))dirty=true;slots[i]=value;}];},
+    useReducer(reducer,initial){const [value,setValue]=react.useState(initial);return [value,action=>setValue(current=>reducer(current,action))];},
     useMemo(fn,deps){const i=cursor++;if(!same(slots[i]?.deps,deps))slots[i]={deps,value:fn()};return slots[i].value;},
     useCallback(fn,deps){return react.useMemo(()=>fn,deps);},useEffect:effect,useLayoutEffect:effect,memo:fn=>fn,
     createContext:()=>({Provider:'Provider'}),createElement:(type,props,children)=>({type,props:{...props,children}}),
   };
   const retry=run(retryCodes[platform],()=>react);
   const presentation=run(presentationCodes[platform],()=>react);
+  const endless=run(endlessCodes[platform],dep=>dep==='react'?react:{createEndlessFeed:args=>endlessDomain.createEndlessFeed({...args,
+    schedule:(fn,delay)=>{const key={};pagingTimers.set(key,{fn,delay});return key;},cancel:key=>pagingTimers.delete(key)})});
   const request = signal => new Promise(resolve=>calls.push({signal,resolve}));
   const jsx=(type,props,key)=>({type,props,key});
   const feed=run(feedCode,dep=>{
@@ -38,6 +43,7 @@ function fixture(platform='ios') {
     if(dep==='react-native')return {View:'View',Text:'Text',FlatList:'FlatList',Pressable:'Pressable',ScrollView:'ScrollView',Platform:{OS:platform,select:v=>v[platform]||v.default},StyleSheet:{create:v=>v},useWindowDimensions:()=>({width:393,fontScale:1})};
     if(dep.endsWith('/feedImageRetry'))return retry;
     if(dep.endsWith('/useFeedPresentation'))return presentation;
+    if(dep.endsWith('/useEndlessFeed'))return endless;
     if(dep.endsWith('/feedHeadStatus'))return {useFeedHeadStatus:()=>null};
     if(dep.endsWith('/theme'))return {colors:{},radius:{},shadow:{}};
     if(dep.endsWith('/persist'))return {load:(key,fallback)=>persisted.get(key)??fallback,save:(key,value)=>persisted.set(key,value)};
@@ -57,7 +63,10 @@ function fixture(platform='ios') {
   const props={feed:[],localFeed:[],loggedIn:true,visible:true,accountId:'a',onRefresh:({signal})=>request(signal)};
   const render=(flush=true)=>{let turns=0;do{dirty=false;cursor=0;const selected=feed(props);tree=selected.type(selected.props);if(flush)while(pending.length)pending.shift()();}while(flush&&dirty&&++turns<10);return tree;};
   render();
-  return {props,calls,render,get tree(){return tree;},get refresh(){return tree.props.children.props.children.props.onRefresh;},
+  return {props,calls,render,pagingTimers,
+    endReached(){tree.props.children.props.children.props.children.props.onEndReached();render();},
+    tickPage(){const [key,timer]=[...pagingTimers][0]||[];assert.ok(timer,"pagination timer");pagingTimers.delete(key);timer.fn();render();},
+    get tree(){return tree;},get refresh(){return tree.props.children.props.children.props.onRefresh;},
     subscribe(fn){return tree.props.value?.subscribe(fn);},
     filter(label){const list=tree.props.children.props.children.props.children;nodes(list.props.ListHeaderComponent).find(n=>n.props?.label===label).props.onPress();render();},
     unmount(){slots.forEach(slot=>slot?.cleanup?.());},

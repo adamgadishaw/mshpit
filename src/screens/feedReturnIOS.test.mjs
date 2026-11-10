@@ -88,7 +88,7 @@ let serial = 0;
 function fixture(platform = "ios", options = {}) {
   const renderer = createRenderer(), persisted = new Map(), owner = createIOSFeedReturnStore();
   let account = "A", epoch = 1, tab = "feed", frames = [{}], admitted = true, presentation = null, width = 393, fontScale = 1;
-  const readiness = [], followingReads = [];
+  const readiness = [], followingReads = [], pagingTimers = new Map();
   let primary = { head: null, following: { posts: [], status: "ready", loaded: true }, news: { stories: [], status: "ready" }, ...options };
   if (options.filter) persisted.set(require("./src/domain/feedExperience.mjs").feedFilterStorageKey("A"), options.filter);
   let rows = options.rows || Array.from({ length: 80 }, (_, index) => ({ id: "post" + index, userId: "synthetic" }));
@@ -126,6 +126,13 @@ function fixture(platform = "ios", options = {}) {
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
     if (name.endsWith("/useIOSFeedReturn")) return hook;
+    if (name.endsWith("/useEndlessFeed")) return execute("src/hooks/useEndlessFeed" + (platform === "ios" ? ".ios" : "") + ".js", imports);
+    // Run production pagination and return handlers together, controlling only
+    // the paging clock so anchor tests never depend on wall-clock timing.
+    if (name.endsWith("/endlessFeed.mjs")) return { createEndlessFeed: args => local(name).createEndlessFeed({ ...args,
+      schedule: (callback, delay) => { const key = {}; pagingTimers.set(key, { callback, delay }); return key; },
+      cancel: key => pagingTimers.delete(key),
+    }) };
     if (name.endsWith("/useFeedPresentation")) return execute("src/hooks/useFeedPresentation" + (platform === "ios" ? ".ios" : "") + ".js", imports);
     if (name.endsWith("/feedHeadStatus")) return { useFeedHeadStatus: () => primary.head };
     if (name.endsWith("/useNativeTabPreview")) return { __esModule: true, default: () => !!primary.preview };
@@ -169,12 +176,23 @@ function fixture(platform = "ios", options = {}) {
       tabScreens: tab === "feed" ? React.createElement("View", null, React.createElement(Feed, { key: lease?.key, feedReturn: lease, feedPresentation: presentation, feed: rows, localFeed: rows, loggedIn: true, accountId: account, visible: !overlay && !primary.preview, hasMore: false, onRefresh: options.onRefresh || (async () => true), onLoadMore: () => assert.fail("No service reads") })) : React.createElement("OtherTab") }));
   };
   const press = label => { const node = all().find(n => n.props?.accessibilityLabel === label); assert.ok(node, label); renderer.act(() => node.props.onPress()); };
+  const advance = () => {
+    if (platform !== "ios") { press("Show more posts"); return; }
+    renderer.act(() => {
+      list().props.onContentSizeChange(393, rowY(list().props.data.length));
+      list().props.onEndReached();
+    });
+    assert.equal(pagingTimers.size, 1, "end-reached schedules one automatic cached-page reveal");
+    const [key, { callback }] = [...pagingTimers][0];
+    pagingTimers.delete(key);
+    renderer.act(callback);
+  };
   const measure = () => {
     const cells = all().filter(n => n.type === "View" && n.props?.onLayout && n.children?.[0]?.type === "Row");
     renderer.act(() => cells.forEach((node, index) => node.props.onLayout({ nativeEvent: { layout: { y: rowY(index), height: heights?.[index] ?? 300 } } })));
   };
   render();
-  return { all, list, press, render, measure, scrolls, attempts, measurements, readiness, followingReads,
+  return { all, list, press, advance, render, measure, scrolls, attempts, measurements, readiness, followingReads, pagingTimers,
     primary(patch) { primary = { ...primary, ...patch }; render(); },
     get instance() { return mountedId; },
     get snapshot() { return owner.reconcile(account, epoch, tab === "feed" ? frames[0] : null)?.read("local"); },
@@ -183,7 +201,7 @@ function fixture(platform = "ios", options = {}) {
     heights(value) { heights = value; },
     rowY,
     precommitDepart() { admitted = false; },
-    reveal() { press("Local feed"); press("Show more posts"); press("Show more posts"); },
+    reveal() { press("Local feed"); advance(); advance(); },
     capture(index = 20, offset = 40) { highest = list().props.data.length - 1; render(); measure(); renderer.act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y: rowY(index) + offset } } })); },
     layout() { measure(); renderer.act(() => list().props.onContentSizeChange?.(393, 8000)); },
     batches() { for (let batch = 0; batch < 15 && pendingBatch; batch++) { pendingBatch = false; highest = Math.min(highest + 2, list().props.data.length - 1); render(); measure();
@@ -241,7 +259,7 @@ for (const platform of ["android", "web"]) test(`${platform} preserves the legac
 });
 
 test("For You cached return has the same bounded continuity", () => {
-  const f = fixture(); f.press("Show more posts"); f.press("Show more posts"); f.capture();
+  const f = fixture(); f.advance(); f.advance(); f.capture();
   f.depart(); f.back(); assert.equal(f.list().props.data.length, 24); f.layout(); f.batches();
   assert.equal(f.scrolls.at(-1)?.requested, 6440); f.close();
 });
@@ -267,16 +285,19 @@ test("drag after coarse seek retires queued layout/scroll callbacks and never sn
   f.batches(); assert.equal(f.attempts.length, before); assert.equal(f.snapshot?.anchor ?? null, null); f.close();
 });
 test("exhaustion never records provisional coarse position or schedules an unbounded retry", () => {
-  const f = fixture(); f.reveal(); for (let i = 0; i < 5; i++) f.press("Show more posts");
+  const f = fixture(); f.reveal(); for (let i = 0; i < 5; i++) f.advance();
   assert.equal(f.list().props.data.length, 64); f.capture(60); f.depart(); f.back(); f.layout(); f.batches();
   assert.equal(f.attempts.length, 6); const before = f.scrolls.length;
   f.list().props.onScroll({ nativeEvent: { contentOffset: { y: 1000 } } });
   f.layout(); f.batches(); assert.equal(f.scrolls.length, before); assert.equal(f.snapshot.anchor, "post60"); f.close();
 });
-test("Following and News have no return seek or synthetic pagination", () => {
+test("Following and News have no return seek or return-driven pagination", () => {
   for (const label of ["Following feed", "News feed"]) {
     const f = fixture(); f.press(label); f.depart(); f.back();
-    assert.equal(f.list().props.onScroll, undefined); assert.equal(f.list().props.CellRendererComponent, undefined); f.close();
+    assert.equal(typeof f.list().props.onScroll, "function", "automatic paging owns its scroll handler");
+    assert.equal(f.list().props.onScrollToIndexFailed, undefined); assert.equal(f.list().props.CellRendererComponent, undefined);
+    f.layout(); f.act(() => f.list().props.onEndReached());
+    assert.equal(f.pagingTimers.size, 0, "return does not manufacture page demand without a cursor"); f.close();
   }
 });
 test("Root store accepts only bounded UI fields and revokes old leases", () => {

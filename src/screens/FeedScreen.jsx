@@ -338,10 +338,11 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
     scope: JSON.stringify([accountId, loggedIn, filter, homeCity, blockedIds, mutedIds, removedIds, followedArtists]),
     listProps: returnUI?.props,
     current: actionCurrent,
+    head: primaryHead,
     enabled: feedActive && readEnabled && !tabPreview && !refreshing,
     ready: newsTab ? news.status !== "idle" && news.status !== "loading"
       : filter === "following" ? following.loaded || following.status === "error"
-      : !primaryHead || primaryHead.verified && primaryHead.status !== "loading",
+      : true,
     loading: newsTab ? news.status === "loading" : effectiveLoading,
     sourceError: newsTab ? news.status === "error" : filter === "following" && following.status === "error",
     hasMore: newsTab ? !!news.nextCursor : effectiveHasMore,
