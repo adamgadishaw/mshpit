@@ -89,11 +89,12 @@ for(const stage of ["decode","render","save"])test(`iOS normalization releases r
 });
 
 function hookFixture(){
- const renderer=createRenderer();let current;
+ const renderer=createRenderer();let current, hidden=false;const never=new Promise(()=>{});
  const Hook=execute("../hooks/useProfileImageUpload.ios.js",(name,local)=>name==="react"||name==="react/jsx-runtime"?require(name):name.includes("ProfileImageCropDialog")?"CropDialog":local(name)).useProfileImageUpload;
  function Host(){current=Hook();return current.imageCropDialog;}
- renderer.render(React.createElement(Host));
- return {renderer,get current(){return current;},dialog:()=>walk(renderer.container).find(n=>n.type==="CropDialog"),close:()=>renderer.render(null)};
+ function Gate(){if(hidden)throw never;return null;}
+ const render=()=>renderer.render(React.createElement(React.Suspense,{fallback:React.createElement("Fallback")},React.createElement(Host),React.createElement(Gate)));render();
+ return {renderer,hide(){hidden=true;render();},show(){hidden=false;render();},get current(){return current;},dialog:()=>walk(renderer.container).find(n=>n.type==="CropDialog"),close:()=>renderer.render(null)};
 }
 test("crop hook passes avatars through and cancels superseded, aborted and unmounted banner requests",async()=>{
  const f=hookFixture(),upload=async()=>"https://media.test/new.jpg",asset={uri:"file:///source.jpg"};
@@ -108,7 +109,7 @@ test("crop hook passes avatars through and cancels superseded, aborted and unmou
 });
 
 function dialogFixture(){
- const renderer=createRenderer(),uploads=[],finishes=[],releases=[];const decode=deferred(),abort=new AbortController();
+ const renderer=createRenderer(),uploads=[],finishes=[],releases=[];let reduced=false;const decode=deferred(),abort=new AbortController();
  const image={width:3000,height:4000,release:()=>releases.push("image")};
  const request={asset:{uri:"file:///portrait.heic",fileSize:1000},signal:abort.signal,finish:value=>{finishes.push(value);abort.abort();},upload:(...args)=>{const next={...deferred(),args};uploads.push(next);return next.promise;}};
  const native={...Object.fromEntries(["ActivityIndicator","Modal","Pressable","ScrollView","Text","View"].map(n=>[n,n])),StyleSheet:{create:v=>v},PanResponder:{create:config=>({panHandlers:config})}};
@@ -116,11 +117,12 @@ function dialogFixture(){
   if(name==="react"||name==="react/jsx-runtime")return require(name);if(name==="react-native")return native;
   if(name==="expo-image")return {Image:"Image"};if(name==="react-native-safe-area-context")return {SafeAreaView:"SafeAreaView"};
   if(name==="expo-image-manipulator")return {ImageManipulator:{manipulate:()=>({renderAsync:()=>decode.promise,release:()=>releases.push("context")})}};
+  if(name==="../hooks/useReducedMotion")return ()=>reduced;
   if(name==="../theme")return {colors:{},radius:{}};return local(name);
  });
  renderer.render(React.createElement(Component.default,{request}));
  const all=()=>walk(renderer.container),button=label=>all().find(n=>n.type==="Pressable"&&n.props.accessibilityLabel===label),frame=()=>all().find(n=>n.props?.testID==="profile-banner-crop-frame");
- return {renderer,uploads,finishes,releases,decode,image,abort,all,button,frame,close:()=>renderer.render(null),async ready(){decode.resolve(image);await settle(renderer);renderer.act(()=>frame().props.onLayout({nativeEvent:{layout:{width:360}}}));}};
+ return {renderer,uploads,finishes,releases,decode,image,abort,all,button,frame,reduce(value){reduced=value;renderer.render(React.createElement(Component.default,{request}));},close:()=>renderer.render(null),async ready(){decode.resolve(image);await settle(renderer);renderer.act(()=>frame().props.onLayout({nativeEvent:{layout:{width:360}}}));}};
 }
 test("real crop dialog applies an exact portrait 3:1 crop, blocks duplicate uploads and preserves adjustments on retry",async()=>{
  const f=dialogFixture();await f.ready();
@@ -148,4 +150,19 @@ test("Metro selects crop and encoder only on iOS, keeping Android and web paths"
  const {resolve}=require("metro-resolver");const context={originModulePath:fileURLToPath(new URL("../../App.js",import.meta.url)),assetExts:new Set(),sourceExts:["js","jsx","json","ts","tsx"],preferNativePlatform:true,mainFields:["react-native","browser","main"],getPackageForModule:()=>null,fileSystemLookup(path){try{const s=statSync(path);return {exists:true,type:s.isDirectory()?"d":"f",realPath:realpathSync(path)};}catch{return {exists:false};}}};
  for(const [platform,suffix]of [["ios","ios"],["android","native"],["web","web"]])assert.ok(resolve(context,"./src/lib/profileImageNormalizer",platform).filePath.endsWith(`profileImageNormalizer.${suffix}.js`));
  for(const [platform,suffix]of [["ios",".ios"],["android",""],["web",".web"]])assert.ok(resolve(context,"./src/hooks/useProfileImageUpload",platform).filePath.endsWith(`useProfileImageUpload${suffix}.js`));
+});
+
+test("retained editor hides cancel the crop and revealing cannot resurrect the obsolete modal",async()=>{
+ const f=hookFixture();let pending;f.renderer.act(()=>{pending=f.current.uploadProfileImage({uri:"file:///original.jpg"},"banner",{upload:async()=>"unused"});});
+ const retired=f.dialog().props.request;f.hide();assert.equal(await pending,null);assert.equal(retired.signal.aborted,true);f.show();assert.equal(f.dialog(),undefined);
+ let replacement;f.renderer.act(()=>{replacement=f.current.uploadProfileImage({uri:"file:///next.jpg"},"banner",{upload:async()=>"unused"});});assert.ok(f.dialog());f.close();assert.equal(await replacement,null);
+});
+
+test("crop modal exposes all controls to VoiceOver, supports escape, and follows Reduce Motion",async()=>{
+ const f=dialogFixture();await f.ready();
+ const modal=()=>f.all().find(n=>n.type==="Modal");
+ assert.equal(modal().props.animationType,"slide");f.reduce(true);assert.equal(modal().props.animationType,"none");f.reduce(false);assert.equal(modal().props.animationType,"slide");
+ const isolated=f.all().filter(n=>n.props?.accessibilityViewIsModal);assert.equal(isolated.length,1);assert.equal(isolated[0].type,"SafeAreaView");
+ assert.ok(walk(isolated[0]).includes(f.button("Use this banner")));assert.ok(walk(isolated[0]).includes(f.button("Zoom in")));
+ f.renderer.act(()=>isolated[0].props.onAccessibilityEscape());assert.deepEqual(f.finishes,[null]);f.close();
 });

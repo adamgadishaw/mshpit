@@ -4,6 +4,7 @@ import { Image } from "expo-image";
 import { ImageManipulator } from "expo-image-manipulator";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { colors, radius } from "../theme";
+import useReducedMotion from "../hooks/useReducedMotion";
 import { profileCropAfterDrag, profileCropPlan } from "../domain/profileCrop.mjs";
 import { MEDIA_PHOTO_SOURCE_MAX_BYTES, mediaUploadLimitLabel } from "../domain/mediaUploadPolicy.mjs";
 
@@ -17,6 +18,7 @@ const touchState = touches => {
 
 export default function ProfileImageCropDialog({ request }) {
   const { asset, signal, finish, upload } = request;
+  const reducedMotion = useReducedMotion();
   const [source, setSource] = useState(null), [position, setPosition] = useState(CENTER), [width, setWidth] = useState(0);
   const [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const mounted = useRef(false), pending = useRef(false), gesture = useRef(null), latest = useRef(null);
@@ -91,9 +93,9 @@ export default function ProfileImageCropDialog({ request }) {
   };
   const control = (label, onPress, disabled = false) => <Pressable key={label} accessibilityRole="button" accessibilityLabel={label}
     accessibilityState={{ disabled: busy || disabled }} disabled={busy || disabled} onPress={onPress} style={[styles.control, (busy || disabled) && styles.disabled]}><Text style={styles.controlText}>{label}</Text></Pressable>;
-  return <Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={() => finish(null)}>
-    <SafeAreaView style={styles.screen}>
-      <View style={styles.header} accessibilityViewIsModal>
+  return <Modal visible animationType={reducedMotion ? "none" : "slide"} presentationStyle="fullScreen" onRequestClose={() => finish(null)}>
+    <SafeAreaView style={styles.screen} accessibilityViewIsModal onAccessibilityEscape={() => finish(null)}>
+      <View style={styles.header}>
         <Pressable onPress={() => finish(null)} accessibilityRole="button" accessibilityLabel="Cancel banner adjustment" style={styles.control}><Text style={styles.controlText}>Cancel</Text></Pressable>
         <Text style={styles.title} accessibilityRole="header">Adjust banner</Text>
       </View>

@@ -8,6 +8,9 @@ export function useProfileImageUpload() {
   const [request, setRequest] = useState(null);
   useLayoutEffect(() => {
     live.current = true;
+    // Retained screens keep state while layout effects are disconnected. A
+    // cancelled request must not remount its modal when the editor is revealed.
+    setRequest(active.current);
     return () => { live.current = false; active.current?.finish(null); };
   }, []);
   const uploadProfileImage = useCallback((asset, purpose, options) => {
