@@ -158,6 +158,7 @@ function fixture({ strict = false, frames: initialFrames, realPost = false, lazy
     const base = name.split("/").at(-1);
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
+    if (name.endsWith("/NativeScrollChrome.ios")) return { NativeScrollChromeContext: React.createContext(null) };
     if (name === "expo-image") return { Image: "ExpoImage" };
     if (name === "react-native-gesture-handler") return { Gesture, GestureDetector };
     if (name === "react-native-reanimated") return { __esModule: true, default: { View: "AnimatedView" }, ReduceMotion: { System: "system" }, useSharedValue,

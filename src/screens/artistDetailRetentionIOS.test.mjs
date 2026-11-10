@@ -133,6 +133,7 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
   const imports = (name, from) => {
     if (name === "react" || name.startsWith("react/")) return require(name);
     if (name === "react-native") return native;
+    if (name.endsWith("/NativeScrollChrome.ios")) return { NativeScrollChromeContext: React.createContext(null) };
     if (name === "react-native-svg") return new Proxy({ __esModule: true, default: "Svg" }, { get: (value, key) => value[key] ?? String(key) });
     if (name === "expo-image") return { Image: "ExpoImage" };
     if (name === "expo-file-system") return { File: class {}, Paths: { cache: "/synthetic-cache" } };

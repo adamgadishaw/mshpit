@@ -125,6 +125,7 @@ function fixture(platform = "ios", options = {}) {
     if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
+    if (name.endsWith("/NativeScrollChrome.ios")) return { NativeScrollChromeContext: React.createContext(null) };
     if (name.endsWith("/useIOSFeedReturn")) return hook;
     if (name.endsWith("/useEndlessFeed")) return execute("src/hooks/useEndlessFeed" + (platform === "ios" ? ".ios" : "") + ".js", imports);
     // Run production pagination and return handlers together, controlling only
@@ -432,7 +433,8 @@ test("News preview waits for its scoped stories or terminal result, not unrelate
 });
 
 
-test("real Feed refresh reaches the native list through its real context provider, retains rows on failed read and allows retry", async t => {
+test("real Feed fast refresh keeps rows visible through one vinyl cycle and slow refresh settles with its response", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const requests = [];
   const f = fixture("ios", { nativeBoundary: true, onRefresh: options => new Promise(resolve => requests.push({ ...options, resolve })) });
   t.after(f.close);
@@ -442,13 +444,16 @@ test("real Feed refresh reaches the native list through its real context provide
   f.act(() => { control().props.onRefresh(); control().props.onRefresh(); });
   assert.equal(requests.length, 1); assert.equal(control().props.refreshing, true);
   requests[0].resolve(false); for (let i = 0; i < 6; i++) { await new Promise(setImmediate); f.act(() => {}); }
-  assert.equal(control().props.refreshing, false); assert.equal(f.instance, instance); assert.equal(f.list().props.data.length, 24);
+  assert.equal(control().props.refreshing, true); assert.equal(f.instance, instance); assert.equal(f.list().props.data.length, 24);
+  f.act(() => t.mock.timers.tick(1000)); assert.equal(control().props.refreshing, false);
   assert.ok(f.all().some(n => n.text?.includes("feed could not refresh")));
   f.act(control().props.onRefresh); assert.equal(requests.length, 2);
+  f.act(() => t.mock.timers.tick(4000)); assert.equal(control().props.refreshing, true);
   f.rows([{ id: "latest-server-row" }]); requests[1].resolve(true); for (let i = 0; i < 6; i++) { await new Promise(setImmediate); f.act(() => {}); }
   assert.equal(f.list().props.data[0].id, "latest-server-row"); assert.equal(f.instance, instance); assert.equal(control().props.refreshing, false);
 });
 test("real Feed refresh aborts outgoing account reads and does not settle the next account spinner", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
   const requests = [];
   const f = fixture("ios", { nativeBoundary: true, onRefresh: options => new Promise(resolve => requests.push({ ...options, resolve })) });
   t.after(f.close);
@@ -457,6 +462,7 @@ test("real Feed refresh aborts outgoing account reads and does not settle the ne
   f.act(f.list().props.refreshControl.props.onRefresh); assert.equal(requests.length, 2);
   requests[0].resolve(true); await new Promise(setImmediate); f.act(() => {});
   assert.equal(f.list().props.refreshControl.props.refreshing, true);
+  f.act(() => t.mock.timers.tick(1000));
   requests[1].resolve(true); for (let i = 0; i < 6; i++) { await new Promise(setImmediate); f.act(() => {}); }
   assert.equal(f.list().props.refreshControl.props.refreshing, false);
 });
@@ -471,4 +477,31 @@ test("actual iOS refresh control cannot replay after retained gallery hides and 
   assert.equal(f.instance, instance);
   f.act(captured); assert.deepEqual(requests, []);
   f.act(f.list().props.refreshControl.props.onRefresh); assert.deepEqual(requests, [true]);
+});
+
+
+test("real Feed publishes a fast success during the vinyl hold and releases the same list afterward", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const requests = [], f = fixture("ios", { nativeBoundary: true, onRefresh: options => new Promise(resolve => requests.push({ ...options, resolve })) });
+  t.after(f.close); f.reveal(); const instance = f.instance;
+  f.act(f.list().props.refreshControl.props.onRefresh); assert.equal(requests.length, 1);
+  f.rows([{ id: "fresh-without-waiting-for-animation" }]); requests[0].resolve(true);
+  for (let i = 0; i < 6; i++) { await new Promise(setImmediate); f.act(() => {}); }
+  assert.equal(f.list().props.data[0].id, "fresh-without-waiting-for-animation");
+  assert.equal(f.list().props.refreshControl.props.refreshing, true); assert.equal(f.instance, instance);
+  f.act(() => t.mock.timers.tick(1000));
+  assert.equal(f.list().props.refreshControl.props.refreshing, false); assert.equal(f.instance, instance);
+});
+
+test("real Feed can refresh after an unresolved pull is covered and returned, while the abandoned read stays fenced", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const requests = [], f = fixture("ios", { nativeBoundary: true, onRefresh: options => new Promise(resolve => requests.push({ ...options, resolve })) });
+  t.after(f.close); const instance = f.instance;
+  f.act(f.list().props.refreshControl.props.onRefresh);
+  f.depart({ photos: { images: [{ uri: "synthetic.jpg" }] } }); assert.equal(requests[0].signal.aborted, true);
+  f.back(); f.act(f.list().props.refreshControl.props.onRefresh); assert.equal(requests.length, 2);
+  requests[0].resolve(true); for (let i = 0; i < 6; i++) { await new Promise(setImmediate); f.act(() => {}); }
+  f.act(() => t.mock.timers.tick(2000)); assert.equal(f.list().props.refreshControl.props.refreshing, true);
+  requests[1].resolve(true); for (let i = 0; i < 6; i++) { await new Promise(setImmediate); f.act(() => {}); }
+  assert.equal(f.list().props.refreshControl.props.refreshing, false); assert.equal(f.instance, instance);
 });

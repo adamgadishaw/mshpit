@@ -1,17 +1,22 @@
 import useIOSDetailPresentation from "../hooks/useIOSDetailPresentation";
-import { Children, cloneElement, useEffect, useMemo, useRef, useState } from "react";
+import { Children, cloneElement, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Animated, Easing, RefreshControl, StyleSheet, View } from "react-native";
 import { colors, themeIsDark } from "../theme";
 import useReducedMotion from "../hooks/useReducedMotion";
 import useAppActive from "../lib/useAppActive";
+import { NativeScrollChromeContext } from "./NativeScrollChrome.ios";
+
+const VISIBLE_CYCLE_MS = 1000;
 
 // UIKit still owns the pull gesture, threshold and inset. The record lives only
-// in that empty overscroll space, never in a second scroll view or over a header.
+// in that empty overscroll space below the measured activity bar, never in a
+// second scroll view or over a header.
 // The website's grooved record/amber label is redrawn with native views.
 export default function VinylRefreshBoundary({ children, refreshing = false, onRefresh, enabled = true, accessibilityLabel = "Refresh this screen", progressViewOffset = 0, style, testID }) {
   const { active: detailActive, current: presentationCurrent, guard, token,
     canAct = presentationCurrent, commandToken = token } = useIOSDetailPresentation();
   const child = Children.only(children);
+  const chrome = useContext(NativeScrollChromeContext);
   const pending = useRef(null);
   const mounted = useRef(false);
   const [latched, setLatched] = useState(null);
@@ -21,15 +26,23 @@ export default function VinylRefreshBoundary({ children, refreshing = false, onR
   const reduced = useReducedMotion();
   const appActive = useAppActive();
   const active = detailActive && appActive;
-  const busy = refreshing || (latched !== null && latched.token === commandToken);
   const canRefresh = active && enabled && typeof onRefresh === "function";
-  const admission = useMemo(() => ({}), [canRefresh, active, onRefresh, commandToken]);
+  // Callback closures can change with fresh rows. Only actual presentation or
+  // eligibility changes retire the visual hold and ignored-cancellation work.
+  const lifetime = useMemo(() => ({}), [commandToken, chrome?.owner, canRefresh]);
+  const busy = refreshing || (latched !== null && latched.token === lifetime);
+  const admission = useMemo(() => ({}), [canRefresh, active, onRefresh, lifetime]);
   const current = useRef(null);
-  current.current = { canRefresh, refreshing, onRefresh, active, admission, canAct };
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; pending.current = null; }; }, []);
+  current.current = { canRefresh, refreshing, onRefresh, active, admission, canAct, lifetime };
+  useEffect(() => { mounted.current = true; return () => {
+    mounted.current = false;
+    clearTimeout(pending.current?.timer);
+    pending.current = null;
+  }; }, []);
   useEffect(() => {
+    if (reduced) { spin.setValue(0); pop.setValue(1); return undefined; }
+    if (!busy || !canRefresh) return undefined;
     spin.setValue(0); pop.setValue(1);
-    if (!busy || reduced || !canRefresh) return undefined;
     const rotation = Animated.loop(Animated.timing(spin, { toValue: 1, duration: 900, easing: Easing.linear, useNativeDriver: true, isInteraction: false }));
     const bounce = Animated.sequence([
       Animated.timing(pop, { toValue: 1.1, duration: 120, useNativeDriver: true, isInteraction: false }),
@@ -37,20 +50,43 @@ export default function VinylRefreshBoundary({ children, refreshing = false, onR
       Animated.timing(pop, { toValue: 1, duration: 140, useNativeDriver: true, isInteraction: false }),
     ]);
     rotation.start(); bounce.start();
-    return () => { rotation.stop(); bounce.stop(); spin.setValue(0); pop.setValue(1); };
+    // Freeze the current pose while UIKit eases its inset closed. Resetting
+    // here visibly snaps the record just as it starts moving back up.
+    return () => { rotation.stop(); bounce.stop(); };
   }, [busy, reduced, canRefresh, spin, pop]);
+  useEffect(() => {
+    const request = latched;
+    if (!request || request.token !== lifetime) return undefined;
+    // Start the visual clock after commit, alongside the animation. The read
+    // starts immediately on release; only fast completions keep the native
+    // inset open long enough to show a full 900ms revolution and the pop.
+    request.minimumUntil ??= Date.now() + VISIBLE_CYCLE_MS;
+    if (reduced || !canRefresh) request.minimumUntil = 0;
+    const release = () => {
+      clearTimeout(request.timer);
+      if (!request.completed || pending.current !== request || !mounted.current
+        || current.current.lifetime !== request.token) return;
+      const remaining = request.minimumUntil - Date.now();
+      if (remaining > 0) { request.timer = setTimeout(release, remaining); return; }
+      pending.current = null;
+      setLatched(null);
+    };
+    request.release = release;
+    release();
+    return () => { clearTimeout(request.timer); request.release = null; };
+  }, [latched, lifetime, reduced, canRefresh]);
   const requestRefresh = () => {
     const latest = current.current;
     if (!mounted.current || latest.admission !== admission || !latest.canAct() || !latest.active || !latest.canRefresh
-      || latest.refreshing || pending.current?.token === commandToken) return;
+      || latest.refreshing || pending.current?.token === lifetime) return;
     // A retired retained detail cannot block a newly admitted presentation.
-    const request = { token: commandToken };
+    const request = { token: lifetime, completed: false };
     pending.current = request;
     setLatched(request);
     const settle = () => {
       if (pending.current !== request) return;
-      pending.current = null;
-      if (mounted.current) setLatched(null);
+      request.completed = true;
+      request.release?.();
     };
     try { Promise.resolve(latest.onRefresh()).then(settle, settle); } catch { settle(); }
   };
@@ -70,7 +106,7 @@ export default function VinylRefreshBoundary({ children, refreshing = false, onR
     {scrollChild}
     <Animated.View pointerEvents="none" accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants"
       testID={testID ? `${testID}-vinyl` : undefined}
-      style={[styles.indicator, { top: progressViewOffset, opacity: canRefresh ? gap.interpolate({ inputRange: [0, 32, 48], outputRange: [0, 0, 1], extrapolate: "clamp" }) : 0,
+      style={[styles.indicator, { top: (chrome?.height || 0) + progressViewOffset, opacity: canRefresh ? gap.interpolate({ inputRange: [0, 32, 48], outputRange: [0, 0, 1], extrapolate: "clamp" }) : 0,
         transform: [{ translateY: gap.interpolate({ inputRange: [0, 160], outputRange: [-14, 66], extrapolate: "clamp" }) }] }]}>
       <Animated.View style={[styles.record, { transform: [{ scaleX: pop }, { scaleY: pop }, { rotateZ: spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] }) }] }]}>
         <View style={styles.grooveOuter} /><View style={styles.grooveInner} />

@@ -104,6 +104,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
   const imports = (name, local) => {
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
+    if (name.endsWith("/NativeScrollChrome.ios")) return { NativeScrollChromeContext: React.createContext(null) };
     if (name.endsWith("/useIOSDetailPresentation")) return load("src/hooks/useIOSDetailPresentation.ios.js");
     if (name.endsWith("/useFeedPresentation")) return load("src/hooks/useFeedPresentation.ios.js");
     if (name.endsWith("/PostNavigationContext")) return postContext;
