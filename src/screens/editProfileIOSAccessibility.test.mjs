@@ -346,3 +346,13 @@ test("repeated busy closes own one notice and stale notice dismissal cannot clea
   f.back();
   assert.equal(f.closed, 1);
 });
+
+for (const os of ["ios", "android", "web"]) test(`${os} personal banner preview keeps its platform size contract`, () => {
+  const f = fixture(os);
+  const banner = labeled(f.render(), "Add a profile banner");
+  const style = flatten(banner.props.style);
+  assert.equal(style.aspectRatio, os === "ios" ? 3 : undefined);
+  assert.equal(style.height, os === "ios" ? undefined : 96);
+  assert.equal(banner.props.accessibilityRole, "button");
+  f.dispose();
+});

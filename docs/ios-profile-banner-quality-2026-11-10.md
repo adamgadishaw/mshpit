@@ -17,7 +17,7 @@ The profile banner already uses the original stored URL, not a small thumbnail. 
 - VoiceOver isolation covers the whole modal, accessibility escape cancels, and modal motion follows Reduce Motion.
 - Cancel aborts the account-scoped operation; late callbacks cannot replace the old banner. Failed uploads keep the crop for retry. Hidden/retained editors cannot resurrect a canceled modal or read a disposed native preview. The profile is unchanged until Save.
 - Profile banner artwork has an in-flow 3:1 layout so image measurement does not start from an absolute-only child. Its existing 44-point minimum hit target remains.
-- Artist editor preview matches 3:1 on iOS. The personal editor equivalent is grouped with the parallel profile customization UI commit.
+- Artist and personal editor previews match 3:1 on iOS. The personal preview style was extracted separately for the clean integration; badge client/server changes are excluded.
 
 ## Verification
 
