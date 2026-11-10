@@ -78,7 +78,7 @@
   },
   "legacyApi": {
     "file": "server/api.js",
-    "maxInlineRoutes": 156,
+    "maxInlineRoutes": 154,
     "allowedInlineRoutes": [
       "DELETE /api/admin/catalog/seed",
       "DELETE /api/admin/email/templates/:key",
@@ -134,7 +134,6 @@
       "GET /api/me/blocked",
       "GET /api/me/fanclubs",
       "GET /api/me/following",
-      "GET /api/me/notifications",
       "GET /api/me/plays",
       "GET /api/me/threads",
       "GET /api/media/assets/:id",
@@ -208,7 +207,6 @@
       "POST /api/logout",
       "POST /api/lounges/:key/messages",
       "POST /api/me/analytics-consent",
-      "POST /api/me/notifications/read",
       "POST /api/media/assets",
       "POST /api/media/assets/:id/finalize",
       "POST /api/media/assets/:id/variants",

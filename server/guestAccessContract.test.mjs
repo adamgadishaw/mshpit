@@ -67,7 +67,7 @@ const memberRoutes = [
   "POST /api/reports", "POST /api/tracks/report", "POST /api/share-cards/render",
   "POST /api/playlists", "PATCH /api/playlists/:id", "DELETE /api/playlists/:id", "POST /api/plays",
   "POST /api/feed/preferences/:postId", "DELETE /api/feed/preferences/:postId", "GET /api/feed/preferences",
-  "POST /api/feed/impressions", "POST /api/me/notifications/read", "GET /api/me/notifications",
+  "POST /api/feed/impressions", "POST /api/me/notifications/read", "POST /api/me/notifications/read/scoped", "GET /api/me/notifications",
   "GET /api/me/going", "GET /api/me/following", "GET /api/me/blocked", "GET /api/me/muted",
   "GET /api/me/fanclubs", "GET /api/me/plays", "GET /api/plays/friends", "GET /api/artists/seen",
   "GET /api/people/suggestions", "GET /api/me/artist-recommendations",

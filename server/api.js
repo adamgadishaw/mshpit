@@ -93,6 +93,7 @@ import { mediaAssetRoutes } from "./mediaAssetRoutes.js";
 import { mediaLegacyFinalizeRoutes } from "./mediaLegacyFinalizeRoutes.js";
 import { directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
 import { createMessageRelationshipContextService } from "./features/messaging/messageRelationshipContext.js";
+import { notificationRoutes } from "./features/notifications/notificationRoutes.js";
 import { postTagRoutes } from "./postTagRoutes.js";
 import { artistReviewRoutes } from "./features/artistReviews/artistReviewRoutes.js";
 import { concertHistoryRoutes } from "./features/concertHistory/concertHistoryRoutes.js";
@@ -282,7 +283,7 @@ import { canonicalVenueKey, venueLookupKeys } from "../src/domain/venueIdentity.
 import { publicVenueFanPhotos } from "./venueGallery.js";
 import { publicVenuePhotoPool } from "./venuePhotoCatalog.js";
 import { attachViewerLikes } from "./postViewerLikes.js";
-import { socialReactionRoutes, commentLikeInfo, repostInfo, repostInfoPage, followingPostIds, SOCIAL_NOTIFICATION_VISIBLE_SQL } from "./features/socialReactions/socialReactions.js";
+import { socialReactionRoutes, commentLikeInfo, repostInfo, repostInfoPage, followingPostIds } from "./features/socialReactions/socialReactions.js";
 import { attachPostMediaPageProjection, preloadedPostMedia } from "./postMediaPageProjection.js";
 import { accountIsPublic, activeAccountSql, PROFILE_AUDIENCES, profileAudienceAllows } from "./accountVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
@@ -8193,45 +8194,7 @@ export const routes = {
     return { id };
   },
 
-  // ---- notifications / activity (server-backed) ----
-  "GET /api/me/notifications": (ctx) => {
-    const u = requireUser(ctx);
-    const hidden = blockedIdSet(u.id);
-    const muted = mutedIdSet(u.id);
-    const { cursor, limit } = pageRequest(ctx, 100, 100);
-    const cursorSql = cursor ? "AND (n.created_at < $before OR (n.created_at = $before AND n.id < $id))" : "";
-    const args = { $viewer:u.id, $limit:limit+1, ...(cursor ? {$before:cursor.createdAt,$id:cursor.id} : {}) };
-    const found = db.prepare(`
-      SELECT n.*, a.name AS actor_name, a.initials AS actor_initials, a.avatar_uri AS actor_uri, a.avatar_color AS actor_color
-      FROM notifications n LEFT JOIN users a ON a.id = n.actor_id
-      WHERE n.user_id = $viewer AND ${SOCIAL_NOTIFICATION_VISIBLE_SQL} ${cursorSql}
-      ORDER BY n.created_at DESC, n.id DESC LIMIT $limit`).all(args);
-    const { rows, nextCursor } = finishPage(found, limit);
-    return {
-      notifications: rows.filter((n) => (!n.actor_id || (!hidden.has(n.actor_id) && !muted.has(n.actor_id))))
-        .map((n) => ({
-        id: n.id, type: n.type, actorId: n.actor_id,
-        actorName: n.actor_name || "Someone", actorInitials: n.actor_initials || "?",
-        actorUri: safePublicProfileImage(n.actor_id, n.actor_uri), actorColor: n.actor_color,
-        postId: n.post_id, commentId: n.comment_id || null, artist: n.artist, text: n.text,
-        ts: n.created_at, read: !!n.read,
-      })),
-      unread: db.prepare(`SELECT COUNT(*) c FROM notifications n WHERE n.user_id=$viewer AND n.read=0
-        AND ${SOCIAL_NOTIFICATION_VISIBLE_SQL}
-        AND (n.actor_id IS NULL OR NOT EXISTS (
-          SELECT 1 FROM blocks b WHERE (b.blocker_id=n.user_id AND b.blocked_id=n.actor_id) OR (b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)
-        )) AND (n.actor_id IS NULL OR NOT EXISTS (
-          SELECT 1 FROM account_mutes mute WHERE mute.muter_id=n.user_id AND mute.muted_id=n.actor_id
-        ))`).get({$viewer:u.id}).c,
-      nextCursor,
-    };
-  },
-
-  "POST /api/me/notifications/read": (ctx) => {
-    const u = requireUser(ctx);
-    db.prepare("UPDATE notifications SET read=1 WHERE user_id=? AND read=0").run(u.id);
-    return { ok: true };
-  },
+  ...notificationRoutes({ database: db, requireUser, ApiError, pageRequest, finishPage, safePublicProfileImage }),
 
   // ---- fan clubs (SQLite migration slice 5) ----
   // The artists this account is a member of, lets the client hydrate membership
