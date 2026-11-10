@@ -73,3 +73,14 @@ test("actual App menu callback preserves root Feed frames and navigates only fro
   );
   denied("news");
 });
+
+
+test("same-filter taps advance pager authority without duplicate persistence, including batched away-and-back taps", () => {
+  const f = fixture(), initial = f.render();
+  initial.select("everyone"); const same = f.render();
+  assert.equal(same.filter, "everyone"); assert.equal(same.revision, initial.revision + 1); assert.equal(f.writes.length, 0);
+  same.select("local"); same.select("everyone"); const returned = f.render();
+  assert.equal(returned.filter, "everyone"); assert.equal(returned.revision, same.revision + 2);
+  assert.equal(f.storage.get(experience.feedFilterStorageKey("A")), "everyone");
+  assert.deepEqual(f.writes.map(([, value]) => value), ["local", "everyone"]);
+});

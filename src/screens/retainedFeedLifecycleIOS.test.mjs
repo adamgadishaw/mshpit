@@ -318,11 +318,11 @@ test("actual iOS introduction row remains in place when its completed command is
   } finally { f.close(); }
 });
 
-test("Feed has no nested filter rail and inherited previews keep every retained pane inert", () => {
+test("Feed uses its filter rail while inherited previews keep every retained pane inert", () => {
   const f = fixture();
   try {
     const source = f.list();
-    assert.equal(f.all().some(node => node.type === "Rail"), false, "global-tab rail keeps ownership of horizontal gestures");
+    assert.equal(f.all().some(node => node.type === "Rail"), true, "the existing Feed pager owns filter gestures");
     assert.equal(f.all().some(node => node.props?.accessibilityRole === "tablist"), false);
     f.selectFilter("local"); const local = f.list(); assert.notEqual(local, source);
     f.cover();
@@ -523,7 +523,7 @@ test("returning to visited Feed filters retains each exact expanded list and pau
     assert.equal(f.listFor("everyone"), original); assert.equal(original.props.data.length, 40);
     assert.equal(f.page("everyone").props.pointerEvents, "none");
     assert.equal(f.page("everyone").props.accessibilityElementsHidden, true);
-    assert.equal(f.page("everyone").props.style[1].opacity, 0);
+    assert.equal(f.page("everyone").props.style[2].opacity, 0);
     f.act(oldMore); assert.equal(original.props.data.length, 40);
     assert.equal(f.calls.following.length, 0); assert.equal(f.calls.news.length, 0);
     f.selectFilter("everyone"); assert.equal(f.list(), original); assert.equal(f.list().props.data.length, 40);

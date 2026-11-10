@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
+import NativeFeedFilterPager from "../components/NativeFeedFilterPager.ios";
 import NativeLargeTitle, { NativeLargeTitleProvider } from "../components/NativeLargeTitle.ios";
 import { colors } from "../theme";
 import { FeedContent } from "./FeedScreen.jsx";
@@ -20,10 +21,7 @@ function StandaloneFeedOwner(props) {
   return <FeedOwner {...props} feedSelection={feedSelection} />;
 }
 function FeedOwner(props) {
-  const { filter, select } = props.feedSelection;
-  const visited = useRef(new Set());
-  useLayoutEffect(() => { visited.current.add(filter); }, [filter]);
-  const pages = [...new Set([...visited.current, filter])];
+  const { filter, select, revision: tapRevision = 0 } = props.feedSelection;
   const active = useAppActive();
   const inheritedPreview = useNativeTabPreview();
   const currentRef = useRef(null);
@@ -49,19 +47,19 @@ function FeedOwner(props) {
   }, [admission, owner, active, inheritedPreview]);
   const choose = value => {
     if (!active || selected.current !== selection || !current()) return;
-    if (value !== filter) select(value);
+    select(value);
   };
+  const commit = value => {
+    if (selected.current !== selection || !current()) return false;
+    return select(value) !== false;
+  };
+  const enabled = !inheritedPreview && !!props.loggedIn && !!props.visible && active && props.swipeEnabled !== false;
   return <NativeTabPreviewContext.Provider value={inheritedPreview || !props.visible || !active}>
     <NativeLargeTitleProvider><View style={{ flex: 1, minHeight: 0 }} testID="feed-filter-pages">
-      {pages.map(page => {
-        const preview = inheritedPreview || page !== filter || !props.visible || !active;
-        return <View key={page} testID={`main-tab-page-${page}`} style={[styles.page, page !== filter && styles.parked]}
-          pointerEvents={preview ? "none" : "auto"} accessibilityElementsHidden={preview} importantForAccessibility={preview ? "no-hide-descendants" : "auto"}>
-          <NativeTabPreviewContext.Provider value={preview}>
-            <FeedPane {...props} filter={page} preview={preview} readEnabled={page === filter && active && current()} onSelectFilter={choose} />
-          </NativeTabPreviewContext.Provider>
-        </View>;
-      })}
+      <NativeFeedFilterPager retainVisited active={filter} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
+        swipeEnabled={enabled} isCurrentSwipeRoute={current}
+        renderPage={(page, preview, mayRead) => <FeedPane {...props} filter={page} preview={preview}
+          readEnabled={mayRead && active && current()} onSelectFilter={choose} />} />
     </View></NativeLargeTitleProvider>
   </NativeTabPreviewContext.Provider>;
 }
@@ -102,8 +100,6 @@ function FeedPane({ preview, feedReturn, visible, ...props }) {
 }
 
 const styles = StyleSheet.create({
-  page: { ...StyleSheet.absoluteFill, minHeight: 0 },
-  parked: { opacity: 0 },
   context: { paddingBottom: 14 },
   largeTitleBox: { minHeight: 50, justifyContent: "center" },
   largeTitle: { color: colors.text, fontSize: 34, lineHeight: 41, fontWeight: "700", letterSpacing: -1 },

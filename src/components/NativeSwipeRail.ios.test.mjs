@@ -14,8 +14,13 @@ const { transformSync } = require("@babel/core");
 const styleFile = realpathSync(new URL("../../node_modules/react-native/Libraries/StyleSheet/StyleSheetExports.js", import.meta.url));
 const styleCode = transformSync(readFileSync(styleFile, "utf8"), { filename: styleFile, babelrc: false, configFile: false,
   presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: false } }).code;
+const flattenFile = require.resolve("react-native/Libraries/StyleSheet/flattenStyle");
+const flattenCode = transformSync(readFileSync(flattenFile, "utf8"), { filename: flattenFile, babelrc: false, configFile: false,
+  presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: false } }).code;
+const flattenModule = { exports: {} };
+new Function("require", "module", "exports", flattenCode)(require, flattenModule, flattenModule.exports);
 const styleModule = { exports: {} };
-new Function("require", "module", "exports", "__DEV__", styleCode)(name => name.startsWith("@babel/") ? require(name) : name.includes("PixelRatio")
+new Function("require", "module", "exports", "__DEV__", styleCode)(name => name.startsWith("@babel/") ? require(name) : name === "./flattenStyle" ? flattenModule.exports : name.includes("PixelRatio")
   ? { default: { roundToNearestPixel: () => 0.5, get: () => 2 } } : {}, styleModule, styleModule.exports, false);
 const installedStyleSheet = styleModule.exports.default;
 const noop = () => {}, codes = new Map();
@@ -133,7 +138,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   const Child = () => scrollChild === "nested" ? React.createElement(Scroll.ScrollView, { testID: "vertical" }, React.createElement(Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: true, testID: "horizontal", snapToInterval: 180 }, React.createElement("Pressable", { onPress: () => calls.push("card") }))) : scrollChild ? React.createElement(scrollChild === "input" ? Scroll.TextInput : Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: scrollChild === "horizontal" }, React.createElement("ExplicitButton")) : excludedChild ? React.createElement(Exclusion, null, React.createElement("ExplicitButton")) : React.createElement("ExplicitButton", { onPress: () => calls.push("explicit") });
   const useContentReady = execute("../hooks/useNativeTabContentReady.ios.js").default;
   const usePreview = execute("../hooks/useNativeTabPreview.ios.js").default;
-  let mounted = 0;
+  let mounted = 0, currentChrome = null, currentSelection = null;
   const unmounted = [], { NativeTabPreviewContext: previewContext, NativeTabReadinessContext: readinessContext } = require("./nativeTabPreviewContext.mjs");
   function ActualPage({ tab }) {
     const identity = React.useRef(++mounted).current;
@@ -200,7 +205,19 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     modules["../components/VinylRefreshBoundary"] = p => p.children;
     modules["./FeedScreen.jsx"] = execute("../screens/FeedScreen.jsx");
     modules["../components/NativeFeedFilterPager.ios"] = modules["./NativeFeedFilterPager.ios"];
-    Component = execute("../screens/FeedScreen.ios.jsx").default;
+    const Feed = execute("../screens/FeedScreen.ios.jsx").default;
+    const Header = execute("./NativeAppHeader.ios.jsx").default;
+    const { NativeScrollChromeProvider, NativeScrollChromeContent, NativeScrollChromeContext } = modules["./NativeScrollChrome.ios"];
+    const useSelection = modules["../hooks/useIOSFeedSelection"].default;
+    function ObserveChrome() { currentChrome = React.useContext(NativeScrollChromeContext); return null; }
+    Component = p => {
+      const owned = useSelection(p.accountId), selection = p.feedSelection || owned;
+      currentSelection = selection;
+      return React.createElement(NativeScrollChromeProvider, { scope: p.swipeScope, page: "feed", enabled: p.swipeEnabled && p.visible && p.appActive !== false },
+        React.createElement(ObserveChrome),
+        React.createElement(Header, { active: "feed", loggedIn: p.loggedIn, feedSelection: selection, swipeEnabled: p.swipeEnabled && p.visible && p.appActive !== false, isCurrentSwipeRoute: p.isCurrentSwipeRoute }),
+        React.createElement(NativeScrollChromeContent, null, React.createElement(Feed, { ...p, feedSelection: selection })));
+    };
     props = { ...props, feed: [{ id: "global", review: "Global post" }], localFeed: [{ id: "nearby", review: "Local post" }], loggedIn: true, visible: true,
       swipeEnabled: true, swipeScope: {}, feedPresentation: { current: () => props.routeCurrent !== false }, isCurrentSwipeRoute: () => props.routeCurrent !== false,
       feedReturn: { key: "lease-A", current: () => props.routeCurrent !== false, read: () => null, save: value => leaseWrites.push(value), clear: () => leaseWrites.push("clear") },
@@ -291,6 +308,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   function Gate() { if (suspended) throw sleepForever; return null; }
   const componentKey = () => pager ? `${props.accountId}:${props.authEpoch || 0}` : component === "social" ? `${props.accountId || "guest"}:${props.post.id}` : "component";
   const f = {
+    get chrome() { return currentChrome; }, get selection() { return currentSelection; },
     calls, queue, gestures, shared, reactions, scrolls, titleOffsets, dimensions, springs, timings, animatedStyles, unmounted, reads, writes, impressions, dwell, leaseWrites, introductions, persisted, browseRenders, canceledAnimations,
     springFrame(value) { shared[3].set(value); },
     preferences(next) { reduced = !!next.reduced; reader = !!next.reader; f.render(); },
@@ -307,7 +325,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     appHistory,
     finishSpring(success = true) { springCompletions.at(-1)?.(success); },
     appState(value) { f.act(() => { for (const callback of [...appListeners]) callback(value); }); },
-    finish(index = timings.length - 1, success = true) { timings[index]?.done(success); }, confirmedSubscriptions, nativeReaderListeners, nativeReaderHistory,
+    finish(index = timings.findLastIndex(item => typeof item.done === "function"), success = true) { timings[index]?.done?.(success); }, confirmedSubscriptions, nativeReaderListeners, nativeReaderHistory,
     all: () => nodes(renderer.container).filter(node => !node.hidden),
     get gesture() { return f.all().find(node => node.type === "GestureDetector").props.gesture.handlers; },
     render(next = {}, passive = true) { props = { ...props, ...next }; renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null,
@@ -724,17 +742,6 @@ test("selected filter tap cancels queued preview and release without a selection
   assert.deepEqual(f.calls, []); assert.deepEqual(f.pages().map(p => p.props.tab), ["following"]);
 });
 
-test("actual iOS Feed leaves horizontal navigation to its outer main-tab owner", t => {
-  const f = fixture({ feedScreen: true }); t.after(f.close);
-  assert.equal(f.all().some(node => node.props?.testID === "feed-filter-swipe-rail"), false);
-  assert.equal(f.all().some(node => node.props?.accessibilityRole === "tablist"), false);
-  assert.equal(f.all().some(node => node.props?.testID === "feed-fixed-navigation"), false);
-  assert.equal(f.all().some(node => node.props?.testID === "feed-activity-controls"), false);
-  assert.equal(f.lists()[0].props.data[0].id, "global");
-  assert.ok(f.all().some(node => node.props?.accessibilityLabel === "Current feed: For You"));
-  assert.deepEqual(f.reads, []); assert.deepEqual(f.writes, []);
-});
-
 test("actual Feed menu selection changes only the selected retained native pane", t => {
   const f = fixture({ feedScreen: true }); t.after(f.close);
   f.render({ feedSelection: { filter: "everyone", select: noop } });
@@ -745,7 +752,7 @@ test("actual Feed menu selection changes only the selected retained native pane"
   assert.equal(nodes(f.surface("everyone")).find(node => node.type === "FlatList"), source);
   assert.equal(f.surface("everyone").props.pointerEvents, "none");
   assert.equal(f.surface("everyone").props.accessibilityElementsHidden, true);
-  assert.equal(f.surface("everyone").props.style[1].opacity, 0);
+  assert.equal(f.surface("everyone").props.style[2].opacity, 0);
   f.render({ feedSelection: { filter: "everyone", select: noop } });
   assert.equal(nodes(f.surface("everyone")).find(node => node.type === "FlatList"), source);
   assert.equal(f.surface("everyone").props.pointerEvents, "auto");
@@ -1375,4 +1382,124 @@ test("Metro retains platform-specific static title compatibility", () => {
     const result = resolve({ ...context, preferNativePlatform: platform !== "web" }, "./src/components/NativeLargeTitle", platform);
     assert.equal(result.filePath, fileURLToPath(new URL(`./NativeLargeTitle${platform === "ios" ? ".ios" : ""}.jsx`, import.meta.url)));
   }
+});
+
+test("actual iOS Feed previews Local cached posts beneath the shared activity-bar tabs without writes", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  assert.ok(f.all().some(node => node.props?.testID === "feed-filter-swipe-rail"), "Feed body must mount its real native swipe rail");
+  const source = f.lists()[0].props.instance;
+  const bar = f.all().find(n => n.props?.testID === "native-activity-bar");
+  assert.ok(bar); assert.equal(f.chrome.sources, 1);
+  assert.equal(f.lists()[0].props.data[0].id, "global");
+  const before = f.leaseWrites.length, g = dragPage(f, 120); f.flush(); f.ready("local");
+  assert.equal(f.lists().length, 2);
+  assert.equal(f.lists()[1].props.data[0].id, "nearby");
+  assert.equal(f.all().filter(n => n.props?.accessibilityLabel === "Following").length, 1);
+  assert.equal(f.translation("everyone"), 120);
+  assert.equal(f.chrome.sources, 1, "the preview cannot register a second chrome scroll owner");
+  assert.equal(f.all().find(n => n.props?.testID === "native-activity-bar"), bar);
+  assert.deepEqual(f.reads, []); assert.deepEqual(f.writes, []); assert.equal(f.leaseWrites.length, before);
+  f.act(() => t.mock.timers.tick(1500));
+  assert.ok(f.impressions.every(args => args[2] === "everyone"));
+  release(g, { x: 280 }); g.onFinalize(); f.finishSpring(); f.flush();
+  assert.equal(f.lists().length, 1); assert.equal(f.lists()[0].props.instance, source); assert.deepEqual(f.writes, []);
+});
+
+test("actual Following GET starts mid-drag and survives promotion without restart or hidden impressions", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true, selectedFilter: "local" }); t.after(f.close);
+  const g = dragPage(f, 120); f.flush(); f.ready("following");
+  assert.equal(f.reads.length, 1); assert.equal(f.reads[0].kind, "following");
+  const destination = f.lists()[1].props.instance, request = f.reads[0];
+  assert.equal(request.args.signal.aborted, false); assert.deepEqual(f.writes, []);
+  release(g, { x: 400 }); g.onFinalize(); f.flush();
+  f.react(); f.finish(); f.flush();
+  const followingList = () => nodes(f.surface("following")).find(node => node.type === "FlatList");
+  assert.equal(followingList().props.instance, destination);
+  assert.equal(f.surface("local").props.pointerEvents, "none");
+  assert.equal(f.surface("local").props.accessibilityElementsHidden, true);
+  assert.equal(f.surface("local").props.style[2].opacity, 0);
+  assert.equal(f.writes.length, 1); assert.equal(f.writes[0][1], "following");
+  assert.equal(f.all().find(n => n.props?.accessibilityLabel === "Following").props.accessibilityState.selected, true);
+  assert.equal(f.chrome.sources, 1);
+  assert.equal(f.reads.length, 1); assert.equal(request.args.signal.aborted, false);
+  request.resolve({ posts: [{ id: "followed", review: "A real followed post" }], nextCursor: "older" }); await f.settle();
+  assert.equal(followingList().props.data[0].id, "followed");
+  f.act(() => t.mock.timers.tick(999)); assert.ok(f.impressions.every(args => args[2] !== "following"));
+  f.act(() => t.mock.timers.tick(1)); assert.equal(f.impressions.filter(args => args[2] === "following").length, 1);
+});
+
+test("actual News normal reads render stories mid-drag and canceled preview aborts without selection", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  const g = dragPage(f); f.flush(); f.ready("news");
+  assert.equal(f.reads.length, 2); assert.ok(f.reads.every(r => r.kind === "news"));
+  for (const request of f.reads) request.resolve({ stories: [{ id: "story", title: "Actual destination story" }], nextCursor: "older" });
+  await f.settle();
+  assert.equal(f.lists()[1].props.data[0].title, "Actual destination story"); assert.equal(f.translation("news"), 260);
+  assert.deepEqual(f.writes, []);
+  release(g, { x: 240 }); g.onFinalize(); f.finishSpring(); f.flush();
+  assert.equal(f.lists().length, 1); assert.deepEqual(f.writes, []);
+  assert.ok(f.reads.every(r => r.args.signal.aborted));
+});
+
+test("loaded Following preview shows posts immediately but qualifies views only after promotion", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true, selectedFilter: "local" }); t.after(f.close);
+  const g = dragPage(f, 120); f.flush(); f.ready("following");
+  f.reads[0].resolve({ posts: [{ id: "followed", review: "Destination before release" }], nextCursor: "older" }); await f.settle();
+  assert.equal(f.lists()[1].props.data[0].review, "Destination before release");
+  f.act(() => t.mock.timers.tick(3000));
+  assert.ok(f.impressions.every(args => args[2] !== "following"));
+  const previewRow = f.all().find(n => n.type === "TicketStub" && n.props.log.id === "followed");
+  assert.equal(previewRow.props.mediaViewable, false); assert.equal(previewRow.props.swipeActions, false);
+  release(g, { x: 400 }); g.onFinalize(); f.finish(); f.flush();
+  assert.equal(f.reads.length, 1); assert.equal(f.writes[0][1], "following");
+  assert.equal(f.all().find(n => n.type === "TicketStub" && n.props.log.id === "followed").props.mediaViewable, true);
+  f.act(() => t.mock.timers.tick(999)); assert.ok(f.impressions.every(args => args[2] !== "following"));
+  f.act(() => t.mock.timers.tick(1)); assert.equal(f.impressions.filter(args => args[2] === "following").length, 1);
+});
+
+for (const change of ["unmount", "suspense", "route", "account", "scope", "background"]) test(`actual Feed retires shared header callbacks and preview reads on ${change}`, t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true, selectedFilter: "local", strict: true }); t.after(f.close);
+  const stale = f.all().find(n => n.props?.accessibilityLabel === "News").props.onPress;
+  const g = dragPage(f, 120); f.flush(); f.ready("following"); const request = f.reads.at(-1);
+  if (change === "unmount") f.close();
+  if (change === "suspense") { f.suspend(true); f.suspend(false); }
+  if (change === "route") f.render({ routeCurrent: false, visible: false });
+  if (change === "account") f.render({ accountId: "account-B" });
+  if (change === "scope") f.render({ swipeScope: {} });
+  if (change === "background") f.render({ appActive: false });
+  f.act(stale); release(g, { x: 400 }); g.onFinalize(); f.finish(); f.flush();
+  assert.deepEqual(f.writes, []); assert.equal(request.args.signal.aborted, true);
+});
+
+test("same-filter explicit tap cancels actual pending preview without saving the selected choice", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true, selectedFilter: "local" }); t.after(f.close);
+  const g = dragPage(f, 120); f.flush(); f.ready("following"); release(g, { x: 400 }); g.onFinalize(); f.flush();
+  f.press("Local"); f.finish(); f.flush();
+  assert.deepEqual(f.writes, []); assert.equal(f.lists().length, 1); assert.equal(f.reads[0].args.signal.aborted, true);
+});
+
+test("actual Feed Reduce Motion commits a body swipe without a sliding preview and keeps shared tabs selected", t => {
+  const f = fixture({ feedScreen: true, reduced: true }); t.after(f.close);
+  const source = f.lists()[0], g = dragPage(f, 120); f.flush();
+  assert.equal(f.surface("local"), undefined); assert.equal(f.translation("everyone"), 0);
+  release(g, { x: 400 }); g.onFinalize(); f.flush();
+  assert.equal(f.selection.filter, "local"); assert.equal(f.translation("local"), 0);
+  assert.equal(f.all().find(n => n.props?.accessibilityLabel === "Local").props.accessibilityState.selected, true);
+  assert.equal(nodes(f.surface("everyone")).find(n => n.type === "FlatList"), source);
+});
+
+test("actual Feed VoiceOver retires an in-flight body swipe while header tabs remain usable", t => {
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  const g = dragPage(f, 120); f.flush(); f.ready("local"); f.reader(true);
+  release(g, { x: 400 }); g.onFinalize(); f.finish(); f.flush();
+  assert.equal(f.selection.filter, "everyone"); assert.equal(f.gesture.enabled, false);
+  f.press("Local"); assert.equal(f.selection.filter, "local");
+  assert.equal(f.all().find(n => n.props?.accessibilityLabel === "Local").props.accessibilityState.selected, true);
+  assert.equal(f.chrome.shown.get(), true);
 });

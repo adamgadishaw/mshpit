@@ -65,7 +65,7 @@ export default function NativeAppHeader({ onHome, onAccount, loggedIn, onMenu, m
         {active === "feed" && loggedIn && feedSelection ? <View style={[styles.feedTabs, fontScale > 1.25 && styles.wrappedTabs]}
           accessibilityRole="tablist" accessibilityLabel="Feed filters" testID="native-feed-tabs">
           {iosFeedFilterChoices(feedSelection.filter).map(tab => <Pressable key={tab.key}
-            onPress={guard(() => { if (!tab.selected) feedSelection.select(tab.key); })}
+            onPress={guard(() => feedSelection.select(tab.key))}
             disabled={swipeEnabled === false} accessibilityRole="tab" accessibilityLabel={tab.title}
             accessibilityHint={tab.detail} accessibilityState={{ selected: tab.selected, disabled: swipeEnabled === false }}
             style={({ pressed }) => [styles.feedTab, fontScale > 1.25 && styles.wrappedTab, tab.selected && styles.selectedTab, pressed && styles.pressed]}>
