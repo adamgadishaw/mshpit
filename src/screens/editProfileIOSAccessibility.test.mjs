@@ -12,7 +12,7 @@ import * as accents from "../domain/profileAccents.mjs";
 import * as dates from "../domain/dates.mjs";
 import * as closeGuard from "./editProfileCloseGuard.mjs";
 import * as profileBadges from "../domain/profileBadges.mjs";
-import * as badges from "../domain/badges.mjs";
+import * as statusBadges from "../domain/statusBadges.mjs";
 
 const require = createRequire(import.meta.url);
 const { transformSync } = require("@babel/core");
@@ -54,7 +54,7 @@ function fixture(os, overrides = {}, options = {}) {
     "../domain/dates.mjs": dates,
     "./editProfileCloseGuard.mjs": closeGuard,
     "../domain/profileBadges.mjs": profileBadges,
-    "../domain/badges.mjs": badges,
+    "../domain/statusBadges.mjs": statusBadges,
     ...Object.fromEntries(["Avatar", "Icon", "LocationPicker", "Button", "SheetHeader", "Badge"].map((name) => [`../components/${name}`, name])),
   };
   const hookCode = transformSync(readFileSync(new URL(`../hooks/useIOSProfileEditor${os === "ios" ? ".ios" : ""}.js`, import.meta.url), "utf8"), {
