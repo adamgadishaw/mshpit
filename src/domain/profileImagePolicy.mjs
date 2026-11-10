@@ -24,7 +24,7 @@ export function profileImagePickerOptions(purpose, { platform } = {}) {
   return {
     mediaTypes: ["images"],
     allowsEditing: nativeCrop,
-    quality: 0.85,
+    quality: platform === "ios" && contract.purpose === "banner" ? 1 : 0.85,
     ...(platform === "ios" ? { shouldDownloadFromNetwork: true } : {}),
     ...(platform === "android" ? { aspect: [...contract.aspect] } : {}),
   };
@@ -37,6 +37,7 @@ export function profileImageSelectionHint(purpose, { platform } = {}) {
   if (platform === "web") return contract.purpose === "avatar"
     ? "Square photo · drag and zoom to adjust"
     : "Wide 3:1 image · drag and zoom to adjust";
+  if (platform === "ios" && contract.purpose === "banner") return "Wide 3:1 image · drag and zoom to adjust";
   return contract.purpose === "avatar"
     ? `Square photo \u00b7 centered crop \u00b7 ${dimensions}`
     : `Wide 3:1 image \u00b7 centered crop \u00b7 ${dimensions}`;

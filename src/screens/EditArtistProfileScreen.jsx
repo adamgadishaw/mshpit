@@ -442,7 +442,7 @@ const styles = StyleSheet.create({
   save: { color: colors.amber, fontSize: 15, fontWeight: "700" },
   denied: { color: colors.textDim, fontSize: 14, textAlign: "center", marginTop: 40, paddingHorizontal: 24, lineHeight: 21 },
   content: { padding: 16, paddingBottom: 48 },
-  bannerEdit: { height: 120, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  bannerEdit: { ...(Platform.OS === "ios" ? { aspectRatio: 3 } : { height: 120 }), borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   bannerOverlay: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(11,14,22,0.4)", paddingHorizontal: 14, paddingVertical: 8, borderRadius: radius.pill },
   bannerEditTxt: { color: colors.text, fontSize: 13, fontWeight: "600" },
   headRow: { marginTop: -42, paddingLeft: 4, flexDirection: "row" },
