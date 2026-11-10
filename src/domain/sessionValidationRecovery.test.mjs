@@ -2,12 +2,25 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "@babel/parser";
+import { registerHooks } from "node:module";
 import { createSessionValidationCoordinator, sessionValidationOutcome } from "./sessionValidation.mjs";
 import { createSessionValidationRetry } from "./sessionValidationRetry.mjs";
 import { createAuthTransitions } from "./authTransitions.mjs";
 import { apiIdentityBarrierDecision } from "./apiIdentityState.mjs";
 import { createRequestControl } from "../lib/requestControl.mjs";
 import { retryAfterDelayMs } from "../lib/retryAfter.mjs";
+
+// Keep the real transport classification: AppError exposes its catalog code,
+// not the input `kind`. An Object.assign error double would hide that boundary.
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "./persist" && context.parentURL?.endsWith("/src/lib/diagnostics.js")) {
+      return nextResolve(new URL("./persist.js", context.parentURL).href, context);
+    }
+    return nextResolve(specifier, context);
+  },
+});
+const { AppError } = await import("../lib/diagnostics.js");
 
 const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
 const provider = parse(source, { sourceType: "module", plugins: ["jsx"] }).program.body
@@ -28,22 +41,20 @@ const member = { id: "synthetic-member", name: "Fixture member" };
 
 // Execute the complete Store effect and API transport. Only external I/O,
 // React setters and unrelated account projections are synthetic seams.
-function fixture({ confirmed = true, account = confirmed ? member : null, intent = null } = {}) {
+function fixture({ confirmed = true, account = confirmed ? member : null, intent = null, requestTimeoutMs } = {}) {
   const state = { ready: confirmed, session: account };
   const sessionRef = { current: account }, authReadyRef = { current: confirmed };
   const authValidationSequenceRef = { current: 0 };
-  const requests = [], retired = [], adoptions = [], timers = new Map();
-  let timerId = 0, coordinator, authState = intent, revoked = 0;
+  const requests = [], retired = [], adoptions = [], errors = [], timers = new Map();
+  let timerId = 0, coordinator, authState = intent, revoked = 0, clock = 0, appStateListener;
   const authTransitions = createAuthTransitions({
     read: () => authState, write: (value) => { authState = value; },
     revoke: async () => { revoked += 1; },
   });
-  class AppError extends Error {
-    constructor(message, properties) { super(message); Object.assign(this, properties); }
-  }
   const transportBindings = {
-    AppError, captureAppError: (error) => error, apiIdentityBarrierDecision, createRequestControl, retryAfterDelayMs,
-    Platform: { OS: "test" }, apiBaseForRuntime: () => "https://synthetic.invalid",
+    AppError, captureAppError: (error) => { errors.push(error); return error; }, apiIdentityBarrierDecision,
+    createRequestControl: (options) => createRequestControl({ ...options, ...(requestTimeoutMs ? { timeoutMs: requestTimeoutMs } : {}) }), retryAfterDelayMs,
+    Platform: { OS: "ios" }, apiBaseForRuntime: () => "https://synthetic.invalid",
     reviewAllowsRequest: () => true, photoCreditUrlFromLinkHeader: () => null,
     fetch: (url, options) => new Promise((resolve, reject) => { requests.push({ url, options, resolve, reject }); }),
   };
@@ -54,7 +65,7 @@ function fixture({ confirmed = true, account = confirmed ? member : null, intent
     sessionValidationStatus: null,
     sessionValidationOutcome, createSessionValidationRetry: () => createSessionValidationRetry({ random: () => 0 }),
     createSessionValidationCoordinator: (options) => {
-      coordinator = createSessionValidationCoordinator(options);
+      coordinator = createSessionValidationCoordinator({ ...options, now: () => clock });
       return coordinator;
     },
     remoteIdentityValidationEnabled: () => true, ENABLE_DEMO_DATA: false,
@@ -71,7 +82,11 @@ function fixture({ confirmed = true, account = confirmed ? member : null, intent
     },
     setTimeout: (work, ms) => { const id = ++timerId; timers.set(id, { work, ms }); return id; },
     clearTimeout: (id) => timers.delete(id),
-    Platform: { OS: "test" }, AppState: { addEventListener: () => ({ remove() {} }) },
+    invalidateIOSDetailPrivacy() {},
+    Platform: { OS: "ios" }, AppState: { addEventListener: (_event, listener) => {
+      appStateListener = listener;
+      return { remove() {} };
+    } },
   };
   const cleanup = new Function(...Object.keys(dependencies), `return (${validationEffect})();`)(...Object.values(dependencies));
   const respond = (index, text, status = 200) => {
@@ -89,8 +104,48 @@ function fixture({ confirmed = true, account = confirmed ? member : null, intent
     timers.delete(id); timer.work();
     return coordinator.validate({ force: true });
   };
-  return { state, requests, retired, adoptions, timers, coordinator, respond, finish, fireRetry, cleanup, authTransitions,
+  return { state, requests, retired, adoptions, errors, timers, coordinator, respond, finish, fireRetry, cleanup, authTransitions,
+    resume: () => { appStateListener("background"); clock += 61_000; appStateListener("active"); },
     get revoked() { return revoked; } };
+}
+
+const unreadableUnauthorized = [
+  { label: "proxy HTML", code: "PIT-NET-001", response: () => new Response("<html>Proxy denied</html>", { status: 401 }) },
+  { label: "malformed JSON", code: "PIT-API-001", response: () => new Response("{broken", { status: 401 }) },
+  { label: "interrupted response body", code: "PIT-NET-001", response: () => ({
+    ok: false, status: 401, headers: new Headers(), text: async () => { throw new TypeError("Connection dropped"); },
+  }) },
+  { label: "response body timeout", code: "PIT-NET-002", requestTimeoutMs: 20, response: (request) => ({
+    ok: false, status: 401, headers: new Headers(), text: () => new Promise((_resolve, reject) => {
+      request.options.signal.addEventListener("abort", () => reject(request.options.signal.reason), { once: true });
+    }),
+  }) },
+];
+
+for (const failure of unreadableUnauthorized) {
+  for (const mode of ["foreground", "cold-start", "strict"]) {
+    test(`${failure.label} with status 401 during ${mode} retries without inventing sign-out`, async (t) => {
+      const f = fixture({ confirmed: mode !== "cold-start", requestTimeoutMs: failure.requestTimeoutMs }); t.after(f.cleanup);
+      if (mode !== "cold-start") await f.finish(JSON.stringify({ user: member }));
+      if (mode === "foreground") f.resume();
+      const pending = f.coordinator.validate({ force: true, strict: mode === "strict" });
+      await tick();
+      const request = f.requests.at(-1);
+      assert.equal(request.options.credentials, "include");
+      request.resolve(failure.response(request));
+      assert.equal((await pending).result.outcome, "transient-failure");
+      assert.equal(f.errors.at(-1).code, failure.code);
+      assert.deepEqual(f.state, { ready: mode === "foreground", session: mode === "cold-start" ? null : member });
+      assert.deepEqual(f.retired, [], "an unreadable response must not purge private account state");
+      assert.equal(f.revoked, 0, "recovery must not revoke the cookie");
+      assert.equal(f.timers.size, 1);
+      const recovered = f.fireRetry(); await tick();
+      f.respond(f.requests.length - 1, JSON.stringify({ user: member }));
+      assert.equal((await recovered).result.authoritative, true);
+      assert.deepEqual(f.state, { ready: true, session: member });
+      assert.equal(f.timers.size, 0);
+    });
+  }
 }
 
 const malformed = [
