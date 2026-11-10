@@ -137,7 +137,7 @@ export function CityGuideContent({ guide, width, onOpenVenue, onOpenArtist, onOp
 }
 function CityGuideScreen({ city, accountId, onClose, onChooseCity, ...navigation }) {
   const [promptDismissed, setPromptDismissed] = useState(false);
-  useEffect(() => setPromptDismissed(false), [accountId, city?.citySlug, city?.homeShowPrompt]);
+  useEffect(() => setPromptDismissed(false), [accountId, city?.countryCode, city?.citySlug, city?.homeShowPrompt]);
   const { width } = useWindowDimensions();
   const countryCode = city?.countryCode || "";
   const citySlug = city?.citySlug || "";

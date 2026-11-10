@@ -28,15 +28,18 @@ export default function VinylRefreshBoundary({ children, refreshing = false, onR
   };
   const requestRef = useRef(requestRefresh);
   requestRef.current = requestRefresh;
+  useEffect(() => () => { pending.current = false; }, [page]);
   useEffect(() => {
     const unregister = page?.register(() => {
       // Stop momentum immediately, even when the refresh is already pending.
       scrollPageToTop(scrollRef.current);
       requestRef.current();
-    });
-    return () => { unregister?.(); pending.current = false; };
-  }, [page]);
-  const refreshControl = <RefreshControl refreshing={!!refreshing} onRefresh={requestRefresh} enabled={canRefresh} progressViewOffset={progressViewOffset} tintColor={colors.amber} colors={[colors.amber]} progressBackgroundColor={colors.bgElev} accessibilityLabel={accessibilityLabel} accessibilityHint="At the top, pull down past the indicator and release to refresh." title={refreshing ? "Refreshing…" : "Pull down and release to refresh"} />;
+    }, canRefresh);
+    return unregister;
+  }, [page, canRefresh]);
+  // RefreshControl.enabled is Android-only. Remove the iOS control when no
+  // refresh is available, while keeping title/tab gestures able to scroll.
+  const refreshControl = canRefresh ? <RefreshControl refreshing={!!refreshing} onRefresh={requestRefresh} enabled={canRefresh} progressViewOffset={progressViewOffset} tintColor={colors.amber} colors={[colors.amber]} progressBackgroundColor={colors.bgElev} accessibilityLabel={accessibilityLabel} accessibilityHint="At the top, pull down past the indicator and release to refresh." title={refreshing ? "Refreshing…" : "Pull down and release to refresh"} /> : undefined;
   const scrollChild = cloneElement(child, { ref: composedRef, refreshControl });
   return <View style={[styles.boundary, style]} testID={testID}>{scrollChild}</View>;
 }

@@ -40,3 +40,10 @@ export function cityIdentityForLocation(value) {
   const identity = cityIdentity(code, city, region);
   return identity && cityPath(identity) ? identity : null;
 }
+
+// Keep the native entry's navigation contract aligned with cityIdentity.js.
+// Browsing another city never changes the saved home location.
+export function findShowFrame(home) {
+  const identity = cityIdentityForLocation(home);
+  return { cityGuide: identity ? { ...identity, homeShowPrompt: true } : { directory: true } };
+}

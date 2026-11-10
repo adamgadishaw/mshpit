@@ -1,5 +1,14 @@
 # Pit current status
 
+## 2026-11-10 Combined PC reliability candidate (local review)
+
+- `fix/pc-integrated-reliability-20261110` integrates preserved privacy commit
+  `7afa14e81ac97ce02192a86d43a5ea6c2549288c` with iOS source commit
+  `9857d67c429e70526f91200d83df5b7cd6ccd20a`, both descending from `ac6a837`.
+- Runtime hunks apply without conflict; both STATUS entries below are retained.
+  Combined validation and remaining native/Mac limits are recorded in
+  [the integration audit](docs/PC_COMBINED_RELIABILITY_2026-11-10.md).
+
 ## 2026-11-10 PC privacy and reliability follow-up (local review)
 
 - Branch `fix/pc-privacy-reliability-20261110` descends from preserved candidate
@@ -13,6 +22,19 @@
   [the follow-up audit](docs/PC_PRIVACY_RELIABILITY_2026-11-10.md).
   Native/export validation is a separate frozen-copy workstream. No production,
   phone, Mac, recovery-transfer, dirty-checkout or publication operation.
+
+## 2026-11-10 Windows iOS source follow-up (local review)
+
+- Isolated `codex/ios-source-reliability` starts at frozen PC candidate
+  `ac6a8374165e27c527c3f3cb23e8ea85bb2dc49e`.
+- Fixed the missing native Find a Show export, country-scoped city prompt
+  dismissal, and disabled native refresh controls/capability announcements.
+- iOS Metro/Hermes export, 697-module source verification, config introspection,
+  72 focused checks and the 7,137-test full suite passed. The restricted npm
+  audit initially failed to connect; its separate read-only retry passed.
+- See [the iOS source audit](docs/PC_IOS_SOURCE_REVIEW_2026-11-10.md) for exact
+  evidence, shared-file overlaps and remaining checks. UIKit/device acceptance
+  and missing Mac source integration remain unverified. Nothing is published.
 
 ## 2026-11-10 Large feed traversal follow-up (local review)
 
