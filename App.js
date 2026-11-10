@@ -890,6 +890,7 @@ function Root() {
     if (decision === "verify") { setVerificationPrompt(intent || "default"); return false; }
     return fn();
   };
+  const openProfileDetails = () => requireVerifiedMutation("profile", () => go({ editProfile: true }));
   const profileAction = profileManagementAction(session);
   const profileDestination = profileAction.destination;
   const profileManagementFrame = () => (profileDestination === "artistHub" ? { artistHub: true } : { editProfile: true });
@@ -1643,7 +1644,7 @@ function Root() {
   else if (nav.notifications) overlay = <NotificationsScreen isCurrentIOSRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} onOpenPlans={ENABLE_CREW ? () => go({ crew: { tab: "plans" } }) : undefined} onOpenArtist={openArtist} />;
   else if (nav.calendar) overlay = <CalendarScreen initialDate={nav.calendarDate} initialView={nav.calendarView} onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
-  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} initialSection={nav.profileSection} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} onRequireAuth={openSignIn} />;
+  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} initialSection={nav.profileSection} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onEditProfileDetails={openProfileDetails} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} onRequireAuth={openSignIn} />;
   else if (nav.fanClub) overlay = <FanClubScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.fanClub]) : undefined} draftOwner={Platform.OS === "ios" ? communityDraftsRef.current : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onMediaPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "status" }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onRequestVerification={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} onPlay={musicPlayerAction} />;
   else if (nav.artistGallery) overlay = <ArtistGalleryScreen artistName={nav.artistGallery.name} artistKey={nav.artistGallery.artistKey} legacyMode={nav.artistGallery.legacyMode === true} onClose={back} onOpenPhotos={openPhotos} />;
@@ -1882,6 +1883,7 @@ function Root() {
                   onInbox={openInbox}
                   onCalendar={() => go({ calendar: true })}
                   profile={{
+                    onEditProfileDetails: openProfileDetails,
                     onOpenShow: openShow, onOpenPost: openPost, onOpenProfile: openProfile, onOpenArtist: openArtist,
                     onOpenArtistArchive: openArtistArchive, onOpenVenue: openVenue, onPreview: musicPreviewAction,
                     onMessage: openThread, onReport: openReport, onEditPost: openPostEditor, onOpenPhotos: openPhotos,

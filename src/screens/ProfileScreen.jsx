@@ -1,3 +1,4 @@
+import ProfileGuidance from "../components/ProfileGuidance";
 import { ScrollView } from "../components/NativeTabScroll";
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ActionSheetIOS, ActivityIndicator, View, Text, StyleSheet, Pressable, Platform, useWindowDimensions } from "react-native";
@@ -216,7 +217,7 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
 });
 
 // Public member profile: musical identity, live history, media, plans, and posts.
-export default function ProfileScreen({ userId, initialSection = null, asTab = false, ownerTools = null, children = null, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
+export default function ProfileScreen({ userId, initialSection = null, asTab = false, ownerTools = null, children = null, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onEditProfileDetails, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
   const { height: windowHeight, width: windowWidth, fontScale } = useWindowDimensions();
   const largeText = IS_IOS && fontScale > 1.25;
   const webBannerMinHeight = windowWidth >= 900 ? Math.min(420, Math.max(352, windowHeight * 0.38)) : 320;
@@ -687,6 +688,8 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
 
         </View>
         </View>
+
+        {isSelf && <ProfileGuidance key={session.id} user={session} onEdit={onEditProfileDetails} />}
 
         {/* The owner's private block (the You tab passes concert memories here). */}
         {!IS_IOS && isSelf ? children : null}

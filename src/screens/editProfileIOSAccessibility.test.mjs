@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import vm from "node:vm";
 import test from "node:test";
+import * as formErrors from "../domain/accountFormError.mjs";
 import * as profileDraft from "../domain/profileEditDraft.mjs";
 import * as imagePolicy from "../domain/profileImagePolicy.mjs";
 import * as genres from "../domain/genrePreferences.mjs";
@@ -44,6 +45,7 @@ function fixture(os, overrides = {}, options = {}) {
     "../lib/mediaUpload": { isDurableMediaUrl: () => false },
     "../domain/profileImagePolicy.mjs": imagePolicy,
     "../domain/profileEditDraft.mjs": profileDraft,
+    "../domain/accountFormError.mjs": formErrors,
     "../domain/genrePreferences.mjs": genres,
     "../domain/validation.mjs": validation,
     "../domain/profileAccents.mjs": accents,

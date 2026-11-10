@@ -11,6 +11,7 @@ import AccountPasswordForm from "../features/signupOnboarding/AccountPasswordFor
 import CityWelcomeCard from "../features/cities/CityWelcomeCard";
 import { cityIdentityForLocation } from "../cityIdentity";
 import { cleanHandle, isHandle } from "../domain/validation.mjs";
+import { accountFormError } from "../domain/accountFormError.mjs";
 import { confirmSignupProfile, signupHandleLocked, signupProfilePatch, signupProfileSnapshot } from "../domain/signupProfileDraft.mjs";
 import { profileImagePickerOptions } from "../domain/profileImagePolicy.mjs";
 import { reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
@@ -19,7 +20,7 @@ import { useWebRecoveryDraft } from "../hooks/useWebRecoveryDraft";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 
 const TOTAL_STEPS = 2;
-const message = (error, fallback) => String(typeof error === "string" ? error : error?.userMessage || error?.message || fallback).slice(0, 280);
+const message = accountFormError;
 
 // Saved photos survive refresh; unfinished changes stay visible until confirmed
 // or explicitly discarded. Nothing sensitive is persisted in browser storage.
@@ -243,7 +244,7 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
           <Text style={styles.subtitle}>{homeCity ? "Welcome to the music in " + homeCity + ". " : "Make yourself at home. "}Browse at your own pace. Everything below is optional.</Text>
           {city && <View style={{ marginBottom: space(4) }}><CityWelcomeCard city={city} compact hideActions /></View>}
           <WelcomeGuide selected={destination} onChoose={setDestination} busy={busy} includeExplore includeArtistSetup={session.role === "fan"} />
-          <Text style={styles.savedNote}>Finish setup marks your profile ready. Exploring now keeps your account and saved progress, subject to the inactivity policy. Confirm your email before posting, messaging or following anyone.</Text>
+          <Text style={styles.savedNote}>Finish setup closes this welcome guide. Optional profile details can be added later. Exploring now keeps your account and saved progress, subject to the inactivity policy. Confirm your email before posting, messaging or following anyone.</Text>
         </>}
         {discardPrompt && <View style={styles.discard} accessibilityRole="alert"><Text style={styles.discardTitle}>Keep your changes?</Text><Text style={styles.hint}>Some profile changes aren’t saved yet.</Text><Button title="Save and continue" onPress={() => void continueProfile()} /><Button title="Finish setup without these changes" variant="secondary" onPress={() => void finish("feed", true)} /><Button title="Cancel signup" variant="secondary" onPress={() => setCancelPrompt(true)} /></View>}
         {!!error && <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive" role="alert">{error}</Text>}

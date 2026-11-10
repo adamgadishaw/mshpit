@@ -97,7 +97,7 @@ for (const platform of ["web", "ios", "android"]) {
   test(`${platform}: failed upload keeps the previous photo and shows an inline error until retry`, async t => {
     const f = fixture(platform); t.after(f.close);
     f.pick(); f.pickers[0].resolve({ canceled: false, assets: [{ uri: "file:///synthetic.jpg" }] }); await f.settle();
-    f.uploads[0].reject(new Error("Confirm your email before uploading.")); await f.settle();
+    f.uploads[0].reject({ userMessage: "Confirm your email before uploading." }); await f.settle();
     assert.equal(f.find(n => n.type === "Avatar").props.user.avatarUri, "https://media.example/old.jpg");
     assert.equal(f.find(n => n.props?.accessibilityRole === "alert").children[0].text, "Confirm your email before uploading.");
     assert.equal(f.header().disabled, false);
@@ -136,3 +136,42 @@ for (const platform of ["web", "ios", "android"]) {
     void f.save(); assert.equal(f.requests.length, 0);
   });
 }
+
+for (const platform of ["web", "ios", "android"]) {
+  test(`${platform}: invalid changed name explains the problem and can be corrected without genres`, async t => {
+    const f = fixture(platform); t.after(f.close);
+    const name = () => f.find(n => n.type === "TextInput" && n.props.placeholder === "Your name");
+    f.act(() => name().props.onChangeText("Bad_Name"));
+    assert.equal(f.header().disabled, true);
+    assert.match(f.find(n => n.props?.accessibilityRole === "alert").children[0].text, /no underscores or emoji/);
+    void f.save(); assert.equal(f.requests.length, 0); await f.settle();
+    f.act(() => name().props.onChangeText("Valid Name"));
+    assert.equal(f.header().disabled, false);
+    void f.save(); assert.deepEqual(f.requests[0].args[0], { name: "Valid Name" });
+    f.requests[0].resolve({ ok: false, error: { source: "api", status: 409, message: "That username is taken. Choose another one.", userMessage: "Check your request." } });
+    await f.settle();
+    assert.equal(f.find(n => n.props?.accessibilityRole === "alert").children[0].text, "That username is taken. Choose another one.");
+    assert.equal(name().props.value, "Valid Name");
+    assert.equal(f.closed, 0);
+  });
+  test(`${platform}: removing the last genre shows its explanation before Save`, t => {
+    const f = fixture(platform, { genres: ["Rock"] }); t.after(f.close);
+    f.act(() => f.find(n => n.type === "Pressable" && n.children.some(c => c.type === "Text" && c.children.some(text => text.text === "Rock"))).props.onPress());
+    assert.equal(f.header().disabled, true);
+    assert.match(f.find(n => n.props?.accessibilityRole === "alert").children[0].text, /Choose/);
+    assert.equal(f.requests.length, 0);
+  });
+}
+
+test("untouched legacy blank name permits unrelated bio save, but clearing a valid name explains the no-op", async t => {
+  const legacy = fixture("web", { name: "" }); t.after(legacy.close);
+  legacy.editBio("New bio");
+  assert.equal(legacy.header().disabled, false);
+  void legacy.save(); assert.deepEqual(legacy.requests[0].args[0], { bio: "New bio" });
+  legacy.requests[0].resolve({ ok: true }); await legacy.settle();
+  const current = fixture("web", { name: "Valid Name" }); t.after(current.close);
+  current.act(() => current.find(n => n.type === "TextInput" && n.props.placeholder === "Your name").props.onChangeText(""));
+  assert.equal(current.header().disabled, true);
+  assert.match(current.find(n => n.props?.accessibilityRole === "alert").children[0].text, /Use a name/);
+  void current.save(); assert.equal(current.requests.length, 0);
+});

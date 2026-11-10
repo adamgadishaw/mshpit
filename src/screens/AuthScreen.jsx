@@ -363,8 +363,18 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
               </View>
             </> : null}
             {signupMode && step === 4 ? <>
+              <View style={styles.section}>
+                <Text style={styles.fieldLabel} accessibilityRole="header">Review your choices</Text>
+                <Text style={styles.hint}>Your name, username, music choices, and city appear on your public profile. You can edit them later.</Text>
+                <Text style={styles.fieldLabel}>{name.trim()} · @{cleanHandle(handle)}</Text>
+                <AuthPressable onPress={() => { clearError(); setStep(1); }} disabled={busy} style={controlStyle(styles.retry, busy)} accessibilityRole="button"><Text style={styles.link}>Edit name and username</Text></AuthPressable>
+                <Text style={styles.hint}>Music: {genres.join(", ")}</Text>
+                <Text style={styles.hint}>City (optional): {city?.city || "Not added"}</Text>
+                <AuthPressable onPress={() => { clearError(); setStep(3); }} disabled={busy} style={controlStyle(styles.retry, busy)} accessibilityRole="button"><Text style={styles.link}>Edit music and city</Text></AuthPressable>
+                <Text style={styles.hint}>Photos and a bio are optional. Add them after confirming your email.</Text>
+              </View>
               <View ref={(node) => { inputs.current.ageBand = node; }} tabIndex={-1} style={styles.section} accessibilityRole="radiogroup" accessibilityLabel="Age group">
-                <Text style={styles.fieldLabel}>Age group</Text><Text style={styles.hint}>For account safety. No birth date needed.</Text>
+                <Text style={styles.fieldLabel}>Age group · Required</Text><Text style={styles.hint}>For account safety. No birth date needed.</Text>
                 <View style={styles.ageChoices}>{[["13_17", "13–17"], ["18_plus", "18+"]].map(([value, label]) => <AuthPressable key={value} style={({ focused, pressed }) => [styles.ageChoice, ageBand === value && styles.selectedChip, pressed && styles.pressed, focused && focusRing]} onPress={() => { setAgeBand(value); clearError(); }} disabled={busy} accessibilityRole="radio" accessibilityState={{ checked: ageBand === value, disabled: busy }} accessibilityLabel={label}><Text style={[styles.genreText, ageBand === value && styles.selectedText]}>{label}</Text></AuthPressable>)}</View>
               </View>
               <View style={styles.consents}>
@@ -372,7 +382,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
                   <View style={[styles.checkbox, agreed && styles.checked]}>{agreed ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}</View><Text style={styles.consentText}>I agree to the Terms & Conditions and Privacy policy.</Text>
                 </AuthPressable>
                 <View style={styles.policyLinks}><AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setViewing("terms")} disabled={busy} accessibilityRole="button" accessibilityLabel="Read Terms"><Text style={styles.link}>Read Terms</Text></AuthPressable><AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setViewing("privacy")} disabled={busy} accessibilityRole="button" accessibilityLabel="Read Privacy policy"><Text style={styles.link}>Read Privacy policy</Text></AuthPressable></View>
-                <AuthPressable style={controlStyle(styles.consent, busy)} onPress={() => setAnalyticsConsent(!analyticsConsent)} disabled={busy} accessibilityRole="checkbox" accessibilityLabel="Share optional limited account usage data" accessibilityState={{ checked: analyticsConsent, disabled: busy }}><View style={[styles.checkbox, analyticsConsent && styles.checked]}>{analyticsConsent ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}</View><Text style={styles.consentText}>Optional: share limited account usage data to help improve Mshpit.</Text></AuthPressable>
+                <AuthPressable style={controlStyle(styles.consent, busy)} onPress={() => setAnalyticsConsent(!analyticsConsent)} disabled={busy} accessibilityRole="checkbox" accessibilityLabel="Share optional limited account usage data" accessibilityState={{ checked: analyticsConsent, disabled: busy }}><View style={[styles.checkbox, analyticsConsent && styles.checked]}>{analyticsConsent ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}</View><Text style={styles.consentText}>Optional: share limited account usage data to help improve Mshpit. Leave unchecked to keep it off.</Text></AuthPressable>
                 <AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setAnalyticsDetails(!analyticsDetails)} disabled={busy} accessibilityRole="button" accessibilityState={{ expanded: analyticsDetails }} accessibilityLabel="What usage data is shared"><Text style={styles.link}>{analyticsDetails ? "Hide details" : "What is shared?"}</Text></AuthPressable>
                 {analyticsDetails ? <Text style={styles.hint}>We record limited usage events linked to your account. They do not include the contents of authored posts or reviews, search terms, messages, or uploaded media. IP addresses are not stored with these analytics events. Change your choice any time in Settings; opting out deletes your raw product events.</Text> : null}
               </View>

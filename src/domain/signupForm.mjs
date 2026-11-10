@@ -1,4 +1,5 @@
 import { cleanEmail, cleanHandle, cleanName, isEmail, isHandle, isName, isPassword } from "./validation.mjs";
+import { accountFormError } from "./accountFormError.mjs";
 import { profileGenreSelection } from "./genrePreferences.mjs";
 
 // Current React Native Web does not project every accessibilityState/value
@@ -21,7 +22,7 @@ const handleTaken = (handle, availability) => availability?.handle === cleanHand
 // Who the member is: the first signup step.
 export function signupIdentityError({ name, handle, artistIntent } = {}, availability = null) {
   if (artistIntent && (typeof artistIntent.artistName !== "string" || artistIntent.artistName.trim().length < 2 || artistIntent.artistName.trim().length > 60)) return { field: "artistName", message: "Use 2–60 characters for your artist or band name." };
-  if (!isName(name)) return { field: "name", message: "Add your name to continue." };
+  if (!isName(name)) return { field: "name", message: typeof name === "string" && name.trim() ? "Use a name with letters or numbers and basic punctuation (no underscores or emoji)." : "Add your name to continue." };
   if (!isHandle(handle)) return { field: "handle", message: "Use 3 to 20 letters, numbers, or underscores for your @username." };
   return handleTaken(handle, availability);
 }
@@ -76,7 +77,7 @@ export function signupHandlePresentation(resource, value) {
   }
   if (resource.status === "error") {
     const status = Number(resource.error?.status || resource.error?.meta?.status);
-    if (status === 400) return { tone: "error", message: String(resource.error?.userMessage || resource.error?.message || "Choose another @username.").slice(0, 280) };
+    if (status === 400) return { tone: "error", message: accountFormError(resource.error, "Choose another @username.") };
     return { tone: "muted", message: status === 429
       ? "Too many checks. Wait a moment, then try again."
       : "Couldn’t check right now. Your @username will be confirmed after verification." };

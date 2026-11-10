@@ -18,8 +18,8 @@ const newPhoto = "https://media.example.test/profile-new.png";
 
 async function scenario(browser, origin, width) {
   const context = await browser.newContext({ viewport: { width, height: 900 }, serviceWorkers: "block" });
-  const state = { user: { ...navigationUser, role: "admin", genres: [], name: "Profile Fixture", bio: "Existing bio", avatarUri: oldPhoto },
-    patches: [], presigns: [], transfers: 0, finalizes: 0, errors: [], diagnostics: [], closing: false };
+  const state = { user: { ...navigationUser, role: "admin", genres: [], name: "Profile Fixture", bio: "Existing bio", home: null, avatarUri: oldPhoto },
+    patches: [], rejectedPatches: [], presigns: [], transfers: 0, finalizes: 0, errors: [], diagnostics: [], closing: false };
   const page = await context.newPage(); page.setDefaultTimeout(15_000);
   await page.addInitScript(user => {
     localStorage.setItem("pit_theme", "stage");
@@ -47,6 +47,10 @@ async function scenario(browser, origin, width) {
           assert.equal(request.headers()["x-pit-expected-account"], state.user.id);
           const patch = request.postDataJSON();
           assert.equal(Object.hasOwn(patch, "genres"), false, "untouched empty genres must not accompany another edit");
+          if (patch.handle === "taken_fixture") {
+            state.rejectedPatches.push(patch);
+            return await route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ error: "That username is taken. Choose another one.", code: "CONFLICT" }) });
+          }
           state.patches.push(patch);
           state.user = { ...state.user, ...patch, profileUpdatedAt: Date.now() };
         } else assert.equal(method, "GET");
@@ -81,7 +85,21 @@ async function scenario(browser, origin, width) {
   };
   try {
     await page.goto(origin + "/you", { waitUntil: "domcontentloaded" });
-    await openEditor();
+    await page.getByRole("heading", { name: "Personalize your profile", exact: true }).waitFor();
+    await page.getByText("Optional: add your city. These details appear on your public profile.", { exact: true }).waitFor();
+    await page.screenshot({ path: join(evidence, `profile-${width}-guidance.png`), fullPage: true });
+    await page.getByRole("button", { name: "Dismiss profile suggestions" }).click();
+    assert.equal(await page.getByRole("heading", { name: "Personalize your profile", exact: true }).count(), 0);
+    assert.deepEqual(state.patches, [], "Dismissing suggestions must never write a profile.");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Review profile details", exact: true }).click();
+    await page.getByRole("heading", { name: "Edit your profile", exact: true }).waitFor();
+    await page.getByText("No music choices yet. You can add them now or save your other changes first.", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Save", exact: true }).isEnabled(), true);
+    await page.getByPlaceholder("Your name", { exact: true }).fill("Bad_Name");
+    await page.getByRole("alert").filter({ hasText: "no underscores or emoji" }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Save", exact: true }).isEnabled(), false);
+    await page.getByPlaceholder("Your name", { exact: true }).fill("Profile Fixture");
     const choosing = page.waitForEvent("filechooser");
     await page.getByRole("button", { name: "Change profile photo", exact: true }).first().click();
     await (await choosing).setFiles({ name: "synthetic-profile.png", mimeType: "image/png", buffer: png });
@@ -97,6 +115,12 @@ async function scenario(browser, origin, width) {
     await page.locator('img[src*="profile-new.png"]').first().waitFor();
     await page.getByPlaceholder("Your name", { exact: true }).fill("Saved Fixture");
     await page.getByPlaceholder("Tell people about yourself", { exact: true }).fill("Saved profile text");
+    await page.getByPlaceholder("username", { exact: true }).fill("taken_fixture");
+    await page.getByRole("button", { name: "Save profile", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: "That username is taken. Choose another one." }).first().waitFor();
+    assert.equal(await page.getByPlaceholder("Your name", { exact: true }).inputValue(), "Saved Fixture");
+    assert.equal(state.rejectedPatches.length, 1);
+    await page.getByPlaceholder("username", { exact: true }).fill(state.user.handle);
     await page.getByRole("button", { name: "Save profile", exact: true }).click();
     await page.getByRole("heading", { name: "Edit your profile", exact: true }).waitFor({ state: "hidden" });
     assert.deepEqual(state.patches[1], { name: "Saved Fixture", bio: "Saved profile text" });
@@ -106,7 +130,11 @@ async function scenario(browser, origin, width) {
     assert.deepEqual(state.user.genres, []); assert.equal(state.user.avatarUri, newPhoto);
     assert.deepEqual(state.errors, []);
     await page.screenshot({ path: join(evidence, `profile-${width}-saved.png`), fullPage: true });
-    return { width, passed: true, patches: state.patches, genres: state.user.genres, sourceTransfers: state.transfers, persistedAcrossReload: true };
+    state.user = { ...state.user, genres: ["Rock"], home: { city: "Toronto", lat: 43.65, lng: -79.38 } };
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "Manage profile", exact: true }).waitFor();
+    assert.equal(await page.getByRole("heading", { name: "Personalize your profile", exact: true }).count(), 0, "A profile with all suggested details needs no nudge.");
+    return { width, passed: true, patches: state.patches, unrelatedSavesKeptGenresEmpty: true, sourceTransfers: state.transfers, persistedAcrossReload: true, actionableConflictRetainedDraft: state.rejectedPatches.length === 1 };
   } catch (error) {
     await page.screenshot({ path: join(evidence, `profile-${width}-failed.png`) }).catch(() => {});
     console.error(JSON.stringify({ width, error: error.message, errors: state.errors, diagnostics: state.diagnostics, presigns: state.presigns, transfers: state.transfers, finalizes: state.finalizes, body: (await page.locator("body").innerText()).slice(-5000) }));

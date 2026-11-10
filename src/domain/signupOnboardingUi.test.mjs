@@ -84,6 +84,6 @@ test("profile editing never calls a partial local member cache username availabi
   assert.doesNotMatch(editProfile, /handleTaken/);
   assert.doesNotMatch(editProfile, />available</);
   assert.match(editProfile, /ready to save/);
-  assert.match(editProfile, /result\?\.error\?\.message/);
+  assert.match(editProfile, /accountFormError\(result\?\.error\)/);
   assert.match(store, /let the server\/unique index own collisions/);
 });
