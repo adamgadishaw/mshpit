@@ -48,7 +48,7 @@ network completion. Existing scroll callbacks, refs, list data and styles remain
 The boundary propagates the vinyl treatment to existing server-backed refresh
 owners: Feed, Search, Discover, Profile/You, Activity, Inbox, message Thread,
 Calendar, Post, Show, Artist, Artist archive/gallery, Venue/Venues, Cities/City,
-Nearby, Tour archive, Fan clubs/Fan club, Lounge, Top Rated, Clips and Admin.
+Nearby, Tour archive, Follow lists, Fan clubs/Fan club, Lounge, Top Rated, Clips and Admin.
 Their existing scoped loaders are reused; no claim is made that every one was
 visually exercised in UIKit. Feed is the confirmed missing native gesture fix.
 
@@ -80,3 +80,31 @@ that would discard user input. Initial error states keep their explicit Retry.
 
 The user's phone has not received this local candidate. No user data was used
 for synthetic likes, notifications, messages or read receipts.
+
+
+## Final combined verification receipt
+
+The separately reviewed notification candidate 941a42b was cherry-picked after
+refresh commit de3678d, producing combined runtime 197c559da3aa79f1fa1475832fd81713cd88328d.
+No runtime source changed during the following final checks:
+
+- Complete hermetic serial suite: 8,685/8,685 passed, zero failures/skips,
+  490.127 seconds. Command: node scripts/run-tests.mjs --test-concurrency=1.
+- Offline Expo SDK 57 export: iOS, Android and web all succeeded, output
+  .tmp/combined-197c559 (EXPO_NO_DOTENV=1, EXPO_OFFLINE=1, CI=1, two workers).
+- Web budget: 524,094/524,288 gzip bytes, 194 bytes remaining; paused-player
+  labels absent. The budget was not raised.
+- Android plus all 82 web source maps passed the iOS-export isolation gate.
+- Architecture gate passed at existing ceilings. Syntax passed 929 Node files.
+- git diff --check passed. Independent refresh and notification reviews found
+  no remaining implementation blocker after the stale native callback repair.
+
+Hermes artifact SHA-256 values:
+- iOS index-0b4cdcda0cdfaf31a39f80d630a8a7e4.hbc:
+  b81b10eb5c67dba6c4a6c8e6eda7f47547a124a44ae966f695843ba8e7a57455
+- Android index-a8891b102cf263e0605c4900cf86a090.hbc:
+  58f8302dcb8b74c970794e73d6c65fc1860552910532427751b6534e156e518e
+
+These are JavaScript export artifacts, not a signed/native app or install receipt.
+Server-first rollout/contract verification and authorized native visual/accessibility
+acceptance remain required. No release, live mutation or phone interaction occurred.
