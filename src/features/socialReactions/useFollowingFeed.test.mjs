@@ -80,6 +80,32 @@ test("Following hook deduplicates pages and does not send concurrent duplicate r
   assert.deepEqual(f.render().posts,[{id:"one",updated:true},{id:"two"}]);
 });
 
+test("expanded 2505-card Local and Following histories stay isolated from late refresh pages and account changes",async()=>{
+  for(const mode of ["local","following"]) {
+    const f=fixture();f.render({mode,homeCity:"Toronto"});
+    for(let offset=0;offset<2505;offset+=50) {
+      const index=f.calls.length-1;
+      const posts=Array.from({length:Math.min(50,2505-offset)},(_,i)=>({id:`large-${offset+i}`}));
+      if(offset) posts.unshift({id:`large-${offset-1}`});
+      f.calls[index].resolve({posts,nextCursor:`after-${offset+50}`});await settle();
+      assert.equal(f.render().posts.length,Math.min(offset+50,2505));
+      if(offset+50<2505) void f.render().loadMore();
+    }
+    assert.deepEqual(f.render().posts.map(p=>p.id),Array.from({length:2505},(_,i)=>`large-${i}`));
+    void f.render().loadMore();const old=f.calls.at(-1);
+    void f.render().reload();const fresh=f.calls.at(-1);
+    assert.equal(old.args.signal.aborted,true);
+    fresh.resolve({posts:[{id:"new-head"}],nextCursor:"fresh-cursor"});await settle();
+    old.resolve({posts:[{id:"late-old-tail"}],nextCursor:null});await settle();
+    assert.deepEqual(f.render().posts,[{id:"new-head"}]);
+    assert.equal(f.render().nextCursor,"fresh-cursor");
+    void f.render().loadMore();const priorAccount=f.calls.at(-1);
+    assert.deepEqual(f.render({accountId:"other"}).posts,[]);
+    priorAccount.resolve({posts:[{id:"private-old-card"}],nextCursor:null});await settle();
+    assert.deepEqual(f.render().posts,[]);f.unmount();
+  }
+});
+
 test("Following coalesces mutation invalidations during pagination into one fresh read",async()=>{
   const f=fixture();f.render();f.calls[0].resolve({posts:Array.from({length:30},(_,i)=>({id:"p"+i})),nextCursor:"older"});await settle();
   void f.render().loadMore();const older=f.calls[1];

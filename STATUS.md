@@ -1,5 +1,16 @@
 # Pit current status
 
+## 2026-11-10 Large feed traversal follow-up (local review)
+
+- Follow-up to local candidate `20975b1ead3fc1f447522dfe433d24a9fb945829`.
+  The interrupted large traversal exposed repeated history scans in the rich
+  seen-ordinal projection, independent of candidate ranking or card rendering.
+- Matching opener sightings now materialize before same-night deduplication.
+  A retained synthetic harness verifies all three feeds across 2,505 eligible
+  posts, including single-author histories and explicit-refresh isolation.
+- Measurements, checks and limits are in [the follow-up audit](docs/PC_LARGE_FEED_VALIDATION_2026-11-10.md).
+  Original candidate artifacts remain preserved; no production/device operation.
+
 ## 2026-11-10 PC feature follow-up (local review)
 
 - Isolated branch `fix/pc-feature-followup-20261110` starts at verified remote

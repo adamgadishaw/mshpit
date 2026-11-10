@@ -71,3 +71,8 @@ continuation past the ranked per-author cap and blocked-author exclusion. A
 Large-history performance remains unverified. For You retains the existing
 in-memory snapshot lifetime; expired/restarted snapshots require an explicit
 page refresh instead of silently changing ordering mid-pagination.
+
+The bounded synthetic large-history gap above is superseded by the separate
+[large traversal follow-up](PC_LARGE_FEED_VALIDATION_2026-11-10.md). Its query
+fix and retained measurements are a descendant of this original candidate;
+they do not establish production or device capacity.
