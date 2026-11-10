@@ -58,6 +58,7 @@
     "verify:quick-log-browser": "node scripts/verify-quick-log-browser.mjs",
     "verify:festivals-browser": "node scripts/verify-festivals-browser.mjs",
     "verify:discover-events-browser": "node scripts/verify-discover-events-browser.mjs",
+    "verify:profile-edit-browser": "node scripts/verify-profile-edit-browser.mjs",
     "verify:media-upload-browser": "node scripts/verify-media-upload-browser.mjs",
     "verify:player-browser": "node scripts/verify-player-browser.mjs",
     "verify:connections-browser": "node scripts/verify-connections-browser.mjs",

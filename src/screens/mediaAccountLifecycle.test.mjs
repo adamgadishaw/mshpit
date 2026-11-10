@@ -70,7 +70,7 @@ const photoCases = [
 function photoFixture(compile, compileSelected, { cancelCrop = false } = {}) {
   const accountTasks = scope(), picker = deferred(), upload = deferred(), uploadStarted = deferred();
   const events = [], uploads = [];
-  const setters = Object.fromEntries(["setAvatarUri", "setAvatarChanged", "setBanner", "setBannerChanged", "setPhotos", "setUploadingAvatar", "setUploadingBanner", "setUploadingPhotos", "setSaveError"]
+  const setters = Object.fromEntries(["setAvatarUri", "setAvatarChanged", "setBanner", "setBannerChanged", "setPhotos", "setUploadingAvatar", "setUploadingBanner", "setUploadingPhotos", "setSaveError", "setMediaError"]
     .map((name) => [name, (value) => events.push({ name, value })]));
   const bindings = {
     reviewIOS: null, accountTasks, session: { id: "a" }, accountId: "a", uploadingAvatar: false, uploadingBanner: false,
