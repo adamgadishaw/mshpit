@@ -380,3 +380,44 @@ for (const mutation of ["read", "privacy"]) {
     } else assert.deepEqual(f.snapshot.data.rows, []);
   });
 }
+
+
+test("automatic updates merge a connected latest page without dropping older loaded history", async () => {
+  const f = fixture(); await f.load([row("old-head", { ts: 30 }), row("middle", { ts: 20 })], { unread: 8, nextCursor: "page2", inboxUnread: 240 });
+  const more = f.controller.load({ more: true }); await tick();
+  f.reads.at(-1).resolve(page([row("older", { ts: 10 })], { unread: 8, nextCursor: "page3", inboxUnread: 240 })); await more;
+  const update = f.controller.load({ updates: true }); await tick();
+  assert.equal(f.snapshot.status, "ready"); assert.equal(f.reads.at(-1).args.limit, 100);
+  f.reads.at(-1).resolve(page([row("new", { ts: 40 }), row("old-head", { ts: 30, read: true })], { unread: 9, nextCursor: "new-head-cursor", inboxUnread: 241 })); await update;
+  assert.deepEqual(f.snapshot.data.rows.map(r => r.id), ["new", "old-head", "middle", "older"]);
+  assert.equal(f.snapshot.data.rows[1].read, true); assert.equal(f.snapshot.data.nextCursor, "page3");
+  assert.equal(f.snapshot.data.inboxUnread, 241); assert.equal(f.snapshot.data.unread, 9); assert.equal(f.writes.length, 0);
+});
+
+test("disconnected or complete update resets the cursor and removes obsolete rows", async () => {
+  for (const nextCursor of ["fresh-page2", null]) {
+    const f = fixture(); await f.load([row("old")], { nextCursor: "old-cursor" });
+    const update = f.controller.load({ updates: true }); await tick();
+    f.reads.at(-1).resolve(page([row("new", { ts: 200 })], { nextCursor, inboxUnread: 0 })); await update;
+    assert.deepEqual(f.snapshot.data.rows.map(r => r.id), ["new"]); assert.equal(f.snapshot.data.nextCursor, nextCursor);
+  }
+});
+
+test("update failures retain counts, scope changes clear them, and old backend counts stay unknown", async () => {
+  const f = fixture(); await f.load([row("old")], { inboxUnread: 124 });
+  const update = f.controller.load({ updates: true }); await tick(); f.reads.at(-1).reject(error()); await assert.rejects(update);
+  assert.equal(f.snapshot.data.inboxUnread, 124); assert.equal(f.snapshot.status, "error");
+  f.adopt("B"); assert.equal(f.snapshot.data.inboxUnread, null); assert.equal(f.snapshot.data.unread, null);
+  await f.load([row("B-row")]); assert.equal(f.snapshot.data.inboxUnread, null);
+  const summary = f.controller.load({ summary: true }); await tick();
+  f.reads.at(-1).resolve(page([], { unread: 0, inboxUnread: 133 })); await summary;
+  assert.equal(f.snapshot.data.inboxUnread, 133);
+});
+
+test("malformed Inbox count rejects the whole refresh instead of publishing false badge data", async () => {
+  for (const inboxUnread of [-1, 2.5, "3", NaN]) {
+    const f = fixture(); const load = f.controller.load(); await tick();
+    f.reads.at(-1).resolve(page([], { inboxUnread })); await assert.rejects(load);
+    assert.equal(f.snapshot.data.inboxUnread, null);
+  }
+});

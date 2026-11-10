@@ -18,6 +18,22 @@ export function directMessageReadProjection(database, userId) {
   };
 }
 
+// Count accepted incoming messages on the server, independently of the 200-row
+// inbox summary and its one-message preview. Requests stay in their own bucket.
+export function directMessageInboxUnread(database, accountId) {
+  return database.prepare(`SELECT COUNT(*) AS count FROM dms d
+    JOIN users actor ON actor.id=d.from_id
+    LEFT JOIN dm_reads r ON r.user_id=d.to_id AND r.other_id=d.from_id
+    WHERE d.to_id=$viewer AND d.removed=0 AND (
+      r.user_id IS NULL OR d.created_at>r.last_read_at OR (d.created_at=r.last_read_at AND d.id>r.last_read_id)
+    ) AND NOT EXISTS (SELECT 1 FROM blocks b
+      WHERE (b.blocker_id=$viewer AND b.blocked_id=d.from_id)
+         OR (b.blocker_id=d.from_id AND b.blocked_id=$viewer))
+    AND (EXISTS (SELECT 1 FROM follows f WHERE f.follower_id=$viewer AND f.followee_id=d.from_id)
+      OR EXISTS (SELECT 1 FROM dms sent WHERE sent.from_id=$viewer AND sent.to_id=d.from_id AND sent.removed=0))
+  `).get({ $viewer: accountId }).count;
+}
+
 function markThreadRead(database, atomicWrite, userId, otherId) {
   return atomicWrite(() => {
     const latest = database.prepare(`SELECT id,created_at FROM dms

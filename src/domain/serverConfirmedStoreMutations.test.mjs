@@ -83,3 +83,15 @@ test("a post response cannot enter a different account's local feed", () => {
   assert.match(success, /return \{ ok: true, id: id \|\| localId, post: null, stale: true \}/);
   assert.match(failure, /return \{ ok: false, error, stale: true \}/);
 });
+
+
+test("production Inbox badge uses server totals, not the one-message thread cache", () => {
+  const source = mutationSlice("const inboxUnread =", "const requestCount =");
+  const select = new Function("session", "ENABLE_DEMO_DATA", "notificationActivity", "mainThreads", `${source}; return inboxUnread();`);
+  const onePreview = () => [{ unread: 1 }];
+  assert.equal(select({ id: "A" }, false, { data: { inboxUnread: 126 } }, onePreview), 126);
+  assert.equal(select({ id: "A" }, false, { data: { inboxUnread: 0 } }, onePreview), 0);
+  assert.equal(select({ id: "B" }, false, { data: { inboxUnread: null } }, onePreview), 0);
+  assert.equal(select(null, false, { data: { inboxUnread: 126 } }, onePreview), 0);
+  assert.equal(select({ id: "demo" }, true, { data: { inboxUnread: null } }, onePreview), 1);
+});

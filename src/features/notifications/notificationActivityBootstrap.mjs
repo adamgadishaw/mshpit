@@ -2,7 +2,7 @@ import { beginLoadState, createLoadState, isLoadCancellation, rejectLoadState } 
 import { commandFailure } from "../../domain/commandResult.mjs";
 
 const key = ({ accountId, epoch, ready }) => JSON.stringify([accountId || null, epoch || 0, !!ready]);
-const empty = () => ({ rows: [], unread: null, nextCursor: null, readContract: null, historyLimited: false });
+const empty = () => ({ rows: [], unread: null, inboxUnread: null, nextCursor: null, readContract: null, historyLimited: false });
 const aborted = () => Object.assign(new Error("Activity request is no longer current."), { name: "AbortError" });
 
 // Boot holds only a bounded account-owned memory snapshot while the runtime

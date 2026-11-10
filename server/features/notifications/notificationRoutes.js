@@ -1,3 +1,4 @@
+import { directMessageInboxUnread } from "../../dmReadRoutes.js";
 import { withImmediateWrite } from "../../databaseTransaction.js";
 import { SOCIAL_NOTIFICATION_VISIBLE_SQL } from "../socialReactions/socialReactions.js";
 
@@ -73,7 +74,7 @@ export function notificationRoutes({ database, requireUser, ApiError, pageReques
           postId: n.post_id, commentId: n.comment_id || null, artist: n.artist, text: n.text,
           ts: n.created_at, read: !!n.read,
         })),
-        unread: unread(account.id), nextCursor,
+        unread: unread(account.id), inboxUnread: directMessageInboxUnread(database, account.id), nextCursor,
       };
     },
 

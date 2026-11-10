@@ -123,3 +123,46 @@ test("legacy endpoint is a safe no-op without IDs and remains scoped with explic
   assert.equal(isRead(first), 1);
   assert.equal(isRead(second), 0);
 });
+
+
+test("three new cross-account likes reach Activity unread without any read mutation", () => {
+  const owner = account(), founder = account();
+  assert.equal(page(owner).unread, 0);
+  const ids = Array.from({ length: 3 }, (_, i) => `liked_post_${++sequence}_${i}`);
+  for (const id of ids) {
+    db.prepare("INSERT INTO posts(id,user_id,artist,venue,overall,created_at) VALUES(?,?,?,?,?,?)").run(id, owner.id, "Test artist", "Test venue", 4, 100);
+    const ctx = { user: founder, ip: "notification-like-test", params: { id }, body: { liked: true } };
+    assert.equal(routes["POST /api/posts/:id/like"](ctx).liked, true);
+    assert.equal(routes["POST /api/posts/:id/like"](ctx).liked, true);
+  }
+  const result = page(owner);
+  assert.equal(result.unread, 3); assert.equal(result.notifications.length, 3);
+  assert.deepEqual(new Set(result.notifications.map(row => row.postId)), new Set(ids));
+  assert.ok(result.notifications.every(row => row.type === "like" && row.actorId === founder.id && !row.read));
+  assert.equal(page(owner).unread, 3); assert.equal(page(founder).unread, 0);
+});
+
+test("accepted Inbox total uses all unread messages, independent of latest preview and thread cap", () => {
+  const owner = account(), followed = account(), replied = account(), request = account(), blocked = account();
+  const send = (from, to, at, removed = 0) => {
+    const id = `dm_count_${String(++sequence).padStart(6, "0")}`;
+    db.prepare("INSERT INTO dms(id,from_id,to_id,text,created_at,removed) VALUES(?,?,?,?,?,?)").run(id, from.id, to.id, "synthetic test message", at, removed);
+    return id;
+  };
+  for (const actor of [followed, blocked]) db.prepare("INSERT INTO follows(follower_id,followee_id) VALUES(?,?)").run(owner.id, actor.id);
+  for (let i = 0; i < 123; i++) send(followed, owner, 100 + i);
+  send(owner, replied, 1); send(replied, owner, 2); send(request, owner, 3); send(blocked, owner, 4);
+  send(followed, owner, 400, 1);
+  db.prepare("INSERT INTO blocks(blocker_id,blocked_id,created_at) VALUES(?,?,?)").run(blocked.id, owner.id, 1);
+  assert.equal(page(owner).inboxUnread, 124);
+  const first = db.prepare("SELECT id,created_at FROM dms WHERE from_id=? AND to_id=? ORDER BY created_at LIMIT 1").get(followed.id, owner.id);
+  db.prepare("INSERT INTO dm_reads(user_id,other_id,last_read_at,last_read_id) VALUES(?,?,?,?)").run(owner.id, followed.id, first.created_at, first.id);
+  assert.equal(page(owner).inboxUnread, 123);
+  // More than 200 accepted peers: the badge is not the capped inbox preview.
+  for (let i = 0; i < 205; i++) {
+    const peer = account(); db.prepare("INSERT INTO follows(follower_id,followee_id) VALUES(?,?)").run(owner.id, peer.id);
+    send(peer, owner, 1000 + i);
+  }
+  assert.equal(page(owner).inboxUnread, 328);
+  assert.equal(page(request).inboxUnread, 0);
+});

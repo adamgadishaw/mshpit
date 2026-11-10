@@ -6475,7 +6475,9 @@ export function StoreProvider({ children }) {
   const requestThreads = () => inboxThreads().filter((t) => t.bucket === "requests");
   // The tab/feed badge counts only accepted conversations, so strangers can't
   // light it up; pending requests are surfaced separately by requestCount().
-  const inboxUnread = () => mainThreads().reduce((s, t) => s + t.unread, 0);
+  const inboxUnread = () => !session ? 0 : ENABLE_DEMO_DATA
+    ? mainThreads().reduce((s, t) => s + t.unread, 0)
+    : notificationActivity.data.inboxUnread ?? 0;
   const requestCount = () => requestThreads().length;
 
   const artistSummary = (name) => {

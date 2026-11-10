@@ -25,13 +25,13 @@ export default function useNotificationActivity({ getIdentity, getHiddenActorIds
   useEffect(() => {
     const current = identity.current.getIdentity();
     if (!active || !current.accountId || !current.ready) return undefined;
-    const load = () => controller.load({ expectedScope: scope, summary: controller.getSnapshot().updatedAt != null }).catch(error => {
+    const load = () => controller.load({ expectedScope: scope, updates: controller.getSnapshot().updatedAt != null }).catch(error => {
       // Initial/page failures already live in the scoped resource. A failed
-      // optional badge poll retains the last confirmed count, never clears it.
+      // optional update retains the last confirmed rows and counts, never clears them.
       if (isLoadCancellation(error)) return;
     });
     void load();
-    const timer = setInterval(() => { void load(); }, 60_000);
+    const timer = setInterval(() => { void load(); }, 15_000);
     return () => clearInterval(timer);
   }, [active, scope, controller]);
   return {

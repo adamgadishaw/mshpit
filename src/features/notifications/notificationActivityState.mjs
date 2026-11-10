@@ -6,7 +6,7 @@ import { createScopedReadCoordinator } from "../../domain/scopedReadCoordinator.
 
 export const NOTIFICATION_READ_CONTRACT = "notification-ids-v1";
 export const MAX_NOTIFICATION_ROWS = 1000;
-const emptyData = () => ({ rows: [], unread: null, nextCursor: null, readContract: null, historyLimited: false });
+const emptyData = () => ({ rows: [], unread: null, inboxUnread: null, nextCursor: null, readContract: null, historyLimited: false });
 const aborted = () => Object.assign(new Error("Activity request is no longer current."), { name: "AbortError" });
 const ownerKey = ({ accountId, epoch, ready }) => JSON.stringify([accountId || null, epoch || 0, !!ready]);
 const unreadRows = rows => rows.filter(row => !row.read).length;
@@ -68,19 +68,19 @@ export function createNotificationActivity({ getIdentity, getHiddenActorIds = ()
     tail = operation.promise.then(() => undefined, () => undefined);
     return operation.promise;
   };
-  const load = ({ expectedScope = sync(), accountId, signal, more = false, summary = false } = {}) => {
+  const load = ({ expectedScope = sync(), accountId, signal, more = false, summary = false, updates = false } = {}) => {
     try { requireScope(expectedScope); } catch (error) { return Promise.reject(error); }
     if (accountId && accountId !== owner.accountId) return Promise.reject(aborted());
     if (signal?.aborted) return Promise.reject(aborted());
-    if (summary && operations.has("head")) return observe(operations.get("head").promise, signal);
+    if ((summary || updates) && operations.has("head")) return observe(operations.get("head").promise, signal);
     const cursor = more ? resource.data.nextCursor : null;
     if (more && !cursor) return Promise.resolve([]);
-    const key = summary ? "summary" : more ? `page:${cursor}` : "head";
+    const key = summary ? "summary" : updates ? "updates" : more ? `page:${cursor}` : "head";
     const promise = enqueue(key, expectedScope, async transportSignal => {
       if (more && resource.data.nextCursor !== cursor) throw aborted();
       const claim = coordinator.claim("activity", owner);
       const before = resource;
-      if (!summary) publish(beginLoadState(resource, { scope, emptyData: resource.data }));
+      if (!summary && !updates) publish(beginLoadState(resource, { scope, emptyData: resource.data }));
       try {
         const { loadNotificationPage } = await loadPageCommand();
         const assertCurrent = () => {
@@ -88,13 +88,13 @@ export function createNotificationActivity({ getIdentity, getHiddenActorIds = ()
           if (transportSignal.aborted || !coordinator.isCurrent(claim, owner)) throw aborted();
         };
         const rows = await loadNotificationPage({
-          cursor, summary, more, demo, seed, fetchPage, makeError, getHiddenActorIds,
+          cursor, summary, more, updates, demo, seed, fetchPage, makeError, getHiddenActorIds,
           signal: transportSignal, assertCurrent,
           getCurrent: () => ({ accountId: owner.accountId, revision: mutationRevision, data: resource.data, updatedAt: resource.updatedAt }),
           adopt: (next, unread) => {
             // Project and publish in one synchronous turn. An external confirmed
             // DM/privacy mutation cannot slip between them across an await.
-            if (summary) publish(createLoadState({ ...resource, data: { ...resource.data, unread: unread + welcomeUnread(resource.data.rows), readContract: next.readContract } }));
+            if (summary) publish(createLoadState({ ...resource, data: { ...resource.data, unread: unread + welcomeUnread(resource.data.rows), readContract: next.readContract, inboxUnread: next.inboxUnread } }));
             else publish(resolveLoadState({ scope, data: next, updatedAt: now() }));
           },
         });
@@ -102,7 +102,7 @@ export function createNotificationActivity({ getIdentity, getHiddenActorIds = ()
         return rows;
       } catch (error) {
         if (!valid(expectedScope) || transportSignal.aborted || isLoadCancellation(error)) {
-          if (valid(expectedScope) && !summary && coordinator.isCurrent(claim, owner)) {
+          if (valid(expectedScope) && !summary && !updates && coordinator.isCurrent(claim, owner)) {
             publish(createLoadState({ ...before, data: resource.data }));
           }
           throw aborted();

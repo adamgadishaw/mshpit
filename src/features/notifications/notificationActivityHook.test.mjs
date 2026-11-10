@@ -99,15 +99,15 @@ test("real hook boot and guest do not fetch; account readiness starts exactly on
   } finally { h.dispose(); }
 });
 
-test("active polling is one bounded summary request, never polls in background or persists content", async () => {
+test("active polling refreshes rows and authoritative totals with one bounded request, never polls in background or persists content", async () => {
   const h = harness();
   try {
     h.render(); await settle(); h.calls[0].resolve(payload()); await settle();
-    assert.equal(h.timers.size, 1); assert.equal([...h.timers.values()][0].delay, 60_000);
+    assert.equal(h.timers.size, 1); assert.equal([...h.timers.values()][0].delay, 15_000);
     h.tick(); h.tick(); await settle(); assert.equal(h.calls.length, 2);
-    assert.equal(h.calls[1].url, "/api/me/notifications?limit=1");
+    assert.equal(h.calls[1].url, "/api/me/notifications?limit=100");
     h.calls[1].resolve(payload("summary-only", 8)); await settle();
-    const state = h.render(); assert.equal(state.notifications[0].id, "row"); assert.equal(state.notificationActivity.data.unread, 8);
+    const state = h.render(); assert.equal(state.notifications[0].id, "summary-only"); assert.equal(state.notificationActivity.data.unread, 8);
     h.render(identity(), false); h.tick(); await settle(); assert.equal(h.timers.size, 0); assert.equal(h.calls.length, 2);
     assert.deepEqual(h.saved, [["pit.notifications", []]]);
   } finally { h.dispose(); }
@@ -178,6 +178,7 @@ test("service preserves exact IDs, account fence, cancellation and encoded curso
   const read = h.service.fetchNotificationPage({ accountId: "B", cursor: "cursor/+?=", limit: 1, signal });
   assert.equal(h.calls[0].url, "/api/me/notifications?limit=1&before=cursor%2F%2B%3F%3D");
   assert.equal(h.calls[0].options.signal, signal); assert.equal(h.calls[0].options.expectedAccountId, "B");
+  assert.equal(h.calls[0].options.cache, "no-store");
   h.calls[0].resolve(payload()); await read;
   const write = h.service.writeNotificationReads({ accountId: "B", notificationIds: ["two", "one"], signal });
   assert.deepEqual(h.calls[1].options.body.notificationIds, ["two", "one"]);
@@ -195,31 +196,31 @@ test("service rejects missing, false and non-boolean success rather than confirm
   }
 });
 
-test("foreground summary first serializes a required Activity head without replacing its rows", async () => {
+test("foreground update serializes an explicit Activity head", async () => {
   const h = harness();
   try {
     h.render(); await settle(); h.calls[0].resolve(payload("cached")); await settle();
     h.render(identity(), false);
     const foreground = h.render(identity(), true); await settle();
-    assert.equal(h.calls[1].url, "/api/me/notifications?limit=1");
+    assert.equal(h.calls[1].url, "/api/me/notifications?limit=100");
     const head = foreground.refreshNotifications(); await settle();
-    assert.equal(h.calls.length, 2, "head waits rather than racing an earlier summary");
+    assert.equal(h.calls.length, 2, "head waits rather than racing an earlier update");
     h.calls[1].resolve(payload("summary", 4)); await settle();
     assert.equal(h.calls.length, 3); assert.equal(h.calls[2].url, "/api/me/notifications?limit=100");
-    assert.equal(h.render().notifications[0].id, "cached");
+    assert.equal(h.render().notifications[0].id, "summary");
     h.calls[2].resolve(payload("fresh-head", 4)); await head;
     assert.equal(h.render().notifications[0].id, "fresh-head");
   } finally { h.dispose(); }
 });
 
-test("summary failure retains confirmed count and the next timer retries without persisting bodies", async () => {
+test("background update failure retains confirmed count and the next timer retries without persisting bodies", async () => {
   const h = harness();
   try {
     h.render(); await settle(); h.calls[0].resolve(payload("cached", 7)); await settle();
     h.tick(); await settle(); h.calls[1].reject(new Error("offline")); await settle();
     assert.equal(h.render().notificationActivity.data.unread, 7);
     assert.equal(h.render().notifications[0].id, "cached");
-    h.tick(); await settle(); assert.equal(h.calls[2].url, "/api/me/notifications?limit=1");
+    h.tick(); await settle(); assert.equal(h.calls[2].url, "/api/me/notifications?limit=100");
     h.calls[2].resolve(payload("summary", 8)); await settle();
     assert.equal(h.render().notificationActivity.data.unread, 8);
     assert.deepEqual(h.saved, [["pit.notifications", []]]);
