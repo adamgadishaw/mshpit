@@ -41,7 +41,8 @@ const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 function fixture() {
   const renderer = createRenderer(), modules = new Map(), samples = [], reactions = [], animations = [], canceled = [], calls = [];
   const previewContext = require('./nativeTabPreviewContext.mjs').NativeTabPreviewContext;
-  let config = { scope: {}, page: 'feed', enabled: true, reader: false, reduced: false, foreground: true, active: 'a', scrolls: true };
+  const persisted = new Map();
+  let config = { fontScale: 1, accountId: 'account-A', tabs: false, scope: {}, page: 'feed', enabled: true, reader: false, reduced: false, foreground: true, active: 'a', scrolls: true };
   const shared = initial => {
     const ref = React.useRef(null);
     if (!ref.current) { let value = initial; ref.current = { get: () => value, set: next => { value = next; } }; }
@@ -49,9 +50,10 @@ function fixture() {
   };
   const native = { View: 'View', Text: 'Text', Pressable: 'Pressable', ScrollView: 'ScrollView', FlatList: 'FlatList', TextInput: 'TextInput',
     StyleSheet: { create: x => x, flatten: x => Array.isArray(x) ? Object.assign({}, ...x.filter(Boolean).map(native.StyleSheet.flatten)) : x },
-    useWindowDimensions: () => ({ width: 390, height: 800, fontScale: 1 }),
+    useWindowDimensions: () => ({ width: 390, height: 800, fontScale: config.fontScale }),
   };
   const overrides = {
+    '../lib/persist': { load: (key, fallback) => persisted.get(key) ?? fallback, save: (key, value) => persisted.set(key, value) },
     react: React, 'react/jsx-runtime': require('react/jsx-runtime'), 'react-native': native,
     'react-native-reanimated': { __esModule: true, default: { View: 'AnimatedView' }, ReduceMotion: { System: 'system' },
       useSharedValue: shared,
@@ -81,15 +83,18 @@ function fixture() {
   const { NativeScrollChromeProvider: Provider, NativeScrollChromeContent: Content, NativeScrollChromeContext: Context } = execute('./NativeScrollChrome.ios.jsx');
   const Scroll = execute('./NativeTabScroll.ios.jsx').ScrollView;
   const Header = execute('./NativeAppHeader.ios.jsx').default;
-  let chrome;
+  const useSelection = execute('../hooks/useIOSFeedSelection.ios.js').default;
+  let chrome, selection;
   function Read() { chrome = React.useContext(Context); return null; }
   const scrollProps = { ref: node => { calls.push(["ref", node]); return node ? () => calls.push(["refCleanup", node]) : undefined; }, onContentSizeChange: (...args) => calls.push(["size", args]), contentContainerStyle: { paddingTop: 12 }, onScroll: event => calls.push(['scroll', event]), onScrollBeginDrag: event => calls.push(['drag', event]), onLayout: event => calls.push(['layout', event]) };
-  function App() { return React.createElement(Provider, { scope: config.scope, page: config.page, enabled: config.enabled },
-    React.createElement(Read), React.createElement(Header, { loggedIn: true, unread: 5, notifications: 8, onOpenInbox: () => calls.push('inbox'), onOpenNotifications: () => calls.push('notifications') }),
+  function App() { selection = useSelection(config.accountId); return React.createElement(Provider, { scope: config.scope, page: config.page, enabled: config.enabled },
+    React.createElement(Read), React.createElement(Header, { active: config.page, loggedIn: !!config.accountId, feedSelection: config.tabs ? selection : undefined, unread: 5, notifications: 8, onOpenInbox: () => calls.push('inbox'), onOpenNotifications: () => calls.push('notifications') }),
     React.createElement(Content, null, config.scrolls ? ['a', 'b'].map(id => React.createElement(previewContext.Provider, { key: id, value: id !== config.active },
       React.createElement(Scroll, { ...scrollProps, testID: id }, React.createElement(Scroll, { horizontal: true, testID: `rail-${id}` }, 'Cards'), React.createElement(Scroll, { testID: `nested-${id}` }, 'Nested')))) : React.createElement('Loading'))); }
   const f = {
-    samples, reactions, animations, canceled, calls,
+    samples, reactions, animations, canceled, calls, persisted,
+    act: callback => renderer.act(callback),
+    get selection() { return selection; },
     render(next = {}) { config = { ...config, ...next }; renderer.render(React.createElement(App)); f.tick(); },
     all: () => nodes(renderer.container),
     get chrome() { return chrome; },
@@ -209,4 +214,65 @@ test('primary observer preserves native callbacks, forwarded ref cleanup, and fo
   f.render({ foreground: true }); f.offset('a', 700); assert.equal(f.chrome.shown.get(), true);
   f.close(); assert.ok(f.calls.some(([kind, node]) => kind === 'refCleanup' && node === main));
   assert.ok(f.samples.every(sample => sample.ref.current === null));
+});
+
+
+test('Feed tabs share canonical persisted selection and the activity bar measured animated surface', t => {
+  const f = fixture(); t.after(f.close); f.render({ tabs: true });
+  const bar = f.node('native-activity-bar'), tabs = f.node('native-feed-tabs');
+  const animated = f.all().filter(n => n.type === 'AnimatedView' && n.props.animatedProps);
+  assert.equal(animated.length, 1);
+  assert.ok(nodes(animated[0]).includes(bar));
+  assert.ok(nodes(bar).includes(tabs));
+  assert.ok(nodes(bar).includes(f.node('native-activity-icons')));
+  assert.equal(tabs.props.accessibilityRole, 'tablist');
+  const choices = nodes(tabs).filter(n => n.props?.accessibilityRole === 'tab');
+  assert.deepEqual(choices.map(n => n.props.accessibilityLabel), ['Following', 'Local', 'For You', 'News']);
+  assert.equal(choices.find(n => n.props.accessibilityLabel === 'For You').props.accessibilityState.selected, true);
+  const list = f.node('a');
+  f.act(() => choices.find(n => n.props.accessibilityLabel === 'Local').props.onPress());
+  assert.equal(f.selection.filter, 'local');
+  assert.ok([...f.persisted.values()].includes('local'));
+  assert.strictEqual(f.node('a'), list, 'tab selection does not replace scroll container');
+  f.act(() => f.selection.select('news')); // the same owner is also used by the drawer
+  assert.equal(nodes(f.node('native-feed-tabs')).find(n => n.props?.accessibilityLabel === 'News').props.accessibilityState.selected, true);
+  f.act(() => bar.props.onLayout({ nativeEvent: { layout: { height: 92 } } }));
+  f.tick(); assert.equal(f.chrome.height, 92);
+  assert.equal(list.props.contentContainerStyle.at(-1).paddingTop, 104);
+  assert.equal(list.props.scrollIndicatorInsets.top, 92);
+  f.begin('a'); f.offset('a', 100); assert.equal(f.chrome.shown.get(), false);
+  assert.equal(animated[0].props.style.animate().transform[0].translateY, -92);
+  assert.equal(list.props.contentContainerStyle.at(-1).paddingTop, 104, 'hiding both rows never changes scroll layout');
+});
+
+test('Feed tab presses are revoked while hidden, after route changes, and across account handoff', t => {
+  const f = fixture(); t.after(f.close); f.render({ tabs: true });
+  const local = () => nodes(f.node('native-feed-tabs')).find(n => n.props?.accessibilityLabel === 'Local').props.onPress;
+  const queued = local();
+  f.begin('a'); f.offset('a', 100); f.act(queued); assert.equal(f.selection.filter, 'everyone');
+  for (const y of [120, 117, 122, 110, 90]) { f.offset('a', y); assert.equal(f.chrome.shown.get(), false); }
+  f.offset('a', 86); assert.equal(f.chrome.shown.get(), true);
+  f.act(local()); assert.equal(f.selection.filter, 'local');
+  const oldAccount = nodes(f.node('native-feed-tabs')).find(n => n.props?.accessibilityLabel === 'News').props.onPress;
+  f.render({ accountId: 'account-B', scope: {} }); f.act(oldAccount); assert.equal(f.selection.filter, 'everyone');
+  const oldRoute = local();
+  f.render({ page: 'discover' }); assert.equal(f.node('native-feed-tabs'), undefined);
+  f.act(oldRoute); assert.equal(f.selection.filter, 'everyone');
+  f.render({ page: 'feed', accountId: null }); assert.equal(f.node('native-feed-tabs'), undefined);
+});
+
+test('Feed tabs wrap large type, keep 44-point targets, and share VoiceOver and reduced-motion policy', t => {
+  const f = fixture(); t.after(f.close); f.render({ tabs: true, fontScale: 2.5, reader: true, reduced: true });
+  const tabs = f.node('native-feed-tabs');
+  assert.equal(tabs.props.style[1].flexWrap, 'wrap');
+  for (const tab of nodes(tabs).filter(n => n.props?.accessibilityRole === 'tab')) {
+    const style = tab.props.style({ pressed: false });
+    assert.ok(style[0].minHeight >= 44); assert.equal(style[1].flexBasis, '45%');
+    assert.ok(tab.props.accessibilityHint);
+  }
+  f.act(() => f.node('native-activity-bar').props.onLayout({ nativeEvent: { layout: { height: 160 } } }));
+  f.begin('a'); f.offset('a', 300); assert.equal(f.chrome.shown.get(), true);
+  f.render({ reader: false }); f.begin('a'); f.offset('a', 400); assert.equal(f.chrome.shown.get(), false);
+  assert.equal(f.animations.at(-1).options.duration, 0);
+  assert.equal(f.all().find(n => n.type === 'AnimatedView' && n.props.animatedProps).props.style.animate().transform[0].translateY, -160);
 });

@@ -7,6 +7,7 @@ import NativeTabRail from "./NativeTabRail";
 import { NativeScrollChromeContext } from "./NativeScrollChrome.ios";
 import useReducedMotion from "../hooks/useReducedMotion";
 import { unreadBadgeCount, unreadBadgeText } from "../domain/unreadBadge.mjs";
+import { iosFeedFilterChoices } from "../domain/iosMenuSections.mjs";
 import { colors, font } from "../theme";
 
 export function NativeActivityIcons({ unread, notifications, onOpenInbox, onOpenNotifications, enabled = true }) {
@@ -26,7 +27,7 @@ export function NativeActivityIcons({ unread, notifications, onOpenInbox, onOpen
   </Pressable>)}</View>;
 }
 
-export default function NativeAppHeader({ onHome, onAccount, loggedIn, onMenu, menuRef, onPost, active, onChange, swipeScope, swipeEnabled, isCurrentSwipeRoute, unread, notifications, onOpenInbox, onOpenNotifications }) {
+export default function NativeAppHeader({ onHome, onAccount, loggedIn, onMenu, menuRef, onPost, active, onChange, swipeScope, swipeEnabled, isCurrentSwipeRoute, unread, notifications, onOpenInbox, onOpenNotifications, feedSelection }) {
   const chrome = useContext(NativeScrollChromeContext);
   const reduced = useReducedMotion();
   const { fontScale } = useWindowDimensions();
@@ -47,7 +48,8 @@ export default function NativeAppHeader({ onHome, onAccount, loggedIn, onMenu, m
   return <View pointerEvents="box-none" style={chrome ? [styles.overlay, { height: chrome.height }] : undefined}>
     <Animated.View style={motion} animatedProps={exposure}>
       <NativeTabRail active={active} onChange={guard(onChange)} swipeScope={swipeScope} swipeEnabled={swipeEnabled} isCurrentSwipeRoute={isCurrentSwipeRoute}>
-        <View style={styles.header} onLayout={chrome?.measure}>
+        <View onLayout={chrome?.measure} testID="native-activity-bar">
+        <View style={styles.header}>
           <Pressable ref={menuRef} onPress={guard(onMenu)} style={styles.control} accessibilityRole="button" accessibilityLabel="Open side menu" accessibilityHint="Shows your account, music community and settings">
             <Icon name="menu" size={23} color={colors.text} strokeWidth={1.8} />
           </Pressable>
@@ -60,6 +62,17 @@ export default function NativeAppHeader({ onHome, onAccount, loggedIn, onMenu, m
             <Icon name={loggedIn ? "plus" : "you"} size={24} color={colors.amber} strokeWidth={1.9} />
           </Pressable>
         </View>
+        {active === "feed" && loggedIn && feedSelection ? <View style={[styles.feedTabs, fontScale > 1.25 && styles.wrappedTabs]}
+          accessibilityRole="tablist" accessibilityLabel="Feed filters" testID="native-feed-tabs">
+          {iosFeedFilterChoices(feedSelection.filter).map(tab => <Pressable key={tab.key}
+            onPress={guard(() => { if (!tab.selected) feedSelection.select(tab.key); })}
+            disabled={swipeEnabled === false} accessibilityRole="tab" accessibilityLabel={tab.title}
+            accessibilityHint={tab.detail} accessibilityState={{ selected: tab.selected, disabled: swipeEnabled === false }}
+            style={({ pressed }) => [styles.feedTab, fontScale > 1.25 && styles.wrappedTab, tab.selected && styles.selectedTab, pressed && styles.pressed]}>
+            <Text style={[styles.feedTabLabel, tab.selected && styles.selectedLabel]}>{tab.title}</Text>
+          </Pressable>)}
+        </View> : null}
+        </View>
       </NativeTabRail>
     </Animated.View>
   </View>;
@@ -67,6 +80,14 @@ export default function NativeAppHeader({ onHome, onAccount, loggedIn, onMenu, m
 const styles = StyleSheet.create({
   overlay: { position: "absolute", top: 0, left: 0, right: 0, zIndex: 20, overflow: "hidden" },
   header: { minHeight: 48, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", backgroundColor: colors.bg },
+  feedTabs: { flexDirection: "row", paddingHorizontal: 8, backgroundColor: colors.bg },
+  feedTab: { flex: 1, minWidth: 0, minHeight: 44, paddingHorizontal: 6, paddingVertical: 10, alignItems: "center", justifyContent: "center", borderBottomWidth: 2, borderBottomColor: "transparent" },
+  wrappedTabs: { flexWrap: "wrap" },
+  wrappedTab: { flexBasis: "45%" },
+  feedTabLabel: { flexShrink: 1, textAlign: "center", fontFamily: font, fontSize: 14, fontWeight: "600", color: colors.textDim },
+  selectedTab: { borderBottomColor: colors.amber },
+  selectedLabel: { color: colors.amber },
+  pressed: { opacity: 0.65 },
   control: { flexShrink: 0, minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   brand: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 5 },
   wordmark: { flexShrink: 1, fontFamily: font, fontSize: 14, fontWeight: "800", letterSpacing: 1, color: colors.text },
