@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { captureAccountMutation } from "./accountMutation.mjs";
+import { captureAccountMutation, accountMutationIsCurrent } from "./accountMutation.mjs";
+import { reconcilePostAuthorBadges, reconcileCommentAuthorBadges } from "./postBadgeBundle.mjs";
 
 import {
   PROFILE_LOAD_ERROR,
@@ -97,10 +98,20 @@ function profileHarness() {
   const state = { users: [...cachedUsers], posts: [...cachedPosts], stats: {}, follows: {} };
   const sessionRef = { current: { id: "A" } };
   const accountMutationEpochRef = { current: 1 };
+  const profileReadAuthority = new Map();
   const calls = [], badgeReconciliations = [];
+  const authorityDependencies = {
+    profileReadAuthority, accountMutationEpochRef, sessionRef,
+    feedMutationRevisionRef: { current: 0 }, reconcilePostAuthorBadges, reconcileCommentAuthorBadges,
+    setFeed: update => { state.posts = update(state.posts); }, setComments: update => update({}),
+    publishAuthorBadgeChange: event => badgeReconciliations.push(structuredClone(event.user)),
+  };
+  const reconcileStart = storeSource.indexOf("const reconcileAuthorBadges =");
+  const reconcileSource = storeSource.slice(reconcileStart, storeSource.indexOf("const absorbUsers =", reconcileStart));
+  const confirmAuthority = new Function(...Object.keys(authorityDependencies), `${reconcileSource}; return reconcileAuthorBadges;`)(...Object.values(authorityDependencies));
   const load = (id, options) => {
     const dependencies = {
-      sessionRef, accountMutationEpochRef, captureAccountMutation, assertCurrentProfileRead,
+      sessionRef, accountMutationEpochRef, profileReadAuthority, captureAccountMutation, assertCurrentProfileRead,
       unavailableProfileOutcome, profileFailureOutcome, withoutUnavailableProfile, withoutUnavailableProfilePosts,
       session: sessionRef.current, follows: state.follows,
       userById: (target) => state.users.find((user) => user.id === target),
@@ -110,12 +121,12 @@ function profileHarness() {
       setUserStats: (update) => { state.stats = update(state.stats); },
       setFollows: (update) => { state.follows = update(state.follows); },
       absorbUsers: (users) => { state.users = [...state.users.filter((row) => !users.some((user) => row.id === user.id)), ...users]; },
-      reconcileAuthorBadges: user => { badgeReconciliations.push(structuredClone(user)); },
+      reconcileAuthorBadges: confirmAuthority,
     };
     const reader = new Function(...Object.keys(dependencies), `"use strict"; ${loadUserSource}; return loadUser;`)(...Object.values(dependencies));
     return reader(id, options);
   };
-  return { state, sessionRef, accountMutationEpochRef, calls, badgeReconciliations, load };
+  return { state, sessionRef, accountMutationEpochRef, profileReadAuthority, calls, badgeReconciliations, confirmAuthority, load };
 }
 
 test("prior-account profile successes and access denials cannot publish or quarantine current data", async () => {
@@ -162,5 +173,63 @@ test("cancelled or identity-changed profile requests do not downgrade a cached p
     else h.calls[0].resolve({ user: null });
     await assert.rejects(read, { name: "AbortError" });
     assert.deepEqual(h.state, before);
+  }
+});
+
+test("older profile successes and denials cannot undo a newer confirmed revocation", async () => {
+  for (const status of [null, 403, 404, 410, 503]) {
+    const h = profileHarness();
+    const older = h.load("u_target");
+    const newer = h.load("u_target");
+    h.calls[1].resolve({ user: { id: "u_target", role: "fan", verified: false } });
+    await newer;
+    const before = structuredClone(h.state);
+    if (status) h.calls[0].reject({ status });
+    else h.calls[0].resolve({ user: { id: "u_target", role: "admin", verified: true } });
+    await assert.rejects(older, { name: "AbortError" });
+    assert.deepEqual(h.state, before);
+    assert.equal(h.badgeReconciliations.length, 1);
+    assert.equal(h.profileReadAuthority.size, 0);
+  }
+});
+
+test("a confirmed authority change fences only that author's pending profile reads", async () => {
+  const h = profileHarness();
+  const older = h.load("u_target");
+  const unrelated = h.load("u_visible");
+  h.confirmAuthority({ id: "u_target", role: "fan", verified: false });
+  h.calls[0].resolve({ user: { id: "u_target", role: "admin", verified: true } });
+  await assert.rejects(older, { name: "AbortError" });
+  h.calls[1].resolve({ user: { id: "u_visible", role: "fan" } });
+  assert.equal((await unrelated).status, "ready");
+  assert.deepEqual(h.badgeReconciliations.map(user => user.id), ["u_target", "u_visible"]);
+  assert.equal(h.profileReadAuthority.size, 0);
+});
+
+test("post reads discard delayed results after account changes, round trips, and cancellation", async () => {
+  const start = storeSource.indexOf("const loadPostForView =");
+  const end = storeSource.indexOf("\n  };", start) + 5;
+  for (const change of ["none", "account", "roundtrip", "abort", "revocation", "block", "mute"]) {
+    const sessionRef = { current: { id: "A" } }, accountMutationEpochRef = { current: 1 };
+    const feedMutationRevisionRef = { current: 0 }, blockedIdsRef = { current: [], mutedIds: [] };
+    let resolve, options;
+    const deps = {
+      sessionRef, accountMutationEpochRef, feedMutationRevisionRef, blockedIdsRef, captureAccountMutation, accountMutationIsCurrent,
+      fetchPostById: (_id, requestOptions) => { options = requestOptions; return new Promise(done => { resolve = done; }); },
+      normalizeServerPost: post => post,
+    };
+    const reader = new Function(...Object.keys(deps), `${storeSource.slice(start, end)}; return loadPostForView;`)(...Object.values(deps));
+    const controller = new AbortController();
+    const pending = reader("p_target", { signal: controller.signal });
+    assert.equal(options.expectedAccountId, "A");
+    if (change === "account") sessionRef.current = { id: "B" };
+    if (change === "roundtrip") accountMutationEpochRef.current += 2;
+    if (change === "abort") controller.abort();
+    if (change === "revocation") feedMutationRevisionRef.current += 1;
+    if (change === "block") blockedIdsRef.current = ["author"];
+    if (change === "mute") blockedIdsRef.mutedIds = ["author"];
+    const post = { id: "p_target", userId: "author", review: "A's private post" };
+    resolve({ post });
+    assert.deepEqual(await pending, change === "none" ? post : null);
   }
 });

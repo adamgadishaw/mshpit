@@ -64,6 +64,18 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
       deleteOwnComment: () => assert.fail("guest must not delete"), deleteOwnPost: () => assert.fail("guest must not delete"),
     }) };
     if (dependency === "../hooks/useScopedRefresh") return () => ({ refresh() {}, refreshing: false });
+    if (dependency === "../hooks/usePostAuthorBadges") {
+      // Run the real hook against this fixture's React slots. Its domain
+      // reconciliation remains production code, just like the screen's.
+      const key = "usePostAuthorBadges";
+      if (!compiled.has(key)) compiled.set(key, transformSync(readFileSync(new URL("../hooks/usePostAuthorBadges.js", import.meta.url), "utf8"), {
+        filename: "usePostAuthorBadges.js", babelrc: false, configFile: false,
+        plugins: [require("@babel/plugin-transform-modules-commonjs")],
+      }).code);
+      const hookModule = { exports: {} };
+      new Function("require", "module", "exports", compiled.get(key))(componentRequire, hookModule, hookModule.exports);
+      return hookModule.exports;
+    }
     if (dependency.endsWith("/Badge")) return { BadgeRow: "BadgeRow" };
     if (dependency.endsWith("/PublicWebLinks")) return { PublicTextLink: "PublicTextLink" };
     if (dependency.startsWith("../components/") || dependency.startsWith("./")) return dependency.split("/").at(-1);

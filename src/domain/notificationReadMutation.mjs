@@ -1,3 +1,9 @@
+export function visibleNotificationActors(rows, { current = [], mutedIds = [] } = {}, accountId = null) {
+  const hidden = new Set([...current, ...mutedIds]);
+  return rows.filter((row) => (accountId != null && row.userId !== accountId)
+    || !row.actorId || !hidden.has(row.actorId));
+}
+
 export function reconcileConfirmedNotificationReads(rows, { accountId, notificationIds } = {}) {
   const current = Array.isArray(rows) ? rows : [];
   const ownerId = accountId == null ? "" : String(accountId);

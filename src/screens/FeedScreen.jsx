@@ -248,7 +248,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     setCount(PAGE);
   };
   const advanceFeed = async ({ retry = false } = {}) => {
-    if (!feedActive || newsTab || refreshing || effectiveLoading || pageRequestRef.current || (pageError && !retry)) return;
+    if (!feedActive || newsTab || refreshing || effectiveLoading || pageRequestRef.current || pageError === "refresh" || (pageError && !retry)) return;
     if (!sectionFeed && !full.length) return; // wait for the authoritative first page
     if (count < full.length) { setCount(c => c + PAGE); return; }
     if (!effectiveHasMore && !(sectionFeed && !sectionFeed.loaded)) return;
@@ -259,7 +259,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       const loaded = sectionFeed ? await (sectionFeed.loaded ? sectionFeed.loadMore() : sectionFeed.reload()) : await onLoadMore?.();
       if (pageScopeRef.current !== token.scope || pageRequestRef.current !== token) return;
       if (loaded === true) setCount(c => c + PAGE);
-      else setPageError(true);
+      else setPageError(loaded?.refreshRequired ? "refresh" : true);
     } catch {
       if (pageScopeRef.current === token.scope && pageRequestRef.current === token) setPageError(true);
     } finally {
@@ -296,6 +296,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     if (filter === "everyone") introduction.dismiss();
     const controller = new AbortController();
     const scope = pageScope;
+    const needsFreshHead = pageError === "refresh";
     refreshControllerRef.current = controller;
     pageRequestRef.current = null;
     setPageError(false);
@@ -305,11 +306,15 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       const result = newsTab ? await news.reload() : sectionFeed ? await sectionFeed.reload() : await onRefresh({ signal: controller.signal });
       if (controller.signal.aborted || refreshControllerRef.current !== controller || pageScopeRef.current !== scope) return false;
       const failed = result === false || result == null;
+      if (failed && needsFreshHead) setPageError("refresh");
       setRefreshError(failed);
       return !failed;
     } catch {
       // architecture: allow-ambiguous-result -- this UI refresh keeps the current feed visible and reports its optional revalidation failure in place
-      if (!controller.signal.aborted && refreshControllerRef.current === controller && pageScopeRef.current === scope) setRefreshError(true);
+      if (!controller.signal.aborted && refreshControllerRef.current === controller && pageScopeRef.current === scope) {
+        if (needsFreshHead) setPageError("refresh");
+        setRefreshError(true);
+      }
       return false;
     } finally {
       if (refreshControllerRef.current === controller) {
@@ -574,7 +579,11 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
         </Pressable>
       ) : null) : (
         <View>
-          {pageError || sectionFeed?.status === "error" ? (
+          {pageError === "refresh" ? (
+            <Pressable style={styles.olderBtn} onPress={refresh} accessibilityRole="button" accessibilityLabel="Refresh feed">
+              <Text style={styles.olderTxt}>This feed page expired. Refresh to continue.</Text>
+            </Pressable>
+          ) : pageError || sectionFeed?.status === "error" ? (
             <Pressable style={styles.olderBtn} onPress={() => advanceFeed({ retry: true })} accessibilityRole="button" accessibilityLabel="Retry loading posts"><Text style={styles.olderTxt}>Couldn't load more posts. Try again or refresh the feed.</Text></Pressable>
           ) : footer.kind === "reveal" || footer.kind === "fetch" || footer.kind === "loading" ? (
             <Pressable

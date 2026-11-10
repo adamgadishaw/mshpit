@@ -1,5 +1,19 @@
 # Pit current status
 
+## 2026-11-10 PC privacy and reliability follow-up (local review)
+
+- Branch `fix/pc-privacy-reliability-20261110` descends from preserved candidate
+  `ac6a8374165e27c527c3f3cb23e8ea85bb2dc49e`. Parallel Astra review reproduced
+  delayed profile/badge and notification-history races, premature recommendation
+  cursor eviction, and interrupted/expired feed recovery failures.
+- Fixes keep newer confirmed authority, account boundaries and current privacy
+  choices authoritative. Expired pages offer explicit refresh; issued snapshots
+  remain valid until normal TTL/capacity eviction.
+- Evidence and integration limits are in
+  [the follow-up audit](docs/PC_PRIVACY_RELIABILITY_2026-11-10.md).
+  Native/export validation is a separate frozen-copy workstream. No production,
+  phone, Mac, recovery-transfer, dirty-checkout or publication operation.
+
 ## 2026-11-10 Large feed traversal follow-up (local review)
 
 - Follow-up to local candidate `20975b1ead3fc1f447522dfe433d24a9fb945829`.

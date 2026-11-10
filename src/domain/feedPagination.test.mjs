@@ -176,6 +176,39 @@ test("failed recommended pagination retains order and cursor for a truthful retr
   assert.equal(h.state.hasMore, false);
 });
 
+test("expired recommendation pages require explicit refresh instead of retrying the invalid cursor", async () => {
+  for (const serverCode of ["RECOMMENDATION_CURSOR_EXPIRED", "RECOMMENDATION_CURSOR_INVALID"]) {
+    const h = feedHarness();
+    const page = h.render().loadMoreFeed();
+    h.calls[0].reject({ status: 400, serverCode });
+    assert.deepEqual(await page, { ok: false, refreshRequired: true });
+    assert.deepEqual(h.state.posts, [{ id: "head" }]);
+    assert.equal(h.state.cursor, "initial-cursor");
+    assert.equal(h.state.hasMore, true, "expiry does not mean all posts were loaded");
+    assert.equal(h.calls.length, 1, "no silent head reset");
+    const refreshed = h.render().hydrateFeed();
+    assert.doesNotMatch(h.calls[1].url, /cursor=/);
+    h.calls[1].resolve({ posts: [{ id: "fresh" }], nextCursor: "fresh-cursor", algorithm: { snapshotAt: 2 } });
+    assert.equal(await refreshed, true);
+    assert.equal(h.state.cursor, "fresh-cursor");
+  }
+});
+
+test("a cancelled head cannot block the next explicit refresh while its transport is unresolved", async () => {
+  const h = feedHarness();
+  const controller = new AbortController();
+  const oldHead = h.render().hydrateFeed({ signal: controller.signal });
+  controller.abort();
+  const freshHead = h.render().hydrateFeed();
+  assert.equal(h.calls.length, 2, "a new page visit can refresh immediately after cancellation");
+  h.calls[1].resolve({ posts: [{ id: "fresh" }], nextCursor: "fresh-cursor", algorithm: { snapshotAt: 2 } });
+  assert.equal(await freshHead, true);
+  h.calls[0].resolve({ posts: [{ id: "cancelled" }], nextCursor: "cancelled-cursor" });
+  assert.equal(await oldHead, null);
+  assert.deepEqual(h.state.posts, [{ id: "fresh" }]);
+  assert.equal(h.state.cursor, "fresh-cursor");
+});
+
 test("local mutations invalidate pending pages without changing existing feed state", async () => {
   const h = feedHarness();
   const page = h.render().loadMoreFeed();

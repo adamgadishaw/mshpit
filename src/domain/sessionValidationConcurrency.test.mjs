@@ -79,7 +79,7 @@ function fixture({ confirmed = true, account = confirmed ? member : null, intent
   };
   const cleanup = new Function(...Object.keys(dependencies), `return (${validationEffect})();`)(...Object.values(dependencies));
   const authDependencies = {
-    ...dependencies, accountMutationEpochRef: { current: 0 },
+    ...dependencies, accountMutationEpochRef: { current: 0 }, profileReadAuthority: new Map(),
     switchLinkedAccountRequest: async (_actor, target) => ({ user: { id: target } }),
     localCommandError: () => ({ ok: false }), captureAppError() {}, AppError,
     broadcastAuthEpoch() {}, playHistoryRequestRef: { current: { sequence: 0 } }, playlistRequestRef: { current: { sequence: 0 } },

@@ -44,3 +44,29 @@ test("interrupted section pagination cannot change a new section's count/error",
   f.calls[0].resolve(false);await old;
   assert.equal(f.state.error,false);assert.equal(f.state.count,8);
 });
+
+test("expired pages keep cards and offer refresh without replaying the dead cursor",async()=>{
+  const f=fixture();const page=f.render()();f.calls[0].resolve({ok:false,refreshRequired:true});await page;
+  assert.equal(f.state.error,"refresh");assert.equal(f.state.posts.length,8);
+  await f.render()();await f.render()({retry:true});assert.equal(f.calls.length,1);
+  assert.match(source,/pageError === "refresh" \? \([\s\S]*?onPress=\{refresh\}[\s\S]*?accessibilityLabel="Refresh feed"/);
+});
+
+test("failed explicit refresh keeps the expired-page control until a new head succeeds",async()=>{
+  const start=source.indexOf("  const refresh = async");
+  const end=source.indexOf("  rowActionsRef.current =",start);
+  assert.ok(start>=0 && end>start);
+  for(const failure of [false,null,new Error("Offline")]) {
+    const state={pageError:"refresh",refreshError:false,refreshing:false};
+    const refreshControllerRef={current:null},pageRequestRef={current:null},pageScopeRef={current:"A:everyone"};
+    let outcome=failure;
+    const render=()=>{
+      const values={refreshControllerRef,pageRequestRef,pageScopeRef,pageScope:"A:everyone",pageError:state.pageError,
+        onRefresh:async()=>{if(outcome instanceof Error)throw outcome;return outcome;},filter:"everyone",introduction:{dismiss(){}},newsTab:false,sectionFeed:null,
+        setPageError:value=>{state.pageError=value;},setRefreshing:value=>{state.refreshing=value;},setRefreshError:value=>{state.refreshError=value;}};
+      return new Function(...Object.keys(values),`${source.slice(start,end)};return refresh;`)(...Object.values(values));
+    };
+    assert.equal(await render()(),false);assert.equal(state.pageError,"refresh");assert.equal(state.refreshError,true);assert.equal(state.refreshing,false);
+    outcome=true;assert.equal(await render()(),true);assert.equal(state.pageError,false);assert.equal(state.refreshError,false);
+  }
+});

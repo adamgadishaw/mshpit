@@ -250,16 +250,15 @@ function pruneSnapshots(at) {
 }
 
 function createSnapshot(viewer, at, hiddenIds) {
-  pruneSnapshots(at);
   const viewerKey = viewer?.id || "guest";
   const activeId = activeSnapshotByViewer.get(viewerKey);
   const active = activeId ? snapshots.get(activeId) : null;
   const contentRevision = postContentRevision();
   if (active && active.expiresAt > at && active.contentRevision === contentRevision) return active;
-  // The requesting client will adopt the fresh snapshot's cursor. Retire its
-  // former active snapshot so routine publishing cannot exhaust the bounded
-  // in-memory pool with superseded heads.
-  if (activeId) snapshots.delete(activeId);
+  // Another tab/device may still be paging the previous head. Keep its issued
+  // cursor valid until the normal TTL/capacity eviction, and reserve capacity
+  // only when allocating (a quiet head read must not evict a live snapshot).
+  pruneSnapshots(at);
   const ranked = rankRecommendations(candidateRows(viewer, at, hiddenIds).map(rankingCandidate), recommendationSignals(viewer, at), {
     snapshotAt: at,
     seed: `${viewerKey}:${Math.floor(at / SNAPSHOT_TTL_MS)}`,

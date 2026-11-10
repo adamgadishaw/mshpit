@@ -18,6 +18,7 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
+import { usePostAuthorBadges } from "../hooks/usePostAuthorBadges";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import { CommentLikeButton } from "../components/SocialReactionButtons";
 
@@ -96,8 +97,9 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
   // live feed state so an edit made on this screen appears immediately. A
   // server-confirmed self-untag also overlays notification-fetched posts that
   // were never part of this feed page.
+  const authorReconciledLog = usePostAuthorBadges(feed.find((post) => post.id === log.id) || log, session?.id || null);
   const activeLog = applyPostLocalOverride(
-    feed.find((post) => post.id === log.id) || log,
+    authorReconciledLog,
     postLocalOverrides,
     session?.id || null,
   );

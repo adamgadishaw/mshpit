@@ -167,7 +167,7 @@ import {
 } from "./domain/artistRequestMutation.mjs";
 import { reconcileConfirmedArtistPostRemoval } from "./domain/artistPostMutation.mjs";
 import { acknowledgeNotificationBatch, loadNotificationHistory } from "./lib/notificationService";
-import { reconcileConfirmedNotificationReads, mergeNotificationHistory, confirmedNotificationIds } from "./domain/notificationReadMutation.mjs";
+import { reconcileConfirmedNotificationReads, mergeNotificationHistory, confirmedNotificationIds, visibleNotificationActors } from "./domain/notificationReadMutation.mjs";
 import {
   directMessageUnreadCount,
   latestDirectMessageReadCursor,
@@ -522,6 +522,7 @@ export function StoreProvider({ children }) {
   const authReadyRef = useRef(ENABLE_DEMO_DATA);
   const authValidationSequenceRef = useRef(0);
   const accountMutationEpochRef = useRef(0);
+  const profileReadAuthority = accountMutationEpochRef.profileReads || (accountMutationEpochRef.profileReads = new Map());
   sessionRef.current = session;
   authReadyRef.current = authReady;
   // A callback belongs to the account epoch that rendered it. Rechecking only
@@ -998,6 +999,7 @@ export function StoreProvider({ children }) {
     blockedIdsRef.accountId = nextAccountId || null;
     blockedIdsRef.status = ENABLE_DEMO_DATA || !nextAccountId ? "ready" : "loading";
     accountMutationEpochRef.current += 1;
+    profileReadAuthority.clear();
     // Rating aggregates include the viewer's `mine` field. Drop them at the
     // synchronous identity boundary instead of waiting for a passive effect.
     // Scoped keys and response guards below provide a second line of defense.
@@ -1193,7 +1195,8 @@ export function StoreProvider({ children }) {
   const hydrateFeed = async ({ resetPagination = true, signal } = {}) => {
     if (!authReadyRef.current || !feedAccountIdRef.current || signal?.aborted) return null;
     const refresh = feedRefreshRef.current;
-    if (refresh.inFlight) return null;
+    if (refresh.inFlight && !refresh.signal?.aborted) return null;
+    refresh.signal = signal;
     const sequence = ++refresh.sequence;
     const read = captureFeedRead(currentFeedReadState());
     const isCurrent = (error) => feedReadIsCurrent(read, currentFeedReadState(), { signal, error });
@@ -1324,12 +1327,16 @@ export function StoreProvider({ children }) {
       return true;
     } catch (error) {
       // architecture: allow-ambiguous-result -- optional next-page callers use false for unchanged feed/cursor on failure or obsolete reads
-      if (isCurrent(error)) trackProductEvent("performance", {
+      const current = isCurrent(error);
+      if (current) trackProductEvent("performance", {
         metric: "feed_next_page",
         durationBucket: analyticsDurationBucket(Date.now() - startedAt),
         surface: "everyone",
         outcome: "error",
       });
+      if (current && ["RECOMMENDATION_CURSOR_EXPIRED", "RECOMMENDATION_CURSOR_INVALID"].includes(error?.serverCode)) {
+        return { ok: false, refreshRequired: true };
+      }
       return false;
     } finally {
       if (feedLoadMoreRef.current === request) {
@@ -1577,6 +1584,8 @@ export function StoreProvider({ children }) {
   // and follow buttons resolve everywhere, without touching the session.
   const reconcileAuthorBadges = (user) => {
     if (!user?.id) return;
+    // A confirmed authority change supersedes any profile read already running.
+    profileReadAuthority.delete(user.id);
     const publicAuthor = user.postBadgeSnapshot ? { ...user.postBadgeSnapshot, id: user.id } : user;
     // A confirmed response owns this bundle, never optimistic profile fields.
     // Invalidate older feed reads before they can restore obsolete claims.
@@ -1609,8 +1618,11 @@ export function StoreProvider({ children }) {
   const loadUser = async (id, { signal } = {}) => {
     if (!id) return unavailableProfileOutcome("missing-id");
     const read = captureAccountMutation(sessionRef.current?.id, accountMutationEpochRef.current);
+    const authorityTicket = {};
+    profileReadAuthority.set(id, authorityTicket);
     const assertCurrent = (error) => assertCurrentProfileRead(
-      read, sessionRef.current?.id, accountMutationEpochRef.current, { signal, error },
+      read, sessionRef.current?.id, accountMutationEpochRef.current,
+      { signal, error, authorityIsCurrent: profileReadAuthority.get(id) === authorityTicket },
     );
     const cachedAtStart = !!userById(id) || sessionRef.current?.id === id;
     const quarantine = () => {
@@ -1633,6 +1645,7 @@ export function StoreProvider({ children }) {
         signal,
         silent: true,
         context: "Loading this profile",
+        expectedAccountId: read.accountId,
       }));
       assertCurrent();
       if (!su?.id) {
@@ -1645,6 +1658,8 @@ export function StoreProvider({ children }) {
       const outcome = profileFailureOutcome(error, { hasCachedProfile: cachedAtStart });
       if (outcome.evict) quarantine();
       return outcome;
+    } finally {
+      if (profileReadAuthority.get(id) === authorityTicket) profileReadAuthority.delete(id);
     }
 
     absorbUsers([su]);
@@ -3133,6 +3148,7 @@ export function StoreProvider({ children }) {
   const logout = () => {
     authValidationSequenceRef.current += 1;
     accountMutationEpochRef.current += 1;
+    profileReadAuthority.clear();
     const departingAccountId = sessionRef.current?.id || null;
     const request = authTransitions.signOut().then((result) => {
       if (result.kind === "pending") captureAppError(new AppError(undefined, { code: "PIT-AUTH-006", context: "Finishing sign-out", cause: result.cause }), { toast: true });
@@ -3665,8 +3681,13 @@ export function StoreProvider({ children }) {
   // news panel, in the same shape as feed posts.
   const loadPostForView = async (id, { signal } = {}) => {
     if (typeof id !== "string" || !id || id.length > 200) return null;
+    const read = captureAccountMutation(sessionRef.current?.id, accountMutationEpochRef.current);
+    const authorityRevision = feedMutationRevisionRef.current;
     try {
-      const { post } = await fetchPostById(id, { signal });
+      const { post } = await fetchPostById(id, { signal, expectedAccountId: read.accountId });
+      if (signal?.aborted || !accountMutationIsCurrent(read, sessionRef.current?.id, accountMutationEpochRef.current)) return null;
+      if (authorityRevision !== feedMutationRevisionRef.current) return null;
+      if (blockedIdsRef.current.includes(post?.userId) || blockedIdsRef.mutedIds.includes(post?.userId)) return null;
       return post ? normalizeServerPost(post) : null;
     } catch {
       // architecture: allow-ambiguous-result -- opening a story is optional; the reader stays where they were
@@ -4060,24 +4081,30 @@ export function StoreProvider({ children }) {
     { id: "nw_" + Date.now(), userId: uid, type: "welcome", actorName: "Pit", actorInitials: "PT", actorColor: "#FF8C42", ts: Date.now(), read: false },
     ...all,
   ]);
-  const myNotifications = () => (session ? notifications.filter((n) => n.userId === session.id).sort((a, b) => b.ts - a.ts) : []);
+  const myNotifications = () => (session ? visibleNotificationActors(notifications.filter((n) => n.userId === session.id), blockedIdsRef).sort((a, b) => b.ts - a.ts) : []);
   const unreadNotifications = () => myNotifications().filter((n) => !n.read).length;
   const refreshNotifications = async ({ signal, accountId = sessionRef.current?.id || null } = {}) => {
     // architecture: allow-ambiguous-result -- this optional activity read preserves the current account snapshot on stale, abort, or offline failure
     if (!accountId || sessionRef.current?.id !== accountId) return null;
+    const sequence = (accountMutationEpochRef.notificationReadSequence || 0) + 1;
+    accountMutationEpochRef.notificationReadSequence = sequence;
+    const readScope = captureAccountMutation(accountId, accountMutationEpochRef.current);
+    const isCurrent = () => !signal?.aborted
+      && sequence === accountMutationEpochRef.notificationReadSequence
+      && accountMutationIsCurrent(readScope, sessionRef.current?.id, accountMutationEpochRef.current);
     try {
       const capturedRows = notifications.filter((row) => row.userId === accountId);
-      const readScope = captureAccountMutation(accountId, accountMutationEpochRef.current);
-      const rows = await loadNotificationHistory({ signal, expectedAccountId: accountId,
-        isCurrent: () => accountMutationIsCurrent(readScope, sessionRef.current?.id, accountMutationEpochRef.current) });
-      if (rows == null) return null;
-      const mine = rows.map((row) => ({ ...row, userId: accountId }));
-      setNotifications((all) => accountMutationIsCurrent(readScope, sessionRef.current?.id, accountMutationEpochRef.current)
-        ? mergeNotificationHistory(all, mine, { accountId, capturedRows }) : all);
+      const rows = await loadNotificationHistory({ signal, expectedAccountId: accountId, isCurrent });
+      if (rows == null || !isCurrent()) return null;
+      // A block or mute can complete while any history page is in flight.
+      // Apply the current boundary to both the cache and acknowledgement input.
+      const mine = visibleNotificationActors(rows, blockedIdsRef).map((row) => ({ ...row, userId: accountId }));
+      setNotifications((all) => isCurrent()
+        ? visibleNotificationActors(mergeNotificationHistory(all, mine, { accountId, capturedRows }), blockedIdsRef, accountId) : all);
       return mine;
     } catch (error) {
       // architecture: allow-ambiguous-result -- this optional activity read preserves the current account snapshot on stale, abort, or offline failure
-      if (signal?.aborted) return null;
+      if (!isCurrent()) return null;
       return false;
     }
   };
