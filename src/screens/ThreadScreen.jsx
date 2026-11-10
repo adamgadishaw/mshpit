@@ -17,6 +17,7 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { createIOSThreadLoad } from "../domain/iosThreadLoad.mjs";
+import { createDirectMessageHistory, createDirectMessageHistoryAnchor, isMessageHistoryAccessError } from "../domain/directMessageHistory.mjs";
 import useIOSThreadControls from "../hooks/useIOSThreadControls";
 import useIOSThreadRefreshAnnouncement from "../hooks/useIOSThreadRefreshAnnouncement";
 import {
@@ -49,6 +50,18 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
   const composerMinHeight = Math.max(44, Math.ceil(22 * fontScale + 22));
   const composerMaxHeight = Math.min(Math.max(44, composerViewportHeight - 17), Math.max(composerMinHeight, Math.min(132, composerViewportHeight * 0.4)));
   const threadRefreshScope = refreshScope(session?.id, "message-thread", `${chatAuthEpoch}:${otherId || ""}`);
+  const historyBlocked = !!isBlocked?.(otherId);
+  const activeHistory = useRef(null);
+  const history = useMemo(() => {
+    const owner = createDirectMessageHistory({ isCurrent: () => activeHistory.current === owner });
+    return owner;
+  }, [threadRefreshScope, historyBlocked]);
+  activeHistory.current = history;
+  const historyState = useSyncExternalStore(history.subscribe, history.read, history.read);
+  useEffect(() => {
+    history.activate();
+    return () => history.dispose();
+  }, [history]);
   const composerScope = accountTargetScope(session?.id, `dm:${otherId || ""}`);
   const composerScopeRef = useRef(composerScope);
   composerScopeRef.current = composerScope;
@@ -95,8 +108,36 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
       value: { ...scopedScreenValue(current, composerScope, EMPTY_COMPOSER), ...changes },
     }));
   };
-  const messages = threadMessages(otherId);
+  const recentMessages = threadMessages(otherId);
+  useEffect(() => {
+    if (!historyBlocked) history.remember(recentMessages);
+  }, [history, historyBlocked, recentMessages]);
+  const messages = historyBlocked ? [] : history.display(recentMessages);
   const { scrollRef, onScroll, onContentSizeChange, onLayout, onScrollBeginDrag } = useChatScroll({ messageCount: messages.length, scopeKey: `${chatAuthEpoch}:${composerScope}` });
+  const historyAnchor = useMemo(() => createDirectMessageHistoryAnchor({
+    web: Platform.OS === "web",
+    isCurrent: () => activeHistory.current === history,
+    scrollTo: (options) => scrollRef.current?.scrollTo(options),
+  }), [history, scrollRef]);
+  const loadThreadPage = async (options = {}) => {
+    if (historyBlocked || activeHistory.current !== history) return { stale: true };
+    const request = history.read().unavailable ? { ...options, after: undefined } : options;
+    try {
+      const result = await loadThread(otherId, request);
+      if (!request.signal?.aborted && activeHistory.current === history) history.receive(result, request);
+      return result;
+    } catch (error) {
+      if (!request.signal?.aborted && isMessageHistoryAccessError(error)) history.deny();
+      throw error;
+    }
+  };
+  const loadEarlier = () => {
+    if (historyBlocked || !admitComposerAction()) return Promise.resolve(null);
+    return history.loadEarlier({
+      load: (options) => loadThread(otherId, options),
+      beforeCommit: () => historyAnchor.prepare(messages.map((message) => message.id)),
+    });
+  };
   const incomingReadTarget = latestIncomingDirectMessageId(messages, session?.id);
   const messageRelationshipContext = [...messages].reverse()
     .find((message) => message?.relationshipContext)?.relationshipContext || null;
@@ -112,7 +153,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
     if (!isIOS) {
       const requestScope = relationshipScopeRef.current;
       const includeContext = forceContext || !relationshipLoadedRef.current;
-      const result = await loadThread(otherId, { after, signal, strict, includeContext });
+      const result = await loadThreadPage({ after, signal, strict, includeContext });
       if (relationshipScopeRef.current === requestScope
         && result
         && Object.prototype.hasOwnProperty.call(result, "relationshipContext")) {
@@ -126,7 +167,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
     }
     const requestScope = relationshipScope;
     const includeContext = forceContext || !relationshipOwner.loaded;
-    const result = await loadThread(otherId, { after, signal, strict, includeContext });
+    const result = await loadThreadPage({ after, signal, strict, includeContext });
     if (activeOwner.current === relationshipOwner && relationshipOwner.alive
       && !signal?.aborted && !result?.stale
       && result
@@ -153,7 +194,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
     ({ after, signal }) => isIOS
       ? threadLoader.run({ after, signal, load: loadRelationshipThread })
       : loadRelationshipThread({ after, signal }),
-    { channelKey: `dm:${chatAuthEpoch}:${session?.id || "guest"}:${otherId}`, enabled: !!session && !!otherId },
+    { channelKey: `dm:${chatAuthEpoch}:${session?.id || "guest"}:${otherId}`, enabled: !!session && !!otherId && !historyBlocked },
   );
   const { refresh: runThreadRefresh, refreshing: threadRefreshing } = useScopedRefresh({
     scope: threadRefreshScope,
@@ -312,8 +353,11 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
         accessibilityLabel={`Refresh messages with ${other?.name || "this member"}`}
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
-        onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}
+        onScroll={(event) => { historyAnchor.onScroll(event); onScroll(event); }}
+        onContentSizeChange={(...size) => { if (!historyAnchor.contentChanged()) onContentSizeChange(...size); }} scrollEventThrottle={100}
+        {...(Platform.OS !== "web" && historyState.initialized ? { maintainVisibleContentPosition: { minIndexForVisible: 1 } } : {})}
         {...(isIOS ? { style: styles.history, onLayout, onScrollBeginDrag, keyboardDismissMode: "interactive", keyboardShouldPersistTaps: "handled", automaticallyAdjustKeyboardInsets: false, contentInsetAdjustmentBehavior: "never" } : {})}>
+        <View collapsable={false} style={styles.historyHeader}>
         {session && <MessagePrivacyControls otherId={otherId} admitAction={admitComposerAction}
           controls={{ session, chatAuthEpoch, isBlocked, blockUser, unblockUser, isBlockMutationPending, isMuted, muteUser, unmuteUser }} />}
         {session && requestState === "pending" && (
@@ -361,7 +405,22 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
             </Pressable>
           </View>
         )}
-        {messages.length === 0 && (!isIOS || (session && threadStatus === "ready")) && <Text style={styles.empty}>Say hi to {other?.name?.split(" ")[0]}.</Text>}
+        {(historyBlocked || historyState.unavailable) ? <Text style={styles.readText}>This conversation isn’t available.</Text> : (
+          historyState.initialized && messages.length > 0 && (
+            <View style={styles.historyRecovery}>
+              {historyState.nextCursor ? (
+                <Pressable style={styles.retryRead} onPress={loadEarlier} disabled={historyState.loading}
+                  accessibilityRole="button" accessibilityLabel={historyState.error ? "Retry loading earlier messages" : "Load earlier messages"}
+                  accessibilityState={{ disabled: historyState.loading, busy: historyState.loading }}>
+                  <Text style={styles.retryReadText}>{historyState.loading ? "Loading earlier messages…" : historyState.error ? "Try earlier messages again" : "Load earlier messages"}</Text>
+                </Pressable>
+              ) : <Text style={styles.readText}>Beginning of conversation</Text>}
+              {historyState.error && <Text style={styles.readText} accessibilityLiveRegion="polite">Earlier messages couldn’t load. Your conversation is still here.</Text>}
+            </View>
+          )
+        )}
+        {!historyBlocked && !historyState.unavailable && messages.length === 0 && (!isIOS || (session && threadStatus === "ready")) && <Text style={styles.empty}>Say hi to {other?.name?.split(" ")[0]}.</Text>}
+        </View>
         {messages.map((m) => {
           const mine = m.from === session?.id;
           const delivery = chatDeliveryPresentation(m);
@@ -411,7 +470,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
             </View>
           );
           return (
-            <View key={m.id} style={[styles.row, mine && styles.rowMine, isIOS && styles.rowIOS, isIOS && mine && styles.rowMineIOS]}>
+            <View key={m.id} onLayout={Platform.OS === "web" ? (event) => historyAnchor.rowLayout(m.id, event) : undefined} style={[styles.row, mine && styles.rowMine, isIOS && styles.rowIOS, isIOS && mine && styles.rowMineIOS]}>
               {isIOS && !mine && <View style={styles.messageAvatar}><Avatar user={other} size={28} /></View>}
               {isIOS ? <View style={[styles.messageColumn, mine && styles.messageColumnMine]}>{bubble}{footer}</View> : bubble}
               {isIOS && reportAction}
@@ -464,6 +523,8 @@ const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   body: { flex: 1, minHeight: 0 },
   history: { flex: 1, minHeight: 0 },
+  historyHeader: { gap: 10 },
+  historyRecovery: { alignItems: "center", gap: 4 },
   chat: { padding: 16, paddingBottom: 24, gap: 10 },
   relationshipCard: { alignSelf: "stretch", gap: 7, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev, paddingHorizontal: 12, paddingVertical: 10 },
   relationshipChips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },

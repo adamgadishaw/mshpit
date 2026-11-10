@@ -6471,11 +6471,15 @@ export function StoreProvider({ children }) {
   };
   // Slice 4: pull a thread's messages from the server and merge them (dedupe by
   // id, keeping any optimistic local-only message not yet echoed back).
-  const loadThread = (otherId, { after, signal, strict = false, includeContext = true } = {}) => {
-    const read = otherId ? chatReadsRef.current.claim(`dm-thread:${otherId}`, sessionRef.current) : null;
+  const loadThread = (otherId, { before, after, signal, strict = false, includeContext = true } = {}) => {
+    if (before && after) return Promise.reject(new Error("Use either earlier history or live updates, not both."));
+    // Historical pages do not compete with the serialized live/head lane. They
+    // are retained by the mounted thread owner, never its 750-row recent cache.
+    const read = otherId ? chatReadsRef.current.claim(`${before ? "dm-history" : "dm-thread"}:${otherId}`, sessionRef.current) : null;
     if (!read) return Promise.resolve({ syncCursor: after || null, hasMore: false });
     const key = dmKey(read.scope, otherId);
     const queryParams = new URLSearchParams();
+    if (before) queryParams.set("before", before);
     if (after) queryParams.set("after", after);
     if (!includeContext) queryParams.set("context", "0");
     const queryString = queryParams.toString();
@@ -6485,28 +6489,28 @@ export function StoreProvider({ children }) {
       silent: true,
       context: "Refreshing direct messages",
     })
-      .then(({ messages, removedIds = [], syncCursor, hasMore, relationshipContext, requestState }) => {
+      .then(({ messages, removedIds = [], nextCursor, syncCursor, hasMore, relationshipContext, requestState }) => {
         if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) {
           return { syncCursor: after || null, hasMore: false, stale: true };
         }
-        if (!Array.isArray(messages)) return { syncCursor: after || null, hasMore: false };
+        if (!Array.isArray(messages)) throw new Error("Messages could not be loaded.");
         const hasRelationshipContext = relationshipContext !== undefined;
         const normalizedRelationshipContext = hasRelationshipContext
           ? normalizeMessageRelationshipContext(relationshipContext)
           : null;
-        setDms((d) => {
+        const incoming = messages.map((m) => ({
+          id: m.id,
+          from: m.from,
+          text: m.text,
+          at: m.createdAt,
+          ts: ago(m.createdAt),
+          server: true,
+          ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
+        }));
+        if (!before) setDms((d) => {
           const existing = hasRelationshipContext
             ? (d[key] || []).map((message) => ({ ...message, relationshipContext: normalizedRelationshipContext }))
             : (d[key] || []);
-          const incoming = messages.map((m) => ({
-            id: m.id,
-            from: m.from,
-            text: m.text,
-            at: m.createdAt,
-            ts: ago(m.createdAt),
-            server: true,
-            ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
-          }));
           const live = applyDMRequestState(mergeChatMessages(existing, incoming, removedIds, 750), read.scope, requestState);
           const next = { ...d };
           if (live.length) next[key] = live;
@@ -6514,6 +6518,9 @@ export function StoreProvider({ children }) {
           return next;
         });
         return {
+          messages: incoming,
+          removedIds,
+          nextCursor: nextCursor || null,
           syncCursor: syncCursor || after || null,
           hasMore: !!hasMore,
           requestState: normalizeDMRequestState(requestState),
@@ -6522,7 +6529,11 @@ export function StoreProvider({ children }) {
       })
       .catch((error) => {
         if (signal?.aborted) throw error;
-        if (strict) throw error;
+        const unavailable = [401, 403, 404].includes(Number(error?.status));
+        if (unavailable && chatReadsRef.current.isCurrent(read, sessionRef.current)) {
+          setDms((current) => { const next = { ...current }; delete next[key]; return next; });
+        }
+        if (strict || unavailable) throw error;
         return { syncCursor: after || null, hasMore: false };
       });
   };

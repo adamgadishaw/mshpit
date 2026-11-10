@@ -2823,10 +2823,14 @@ function blockedIdSet(userId) {
 const DM_TOMBSTONE_LIMIT = 750;
 function removedDmIdsFor(userId, otherId = null) {
   if (otherId) {
+    // A mounted conversation can retain explicitly paged history beyond the
+    // recent750 cache. Return every removal in this authorized pair so an old
+    // removed row cannot survive behind newer tombstones. Inbox remains bounded;
+    // a future deletion stream can paginate this per-thread payload separately.
     return db.prepare(`SELECT id FROM dms WHERE removed=1
       AND ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?))
-      ORDER BY created_at DESC,id DESC LIMIT ?`)
-      .all(userId, otherId, otherId, userId, DM_TOMBSTONE_LIMIT).map((row) => row.id);
+      ORDER BY created_at DESC,id DESC`)
+      .all(userId, otherId, otherId, userId).map((row) => row.id);
   }
   return db.prepare(`SELECT id FROM dms WHERE removed=1 AND (from_id=? OR to_id=?)
     ORDER BY created_at DESC,id DESC LIMIT ?`)
