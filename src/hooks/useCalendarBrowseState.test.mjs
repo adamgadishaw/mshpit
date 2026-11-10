@@ -13,7 +13,7 @@ const compiled = require("@babel/core").transformSync(readFileSync(new URL("./us
 // Execute the actual hook with controlled React lifetimes and native geometry.
 function mount(options) {
   const slots = [], calls = [];
-  let index = 0, effects = [], updates = 0, hook;
+  let index = 0, effects = [], updates = 0, hook, dirty = false;
   const module = { exports: {} };
   new vm.Script(compiled).runInNewContext({ module, exports: module.exports, require(name) {
     if (name === "../domain/calendarBrowseMemory.mjs") return domain;
@@ -23,7 +23,7 @@ function mount(options) {
       useState(value) {
         const slot = index++;
         slots[slot] ??= { value };
-        return [slots[slot].value, next => { updates += 1; slots[slot].value = typeof next === "function" ? next(slots[slot].value) : next; }];
+        return [slots[slot].value, next => { updates += 1; dirty = true; slots[slot].value = typeof next === "function" ? next(slots[slot].value) : next; }];
       },
       useLayoutEffect(effect, deps) {
         const slot = index++, previous = slots[slot];
@@ -34,10 +34,13 @@ function mount(options) {
     };
   } });
   const render = next => {
-    options = next || options; index = 0; effects = [];
-    hook = module.exports.default(options);
-    hook.scrollRef.current = { scrollTo: value => calls.push({ ...value }) };
-    effects.forEach(effect => effect());
+    options = next || options;
+    do {
+      dirty = false; index = 0; effects = [];
+      hook = module.exports.default(options);
+      hook.scrollRef.current = { scrollTo: value => calls.push({ ...value }) };
+      effects.forEach(effect => effect());
+    } while (dirty);
     return hook;
   };
   render();

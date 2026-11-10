@@ -53,7 +53,7 @@ function fixture({ strict = false } = {}) {
       initialState: { selected: "2026-11-10", cursor: { y: 2026, m: 10 } } });
     latest = browse;
     browse.scrollRef.current = { scrollTo: value => calls.push(value) };
-    React.useLayoutEffect(() => { captures.push(browse.capture()); }, []);
+    React.useLayoutEffect(() => { captures.push(browse.capture()); }, [browse.isCurrent]);
     if (hidden) throw waiting;
     return null;
   }
@@ -81,6 +81,22 @@ test("real React Suspense hiding retires captures and reveal restores fresh acti
   f.hide(false);
   assert.equal(before(), false);
   assert.equal(f.read().capture()(), true);
+  f.render(false);
+});
+
+test("a queued native handler cannot recapture fresh authority after Suspense reconnect", () => {
+  const f = fixture(); f.render();
+  const old = f.read();
+  const queuedPress = () => old.capture()() && old.update({ scope: "plans" });
+  f.hide(true); f.hide(false);
+  assert.equal(old.isCurrent(), false);
+  assert.equal(queuedPress(), false);
+  old.onScrollBeginDrag({ nativeEvent: { contentOffset: { y: 900 } } });
+  old.onScroll({ nativeEvent: { contentOffset: { y: 950 } } });
+  assert.equal(f.read().state.scope, "all");
+  assert.equal(f.read().state.scrollY, 0);
+  f.host.act(() => f.read().update({ scope: "plans" }));
+  assert.equal(f.read().state.scope, "plans");
   f.render(false);
 });
 
