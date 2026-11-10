@@ -72,3 +72,23 @@ test("a member picks an accent, pronouns and up to four favorite shows, shown on
   assert.equal(cleared.user.pronouns, undefined);
   assert.equal(cleared.user.favoriteShows, undefined);
 });
+
+test("a verified admin can edit and clear bio without replaying unrelated legacy fields", () => {
+  const member = addUser();
+  db.prepare("UPDATE users SET role='admin', name='Legacy_Name', bio='Existing bio', genres='[]', extras=? WHERE id=?")
+    .run(JSON.stringify({ favoriteShows: ["removed-review"], theme: "neon" }), member.id);
+  const update = body => routes["PATCH /api/me"]({ user: q.userById.get(member.id), ip: member.id, body });
+  assert.throws(() => update({ name: "Legacy_Name", genres: [], bio: "Edited bio" }),
+    error => error instanceof ApiError && error.status === 400);
+  const edited = update({ bio: "Edited bio" });
+  assert.equal(edited.user.bio, "Edited bio");
+  const cleared = update({ bio: "" });
+  assert.equal(cleared.user.bio, "");
+  const stored = q.userById.get(member.id);
+  assert.equal(stored.bio, "");
+  assert.equal(stored.name, "Legacy_Name");
+  assert.equal(stored.genres, "[]");
+  assert.deepEqual(JSON.parse(stored.extras), { favoriteShows: ["removed-review"], theme: "neon" });
+  update({ name: "Updated Name" });
+  assert.equal(q.userById.get(member.id).bio, "", "an omitted bio stays cleared");
+});

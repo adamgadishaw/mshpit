@@ -30,6 +30,7 @@ import { PROFILE_ACCENT_OPTIONS, PROFILE_FAVORITE_SHOWS_MAX, PROFILE_PRONOUNS_MA
 import { formatDate } from "../domain/dates.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import { createEditProfileCloseGuard } from "./editProfileCloseGuard.mjs";
+import { changedProfileDraftFields } from "../domain/profileEditDraft.mjs";
 
 const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar", { platform:Platform.OS });
 const BANNER_IMAGE_HINT = profileImageSelectionHint("banner", { platform:Platform.OS });
@@ -44,8 +45,6 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
   });
   const [name, setName] = useState(session?.name || "");
   const [handle, setHandle] = useState(session?.handle || "");
-  const handleChanged = handle !== session?.handle;
-  const handleInvalid = !isHandle(handle);
   const [bio, setBio] = useState(session?.bio || "");
   const [avatarUri, setAvatarUri] = useState(isDurableMediaUrl(session?.avatarUri) ? session.avatarUri : null);
   const [banner, setBanner] = useState(isDurableMediaUrl(session?.banner) ? session.banner : null);
@@ -58,10 +57,19 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
   const [uploadingBanner, setUploadingBanner] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [mediaError, setMediaError] = useState("");
   // Make it yours: pronouns, an accent colour and up to four favorite shows.
   const [pronouns, setPronouns] = useState(session?.pronouns || "");
   const [accent, setAccent] = useState(session?.accent || null);
   const [favoriteShows, setFavoriteShows] = useState(() => (Array.isArray(session?.favoriteShows) ? session.favoriteShows : []));
+  const [originalDraft] = useState(() => ({ name: name.trim(), handle, bio: bio.trim(), avatarUri, banner,
+    genres, home, pronouns: pronouns.trim() || null, accent: accent || null, favoriteShows }));
+  const patch = changedProfileDraftFields(originalDraft, {
+    name: name.trim() || originalDraft.name, handle, bio: bio.trim(), avatarUri, banner, genres, home,
+    pronouns: pronouns.trim() || null, accent: accent || null, favoriteShows,
+  });
+  const handleChanged = Object.hasOwn(patch, "handle");
+  const handleInvalid = handleChanged && !isHandle(handle);
   const history = useProfileHistory({ accountId: session?.id, targetId: session?.id, enabled: !!session?.id });
   const myShows = (Array.isArray(history.posts) ? history.posts : []).filter(pinnableShow);
   const historyLoading = ["idle", "loading", "refreshing"].includes(history.status);
@@ -118,11 +126,15 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
     if (uploadingAvatar || saving) return;
     const task = accountTasks.begin(session?.id);
     if (!task) return;
+    setMediaError("");
     let res;
     try {
       res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("avatar", { platform: Platform.OS }));
     } catch (error) {
-      if (task.isCurrent() && (!command || command.isCurrent())) reportMediaPickerError(error, "Opening the profile photo library");
+      if (task.isCurrent() && (!command || command.isCurrent())) {
+        const reported = reportMediaPickerError(error, "Opening the profile photo library");
+        setMediaError(reported?.userMessage || "The photo library could not be opened. Try again.");
+      }
       task.finish();
       return;
     }
@@ -131,9 +143,10 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
     try {
       const uploaded = await uploadSelectedImage(res.assets[0], "avatar", task);
       if (task.isCurrent() && (!command || command.isCurrent()) && uploaded) setAvatarUri(uploaded);
-    } catch {
-      // The upload helper records the themed diagnostic and leaves the existing
-      // durable photo untouched.
+    } catch (error) {
+      // Keep the draft photo and a persistent error beside its controls, even
+      // when the transport rejects before publishing a global diagnostic.
+      if (task.isCurrent() && (!command || command.isCurrent())) setMediaError(error?.userMessage || error?.message || "Your profile photo could not be uploaded. Try again.");
     } finally {
       if (task.isCurrent() && (!command || command.isCurrent())) setUploadingAvatar(false);
       task.finish();
@@ -143,11 +156,15 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
     if (uploadingBanner || saving) return;
     const task = accountTasks.begin(session?.id);
     if (!task) return;
+    setMediaError("");
     let res;
     try {
       res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("banner", { platform: Platform.OS }));
     } catch (error) {
-      if (task.isCurrent() && (!command || command.isCurrent())) reportMediaPickerError(error, "Opening the banner photo library");
+      if (task.isCurrent() && (!command || command.isCurrent())) {
+        const reported = reportMediaPickerError(error, "Opening the banner photo library");
+        setMediaError(reported?.userMessage || "The photo library could not be opened. Try again.");
+      }
       task.finish();
       return;
     }
@@ -156,8 +173,9 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
     try {
       const uploaded = await uploadSelectedImage(res.assets[0], "banner", task);
       if (task.isCurrent() && (!command || command.isCurrent()) && uploaded) setBanner(uploaded);
-    } catch {
+    } catch (error) {
       // Keep the editor open with its previous banner when upload fails.
+      if (task.isCurrent() && (!command || command.isCurrent())) setMediaError(error?.userMessage || error?.message || "Your profile banner could not be uploaded. Try again.");
     } finally {
       if (task.isCurrent() && (!command || command.isCurrent())) setUploadingBanner(false);
       task.finish();
@@ -169,6 +187,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
 
   const genreOptions = profileGenreOptions(genres);
   const genreSelection = profileGenreSelection(genres);
+  const genresInvalid = Object.hasOwn(patch, "genres") && !genreSelection.valid;
   const toggleGenre = (genre) => setGenres((current) => {
     if (current.includes(genre)) {
       setGenreError("");
@@ -189,22 +208,21 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
       setSaveError("Use 3–20 letters, numbers, or underscores for your @username.");
       return;
     }
-    if (!genreSelection.valid) {
+    if (genresInvalid) {
       setGenreError(genreSelection.error);
       return;
     }
     const task = accountTasks.begin(session?.id);
     if (!task) return;
-    const initials = (name.trim() || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
     setSaving(true);
     setSaveError("");
     try {
       const result = await Promise.resolve(updateProfile({
-        name: name.trim() || session.name, bio: bio.trim(), avatarUri, banner, genres: genreSelection.genres, initials, home,
-        ...(handleChanged ? { handle } : {}),
-        pronouns: pronouns.trim() || null, accent: accent || null,
+        ...patch,
+        ...(Object.hasOwn(patch, "genres") ? { genres: genreSelection.genres } : {}),
         // Pins whose review is gone are dropped rather than failing the save.
-        favoriteShows: history.status === "ready" && !history.nextCursor ? favoriteShows.filter((id) => myShows.some((post) => post.id === id)) : favoriteShows,
+        ...(Object.hasOwn(patch, "favoriteShows") ? { favoriteShows: history.status === "ready" && !history.nextCursor
+          ? favoriteShows.filter((id) => myShows.some((post) => post.id === id)) : favoriteShows } : {}),
       }, { expectedAccountId: task.accountId, signal: task.controller.signal }));
       if (!(task.isCurrent() && (!command || command.isCurrent()))) return;
       if (result?.ok !== false) {
@@ -226,7 +244,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
   return (
     <View style={styles.wrap}>
       {imageCropDialog}
-      <SheetHeader title="Edit your profile" onClose={requestClose} action={{ label: saving ? "Saving..." : mediaBusy ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : "Save", onPress: save, disabled: iosEditor?.confirmed || locked || mediaBusy || saving || !genreSelection.valid || handleInvalid }} />
+      <SheetHeader title="Edit your profile" onClose={requestClose} action={{ label: saving ? "Saving..." : mediaBusy ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : "Save", onPress: save, disabled: iosEditor?.confirmed || locked || mediaBusy || saving || genresInvalid || handleInvalid }} />
 
       <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"
         {...(Platform.OS === "ios" ? { automaticallyAdjustKeyboardInsets: true, keyboardDismissMode: "interactive" } : {})}>
@@ -272,6 +290,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
           <Text style={styles.changePhoto}>{uploadingAvatar ? (Platform.OS === "web" ? "Preparing photo..." : "Uploading photo...") : "Change photo"}</Text>
         </Pressable>
         <Text style={styles.avatarFormat}>{AVATAR_IMAGE_HINT}</Text>
+        {!!mediaError && <Text style={styles.saveError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{mediaError}</Text>}
 
         <Text style={styles.label}>NAME</Text>
         <TextInput {...(iosEditor ? { editable: !locked } : {})} style={styles.input} value={name} onChangeText={edit(setName)} placeholder="Your name" placeholderTextColor={colors.textFaint} maxLength={40}
@@ -391,7 +410,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
 
         {!!saveError && <Text style={styles.saveError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{saveError}</Text>}
 
-        <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} disabled={iosEditor?.confirmed || locked || mediaBusy || saving || !genreSelection.valid || handleInvalid} style={{ marginTop: 28 }} />
+        <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} disabled={iosEditor?.confirmed || locked || mediaBusy || saving || genresInvalid || handleInvalid} style={{ marginTop: 28 }} />
       </ScrollView>
     </View>
   );

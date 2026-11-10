@@ -205,7 +205,7 @@ for (const outcome of ["cancel", "throw", "upload-null", "upload-throw"]) test(`
   if (outcome === "cancel") f.pickers[0].resolve({ canceled: true });
   else if (outcome === "throw") f.pickers[0].reject(new Error("Synthetic picker failure"));
   else { f.pickers[0].resolve({ assets: [{ uri: "file:///synthetic.jpg" }] }); await f.settle(); if (outcome === "upload-null") f.uploads[0].resolve(null); else f.uploads[0].reject(new Error("Synthetic upload failure")); }
-  await f.settle(); assert.equal(f.input().props.editable, true); void f.save(); assert.equal(f.requests[0].args[0].bio, "Draft"); assert.equal(f.requests[0].args[0].avatarUri, "https://media.example.org/old.jpg"); await f.complete();
+  await f.settle(); assert.equal(f.input().props.editable, true); void f.save(); assert.equal(f.requests[0].args[0].bio, "Draft"); assert.equal(Object.hasOwn(f.requests[0].args[0], "avatarUri"), false); assert.equal(f.find(n => n.type === "Avatar").props.user.avatarUri, "https://media.example.org/old.jpg"); await f.complete();
 });
 
 test("no-op edits still release the commit barrier for Save", async t => {
@@ -227,7 +227,7 @@ for (const phase of ["picker", "upload"]) test(`real account scope retires pendi
   f.scope("other"); f.scope("synthetic-account"); f.act(() => { void photo(); }); assert.equal(f.pickers.length, 1);
   if (phase === "picker") { f.pickers[0].resolve({ assets: [{ uri: "file:///synthetic.jpg" }] }); await f.settle(); assert.equal(f.uploads.length, 0); }
   else { assert.equal(f.uploads[0].args[2].signal.aborted, true); f.uploads[0].resolve("https://media.example.org/stale.jpg"); await f.settle(); }
-  void f.save(); assert.equal(f.requests[0].args[0].avatarUri, "https://media.example.org/old.jpg"); await f.complete();
+  void f.save(); assert.equal(Object.hasOwn(f.requests[0].args[0], "avatarUri"), false); assert.equal(f.find(n => n.type === "Avatar").props.user.avatarUri, "https://media.example.org/old.jpg"); await f.complete();
 });
 
 test("confirmed success while hidden never closes a replacement route", async t => {
