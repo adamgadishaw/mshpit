@@ -42,6 +42,8 @@ Evidence is in `.tmp/scroll-feed-validation/`: `final-full-tests.log`, `final-ex
 
 ## Remaining acceptance
 
-No phone access, installation, deployment, push, signing changes, or replacement signed native build occurred. A signed build and device acceptance remain for the release owner when the phone is available. Native animation appearance/frame timing, VoiceOver navigation, and physical gesture feel are not certified by the deterministic harness.
+A separate signed native Release candidate is complete, with all 53 independent artifact checks passing. See [the native build handoff](IOS_SCROLL_FEED_NATIVE_BUILD_2026-11-10.md) for its path, provenance, signing, integrity, and preservation evidence. The existing signing configuration and all three previous candidates were preserved. No phone access, installation, deployment, or push occurred.
+
+Device acceptance remains for the release owner when the phone is available. Native animation appearance/frame timing, VoiceOver navigation, and physical gesture feel are not certified by the deterministic harness. The existing development provisioning profile expires November 14, 2026, at 23:50:01 UTC.
 
 Short content keeps fixed titles expanded to prevent offset/layout oscillation. You preserves its action-row height. The pre-existing fresh-mount Feed snapshot remains capped at 64 items; mounted filter/detail returns retain their actual list state.
