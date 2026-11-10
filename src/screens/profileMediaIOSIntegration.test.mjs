@@ -417,28 +417,30 @@ test('native primary readiness excludes rewards and preview cannot award achieve
   failed.unmount();
 });
 
-test('explicit owner actions preserve badges/current callbacks and refuse obsolete scopes', async () => {
+test('You removes lower activity icons at normal and large type while preserving every account-menu route and unread label', async () => {
   const f = fixture(), actions = [];
-  const tools = callback => [
-    { key: 'inbox', label: 'Inbox', icon: 'mail', badge: 4, onPress: callback },
+  f.state.ownerTools = [
+    { key: 'inbox', label: 'Inbox', icon: 'mail', badge: 4, onPress: () => actions.push('inbox') },
     { key: 'activity', label: 'Activity', icon: 'bell', badge: 120, onPress: () => actions.push('activity') },
-    { key: 'settings', label: 'Settings', icon: 'menu', onPress: noop },
+    { key: 'calendar', label: 'Calendar', icon: 'calendar', onPress: () => actions.push('calendar') },
+    { key: 'settings', label: 'Settings', icon: 'menu', onPress: () => actions.push('settings') },
   ];
-  f.state.ownerTools = tools(() => actions.push('old')); f.render(); await f.flush();
-  const old = f.byId('profile-owner-inbox').props.onPress;
-  assert.match(f.byId('profile-owner-inbox').props.accessibilityLabel, /4 unread/);
-  assert.match(f.byId('profile-owner-activity').props.accessibilityLabel, /120 unread/);
-  assert.equal(f.byId('profile-owner-settings'), undefined);
-  assert.deepEqual(actions, [], 'rendering shortcuts never opens Inbox or Activity');
-  f.state.ownerTools = tools(() => actions.push('current')); f.render(); f.act(old);
-  assert.deepEqual(actions, ['current']);
-  f.state.fontScale = 3; f.render();
-  assert.ok(flatten(f.byId('profile-owner-inbox').props.style).minHeight >= 44);
-  assert.ok(f.all().filter(n => n.type === 'Text').every(n => n.props.allowFontScaling !== false));
-  const beforeEpoch = f.byId('profile-owner-inbox').props.onPress;
-  f.state.epoch++; f.render(); f.act(beforeEpoch); assert.deepEqual(actions, ['current']);
-  const beforeUnmount = f.byId('profile-owner-inbox').props.onPress;
-  f.unmount(); f.act(beforeUnmount); assert.deepEqual(actions, ['current']);
+  for (const fontScale of [1, 3]) {
+    f.state.fontScale = fontScale; f.render(); await f.flush();
+    assert.equal(f.byId('profile-owner-inbox'), undefined); assert.equal(f.byId('profile-owner-activity'), undefined);
+    assert.equal(f.all().filter(n => n.type === 'Icon' && ['mail', 'bell'].includes(n.props.name)).length, 0);
+    assert.equal(f.byId('profile-action-menu').props.accessibilityLabel, 'Your account, 124 unread updates');
+    const before = actions.length;
+    for (let index = 0; index < 4; index++) {
+      f.press('profile-action-menu'); const sheet = f.sheets.at(-1);
+      assert.deepEqual(sheet.options.options, ['Inbox (4 new)', 'Activity (120 new)', 'Calendar', 'Settings', 'Cancel']);
+      f.act(() => sheet.choose(index));
+    }
+    assert.deepEqual(actions.slice(before), ['inbox', 'activity', 'calendar', 'settings']);
+    const target = flatten(f.byId('profile-action-menu').props.style({ pressed: false }));
+    assert.ok((target.minHeight || target.height) >= 44);
+  }
+  f.unmount();
 });
 
 for (const platform of ['android', 'web']) test(`${platform} has no native section wrappers, tab controls or owner shortcut additions`, async () => {
@@ -528,20 +530,18 @@ test('owner shortcut handlers belong to one layout presentation across Suspense 
 });
 
 
-test('captured owner shortcuts stay inert during preview and never borrow a later promotion', async () => {
-  const f = fixture(), actions = [];
-  f.state.preview = true;
+test('remaining You account menu preserves presentation guards without restoring duplicate activity icons', async () => {
+  const f = fixture({ managed: true }), actions = [];
   f.state.ownerTools = [{ key: 'inbox', label: 'Inbox', icon: 'mail', onPress: () => actions.push('inbox') }];
-  f.render(); await f.flush(); const previewHandler = f.byId('profile-owner-inbox').props.onPress;
-  f.act(previewHandler); assert.deepEqual(actions, []);
-  f.state.preview = false; f.render(); await f.flush();
-  f.act(previewHandler); assert.deepEqual(actions, [], 'preview callback never gains committed ownership');
-  const committed = f.byId('profile-owner-inbox').props.onPress;
-  f.act(committed); assert.deepEqual(actions, ['inbox']);
-  f.state.preview = true; f.render(); f.act(committed); assert.deepEqual(actions, ['inbox']);
-  f.state.preview = false; f.render(); f.act(committed); assert.deepEqual(actions, ['inbox'], 'old foreground handler cannot borrow the fresh promotion');
-  f.press('profile-owner-inbox'); assert.deepEqual(actions, ['inbox', 'inbox']);
-  f.unmount();
+  f.render(); await f.flush(); const oldOpen = f.byId('profile-action-menu').props.onPress;
+  f.act(oldOpen); const choose = f.sheets.at(-1).choose;
+  f.cover(); f.act(() => choose(0)); assert.deepEqual(actions, []);
+  f.reveal(); await f.flush(); const count = f.sheets.length; f.act(oldOpen);
+  assert.equal(f.sheets.length, count, 'retired opener cannot borrow the new presentation');
+  assert.equal(f.byId('profile-owner-inbox'), undefined); assert.equal(f.byId('profile-owner-activity'), undefined);
+  f.press('profile-action-menu'); f.act(() => f.sheets.at(-1).choose(0)); assert.deepEqual(actions, ['inbox']);
+  f.press('profile-action-menu'); const beforeUnmount = f.sheets.at(-1).choose;
+  f.unmount(); f.act(() => beforeUnmount(0)); assert.deepEqual(actions, ['inbox']);
 });
 
 

@@ -42,7 +42,7 @@ import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import { PostNavigationContext } from "../components/PostNavigationContext";
 import { profileAccentColor } from "../domain/profileAccents.mjs";
-import { ProfileSection, ProfileIdentityRow, ProfileOwnerActions, ProfileSectionTabs, hierarchyStyles } from "../features/profilePresentation/ProfileHierarchy";
+import { ProfileSection, ProfileIdentityRow, ProfileSectionTabs, hierarchyStyles } from "../features/profilePresentation/ProfileHierarchy";
 import { ProfileBannerCover, ProfileGallery, ProfileMediaRetryBoundary, useProfileMediaPresentation } from "../features/profileMedia/ProfileMediaPresentation";
 
 const IS_IOS = Platform.OS === "ios";
@@ -600,7 +600,6 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             <Text style={styles.topTitle}>@{user.handle}</Text>
           </>
         )}
-        {IS_IOS && !largeText && isSelf && asTab && ownerTools?.length ? <ProfileOwnerActions actions={ownerTools} scope={`${profileScope}:${chatAuthEpoch}`} /> : null}
         {IS_IOS && session && (isSelf ? asTab && ownerTools?.length : true) ? (
           <ProfileActionMenu actions={profileMenuActions} scope={profileScope} label={isSelf ? "Your account" : "Profile actions"} unread={ownerUnread} />
         ) : asTab && isSelf && ownerTools?.length ? null : session && !isSelf && onReport ? (
@@ -622,7 +621,6 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           </Pressable>
         ) : <View style={{ width: 40 }} />}
       </View>
-      {IS_IOS && largeText && isSelf && asTab && ownerTools?.length ? <ProfileOwnerActions actions={ownerTools} scope={`${profileScope}:${chatAuthEpoch}`} largeText /> : null}
       {!IS_IOS && asTab && isSelf && ownerTools?.length ? (
         // Your own tools, each with its name under the icon, in one row that
         // fits a 320px phone.

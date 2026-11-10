@@ -276,3 +276,22 @@ test('Feed tabs wrap large type, keep 44-point targets, and share VoiceOver and 
   assert.equal(f.animations.at(-1).options.duration, 0);
   assert.equal(f.all().find(n => n.type === 'AnimatedView' && n.props.animatedProps).props.style.animate().transform[0].translateY, -160);
 });
+
+test('You retains exactly one upper Messages/Notifications pair with unread badges, actions and scrolling visibility', t => {
+  const f = fixture(); t.after(f.close); f.render({ page: 'you' });
+  const controls = () => f.all().filter(n => n.type === 'Pressable' && /^(Messages|Notifications),/.test(n.props.accessibilityLabel || ''));
+  assert.deepEqual(controls().map(n => n.props.accessibilityLabel), ['Messages, 5 unread', 'Notifications, 8 unread']);
+  assert.equal(f.node('native-activity-icons').children.length, 2);
+  const [messages, notifications] = controls();
+  f.act(messages.props.onPress); f.act(notifications.props.onPress);
+  assert.deepEqual(f.calls.filter(value => typeof value === 'string'), ['inbox', 'notifications']);
+  f.begin('a'); f.offset('a', 100); assert.equal(f.chrome.shown.get(), false);
+  f.act(messages.props.onPress); f.act(notifications.props.onPress);
+  assert.equal(f.calls.filter(value => typeof value === 'string').length, 2, 'hidden controls cannot navigate');
+  f.offset('a', 60); assert.equal(f.chrome.shown.get(), true);
+  f.render({ fontScale: 3 });
+  assert.deepEqual(controls().map(n => n.props.accessibilityLabel), ['Messages, 5 unread', 'Notifications, 8 unread']);
+  assert.equal(nodes(f.node('native-activity-icons')).filter(n => n.type === 'Text').length, 0, 'large text uses badge dots while counts remain spoken');
+  for (const control of controls()) f.act(control.props.onPress);
+  assert.deepEqual(f.calls.filter(value => typeof value === 'string'), ['inbox', 'notifications', 'inbox', 'notifications']);
+});
