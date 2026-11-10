@@ -8146,11 +8146,11 @@ export const routes = {
     assertSafeAuthoredText(text, { field: "message" });
     const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId
-      ? db.prepare("SELECT id,to_id,text,removed FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      ? db.prepare("SELECT id,to_id,text,removed,created_at FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
       : null;
     if (existing) {
       assertChatRetryMatches(existing, { to_id: other, text });
-      return { id: existing.id, duplicate: true };
+      return { id: existing.id, createdAt: existing.created_at, duplicate: true };
     }
     const priorConversation = !!db.prepare(`SELECT 1 FROM dms
       WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) LIMIT 1`).get(u.id, other, other, u.id);
@@ -8176,21 +8176,22 @@ export const routes = {
     }
     limit(ctx, "dm", 120, 10 * 60 * 1000);
     const id = uid("dm");
+    const createdAt = now();
     if (mutationId) {
       const inserted = db.prepare("INSERT OR IGNORE INTO dms (id,from_id,to_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
-        .run(id, u.id, other, text, mutationId, now());
+        .run(id, u.id, other, text, mutationId, createdAt);
       if (!inserted.changes) {
-        const raced = db.prepare("SELECT id,to_id,text,removed FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1")
+        const raced = db.prepare("SELECT id,to_id,text,removed,created_at FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1")
           .get(u.id, mutationId);
         assertChatRetryMatches(raced, { to_id: other, text });
-        if (raced) return { id: raced.id, duplicate: true };
+        if (raced) return { id: raced.id, createdAt: raced.created_at, duplicate: true };
         throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
       }
     } else {
-      db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run(id, u.id, other, text, now());
+      db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run(id, u.id, other, text, createdAt);
     }
     addNotif(other, u.id, "dm", { postId: id, text: text.slice(0, 80) });
-    return { id };
+    return { id, createdAt };
   },
 
   // ---- notifications / activity (server-backed) ----
@@ -8404,28 +8405,29 @@ export const routes = {
     if (!artist) throw new ApiError(403, "Join this fan club before jumping into the conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
     const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId
-      ? db.prepare("SELECT id,artist,text,removed FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      ? db.prepare("SELECT id,artist,text,removed,created_at FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
       : null;
     if (existing) {
       assertChatRetryMatches(existing, { artist, text });
-      return { id: existing.id, duplicate: true };
+      return { id: existing.id, createdAt: existing.created_at, duplicate: true };
     }
     limit(ctx, "fanmsg", 60, 60 * 60 * 1000);
     const id = uid("fc");
+    const createdAt = now();
     if (mutationId) {
       const inserted = db.prepare("INSERT OR IGNORE INTO fan_club_messages (id,artist,user_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
-        .run(id, artist, u.id, text, mutationId, now());
+        .run(id, artist, u.id, text, mutationId, createdAt);
       if (!inserted.changes) {
-        const raced = db.prepare("SELECT id,artist,text,removed FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
+        const raced = db.prepare("SELECT id,artist,text,removed,created_at FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
           .get(u.id, mutationId);
         assertChatRetryMatches(raced, { artist, text });
-        if (raced) return { id: raced.id, duplicate: true };
+        if (raced) return { id: raced.id, createdAt: raced.created_at, duplicate: true };
         throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
       }
     } else {
-      db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, artist, u.id, text, now());
+      db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, artist, u.id, text, createdAt);
     }
-    return { id };
+    return { id, createdAt };
   },
 
   // ---- concert lounge (shared attendee chat, keyed by concertKey) ----
@@ -8524,12 +8526,12 @@ export const routes = {
     if (!attendee) throw new ApiError(403, "Join this show's Going list before posting in the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
     const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId
-      ? db.prepare("SELECT id,lounge_id,text,removed FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      ? db.prepare("SELECT id,lounge_id,text,removed,created_at FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
       : null;
     if (existing) {
       assertChatRetryMatches(existing, { lounge_id: key, text });
       legacySafeLoungeSnapshot(key, now(), { register: true });
-      return { id: existing.id, duplicate: true };
+      return { id: existing.id, createdAt: existing.created_at, duplicate: true };
     }
     const lifecycle = legacySafeLoungeSnapshot(key, now(), { register: true });
     if (lifecycle.status === "closed") {
@@ -8537,20 +8539,21 @@ export const routes = {
     }
     limit(ctx, "loungemsg", 90, 60 * 60 * 1000);
     const id = uid("lm");
+    const createdAt = now();
     if (mutationId) {
       const inserted = db.prepare("INSERT OR IGNORE INTO lounge_messages (id,lounge_id,user_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
-        .run(id, key, u.id, text, mutationId, now());
+        .run(id, key, u.id, text, mutationId, createdAt);
       if (!inserted.changes) {
-        const raced = db.prepare("SELECT id,lounge_id,text,removed FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
+        const raced = db.prepare("SELECT id,lounge_id,text,removed,created_at FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
           .get(u.id, mutationId);
         assertChatRetryMatches(raced, { lounge_id: key, text });
-        if (raced) return { id: raced.id, duplicate: true };
+        if (raced) return { id: raced.id, createdAt: raced.created_at, duplicate: true };
         throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
       }
     } else {
-      db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, now());
+      db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, createdAt);
     }
-    return { id };
+    return { id, createdAt };
   },
 
   // ---- consented first-party product analytics ----

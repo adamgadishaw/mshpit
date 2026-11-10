@@ -48,6 +48,8 @@ test("DM retries return one row and reject mutation-token reuse", () => {
 
   assert.equal(retry.id, first.id);
   assert.equal(retry.duplicate, true);
+  assert.equal(first.createdAt, db.prepare("SELECT created_at FROM dms WHERE id=?").get(first.id).created_at);
+  assert.equal(retry.createdAt, first.createdAt, "retry preserves canonical creation time");
   assert.equal(db.prepare("SELECT COUNT(*) count FROM dms WHERE from_id=? AND client_mutation_id=?")
     .get(sender.id, body.clientMutationId).count, 1);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM notifications WHERE user_id=? AND type='dm' AND post_id=?")
@@ -80,6 +82,8 @@ test("fan-club retries return one row and keep the token bound to its room and t
 
   assert.equal(retry.id, first.id);
   assert.equal(retry.duplicate, true);
+  assert.equal(first.createdAt, db.prepare("SELECT created_at FROM fan_club_messages WHERE id=?").get(first.id).created_at);
+  assert.equal(retry.createdAt, first.createdAt, "retry preserves canonical creation time");
   assert.equal(db.prepare("SELECT COUNT(*) count FROM fan_club_messages WHERE user_id=? AND client_mutation_id=?")
     .get(sender.id, ctx.body.clientMutationId).count, 1);
   assert.throws(
@@ -104,6 +108,8 @@ test("lounge retries return one row and malformed tokens are rejected", () => {
 
   assert.equal(retry.id, first.id);
   assert.equal(retry.duplicate, true);
+  assert.equal(first.createdAt, db.prepare("SELECT created_at FROM lounge_messages WHERE id=?").get(first.id).created_at);
+  assert.equal(retry.createdAt, first.createdAt, "retry preserves canonical creation time");
   assert.equal(db.prepare("SELECT COUNT(*) count FROM lounge_messages WHERE user_id=? AND client_mutation_id=?")
     .get(sender.id, ctx.body.clientMutationId).count, 1);
   assert.throws(

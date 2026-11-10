@@ -63,6 +63,7 @@ import { mergeUniquePage, reconcileMemberMutationPage } from "./domain/pageMerge
 import { mergeChatMessages, reconcileRemovedDirectMessages } from "./domain/chatMessages.mjs";
 import { normalizeMessageRelationshipContext } from "./domain/messageRelationshipContext.mjs";
 import {
+  chatDeliveryFailure,
   chatOutboxFor,
   chatOutboxMessageId,
   confirmedChatMessage,
@@ -5151,9 +5152,10 @@ export function StoreProvider({ children }) {
     }
     return candidate;
   };
-  const commitConfirmedChatMessage = (item, serverId) => {
-    const message = confirmedChatMessage(item, serverId);
+  const commitConfirmedChatMessage = (item, acknowledgement) => {
+    const message = confirmedChatMessage(item, acknowledgement);
     if (!message) return;
+    if (Number.isFinite(acknowledgement?.createdAt) && acknowledgement.createdAt >= 0) message.ts = ago(message.at);
     if (item.kind === "dm") {
       setDms((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 750) }));
     } else if (item.kind === "fan") {
@@ -5168,47 +5170,57 @@ export function StoreProvider({ children }) {
       return { ok: false, stale: true };
     }
     if (item.status === "sending") return { ok: false, pending: true, localId };
+    if (item.retryable === false || (Number.isFinite(item.retryAt) && item.retryAt > Date.now())) {
+      return { ok: false, localId, retryable: item.retryable, retryAt: item.retryAt,
+        deliveryState: item.deliveryState, deliveryMessage: item.deliveryMessage };
+    }
     commitChatOutbox((current) => updateChatOutboxItem(current, localId, {
       status: "sending",
       pending: true,
       failed: false,
+      deliveryState: "sending",
+      deliveryMessage: null,
+      retryAt: null,
     }));
     try {
-      const { id } = await api(item.endpoint, {
+      const acknowledgement = await api(item.endpoint, {
         method: "POST",
         body: { text: item.text, clientMutationId: item.clientMutationId },
         context: item.context,
         expectedAccountId: item.ownerId,
       });
-      if (!id) throw new Error("Message delivery was not confirmed");
+      const id = acknowledgement?.id;
+      if (typeof id !== "string" || !id.trim()) throw new Error("Message delivery was not confirmed");
       const live = chatOutboxRef.current.find((entry) => entry.id === localId);
       if (!live || live.ownerId !== sessionRef.current?.id || live.authEpoch !== chatAuthEpochRef.current) {
         return { ok: false, stale: true };
       }
       commitChatOutbox((current) => withoutChatOutboxItem(current, localId));
-      commitConfirmedChatMessage(live, id);
+      commitConfirmedChatMessage(live, acknowledgement);
       return { ok: true, id, localId };
-    } catch {
+    } catch (error) {
       const live = chatOutboxRef.current.find((entry) => entry.id === localId);
       if (live && live.ownerId === sessionRef.current?.id && live.authEpoch === chatAuthEpochRef.current) {
-        commitChatOutbox((current) => updateChatOutboxItem(current, localId, {
-          status: "failed",
-          pending: false,
-          failed: true,
-        }));
-        return { ok: false, retryable: true, localId };
+        const failure = chatDeliveryFailure(error, { previouslyUnconfirmed: live.deliveryUncertain === true });
+        commitChatOutbox((current) => updateChatOutboxItem(current, localId, failure));
+        return { ok: false, ...failure, localId };
       }
       return { ok: false, stale: true };
     }
   };
   const queueChatMessage = (item) => {
-    commitChatOutbox((current) => withChatOutboxItem(current, item));
+    const next = commitChatOutbox((current) => withChatOutboxItem(current, item));
+    if (!next.includes(item)) {
+      return Promise.resolve({ ok: false, queued: false, queueFull: true, retryable: false,
+        deliveryState: "queue_full",
+        deliveryMessage: "Too many messages are waiting. Resolve or dismiss a pending message, then try again." });
+    }
     return deliverChatMessage(item.id);
   };
   const retryChatMessage = (localId) => deliverChatMessage(localId);
   const cancelChatMessage = (localId) => {
     const item = chatOutboxRef.current.find((entry) => entry.id === localId);
-    if (!item || item.ownerId !== sessionRef.current?.id || item.status !== "failed") return false;
+    if (!item || item.ownerId !== sessionRef.current?.id || item.authEpoch !== chatAuthEpochRef.current || item.status !== "failed") return false;
     commitChatOutbox((current) => withoutChatOutboxItem(current, localId));
     return true;
   };
