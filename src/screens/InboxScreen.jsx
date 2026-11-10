@@ -13,6 +13,7 @@ import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { messageRelationshipChips } from "../domain/messageRelationshipContext.mjs";
 import { createIOSInboxLoad } from "../domain/iosInboxLoad.mjs";
+import { chatDeliverySnippetPrefix } from "../domain/chatDeliveryPresentation.mjs";
 
 const EMPTY_PEOPLE_SEARCH = Object.freeze({ status: "idle", rows: [], error: "" });
 
@@ -105,7 +106,7 @@ export default function InboxScreen({ onClose, onOpenThread }) {
             </View>
           )}
           <Text style={[styles.snippet, t.unread > 0 && styles.snippetUnread]} numberOfLines={1}>
-            {t.last?.failed ? "Not sent: " : t.last?.from === session.id ? "You: " : ""}{t.last?.text}
+            {t.last?.failed ? chatDeliverySnippetPrefix(t.last) : t.last?.from === session.id ? "You: " : ""}{t.last?.text}
           </Text>
         </View>
         <View style={{ alignItems: "flex-end", gap: 6 }}>

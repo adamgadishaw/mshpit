@@ -75,8 +75,8 @@ const rootCommands = new Function("Platform", "navigationRef", "stackRef", "link
   return { go: commitGo, back: popStack };
 `);
 
-function fixture({ platform = "ios", strict = false, capacity = 32 } = {}) {
-  const renderer = createRenderer(), sends = [], retries = [], cancels = [], reads = [];
+function fixture({ platform = "ios", strict = false, capacity = 32, messageRequest = false } = {}) {
+  const renderer = createRenderer(), sends = [], retries = [], cancels = [], reads = [], accepts = [];
   const drafts = createIOSMessageDrafts({ capacity });
   const linkedNavigationRef = { current: createIOSLinkedNavigation() }; linkedNavigationRef.current.mount();
   let account = "A", epoch = 1, suspended = false;
@@ -106,6 +106,8 @@ function fixture({ platform = "ios", strict = false, capacity = 32 } = {}) {
       cancelChatMessage: id => { cancels.push(id); return true; },
       loadThread: (...args) => { reads.push(args); return Promise.resolve({}); },
       markThreadRead: () => { throw new Error("Unexpected read marker"); }, loadUser: noop,
+      getDMRequestState: () => messageRequest ? "pending" : null,
+      acceptDMRequest: (...args) => request(accepts, args),
     }) };
     if (name.startsWith("../components/")) return name.split("/").at(-1);
     assert.ok(name.startsWith("../domain/"), `Unexpected dependency: ${name}`);
@@ -117,7 +119,7 @@ function fixture({ platform = "ios", strict = false, capacity = 32 } = {}) {
   function MaybeSuspend() { if (suspended) throw suspension; return null; }
   const command = () => rootCommands(native.Platform, navigationRef, stackRef, linkedNavigationRef, account ? { id: account } : null);
   const f = {
-    sends, retries, cancels, reads, drafts, navigationRef, linkedNavigationRef,
+    sends, retries, cancels, reads, accepts, drafts, navigationRef, linkedNavigationRef,
     get lease() { return drafts.lease(navigationRef.current.stack.at(-1).thread || "recipient"); },
     all: () => nodes(renderer.container),
     find: predicate => { const node = f.all().find(predicate); assert.ok(node, "Expected rendered control"); return node; },
@@ -127,7 +129,8 @@ function fixture({ platform = "ios", strict = false, capacity = 32 } = {}) {
     capture() { return {
       edit: f.input.props.onChangeText, submit: f.input.props.onSubmitEditing,
       tap: f.button("Send direct message to Fixture member").props.onPress,
-      retry: f.button("Retry direct message").props.onPress, cancel: f.button("Cancel failed direct message").props.onPress,
+      retry: f.button("Retry direct message").props.onPress, cancel: f.button("Cancel failed message").props.onPress,
+      accept: messageRequest ? f.button("Accept message request").props.onPress : undefined,
     }; },
     edit(value) { f.act(() => f.input.props.onChangeText(value)); },
     send() { let result; f.act(() => { result = platform === "ios" ? f.button("Send direct message to Fixture member").props.onPress() : f.input.props.onSubmitEditing(); }); return result; },
@@ -163,8 +166,29 @@ function fixture({ platform = "ios", strict = false, capacity = 32 } = {}) {
   };
   f.render(); return f;
 }
-const invokeRetired = (f, old) => f.act(() => { old.edit("Retired overwrite"); void old.submit?.(); void old.tap(); void old.retry(); old.cancel(); });
-const noCommands = f => { assert.equal(f.sends.length, 0); assert.equal(f.retries.length, 0); assert.deepEqual(f.cancels, []); assert.deepEqual(f.reads, []); };
+const invokeRetired = (f, old) => f.act(() => { old.edit("Retired overwrite"); void old.submit?.(); void old.tap(); void old.retry(); old.cancel(); void old.accept?.(); });
+const noCommands = f => { assert.equal(f.sends.length, 0); assert.equal(f.retries.length, 0); assert.deepEqual(f.cancels, []); assert.deepEqual(f.reads, []); assert.equal(f.accepts.length, 0); };
+
+test("request acceptance needs a current route and does not send a reply", async t => {
+  const f = fixture({ messageRequest: true }); t.after(f.close); await f.settle();
+  const old = f.capture(); f.goBeforeRender({ profileId: "member" });
+  invokeRetired(f, old); noCommands(f); f.render(); f.back(); await f.settle();
+  const accept = f.button("Accept message request").props.onPress;
+  f.act(() => { void accept(); void accept(); });
+  assert.equal(f.accepts.length, 1); assert.deepEqual(f.accepts[0].args, ["recipient"]);
+  assert.equal(f.sends.length, 0);
+  await f.complete(f.accepts, 0, { ok: false });
+  f.find(n => n.type === "Text" && n.props.children === "This request couldn’t be accepted. Try again.");
+  assert.equal(f.button("Accept message request").props.disabled, false);
+});
+
+test("old acceptance completion cannot announce success in a different account", async t => {
+  const f = fixture({ messageRequest: true }); t.after(f.close); await f.settle();
+  f.act(() => { void f.button("Accept message request").props.onPress(); });
+  f.scope("B", 2);
+  await f.complete(f.accepts);
+  assert.equal(f.all().some(n => n.type === "Text" && n.props.children === "Message request accepted."), false);
+});
 
 for (const strict of [false, true]) test(`actual Profile navigation rejects retained edit/send/retry/cancel; draft survives (StrictMode ${strict})`, async t => {
   const f = fixture({ strict }); t.after(f.close); await f.settle(); f.edit("Draft kept before leaving"); const old = f.capture(), lease = f.lease;
@@ -250,7 +274,7 @@ for (const newer of [false, true]) test(`accepted failed-row retry settles origi
 test("retry cannot clear an exact pending send claim; current cancel stays a Store command", async t => {
   const f = fixture(); t.after(f.close); f.edit("Failed draft"); void f.send(); void f.retry();
   await f.complete(f.retries); assert.deepEqual(f.lease.read(), { text: "Failed draft", sending: true });
-  f.act(() => f.button("Cancel failed direct message").props.onPress()); assert.deepEqual(f.cancels, ["failed-row"]);
+  f.act(() => f.button("Cancel failed message").props.onPress()); assert.deepEqual(f.cancels, ["failed-row"]);
   await f.complete(f.sends); assert.deepEqual(f.lease.read(), { text: "", sending: false });
 });
 
@@ -298,3 +322,16 @@ test("accepted failed-row retry settles while hidden without reviving hidden con
   assert.deepEqual(lease.read(), { text: "", sending: false }); f.suspend(false); await f.settle();
   invokeRetired(f, old); f.edit("Fresh draft"); void f.send(); assert.equal(f.sends.length, 1);
 });
+
+for (const platform of ["android", "web"]) for (const kind of ["account", "epoch", "recipient", "unmount"]) {
+  test(`${platform} retired acceptance cannot target a new ${kind}`, async t => {
+    const f = fixture({ platform, messageRequest: true }); t.after(f.close); await f.settle();
+    const accept = f.button("Accept message request").props.onPress;
+    if (kind === "account") f.scope("B", 2);
+    if (kind === "epoch") f.scope("A", 2);
+    if (kind === "recipient") f.scope("A", 1, "other");
+    if (kind === "unmount") f.close();
+    f.act(() => { void accept(); });
+    assert.equal(f.accepts.length, 0);
+  });
+}
