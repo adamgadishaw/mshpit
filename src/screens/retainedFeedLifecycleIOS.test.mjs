@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,15 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const require = createRequire(new URL("../../package.json", import.meta.url));
 const React = require("react"), reconciler = require("react-reconciler");
 const { transformSync } = require("@babel/core");
+// Use RN 0.86's installed StyleSheet API; a mock of removed absoluteFillObject
+// previously let zero-height Feed pages pass the entire suite.
+const styleFile = realpathSync(new URL("../../node_modules/react-native/Libraries/StyleSheet/StyleSheetExports.js", import.meta.url));
+const styleCode = transformSync(readFileSync(styleFile, "utf8"), { filename: styleFile, babelrc: false, configFile: false,
+  presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: false } }).code;
+const styleModule = { exports: {} };
+new Function("require", "module", "exports", "__DEV__", styleCode)(name => name.startsWith("@babel/") ? require(name) : name.includes("PixelRatio")
+  ? { default: { roundToNearestPixel: () => 0.5, get: () => 2 } } : {}, styleModule, styleModule.exports, false);
+const installedStyleSheet = styleModule.exports.default;
 const noop = () => {};
 const codes = new Map();
 function execute(file, imports, timers) {
@@ -93,7 +102,7 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
       ...props.data.map((item, index) => React.createElement(React.Fragment, { key: props.keyExtractor(item) }, props.renderItem({ item, index }))));
   };
   const native = { View: "View", Text: "Text", Pressable: "Pressable", ScrollView: "ScrollView", Modal: "Modal", Alert: { alert: noop }, Linking: { openURL: (...args) => { calls.actions.push(args); return Promise.resolve(); } },
-    Platform: { OS: platform, select: values => values[platform] || values.default }, StyleSheet: { create: value => value, absoluteFill: {} },
+    Platform: { OS: platform, select: values => values[platform] || values.default }, StyleSheet: installedStyleSheet,
     useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1 }), FlatList };
   const component = name => props => React.createElement(name, { ...props, preview: usePreview() }, props.children);
   const load = file => {
@@ -136,6 +145,7 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
     if (name.endsWith("/feedImageRetry")) return { useFeedImageRetry: () => ({ value: null, isCurrent: () => true, accept: noop }), FeedImageRetryProvider: p => p.children };
     if (name.endsWith("/theme")) return { colors: new Proxy({}, { get: (_, key) => String(key) }), radius: {}, shadow: {}, glow: {}, font: "", roleColor: () => null, space: value => value * 4 };
     if (name.endsWith("/persist")) return { load: (key, value) => persisted.get(key) ?? value, save: (key, value) => persisted.set(key, value) };
+    if (name.endsWith("/useIOSFeedSelection")) return load("src/hooks/useIOSFeedSelection.ios.js");
     if (name.endsWith("/useEndlessFeed")) return load(platform === "ios" ? "src/hooks/useEndlessFeed.ios.js" : "src/hooks/useEndlessFeed.js");
     if (name.endsWith("/endlessFeed.mjs")) return { createEndlessFeed: args => local(name).createEndlessFeed({ ...args,
       schedule: (fn, delay) => { const key = {}; pagingTimers.set(key, { fn, delay }); return key; }, cancel: key => pagingTimers.delete(key) }) };
@@ -158,12 +168,15 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
   const introductionSession = require("./src/domain/newsIntroductionSession.mjs").createNewsIntroductionSession();
   persisted.set(require("./src/domain/feedExperience.mjs").feedFilterStorageKey(accountId), filter);
   const Feed = load("src/screens/FeedScreen.ios.jsx").default;
+  const useSelection = load("src/hooks/useIOSFeedSelection.ios.js").default;
+  let selection;
+  function SelectedFeed(props) { selection = useSelection(props.accountId); return React.createElement(Feed, { ...props, feedSelection: selection }); }
   const all = () => walk(renderer.container);
   const page = filter => all().find(node => node.props?.testID === `main-tab-page-${filter}`);
   const listFor = filter => page(filter) && walk(page(filter)).find(node => node.type === "FlatList");
   const list = () => { const selected = all().find(node => node.props?.testID?.startsWith("main-tab-page-") && node.props.pointerEvents === "auto"); return selected ? walk(selected).find(node => node.type === "FlatList") : all().find(node => node.type === "FlatList"); };
   const event = label => { const node = all().find(node => node.props?.accessibilityLabel === label); assert.ok(node, label + ": " + JSON.stringify(all().filter(n => n.props?.accessibilityLabel).map(n => n.props.accessibilityLabel)) + " rows=" + list()?.props.data.length); return node.props.onPress; };
-  const render = () => { const element = React.createElement(Feed, { visible, accountId, loggedIn: !!accountId, swipeScope: presentation, swipeEnabled: visible && appActive,
+  const render = () => { const element = React.createElement(SelectedFeed, { visible, accountId, loggedIn: !!accountId, swipeScope: presentation, swipeEnabled: visible && appActive,
     isCurrentSwipeRoute: presentation.current, feedPresentation: presentation, feedReturn: { key: "lease", current: () => true, read: () => null, save: noop, clear: noop },
     feed: source, localFeed: source, hasMore, unread, notifUnread,
     onOpenInbox: activity ? () => calls.actions.push("inbox") : undefined, onOpenNotifications: activity ? () => calls.actions.push("notifications") : undefined, onLoadMore: pending("loadMore"), onRefresh: pending("refresh"),
@@ -175,6 +188,8 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
   };
   render();
   return { all, list, listFor, page, calls, intervals, pagingTimers, render, act: renderer.act, event,
+    selectFilter(value) { renderer.act(() => selection.select(value)); },
+    selection: () => selection,
     data(rows, more) { source = rows; hasMore = more; render(); },
     endReached: () => list().props.onEndReached,
     advance() {
@@ -303,23 +318,18 @@ test("actual iOS introduction row remains in place when its completed command is
   } finally { f.close(); }
 });
 
-test("actual pager cancels candidate without losing source instance and preserves nested preview effect gates", () => {
+test("Feed has no nested filter rail and inherited previews keep every retained pane inert", () => {
   const f = fixture();
   try {
-    const source = f.list().props.instance;
-    f.act(() => f.all().find(node => node.type === "Rail").props.onPageIntent("negative", 7));
-    const lists = f.all().filter(node => node.type === "FlatList");
-    assert.equal(lists.length, 2); assert.equal(f.calls.news.length, 2);
-    const candidatePage = f.all().find(node => node.props?.testID === "main-tab-page-news");
-    assert.equal(candidatePage.props.pointerEvents, "none");
-    f.act(() => f.all().find(node => node.type === "Rail").props.onPageCancel());
-    assert.equal(f.all().filter(node => node.type === "FlatList").length, 1); assert.equal(f.list().props.instance, source);
-    assert.ok(f.calls.news.every(call => call.args.signal.aborted));
+    const source = f.list();
+    assert.equal(f.all().some(node => node.type === "Rail"), false, "global-tab rail keeps ownership of horizontal gestures");
+    assert.equal(f.all().some(node => node.props?.accessibilityRole === "tablist"), false);
+    f.selectFilter("local"); const local = f.list(); assert.notEqual(local, source);
     f.cover();
-    const page = f.all().find(node => node.props?.testID === "main-tab-page-everyone");
-    assert.equal(page.props.pointerEvents, "none"); assert.equal(page.props.accessibilityElementsHidden, true);
-    assert.equal(f.all().find(node => node.type === "TicketStub").props.preview, true);
-    f.uncover(); assert.equal(f.list().props.instance, source);
+    for (const name of ["everyone", "local"]) {
+      assert.equal(f.page(name).props.pointerEvents, "none"); assert.equal(f.page(name).props.accessibilityElementsHidden, true);
+    }
+    f.uncover(); assert.equal(f.list(), local); f.selectFilter("everyone"); assert.equal(f.list(), source);
   } finally { f.close(); }
 });
 
@@ -491,50 +501,16 @@ for (const surface of ["news", "everyone"]) test(`full production Feed/${surface
 });
 
 
-for (const control of ["Messages", "Notifications"]) {
-  test(`fixed Feed ${control} stays with the list and retires stale presentation presses`, () => {
-    const f = fixture({ activity: true, unread: 3, notifUnread: 2 });
-    try {
-      const label = `${control}, ${control === "Messages" ? 3 : 2} unread`;
-      const old = f.event(label), instance = f.list().props.instance;
-      const bar = () => f.all().filter(node => node.props?.testID === "feed-activity-controls");
-      assert.equal(bar().length, 1);
-      f.act(old); assert.deepEqual(f.calls.actions, [control === "Messages" ? "inbox" : "notifications"]);
-      f.precommit(); f.act(old); assert.equal(f.calls.actions.length, 1);
-      f.cover(); f.act(old); assert.equal(f.calls.actions.length, 1);
-      assert.equal(f.all().find(node => node.props?.accessibilityLabel === label).props.disabled, true);
-      f.uncover(); assert.equal(f.list().props.instance, instance); assert.equal(bar().length, 1);
-      f.act(old); assert.equal(f.calls.actions.length, 1);
-      f.press(label); assert.equal(f.calls.actions.length, 2);
-      const resumed = f.event(label);
-      f.active(false); f.act(resumed); assert.equal(f.calls.actions.length, 2);
-      f.active(true); f.act(resumed); assert.equal(f.calls.actions.length, 2);
-      f.press(label); assert.equal(f.calls.actions.length, 3);
-      const backgroundResumed = f.event(label);
-      f.suspend(true); f.act(backgroundResumed); assert.equal(f.calls.actions.length, 3);
-      f.suspend(false); f.act(backgroundResumed); assert.equal(f.calls.actions.length, 3);
-      f.press(label); assert.equal(f.calls.actions.length, 4);
-      const reconnect = f.event(label);
-      f.account("B"); f.act(reconnect); assert.equal(f.calls.actions.length, 4);
-      f.press(label); assert.equal(f.calls.actions.length, 5);
-      const replacement = f.event(label);
-      f.close(); f.act(replacement); assert.equal(f.calls.actions.length, 5);
-    } finally { f.close(); }
-  });
-}
-
-test("Feed activity counts remain truthful, readable and absent for missing actions", () => {
-  const f = fixture({ activity: true, unread: 123.8, notifUnread: -4 });
+test("Feed keeps its title and selected label in the list, with no fixed tabs or activity cards", () => {
+  const f = fixture({ activity: true, unread: 3, notifUnread: 2 });
   try {
-    assert.ok(f.event("Messages, 123 unread")); assert.ok(f.event("Notifications"));
-    assert.ok(f.all().some(node => node.text === "99+"));
-    assert.ok(!f.all().some(node => node.props?.accessibilityLabel?.includes("-4")));
+    assert.equal(f.all().some(node => ["feed-fixed-navigation", "feed-activity-controls"].includes(node.props?.testID)), false);
+    assert.equal(f.all().some(node => node.props?.accessibilityRole === "tablist"), false);
+    assert.ok(f.all().some(node => node.props?.accessibilityLabel === "Current feed: For You"));
+    f.selectFilter("local"); assert.ok(f.all().some(node => node.props?.accessibilityLabel === "Current feed: Local"));
+    assert.ok(f.list().props.ListHeaderComponent, "ordinary native list header scrolls with posts");
   } finally { f.close(); }
-  const missing = fixture();
-  try { assert.ok(!missing.all().some(node => node.props?.testID === "feed-activity-controls")); }
-  finally { missing.close(); }
 });
-
 
 test("returning to visited Feed filters retains each exact expanded list and pauses hidden actions", () => {
   const f = fixture({ activity: true });
@@ -542,20 +518,20 @@ test("returning to visited Feed filters retains each exact expanded list and pau
     for (let index = 0; index < 4; index++) f.advance();
     const original = f.list(), oldMore = f.endReached();
     assert.equal(original.props.data.length, 40);
-    f.press("Local feed");
+    f.selectFilter("local");
     const local = f.list(); assert.notEqual(local, original);
     assert.equal(f.listFor("everyone"), original); assert.equal(original.props.data.length, 40);
     assert.equal(f.page("everyone").props.pointerEvents, "none");
     assert.equal(f.page("everyone").props.accessibilityElementsHidden, true);
-    assert.equal(f.page("everyone").props.style[2].opacity, 0);
+    assert.equal(f.page("everyone").props.style[1].opacity, 0);
     f.act(oldMore); assert.equal(original.props.data.length, 40);
     assert.equal(f.calls.following.length, 0); assert.equal(f.calls.news.length, 0);
-    f.press("For You feed"); assert.equal(f.list(), original); assert.equal(f.list().props.data.length, 40);
+    f.selectFilter("everyone"); assert.equal(f.list(), original); assert.equal(f.list().props.data.length, 40);
     f.act(oldMore); assert.equal(original.props.data.length, 40, "Returning does not revive old callbacks");
     f.advance(); assert.equal(original.props.data.length, 48);
-    f.press("Local feed"); assert.equal(f.list(), local);
-    f.press("For You feed"); assert.equal(f.list(), original); assert.equal(f.list().props.data.length, 48);
-    assert.equal(f.all().filter(node => node.props?.testID === "feed-activity-controls").length, 1);
+    f.selectFilter("local"); assert.equal(f.list(), local);
+    f.selectFilter("everyone"); assert.equal(f.list(), original); assert.equal(f.list().props.data.length, 48);
+    assert.equal(f.all().filter(node => node.props?.testID === "feed-activity-controls").length, 0);
     f.account("B"); assert.notEqual(f.listFor("everyone"), original); assert.notEqual(f.list(), original);
     assert.equal(f.all().filter(node => node.type === "FlatList").length, 1);
   } finally { f.close(); }
@@ -568,14 +544,14 @@ test("visited Following preserves loaded pages and cursor, pauses reads, and rec
     for (let index = 0; index < 4; index++) f.advance();
     const following = f.list(), oldMore = f.endReached();
     assert.equal(following.props.data.length, 40);
-    f.press("Local feed"); assert.equal(f.listFor("following"), following); assert.equal(f.intervals.size, 0);
+    f.selectFilter("local"); assert.equal(f.listFor("following"), following); assert.equal(f.intervals.size, 0);
     f.act(oldMore); assert.equal(f.calls.following.length, 1);
-    f.press("Following feed"); assert.equal(f.list(), following); assert.equal(following.props.data.length, 40);
+    f.selectFilter("following"); assert.equal(f.list(), following); assert.equal(following.props.data.length, 40);
     assert.equal(f.calls.following.length, 1, "An unchanged visited filter does not refetch");
     f.advance(); assert.equal(f.calls.following[1].args.cursor, "older");
     await f.resolve(f.calls.following[1], { posts: [{ id: "page2" }], nextCursor: "last" });
-    f.press("Local feed"); f.changed(); assert.equal(f.calls.following.length, 2, "Hidden mutation only invalidates");
-    f.press("Following feed"); assert.equal(f.calls.following.length, 3); assert.equal(f.calls.following[2].args.cursor, null);
+    f.selectFilter("local"); f.changed(); assert.equal(f.calls.following.length, 2, "Hidden mutation only invalidates");
+    f.selectFilter("following"); assert.equal(f.calls.following.length, 3); assert.equal(f.calls.following[2].args.cursor, null);
     await f.resolve(f.calls.following[2], { posts: [{ id: "current" }], nextCursor: null });
     assert.equal(f.list(), following); assert.deepEqual(following.props.data.map(post => post.id), ["current"]);
   } finally { f.close(); }
@@ -590,29 +566,29 @@ test("visited News keeps paginated stories and pending replies cannot mutate it 
     f.advance();
     const page = f.calls.news.at(-1); assert.equal(page.args.cursor, "page2");
     await f.resolve(page, { stories: [{ id: "story2" }], nextCursor: "page3" });
-    f.press("Local feed"); assert.equal(f.listFor("news"), news); assert.equal(f.intervals.size, 0);
+    f.selectFilter("local"); assert.equal(f.listFor("news"), news); assert.equal(f.intervals.size, 0);
     const reads = f.calls.news.length;
-    f.press("News feed"); assert.equal(f.list(), news); assert.equal(f.calls.news.length, reads);
+    f.selectFilter("news"); assert.equal(f.list(), news); assert.equal(f.calls.news.length, reads);
     assert.deepEqual(news.props.data.map(story => story.id), ["story1", "story2"]);
     f.advance(); const late = f.calls.news.at(-1); assert.equal(late.args.cursor, "page3");
-    f.press("Local feed"); assert.equal(late.args.signal.aborted, true);
+    f.selectFilter("local"); assert.equal(late.args.signal.aborted, true);
     await f.resolve(late, { stories: [{ id: "late" }], nextCursor: null });
-    f.press("News feed"); assert.deepEqual(news.props.data.map(story => story.id), ["story1", "story2"]);
+    f.selectFilter("news"); assert.deepEqual(news.props.data.map(story => story.id), ["story1", "story2"]);
   } finally { f.close(); }
 });
 
 
-test("Feed controls and cached filters cannot act from an inherited preview or revive its callbacks", () => {
-  const f = fixture({ activity: true });
+test("cached Feed cards cannot act from an inherited preview or revive retired callbacks", () => {
+  const f = fixture();
   try {
-    const old = f.event("Messages"); f.press("Local feed");
-    const local = f.list(), oldLocal = f.event("Notifications");
-    f.preview(true); f.act(old); f.act(oldLocal);
-    assert.deepEqual(f.calls.actions, []);
-    assert.equal(f.all().find(node => node.props?.accessibilityLabel === "Messages").props.disabled, true);
+    const old = f.event("Find a show"); f.selectFilter("local");
+    const local = f.list(); const oldLocal = f.event("Find a show");
+    f.preview(true); f.act(old); f.act(oldLocal); assert.deepEqual(f.calls.actions, []);
     f.preview(false); f.act(old); f.act(oldLocal); assert.deepEqual(f.calls.actions, []);
     assert.equal(f.list(), local);
-    f.press("Messages"); assert.deepEqual(f.calls.actions, ["inbox"]);
+    // The selected pane's new action is admitted, while hidden panes stay inert.
+    const fresh = walk(f.page("local")).find(node => node.props?.accessibilityLabel === "Find a show").props.onPress;
+    f.act(fresh); assert.equal(f.calls.actions.length, 1);
   } finally { f.close(); }
 });
 
@@ -621,9 +597,9 @@ test("hidden visited News drops old private-scope stories before it can be shown
   try {
     await f.resolve(f.calls.news.find(call => call.args.sort === "latest"), { stories: [{ id: "old-scope" }], nextCursor: "page2" });
     await f.resolve(f.calls.news.find(call => call.args.sort === "top"), { stories: [], nextCursor: null });
-    f.press("Local feed"); const reads = f.calls.news.length;
+    f.selectFilter("local"); const reads = f.calls.news.length;
     f.privacy(); assert.deepEqual(f.listFor("news").props.data, []); assert.equal(f.calls.news.length, reads);
-    f.press("News feed"); assert.deepEqual(f.list().props.data, []); assert.equal(f.calls.news.length, reads + 2);
+    f.selectFilter("news"); assert.deepEqual(f.list().props.data, []); assert.equal(f.calls.news.length, reads + 2);
     const latest = f.calls.news.slice(reads).find(call => call.args.sort === "latest");
     await f.resolve(latest, { stories: [{ id: "new-scope" }], nextCursor: null });
     assert.deepEqual(f.list().props.data.map(story => story.id), ["new-scope"]);
@@ -716,3 +692,36 @@ for (const filter of ["following", "news"]) {
     } finally { f.close(); }
   });
 }
+
+test("menu-selected retained Feed panes use installed native absolute bounds without hiding their layout", () => {
+  assert.equal(installedStyleSheet.absoluteFillObject, undefined, "fixture must expose the installed RN 0.86 API");
+  const f = fixture();
+  const geometry = name => Object.assign({}, ...f.page(name).props.style.filter(Boolean));
+  try {
+    for (let i = 0; i < 4; i++) f.advance();
+    const original = f.list(); original.nativeContentOffset = 1240;
+    const oldGeometry = geometry("everyone");
+    assert.deepEqual([oldGeometry.position, oldGeometry.top, oldGeometry.right, oldGeometry.bottom, oldGeometry.left], ["absolute", 0, 0, 0, 0]);
+    f.selectFilter("local"); const local = f.list(); local.nativeContentOffset = 580;
+    const parked = geometry("everyone");
+    assert.equal(parked.opacity, 0); assert.notEqual(parked.display, "none");
+    for (const key of ["position", "top", "right", "bottom", "left"]) assert.equal(parked[key], oldGeometry[key]);
+    f.selectFilter("everyone"); assert.equal(f.list(), original); assert.equal(f.list().nativeContentOffset, 1240); assert.equal(f.list().props.data.length, 40);
+    f.selectFilter("local"); assert.equal(f.list(), local); assert.equal(f.list().nativeContentOffset, 580);
+  } finally { f.close(); }
+});
+
+test("a shared menu selection while Feed is covered opens that filter without resetting another retained list", () => {
+  const f = fixture();
+  try {
+    for (let i = 0; i < 3; i++) f.advance();
+    const everyone = f.list();
+    f.cover(); f.selectFilter("local"); assert.equal(f.page("local").props.pointerEvents, "none");
+    assert.equal(f.calls.loadMore.length, 0); f.uncover(); const local = f.list(); assert.notEqual(local, everyone);
+    f.cover(); f.selectFilter("everyone"); f.uncover();
+    assert.equal(f.list(), everyone); assert.equal(f.list().props.data.length, 32); assert.equal(f.listFor("local"), local);
+    const oldSelect = f.selection().select;
+    f.account("B"); f.act(() => oldSelect("news"));
+    assert.equal(f.selection().filter, "everyone"); assert.equal(f.listFor("news"), undefined);
+  } finally { f.close(); }
+});

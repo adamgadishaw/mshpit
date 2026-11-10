@@ -30,6 +30,9 @@ import { PROFILE_ACCENT_OPTIONS, PROFILE_FAVORITE_SHOWS_MAX, PROFILE_PRONOUNS_MA
 import { formatDate } from "../domain/dates.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import { createEditProfileCloseGuard } from "./editProfileCloseGuard.mjs";
+import Badge from "../components/Badge";
+import { STATUS_BADGES } from "../domain/statusBadges.mjs";
+import { canonicalProfileBadges, displayedProfileBadges, toggleProfileBadge } from "../domain/profileBadges.mjs";
 import { changedProfileDraftFields } from "../domain/profileEditDraft.mjs";
 
 import { accountFormError } from "../domain/accountFormError.mjs";
@@ -38,7 +41,7 @@ const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar", { platform:Platfor
 const BANNER_IMAGE_HINT = profileImageSelectionHint("banner", { platform:Platform.OS });
 
 export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRoute }) {
-  const { session, updateProfile, locationCenter, chatAuthEpoch } = useStore();
+  const { session, updateProfile, locationCenter, chatAuthEpoch, userBadges } = useStore();
   const scrollRef = useRef(null);
   const accountTasks = useAccountTaskScope(session?.id);
   const { uploadProfileImage, imageCropDialog } = useProfileImageUpload();
@@ -66,6 +69,18 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
   const [pronouns, setPronouns] = useState(session?.pronouns || "");
   const [accent, setAccent] = useState(session?.accent || null);
   const [favoriteShows, setFavoriteShows] = useState(() => (Array.isArray(session?.favoriteShows) ? session.favoriteShows : []));
+  // Untouched choices follow self hydration without becoming an unsaved edit.
+  // Explicit choices own their draft and compare against the latest self receipt.
+  const [badgeDraft, setBadgeDraft] = useState(null);
+  const storedProfileBadges = canonicalProfileBadges(session?.profileBadges) ?? null;
+  const profileBadges = badgeDraft ? badgeDraft.value : storedProfileBadges;
+  const setProfileBadges = update => setBadgeDraft(current => ({
+    value: typeof update === "function" ? update(current ? current.value : storedProfileBadges) : update,
+  }));
+  const badgeDraftChanged = badgeDraft && JSON.stringify(badgeDraft.value) !== JSON.stringify(storedProfileBadges);
+  const badgeChoicesSupported = session?.profileBadgeSelectionSupported === true;
+  const earnedNameBadges = userBadges?.(session) || [];
+  const shownNameBadges = displayedProfileBadges(earnedNameBadges, profileBadges);
   const [originalDraft] = useState(() => ({ name: name.trim(), handle, bio: bio.trim(), avatarUri, banner,
     genres, home, pronouns: pronouns.trim() || null, accent: accent || null, favoriteShows }));
   const patch = changedProfileDraftFields(originalDraft, {
@@ -85,7 +100,8 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
   const edit = action => iosEditor ? iosEditor.edit(action) : action;
   const locked = !!iosEditor?.locked;
   const editorCloseRef = useRef(null);
-  const draft = { name, handle, bio, avatarUri, banner, genres, home, pronouns, accent, favoriteShows };
+  const draft = { name, handle, bio, avatarUri, banner, genres, home, pronouns, accent, favoriteShows,
+    profileBadges: badgeDraftChanged ? profileBadges : undefined };
   if (Platform.OS === "ios" && !editorCloseRef.current) {
     editorCloseRef.current = createEditProfileCloseGuard({ accountId: session?.id, draft, alert: (...args) => Alert.alert(...args) });
   }
@@ -226,6 +242,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
     try {
       const result = await Promise.resolve(updateProfile({
         ...patch,
+        ...(Platform.OS === "ios" && badgeDraft ? { profileBadges } : {}),
         ...(Object.hasOwn(patch, "genres") ? { genres: genreSelection.genres } : {}),
         // Pins whose review is gone are dropped rather than failing the save.
         ...(Object.hasOwn(patch, "favoriteShows") ? { favoriteShows: history.status === "ready" && !history.nextCursor
@@ -368,7 +385,42 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
         {!!(genreError || genresInvalid) && <Text style={styles.genreError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{genreError || genreSelection.error}</Text>}
 
         <Text style={styles.sectionTitle} accessibilityRole="header">Make it yours</Text>
-        <Text style={styles.genreHint}>Everything here is optional and shows on your public profile.</Text>
+        <Text style={styles.genreHint}>These optional details appear for people who can view your profile.</Text>
+
+        {Platform.OS === "ios" ? <View>
+          <View style={styles.genreHeading}>
+            <Text style={styles.label}>PROFILE NAME BADGES</Text>
+            {badgeChoicesSupported ? <Text style={styles.genreCount}>{shownNameBadges.length}/{earnedNameBadges.length} shown</Text> : null}
+          </View>
+          <Text style={styles.genreHint}>Choose the earned badges shown beside your name on your profile. Your achievements and account permissions stay the same.</Text>
+          {!badgeChoicesSupported ? <Text style={styles.genreHint}>{badgeDraftChanged ? "Badge choices are temporarily unavailable. Your changes are still here. Try again later." : "Badge choices are not available yet. Your other profile edits can still be saved."}</Text> : <>
+            <View style={styles.badgeActions}>
+              <Pressable style={styles.badgeAction} disabled={locked} onPress={edit(() => setProfileBadges(null))}
+                accessibilityRole="button" accessibilityLabel="Show all profile badges" accessibilityState={{ disabled: locked }}>
+                <Text style={styles.badgeActionText}>Show all</Text>
+              </Pressable>
+              <Pressable style={styles.badgeAction} disabled={locked} onPress={edit(() => setProfileBadges([]))}
+                accessibilityRole="button" accessibilityLabel="Hide all profile badges" accessibilityState={{ disabled: locked }}>
+                <Text style={styles.badgeActionText}>Hide all</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.genreHint}>{profileBadges === null ? "All current and future badges are shown." : "Only your selections are shown. New badges stay hidden until you choose them."}</Text>
+            {!earnedNameBadges.length ? <Text style={styles.genreHint}>You do not have any profile name badges yet.</Text> : null}
+            <View style={styles.showList}>
+              {earnedNameBadges.map(id => {
+                const selected = shownNameBadges.includes(id);
+                return <Pressable key={id} style={[styles.badgeChoice, selected && styles.showRowOn]} disabled={locked}
+                  onPress={edit(() => setProfileBadges(current => toggleProfileBadge(current, id, earnedNameBadges)))}
+                  accessibilityRole="checkbox" accessibilityLabel={`${STATUS_BADGES[id].label} profile badge`}
+                  accessibilityState={{ checked: selected, disabled: locked }}>
+                  <View accessible={false} pointerEvents="none"><Badge type={id} size={22} tooltip={false} /></View>
+                  <Text style={styles.badgeChoiceText}>{STATUS_BADGES[id].label}</Text>
+                  <Icon name={selected ? "check" : "plus"} size={18} color={selected ? colors.amber : colors.textDim} />
+                </Pressable>;
+              })}
+            </View>
+          </>}
+        </View> : null}
 
         <Text style={styles.label}>PRONOUNS</Text>
         <TextInput {...(iosEditor ? { editable: !locked } : {})} style={styles.input} value={pronouns} onChangeText={edit(setPronouns)} placeholder="e.g. she/her, he/him, they/them" placeholderTextColor={colors.textFaint}
@@ -426,6 +478,11 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
 
 const styles = StyleSheet.create({
   savingLock: { pointerEvents: "none", opacity: 0.82 },
+  badgeActions: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 8 },
+  badgeAction: { minHeight: 44, paddingHorizontal: 16, paddingVertical: 12, justifyContent: "center", borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
+  badgeActionText: { color: colors.amber, fontSize: 14, fontWeight: "700" },
+  badgeChoice: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm },
+  badgeChoiceText: { flex: 1, color: colors.text, fontSize: 15, fontWeight: "600" },
   wrap: { flex: 1, backgroundColor: colors.bg },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 10 },
   cancel: { color: colors.textDim, fontSize: 15 },

@@ -56,9 +56,9 @@ const storeDeclarations = require('@babel/parser').parse(storeSource, { sourceTy
 const empty = [];
 const post = { id: 'review', userId: 'self', artist: 'Saved artist', venue: 'Room', date: '2025-01-01', overall: 4, createdAt: 1 };
 const offline = () => Object.assign(new Error('Synthetic offline'), { name: 'AppError', code: 'PIT-NET-001', retryable: true });
-function fixture({ copies = 1, platform = 'ios', self = true, guest = false, cached = empty, going = empty, attendance = empty, access = 'ready', favoriteShows = empty, colors = {}, accent = 'amber' } = {}) {
+function fixture({ copies = 1, platform = 'ios', self = true, guest = false, cached = empty, going = empty, attendance = empty, access = 'ready', favoriteShows = empty, colors = {}, accent = 'amber', userOverride = {}, badgeEligibility = () => empty } = {}) {
   const renderer = createRenderer(), reads = [];
-  const user = { id: self ? 'self' : 'target', name: 'Synthetic member', handle: 'fixture', favoriteArtists: [], favoriteGenres: [], accent };
+  const user = { id: self ? 'self' : 'target', name: 'Synthetic member', handle: 'fixture', favoriteArtists: [], favoriteGenres: [], accent, ...userOverride };
   const session = guest ? null : self ? user : { id: 'viewer', favoriteArtists: [], favoriteGenres: [] };
   const createStore = platform === "ios" ? require("../features/profileHistory/profileHistoryState.ios.mjs").createProfileHistoryStore : createProfileHistoryStore;
   let store = createStore({ fetchPage: () => { const r = deferred(); reads.push(r); return r.promise; } });
@@ -110,7 +110,7 @@ function fixture({ copies = 1, platform = 'ios', self = true, guest = false, cac
     if (name === '../store') return { useStore: () => ({ session, authReady: true, chatAuthEpoch: 1,
       userById: () => user, logsByUser: () => cached, goingFor: () => going, myAttendance: attendance,
       isFollowing: () => false, isBlocked: () => false, isMuted: () => false, followerCount: () => 0, followingCount: () => 0,
-      userBadges: () => empty, userPoints: () => 0, userAchievements: () => empty, sharedShows: () => ({ shows: empty, artists: empty }),
+      userBadges: badgeEligibility, userPoints: () => 0, userAchievements: () => empty, sharedShows: () => ({ shows: empty, artists: empty }),
       loadUser: async () => ({ status: access, user: access === 'missing' ? null : user, favoriteShows }), loadRewards: async () => ({}),
     }) };
     if (name.includes('/components/')) return name.split('/').at(-1);
@@ -263,4 +263,56 @@ test('actual selected Store history bindings share mutation, block scrub and acc
   f.storeActions.upsertProfileHistoryPost('viewer', 'target', { ...post, id: 'reset', userId: 'target' }); await f.flush();
   f.storeActions.resetProfileHistoryAccount('viewer'); await f.flush(); assert.deepEqual(rows(), []);
   f.unmount();
+});
+
+// End-to-end contract seam: a temporary real SQLite account, actual PATCH and
+// self/public reads, actual Store eligibility, and each real profile component.
+test('saved badge preferences survive fresh reads and render on self/public profiles without awarding status', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dataDir = mkdtempSync(join(tmpdir(), 'pit-profile-badge-view-'));
+  process.env.PIT_DATA_DIR = dataDir;
+  process.env.PIT_ALLOW_EMPTY_DB_BOOTSTRAP = 'true';
+  delete process.env.RESEND_API_KEY;
+  delete process.env.MAIL_FROM;
+  const { db, q } = await import('../../server/db.js');
+  const { routes } = await import('../../server/api.js');
+  const { memberBadgeTypes } = await import('../domain/memberBadges.mjs');
+  // roleBadge is exported, so its declaration lives under ExportNamedDeclaration.
+  const ast = require('@babel/parser').parse(storeSource, { sourceType: 'module', plugins: ['jsx'] });
+  const exportedRole = ast.program.body.flatMap(n => n.declaration?.declarations || []).find(n => n.id.name === 'roleBadge');
+  const roleBadge = new Function('return (' + storeSource.slice(exportedRole.init.start, exportedRole.init.end) + ')')();
+  const eligibilitySource = storeSource.slice(storeSource.indexOf('  const userBadges ='), storeSource.indexOf('  // --- Gamification'));
+  const badgeEligibility = new Function('roleBadge', 'memberBadgeTypes', 'isTop100', eligibilitySource + '\nreturn userBadges;')(roleBadge, memberBadgeTypes, () => false);
+  const id = 'badge_view_owner';
+  try {
+    q.insertUser.run(id, 'badge-view@example.test', 'Badge viewer fixture', id, 'test-hash', 'fan', null, null, null, 'BV', '#123456', Date.now());
+    db.prepare("UPDATE users SET age_band='18_plus', email_verified_at=?, verified=1, sponsor=1 WHERE id=?").run(Date.now(), id);
+    for (const selection of [null, [], ['verified'], ['staff', 'verified']]) {
+      routes['PATCH /api/me']({ user: q.userById.get(id), ip: 'badge-view-fixture', body: { extras: { profileBadges: selection } } });
+      for (const self of [true, false]) {
+        const user = self ? routes['GET /api/me']({ user: q.userById.get(id) }).user
+          : routes['GET /api/users/:id']({ params: { id }, user: null }).user;
+        assert.equal(user.role, 'fan');
+        assert.equal(user.verified, true);
+        assert.equal(user.sponsor, true);
+        assert.equal(Object.hasOwn(user, 'profileBadgeSelectionSupported'), self);
+        const expected = selection === null ? badgeEligibility(user) : selection.length ? ['verified'] : [];
+        for (const platform of ['ios', 'web', 'android']) {
+          const f = fixture({ self, platform, userOverride: user, badgeEligibility });
+          try {
+            f.render(); await f.flush();
+            const rows = f.all().filter(n => n.type === 'BadgeRow');
+            assert.equal(rows.length, 1, platform + ': exact profile name badge row');
+            assert.deepEqual(rows[0].props.badges, expected, platform + ': fresh preference rendered');
+          } finally { f.unmount(); }
+        }
+      }
+    }
+    db.prepare('UPDATE users SET verified=0 WHERE id=?').run(id);
+    const revoked = routes['GET /api/users/:id']({ params: { id }, user: null }).user;
+    const f = fixture({ self: false, userOverride: revoked, badgeEligibility });
+    try { f.render(); await f.flush(); assert.deepEqual(f.all().find(n => n.type === 'BadgeRow').props.badges, []); } finally { f.unmount(); }
+  } finally { db.close(); rmSync(dataDir, { recursive: true, force: true }); }
 });

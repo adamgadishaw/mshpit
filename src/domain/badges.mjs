@@ -1,31 +1,21 @@
-// Single source of truth for badge meaning and achievement policy. Visual badge
-// art stays in the UI; these labels, thresholds, points, and predicates are
-// platform-neutral and shared with the server rewards engine.
+// Public badge catalog. Screens and server consumers retain the complete API.
+// Startup consumers import only the status definitions or award rules they use.
+import { ACHIEVEMENT_RULES } from "./achievementRules.mjs";
+export { STATUS_BADGES } from "./statusBadges.mjs";
 
-export const STATUS_BADGES = Object.freeze({
-  "first-wave": { label: "First Wave", desc: "One of Pit's first 1,000 eligible email-confirmed member accounts. An early-member milestone, not an identity check.", how: "Awarded automatically after email confirmation and account setup. Places are never recycled." },
-  "email-confirmed": { label: "Email confirmed", desc: "This account confirmed its email inbox. This does not verify the person's identity or an artist claim.", how: "Confirm your email and complete account setup." },
-  verified: { label: "Verified", desc: "Identity confirmed by the Pit team.", how: "Granted by an admin to real, notable accounts." },
-  sponsor: { label: "Sponsor", desc: "An official Pit partner or sponsor.", how: "Granted by the Pit team to partners." },
-  top100: { label: "Top 100", desc: "One of the 100 most popular artists on Pit.", how: "Rank in the global Top 100 by popularity." },
-  staff: { label: "Pit Team", desc: "Works on Pit.", how: "Reserved for staff." },
-  mod: { label: "Moderator", desc: "Keeps the community healthy.", how: "Appointed by an admin." },
-  founder: { label: "Founder", desc: "Built Pit.", how: "Reserved." },
-  artist: { label: "Verified Artist", desc: "An official, claimed artist account.", how: "Claim your artist page; an admin approves." },
-});
-
-export const ACHIEVEMENTS = Object.freeze([
-  { id: "first_show", label: "First Pit", icon: "ticket", tint: "amber", points: 25, desc: "Logged your first show.", how: "Log 1 show.", test: (stats) => stats.shows >= 1, goal: (stats) => Math.min(1, stats.shows), target: 1 },
-  { id: "regular", label: "Regular", icon: "ticket", tint: "amber", points: 75, desc: "Ten nights on the books.", how: "Log 10 shows.", test: (stats) => stats.shows >= 10, goal: (stats) => Math.min(10, stats.shows), target: 10 },
-  { id: "road_warrior", label: "Road Warrior", icon: "map", tint: "magenta", points: 200, desc: "A serious gig-going habit.", how: "Log 25 shows.", test: (stats) => stats.shows >= 25, goal: (stats) => Math.min(25, stats.shows), target: 25 },
-  { id: "critic", label: "Critic", icon: "edit", tint: "cool", points: 100, desc: "Ten written reviews.", how: "Write 10 reviews (not just a score).", test: (stats) => stats.reviews >= 10, goal: (stats) => Math.min(10, stats.reviews), target: 10 },
-  { id: "tastemaker", label: "Tastemaker", icon: "heart", tint: "magenta", points: 150, desc: "The crowd rates YOU.", how: "Earn 100 likes across your posts.", test: (stats) => stats.likes >= 100, goal: (stats) => Math.min(100, stats.likes), target: 100 },
-  { id: "superfan", label: "Superfan", icon: "comment", tint: "amber", points: 80, desc: "Deep in the fan clubs.", how: "Join 3 fan clubs.", test: (stats) => stats.fanClubs >= 3, goal: (stats) => Math.min(3, stats.fanClubs), target: 3 },
-  { id: "connector", label: "Connector", icon: "you", tint: "cool", points: 90, desc: "Building your scene.", how: "Follow 25 people.", test: (stats) => stats.follows >= 25, goal: (stats) => Math.min(25, stats.follows), target: 25 },
-  { id: "photographer", label: "Photographer", icon: "camera", tint: "good", points: 120, desc: "Bringing the night to life.", how: "Post 20 show photos.", test: (stats) => stats.photos >= 20, goal: (stats) => Math.min(20, stats.photos), target: 20 },
-  { id: "globetrotter", label: "Globetrotter", icon: "map", tint: "good", points: 160, desc: "Shows across many cities.", how: "See shows in 5 different cities.", test: (stats) => stats.cities >= 5, goal: (stats) => Math.min(5, stats.cities), target: 5 },
-  { id: "explorer", label: "Explorer", icon: "discover", tint: "amber", points: 110, desc: "A wide-ranging ear.", how: "Review 10 different artists.", test: (stats) => stats.artists >= 10, goal: (stats) => Math.min(10, stats.artists), target: 10 },
-]);
+const ACHIEVEMENT_DETAILS = {
+  "first_show": { label: "First Pit", icon: "ticket", tint: "amber", desc: "Logged your first show.", how: "Log 1 show.", goal: (stats) => Math.min(1, stats.shows), target: 1 },
+  "regular": { label: "Regular", icon: "ticket", tint: "amber", desc: "Ten nights on the books.", how: "Log 10 shows.", goal: (stats) => Math.min(10, stats.shows), target: 10 },
+  "road_warrior": { label: "Road Warrior", icon: "map", tint: "magenta", desc: "A serious gig-going habit.", how: "Log 25 shows.", goal: (stats) => Math.min(25, stats.shows), target: 25 },
+  "critic": { label: "Critic", icon: "edit", tint: "cool", desc: "Ten written reviews.", how: "Write 10 reviews (not just a score).", goal: (stats) => Math.min(10, stats.reviews), target: 10 },
+  "tastemaker": { label: "Tastemaker", icon: "heart", tint: "magenta", desc: "The crowd rates YOU.", how: "Earn 100 likes across your posts.", goal: (stats) => Math.min(100, stats.likes), target: 100 },
+  "superfan": { label: "Superfan", icon: "comment", tint: "amber", desc: "Deep in the fan clubs.", how: "Join 3 fan clubs.", goal: (stats) => Math.min(3, stats.fanClubs), target: 3 },
+  "connector": { label: "Connector", icon: "you", tint: "cool", desc: "Building your scene.", how: "Follow 25 people.", goal: (stats) => Math.min(25, stats.follows), target: 25 },
+  "photographer": { label: "Photographer", icon: "camera", tint: "good", desc: "Bringing the night to life.", how: "Post 20 show photos.", goal: (stats) => Math.min(20, stats.photos), target: 20 },
+  "globetrotter": { label: "Globetrotter", icon: "map", tint: "good", desc: "Shows across many cities.", how: "See shows in 5 different cities.", goal: (stats) => Math.min(5, stats.cities), target: 5 },
+  "explorer": { label: "Explorer", icon: "discover", tint: "amber", desc: "A wide-ranging ear.", how: "Review 10 different artists.", goal: (stats) => Math.min(10, stats.artists), target: 10 },
+};
+export const ACHIEVEMENTS = Object.freeze(ACHIEVEMENT_RULES.map(rule => ({ ...rule, ...ACHIEVEMENT_DETAILS[rule.id] })));
 
 export const TINT = Object.freeze({ amber: "amber", magenta: "magenta", cool: "cool", good: "good", gold: "gold" });
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { iosMenuSections } from "./iosMenuSections.mjs";
+import { iosFeedFilterChoices, iosMenuSections } from "./iosMenuSections.mjs";
 import { journeyMenuModel } from "./menuJourney.mjs";
 
 const actionKeys = ["near", "venues", "fanClubs", "topRated", "news", "crew", "activity", "inbox", "suggestion", "manageProfile", "settings", "admin", "newsroom", "tourDates", "requestArtist", "calendar", "clips", "howItWorks", "signOut"];
@@ -51,4 +51,15 @@ test("iOS grouping preserves real counts with malformed values sanitized", () =>
   assert.equal(get({ notifications: 123 }, "activity").badge, 123);
   assert.equal(get({ inboxUnread: -3 }, "inbox").badge, 0);
   assert.equal(get({ notifications: Infinity }, "activity").badge, 0);
+});
+
+
+test("Feed choices have a single truthful selection and safe fallback", () => {
+  for (const key of ["following", "local", "everyone", "news", "invalid"]) {
+    const choices = iosFeedFilterChoices(key);
+    assert.deepEqual(choices.map(item => item.key), ["following", "local", "everyone", "news"]);
+    assert.equal(choices.filter(item => item.selected).length, 1);
+    assert.equal(choices.find(item => item.selected).key, key === "invalid" ? "everyone" : key);
+    for (const item of choices) assert.ok(item.title && item.detail && item.icon);
+  }
 });

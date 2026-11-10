@@ -4,7 +4,6 @@ import DiscoverBrowse from "./DiscoverBrowse.ios";
 import DiscoverSectionTabs from "./DiscoverSectionTabs.ios";
 import NativeDiscoverSectionPager from "../NativeDiscoverSectionPager.ios";
 import { ScrollView } from "../NativeTabScroll";
-import NativeLargeTitle, { NativeLargeTitleProvider } from "../NativeLargeTitle.ios";
 import Icon from "../Icon";
 import { colors } from "../../theme";
 import useNativeTabPreview from "../../hooks/useNativeTabPreview";
@@ -42,9 +41,9 @@ export function DiscoverOwner(props) {
   };
   const commit = useCallback(value => { if (!current()) return false; setGenreFocused(false); initialSection.current = null; latest.current.browseReturn?.save({ scrollY: 0, genreFocused: false }); latest.current.onProgramme(value); return true; }, [current]);
   const changeArea = country => { if (!current()) return; setTapRevision(revision => revision + 1); setAreaOpen(false); initialSection.current = null; latest.current.browseReturn?.save({ scrollY: 0 }); props.onRegion(country); };
-  const navigation = (x, width, origin) => <View testID="discover-fixed-navigation">
+  const navigation = (x, width, origin) => <View testID="discover-scroll-navigation">
       <View style={styles.header}>
-        <NativeLargeTitle><Text style={styles.title} accessibilityRole="header">Discover</Text></NativeLargeTitle>
+        <Text style={styles.title} accessibilityRole="header">Discover</Text>
         <Pressable onPress={() => { if (current()) { setTapRevision(revision => revision + 1); setAreaOpen(value => !value); } }} accessibilityRole="button"
           accessibilityLabel={`Choose an area to explore. Current area: ${props.region}`} accessibilityState={{ expanded: areaOpen }} style={styles.areaButton}>
           <Icon name={props.region === "Worldwide" ? "globe" : "pin"} size={16} color={colors.amber} />
@@ -59,14 +58,14 @@ export function DiscoverOwner(props) {
         <Pressable onPress={() => setAreaOpen(false)} accessibilityRole="button" style={styles.areaButton}><Text style={styles.areaText}>Done</Text></Pressable>
       </ScrollView> : null}
     </View>;
-  return <NativeLargeTitleProvider><View style={styles.root}>
-    <NativeDiscoverSectionPager renderNavigation={navigation} active={props.programme} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
+  return <View style={styles.root}>
+    <NativeDiscoverSectionPager scrollNavigation renderNavigation={navigation} active={props.programme} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
       loading={props.loading} swipeEnabled={appActive && !inheritedPreview && !areaOpen && props.swipeEnabled !== false} isCurrentSwipeRoute={current}
-      renderPage={(section, preview) => <DiscoverPane {...props} programme={section} localSection
+      renderPage={(section, preview, navigation) => <DiscoverPane {...props} navigation={navigation} programme={section} localSection
         initialBrowse={section === initialSection.current ? props.initialBrowse : null}
         sectionGenreFocused={section === "artists" && genreFocused} onSectionGenreFocus={setGenreFocused}
         onProgramme={choose} navigationRevision={tapRevision} preview={preview} isCurrent={current} />} />
-  </View></NativeLargeTitleProvider>;
+  </View>;
 }
 export function DiscoverPane({ preview, isCurrent, browseReturn, ...props }) {
   const permitted = useRef(null); permitted.current = () => !preview && isCurrent();

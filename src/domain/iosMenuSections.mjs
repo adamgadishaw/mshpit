@@ -27,3 +27,16 @@ export function iosMenuSections({ session = null, inboxUnread = 0, notifications
   return sections.map(section => ({ ...section, items: section.items.filter(item => typeof actions[item.key] === "function") }))
     .filter(section => section.items.length > 0);
 }
+
+
+export const IOS_FEED_FILTERS = Object.freeze([
+  { key: "following", title: "Following", icon: "you", detail: "Posts and reposts from people you follow" },
+  { key: "local", title: "Local", icon: "pin", detail: "Concert posts from your city" },
+  { key: "everyone", title: "For You", icon: "feed", detail: "Posts picked for your music interests" },
+  { key: "news", title: "News", icon: "music", detail: "The latest music stories" },
+]);
+
+export function iosFeedFilterChoices(selected = "everyone") {
+  const value = IOS_FEED_FILTERS.some(item => item.key === selected) ? selected : "everyone";
+  return IOS_FEED_FILTERS.map(item => ({ ...item, selected: item.key === value }));
+}

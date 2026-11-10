@@ -2,6 +2,7 @@
 // Keep these functions pure so production migrations can be tested without React.
 
 import { MUSIC_PLAYER_ENABLED } from "./musicPlayerAvailability.mjs";
+import { canonicalProfileBadges } from "./profileBadges.mjs";
 
 const DEMO_USER_IDS = new Set(["u_demo", "u_artist", "u_mara", "u_devon", "u_priya"]);
 const DEMO_FEED_IDS = new Set(["log_1", "log_2", "log_3"]);
@@ -30,6 +31,8 @@ export function publicProfileCacheEntry(user) {
   if (Array.isArray(user.genres)) projected.genres = user.genres.filter((value) => typeof value === "string").slice(0, 12);
   if (Array.isArray(user.favoriteArtists)) projected.favoriteArtists = user.favoriteArtists.filter((value) => typeof value === "string").slice(0, 50);
   if (Array.isArray(user.favoriteShows)) projected.favoriteShows = user.favoriteShows.filter((value) => typeof value === "string").slice(0, 4);
+  const profileBadges = canonicalProfileBadges(user.profileBadges);
+  if (profileBadges !== undefined) projected.profileBadges = profileBadges;
   if (typeof user.home?.city === "string" && user.home.city) projected.home = { city: user.home.city };
   return projected;
 }

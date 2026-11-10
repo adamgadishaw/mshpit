@@ -194,7 +194,7 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
   onRange, eventView, onEventView, listView, onEventList, eventWeek, onEventWeek,
   onOpen, onOpenArtist, onOpenEvents, onOpenTopRated, onOpenCrew, onOpenFanClubs, onOpenLounge,
   loungeRows, panels, renderPanel, recommendations, attendanceRows = [],
-  localSection = false, sectionGenreFocused, onSectionGenreFocus, navigationRevision = 0,
+  localSection = false, navigation, sectionGenreFocused, onSectionGenreFocus, navigationRevision = 0,
 }) {
   const isTabPreview = useNativeTabPreview();
   const previewRef = useRef(isTabPreview);
@@ -259,6 +259,7 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
       directionalLockEnabled keyboardShouldPersistTaps="handled" onScroll={scrollReturn.current.onScroll} onScrollBeginDrag={scrollReturn.current.onScrollBeginDrag} scrollEventThrottle={32}
       onContentSizeChange={scrollReturn.current.onContentSizeChange}
       onLayout={(event) => { setMeasuredWidth(event.nativeEvent.layout.width); scrollReturn.current.onLayout(event); }}>
+      {navigation}
       {!localSection ? <><View style={styles.header}>
         <Text style={styles.title} accessibilityRole="header">Discover</Text>
         <Pressable onPress={toggleArea} accessibilityRole="button"

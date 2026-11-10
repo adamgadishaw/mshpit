@@ -3176,6 +3176,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
   return {
     ...publicExtras,
     ...selfExtras,
+    profileBadges: extras.profileBadges ?? null,
     id: u.id,
     name: u.name,
     handle: u.handle,
@@ -3203,6 +3204,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
     // and the private account flag remain self-only; no identity check implied.
     ...(badges ? { badges: customBadgesFor(u.id) } : {}),
     ...(self ? {
+      profileBadgeSelectionSupported: true,
       email: u.email,
       ageBand: u.age_band || "unknown",
       directMessagePolicy: u.dm_policy || "mutuals",

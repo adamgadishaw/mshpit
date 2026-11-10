@@ -11,6 +11,8 @@ import * as validation from "../domain/validation.mjs";
 import * as accents from "../domain/profileAccents.mjs";
 import * as dates from "../domain/dates.mjs";
 import * as closeGuard from "./editProfileCloseGuard.mjs";
+import * as profileBadges from "../domain/profileBadges.mjs";
+import * as badges from "../domain/badges.mjs";
 
 const require = createRequire(import.meta.url);
 const { transformSync } = require("@babel/core");
@@ -51,7 +53,9 @@ function fixture(os, overrides = {}, options = {}) {
     "../domain/profileAccents.mjs": accents,
     "../domain/dates.mjs": dates,
     "./editProfileCloseGuard.mjs": closeGuard,
-    ...Object.fromEntries(["Avatar", "Icon", "LocationPicker", "Button", "SheetHeader"].map((name) => [`../components/${name}`, name])),
+    "../domain/profileBadges.mjs": profileBadges,
+    "../domain/badges.mjs": badges,
+    ...Object.fromEntries(["Avatar", "Icon", "LocationPicker", "Button", "SheetHeader", "Badge"].map((name) => [`../components/${name}`, name])),
   };
   const hookCode = transformSync(readFileSync(new URL(`../hooks/useIOSProfileEditor${os === "ios" ? ".ios" : ""}.js`, import.meta.url), "utf8"), {
     babelrc: false, configFile: false, plugins: [require("@babel/plugin-transform-modules-commonjs")],
@@ -80,6 +84,9 @@ test("iOS populated form fields have stable spoken names and native keyboard beh
   assert.equal(scroll.props.keyboardShouldPersistTaps, "handled");
   assert.equal(labeled(tree, "Bio").props.multiline, true);
   assert.equal(labeled(tree, "Bio").props.maxLength, 240);
+  const banner = labeled(tree, "Add a profile banner");
+  assert.equal(flatten(banner.props.style).aspectRatio, 3, "editor preview matches the iOS banner crop");
+  assert.equal(flatten(banner.props.style).height, undefined);
 });
 
 test("iOS pickers announce purpose and selection, and repeated dismissal preserves form edits", () => {
@@ -140,8 +147,8 @@ const header = (tree) => nodes(tree).find((node) => node.type === "SheetHeader")
 const choice = (f, text) => f.alerts.at(-1)[2].find((button) => button.text === text).onPress;
 
 test("every editor-owned draft field participates in discard protection", () => {
-  const baseline = { name: "Fan", handle: "fan", bio: "", avatarUri: null, banner: null, genres: ["Rock"], home: null, pronouns: "", accent: null, favoriteShows: [] };
-  const changes = { name: "New", handle: "new_fan", bio: "New bio", avatarUri: "https://media.test/avatar", banner: "https://media.test/banner", genres: ["Pop"], home: { city: "Portland" }, pronouns: "they/them", accent: "blue", favoriteShows: ["show-a"] };
+  const baseline = { name: "Fan", handle: "fan", bio: "", avatarUri: null, banner: null, genres: ["Rock"], home: null, pronouns: "", accent: null, favoriteShows: [], profileBadges: null };
+  const changes = { name: "New", handle: "new_fan", bio: "New bio", avatarUri: "https://media.test/avatar", banner: "https://media.test/banner", genres: ["Pop"], home: { city: "Portland" }, pronouns: "they/them", accent: "blue", favoriteShows: ["show-a"], profileBadges: [] };
   for (const [field, value] of Object.entries(changes)) {
     const alerts = [];
     const guard = closeGuard.createEditProfileCloseGuard({ accountId: "a", draft: baseline, alert: (...args) => alerts.push(args) });

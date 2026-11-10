@@ -1,11 +1,10 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import NativeLargeTitle, { NativeLargeTitleProvider } from "../components/NativeLargeTitle.ios";
-import Icon from "../components/Icon";
-import { colors, font } from "../theme";
-import { unreadBadgeCount, unreadBadgeText } from "../domain/unreadBadge.mjs";
-import { FeedContent, FeedNavigation, useFeedSelection } from "./FeedScreen.jsx";
-import NativeFeedFilterPager from "../components/NativeFeedFilterPager.ios";
+import { colors } from "../theme";
+import { FeedContent } from "./FeedScreen.jsx";
+import useIOSFeedSelection from "../hooks/useIOSFeedSelection";
+import { IOS_FEED_FILTERS } from "../domain/iosMenuSections.mjs";
 import useAppActive from "../lib/useAppActive";
 import useFeedPresentation from "../hooks/useFeedPresentation";
 import useNativeTabPreview from "../hooks/useNativeTabPreview";
@@ -13,11 +12,18 @@ import { NativeTabPreviewContext } from "../components/nativeTabPreviewContext.m
 
 // One persisted selection, outside every preview. Never mount a second selector.
 export default function FeedScreen(props) {
-  return <FeedOwner key={`${props.accountId || "guest"}:${props.feedReturn?.key || "feed"}`} {...props} />;
+  const Owner = props.feedSelection ? FeedOwner : StandaloneFeedOwner;
+  return <Owner key={`${props.accountId || "guest"}:${props.feedReturn?.key || "feed"}`} {...props} />;
+}
+function StandaloneFeedOwner(props) {
+  const feedSelection = useIOSFeedSelection(props.accountId);
+  return <FeedOwner {...props} feedSelection={feedSelection} />;
 }
 function FeedOwner(props) {
-  const { filter, select } = useFeedSelection(props.accountId, props.loggedIn);
-  const [tapRevision, setTapRevision] = useState(0);
+  const { filter, select } = props.feedSelection;
+  const visited = useRef(new Set());
+  useLayoutEffect(() => { visited.current.add(filter); }, [filter]);
+  const pages = [...new Set([...visited.current, filter])];
   const active = useAppActive();
   const inheritedPreview = useNativeTabPreview();
   const currentRef = useRef(null);
@@ -43,28 +49,23 @@ function FeedOwner(props) {
   }, [admission, owner, active, inheritedPreview]);
   const choose = value => {
     if (!active || selected.current !== selection || !current()) return;
-    // Even a tap on the selected filter invalidates queued intent/release.
-    setTapRevision(revision => revision + 1);
     if (value !== filter) select(value);
   };
-  const commit = value => { if (selected.current !== selection || !current()) return false; select(value); return true; };
-  const enabled = !inheritedPreview && !!props.loggedIn && !!props.visible && active && props.swipeEnabled !== false;
   return <NativeTabPreviewContext.Provider value={inheritedPreview || !props.visible || !active}>
-  <NativeLargeTitleProvider><View style={{ flex: 1, minHeight: 0 }}>
-    <View testID="feed-fixed-navigation" style={{ paddingHorizontal: 12, paddingTop: 4 }}>
-      <NativeLargeTitle style={styles.largeTitleBox}><Text style={styles.largeTitle} accessibilityRole="header">Feed</Text></NativeLargeTitle>
-      <FeedNavigation hideTitle filter={filter} loggedIn={props.loggedIn} onSelect={choose} />
-      {props.loggedIn && <FeedActivityControls unread={props.unread} notifications={props.notifUnread}
-        enabled={!inheritedPreview && current()} onOpenInbox={() => { if (!inheritedPreview && current()) props.onOpenInbox?.(); }}
-        onOpenNotifications={() => { if (!inheritedPreview && current()) props.onOpenNotifications?.(); }}
-        hasInbox={typeof props.onOpenInbox === "function"} hasNotifications={typeof props.onOpenNotifications === "function"} />}
-    </View>
-    <NativeFeedFilterPager retainVisited active={filter} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
-      swipeEnabled={enabled} isCurrentSwipeRoute={current}
-      renderPage={(page, preview, mayRead) => <FeedPane {...props} filter={page} preview={preview}
-        readEnabled={mayRead && active && current()} onSelectFilter={choose} />} />
-  </View></NativeLargeTitleProvider></NativeTabPreviewContext.Provider>;
+    <NativeLargeTitleProvider><View style={{ flex: 1, minHeight: 0 }} testID="feed-filter-pages">
+      {pages.map(page => {
+        const preview = inheritedPreview || page !== filter || !props.visible || !active;
+        return <View key={page} testID={`main-tab-page-${page}`} style={[styles.page, page !== filter && styles.parked]}
+          pointerEvents={preview ? "none" : "auto"} accessibilityElementsHidden={preview} importantForAccessibility={preview ? "no-hide-descendants" : "auto"}>
+          <NativeTabPreviewContext.Provider value={preview}>
+            <FeedPane {...props} filter={page} preview={preview} readEnabled={page === filter && active && current()} onSelectFilter={choose} />
+          </NativeTabPreviewContext.Provider>
+        </View>;
+      })}
+    </View></NativeLargeTitleProvider>
+  </NativeTabPreviewContext.Provider>;
 }
+
 function FeedPane({ preview, feedReturn, visible, ...props }) {
   const permitted = useRef(false);
   permitted.current = !preview && visible && props.readEnabled
@@ -92,39 +93,19 @@ function FeedPane({ preview, feedReturn, visible, ...props }) {
         return value(...args);
       } : value;
   }
-  return <FeedContent {...guarded} localNavigation visible={permitted.current} feedReturn={lease} />;
+  const label = IOS_FEED_FILTERS.find(item => item.key === props.filter)?.title || "For You";
+  return <FeedContent {...guarded} localNavigation visible={permitted.current} feedReturn={lease}
+    feedContext={<View style={styles.context}>
+      <NativeLargeTitle style={styles.largeTitleBox}><Text style={styles.largeTitle} accessibilityRole="header">Feed</Text></NativeLargeTitle>
+      <Text style={styles.filterLabel} accessibilityLabel={`Current feed: ${label}`}>{label}</Text>
+    </View>} />;
 }
 
-// These controls belong to the fixed Feed owner, not an individual filter pane.
-// They remain in place during swipes and never mark activity read themselves.
-export function FeedActivityControls({ unread, notifications, enabled, onOpenInbox, onOpenNotifications, hasInbox, hasNotifications }) {
-  const { fontScale } = useWindowDimensions();
-  const items = [
-    ...(hasInbox ? [{ title: "Messages", icon: "mail", count: unreadBadgeCount(unread), press: onOpenInbox }] : []),
-    ...(hasNotifications ? [{ title: "Notifications", icon: "bell", count: unreadBadgeCount(notifications), press: onOpenNotifications }] : []),
-  ];
-  if (!items.length) return null;
-  return <View style={styles.activity} testID="feed-activity-controls">
-    {items.map(item => <Pressable key={item.title} onPress={item.press} disabled={!enabled}
-      accessibilityRole="button" accessibilityLabel={`${item.title}${item.count ? `, ${item.count} unread` : ""}`}
-      accessibilityState={{ disabled: !enabled }} style={({ pressed }) => [styles.activityButton, fontScale > 1.25 && styles.activityButtonLarge, pressed && styles.activityPressed]}>
-      <Icon name={item.icon} size={19} color={colors.amber} />
-      <Text style={styles.activityLabel}>{item.title}</Text>
-      {item.count > 0 && <View style={styles.activityBadge} testID={`feed-activity-badge-${item.title.toLowerCase()}`}
-        accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-        <Text style={styles.activityBadgeText}>{unreadBadgeText(item.count)}</Text>
-      </View>}
-    </Pressable>)}
-  </View>;
-}
 const styles = StyleSheet.create({
+  page: { ...StyleSheet.absoluteFill, minHeight: 0 },
+  parked: { opacity: 0 },
+  context: { paddingBottom: 14 },
   largeTitleBox: { minHeight: 50, justifyContent: "center" },
   largeTitle: { color: colors.text, fontSize: 34, lineHeight: 41, fontWeight: "700", letterSpacing: -1 },
-  activity: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 8, paddingBottom: 6 },
-  activityButton: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 12, backgroundColor: colors.surface },
-  activityButtonLarge: { flexBasis: "100%" },
-  activityLabel: { flexShrink: 1, minWidth: 0, fontFamily: font, fontSize: 14, color: colors.text },
-  activityBadge: { flexShrink: 0, minWidth: 21, minHeight: 20, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 5, backgroundColor: "#BD1734", alignItems: "center", justifyContent: "center" },
-  activityBadgeText: { fontSize: 12, fontWeight: "700", color: "#FFFFFF", fontVariant: ["tabular-nums"] },
-  activityPressed: { backgroundColor: colors.surfaceAlt },
+  filterLabel: { color: colors.textDim, fontSize: 15, lineHeight: 21 },
 });

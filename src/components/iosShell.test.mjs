@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 import { transformSync } from '@babel/core';
-import { iosMenuSections } from '../domain/iosMenuSections.mjs';
+import { iosFeedFilterChoices, iosMenuSections } from '../domain/iosMenuSections.mjs';
 import { iosBackSwipeCommits } from '../domain/iosNavigationPolicy.mjs';
 const require = createRequire(import.meta.url);
 const nodes = tree => !tree ? [] : Array.isArray(tree) ? tree.flatMap(nodes) : typeof tree !== 'object' ? [] : [tree, ...nodes(tree.props?.children)];
@@ -29,13 +29,15 @@ function load(name, { reduced = false, reader = false, fontScale = 1, queued = f
     'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:59,bottom:34})},
     '../hooks/useIOSDetailBackBlock': { IOSDetailBackContext: { Provider: 'DetailBackProvider' } },
     '../theme':{colors:new Proxy({},{get:()=> '#888'}),font:'System'},
-    '../domain/iosMenuSections.mjs':{iosMenuSections}, '../domain/iosNavigationPolicy.mjs':{iosBackSwipeCommits},
+    '../domain/iosMenuSections.mjs':{iosFeedFilterChoices,iosMenuSections}, '../domain/iosNavigationPolicy.mjs':{iosBackSwipeCommits},
+    './NativeScrollChrome.ios': { NativeScrollChromeContext: {} },
+    '../domain/unreadBadge.mjs': require('../domain/unreadBadge.mjs'),
     './nativeFeedBackContext.mjs':{NativeFeedBackContext:{}},
     './Avatar':'Avatar','./BrandMark':'BrandMark','./Icon':'Icon','./NativeTabRail':'TabRail',
     '../hooks/useReducedMotion':()=>reduced, '../hooks/useScreenReaderEnabled':{__esModule:true,default:()=>reader,getConfirmedScreenReaderEnabled:()=>reader,subscribeConfirmedScreenReaderEnabled:()=>()=>{}},
     'react-native-worklets':{scheduleOnRN:(f,...args)=>queued ? queue.push(()=>f(...args)) : f(...args)},
     'react-native-reanimated':{__esModule:true,default:{View:'AnimatedView'},ReduceMotion:{System:'system'},
-      useSharedValue:value=>{const i=sharedIndex++;return shared[i] ||= {get:()=>value,set:x=>{value=x;}};},useAnimatedStyle:f=>f(),cancelAnimation:()=>{},withTiming:x=>x,withSpring:x=>x},
+      useSharedValue:value=>{const i=sharedIndex++;return shared[i] ||= {get:()=>value,set:x=>{value=x;}};},useAnimatedStyle:f=>f(),useAnimatedProps:f=>f(),useAnimatedReaction:(prepare,react)=>react(prepare()),cancelAnimation:()=>{},withTiming:x=>x,withSpring:x=>x},
     'react-native-gesture-handler':{GestureDetector:'Detector',Gesture:{Pan:()=>{const g={};for(const method of ['enabled','maxPointers','activeOffsetX','failOffsetY','onTouchesDown','onUpdate','onEnd','onFinalize'])g[method]=value=>{g[`${method}Value`]=value;return g;};gestures.push(g);return g;}}},
   };
   const code=transformSync(source,{filename:name,babelrc:false,configFile:false,plugins:[[require('@babel/plugin-transform-react-jsx'),{runtime:'automatic'}],require('@babel/plugin-transform-modules-commonjs')]}).code;

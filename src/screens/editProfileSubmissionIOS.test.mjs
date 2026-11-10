@@ -50,11 +50,11 @@ const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 
 // Real component, React, account-task scope and close guard. No native or network writes.
-function fixture({ platform = "ios", strict = false, closeBehavior = "count" } = {}) {
+function fixture({ platform = "ios", strict = false, closeBehavior = "count", badgeSupport = true, profileBadges = null } = {}) {
   const renderer = createRenderer(), requests = [], pickers = [], uploads = [], alerts = [];
   let closed = 0, route = true, epoch = 1, hidden = false;
   const suspension = deferred();
-  let session = { id: "synthetic-account", name: "Fixture", handle: "fixture_fan", bio: "Original bio", genres: ["Rock"], favoriteShows: [], avatarUri: "https://media.example.org/old.jpg" };
+  let session = { id: "synthetic-account", name: "Fixture", handle: "fixture_fan", bio: "Original bio", genres: ["Rock"], favoriteShows: [], avatarUri: "https://media.example.org/old.jpg", profileBadgeSelectionSupported: badgeSupport, profileBadges };
   const closeGuardRef = { current: null };
   const native = { ...Object.fromEntries(["View", "Text", "ScrollView", "TextInput", "Pressable", "Image"].map(name => [name, name])),
     Platform: { OS: platform }, StyleSheet: { create: value => value, absoluteFill: {} }, Alert: { alert: (...args) => alerts.push(args) } };
@@ -63,7 +63,7 @@ function fixture({ platform = "ios", strict = false, closeBehavior = "count" } =
     if (name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
     if (name === "../theme") return { colors: {}, radius: {} };
-    if (name === "../store") return { useStore: () => ({ session, chatAuthEpoch: epoch, locationCenter: value => value,
+    if (name === "../store") return { useStore: () => ({ session, chatAuthEpoch: epoch, locationCenter: value => value, userBadges: () => ["verified", "email-confirmed"],
       updateProfile: (...args) => { const request = { ...deferred(), args }; requests.push(request); return request.promise; } }) };
     if (name === "../hooks/useIOSProfileEditor") return execute(`../hooks/useIOSProfileEditor${platform === "ios" ? ".ios" : ""}.js`, imports);
     if (name === "../hooks/useAccountTaskScope") return execute("../hooks/useAccountTaskScope.js", imports);
@@ -94,6 +94,7 @@ function fixture({ platform = "ios", strict = false, closeBehavior = "count" } =
     save() { let result; f.act(() => { result = f.header().onPress(); }); return result; },
     scope(id, nextEpoch = epoch) { session = { ...session, id }; epoch = nextEpoch; f.render(); },
     rerenderSession() { session = { ...session }; f.render(); },
+    refreshSession(patch) { session = { ...session, ...patch }; f.render(); },
     leave() { route = false; },
     hide() { hidden = true; f.render(); },
     show() { hidden = false; f.render(); },
@@ -103,6 +104,135 @@ function fixture({ platform = "ios", strict = false, closeBehavior = "count" } =
   };
   f.render(); return f;
 }
+
+test("badge choices toggle repeatedly, participate in cancel protection and save one confirmed draft", async t => {
+  const f = fixture(); t.after(f.close);
+  const label = "Verified profile badge";
+  assert.equal(f.button(label).accessibilityState.checked, true);
+  f.act(() => f.button(label).onPress());
+  assert.equal(f.button(label).accessibilityState.checked, false);
+  f.act(() => f.button(label).onPress());
+  assert.equal(f.button(label).accessibilityState.checked, true);
+  f.act(() => f.button("Hide all profile badges").onPress());
+  assert.equal(f.button(label).accessibilityState.checked, false);
+  f.act(() => f.closeGuardRef.current({ proceed: () => assert.fail("Unconfirmed discard") }));
+  assert.equal(f.alerts.at(-1)[0], "Discard profile changes?");
+  f.act(() => f.alerts.at(-1)[2].find(b => b.text === "Keep editing").onPress());
+  assert.equal(f.button(label).accessibilityState.checked, false);
+  const toggle = f.button(label).onPress, save = f.header().onPress;
+  let submitted;
+  f.act(() => { submitted = save(); toggle(); void save(); });
+  assert.equal(f.requests.length, 1);
+  assert.deepEqual(f.requests[0].args[0].profileBadges, []);
+  assert.equal(f.button(label).disabled, true);
+  await f.complete({ ok: false, error: "Could not confirm badge choices" });
+  await submitted;
+  await f.settle();
+  assert.equal(f.closed, 0);
+  assert.equal(f.button(label).accessibilityState.checked, false);
+  void f.save();
+  assert.deepEqual(f.requests[1].args[0].profileBadges, []);
+  await f.complete();
+  assert.equal(f.closed, 1);
+});
+
+test("show-all reset sends explicit null, clean saves preserve existing choice and old servers have no controls", async t => {
+  const f = fixture({ profileBadges: [] }); t.after(f.close);
+  void f.save();
+  assert.equal(Object.hasOwn(f.requests[0].args[0], "profileBadges"), false);
+  await f.complete({ ok: false });
+  f.act(() => f.button("Show all profile badges").onPress());
+  assert.equal(f.button("Verified profile badge").accessibilityState.checked, true);
+  void f.save();
+  assert.equal(f.requests[1].args[0].profileBadges, null);
+  await f.complete();
+  for (const platform of ["ios", "android", "web"]) {
+    const old = fixture({ platform, badgeSupport: false }); t.after(old.close);
+    assert.equal(old.all().some(n => n.props?.accessibilityLabel === "Hide all profile badges"), false);
+    void old.save();
+    assert.equal(Object.hasOwn(old.requests[0].args[0], "profileBadges"), false);
+    await old.complete();
+  }
+});
+
+test("badge-only discard does not save or leak into a reopened editor", t => {
+  const f = fixture(); t.after(f.close);
+  f.act(() => f.button("Hide all profile badges").onPress());
+  let discarded = 0;
+  f.act(() => f.closeGuardRef.current({ proceed: () => discarded++ }));
+  const discard = f.alerts.at(-1)[2].find(b => b.text === "Discard").onPress;
+  f.act(() => { discard(); discard(); });
+  assert.equal(discarded, 1);
+  assert.equal(f.requests.length, 0);
+  const reopened = fixture(); t.after(reopened.close);
+  assert.equal(reopened.button("Verified profile badge").accessibilityState.checked, true);
+});
+
+test("badge editing is iOS-only even with the shared server capability", t => {
+  for (const platform of ["android", "web"]) {
+    const f = fixture({ platform }); t.after(f.close);
+    assert.equal(f.all().some(n => n.props?.accessibilityLabel === "Hide all profile badges"), false);
+  }
+});
+
+test("untouched badge choices follow self hydration without dirtying or replaying a stale preference", async t => {
+  const f = fixture({ badgeSupport: false }); t.after(f.close);
+  assert.equal(f.all().some(n => n.props?.accessibilityLabel === "Hide all profile badges"), false);
+  f.refreshSession({ profileBadgeSelectionSupported: true, profileBadges: [] });
+  assert.equal(f.button("Verified profile badge").accessibilityState.checked, false);
+  let cleanClose = 0;
+  f.act(() => f.closeGuardRef.current({ proceed: () => cleanClose++ }));
+  assert.equal(cleanClose, 1);
+  assert.equal(f.alerts.length, 0);
+  f.refreshSession({ profileBadges: ["verified"] });
+  assert.equal(f.button("Verified profile badge").accessibilityState.checked, true);
+  assert.equal(f.button("Email confirmed profile badge").accessibilityState.checked, false);
+  void f.save();
+  assert.equal(Object.hasOwn(f.requests[0].args[0], "profileBadges"), false);
+  await f.complete();
+});
+
+test("explicit show-all intent survives a later self receipt and remains a guarded draft", async t => {
+  const f = fixture({ profileBadges: null }); t.after(f.close);
+  f.act(() => f.button("Show all profile badges").onPress());
+  f.refreshSession({ profileBadges: [] });
+  assert.equal(f.button("Verified profile badge").accessibilityState.checked, true);
+  f.act(() => f.closeGuardRef.current({ proceed: () => assert.fail("Explicit selection differs from latest receipt") }));
+  assert.equal(f.alerts.at(-1)[0], "Discard profile changes?");
+  f.act(() => f.alerts.at(-1)[2].find(b => b.text === "Keep editing").onPress());
+  void f.save();
+  assert.equal(Object.hasOwn(f.requests[0].args[0], "profileBadges"), true);
+  assert.equal(f.requests[0].args[0].profileBadges, null);
+  await f.complete();
+});
+
+test("lost badge capability keeps an explicit draft and explains that it must be retried", async t => {
+  const f = fixture(); t.after(f.close);
+  f.act(() => f.button("Hide all profile badges").onPress());
+  f.refreshSession({ profileBadgeSelectionSupported: false });
+  const text = f.all().map(n => n.text || "").join(" ");
+  assert.match(text, /Badge choices are temporarily unavailable/u);
+  assert.doesNotMatch(text, /other profile edits can still be saved/u);
+  void f.save();
+  assert.deepEqual(f.requests[0].args[0].profileBadges, []);
+  await f.complete({ ok: false });
+  assert.equal(f.closed, 0);
+  f.refreshSession({ profileBadgeSelectionSupported: true });
+  assert.equal(f.button("Verified profile badge").accessibilityState.checked, false);
+});
+
+test("explicit badge choices survive self refresh and are still saved as the user's draft", async t => {
+  const f = fixture(); t.after(f.close);
+  f.act(() => f.button("Hide all profile badges").onPress());
+  f.refreshSession({ profileBadges: ["verified"] });
+  assert.equal(f.button("Verified profile badge").accessibilityState.checked, false);
+  f.act(() => f.closeGuardRef.current({ proceed: () => assert.fail("Explicit badge draft is dirty") }));
+  assert.equal(f.alerts.at(-1)[0], "Discard profile changes?");
+  f.act(() => f.alerts.at(-1)[2].find(b => b.text === "Keep editing").onPress());
+  void f.save();
+  assert.deepEqual(f.requests[0].args[0].profileBadges, []);
+  await f.complete();
+});
 
 for (const strict of [false, true]) test(`same-batch saves and keyboard edits are exclusive (StrictMode ${strict})`, async t => {
   const f = fixture({ strict }); t.after(f.close);

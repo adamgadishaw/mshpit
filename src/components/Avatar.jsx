@@ -9,24 +9,28 @@ import { useFeedImageRetryPulse } from "../hooks/feedImageRetry";
 
 // Shows the user's uploaded photo if set, else initials on their colour.
 // Tappable to open a profile.
-export default function Avatar({ user, size = 36, onPress, priority = "normal", fallbackTextColor }) {
+export default function Avatar({ user, size = 36, onPress, priority = "normal", fallbackTextColor, preferOriginal: requestedOriginal = false }) {
+  const preferOriginal = Platform.OS === "ios" && requestedOriginal;
   const profileName = user?.name || user?.username || "member";
   const previewWidth = Math.max(96, Math.min(384, Math.ceil((size * PixelRatio.get()) / 32) * 32));
   const rawAvatarUri = user?.avatarUri || null;
   const sources = useMemo(() => {
     if (!rawAvatarUri) return [];
     return [...new Set([
+      // Profile identity is a hero, not a feed thumbnail. iOS can decode HEIC
+      // directly too; retain the established delivery fallback only on error.
+      preferOriginal ? rawAvatarUri : null,
       previewSrc(rawAvatarUri, previewWidth),
       displaySrc(rawAvatarUri, previewWidth),
     ].filter(Boolean))];
-  }, [previewWidth, rawAvatarUri]);
-  const requestScope = JSON.stringify([rawAvatarUri, previewWidth, user?.id || user?.handle, user?.profileUpdatedAt]);
+  }, [preferOriginal, previewWidth, rawAvatarUri]);
+  const requestScope = JSON.stringify([rawAvatarUri, previewWidth, preferOriginal, user?.id || user?.handle, user?.profileUpdatedAt]);
   const { uri: avatarUri, index: sourceIndex, onError, onDisplay, nativeAttemptKey } = useImageAttempt(requestScope, sources, useFeedImageRetryPulse());
   const cacheKey = versionedImageCacheKey({
     namespace: "avatar",
     id: user?.id || user?.handle,
     version: user?.profileUpdatedAt,
-    variant: `${previewWidth}:${sourceIndex}`,
+    variant: `${preferOriginal ? "original:" : ""}${previewWidth}:${sourceIndex}`,
     uri: avatarUri,
   });
   const source = useMemo(() => avatarUri ? { uri: avatarUri, cacheKey } : null, [avatarUri, cacheKey]);
@@ -58,7 +62,7 @@ export default function Avatar({ user, size = 36, onPress, priority = "normal", 
           loading={policy.loading}
           autoplay={false}
           allowDownscaling
-          enforceEarlyResizing
+          enforceEarlyResizing={!preferOriginal}
           recyclingKey={`avatar:${cacheKey}`}
           transition={80}
           onError={onError}

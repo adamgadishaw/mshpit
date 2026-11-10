@@ -26,14 +26,15 @@ function setAnimating(image, playing) {
 // Descriptor-declared clips (plus URL-only historical videos) render a play
 // tile instead of a broken image in every grid/wall/strip; tapping still opens
 // the viewer, which actually plays them.
-export default function SmartImage({ uri, posterUri = null, mediaKind = null, viewable = null, style, contain = true, onPress, previewWidth = 0, cachePolicy = "memory-disk", priority = "normal", loading = null, accessibilityLabel = "Open image", accessible = true }) {
+export default function SmartImage({ uri, posterUri = null, mediaKind = null, viewable = null, style, contain = true, onPress, previewWidth = 0, cachePolicy = "memory-disk", priority = "normal", loading = null, accessibilityLabel = "Open image", accessible = true, preferOriginal = false }) {
   const tabPreview = useNativeTabPreview();
   const reduced = useReducedMotion(), active = useAppActive();
   const imageRef = useRef(null);
-  const original = displaySrc(uri);
-  const preview = previewWidth > 0 ? previewSrc(uri, previewWidth) : original;
-  const fallback = preview === original && isHttp(uri) ? proxied(uri) : original;
-  const requestScope = JSON.stringify([uri, previewWidth, mediaKind]);
+  const original = preferOriginal ? uri : displaySrc(uri);
+  const preview = !preferOriginal && previewWidth > 0 ? previewSrc(uri, previewWidth) : original;
+  const fallback = preferOriginal && displaySrc(uri) !== uri ? displaySrc(uri)
+    : preview === original && isHttp(uri) ? proxied(uri) : original;
+  const requestScope = JSON.stringify([uri, previewWidth, mediaKind, preferOriginal]);
   const { uri: src, onError, onDisplay, nativeAttemptKey } = useImageAttempt(requestScope, [preview, fallback], useFeedImageRetryPulse());
   const policy = imageLoadPolicy({ priority, loading, viewable });
   const playing = !tabPreview && policy.autoplay && !reduced && active;
@@ -51,7 +52,7 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
   };
   // ExpoImage is a PureComponent. A stable source object avoids asking it to
   // reconcile the same cached image whenever a feed card updates its counters.
-  const source = useMemo(() => ({ uri: src, cacheKey: src }), [src]);
+  const source = useMemo(() => ({ uri: src, cacheKey: preferOriginal ? `original:${src}` : src }), [src, preferOriginal]);
   if (mediaKind === "video" || (!mediaKind && isVideoUrl(uri))) {
     const clip = <ClipPoster uri={uri} posterUri={posterUri} viewable={viewable} style={StyleSheet.absoluteFill} contain={contain} compact={!previewWidth} priority={policy.priority} loading={policy.loading} cachePolicy={cachePolicy} accessible={accessible} />;
     if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel === "Open image" ? "Play video clip" : accessibilityLabel}>{clip}</Pressable>;
@@ -73,6 +74,9 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
     <>
       {contain && <View style={[StyleSheet.absoluteFill, styles.containBackdrop]} />}
       {contain && <View style={[StyleSheet.absoluteFill, styles.scrim]} />}
+      {/* Early iOS decoding fits inside the bounds before cover is applied.
+          Hero artwork keeps source detail through layout/crop changes, while
+          content-fit-aware downscaling still limits the displayed bitmap. */}
       <ExpoImage
         ref={imageRef}
         key={nativeAttemptKey == null ? src : `${src}:${nativeAttemptKey}`}
@@ -84,7 +88,7 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
         loading={policy.loading}
         autoplay={playing}
         allowDownscaling
-        enforceEarlyResizing
+        enforceEarlyResizing={!preferOriginal}
         recyclingKey={`smart-image:${src}`}
         transition={policy.transition}
         onError={onError}

@@ -12,7 +12,8 @@ import TicketStub from "../components/TicketStub";
 import NativeDeleteRow from "../components/NativeDeleteRow";
 import { confirmOwnPostDelete } from "../lib/confirmOwnPostDelete";
 import { BadgeRow } from "../components/Badge";
-import { ACHIEVEMENTS } from "../domain/badges.mjs";
+import { displayedProfileBadges } from "../domain/profileBadges.mjs";
+import { ACHIEVEMENT_RULES as ACHIEVEMENTS } from "../domain/achievementRules.mjs";
 import { showDateMs } from "../lib/showTime";
 import Countdown from "../components/Countdown";
 import SmartImage from "../components/SmartImage";
@@ -587,8 +588,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   ];
   const ownerUnread = isSelf ? (ownerTools || []).reduce((total, tool) => total + (tool.badge || 0), 0) : 0;
   const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? user.verified ? "VERIFIED ARTIST" : "ARTIST" : "FAN";
-  return (
-    <NativeLargeTitleProvider reserveSpace><View style={styles.wrap}>
+  const profileHeader = (<>
       <View testID="profile-header" style={styles.topbar}>
         {asTab ? (
           <NativeLargeTitle containerStyle={{ flex: 1, minWidth: 0 }}><Text style={[styles.topTitle, styles.topTitleTab, { flex: 0 }]} accessibilityRole="header">{IS_IOS ? "You" : `@${user.handle}`}</Text></NativeLargeTitle>
@@ -649,6 +649,11 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         </View>
       ) : null}
 
+  </>);
+  return (
+    <NativeLargeTitleProvider reserveSpace><View style={styles.wrap}>
+      {!asTab ? profileHeader : null}
+
       <ProfileMediaRetryBoundary value={profileMedia.retryValue}>
       <VinylRefreshBoundary
         refreshing={profileRefreshing}
@@ -657,6 +662,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         testID="profile-refresh"
       >
       <ScrollView ref={profileScrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} contentInsetAdjustmentBehavior={IS_IOS ? "automatic" : undefined}>
+        {asTab ? profileHeader : null}
         {profileView.status === "stale" && (
           <View style={styles.staleProfile} accessibilityRole="alert" accessibilityLiveRegion="polite">
             <Text style={styles.staleProfileText}>{profileView.error}</Text>
@@ -673,14 +679,14 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         <View pointerEvents={IS_IOS ? "box-none" : undefined} style={[styles.identityWrap, !user.banner && styles.identityWrapCompact, IS_IOS && styles.nativeIdentityWrap, IS_IOS && !!user.banner && hierarchyStyles.nativeIdentityWithBanner, IS_IOS && !user.banner && styles.nativeIdentityCompact]}>
         <View testID="profile-identity-tile" pointerEvents={IS_IOS ? "box-none" : undefined} style={[styles.head, Platform.OS === "web" && styles.integratedHead]}>
           <ProfileIdentityRow>
-          <View testID="profile-identity-avatar" style={[styles.avatarWrap, Platform.OS === "web" && styles.integratedAvatar, IS_IOS && accentColor && { borderColor: accentColor }]}><Avatar user={user} size={Platform.OS === "web" || IS_IOS ? 88 : 72} fallbackTextColor={IS_IOS ? colors.text : undefined} /></View>
+          <View testID="profile-identity-avatar" style={styles.avatarWrap}><Avatar user={user} size={96} preferOriginal priority="high" fallbackTextColor={IS_IOS ? colors.text : undefined} /></View>
           {IS_IOS && isSelf ? <Pressable style={hierarchyStyles.nativeManageButton} onPress={onManageProfile} accessibilityRole="button" accessibilityLabel="Manage profile">
             <Icon name="edit" size={15} color={colors.amber} /><Text style={styles.editTxt}>Manage profile</Text>
           </Pressable> : null}
           </ProfileIdentityRow>
           <View style={[styles.nameRow, Platform.OS === "web" && styles.integratedNameRow]}>
             <Text testID="profile-identity-name" style={[styles.name, Platform.OS === "web" && styles.integratedName]}>{user.name}</Text>
-            <BadgeRow badges={userBadges(user)} size={20} />
+            <BadgeRow badges={displayedProfileBadges(userBadges(user), user.profileBadges)} size={20} />
           </View>
           <Text testID="profile-identity-handle" style={[styles.handle, Platform.OS === "web" && styles.integratedHandle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}{user.pronouns ? <Text style={styles.pronouns}>{` · ${user.pronouns}`}</Text> : null}</Text>
           <View style={styles.roleBadge}><Text style={styles.roleTxt}>{roleLabel}</Text></View>
@@ -934,7 +940,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         <View style={styles.postsSection}>
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
-        <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>{IS_IOS && isSelf ? "Your diary" : isSelf ? "Your posts" : "Posts"}{historyHeadingCount(logs.length)}</Text>
+        <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>{isSelf ? "Your posts" : "Posts"}{historyHeadingCount(logs.length)}</Text>
         {logs.length === 0 && (IS_IOS ? historyConfirmed : !historyLoading) && (
           <Text style={styles.empty}>{isSelf ? "You haven't posted yet. Tap “Make a post” to log a show or share an update." : "No posts yet."}</Text>
         )}
@@ -1146,7 +1152,7 @@ const iosStyles = IS_IOS ? StyleSheet.create({
   nativeBannerCompact: { height: 48, borderRadius: 14 },
   nativeIdentityCompact: { paddingTop: 12 },
   head: { width: "100%", alignItems: "flex-start", padding: 0, borderWidth: 0, backgroundColor: "transparent", shadowOpacity: 0, elevation: 0 },
-  avatarWrap: { borderWidth: 4, borderColor: colors.bg, borderRadius: 50 },
+  avatarWrap: { borderWidth: 4, borderColor: colors.bg, borderRadius: 52 },
   nameRow: { ...baseStyles.nameRow, justifyContent: "flex-start", gap: 7, marginTop: 12 },
   name: { ...baseStyles.name, fontSize: 30, fontWeight: "700", letterSpacing: -0.7, textAlign: "left" },
   handle: { ...baseStyles.handle, fontSize: 15, lineHeight: 21, textAlign: "left", marginTop: 3 },

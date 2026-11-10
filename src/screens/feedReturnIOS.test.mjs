@@ -77,7 +77,7 @@ const overlayDeclarations = ["singleNativeOverlay", "nativeDetailOverlay"].map(n
   const initializer = declarations[0].init;
   return `const ${name} = ${app.slice(initializer.start, initializer.end)};`;
 }).join("\n");
-const names = "stack,chatAuthEpoch,openSignIn,retainNativeFeed,session,overlay,NativeFeedMediaLayer,NativeAppHeader,activeTab,switchTab,Platform,iosTabSwipeScope,iosTabSwipeEnabled,isCurrentIOSTabSwipe,openMainMenu,iosMenuOpener,requireVerifiedMutation,go,openProfileManagement,mobileTabBar,Suspense,ScreenLoading,ScreenTransition,screenKey,screenDirection,IosDetailNavigation,iosBackGestureAllowed,nav,linkedNavigationScope,linkedNavigationRef,navigationRef,back,tabScreens,NativeDetailStack,authReady,landing,status,nativeAccountLinkActive,nativeAccountLinkActiveRef,resetToken,ownerApprovalToken,appActive,iosMenuOpen,acctOpen,welcome,unsubToken,verifyToken,publicNavigationNotice,newsStoryNotice,screenTransitionKey";
+const names = "stack,chatAuthEpoch,openSignIn,retainNativeFeed,session,overlay,NativeFeedMediaLayer,NativeAppHeader,activeTab,switchTab,Platform,iosTabSwipeScope,iosTabSwipeEnabled,isCurrentIOSTabSwipe,openMainMenu,iosMenuOpener,requireVerifiedMutation,go,openProfileManagement,mobileTabBar,Suspense,ScreenLoading,ScreenTransition,screenKey,screenDirection,IosDetailNavigation,iosBackGestureAllowed,nav,linkedNavigationScope,linkedNavigationRef,navigationRef,back,tabScreens,NativeDetailStack,authReady,landing,status,nativeAccountLinkActive,nativeAccountLinkActiveRef,resetToken,ownerApprovalToken,appActive,iosMenuOpen,acctOpen,welcome,unsubToken,verifyToken,publicNavigationNotice,newsStoryNotice,screenTransitionKey,inboxUnread,unreadNotifications,openInbox,openNotifications";
 const module = { exports: {} };
 const code = transformSync(`export default function RootSlice(p) { const {${names}} = p; const nativeTabPage = tabScreens; ${overlayDeclarations} return (${app.slice(branch.start, branch.end)}); }`, {
   babelrc: false, configFile: false, plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
@@ -172,6 +172,7 @@ function fixture(platform = "ios", options = {}) {
       nativeAccountLinkActiveRef: { current: false }, resetToken: null, ownerApprovalToken: null, appActive: true,
       iosMenuOpen: false, acctOpen: false, welcome: null, unsubToken: null, verifyToken: null,
       publicNavigationNotice: null, newsStoryNotice: null,
+      inboxUnread: () => 0, unreadNotifications: () => 0, openInbox: noop, openNotifications: noop,
       screenTransitionKey: require("./src/domain/screenTransition.mjs").screenTransitionKey,
       tabScreens: tab === "feed" ? React.createElement("View", null, React.createElement(Feed, { key: lease?.key, feedReturn: lease, feedPresentation: presentation, feed: rows, localFeed: rows, loggedIn: true, accountId: account, visible: !overlay && !primary.preview, hasMore: false, onRefresh: options.onRefresh || (async () => true), onLoadMore: () => assert.fail("No service reads") })) : React.createElement("OtherTab") }));
   };

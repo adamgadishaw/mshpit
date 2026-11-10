@@ -174,6 +174,7 @@ import { countryForCity } from "./src/geo";
 import { accountThemeNavigationReady } from "./src/domain/accountThemeNavigation.mjs";
 import { screenTransitionDirection, screenTransitionKey } from "./src/domain/screenTransition.mjs";
 import ScreenTransition from "./src/components/ScreenTransition";
+import useIOSFeedSelection from "./src/hooks/useIOSFeedSelection";
 import NativeAppHeader from "./src/components/NativeAppHeader";
 import {
   PLAYER_POSITION_STORAGE_KEY,
@@ -1774,6 +1775,7 @@ function Root() {
   const iosTabSwipeEnabled = Platform.OS === "ios" && !overlay && !landing && !iosMenuOpen
     && !nativeAccountLinkActive && status === "ok" && !acctOpen && !welcome
     && !resetToken && !unsubToken && !verifyToken && !ownerApprovalToken;
+  const iosFeedSelection = useIOSFeedSelection(session?.id || null);
   const iosTabSwipeScope = useMemo(() => ({ navigation: linkedNavigationScope, revision: iosTabSwipeRevision, enabled: iosTabSwipeEnabled }),
     [linkedNavigationScope, iosTabSwipeRevision, iosTabSwipeEnabled]);
   const isCurrentIOSTabSwipe = () => iosTabSwipeEnabled
@@ -1797,7 +1799,7 @@ function Root() {
                   key={pager ? undefined : feedReturn?.key}
                   feedReturn={feedReturn}
                   feedPresentation={feedPresentation}
-                  {...(Platform.OS === "ios" ? { swipeScope: iosTabSwipeScope, swipeEnabled: iosTabSwipeEnabled, isCurrentSwipeRoute: isCurrentIOSTabSwipe } : {})}
+                  {...(Platform.OS === "ios" ? { feedSelection: iosFeedSelection, swipeScope: iosTabSwipeScope, swipeEnabled: iosTabSwipeEnabled, isCurrentSwipeRoute: isCurrentIOSTabSwipe } : {})}
                   onRequireAuth={openSignIn}
                   onOpenNewsStory={openNewsStory}
                   onOpenNews={() => go({ news: true })}
@@ -2118,8 +2120,8 @@ function Root() {
                     onOpenArtist={openArtist}
                     onOpenEvent={openShow}
                   />
-                  {(retainNativeFeed || (Platform.OS === "ios" && !overlay)) ? <NativeFeedMediaLayer key={Platform.OS === "ios" ? `${session?.id || "guest"}:${chatAuthEpoch}` : session.id} obscured={!!overlay} frames={activeTab === "feed" ? stack : undefined}
-                    header={<NativeAppHeader active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
+                  {(retainNativeFeed || (Platform.OS === "ios" && !overlay)) ? <NativeFeedMediaLayer key={Platform.OS === "ios" ? `${session?.id || "guest"}:${chatAuthEpoch}` : session.id} obscured={!!overlay} frames={activeTab === "feed" ? stack : undefined} chromeScope={iosTabSwipeScope} chromePage={activeTab} chromeEnabled={iosTabSwipeEnabled}
+                    header={<NativeAppHeader unread={session ? inboxUnread() : 0} notifications={session ? unreadNotifications() : 0} onOpenInbox={openInbox} onOpenNotifications={openNotifications} active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
                     tabBar={mobileTabBar}
                     media={nativeDetailOverlay}>
                     <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey={Platform.OS === "ios" ? screenKey : "main:feed"}>{nativeTabPage}</ScreenTransition></Suspense>
@@ -2137,6 +2139,11 @@ function Root() {
 
         {Platform.OS === "ios" && <IosMenuDrawer visible={iosMenuOpen} onClose={() => setIosMenuOpen(false)} openerRef={iosMenuOpener}
           session={session} unread={session ? inboxUnread() : 0} activity={session ? unreadNotifications() : 0}
+          feedFilter={iosFeedSelection?.filter} onSelectFeedFilter={value => {
+            if (!iosFeedSelection?.select(value)) return;
+            const route = navigationRef.current;
+            if (route.tab !== "feed" || route.stack.length !== 1 || Object.keys(route.stack[0] || {}).length > 0 || route.landing) switchTab("feed");
+          }}
           onProfile={() => session && openProfile(session.id)} onLogin={openSignIn} onLogout={signOut}
           actions={{
             near: () => go({ nearby: true }), venues: () => go({ venues: true }), fanClubs: () => go({ fanClubs: true }),

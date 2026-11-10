@@ -25,7 +25,8 @@ import { requestFreshDeezerPreview } from "./lib/playbackApi";
 import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount, syncNativeAccountTheme } from "./theme";
 import { artistMeta, installIngestedCatalog } from "./seed/ingested";
 import { arenaVenues } from "./seed/arenas";
-import { ACHIEVEMENTS } from "./domain/badges.mjs";
+import { ACHIEVEMENT_RULES as ACHIEVEMENTS } from "./domain/achievementRules.mjs";
+import { canonicalProfileBadges, profileBadgesSaveConfirmed } from "./domain/profileBadges.mjs";
 import { verifiedArtistGenre } from "./domain/genre.mjs";
 import { profileGenreSelection } from "./domain/genrePreferences.mjs";
 import { SIGNUP_ONBOARDING_VERSION } from "./domain/signupOnboarding.mjs";
@@ -3503,8 +3504,16 @@ export function StoreProvider({ children }) {
     const accountMutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     // General profile edits cannot optimistically adopt permissions or replay a
     // whole privacy/consent snapshot. Those choices have dedicated mutations.
-    const editableFields = ["name", "bio", "handle", "avatarUri", "banner", "concertMapVisible", "home", "genres", "favoriteArtists", "nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows"];
+    const editableFields = ["name", "bio", "handle", "avatarUri", "banner", "concertMapVisible", "home", "genres", "favoriteArtists", "nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows", "profileBadges"];
     const safe = Object.fromEntries(editableFields.filter((key) => Object.hasOwn(patch || {}, key)).map((key) => [key, patch[key]]));
+    if (Object.hasOwn(safe, "profileBadges")) {
+      if (actor.profileBadgeSelectionSupported !== true) return Promise.resolve({ ok: false, error: "Profile badge choices are not available yet. Please try again later." });
+      const selection = canonicalProfileBadges(safe.profileBadges);
+      if (selection === undefined) return Promise.resolve({ ok: false, error: "Choose valid profile badges." });
+      safe.profileBadges = selection;
+      // Do not show a cosmetic change as saved before an explicit receipt.
+      optimistic = false;
+    }
     if (Object.prototype.hasOwnProperty.call(safe, "genres")) {
       const genreSelection = profileGenreSelection(safe.genres);
       if (!genreSelection.valid) return Promise.resolve({ ok: false, error: genreSelection.error });
@@ -3533,7 +3542,7 @@ export function StoreProvider({ children }) {
 
     // The server merges this bounded envelope. Send changed music fields only;
     // never replay older theme, consent, privacy, or unrelated music choices.
-    const changedExtras = ["nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows"].filter((key) => key in safe);
+    const changedExtras = ["nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows", "profileBadges"].filter((key) => key in safe);
     if (changedExtras.length) body.extras = Object.fromEntries(changedExtras.map((key) => [key, safe[key]]));
     if (!Object.keys(body).length) return Promise.resolve({ ok: true, patch: safe });
     if (Platform.OS === "ios" && ("concertMapVisible" in safe)) invalidateIOSDetailPrivacy();
@@ -3552,6 +3561,9 @@ export function StoreProvider({ children }) {
           return { ok: false, stale: true };
         }
         if (user?.id !== actor.id) throw new Error("Mshpit could not confirm the profile save. Please try again.");
+        if (Object.hasOwn(safe, "profileBadges") && !profileBadgesSaveConfirmed(user, safe.profileBadges)) {
+          throw new Error("Mshpit could not confirm your badge choices. Keep your changes and try saving again later.");
+        }
         if (Platform.OS === "ios" && ("concertMapVisible" in safe)) invalidateIOSDetailPrivacy();
         const confirmedFields = new Set(Object.keys(safe));
         if ("handle" in safe) { confirmedFields.add("handleChangeAvailableAt"); confirmedFields.add("pendingSignupHandle"); }

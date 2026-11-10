@@ -123,7 +123,7 @@ export function FeedNavigation({ filter, onSelect, loggedIn, hideTitle = false }
   </View>;
 }
 
-export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onRefreshCounts, onLoadMore, headStatusOwner = null, feedReturn = null, feedPresentation = null, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews , filter, onSelectFilter, localNavigation = false, readEnabled = true }) {
+export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onRefreshCounts, onLoadMore, headStatusOwner = null, feedReturn = null, feedPresentation = null, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews , filter, onSelectFilter, localNavigation = false, readEnabled = true, feedContext = null }) {
   const { width, fontScale } = useWindowDimensions();
   const tabPreview = useNativeTabPreview();
   const appActive = useAppActive();
@@ -521,6 +521,7 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
       viewabilityConfigCallbackPairs={viewabilityConfigCallbackPairs}
       ListHeaderComponent={
         <View style={styles.head}>
+          {feedContext}
           {!localNavigation && <View style={[styles.wordmarkRow, Platform.OS !== "web" && styles.nativeHeaderRow]}>
             {/* The native shell already owns the brand; this title identifies the page. */}
             <Text style={Platform.OS === "web" ? styles.wordmark : styles.nativeFeedTitle}>{Platform.OS === "web" ? "MSHPIT" : Platform.OS === "ios" ? "Feed" : "Your feed"}</Text>

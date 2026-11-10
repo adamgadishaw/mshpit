@@ -43,6 +43,9 @@ const module = { exports: {} };
 new Function("require", "module", "exports", code)(name => {
   if (name === "react-native") return { View: "View", StyleSheet: { create: value => value, absoluteFill: { position: "absolute" } } };
   if (name === "./nativeFeedBackContext.mjs") return { NativeFeedBackContext: context };
+  // This suite owns retained-layer lifetimes; native chrome has its own
+  // production-component/worklet suite. Keep its layout boundary transparent.
+  if (name === "./NativeScrollChrome.ios") return { NativeScrollChromeProvider: props => props.children, NativeScrollChromeContent: props => props.children };
   return require(name);
 }, module, module.exports);
 const Layer = module.exports.default, walk = node => [node, ...(node.children || []).flatMap(walk)];
@@ -52,7 +55,7 @@ function fixture() {
   function Detail() { return React.createElement("Detail", { reveal: React.useContext(context) }); }
   function render() {
     renderer.render(React.createElement(Layer, { key: account + key, frames, obscured: frames.length > 1,
-      header: React.createElement("Header", { onPost: () => actions.push("post") }), tabBar: React.createElement("Tabs", { onChange: value => actions.push(value) }), media: React.createElement(Detail) }, React.createElement(Feed)));
+      header: React.createElement("Header", { onPost: () => actions.push("post"), onOpenInbox: () => actions.push("inbox"), onOpenNotifications: () => actions.push("notifications") }), tabBar: React.createElement("Tabs", { onChange: value => actions.push(value) }), media: React.createElement(Detail) }, React.createElement(Feed)));
   }
   render(); const all = () => walk(renderer.container);
   return { renderer, all, actions, feed: () => all().find(node => node.type === "Feed"), detail: () => all().find(node => node.type === "Detail"),
@@ -113,11 +116,16 @@ test("installed Metro selects retention policy and layer only on iOS", () => {
 test("retained header and tab presses cannot run while hidden or revive after Back", () => {
   const f = fixture();
   const oldPost = f.all().find(node => node.type === "Header").props.onPost;
+  const oldInbox = f.all().find(node => node.type === "Header").props.onOpenInbox;
+  const oldNotifications = f.all().find(node => node.type === "Header").props.onOpenNotifications;
   const oldTab = f.all().find(node => node.type === "Tabs").props.onChange;
-  f.push({ profileId: "P" }); oldPost(); oldTab("search");
-  f.all().find(node => node.type === "Header").props.onPost(); assert.deepEqual(f.actions, []);
-  f.back(); oldPost(); oldTab("search"); assert.deepEqual(f.actions, []);
+  f.push({ profileId: "P" }); oldPost(); oldInbox(); oldNotifications(); oldTab("search");
+  const hiddenHeader = f.all().find(node => node.type === "Header").props;
+  hiddenHeader.onPost(); hiddenHeader.onOpenInbox(); hiddenHeader.onOpenNotifications(); assert.deepEqual(f.actions, []);
+  f.back(); oldPost(); oldInbox(); oldNotifications(); oldTab("search"); assert.deepEqual(f.actions, []);
   f.all().find(node => node.type === "Header").props.onPost();
+  f.all().find(node => node.type === "Header").props.onOpenInbox();
+  f.all().find(node => node.type === "Header").props.onOpenNotifications();
   f.all().find(node => node.type === "Tabs").props.onChange("discover");
-  assert.deepEqual(f.actions, ["post", "discover"]); f.close();
+  assert.deepEqual(f.actions, ["post", "inbox", "notifications", "discover"]); f.close();
 });

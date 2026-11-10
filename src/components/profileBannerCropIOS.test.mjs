@@ -134,6 +134,21 @@ test("real crop dialog applies an exact portrait 3:1 crop, blocks duplicate uplo
  f.renderer.act(()=>void f.button("Use this banner").props.onPress());assert.deepEqual(f.uploads[1].args[0].profileCrop,selected.profileCrop);
  f.uploads[1].resolve("https://media.test/cropped.jpg");await settle(f.renderer);assert.deepEqual(f.finishes,["https://media.test/cropped.jpg"]);f.close();assert.deepEqual(f.releases.sort(),["context","image"]);
 });
+for (const failure of [
+  { error: { source: "api", status: 403, message: "Confirm your email before uploading." }, expected: /Confirm your email/ },
+  { error: { source: "media", userMessage: "Open the original in Photos and download it before choosing it again.", message: "file:///private-photo.jpg" }, expected: /Open the original in Photos/ },
+  { error: new Error("file:///private-photo.jpg?token=secret"), expected: /Check your connection/ },
+]) test(`crop upload failure preserves safe actionable guidance: ${failure.expected}`, async () => {
+  const f = dialogFixture(); await f.ready();
+  f.renderer.act(() => void f.button("Use this banner").props.onPress());
+  f.uploads[0].reject(failure.error); await settle(f.renderer);
+  const alert = f.all().find(node => node.props?.accessibilityRole === "alert");
+  const text = walk(alert).map(node => node.text || "").join("");
+  assert.match(text, failure.expected); assert.match(text, /crop is still here/);
+  assert.doesNotMatch(text, /file:|private-photo|token=secret/);
+  assert.equal(f.button("Use this banner").props.disabled, false); assert.deepEqual(f.finishes, []);
+  f.close();
+});
 test("crop cancel aborts upload, ignores its late completion, and decoding after dismissal releases native pixels",async()=>{
  const f=dialogFixture();await f.ready();f.renderer.act(()=>void f.button("Use this banner").props.onPress());
  f.renderer.act(()=>f.button("Cancel banner adjustment").props.onPress());assert.equal(f.uploads[0].args[1].signal.aborted,true);assert.ok(f.releases.includes("image"),"cancellation releases the full-resolution preview before unmount");

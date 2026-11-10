@@ -1,9 +1,10 @@
 import { cloneElement, isValidElement, useLayoutEffect, useRef, useState } from "react";
 import { StyleSheet, View } from "react-native";
 import { NativeFeedBackContext } from "./nativeFeedBackContext.mjs";
+import { NativeScrollChromeProvider, NativeScrollChromeContent } from "./NativeScrollChrome.ios";
 import { iosBackGestureAllowed } from "../domain/iosNavigationPolicy.mjs";
 
-export default function NativeFeedMediaLayer({ obscured, frames, header, tabBar, children, media }) {
+export default function NativeFeedMediaLayer({ obscured, frames, header, tabBar, children, media, chromeScope, chromePage, chromeEnabled = false }) {
   const presented = useRef(null), live = useRef(null);
   const [owner, setOwner] = useState(null);
   const base = frames?.[0];
@@ -26,7 +27,7 @@ export default function NativeFeedMediaLayer({ obscured, frames, header, tabBar,
   const chrome = element => {
     if (!isValidElement(element)) return element;
     const props = {};
-    for (const key of ["onMenu", "onHome", "onAccount", "onPost", "onChange"]) {
+    for (const key of ["onMenu", "onHome", "onAccount", "onPost", "onChange", "onOpenInbox", "onOpenNotifications"]) {
       const callback = element.props[key];
       if (typeof callback === "function") props[key] = (...args) => {
         if (!obscured && owner && live.current === owner && element.props.isCurrentSwipeRoute?.() !== false) return callback(...args);
@@ -35,12 +36,12 @@ export default function NativeFeedMediaLayer({ obscured, frames, header, tabBar,
     return cloneElement(element, props);
   };
   return <NativeFeedBackContext.Provider value={reveal}><View style={styles.fill}>
-    <View style={[styles.fill, obscured && !reveal && styles.hidden]}
+    <NativeScrollChromeProvider scope={chromeScope} page={chromePage} enabled={chromeEnabled && !obscured}><View style={[styles.fill, obscured && !reveal && styles.hidden]}
       pointerEvents={obscured ? "none" : "auto"}
       accessibilityElementsHidden={!!obscured}
       importantForAccessibility={obscured ? "no-hide-descendants" : "auto"}>
-      {chrome(header)}{children}{chrome(tabBar)}
-    </View>
+      {chrome(header)}<NativeScrollChromeContent>{children}</NativeScrollChromeContent>{chrome(tabBar)}
+    </View></NativeScrollChromeProvider>
     {obscured ? <View style={StyleSheet.absoluteFill} accessibilityViewIsModal>{media}</View> : null}
   </View></NativeFeedBackContext.Provider>;
 }

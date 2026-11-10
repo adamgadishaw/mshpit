@@ -43,7 +43,7 @@ function execute(path, imports) {
   new Function("require", "module", "exports", codes.get(path))(name => imports(name, createRequire(file)), module, module.exports);
   return module.exports;
 }
-function fixture() {
+function fixture({ realSources = false, component = "smart" } = {}) {
   const renderer = createRenderer(), commands = []; let preview = false, reduced = false, active = true, hidden = false, reject = false, serial = 0;
   let props = { uri: "https://test.invalid/animated.webp", mediaKind: "image", cachePolicy: "none" };
   const never = new Promise(() => {});
@@ -55,7 +55,7 @@ function fixture() {
   });
   const imports = (name, local) => {
     if (name === "react" || name === "react/jsx-runtime") return require(name);
-    if (name === "react-native") return { View: "View", Text: "Text", Pressable: "Pressable", StyleSheet: { create: value => value, absoluteFill: {} } };
+    if (name === "react-native") return { View: "View", Text: "Text", Pressable: "Pressable", Platform: { OS: "ios" }, PixelRatio: { get: () => 3 }, StyleSheet: { create: value => value, absoluteFill: {} } };
     if (name === "expo-image") return { Image: NativeImage };
     if (name.endsWith("/useIOSDetailPresentation")) return { __esModule: true, default: () => ({ active: true, current: () => true, token: null, scope: null }) };
     if (name === "../hooks/useNativeTabPreview") return () => preview;
@@ -67,10 +67,10 @@ function fixture() {
     if (name === "../theme") return { colors: {}, mono: "mono" };
     if (name === "./Icon") return "Icon";
     if (name === "./ClipPoster") return "ClipPoster";
-    if (name === "../lib/img") return { displaySrc: value => value, previewSrc: value => value, isHttp: () => true, proxied: value => value + "?fallback", isVideoUrl: value => value?.endsWith(".mp4") };
+    if (name === "../lib/img") return realSources ? local("../lib/img.js") : { displaySrc: value => value, previewSrc: value => value, isHttp: () => true, proxied: value => value + "?fallback", isVideoUrl: value => value?.endsWith(".mp4") };
     return local(name);
   };
-  const Image = execute("./SmartImage.ios.jsx", imports).default;
+  const Image = execute(component === "avatar" ? "./Avatar.jsx" : "./SmartImage.ios.jsx", imports).default;
   function Gate() { if (hidden) throw never; return null; }
   function render() { renderer.render(React.createElement(React.Suspense, { fallback: React.createElement("Fallback") }, React.createElement(Image, props), React.createElement(Gate))); }
   const walk = node => [node, ...(node.children || []).flatMap(walk)];
@@ -117,4 +117,54 @@ test("Metro selects SmartImage native animation lifecycle only for iOS", () => {
   const { resolve } = require("metro-resolver"); const context = { originModulePath: fileURLToPath(new URL("../../App.js", import.meta.url)), assetExts: new Set(), sourceExts: ["js", "jsx", "json", "ts", "tsx"], preferNativePlatform: true,
     mainFields: ["react-native", "browser", "main"], getPackageForModule: () => null, fileSystemLookup(path) { try { const stat = statSync(path); return { exists: true, type: stat.isDirectory() ? "d" : "f", realPath: realpathSync(path) }; } catch { return { exists: false }; } } };
   for (const platform of ["ios", "android", "web"]) assert.equal(resolve(context, "./src/components/SmartImage", platform).filePath, fileURLToPath(new URL(`./SmartImage.${platform === "ios" ? "ios." : ""}jsx`, import.meta.url)));
+});
+
+test("iOS profile hero decodes the stored HEIC before trying the existing conversion fallback", () => {
+  const f = fixture({ realSources: true });
+  const uri = "https://media.test/profile.heic";
+  f.props({ uri, preferOriginal: true, contain: false, previewWidth: 320 });
+  const original = f.image().props;
+  assert.equal(original.source.uri, uri, "native HEIC support must not start with an external conversion");
+  assert.equal(original.enforceEarlyResizing, false, "decode must not fit legacy portrait pixels into a wide banner before cover");
+  assert.equal(original.allowDownscaling, true, "final display-size memory bound remains enabled");
+  assert.equal(original.source.cacheKey, `original:${uri}`);
+  f.renderer.act(original.onError);
+  assert.match(f.image().props.source.uri, /wsrv\.nl.*output=jpg/);
+  f.props({ uri: "https://media.test/replacement.jpg" });
+  const replacement = f.image();
+  f.renderer.act(original.onError);
+  assert.equal(f.image(), replacement, "late failure must not advance a replacement photo");
+  assert.equal(f.image().props.source.uri, "https://media.test/replacement.jpg");
+  f.close();
+});
+
+test("ordinary iOS images retain bounded previews and early decode when hero quality is disabled", () => {
+  const f = fixture({ realSources: true });
+  f.props({ uri: "https://media.test/photo.jpg", previewWidth: 720 });
+  assert.match(f.image().props.source.uri, /wsrv\.nl.*w=720.*q=80/);
+  assert.equal(f.image().props.enforceEarlyResizing, true);
+  assert.equal(f.image().props.source.cacheKey, f.image().props.source.uri);
+  f.close();
+});
+
+test("profile avatar uses stored detail with a separate cache identity and bounded failure fallback", () => {
+  const f = fixture({ realSources: true, component: "avatar" });
+  const user = { id: "member", name: "Member", avatarUri: "https://media.test/avatar.jpg", profileUpdatedAt: 5 };
+  f.props({ user, size: 96 });
+  const thumbnail = f.image().props;
+  assert.match(thumbnail.source.uri, /wsrv\.nl.*w=288.*q=80/);
+  f.props({ preferOriginal: true, priority: "high" });
+  const hero = f.image().props;
+  assert.equal(hero.source.uri, user.avatarUri);
+  assert.notEqual(hero.source.cacheKey, thumbnail.source.cacheKey);
+  assert.equal(hero.enforceEarlyResizing, false);
+  assert.equal(hero.allowDownscaling, true);
+  assert.equal(hero.priority, "high");
+  f.renderer.act(hero.onError);
+  assert.match(f.image().props.source.uri, /wsrv\.nl.*w=288/);
+  f.props({ user: { ...user, avatarUri: "https://media.test/changed.jpg", profileUpdatedAt: 6 } });
+  f.renderer.act(hero.onError);
+  assert.equal(f.image().props.source.uri, "https://media.test/changed.jpg");
+  assert.notEqual(f.image().props.source.cacheKey, hero.source.cacheKey);
+  f.close();
 });

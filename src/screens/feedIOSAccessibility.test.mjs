@@ -91,34 +91,39 @@ for (const platform of ["ios", "android", "web"]) {
   });
 }
 
-const nativeSource = readFileSync(new URL("./FeedScreen.ios.jsx", import.meta.url), "utf8");
+// Activity now belongs to the compact app header, outside the Feed list.
+// Execute its actual exported controls, including large-type badge behavior.
+const nativeSource = readFileSync(new URL("../components/NativeAppHeader.ios.jsx", import.meta.url), "utf8");
 const nativeAst = parse(nativeSource, { sourceType: "module", plugins: ["jsx"] });
 const nativeStylesNode = nativeAst.program.body.find(node => node.type === "VariableDeclaration" && node.declarations.some(item => item.id.name === "styles"));
 const nativeStyles = new vm.Script(nativeSource.slice(nativeStylesNode.start, nativeStylesNode.end) + "\nstyles;").runInNewContext({ StyleSheet: { create: value => value }, colors: {}, font: "System" });
-const activityNode = nativeAst.program.body.find(node => node.type === "ExportNamedDeclaration" && node.declaration?.id?.name === "FeedActivityControls").declaration;
+const activityNode = nativeAst.program.body.find(node => node.type === "ExportNamedDeclaration" && node.declaration?.id?.name === "NativeActivityIcons").declaration;
 const activityCode = transformSync(nativeSource.slice(activityNode.start, activityNode.end), { babelrc: false, configFile: false, plugins: [[transformJSX, { runtime: "classic" }]] }).code;
-const activityTree = (fontScale, overrides = {}) => new vm.Script(activityCode + "\nFeedActivityControls(props);").runInNewContext({
+const activityTree = (fontScale, overrides = {}) => new vm.Script(activityCode + "\nNativeActivityIcons(props);").runInNewContext({
   React: { createElement: (type, props, ...children) => ({ type, props, children }) },
   Pressable: "Pressable", Text: "Text", View: "View", Icon: "Icon", colors: {}, styles: nativeStyles, unreadBadgeCount, unreadBadgeText,
-  useWindowDimensions: () => ({ fontScale }), props: { enabled: true, hasInbox: true, hasNotifications: true, unread: 0, notifications: 0, ...overrides },
+  useWindowDimensions: () => ({ fontScale }), props: { enabled: true, onOpenInbox: () => {}, onOpenNotifications: () => {}, unread: 124, notifications: 7, ...overrides },
 });
 const activityNodes = node => !node ? [] : Array.isArray(node) ? node.flatMap(activityNodes) : typeof node !== "object" ? [] : [node, ...activityNodes(node.children)];
-for (const scale of [1, 1.25, 1.5, 2, 3]) test(`Feed activity controls keep readable targets at text scale ${scale}`, () => {
+for (const scale of [1, 1.25, 1.5, 2, 3]) test(`Top activity symbols retain readable targets at text scale ${scale}`, () => {
   const tree = activityTree(scale);
-  assert.equal(tree.props.style.flexWrap, "wrap");
   const buttons = activityNodes(tree).filter(node => node.type === "Pressable");
   assert.equal(buttons.length, 2);
   for (const button of buttons) {
-    const style = button.props.style({ pressed: false });
-    assert.ok(style[0].minHeight >= 44);
-    assert.equal(style[0].height, undefined);
-    if (scale > 1.25) assert.equal(style[1].flexBasis, "100%");
+    assert.ok(button.props.style.minHeight >= 44);
+    assert.ok(button.props.style.minWidth >= 44);
+    assert.equal(button.props.style.height, undefined);
     assert.equal(button.props.accessibilityState.disabled, false);
   }
-  assert.equal(nativeStyles.activityLabel.flexShrink, 1);
+  assert.deepEqual(buttons.map(node => node.props.accessibilityLabel), ["Messages, 124 unread", "Notifications, 7 unread"]);
+  const badgeLabels = activityNodes(tree).filter(node => node.type === "Text").flatMap(node => node.children);
+  assert.deepEqual(badgeLabels, scale <= 1.5 ? ["99+", "7"] : [], "large type uses compact dots; exact counts remain announced by the controls");
+  const badges = activityNodes(tree).filter(node => node.type === "View" && node.props.importantForAccessibility === "no-hide-descendants");
+  assert.equal(badges.length, 2);
+  assert.ok(badges.every(node => node.props.accessible === false), "badge text must not duplicate the button's spoken count");
   assert.doesNotMatch(nativeSource, /allowFontScaling=\{false\}|maxFontSizeMultiplier|adjustsFontSizeToFit/);
 });
-test("Feed activity announces actual unread values, caps only visible badges and rejects invalid counts", () => {
+test("Top activity announces actual unread values, caps only visible badges and rejects invalid counts", () => {
   for (const value of [-4, NaN, Infinity, undefined, "malformed"]) {
     const buttons = activityNodes(activityTree(1, { unread: value, notifications: value })).filter(node => node.type === "Pressable");
     assert.deepEqual(buttons.map(node => node.props.accessibilityLabel), ["Messages", "Notifications"]);
@@ -126,4 +131,11 @@ test("Feed activity announces actual unread values, caps only visible badges and
   const buttons = activityNodes(activityTree(1, { unread: 123.9, notifications: 7, enabled: false })).filter(node => node.type === "Pressable");
   assert.deepEqual(buttons.map(node => node.props.accessibilityLabel), ["Messages, 123 unread", "Notifications, 7 unread"]);
   assert.ok(buttons.every(node => node.props.disabled && node.props.accessibilityState.disabled));
+});
+test("Top activity preserves separate actions and omits unavailable destinations", () => {
+  const opened = [];
+  const buttons = activityNodes(activityTree(1, { onOpenInbox: () => opened.push("messages"), onOpenNotifications: () => opened.push("notifications") })).filter(node => node.type === "Pressable");
+  buttons.forEach(node => node.props.onPress());
+  assert.deepEqual(opened, ["messages", "notifications"]);
+  assert.equal(activityNodes(activityTree(1, { onOpenInbox: undefined, onOpenNotifications: undefined })).filter(node => node.type === "Pressable").length, 0);
 });

@@ -118,6 +118,7 @@ function fixture({ guidance = false, managed = false, strict = false, platform =
     if (name === 'react' || name === 'react/jsx-runtime') return require(name);
     if (name === 'react-native') return native;
     if (name.endsWith('/useNativeTabPreview')) return execute(`../hooks/useNativeTabPreview${platform === 'ios' ? '.ios' : ''}.js`, imports);
+    if (name.endsWith('/useFeedPresentation')) return execute(`../hooks/useFeedPresentation${platform === 'ios' ? '.ios' : ''}.js`, imports);
     if (name === '../hooks/useNativeTabContentReady') return execute(`../hooks/useNativeTabContentReady${platform === 'ios' ? '.ios' : ''}.js`, imports);
     if (name === '../components/nativeTabPreviewContext.mjs') return tabContext;
     if (name === '../features/profilePresentation/ProfileHierarchy') return execute(`../features/profilePresentation/ProfileHierarchy${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
@@ -160,7 +161,7 @@ function fixture({ guidance = false, managed = false, strict = false, platform =
   retryHooks = execute(`../hooks/feedImageRetry${platform === 'ios' ? '.ios' : ''}.js`, imports);
   attemptHook = execute(`../hooks/useImageAttempt${platform === 'ios' ? '.ios' : ''}.js`, imports);
   refreshHook = execute('../hooks/useScopedRefresh.js', imports);
-  smartImage = execute('../components/SmartImage.jsx', imports);
+  smartImage = execute(`../components/SmartImage${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
   refreshBoundary = execute('../components/VinylRefreshBoundary.jsx', imports);
   presentation = execute(`../features/profileMedia/ProfileMediaPresentation${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
   const Screen = execute(`./ProfileScreen${platform === 'ios' ? '.ios' : ''}.jsx`, imports).default;
@@ -696,4 +697,31 @@ test('actual iOS profile guidance is owner-only and retained edit/dismiss callba
   const other = fixture({ guidance: true, managed: true, self: false }); t.after(other.unmount);
   other.render(); await other.flush();
   assert.doesNotMatch(other.text(), /Personalize your profile/);
+});
+
+test('profile hero preserves original detail while the gallery stays bounded and owner heading says posts', async () => {
+  const f = fixture(); f.render(); await f.flush(); await f.resolve(0, [photo]);
+  const banner = f.image('banner-original').props;
+  assert.equal(banner.source.uri, f.state.user.banner);
+  assert.equal(banner.enforceEarlyResizing, false);
+  assert.equal(banner.allowDownscaling, true);
+  assert.equal(banner.priority, 'high');
+  assert.equal(flatten(f.byId('profile-banner-open').props.style).width, '100%');
+  assert.match(f.image('/original.jpg').props.source.uri, /wsrv\.nl.*w=720/);
+  assert.equal(f.image('/original.jpg').props.enforceEarlyResizing, true);
+  const avatar = f.all().find(n => n.type === 'Avatar');
+  assert.equal(avatar.props.preferOriginal, true);
+  assert.equal(avatar.props.size, 96);
+  assert.match(f.text(), /Your posts/); assert.doesNotMatch(f.text(), /Your diary/);
+  f.unmount();
+});
+
+test('You header scrolls under global chrome while public profile back controls remain fixed', async () => {
+  for (const self of [true, false]) {
+    const f = fixture({ self }); f.render(); await f.flush();
+    const scroll = f.all().find(n => n.type === 'ScrollView');
+    assert.equal(nodes(scroll).includes(f.byId('profile-header')), self);
+    assert.ok(f.byId('profile-header'));
+    f.unmount();
+  }
 });

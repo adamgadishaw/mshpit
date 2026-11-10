@@ -7,6 +7,7 @@ import { colors, radius } from "../theme";
 import useReducedMotion from "../hooks/useReducedMotion";
 import { profileCropAfterDrag, profileCropPlan } from "../domain/profileCrop.mjs";
 import { MEDIA_PHOTO_SOURCE_MAX_BYTES, mediaUploadLimitLabel } from "../domain/mediaUploadPolicy.mjs";
+import { accountFormError } from "../domain/accountFormError.mjs";
 
 const CENTER = { zoom: 1, centerX: 0.5, centerY: 0.5 };
 const touchState = touches => {
@@ -97,8 +98,8 @@ export default function ProfileImageCropDialog({ request }) {
     try {
       const result = await upload({ ...asset, profileImageRef: current.source, profileCrop: current.plan.selection }, { signal });
       if (!signal.aborted && mounted.current) finish(result);
-    } catch {
-      if (!signal.aborted && mounted.current) setError("Your banner could not be uploaded. Your crop is still here. Try again or cancel to keep your current banner.");
+    } catch (error) {
+      if (!signal.aborted && mounted.current) setError(`${accountFormError(error, "Your banner could not be uploaded. Check your connection and try again.")} Your crop is still here. Cancel to keep your current banner.`);
     } finally {
       pending.current = false;
       if (!signal.aborted && mounted.current) setBusy(false);

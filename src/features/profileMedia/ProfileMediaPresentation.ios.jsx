@@ -60,15 +60,14 @@ export function useProfileMediaPresentation({ scope, user, gallery: galleryViewe
   return { openBanner: openIOSBanner, openGallery: openIOSGallery, request: requestIOSGallery, retryImages: presentation.guard(imageRetry.accept), retryValue: imageRetry.value };
 }
 
-export function ProfileBannerCover({ uri, name, onOpen, largeText = false }) {
+export function ProfileBannerCover({ uri, name, onOpen }) {
   return (
     <Pressable testID="profile-banner-open" style={styles.bannerCover} onPress={onOpen} disabled={!onOpen}
       accessibilityRole={onOpen ? "button" : "image"} accessibilityLabel={onOpen ? `View ${name}'s full-size profile banner` : `${name}'s profile banner`}
       accessibilityHint={onOpen ? "Opens the original photo" : undefined}>
-      <SmartImage uri={uri} mediaKind="image" style={styles.bannerArtwork} contain={false} accessible={false} />
+      <SmartImage uri={uri} mediaKind="image" style={styles.bannerArtwork} contain={false} accessible={false} preferOriginal priority="high" />
       {onOpen ? <View pointerEvents="none" style={styles.bannerView} accessible={false}>
         <Icon name="photo" size={18} color="#FFFFFF" />
-        {!largeText ? <Text style={styles.bannerViewText}>View photo</Text> : null}
       </View> : null}
     </Pressable>
   );
@@ -133,10 +132,10 @@ export function ProfileGallery({ items, history, isSelf, name, onOpen, onRefresh
 }
 
 const styles = StyleSheet.create({
-  bannerCover: { marginHorizontal: 20, aspectRatio: 3, minHeight: 44, borderRadius: 18, overflow: "hidden", backgroundColor: colors.surfaceAlt },
+  bannerCover: { width: "100%", aspectRatio: 3, minHeight: 44, overflow: "hidden", backgroundColor: colors.surfaceAlt },
   bannerArtwork: { width: "100%", aspectRatio: 3 },
-  bannerView: { position: "absolute", right: 8, bottom: 8, minHeight: 44, minWidth: 44, maxWidth: "90%", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 12, backgroundColor: "rgba(0,0,0,0.72)" },
-  bannerViewText: { color: "#FFFFFF", fontSize: 14, fontWeight: "600", flexShrink: 1 },
+  // This is a decorative affordance; the whole banner is the accessible target.
+  bannerView: { position: "absolute", right: 12, bottom: 12, width: 32, height: 32, alignItems: "center", justifyContent: "center", borderRadius: 16, backgroundColor: "rgba(0,0,0,0.64)" },
   galleryHeader: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8, marginHorizontal: 24, marginTop: 24, marginBottom: 8 },
   galleryTitle: { color: colors.text, fontSize: 22, fontWeight: "700", letterSpacing: -0.35, flexShrink: 1 },
   galleryRefresh: { minHeight: 44, minWidth: 44, justifyContent: "center", paddingHorizontal: 8 },

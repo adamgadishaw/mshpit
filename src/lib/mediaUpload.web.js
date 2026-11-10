@@ -55,14 +55,17 @@ function extensionOf(value) {
 }
 
 async function firstMediaBytes(body) {
+  // Expo File also implements slice(), but SDK 57 builds that Blob from a
+  // Uint8Array after reading the whole file. React Native's Blob rejects binary
+  // parts. Read only the signature via the native handle, leaving bytes on disk.
+  if (typeof body?.open === "function") {
+    const handle = body.open("r");
+    try { return handle.readBytes(Math.min(96, Number(handle.size) || 96)); }
+    finally { handle.close(); }
+  }
   if (typeof body?.slice === "function") {
     const prefix = body.slice(0, 96);
     if (typeof prefix?.arrayBuffer === "function") return new Uint8Array(await prefix.arrayBuffer());
-  }
-  if (typeof body?.open === "function") {
-    const handle = body.open();
-    try { return handle.readBytes(Math.min(96, Number(handle.size) || 96)); }
-    finally { handle.close(); }
   }
   return null;
 }
@@ -134,13 +137,13 @@ async function bodyFor(asset, { optimizeWeb = true } = {}) {
 // object PUT. New media-assets deliberately set optimizeWeb=false for immutable
 // originals; their edited display variant is rendered and uploaded separately.
 export async function prepareMediaUploadAsset(asset, { optimizeWeb = true, context = "Preparing media" } = {}) {
-  let body;
+  let body, contentType;
   try {
     body = await bodyFor(asset, { optimizeWeb });
+    contentType = await contentTypeFor(asset, body);
   } catch (error) {
-    throw capturedUploadError(error, { context, code: "PIT-UPLOAD-002" });
+    throw capturedUploadError(error, { context: "Reading the selected media", code: "PIT-UPLOAD-008" });
   }
-  const contentType = await contentTypeFor(asset, body);
   if (!contentType) {
     throw captureAppError(new AppError(undefined, { code: "PIT-UPLOAD-002", context, source: "media" }), {
       context,
@@ -248,7 +251,7 @@ function capturedUploadError(error, { timedOut = false, context, code } = {}) {
     context,
     source: "media",
     toast: true,
-    meta: { method: "PUT", route: "/media/object" },
+    meta: code === "PIT-UPLOAD-008" ? undefined : { method: "PUT", route: "/media/object" },
   });
 }
 
@@ -280,7 +283,7 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs, expe
         if (signal?.aborted || error?.name === "AbortError") throw error;
         // A selected crop must never silently become a different centered photo.
         // Unedited originals retain the existing optional-normalization fallback.
-        if (asset?.profileCrop) throw capturedUploadError(error, { context: "Preparing your profile photo" });
+        if (asset?.profileCrop) throw capturedUploadError(error, { context: "Preparing your profile photo", code: "PIT-UPLOAD-008" });
         uploadAsset = asset;
       }
     }

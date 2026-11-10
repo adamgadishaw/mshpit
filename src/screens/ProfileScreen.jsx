@@ -10,7 +10,8 @@ import TicketStub from "../components/TicketStub";
 import NativeDeleteRow from "../components/NativeDeleteRow";
 import { confirmOwnPostDelete } from "../lib/confirmOwnPostDelete";
 import { BadgeRow } from "../components/Badge";
-import { ACHIEVEMENTS } from "../domain/badges.mjs";
+import { displayedProfileBadges } from "../domain/profileBadges.mjs";
+import { ACHIEVEMENT_RULES as ACHIEVEMENTS } from "../domain/achievementRules.mjs";
 import { showDateMs } from "../lib/showTime";
 import Countdown from "../components/Countdown";
 import SmartImage from "../components/SmartImage";
@@ -630,7 +631,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           </ProfileIdentityRow>
           <View style={[styles.nameRow, Platform.OS === "web" && styles.integratedNameRow]}>
             <Text testID="profile-identity-name" style={[styles.name, Platform.OS === "web" && styles.integratedName]}>{user.name}</Text>
-            <BadgeRow badges={userBadges(user)} size={20} />
+            <BadgeRow badges={displayedProfileBadges(userBadges(user), user.profileBadges)} size={20} />
           </View>
           <Text testID="profile-identity-handle" style={[styles.handle, Platform.OS === "web" && styles.integratedHandle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}{user.pronouns ? <Text style={styles.pronouns}>{` · ${user.pronouns}`}</Text> : null}</Text>
           <View style={styles.roleBadge}><Text style={styles.roleTxt}>{roleLabel}</Text></View>
@@ -884,7 +885,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         <View style={styles.postsSection}>
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
-        <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>{IS_IOS && isSelf ? "Your diary" : isSelf ? "Your posts" : "Posts"}{historyHeadingCount(logs.length)}</Text>
+        <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>{isSelf ? "Your posts" : "Posts"}{historyHeadingCount(logs.length)}</Text>
         {logs.length === 0 && (IS_IOS ? historyConfirmed : !historyLoading) && (
           <Text style={styles.empty}>{isSelf ? "You haven't posted yet. Tap “Make a post” to log a show or share an update." : "No posts yet."}</Text>
         )}

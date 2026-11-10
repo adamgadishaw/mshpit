@@ -82,7 +82,7 @@ test("Discover restores its in-app destination while explicit directory links ke
     for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(walkLocal); else if (value?.type) walkLocal(value);
   };
   walkLocal(parse(local, { sourceType: "module", plugins: ["jsx"] }));
-  const localKey = localOpening.find(node => node.name.name === "FeedOwner").attributes.find(a => a.name?.name === "key").value.expression;
+  const localKey = localOpening.find(node => node.name.name === "Owner").attributes.find(a => a.name?.name === "key").value.expression;
   const keyForFeed = new Function("props", `return (${local.slice(localKey.start, localKey.end)});`);
   const feedStore = createIOSFeedReturnStore(), base = {};
   const feedKey = (accountId, epoch) => keyForFeed({ accountId, feedReturn: feedStore.reconcile(accountId, epoch, base) });
@@ -92,8 +92,9 @@ test("Discover restores its in-app destination while explicit directory links ke
   const feedAAgain = feedKey("A", 1); assert.notEqual(feedAAgain, feedA);
   assert.notEqual(feedKey("A", 2), feedAAgain, "actual Feed return epoch changes the local owner key");
   const localPager = localOpening.filter(node => node.name.name === "NativeFeedFilterPager");
-  assert.equal(localPager.length, 1);
-  assert.equal(localPager[0].attributes.find(a => a.name?.name === "active").value.expression.name, "filter");
+  assert.equal(localPager.length, 0, "the side menu owns filter selection; Feed no longer intercepts horizontal tab swipes");
+  assert.equal(localOpening.filter(node => node.name.name === "FeedPane").length, 1,
+    "visited filters share the retained pane renderer, including the active filter");
 
 });
 

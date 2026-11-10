@@ -54,7 +54,7 @@ const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 const sleepForever = new Promise(() => {});
 // Actual React, platform-resolved rail and shell components. The native gesture,
 // UI/RN scheduler and actions are synthetic: this does not validate a device.
-function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "following", entryDirection = 0, scrollChild = null, pager = false, shell = false, scrollRef = null, scrollProps = {}, feedScreen = false, discoverScreen = false, selectedFilter = "everyone", titleMode = null } = {}) {
+function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "following", entryDirection = 0, scrollChild = null, pager = false, shell = false, scrollRef = null, scrollProps = {}, feedScreen = false, discoverScreen = false, selectedFilter = "everyone" } = {}) {
   const dimensions = { width: 412, fontScale: 1 };
   const scrolls = [], titleOffsets = [];
   const renderer = createRenderer(), gestures = [], queue = [], calls = [], shared = [], reactions = [], springs = [], timings = [], animatedStyles = [], appListeners = new Set(), appHistory = [], springCompletions = [], canceledAnimations = [];
@@ -74,7 +74,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     react: React, "react/jsx-runtime": require("react/jsx-runtime"),
     "react-native": { AppState: { currentState: "active", addEventListener: (_event, callback) => { appListeners.add(callback); appHistory.push(callback); return { remove: () => appListeners.delete(callback) }; } }, AccessibilityInfo: { announceForAccessibility: noop }, View: "View", Text: "Text", ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Pressable: "Pressable", StyleSheet: installedStyleSheet, useWindowDimensions: () => dimensions },
     "react-native-reanimated": { __esModule: true, default: { View: "AnimatedView", Text: "AnimatedText", createAnimatedComponent: Component => Component }, ReduceMotion: { System: "system" }, useSharedValue, cancelAnimation: value => canceledAnimations.push(value),
-      useAnimatedStyle: f => { animatedStyles.push(f); return { ...f(), __animate: f }; }, useAnimatedReaction: (prepare, react) => {
+      useAnimatedProps: f => ({ ...f(), __animate: f }), useAnimatedStyle: f => { animatedStyles.push(f); return { ...f(), __animate: f }; }, useAnimatedReaction: (prepare, react) => {
         const ref = React.useRef(null); if (!ref.current) { ref.current = {}; reactions.push(ref.current); }
         Object.assign(ref.current, { prepare, react });
         React.useLayoutEffect(() => { ref.current.active = true; return () => { ref.current.active = false; }; }, []);
@@ -113,6 +113,8 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     };
     modules["../hooks/useScreenReaderEnabled"] = execute("../hooks/useScreenReaderEnabled.ios.js");
   }
+  modules["../lib/useAppActive"] = () => props.appActive !== false;
+  modules["./NativeScrollChrome.ios"] = execute("./NativeScrollChrome.ios.jsx");
   modules["./NativeSwipeRail"] = execute("./NativeSwipeRail.ios.jsx");
   modules["./NativeTabPages.ios"] = execute("./NativeTabPages.ios.jsx");
   modules["./NativeFeedFilterPager.ios"] = execute("./NativeFeedFilterPager.ios.jsx");
@@ -179,16 +181,20 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     modules["../hooks/feedImageRetry"] = { FeedImageRetryProvider: p => p.children, useFeedImageRetry: () => ({ value: null, isCurrent: () => true, accept: noop }) };
     modules["../lib/useAppActive"] = () => props.appActive !== false;
     modules["../lib/persist"] = { load: (key, fallback) => persisted.get(key) ?? fallback, save: (key, value) => { writes.push([key, value]); persisted.set(key, value); } };
+    modules["../hooks/useIOSFeedSelection"] = execute("../hooks/useIOSFeedSelection.ios.js");
     modules["../lib/lazyWithRetry"] = { lazyWithRetry: () => "OptionalPanel" };
     modules["../theme"] = { colors: {}, radius: {}, shadow: {}, mono: "mono" };
     const interactions = { useNewsInteractions: () => ({ session: { id: props.accountId }, authReady: true, blockedIds: props.blockedIds || [], mutedIds: [], removedIds: [], followedArtists: [] }) };
     modules["./NewsInteractionContext"] = interactions;
     modules["../components/news/NewsInteractionContext"] = interactions;
     const read = (kind, args) => new Promise(resolve => reads.push({ kind, args, resolve }));
+    modules["../../lib/diagnostics"] = { toAppError: error => error };
+    modules["./useIOSDetailPresentation.js"] = execute("../hooks/useIOSDetailPresentation.js");
+    modules["../../hooks/useIOSDetailPresentation"] = execute("../hooks/useIOSDetailPresentation.ios.js");
     modules["./socialReactionsApi"] = { readFollowingFeed: args => read("following", args), subscribeSocialReactionChanges: () => noop };
-    modules["../features/socialReactions/useFollowingFeed"] = execute("../features/socialReactions/useFollowingFeed.js");
+    modules["../features/socialReactions/useFollowingFeed"] = execute("../features/socialReactions/useFollowingFeed.ios.js");
     modules["../../lib/newsDeskApi"] = { fetchNewsDeskStories: args => read("news", args) };
-    modules["../components/news/useNewsDeskStories"] = execute("./news/useNewsDeskStories.js");
+    modules["../components/news/useNewsDeskStories"] = execute("./news/useNewsDeskStories.ios.js");
     modules["../components/news/useNewsIntroduction"] = enabled => { introductions.push(enabled); return { post: null, dismiss: noop }; };
     for (const name of ["TicketStub", "Icon", "SuggestedPittersRail", "news/NewsStoryCard"]) modules["../components/" + name] = name;
     modules["../components/VinylRefreshBoundary"] = p => p.children;
@@ -281,25 +287,12 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
       },
     };
   }
-  if (titleMode) {
-    const { default: Title, NativeLargeTitleProvider: Provider } = modules["./NativeLargeTitle.ios"];
-    Component = () => {
-    const heading = React.createElement(Title, { inFlow: titleMode === "flow" }, React.createElement("Text", { accessibilityRole: "header" }, "Page"));
-    return React.createElement(Provider, { reserveSpace: titleMode === "row" },
-      titleMode === "flow" ? null : heading,
-      React.createElement(Scroll.ScrollView, { observePageTitle: false, testID: "area" }, "Area options"),
-      React.createElement(Scroll.ScrollView, { ...scrollProps, ref: scrollRef, testID: "primary" },
-        titleMode === "flow" ? heading : null,
-        React.createElement(Scroll.ScrollView, { horizontal: true, testID: "rail" }, "Horizontal cards"),
-        React.createElement(Scroll.ScrollView, { testID: "nested" }, "Nested content")));
-    };
-  }
   const Layer = execute("./NativeFeedMediaLayer.jsx").default;
   function Gate() { if (suspended) throw sleepForever; return null; }
   const componentKey = () => pager ? `${props.accountId}:${props.authEpoch || 0}` : component === "social" ? `${props.accountId || "guest"}:${props.post.id}` : "component";
   const f = {
     calls, queue, gestures, shared, reactions, scrolls, titleOffsets, dimensions, springs, timings, animatedStyles, unmounted, reads, writes, impressions, dwell, leaseWrites, introductions, persisted, browseRenders, canceledAnimations,
-    springFrame(value) { shared[discoverScreen ? 5 : 3].set(value); },
+    springFrame(value) { shared[3].set(value); },
     preferences(next) { reduced = !!next.reduced; reader = !!next.reader; f.render(); },
     holdUI(value) { holdUI = value; }, flushUI() { while (uiQueue.length) uiQueue.shift()(); },
     pages: () => f.all().filter(node => node.type === "ActualPage"),
@@ -502,7 +495,7 @@ test("real removed native listener cannot revoke a replacement mount", async t =
 });
 test("Root routes all iOS shell rails through presentation guards without changing default wrappers", () => {
   const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
-  assert.equal((app.match(/<NativeAppHeader active=\{activeTab\} onChange=\{switchTab\} swipeScope=/g) || []).length, 2);
+  assert.equal((app.match(/<NativeAppHeader active=\{activeTab\} onChange=\{switchTab\} swipeScope=/g) || []).length, 1);
   assert.match(app, /<IosTabBar active=\{activeTab\} onChange=\{switchTab\} swipeScope=\{iosTabSwipeScope\}/);
   assert.match(app, /<NativeFeedMediaLayer key=\{Platform.OS === "ios"/);
   assert.match(app, /const nativeTabPage = tabScreens;/);
@@ -731,98 +724,32 @@ test("selected filter tap cancels queued preview and release without a selection
   assert.deepEqual(f.calls, []); assert.deepEqual(f.pages().map(p => p.props.tab), ["following"]);
 });
 
-test("actual iOS Feed previews Local cached posts beneath one stable strip without writes", t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+test("actual iOS Feed leaves horizontal navigation to its outer main-tab owner", t => {
   const f = fixture({ feedScreen: true }); t.after(f.close);
-  const source = f.lists()[0].props.instance;
-  assert.deepEqual(f.all().find(n => n.props?.testID === "feed-fixed-navigation").props.style, { paddingHorizontal: 12, paddingTop: 4 });
+  assert.equal(f.all().some(node => node.props?.testID === "feed-filter-swipe-rail"), false);
+  assert.equal(f.all().some(node => node.props?.accessibilityRole === "tablist"), false);
+  assert.equal(f.all().some(node => node.props?.testID === "feed-fixed-navigation"), false);
+  assert.equal(f.all().some(node => node.props?.testID === "feed-activity-controls"), false);
   assert.equal(f.lists()[0].props.data[0].id, "global");
-  const before = f.leaseWrites.length, g = dragPage(f, 120); f.flush(); f.ready("local");
-  assert.equal(f.lists().length, 2);
-  assert.equal(f.lists()[1].props.data[0].id, "nearby");
-  assert.equal(f.all().filter(n => n.props?.accessibilityLabel === "Following feed").length, 1);
-  assert.equal(f.translation("everyone"), 120);
-  assert.deepEqual(f.reads, []); assert.deepEqual(f.writes, []); assert.equal(f.leaseWrites.length, before);
-  f.act(() => t.mock.timers.tick(1500));
-  assert.ok(f.impressions.every(args => args[2] === "everyone"));
-  release(g, { x: 280 }); g.onFinalize(); f.finishSpring(); f.flush();
-  assert.equal(f.lists().length, 1); assert.equal(f.lists()[0].props.instance, source); assert.deepEqual(f.writes, []);
+  assert.ok(f.all().some(node => node.props?.accessibilityLabel === "Current feed: For You"));
+  assert.deepEqual(f.reads, []); assert.deepEqual(f.writes, []);
 });
 
-test("actual Following GET starts mid-drag and survives promotion without restart or hidden impressions", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const f = fixture({ feedScreen: true, selectedFilter: "local" }); t.after(f.close);
-  const g = dragPage(f, 120); f.flush(); f.ready("following");
-  assert.equal(f.reads.length, 1); assert.equal(f.reads[0].kind, "following");
-  const destination = f.lists()[1].props.instance, request = f.reads[0];
-  assert.equal(request.args.signal.aborted, false); assert.deepEqual(f.writes, []);
-  release(g, { x: 400 }); g.onFinalize(); f.flush();
-  f.act(() => t.mock.timers.tick(2500)); f.react(); f.finish(); f.flush();
-  const followingList = () => nodes(f.surface("following")).find(node => node.type === "FlatList");
-  assert.equal(followingList().props.instance, destination);
-  assert.equal(f.surface("local").props.pointerEvents, "none");
-  assert.equal(f.surface("local").props.accessibilityElementsHidden, true);
-  assert.equal(f.surface("local").props.style[2].opacity, 0);
-  assert.equal(f.writes.length, 1); assert.equal(f.writes[0][1], "following");
-  assert.equal(f.reads.length, 1); assert.equal(request.args.signal.aborted, false);
-  request.resolve({ posts: [{ id: "followed", review: "A real followed post" }], nextCursor: "older" }); await f.settle();
-  assert.equal(followingList().props.data[0].id, "followed");
-  f.act(() => t.mock.timers.tick(999)); assert.ok(f.impressions.every(args => args[2] !== "following"));
-  f.act(() => t.mock.timers.tick(1)); assert.equal(f.impressions.filter(args => args[2] === "following").length, 1);
-});
-
-test("actual News normal reads render stories mid-drag and canceled preview aborts without selection", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+test("actual Feed menu selection changes only the selected retained native pane", t => {
   const f = fixture({ feedScreen: true }); t.after(f.close);
-  const g = dragPage(f); f.flush(); f.ready("news");
-  assert.equal(f.reads.length, 2); assert.ok(f.reads.every(r => r.kind === "news"));
-  for (const request of f.reads) request.resolve({ stories: [{ id: "story", title: "Actual destination story" }], nextCursor: "older" });
-  await f.settle();
-  assert.equal(f.lists()[1].props.data[0].title, "Actual destination story"); assert.equal(f.translation("news"), 260);
-  assert.deepEqual(f.writes, []);
-  release(g, { x: 240 }); g.onFinalize(); f.finishSpring(); f.flush();
-  assert.equal(f.lists().length, 1); assert.deepEqual(f.writes, []);
-  assert.ok(f.reads.every(r => r.args.signal.aborted));
-});
-
-test("loaded Following preview shows posts immediately but qualifies views only after promotion", async t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const f = fixture({ feedScreen: true, selectedFilter: "local" }); t.after(f.close);
-  const g = dragPage(f, 120); f.flush(); f.ready("following");
-  f.reads[0].resolve({ posts: [{ id: "followed", review: "Destination before release" }], nextCursor: "older" }); await f.settle();
-  assert.equal(f.lists()[1].props.data[0].review, "Destination before release");
-  f.act(() => t.mock.timers.tick(3000));
-  assert.ok(f.impressions.every(args => args[2] !== "following"));
-  const previewRow = f.all().find(n => n.type === "TicketStub" && n.props.log.id === "followed");
-  assert.equal(previewRow.props.mediaViewable, false); assert.equal(previewRow.props.swipeActions, false);
-  release(g, { x: 400 }); g.onFinalize(); f.finish(); f.flush();
-  assert.equal(f.reads.length, 1); assert.equal(f.writes[0][1], "following");
-  assert.equal(f.all().find(n => n.type === "TicketStub" && n.props.log.id === "followed").props.mediaViewable, true);
-  f.act(() => t.mock.timers.tick(999)); assert.ok(f.impressions.every(args => args[2] !== "following"));
-  f.act(() => t.mock.timers.tick(1)); assert.equal(f.impressions.filter(args => args[2] === "following").length, 1);
-});
-
-for (const change of ["unmount", "suspense", "route", "account", "scope", "background"]) test(`actual Feed retires selected-strip callbacks and preview reads on ${change}`, t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const f = fixture({ feedScreen: true, selectedFilter: "local", strict: true }); t.after(f.close);
-  const stale = f.all().find(n => n.props?.accessibilityLabel === "News feed").props.onPress;
-  const g = dragPage(f, 120); f.flush(); f.ready("following"); const request = f.reads.at(-1);
-  if (change === "unmount") f.close();
-  if (change === "suspense") { f.suspend(true); f.suspend(false); }
-  if (change === "route") f.render({ routeCurrent: false, visible: false });
-  if (change === "account") f.render({ accountId: "account-B" });
-  if (change === "scope") f.render({ swipeScope: {} });
-  if (change === "background") f.render({ appActive: false });
-  f.act(stale); release(g, { x: 400 }); g.onFinalize(); f.finish(); f.flush();
-  assert.deepEqual(f.writes, []); assert.equal(request.args.signal.aborted, true);
-});
-
-test("same-filter explicit tap cancels actual pending preview without saving the selected choice", t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const f = fixture({ feedScreen: true, selectedFilter: "local" }); t.after(f.close);
-  const g = dragPage(f, 120); f.flush(); f.ready("following"); release(g, { x: 400 }); g.onFinalize(); f.flush();
-  f.press("Local feed"); f.finish(); f.flush();
-  assert.deepEqual(f.writes, []); assert.equal(f.lists().length, 1); assert.equal(f.reads[0].args.signal.aborted, true);
+  f.render({ feedSelection: { filter: "everyone", select: noop } });
+  const source = f.lists()[0];
+  f.render({ feedSelection: { filter: "local", select: noop } });
+  const local = nodes(f.surface("local")).find(node => node.type === "FlatList");
+  assert.equal(local.props.data[0].id, "nearby");
+  assert.equal(nodes(f.surface("everyone")).find(node => node.type === "FlatList"), source);
+  assert.equal(f.surface("everyone").props.pointerEvents, "none");
+  assert.equal(f.surface("everyone").props.accessibilityElementsHidden, true);
+  assert.equal(f.surface("everyone").props.style[1].opacity, 0);
+  f.render({ feedSelection: { filter: "everyone", select: noop } });
+  assert.equal(nodes(f.surface("everyone")).find(node => node.type === "FlatList"), source);
+  assert.equal(f.surface("everyone").props.pointerEvents, "auto");
+  assert.deepEqual(f.reads, []);
 });
 
 test("disabled iOS social wrapper exposes explicit controls without mutation or page exclusion", t => {
@@ -850,20 +777,14 @@ for (const kind of ["vertical", "horizontal", "nested", "input"]) test(`local pa
   }
 });
 
-test("fixed Feed navigation and body header contribute one original strip-to-card gap", t => {
+test("Feed title and selected label occupy the ordinary list header rather than fixed chrome", t => {
   const f = fixture({ feedScreen: true }); t.after(f.close);
-  const flatten = style => Array.isArray(style) ? Object.assign({}, ...style.filter(Boolean).map(flatten)) : style || {};
-  const fixed = f.all().find(node => node.props?.testID === "feed-fixed-navigation");
-  const navigation = flatten(fixed.children.find(node => node.type === "View").props.style);
   const list = f.lists()[0];
-  const bodyHeader = flatten(list.props.ListHeaderComponent.props.style);
-  const content = flatten(list.props.contentContainerStyle);
-  assert.equal(navigation.marginBottom, 0, "fixed chrome does not duplicate the body gap");
-  assert.equal(navigation.marginBottom + bodyHeader.marginBottom + content.paddingTop, 26);
-  assert.equal(bodyHeader.marginBottom, 22, "optional content retains its existing trailing gap");
-  assert.equal(content.paddingTop, 4);
+  assert.ok(list.props.ListHeaderComponent);
+  assert.ok(f.all().some(node => node.props?.accessibilityLabel === "Current feed: For You"));
+  assert.equal(f.all().find(node => node.props?.testID === "feed-fixed-navigation"), undefined);
+  assert.equal(list.props.ListHeaderComponent.props.style.marginBottom, 22);
 });
-
 
 test("installed RN absolute fill gives every real local pane native viewport bounds", t => {
   assert.equal(installedStyleSheet.absoluteFillObject, undefined, "RN 0.86 removed the legacy property");
@@ -878,9 +799,10 @@ test("installed RN absolute fill gives every real local pane native viewport bou
   assert.equal(track.props.style.flex, 1); assert.equal(track.props.style.overflow, "hidden");
 });
 
-test("Discover fixed navigation previews actual Festival read and promotes the same resource instance", async t => {
+test("Discover scrolling navigation previews actual Festival read and promotes the same resource instance", async t => {
   const f = fixture({ discoverScreen: true }); t.after(f.close);
-  const heading = f.all().find(n => n.props?.testID === "discover-fixed-navigation");
+  const heading = f.all().find(n => n.props?.testID === "discover-scroll-navigation");
+  assert.ok(nodes(f.surface("shows")).includes(heading));
   const before = f.leaseWrites.length;
   const g = dragPage(f); f.flush();
   assert.equal(f.reads.length, 1); assert.equal(f.introductions.length, 0, "preview cannot register refresh");
@@ -895,7 +817,8 @@ test("Discover fixed navigation previews actual Festival read and promotes the s
   assert.equal(f.timings.length, 1); f.finish(); f.flush();
   assert.deepEqual(f.calls, ["festivals"]); assert.equal(f.reads.length, 1, "promotion retains loader instance");
   assert.ok(f.introductions.some(x => typeof x === "function"));
-  assert.equal(f.all().find(n => n.props?.testID === "discover-fixed-navigation"), heading);
+  assert.ok(nodes(f.surface("festivals")).some(n => n.props?.testID === "discover-scroll-navigation"));
+  assert.ok(!f.all().includes(heading), "source navigation leaves with its source page");
   assert.ok(f.leaseWrites.some(p => p.scrollY === 0));
 });
 
@@ -1220,9 +1143,10 @@ test("retained swipe controller is iOS-only and the Android native implementatio
 // Production DiscoverOwner -> section pager -> rail -> measured tab strip.
 // Native glyph measurements and the UI scheduler are synthetic, not device QA.
 const sectionKeys = ["shows", "festivals", "artists", "venues", "cities", "photos"];
-const tabStrip = f => f.all().find(node => node.props?.testID === "discover-section-tabs");
-const tabIndicator = f => f.all().find(node => node.props?.testID === "discover-section-indicator").props.style[1].__animate();
-const tabButtons = f => f.all().filter(node => node.props?.accessibilityRole === "tab");
+const sectionNodes = f => nodes(f.all().find(n => n.props?.testID?.startsWith("main-tab-page-") && n.props.pointerEvents === "auto") || f.all().find(n => n.props?.testID?.startsWith("main-tab-page-")));
+const tabStrip = f => sectionNodes(f).find(node => node.props?.testID === "discover-section-tabs");
+const tabIndicator = f => sectionNodes(f).find(node => node.props?.testID === "discover-section-indicator").props.style[1].__animate();
+const tabButtons = f => sectionNodes(f).filter(node => node.props?.accessibilityRole === "tab");
 function measureSectionTabs(f, widths = [76, 110, 90, 95, 80, 100], viewport = 300) {
   const strip = tabStrip(f);
   let x = 3;
@@ -1241,7 +1165,7 @@ const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < .0
 
 test("Discover's Feed-style strip follows actual held page motion before selection commits", t => {
   const f = fixture({ discoverScreen: true }); t.after(f.close); measureSectionTabs(f);
-  const fixed = f.all().find(node => node.props?.testID === "discover-fixed-navigation");
+  const fixed = f.all().find(node => node.props?.testID === "discover-scroll-navigation");
   assert.equal(tabButtons(f).length, 6);
   assert.equal(tabStrip(f).props.horizontal, true);
   assert.equal(tabStrip(f).props.style.borderRadius, 13);
@@ -1277,11 +1201,13 @@ test("Discover strip and page share continuous geometry through a delayed atomic
   const f = fixture({ discoverScreen: true }); t.after(f.close); measureSectionTabs(f);
   const strip = tabStrip(f), g = dragPage(f); f.flush(); f.ready("festivals"); release(g); g.onFinalize();
   assert.equal(tabIndicator(f).transform[0].translateX, 79);
-  f.holdUI(true); f.finish(); f.flush();
+  const candidateStrip = nodes(f.surface("festivals")).find(n => n.props?.testID === "discover-section-tabs");
+  f.holdUI(true); f.finish(); f.flush(); measureSectionTabs(f);
   assert.deepEqual(f.calls, ["festivals"]); assert.equal(tabIndicator(f).transform[0].translateX, 79);
   assert.equal(tabButtons(f).find(n => n.props.accessibilityState.selected).props.accessibilityLabel, "Festivals");
   f.flushUI(); f.react(); assert.equal(tabIndicator(f).transform[0].translateX, 79);
-  assert.equal(tabStrip(f), strip, "promotion retains the fixed strip and its native measurements");
+  assert.notEqual(tabStrip(f), strip, "navigation scrolls with each page");
+  assert.equal(tabStrip(f), candidateStrip, "promotion retains the preview navigation instance");
 });
 
 test("Discover scroll visibility follows unequal-width interpolation and far section taps", t => {
@@ -1289,7 +1215,7 @@ test("Discover scroll visibility follows unequal-width interpolation and far sec
   assert.equal(f.scrolls.at(-1).x, 84);
   const g = dragPage(f, -100); f.flush(); f.ready("venues");
   closeTo(f.scrolls.at(-1).x, 107.125);
-  f.press("Photos"); f.react();
+  f.press("Photos"); measureSectionTabs(f); f.react();
   assert.equal(f.scrolls.at(-1).x, 257); assert.equal(f.scrolls.at(-1).animated, false);
   assert.equal(tabIndicator(f).transform[0].translateX, 454);
   assert.deepEqual(f.calls, ["photos"]); g.onFinalize(); f.finish(); f.flush(); assert.deepEqual(f.calls, ["photos"]);
@@ -1305,7 +1231,7 @@ test("idle manual strip browsing stays free and retires pending page settlement"
   f.react(); f.react(); f.finish(); f.flush(); f.react();
   assert.equal(f.scrolls.length, count, "idle selection never recenters a manually browsed strip");
   assert.deepEqual(f.calls, []);
-  f.press("Cities"); f.react(); assert.equal(f.scrolls.at(-1).x, 257);
+  f.press("Cities"); measureSectionTabs(f); f.react(); assert.equal(f.scrolls.at(-1).x, 257);
 });
 
 for (const changed of ["font", "width"]) test(`Discover ${changed} change replaces measurements without remounting the page`, t => {
@@ -1334,15 +1260,16 @@ test("Discover Reduce Motion live change cancels displacement and keeps accessib
   const g = dragPage(f); f.flush(); f.ready("festivals"); assert.ok(tabIndicator(f).transform[0].translateX > 3);
   f.reduced(true); f.react(); assert.equal(tabIndicator(f).transform[0].translateX, 3);
   release(g); g.onFinalize(); f.finish(); f.flush(); assert.deepEqual(f.calls, []);
-  f.press("Artists"); f.react(); assert.equal(tabIndicator(f).transform[0].translateX, 189);
-  f.reader(true); f.press("Shows"); f.react(); assert.equal(tabIndicator(f).transform[0].translateX, 3);
+  f.press("Artists"); measureSectionTabs(f); f.react(); assert.equal(tabIndicator(f).transform[0].translateX, 189);
+  f.reader(true); f.press("Shows"); measureSectionTabs(f); f.react(); assert.equal(tabIndicator(f).transform[0].translateX, 3);
   assert.deepEqual(f.calls, ["artists", "shows"]);
 });
 
-test("Discover header is outside the page pan and uses consistent physical LTR coordinates", t => {
+test("Discover header scrolls inside the page with native horizontal arbitration and physical LTR coordinates", t => {
   const f = fixture({ discoverScreen: true }); t.after(f.close); measureSectionTabs(f);
   const detector = f.all().find(n => n.type === "GestureDetector" && n.props.gesture.handlers === f.gesture);
-  assert.ok(!nodes(detector).includes(tabStrip(f)));
+  assert.ok(nodes(detector).includes(tabStrip(f)));
+  assert.ok(nodes(f.surface("shows")).some(n => n.type === "ScrollView" && !n.props.horizontal && nodes(n).includes(tabStrip(f))));
   assert.equal(tabStrip(f).props.style.direction, "ltr");
   assert.equal(tabStrip(f).props.contentContainerStyle.direction, "ltr");
   assert.equal(tabIndicator(f).transform[0].translateX, 3);
@@ -1409,184 +1336,28 @@ test("compiled Discover UI worklet closures execute geometry and synchronous scr
 });
 
 
-test("actual Feed swipes back into the visited native list and preserves one activity header", t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+test("menu-controlled Feed retains no more than four full-size panes and resets them on account changes", t => {
   const f = fixture({ feedScreen: true }); t.after(f.close);
-  f.render({ onOpenInbox: () => f.calls.push("inbox"), onOpenNotifications: () => f.calls.push("notifications") });
-  const listFor = tab => nodes(f.surface(tab)).find(node => node.type === "FlatList");
-  const original = listFor("everyone").props.instance;
-  f.ready("everyone");
-  const forward = dragPage(f, 120); f.flush(); f.ready("local");
-  release(forward, { x: 400 }); forward.onFinalize(); f.flush(); f.finish(); f.flush();
-  assert.equal(f.surface("local").props.pointerEvents, "auto");
-  assert.equal(listFor("everyone").props.instance, original);
-  assert.equal(f.surface("everyone").props.style[2].opacity, 0);
-  const backward = dragPage(f); f.flush();
-  assert.equal(listFor("everyone").props.instance, original);
-  assert.equal(f.surface("everyone").props.style[2], false, "The visited page reveals instead of remounting");
-  release(backward); backward.onFinalize(); f.flush(); f.finish(); f.flush();
-  assert.equal(f.surface("everyone").props.pointerEvents, "auto");
-  assert.equal(listFor("everyone").props.instance, original);
-  assert.equal(f.all().filter(node => node.props?.testID === "feed-activity-controls").length, 1);
-  assert.deepEqual(f.writes.map(write => write[1]), ["local", "everyone"]);
-  assert.deepEqual(f.reads, []);
-});
-
-test("Feed retains at most four visited filters and cancels unvisited previews without caching them", t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const f = fixture({ feedScreen: true }); t.after(f.close);
-  const canceled = dragPage(f); f.flush(); assert.ok(f.surface("news"));
-  release(canceled, { x: 240 }); canceled.onFinalize(); f.finishSpring(); f.flush();
-  assert.equal(f.surface("news"), undefined);
-  for (const label of ["Local feed", "Following feed", "News feed", "For You feed"]) f.press(label);
+  const select = filter => f.render({ feedSelection: { filter, select: noop } });
+  select("everyone");
+  const original = nodes(f.surface("everyone")).find(node => node.type === "FlatList");
+  for (const filter of ["local", "following", "news", "everyone"]) select(filter);
   assert.equal(f.lists().length, 4);
-  const ids = new Set(f.lists().map(list => list.props.instance));
-  for (const label of ["News feed", "Following feed", "For You feed", "Local feed"]) f.press(label);
-  assert.equal(f.lists().length, 4); assert.deepEqual(new Set(f.lists().map(list => list.props.instance)), ids);
-  const pending = f.reads.filter(read => !read.args.signal.aborted);
-  assert.ok(pending.length === 0, "Only Local is selected; hidden remote filters have no active read");
-  f.render({ accountId: "account-B" });
-  assert.equal(f.lists().length, 1); assert.ok(!ids.has(f.lists()[0].props.instance));
-});
-
-test("a visited Feed preview is ready after a resize and reversal without losing the current source", t => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const f = fixture({ feedScreen: true }); t.after(f.close);
-  f.ready("everyone"); f.press("Local feed"); f.ready("local"); Object.assign(f.dimensions, { width: 320, fontScale: 1.5 }); f.render();
-  const source = nodes(f.surface("local")).find(node => node.type === "FlatList").props.instance;
-  const visited = nodes(f.surface("everyone")).find(node => node.type === "FlatList").props.instance;
-  const gesture = dragPage(f); f.flush();
-  assert.equal(nodes(f.surface("everyone")).find(node => node.type === "FlatList").props.instance, visited);
-  gesture.onUpdate({ absoluteX: 380 }); f.flush();
-  assert.ok(f.surface("following")); assert.equal(f.surface("everyone").props.style[2].opacity, 0);
-  release(gesture, { x: 280 }); gesture.onFinalize(); f.finishSpring(); f.flush();
-  assert.equal(f.surface("following"), undefined);
-  assert.equal(nodes(f.surface("local")).find(node => node.type === "FlatList").props.instance, source);
-  assert.ok(f.reads.filter(read => read.kind === "following").every(read => read.args.signal.aborted));
-});
-
-test("iOS Feed exposes distinct notification/message badges capped visually at 99+ with exact accessible totals", t => {
-  const f = fixture({ feedScreen: true }); t.after(f.close);
-  const opened = [];
-  f.render({ notifUnread: 3, unread: 124, onOpenNotifications: () => opened.push("activity"), onOpenInbox: () => opened.push("inbox") });
-  const bell = f.all().find(n => n.props?.accessibilityLabel === "Notifications, 3 unread");
-  const mail = f.all().find(n => n.props?.accessibilityLabel === "Messages, 124 unread");
-  assert.ok(bell); assert.ok(mail); assert.ok(f.all().some(n => n.text === "99+"));
-  for (const action of [bell, mail]) {
-    const style = Object.assign({}, ...action.props.style({ pressed: false }).filter(Boolean));
-    assert.ok(style.minHeight >= 44);
-    assert.equal(style.flex, 1, "The installed full-label activity actions retain their equal-width layout");
-    const badge = nodes(action).find(node => node.props?.testID?.startsWith("feed-activity-badge-"));
-    assert.ok(badge);
-    assert.equal(badge.props.style.backgroundColor, "#BD1734");
-    assert.equal(badge.props.style.borderRadius, 5);
-    assert.equal(badge.props.accessibilityElementsHidden, true);
-    assert.equal(badge.children[0].props.style.color, "#FFFFFF");
+  const instances = new Set(f.lists().map(list => list.props.instance));
+  for (const filter of ["news", "following", "everyone", "local"]) select(filter);
+  assert.equal(f.lists().length, 4); assert.deepEqual(new Set(f.lists().map(list => list.props.instance)), instances);
+  for (const filter of ["following", "everyone", "news", "local"]) {
+    const style = f.surface(filter).props.style[0];
+    for (const [key, value] of Object.entries(installedStyleSheet.absoluteFill)) assert.equal(style[key], value);
+    assert.notEqual(f.surface(filter).props.style[1]?.display, "none");
   }
-  f.act(bell.props.onPress); f.act(mail.props.onPress); assert.deepEqual(opened, ["activity", "inbox"]);
-  f.render({ notifUnread: 0, unread: 0 });
-  assert.ok(f.all().some(n => n.props?.accessibilityLabel === "Notifications"));
-  assert.ok(f.all().some(n => n.props?.accessibilityLabel === "Messages"));
-  assert.ok(!f.all().some(n => n.text === "99+"));
-  assert.ok(!f.all().some(n => n.props?.testID?.startsWith("feed-activity-badge-")));
-  f.render({ routeCurrent: false }); f.act(bell.props.onPress); assert.equal(opened.length, 2);
+  assert.equal(nodes(f.surface("everyone")).find(node => node.type === "FlatList"), original);
+  f.render({ accountId: "account-B", feedSelection: { filter: "everyone", select: noop } });
+  assert.equal(f.lists().length, 1); assert.ok(!instances.has(f.lists()[0].props.instance));
 });
 
-const titleRegion = f => f.all().find(node => node.type === "AnimatedView" && node.props.style?.[0]?.overflow === "hidden");
-const titleStyle = f => titleRegion(f).props.style.at(-1).__animate();
-const measureTitle = (f, height = 60) => f.act(() => titleRegion(f).children[0].props.onLayout({ nativeEvent: { layout: { height } } }));
-const measureTitleList = (f, content = 1000, viewport = 500, list = f.lists()[0]) => f.act(() => {
-  list.props.onLayout({ nativeEvent: { layout: { height: viewport, width: 390 } } });
-  list.props.onContentSizeChange(390, content);
-});
-
-test("actual Feed title collapses continuously, clamps bounce, and expands on return to top", t => {
-  const f = fixture({ feedScreen: true }); t.after(f.close);
-  measureTitle(f); measureTitleList(f); f.react();
-  const offset = f.titleOffsets[0].offset;
-  assert.equal(f.lists()[0].props.collapsable, false, "forward RNGH native attachment guarantee through title observer");
-  for (const [y, height, opacity] of [[0, 60, 1], [30, 30, 0.5], [60, 0, 0], [400, 0, 0], [-25, 60, 1], [0, 60, 1]]) {
-    offset.set(y); f.react();
-    assert.equal(titleStyle(f).height, height);
-    assert.equal(titleStyle(f).opacity, opacity);
-  }
-  assert.equal(f.all().filter(node => node.type === "Text" && node.children.some(child => child.text === "Feed")).length, 1);
-  assert.equal(f.all().filter(node => node.props?.testID === "feed-fixed-navigation").length, 1);
-});
-
-test("short Feed content cannot oscillate as collapsing the title expands its viewport", t => {
-  const f = fixture({ feedScreen: true }); t.after(f.close);
-  measureTitle(f); measureTitleList(f, 619); f.titleOffsets[0].offset.set(60); f.react();
-  assert.equal(titleStyle(f).height, 60, "needs enough range for both scroll and expanded viewport");
-  measureTitleList(f, 620); f.react();
-  assert.equal(titleStyle(f).height, 0);
-  measureTitleList(f, 620, 560); f.react();
-  assert.equal(titleStyle(f).height, 0, "our own resize is excluded from expanded viewport measurement");
-  f.titleOffsets[0].offset.set(0); f.react(); measureTitleList(f, 620, 500); f.react();
-  assert.equal(titleStyle(f).height, 60);
-});
-
-test("actual retained Feed filters restore their own title offset and ignore hidden scroll events", t => {
-  const f = fixture({ feedScreen: true }); t.after(f.close);
-  measureTitle(f); measureTitleList(f); f.titleOffsets[0].offset.set(60); f.react();
-  assert.equal(titleStyle(f).height, 0);
-  f.press("Local feed"); f.react();
-  assert.equal(titleStyle(f).height, 60, "new selected filter starts expanded");
-  f.titleOffsets[0].offset.set(300); f.react();
-  assert.equal(titleStyle(f).height, 60, "parked pane cannot overwrite selected heading");
-  f.press("For You feed"); f.react();
-  assert.equal(titleStyle(f).height, 0, "retained filter reuses its native offset without scrollTo");
-});
-
-test("title responds to larger text and live accessibility preferences without losing its heading", t => {
-  const f = fixture({ feedScreen: true }); t.after(f.close);
-  measureTitle(f); measureTitleList(f); f.titleOffsets[0].offset.set(30); f.react();
-  measureTitle(f, 120); f.react();
-  assert.equal(titleStyle(f).height, 90);
-  assert.equal(titleStyle(f).opacity, 0.75);
-  f.preferences({ reduced: true }); f.react();
-  assert.equal(titleStyle(f).height, 90);
-  assert.equal(titleStyle(f).opacity, 1);
-  assert.equal(titleStyle(f).transform[0].translateY, 0);
-  f.preferences({ reader: true }); f.react();
-  assert.equal(titleStyle(f).height, 120);
-  assert.equal(titleStyle(f).opacity, 1);
-  assert.ok(nodes(titleRegion(f)).some(node => node.props?.accessibilityRole === "header"));
-});
-
-test("native title observer preserves original events/ref and excludes area, horizontal and nested scrolls", t => {
-  const scrollEvents = [], layoutEvents = [], sizes = [], refs = [];
-  const onScroll = event => scrollEvents.push(event);
-  const f = fixture({ titleMode: "fixed", scrollRef: node => { refs.push(node); }, scrollProps: {
-    onScroll, onLayout: event => layoutEvents.push(event), onContentSizeChange: (...args) => sizes.push(args), scrollEventThrottle: 32,
-  } }); t.after(f.close);
-  const main = f.all().find(node => node.props?.testID === "primary");
-  const event = { nativeEvent: { layout: { height: 500, width: 390 }, contentOffset: { x: 0, y: 40 } } };
-  assert.equal(main.props.onScroll, onScroll, "no event replacement or JS relay");
-  main.props.onScroll(event); main.props.onLayout(event); main.props.onContentSizeChange(390, 1000);
-  assert.equal(scrollEvents[0], event); assert.equal(layoutEvents[0], event);
-  assert.deepEqual(sizes, [[390, 1000]]);
-  assert.equal(refs.at(-1), main);
-  assert.equal(main.props.scrollEventThrottle, 16);
-  assert.equal(f.titleOffsets.length, 1, "only the primary vertical scroll subscribes");
-  f.close(); assert.equal(refs.at(-1), null);
-});
-
-for (const mode of ["flow", "row"]) test(`${mode} title animates without changing existing content/action row height`, t => {
-  const f = fixture({ titleMode: mode }); t.after(f.close);
-  measureTitle(f);
-  const main = f.all().find(node => node.props?.testID === "primary");
-  measureTitleList(f, 1000, 500, main); f.titleOffsets[0].offset.set(30); f.react();
-  assert.equal(titleStyle(f).height, undefined);
-  assert.equal(titleStyle(f).opacity, 0.5);
-  assert.equal(titleStyle(f).transform[0].translateY, -4);
-  f.preferences({ reduced: true }); f.react();
-  assert.equal(titleStyle(f).height, undefined);
-  assert.equal(titleStyle(f).opacity, 1);
-});
-
-test("installed Expo 57 preset compiles native title observers and animated styles as UI worklets", () => {
-  for (const name of ["NativeLargeTitle", "NativeTabScroll"]) {
+test("installed Expo 57 preset compiles native chrome observers and animated styles as UI worklets", () => {
+  for (const name of ["NativeAppHeader", "NativeTabScroll"]) {
     const file = new URL(`./${name}.ios.jsx`, import.meta.url);
     const result = transformSync(readFileSync(file, "utf8"), { filename: file.pathname, babelrc: false, configFile: false,
       presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: true } });
@@ -1594,7 +1365,7 @@ test("installed Expo 57 preset compiles native title observers and animated styl
   }
 });
 
-test("Metro keeps new large-title animation out of Android and web", () => {
+test("Metro retains platform-specific static title compatibility", () => {
   const { resolve } = require("metro-resolver");
   const context = { originModulePath: fileURLToPath(new URL("../../App.js", import.meta.url)), assetExts: new Set(), sourceExts: ["js", "jsx", "json", "ts", "tsx"],
     preferNativePlatform: true, mainFields: ["react-native", "browser", "main"], getPackageForModule: () => null,
