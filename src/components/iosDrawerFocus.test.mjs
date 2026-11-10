@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 import { transformSync } from '@babel/core';
-import { journeyMenuModel } from '../domain/menuJourney.mjs';
+import { iosMenuSections } from '../domain/iosMenuSections.mjs';
 const require = createRequire(import.meta.url);
 const nodes = tree => !tree ? [] : Array.isArray(tree) ? tree.flatMap(nodes) : typeof tree !== 'object' ? [] : [tree, ...nodes(tree.props?.children)];
 function fixture() {
@@ -22,7 +22,7 @@ function fixture() {
       Modal: 'Modal', Pressable: 'Pressable', ScrollView: 'ScrollView', Text: 'Text', View: 'View',
       StyleSheet: { create: x => x, absoluteFill: {}, hairlineWidth: 1 }, useWindowDimensions: () => ({ width: 393 }) },
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 59, bottom: 34 }) },
-    '../theme': { colors: {}, font: 'System' }, '../domain/menuJourney.mjs': { journeyMenuModel },
+    '../theme': { colors: {}, font: 'System' }, '../domain/iosMenuSections.mjs': { iosMenuSections },
     './Avatar': 'Avatar', './BrandMark': 'BrandMark', './Icon': 'Icon', '../hooks/useReducedMotion': () => false,
   };
   const code = transformSync(readFileSync(new URL('./IosMenuDrawer.ios.jsx', import.meta.url), 'utf8'), {

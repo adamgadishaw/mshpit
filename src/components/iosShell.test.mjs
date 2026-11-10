@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 import { transformSync } from '@babel/core';
-import { journeyMenuModel } from '../domain/menuJourney.mjs';
+import { iosMenuSections } from '../domain/iosMenuSections.mjs';
 import { iosBackSwipeCommits } from '../domain/iosNavigationPolicy.mjs';
 const require = createRequire(import.meta.url);
 const nodes = tree => !tree ? [] : Array.isArray(tree) ? tree.flatMap(nodes) : typeof tree !== 'object' ? [] : [tree, ...nodes(tree.props?.children)];
@@ -29,7 +29,7 @@ function load(name, { reduced = false, reader = false, fontScale = 1, queued = f
     'react-native-safe-area-context':{useSafeAreaInsets:()=>({top:59,bottom:34})},
     '../hooks/useIOSDetailBackBlock': { IOSDetailBackContext: { Provider: 'DetailBackProvider' } },
     '../theme':{colors:new Proxy({},{get:()=> '#888'}),font:'System'},
-    '../domain/menuJourney.mjs':{journeyMenuModel}, '../domain/iosNavigationPolicy.mjs':{iosBackSwipeCommits},
+    '../domain/iosMenuSections.mjs':{iosMenuSections}, '../domain/iosNavigationPolicy.mjs':{iosBackSwipeCommits},
     './nativeFeedBackContext.mjs':{NativeFeedBackContext:{}},
     './Avatar':'Avatar','./BrandMark':'BrandMark','./Icon':'Icon','./NativeTabRail':'TabRail',
     '../hooks/useReducedMotion':()=>reduced, '../hooks/useScreenReaderEnabled':{__esModule:true,default:()=>reader,getConfirmedScreenReaderEnabled:()=>reader,subscribeConfirmedScreenReaderEnabled:()=>()=>{}},
@@ -203,4 +203,23 @@ test('iOS navigation reflows for accessibility text without shrinking type',()=>
   assert.doesNotMatch(source,/allowFontScaling=\{false\}|maxFontSizeMultiplier|adjustsFontSizeToFit/);
   assert.match(source,/flexShrink: 1/);
  }
+});
+
+test('iOS drawer renders requested section order and actionable purpose hints',()=>{
+ const calls=[], f=load('./IosMenuDrawer.ios.jsx');
+ const tree=f.render({visible:true,onClose:()=>calls.push('close'),session:{id:'admin',role:'admin',name:'Admin',handle:'admin'},actions,onLogout:()=>calls.push('logout')});
+ const headers=nodes(tree).filter(n=>n.props.accessibilityRole==='header').map(n=>n.props.children);
+ assert.deepEqual(headers,['Community','Explore','Account','Settings']);
+ const rows=nodes(tree).filter(n=>n.type==='Pressable' && n.props.accessibilityHint);
+ assert.equal(rows.length,18);
+ for (const row of rows) assert.ok(row.props.style({pressed:false})[0].minHeight>=44);
+ const logout=rows.find(n=>n.props.accessibilityLabel==='Sign out');
+ logout.props.onPress(); logout.props.onPress();
+ assert.deepEqual(calls,['close','logout']);
+});
+
+test('iOS drawer omits unavailable destinations rather than rendering empty sections',()=>{
+ const tree=load('./IosMenuDrawer.ios.jsx').render({visible:true,actions:{inbox:()=>{},near:true},session:null});
+ assert.deepEqual(nodes(tree).filter(n=>n.props.accessibilityRole==='header').map(n=>n.props.children),['Community']);
+ assert.ok(!nodes(tree).some(n=>n.props.accessibilityLabel==='Near you'));
 });
