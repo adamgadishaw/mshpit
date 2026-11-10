@@ -1,10 +1,11 @@
 import { clean } from "./validate.js";
+import { canonicalProfileBadges } from "../src/domain/profileBadges.mjs";
 
 const THEMES = new Set(["stage", "neon", "forest", "ember", "backstage", "vinyl", "daylight", "ice", "rose", "mint", "sunset", "lavender"]);
 const ALLOWED_KEYS = new Set([
   "theme", "consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion",
   "analyticsOptOut", "searchIndexingOptOut", "concertMapVisible", "nowPlaying", "treble", "bass", "playlists",
-  "accent", "pronouns", "favoriteShows",
+  "accent", "pronouns", "favoriteShows", "profileBadges",
 ]);
 
 // Profile personalisation, all public: an accent colour, pronouns, and up to
@@ -76,6 +77,7 @@ export function canonicalProfileExtras(value, { strict = false } = {}) {
     else if (key === "accent") normalized = accent(raw);
     else if (key === "pronouns") normalized = pronouns(raw);
     else if (key === "favoriteShows") normalized = favoriteShows(raw);
+    else if (key === "profileBadges") normalized = canonicalProfileBadges(raw);
     if (normalized === undefined) { valid = false; continue; }
     output[key] = normalized;
   }

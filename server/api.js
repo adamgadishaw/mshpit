@@ -6505,6 +6505,9 @@ export const routes = {
             if (value === null || (Array.isArray(value) && !value.length)) delete next[key];
             else next[key] = value;
           }
+          // Unlike favorite shows, [] means hide all badges, not reset to all.
+          // Selection never changes role, verification or badge ownership.
+          if (Object.hasOwn(incomingExtras.value, "profileBadges")) next.profileBadges = incomingExtras.value.profileBadges;
           const pendingHandle = pendingSignupHandle(stored);
           if (pendingHandle) next.pendingSignupHandle = pendingHandle;
           const pendingArtist = pendingArtistSignupIntent(stored);

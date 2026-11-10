@@ -8,6 +8,7 @@ import TicketStub from "../components/TicketStub";
 import NativeDeleteRow from "../components/NativeDeleteRow";
 import { confirmOwnPostDelete } from "../lib/confirmOwnPostDelete";
 import { BadgeRow } from "../components/Badge";
+import { displayedProfileBadges } from "../domain/profileBadges.mjs";
 import { ACHIEVEMENTS } from "../domain/badges.mjs";
 import { showDateMs } from "../lib/showTime";
 import Countdown from "../components/Countdown";
@@ -530,7 +531,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           <View testID="profile-identity-avatar" style={[styles.avatarWrap, Platform.OS === "web" && styles.integratedAvatar]}><Avatar user={user} size={Platform.OS === "web" ? 88 : 72} /></View>
           <View style={[styles.nameRow, Platform.OS === "web" && styles.integratedNameRow]}>
             <Text testID="profile-identity-name" style={[styles.name, Platform.OS === "web" && styles.integratedName]}>{user.name}</Text>
-            <BadgeRow badges={userBadges(user)} size={20} />
+            <BadgeRow badges={displayedProfileBadges(userBadges(user), user.profileBadges)} size={20} />
           </View>
           <Text testID="profile-identity-handle" style={[styles.handle, Platform.OS === "web" && styles.integratedHandle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}{user.pronouns ? <Text style={styles.pronouns}>{` · ${user.pronouns}`}</Text> : null}</Text>
           <View style={styles.roleBadge}><Text style={styles.roleTxt}>{roleLabel}</Text></View>
