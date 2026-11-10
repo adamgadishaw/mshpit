@@ -22,7 +22,10 @@ export default function ProfileImageCropDialog({ request }) {
   const [source, setSource] = useState(null), [position, setPosition] = useState(CENTER), [width, setWidth] = useState(0);
   const [error, setError] = useState(""), [busy, setBusy] = useState(false);
   const mounted = useRef(false), pending = useRef(false), gesture = useRef(null), latest = useRef(null);
-  const plan = source && width > 0 ? profileCropPlan({ imageWidth: source.width, imageHeight: source.height, frameWidth: width, frameHeight: width / 3, ...position }) : null;
+  // Retained renders can run after abort, before a state update is committed.
+  // Never consult getters on the native ImageRef once it has been released.
+  const usableSource = signal.aborted ? null : source;
+  const plan = usableSource && width > 0 ? profileCropPlan({ imageWidth: usableSource.width, imageHeight: usableSource.height, frameWidth: width, frameHeight: width / 3, ...position }) : null;
   const update = next => {
     const current = latest.current;
     if (!current?.source || !current.width || pending.current || signal.aborted) return;
@@ -31,11 +34,15 @@ export default function ProfileImageCropDialog({ request }) {
     latest.current = { ...current, plan: bounded };
     setPosition({ zoom: bounded.zoom, centerX: bounded.centerX, centerY: bounded.centerY });
   };
-  latest.current = { source, plan, width };
+  latest.current = { source: usableSource, plan, width };
   useEffect(() => {
     mounted.current = true;
     let retired = false, image;
-    const releaseImage = () => { image?.release?.(); image = null; };
+    const releaseImage = () => {
+      latest.current = null;
+      if (!retired && mounted.current) setSource(null);
+      image?.release?.(); image = null;
+    };
     if (Number(asset.fileSize) > MEDIA_PHOTO_SOURCE_MAX_BYTES) {
       setError(`Choose a photo smaller than ${mediaUploadLimitLabel(MEDIA_PHOTO_SOURCE_MAX_BYTES)}.`);
       return () => { mounted.current = false; };
@@ -108,7 +115,7 @@ export default function ProfileImageCropDialog({ request }) {
       <ScrollView contentContainerStyle={styles.body}>
         <Text style={styles.hint}>Drag to reposition. Pinch to zoom, or use the controls below.</Text>
         <View testID="profile-banner-crop-frame" style={styles.frame} onLayout={event => setWidth(event.nativeEvent.layout.width)} {...responder.current.panHandlers}>
-          {plan ? <Image source={source} contentFit="fill" allowDownscaling={false} transition={0} accessible={false}
+          {plan ? <Image source={usableSource} contentFit="fill" allowDownscaling={false} transition={0} accessible={false}
             style={{ position: "absolute", left: plan.left, top: plan.top, width: plan.renderedWidth, height: plan.renderedHeight }} /> : !error ? <ActivityIndicator accessibilityLabel="Loading banner preview" color={colors.amber} /> : null}
         </View>
         <Text style={styles.hint}>This 3:1 crop is how your banner will appear on your profile.</Text>

@@ -15,13 +15,13 @@ The profile banner already uses the original stored URL, not a small thumbnail. 
 - Preview uses an orientation-corrected native ImageRef. The approved normalized crop is applied to those same native pixels, without an intermediate JPEG.
 - iOS normalizer writes one 96% JPEG after crop/resize. Server-owned sanitization, ownership checks and durable URL finalization stay unchanged. Android/web normalizers remain unchanged.
 - VoiceOver isolation covers the whole modal, accessibility escape cancels, and modal motion follows Reduce Motion.
-- Cancel aborts the account-scoped operation; late callbacks cannot replace the old banner. Failed uploads keep the crop for retry. Hidden/retained editors cannot resurrect a canceled modal. The profile is unchanged until Save.
+- Cancel aborts the account-scoped operation; late callbacks cannot replace the old banner. Failed uploads keep the crop for retry. Hidden/retained editors cannot resurrect a canceled modal or read a disposed native preview. The profile is unchanged until Save.
 - Profile banner artwork has an in-flow 3:1 layout so image measurement does not start from an absolute-only child. Its existing 44-point minimum hit target remains.
 - Artist editor preview matches 3:1 on iOS. The personal editor equivalent is grouped with the parallel profile customization UI commit.
 
 ## Verification
 
-- 38 focused tests pass: crop geometry (portrait, landscape, extreme panorama), single encoding, source ownership, cancellation during decode/render/save, repeated requests, late callbacks, upload retry, accessible controls, and Metro platform resolution.
+- 39 focused tests pass: crop geometry (portrait, landscape, extreme panorama), single encoding, source ownership, cancellation during decode/render/save, repeated requests, late callbacks, upload retry, accessible controls, and Metro platform resolution.
 - 103 existing profile media/presentation/editor submission/accessibility tests pass.
 - Syntax check passed across 928 Node files. Architecture check passed.
 - Expo SDK 57 docs and installed native ImageManipulator implementation were checked: native SharedRef input is supported and orientation is corrected before crop.

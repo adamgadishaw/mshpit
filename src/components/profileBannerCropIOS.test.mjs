@@ -110,7 +110,8 @@ test("crop hook passes avatars through and cancels superseded, aborted and unmou
 
 function dialogFixture(){
  const renderer=createRenderer(),uploads=[],finishes=[],releases=[];let reduced=false;const decode=deferred(),abort=new AbortController();
- const image={width:3000,height:4000,release:()=>releases.push("image")};
+ let disposed=false;
+ const image={get width(){if(disposed)throw new Error("Disposed image width");return 3000;},get height(){if(disposed)throw new Error("Disposed image height");return 4000;},release:()=>{disposed=true;releases.push("image");}};
  const request={asset:{uri:"file:///portrait.heic",fileSize:1000},signal:abort.signal,finish:value=>{finishes.push(value);abort.abort();},upload:(...args)=>{const next={...deferred(),args};uploads.push(next);return next.promise;}};
  const native={...Object.fromEntries(["ActivityIndicator","Modal","Pressable","ScrollView","Text","View"].map(n=>[n,n])),StyleSheet:{create:v=>v},PanResponder:{create:config=>({panHandlers:config})}};
  const Component=execute("./ProfileImageCropDialog.ios.jsx",(name,local)=>{
@@ -165,4 +166,16 @@ test("crop modal exposes all controls to VoiceOver, supports escape, and follows
  const isolated=f.all().filter(n=>n.props?.accessibilityViewIsModal);assert.equal(isolated.length,1);assert.equal(isolated[0].type,"SafeAreaView");
  assert.ok(walk(isolated[0]).includes(f.button("Use this banner")));assert.ok(walk(isolated[0]).includes(f.button("Zoom in")));
  f.renderer.act(()=>isolated[0].props.onAccessibilityEscape());assert.deepEqual(f.finishes,[null]);f.close();
+});
+
+test("an aborted retained crop can rerender after native image disposal without reading its getters",async()=>{
+ const f=dialogFixture();await f.ready();
+ const oldMove=f.frame().props.onPanResponderMove,oldApply=f.button("Use this banner").props.onPress;
+ // Simulate a retained child still rendering while parent modal removal waits.
+ f.abort.abort();assert.throws(()=>f.image.width,/Disposed image/);
+ assert.doesNotThrow(()=>f.reduce(true));assert.doesNotThrow(()=>f.reduce(false));
+ f.renderer.act(()=>f.frame().props.onLayout({nativeEvent:{layout:{width:420}}}));
+ f.renderer.act(()=>{oldMove({nativeEvent:{touches:[{pageX:20,pageY:30}]}});void oldApply();});
+ assert.equal(f.all().some(n=>n.type==="Image"),false);assert.equal(f.button("Use this banner").props.disabled,true);assert.equal(f.uploads.length,0);
+ f.close();assert.equal(f.releases.filter(value=>value==="image").length,1);
 });
