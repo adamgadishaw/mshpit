@@ -1,5 +1,8 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
+import Icon from "../components/Icon";
+import { colors } from "../theme";
+import { unreadBadgeCount, unreadBadgeText } from "../domain/unreadBadge.mjs";
 import { FeedContent, FeedNavigation, useFeedSelection } from "./FeedScreen.jsx";
 import NativeFeedFilterPager from "../components/NativeFeedFilterPager.ios";
 import useAppActive from "../lib/useAppActive";
@@ -43,7 +46,14 @@ function FeedOwner(props) {
   const enabled = !!props.loggedIn && !!props.visible && active && props.swipeEnabled !== false;
   return <View style={{ flex: 1, minHeight: 0 }}>
     <View testID="feed-fixed-navigation" style={{ paddingHorizontal: 12, paddingTop: 4 }}>
-      <FeedNavigation filter={filter} loggedIn={props.loggedIn} onSelect={choose} />
+      <View style={styles.heading}>
+        <Text style={styles.title} accessibilityRole="header">Feed</Text>
+        {props.loggedIn && <View style={styles.actions}>
+          <FeedUnreadAction icon="bell" label="Notifications" count={props.notifUnread} onPress={() => { if (current()) props.onOpenNotifications?.(); }} />
+          <FeedUnreadAction icon="mail" label="Messages" count={props.unread} onPress={() => { if (current()) props.onOpenInbox?.(); }} />
+        </View>}
+      </View>
+      <FeedNavigation filter={filter} loggedIn={props.loggedIn} onSelect={choose} hideTitle />
     </View>
     <NativeFeedFilterPager active={filter} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
       swipeEnabled={enabled} isCurrentSwipeRoute={current}
@@ -66,3 +76,23 @@ function FeedPane({ preview, feedReturn, visible, ...props }) {
   }), [feedReturn]);
   return <FeedContent {...props} localNavigation visible={permitted.current} feedReturn={lease} />;
 }
+
+
+export function FeedUnreadAction({ icon, label, count, onPress }) {
+  const unread = unreadBadgeCount(count);
+  return <Pressable style={styles.action} onPress={onPress} accessibilityRole="button"
+    accessibilityLabel={unread ? `${label}, ${unread} unread` : label}>
+    <Icon name={icon} size={22} color={colors.text} />
+    {unread > 0 && <View style={styles.badge} accessible={false} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+      <Text style={styles.badgeText} maxFontSizeMultiplier={1.4}>{unreadBadgeText(unread)}</Text>
+    </View>}
+  </Pressable>;
+}
+const styles = StyleSheet.create({
+  heading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  title: { flexShrink: 1, color: colors.text, fontSize: 28, fontWeight: "800" },
+  actions: { flexDirection: "row", alignItems: "center", gap: 4 },
+  action: { minWidth: 48, minHeight: 48, alignItems: "center", justifyContent: "center" },
+  badge: { position: "absolute", top: 0, right: 0, minWidth: 19, minHeight: 18, paddingHorizontal: 4, borderRadius: 5, backgroundColor: "#BD1734", borderWidth: 1.5, borderColor: colors.bg, alignItems: "center", justifyContent: "center" },
+  badgeText: { color: "#FFFFFF", fontSize: 10, lineHeight: 13, fontWeight: "800", fontVariant: ["tabular-nums"] },
+});

@@ -818,7 +818,7 @@ test("fixed Feed navigation and body header contribute one original strip-to-car
   const f = fixture({ feedScreen: true }); t.after(f.close);
   const flatten = style => Array.isArray(style) ? Object.assign({}, ...style.filter(Boolean).map(flatten)) : style || {};
   const fixed = f.all().find(node => node.props?.testID === "feed-fixed-navigation");
-  const navigation = flatten(fixed.children[0].props.style);
+  const navigation = flatten(fixed.children.at(-1).props.style);
   const list = f.lists()[0];
   const bodyHeader = flatten(list.props.ListHeaderComponent.props.style);
   const content = flatten(list.props.contentContainerStyle);
@@ -1160,4 +1160,21 @@ test("direction reversal cannot reuse an unmounted same-gesture candidate before
   ready.set = setReady; setReady(null);
   f.flush(); f.ready("everyone");
   assert.equal(f.translation("local"), -120);
+});
+
+
+test("iOS Feed exposes distinct notification/message badges capped visually at 99+ with exact accessible totals", t => {
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  const opened = [];
+  f.render({ notifUnread: 3, unread: 124, onOpenNotifications: () => opened.push("activity"), onOpenInbox: () => opened.push("inbox") });
+  const bell = f.all().find(n => n.props?.accessibilityLabel === "Notifications, 3 unread");
+  const mail = f.all().find(n => n.props?.accessibilityLabel === "Messages, 124 unread");
+  assert.ok(bell); assert.ok(mail); assert.ok(f.all().some(n => n.text === "99+"));
+  assert.equal(bell.props.style.minHeight, 48); assert.equal(mail.props.style.minWidth, 48);
+  f.act(bell.props.onPress); f.act(mail.props.onPress); assert.deepEqual(opened, ["activity", "inbox"]);
+  f.render({ notifUnread: 0, unread: 0 });
+  assert.ok(f.all().some(n => n.props?.accessibilityLabel === "Notifications"));
+  assert.ok(f.all().some(n => n.props?.accessibilityLabel === "Messages"));
+  assert.ok(!f.all().some(n => n.text === "99+"));
+  f.render({ routeCurrent: false }); f.act(bell.props.onPress); assert.equal(opened.length, 2);
 });
