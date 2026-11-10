@@ -140,3 +140,13 @@ test("source-error retry replays the failed read even with unrevealed cache or n
     assert.equal(f.owner.error, false);
   }
 });
+
+test("a new active presentation replaces an obsolete scheduled timer without waiting for a hidden render", () => {
+  let active = true;
+  const f = fixture({ current: () => active }); f.measure();
+  const old = [...f.timers.values()][0].fn;
+  active = false; f.render({ current: () => true });
+  const fresh = [...f.timers.keys()][0]; old();
+  assert.equal([...f.timers.keys()][0], fresh); assert.equal(f.calls.length, 0);
+  f.tick(); assert.equal(f.calls.length, 1);
+});

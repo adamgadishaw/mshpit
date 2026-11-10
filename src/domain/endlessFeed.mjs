@@ -56,7 +56,7 @@ export function createEndlessFeed({ changed = () => {}, schedule = setTimeout, c
     } else clearTimer();
   };
   return {
-    update(next) { options = next; pump(); },
+    update(next) { if (options.current !== next.current) clearTimer(); options = next; pump(); },
     end() { if (!valid()) return; demand = true; pump(); },
     layout(value) { if (!options.current?.()) return; height = value; pump(); },
     content(value, rows = options.rowsCount) { if (!options.current?.()) return; content = value; measuredRows = rows; demand = nearEnd(); pump(); },
