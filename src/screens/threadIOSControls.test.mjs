@@ -84,6 +84,7 @@ function fixture({ platform = "ios", strict = false, capacity = 32 } = {}) {
   const navigationRef = { current: { stack: [{}, initialFrame], tab: "feed", landing: false } };
   const stackRef = { current: navigationRef.current.stack };
   const native = { Platform: { OS: platform }, StyleSheet: { create: value => value },
+    useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }),
     ...Object.fromEntries(["View", "Text", "TextInput", "Pressable", "ScrollView", "ActivityIndicator", "KeyboardAvoidingView"].map(name => [name, name])) };
   const request = (list, args) => { const value = { ...deferred(), args }; list.push(value); return value.promise; };
   let controls;
@@ -129,7 +130,7 @@ function fixture({ platform = "ios", strict = false, capacity = 32 } = {}) {
       retry: f.button("Retry direct message").props.onPress, cancel: f.button("Cancel failed direct message").props.onPress,
     }; },
     edit(value) { f.act(() => f.input.props.onChangeText(value)); },
-    send() { let result; f.act(() => { result = f.input.props.onSubmitEditing(); }); return result; },
+    send() { let result; f.act(() => { result = platform === "ios" ? f.button("Send direct message to Fixture member").props.onPress() : f.input.props.onSubmitEditing(); }); return result; },
     retry() { let result; f.act(() => { result = f.button("Retry direct message").props.onPress(); }); return result; },
     act: callback => renderer.act(callback),
     render() {
@@ -162,7 +163,7 @@ function fixture({ platform = "ios", strict = false, capacity = 32 } = {}) {
   };
   f.render(); return f;
 }
-const invokeRetired = (f, old) => f.act(() => { old.edit("Retired overwrite"); void old.submit(); void old.tap(); void old.retry(); old.cancel(); });
+const invokeRetired = (f, old) => f.act(() => { old.edit("Retired overwrite"); void old.submit?.(); void old.tap(); void old.retry(); old.cancel(); });
 const noCommands = f => { assert.equal(f.sends.length, 0); assert.equal(f.retries.length, 0); assert.deepEqual(f.cancels, []); assert.deepEqual(f.reads, []); };
 
 for (const strict of [false, true]) test(`actual Profile navigation rejects retained edit/send/retry/cancel; draft survives (StrictMode ${strict})`, async t => {
@@ -222,9 +223,12 @@ for (const destination of ["profile", "hidden", "unmount"]) for (const success o
   assert.equal(f.input.props.value, success ? "" : "Accepted draft");
 });
 
-test("same-tick edit/keyboard/tap admits one claim and success cannot erase newer edits", async t => {
+test("iOS Return edits a newline without sending; repeated same-tick Send admits one claim and preserves newer edits", async t => {
   const f = fixture(); t.after(f.close); const old = f.capture();
-  f.act(() => { old.edit("First draft"); void old.submit(); void old.tap(); old.edit("Newer draft"); });
+  assert.equal(old.submit, undefined); assert.equal(f.input.props.multiline, true); assert.equal(f.input.props.submitBehavior, "newline");
+  f.act(() => old.edit("First line\nSecond line"));
+  assert.equal(f.sends.length, 0); assert.equal(f.input.props.value, "First line\nSecond line");
+  f.act(() => { old.edit("First draft"); void old.tap(); void old.tap(); old.edit("Newer draft"); });
   assert.deepEqual(f.sends.map(x => x.args), [["recipient", "First draft"]]); assert.equal(f.input.props.value, "Newer draft");
   await f.complete(f.sends); assert.deepEqual(f.lease.read(), { text: "Newer draft", sending: false });
   void f.send(); assert.deepEqual(f.sends[1].args, ["recipient", "Newer draft"]);

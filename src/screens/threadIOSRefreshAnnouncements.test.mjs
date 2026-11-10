@@ -64,6 +64,7 @@ function fixture({ platform = "ios", strict = false, reader = true, state = "act
     return { remove: () => active.delete(callback) };
   };
   const native = {
+    useWindowDimensions: () => ({ width: 390, height: 844, fontScale: 1 }),
     View: "View", Text: "Text", TextInput: "TextInput", Pressable: "Pressable", ScrollView: "ScrollView", ActivityIndicator: "ActivityIndicator", KeyboardAvoidingView: "KeyboardAvoidingView",
     Platform: { OS: platform }, StyleSheet: { create: value => value },
     AppState: { currentState: state, addEventListener: listen },

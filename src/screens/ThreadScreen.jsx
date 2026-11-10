@@ -1,8 +1,9 @@
-import { useState, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator } from "react-native";
+import { Fragment, useState, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, useWindowDimensions } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
+import IOSPostKeyboardView from "../components/IOSPostKeyboardView";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import MentionText from "../components/MentionText";
@@ -22,6 +23,9 @@ import {
   normalizeMessageRelationshipContext,
 } from "../domain/messageRelationshipContext.mjs";
 
+const ThreadContainer = Platform.OS === "ios" ? IOSPostKeyboardView : KeyboardAvoidingView;
+const ThreadBody = Platform.OS === "ios" ? View : Fragment;
+
 const THREAD_READ_ERROR = "Messages could not update. Check your connection and try again.";
 const EMPTY_COMPOSER = Object.freeze({ text: "", sending: false });
 const subscribeLocalComposer = () => () => {};
@@ -34,6 +38,12 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
   } = useStore();
   const other = userById(otherId);
   const isIOS = Platform.OS === "ios";
+  // This is the space below the header AFTER keyboard avoidance, not a device
+  // height guess. A long draft stays scrollable without taking over the history.
+  const { fontScale } = useWindowDimensions();
+  const [composerViewportHeight, setComposerViewportHeight] = useState(360);
+  const composerMinHeight = Math.max(44, Math.ceil(22 * fontScale + 22));
+  const composerMaxHeight = Math.min(Math.max(44, composerViewportHeight - 17), Math.max(composerMinHeight, Math.min(132, composerViewportHeight * 0.4)));
   const threadRefreshScope = refreshScope(session?.id, "message-thread", `${chatAuthEpoch}:${otherId || ""}`);
   const composerScope = accountTargetScope(session?.id, `dm:${otherId || ""}`);
   const composerScopeRef = useRef(composerScope);
@@ -76,7 +86,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
     }));
   };
   const messages = threadMessages(otherId);
-  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll({ messageCount: messages.length, scopeKey: `${chatAuthEpoch}:${composerScope}` });
+  const { scrollRef, onScroll, onContentSizeChange, onLayout, onScrollBeginDrag } = useChatScroll({ messageCount: messages.length, scopeKey: `${chatAuthEpoch}:${composerScope}` });
   const incomingReadTarget = latestIncomingDirectMessageId(messages, session?.id);
   const messageRelationshipContext = [...messages].reverse()
     .find((message) => message?.relationshipContext)?.relationshipContext || null;
@@ -249,17 +259,22 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
   const onMention = (h) => onOpenProfileByHandle?.(h);
 
   return (
-    <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+    <ThreadContainer style={styles.wrap} testID="message-thread-shell">
       <ScreenHeader kicker="Direct message" title={other?.name || "Chat"} onBack={onClose}
         right={<Pressable style={styles.profileButton} onPress={() => onOpenProfile?.(otherId)} accessibilityRole="button" accessibilityLabel={`View ${other?.name || "member"} profile`}><Avatar user={other} size={32} /></Pressable>} />
 
+      <ThreadBody {...(isIOS ? { style: styles.body, onLayout: (event) => {
+        const height = event.nativeEvent.layout.height;
+        if (Number.isFinite(height) && height > 0) setComposerViewportHeight(height);
+      } } : {})}>
       <VinylRefreshBoundary
         refreshing={threadRefreshing}
         onRefresh={refreshThread}
         accessibilityLabel={`Refresh messages with ${other?.name || "this member"}`}
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
-        onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}>
+        onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}
+        {...(isIOS ? { style: styles.history, onLayout, onScrollBeginDrag, keyboardDismissMode: "interactive", keyboardShouldPersistTaps: "handled", automaticallyAdjustKeyboardInsets: false, contentInsetAdjustmentBehavior: "never" } : {})}>
         {(relationshipChips.length > 0 || relationshipSummary) && (
           <View
             style={styles.relationshipCard}
@@ -294,44 +309,53 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
         {messages.length === 0 && (!isIOS || (session && threadStatus === "ready")) && <Text style={styles.empty}>Say hi to {other?.name?.split(" ")[0]}.</Text>}
         {messages.map((m) => {
           const mine = m.from === session?.id;
-          return (
-            <View key={m.id} style={[styles.row, mine && styles.rowMine]}>
-              <View style={[styles.bubble, mine && styles.bubbleMine, m.failed && styles.bubbleFailed]}>
-                <MentionText text={m.text} style={[styles.msgText, mine && { color: "#1A1206" }]} onMention={onMention} />
-                <View style={styles.msgFoot}>
-                  <Text style={[styles.ts, mine && { color: "rgba(26,18,6,0.6)" }]}>{m.ts}</Text>
-                  {mine && m.pending ? <Text style={styles.deliveryMine} accessibilityLiveRegion="polite">sending…</Text> : null}
-                  {mine && m.failed ? (
-                    <View style={styles.deliveryActions}>
-                      <Text style={styles.deliveryFailed} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel="Direct message not sent">not sent</Text>
-                      <Pressable style={styles.deliveryButton} onPress={() => retry(m)} accessibilityRole="button" accessibilityLabel="Retry direct message">
-                        <Text style={styles.deliveryAction}>retry</Text>
-                      </Pressable>
-                      <Pressable style={styles.deliveryButton} onPress={() => cancel(m)} accessibilityRole="button" accessibilityLabel="Cancel failed direct message">
-                        <Text style={styles.deliveryAction}>cancel</Text>
-                      </Pressable>
-                    </View>
-                  ) : null}
-                  {!mine && onReport ? (
-                    <Pressable
-                      style={styles.reportBtn}
-                      onPress={() => onReport({
-                        targetType: "message",
-                        targetId: m.id,
-                        ownerId: m.from,
-                        targetName: "direct message",
-                        title: `Message from ${other?.name || "a member"}`,
-                        summary: "The message stays private and is reviewed only by the moderation team.",
-                      })}
-                      hitSlop={8}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Report message from ${other?.name || "this member"}`}
-                    >
-                      <Icon name="flag" size={12} color={colors.textFaint} />
-                    </Pressable>
-                  ) : null}
+          const reportAction = !mine && onReport ? (
+            <Pressable
+              style={[styles.reportBtn, isIOS && styles.reportBtnIOS]}
+              onPress={() => onReport({
+                targetType: "message",
+                targetId: m.id,
+                ownerId: m.from,
+                targetName: "direct message",
+                title: `Message from ${other?.name || "a member"}`,
+                summary: "The message stays private and is reviewed only by the moderation team.",
+              })}
+              hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel={`Report message from ${other?.name || "this member"}`}
+            >
+              <Icon name="flag" size={12} color={colors.textFaint} />
+            </Pressable>
+          ) : null;
+          const footer = (
+            <View style={[styles.msgFoot, isIOS && styles.msgFootIOS]}>
+              <Text style={[styles.ts, mine && !isIOS && { color: "rgba(26,18,6,0.6)" }]}>{m.ts}</Text>
+              {mine && m.pending ? <Text style={[styles.deliveryMine, isIOS && styles.deliveryMineIOS]} accessibilityLiveRegion="polite">sending…</Text> : null}
+              {mine && m.failed ? (
+                <View style={[styles.deliveryActions, isIOS && styles.deliveryActionsIOS]}>
+                  <Text style={[styles.deliveryFailed, isIOS && styles.deliveryFailedIOS]} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel="Direct message not sent">not sent</Text>
+                  <Pressable style={[styles.deliveryButton, isIOS && styles.deliveryButtonIOS]} onPress={() => retry(m)} accessibilityRole="button" accessibilityLabel="Retry direct message">
+                    <Text style={[styles.deliveryAction, isIOS && styles.deliveryActionIOS]}>retry</Text>
+                  </Pressable>
+                  <Pressable style={[styles.deliveryButton, isIOS && styles.deliveryButtonIOS]} onPress={() => cancel(m)} accessibilityRole="button" accessibilityLabel="Cancel failed direct message">
+                    <Text style={[styles.deliveryAction, isIOS && styles.deliveryActionIOS]}>cancel</Text>
+                  </Pressable>
                 </View>
-              </View>
+              ) : null}
+              {!isIOS && reportAction}
+            </View>
+          );
+          const bubble = (
+            <View style={[styles.bubble, mine && styles.bubbleMine, isIOS && mine && styles.bubbleMineIOS, m.failed && styles.bubbleFailed, isIOS && styles.bubbleIOS]}>
+              <MentionText text={m.text} style={[styles.msgText, mine && { color: "#1A1206" }]} mentionStyle={isIOS && mine ? styles.mentionMineIOS : undefined} onMention={onMention} />
+              {!isIOS && footer}
+            </View>
+          );
+          return (
+            <View key={m.id} style={[styles.row, mine && styles.rowMine, isIOS && styles.rowIOS, isIOS && mine && styles.rowMineIOS]}>
+              {isIOS && !mine && <View style={styles.messageAvatar}><Avatar user={other} size={28} /></View>}
+              {isIOS ? <View style={[styles.messageColumn, mine && styles.messageColumnMine]}>{bubble}{footer}</View> : bubble}
+              {isIOS && reportAction}
             </View>
           );
         })}
@@ -339,15 +363,27 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
       </VinylRefreshBoundary>
 
       {session ? (
-        <View style={styles.inputBar}>
-          <TextInput style={styles.input} editable={!unavailable} placeholder={unavailable ? "Wait for another message to finish sending" : `Message ${other?.name?.split(" ")[0] || ""}…  (use @ to tag)`} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateComposer({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} accessibilityLabel={unavailable ? "Wait for another message to finish sending" : `Message ${other?.name || "this member"}`} />
+        <View style={[styles.inputBar, isIOS && styles.inputBarIOS]}>
+          <TextInput
+            style={[styles.input, isIOS && [styles.inputIOS, { minHeight: Math.min(composerMinHeight, composerMaxHeight), maxHeight: composerMaxHeight }]]}
+            editable={!unavailable}
+            placeholder={unavailable ? "Wait for another message to finish sending" : isIOS ? "Message…" : `Message ${other?.name?.split(" ")[0] || ""}…  (use @ to tag)`}
+            placeholderTextColor={colors.textFaint}
+            value={text}
+            onChangeText={(value) => updateComposer({ text: value })}
+            onSubmitEditing={isIOS ? undefined : send}
+            returnKeyType={isIOS ? "default" : "send"}
+            {...(isIOS ? { multiline: true, submitBehavior: "newline", accessibilityHint: "Write your message, then use Send direct message. Return adds a new line. Use @ to mention someone." } : {})}
+            maxLength={1000}
+            accessibilityLabel={unavailable ? "Wait for another message to finish sending" : `Message ${other?.name || "this member"}`}
+          />
           <Pressable
             style={[styles.sendBtn, sending && { opacity: 0.65 }]}
             onPress={send}
-            disabled={sending || !text.trim()}
+            disabled={sending || unavailable || !text.trim()}
             accessibilityRole="button"
             accessibilityLabel={`Send direct message to ${other?.name || "this member"}`}
-            accessibilityState={{ disabled: sending || !text.trim(), busy: sending }}
+            accessibilityState={{ disabled: sending || unavailable || !text.trim(), busy: sending }}
           >
             <Icon name="chevron-right" size={20} color="#1A1206" />
           </Pressable>
@@ -355,12 +391,15 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
       ) : (
         <Text style={styles.login}>Log in to message.</Text>
       )}
-    </KeyboardAvoidingView>
+      </ThreadBody>
+    </ThreadContainer>
   );
 }
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
+  body: { flex: 1, minHeight: 0 },
+  history: { flex: 1, minHeight: 0 },
   chat: { padding: 16, paddingBottom: 24, gap: 10 },
   relationshipCard: { alignSelf: "stretch", gap: 7, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev, paddingHorizontal: 12, paddingVertical: 10 },
   relationshipChips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
@@ -374,6 +413,21 @@ const styles = StyleSheet.create({
   retryReadText: { color: colors.amber, fontSize: 14, fontWeight: "800" },
   row: { maxWidth: "82%", alignSelf: "flex-start" },
   rowMine: { alignSelf: "flex-end" },
+  rowIOS: { maxWidth: "100%", alignSelf: "stretch", flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  rowMineIOS: { justifyContent: "flex-end" },
+  messageAvatar: { paddingTop: 4 },
+  messageColumn: { maxWidth: "82%", minWidth: 0, flexShrink: 1, alignItems: "flex-start" },
+  messageColumnMine: { alignItems: "flex-end" },
+  bubbleIOS: { maxWidth: "100%", paddingHorizontal: 12, paddingVertical: 8 },
+  msgFootIOS: { minHeight: 0, maxWidth: "100%", flexWrap: "wrap", marginTop: 4, gap: 6 },
+  bubbleMineIOS: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
+  mentionMineIOS: { color: "#1A1206", textDecorationLine: "underline" },
+  deliveryMineIOS: { color: colors.textDim },
+  deliveryFailedIOS: { color: colors.magenta },
+  deliveryActionIOS: { color: colors.amber },
+  deliveryActionsIOS: { flexWrap: "wrap", flexShrink: 1 },
+  deliveryButtonIOS: { marginVertical: 0 },
+  reportBtnIOS: { marginVertical: 0, marginRight: 0 },
   bubble: { backgroundColor: colors.surface, borderRadius: 16, borderTopLeftRadius: 4, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 13, paddingVertical: 9 },
   bubbleMine: { backgroundColor: colors.amber, borderColor: colors.amber, borderTopLeftRadius: 16, borderTopRightRadius: 4 },
   bubbleFailed: { borderColor: colors.magenta, borderWidth: 1.5 },
@@ -388,6 +442,8 @@ const styles = StyleSheet.create({
   reportBtn: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center", marginVertical: -10, marginRight: -5 },
   profileButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   inputBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 8, paddingBottom: Platform.OS === "ios" ? 24 : 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  inputBarIOS: { alignItems: "flex-end", paddingBottom: 8, flexShrink: 0 },
+  inputIOS: { minHeight: 44, borderRadius: 22, paddingVertical: 10, fontSize: 16, lineHeight: 22, textAlignVertical: "top" },
   input: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 16, paddingVertical: 11, fontSize: 15 },
   sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },
   login: { color: colors.textDim, textAlign: "center", padding: 16, fontStyle: "italic" },
