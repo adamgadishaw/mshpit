@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import DiscoverBrowse, { BrowseCategories } from "./DiscoverBrowse.ios";
+import DiscoverBrowse from "./DiscoverBrowse.ios";
+import DiscoverSectionTabs from "./DiscoverSectionTabs.ios";
 import NativeDiscoverSectionPager from "../NativeDiscoverSectionPager.ios";
 import { ScrollView } from "../NativeTabScroll";
 import Icon from "../Icon";
@@ -40,8 +41,7 @@ export function DiscoverOwner(props) {
   };
   const commit = useCallback(value => { if (!current()) return false; setGenreFocused(false); initialSection.current = null; latest.current.browseReturn?.save({ scrollY: 0, genreFocused: false }); latest.current.onProgramme(value); return true; }, [current]);
   const changeArea = country => { if (!current()) return; setTapRevision(revision => revision + 1); setAreaOpen(false); initialSection.current = null; latest.current.browseReturn?.save({ scrollY: 0 }); props.onRegion(country); };
-  return <View style={styles.root}>
-    <View testID="discover-fixed-navigation">
+  const navigation = (x, width, origin) => <View testID="discover-fixed-navigation">
       <View style={styles.header}>
         <Text style={styles.title} accessibilityRole="header">Discover</Text>
         <Pressable onPress={() => { if (current()) { setTapRevision(revision => revision + 1); setAreaOpen(value => !value); } }} accessibilityRole="button"
@@ -50,14 +50,16 @@ export function DiscoverOwner(props) {
           <Text style={styles.areaText}>{props.region}</Text><Icon name="chevron-down" size={14} color={colors.amber} />
         </Pressable>
       </View>
-      <BrowseCategories selected={props.programme} onSelect={choose} />
+      <DiscoverSectionTabs selected={props.programme} onSelect={choose} enabled={current()}
+        x={x} width={width} origin={origin} onInteraction={() => { if (current()) setTapRevision(value => value + 1); }} />
       {areaOpen ? <ScrollView style={styles.areaChoices} contentContainerStyle={styles.areaContent} accessibilityLabel="Choose an area to explore">
         {props.countries.map(country => <Pressable key={country.country} onPress={() => changeArea(country.country)} accessibilityRole="radio"
           accessibilityState={{ checked: country.country === props.region }} style={styles.areaButton}><Text style={styles.areaText}>{country.country}</Text></Pressable>)}
         <Pressable onPress={() => setAreaOpen(false)} accessibilityRole="button" style={styles.areaButton}><Text style={styles.areaText}>Done</Text></Pressable>
       </ScrollView> : null}
-    </View>
-    <NativeDiscoverSectionPager active={props.programme} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
+    </View>;
+  return <View style={styles.root}>
+    <NativeDiscoverSectionPager renderNavigation={navigation} active={props.programme} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
       loading={props.loading} swipeEnabled={appActive && !inheritedPreview && !areaOpen && props.swipeEnabled !== false} isCurrentSwipeRoute={current}
       renderPage={(section, preview) => <DiscoverPane {...props} programme={section} localSection
         initialBrowse={section === initialSection.current ? props.initialBrowse : null}

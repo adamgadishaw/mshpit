@@ -13,7 +13,7 @@ import { releasedSwipe, swipeAxis, swipeThreshold } from "../domain/nativeGestur
 
 // Rails own only their visible controls. Page mode owns main-tab content,
 // with passive native exclusions for child gestures and reserved Back edges.
-export default function NativeSwipeRail({ children, onCommit, positive = "Like", negative = "Repost", hint, enabled = true, testID, surfaceColor = colors.surface, page = false, pageKey, pageIndex, entryDirection = 0, canPrevious = true, canNext = true, previewPrevious = true, previewNext = true, renderPages, onPageIntent, onPageCancel, pageReady = null }) {
+export default function NativeSwipeRail({ children, onCommit, positive = "Like", negative = "Repost", hint, enabled = true, testID, surfaceColor = colors.surface, page = false, pageKey, pageIndex, entryDirection = 0, canPrevious = true, canNext = true, previewPrevious = true, previewNext = true, renderPages, renderNavigation, onPageIntent, onPageCancel, pageReady = null }) {
   const { width: screenWidth } = useWindowDimensions();
   const reduced = useReducedMotion(), screenReader = useScreenReaderEnabled();
   const interactive = page && !!renderPages;
@@ -237,10 +237,12 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
   const positiveStyle = useAnimatedStyle(() => ({ opacity: x.get() >= swipeThreshold(width.get()) ? 1 : 0 }));
   const negativeStyle = useAnimatedStyle(() => ({ opacity: x.get() <= -swipeThreshold(width.get()) ? 1 : 0 }));
   const pageScope = useMemo(() => ({ gesture: pan, excluded, touching, epoch, generation }), [pan, excluded, touching, epoch, generation]);
-  if (interactive) return <NativeTabSwipeContext.Provider value={pageScope}>
+  // Navigation is a fixed sibling, not another page or a child of the page pan.
+  // It reads the exact same UI coordinates, including the atomic promotion rebase.
+  if (interactive) return <>{renderNavigation?.(x, width, pageOrigin)}<NativeTabSwipeContext.Provider value={pageScope}>
     <GestureDetector gesture={pan}><View collapsable={false} testID={testID} style={styles.pageTrack}
       onLayout={event => width.set(event.nativeEvent.layout.width)}>{renderPages(x, width, pageOrigin)}</View></GestureDetector>
-  </NativeTabSwipeContext.Provider>;
+  </NativeTabSwipeContext.Provider></>;
   if (page) return <NativeTabSwipeContext.Provider value={pageScope}>
     <View testID={testID} style={styles.pageTrack} onLayout={event => width.set(event.nativeEvent.layout.width)}>
       <View pointerEvents="none" style={styles.pageDestination} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">

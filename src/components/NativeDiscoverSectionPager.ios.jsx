@@ -10,7 +10,7 @@ const tabs = DISCOVER_PROGRAMME_SECTIONS.map(section => section.key);
 
 // One current page and at most one deliberate neighboring preview. Cancellation
 // keeps the source; commit promotes the exact incoming instance without a reload.
-export default function NativeDiscoverSectionPager({ active, onChange, swipeScope, swipeEnabled = true, isCurrentSwipeRoute, renderPage, loading, tapRevision = 0 }) {
+export default function NativeDiscoverSectionPager({ active, onChange, swipeScope, swipeEnabled = true, isCurrentSwipeRoute, renderPage, renderNavigation, loading, tapRevision = 0 }) {
   const inheritedPreview = useNativeTabPreview();
   const callbacks = useRef(null);
   callbacks.current = { onChange, isCurrentSwipeRoute };
@@ -51,5 +51,5 @@ export default function NativeDiscoverSectionPager({ active, onChange, swipeScop
   return <NativeSwipeRail page pageKey={active} pageIndex={index} enabled={swipeEnabled} onCommit={commit}
     canPrevious={index > 0} canNext={index < tabs.length - 1}
     onPageIntent={prepare} onPageCancel={cancel} pageReady={readyDirection}
-    renderPages={renderPages} surfaceColor={colors.bg} testID="discover-section-swipe-rail" />;
+    renderPages={renderPages} renderNavigation={renderNavigation} surfaceColor={colors.bg} testID="discover-section-swipe-rail" />;
 }

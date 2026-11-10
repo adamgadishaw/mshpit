@@ -55,6 +55,8 @@ const sleepForever = new Promise(() => {});
 // Actual React, platform-resolved rail and shell components. The native gesture,
 // UI/RN scheduler and actions are synthetic: this does not validate a device.
 function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "following", entryDirection = 0, scrollChild = null, pager = false, shell = false, scrollRef = null, scrollProps = {}, feedScreen = false, discoverScreen = false, selectedFilter = "everyone" } = {}) {
+  const dimensions = { width: 412, fontScale: 1 };
+  const scrolls = [];
   const renderer = createRenderer(), gestures = [], queue = [], calls = [], shared = [], reactions = [], springs = [], timings = [], animatedStyles = [], appListeners = new Set(), appHistory = [], springCompletions = [], canceledAnimations = [];
   let props = { page, entryDirection, enabled: true, active, onCommit: onCommit || (direction => calls.push(direction)), onChange: onChange || (tab => calls.push(tab)), hint: "Swipe for an action",
     post: { id: "post-A", likes: 0 }, accountId: "account-A", likeInfo: () => ({ liked: false }),
@@ -70,9 +72,14 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   };
   const modules = {
     react: React, "react/jsx-runtime": require("react/jsx-runtime"),
-    "react-native": { AppState: { currentState: "active", addEventListener: (_event, callback) => { appListeners.add(callback); appHistory.push(callback); return { remove: () => appListeners.delete(callback) }; } }, AccessibilityInfo: { announceForAccessibility: noop }, View: "View", Text: "Text", ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Pressable: "Pressable", StyleSheet: installedStyleSheet, useWindowDimensions: () => ({ width: 412, fontScale: 1 }) },
-    "react-native-reanimated": { __esModule: true, default: { View: "AnimatedView", Text: "AnimatedText" }, ReduceMotion: { System: "system" }, useSharedValue, cancelAnimation: value => canceledAnimations.push(value),
-      useAnimatedStyle: f => { animatedStyles.push(f); return { ...f(), __animate: f }; }, useAnimatedReaction: (prepare, react) => { reactions.push({ prepare, react }); }, withSpring: (value, config, done) => { springs.push(config); springCompletions.push(done); return value; }, withTiming: (value, config, done) => { timings.push({ value, config, done }); return value; } },
+    "react-native": { AppState: { currentState: "active", addEventListener: (_event, callback) => { appListeners.add(callback); appHistory.push(callback); return { remove: () => appListeners.delete(callback) }; } }, AccessibilityInfo: { announceForAccessibility: noop }, View: "View", Text: "Text", ScrollView: "ScrollView", FlatList: "FlatList", TextInput: "TextInput", Pressable: "Pressable", StyleSheet: installedStyleSheet, useWindowDimensions: () => dimensions },
+    "react-native-reanimated": { __esModule: true, default: { View: "AnimatedView", Text: "AnimatedText", createAnimatedComponent: Component => Component }, ReduceMotion: { System: "system" }, useSharedValue, cancelAnimation: value => canceledAnimations.push(value),
+      useAnimatedStyle: f => { animatedStyles.push(f); return { ...f(), __animate: f }; }, useAnimatedReaction: (prepare, react) => {
+        const ref = React.useRef(null); if (!ref.current) { ref.current = {}; reactions.push(ref.current); }
+        Object.assign(ref.current, { prepare, react });
+        React.useLayoutEffect(() => { ref.current.active = true; return () => { ref.current.active = false; }; }, []);
+      }, useAnimatedRef: () => React.useRef(null), useAnimatedScrollHandler: handlers => handlers,
+      scrollTo: (ref, x, y, animated) => { scrolls.push({ target: ref.current, x, y, animated }); }, withSpring: (value, config, done) => { springs.push(config); springCompletions.push(done); return value; }, withTiming: (value, config, done) => { timings.push({ value, config, done }); return value; } },
     "react-native-worklets": { scheduleOnRN: (fn, ...args) => { queue.push(() => fn(...args)); }, scheduleOnUI: (fn, ...args) => { if (holdUI) uiQueue.push(() => fn(...args)); else fn(...args); } },
     "../theme": { colors: { bg: "bg", surface: "surface" }, font: "System" }, "./Icon": "Icon", "./BrandMark": "BrandMark",
     "../hooks/useReducedMotion": () => reduced, "../hooks/useScreenReaderEnabled": { __esModule: true, default: () => reader,
@@ -203,6 +210,8 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     modules["./DiscoverEventList"] = "EventList";
     modules["../LiveDiscoveryCards"] = { PopularLoungeCard: "Lounge" };
     modules["../../lib/img"] = { isHttp: uri => /^http/.test(uri), proxied: uri => uri };
+    modules["../../hooks/useReducedMotion"] = () => reduced;
+    modules["./DiscoverSectionTabs.ios"] = execute("./discover/DiscoverSectionTabs.ios.jsx");
     modules["./DiscoverBrowse.ios"] = execute("./discover/DiscoverBrowse.ios.jsx");
     const Browse = modules["./DiscoverBrowse.ios"].default;
     modules["./DiscoverBrowse.ios"].default = p => { browseRenders.push(p.programme); return React.createElement(Browse, p); };
@@ -270,7 +279,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   function Gate() { if (suspended) throw sleepForever; return null; }
   const componentKey = () => pager ? `${props.accountId}:${props.authEpoch || 0}` : component === "social" ? `${props.accountId || "guest"}:${props.post.id}` : "component";
   const f = {
-    calls, queue, gestures, shared, reactions, springs, timings, animatedStyles, unmounted, reads, writes, impressions, dwell, leaseWrites, introductions, persisted, browseRenders, canceledAnimations,
+    calls, queue, gestures, shared, reactions, scrolls, dimensions, springs, timings, animatedStyles, unmounted, reads, writes, impressions, dwell, leaseWrites, introductions, persisted, browseRenders, canceledAnimations,
     springFrame(value) { shared[3].set(value); },
     holdUI(value) { holdUI = value; }, flushUI() { while (uiQueue.length) uiQueue.shift()(); },
     pages: () => f.all().filter(node => node.type === "ActualPage"),
@@ -279,7 +288,9 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     surface: tab => f.all().find(node => node.props?.testID === `main-tab-page-${tab}`),
     translation: tab => f.surface(tab).props.style[1].__animate().transform[0].translateX,
     ready(tab) { const surface = f.surface(tab); f.act(() => nodes(surface).find(node => node.props?.onLayout)?.props.onLayout()); f.react(); },
-    react() { for (const reaction of reactions.slice(-2)) { const next = reaction.prepare(); reaction.react(next, null); } },
+    react() { for (const reaction of reactions.filter(item => item.active)) {
+      const next = reaction.prepare(); reaction.react(next, reaction.previous ?? null); reaction.previous = next;
+    } },
     appHistory,
     finishSpring(success = true) { springCompletions.at(-1)?.(success); },
     appState(value) { f.act(() => { for (const callback of [...appListeners]) callback(value); }); },
@@ -1180,4 +1191,195 @@ test("retained swipe controller is iOS-only and the Android native implementatio
     const resolved = resolve({ ...context, preferNativePlatform: platform !== "web" }, "./src/components/PostSwipeActions", platform);
     assert.equal(resolved.filePath, fileURLToPath(new URL(`./PostSwipeActions${suffix}.jsx`, import.meta.url)));
   }
+});
+
+// Production DiscoverOwner -> section pager -> rail -> measured tab strip.
+// Native glyph measurements and the UI scheduler are synthetic, not device QA.
+const sectionKeys = ["shows", "festivals", "artists", "venues", "cities", "photos"];
+const tabStrip = f => f.all().find(node => node.props?.testID === "discover-section-tabs");
+const tabIndicator = f => f.all().find(node => node.props?.testID === "discover-section-indicator").props.style[1].__animate();
+const tabButtons = f => f.all().filter(node => node.props?.accessibilityRole === "tab");
+function measureSectionTabs(f, widths = [76, 110, 90, 95, 80, 100], viewport = 300) {
+  const strip = tabStrip(f);
+  let x = 3;
+  f.act(() => {
+    strip.props.onLayout({ nativeEvent: { layout: { width: viewport } } });
+    for (const [index, key] of sectionKeys.entries()) {
+      tabButtons(f).find(node => node.props.nativeID === `discover-tab-${key}`).props.onLayout({ nativeEvent: { layout: { x, width: widths[index] } } });
+      x += widths[index];
+    }
+    strip.props.onContentSizeChange(x + 3, 50);
+    f.all().find(node => node.props?.testID === "discover-section-swipe-rail").props.onLayout({ nativeEvent: { layout: { width: 400 } } });
+  });
+  f.react();
+}
+const closeTo = (actual, expected) => assert.ok(Math.abs(actual - expected) < .0001, `${actual} != ${expected}`);
+
+test("Discover's Feed-style strip follows actual held page motion before selection commits", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close); measureSectionTabs(f);
+  const fixed = f.all().find(node => node.props?.testID === "discover-fixed-navigation");
+  assert.equal(tabButtons(f).length, 6);
+  assert.equal(tabStrip(f).props.horizontal, true);
+  assert.equal(tabStrip(f).props.style.borderRadius, 13);
+  assert.equal(f.all().find(node => node.props?.testID === "discover-section-indicator").props.style[0].borderRadius, 10);
+  assert.ok(tabButtons(f).every(node => node.props.style({ pressed: false })[0].minHeight === 44));
+  assert.ok(nodes(fixed).includes(tabStrip(f)));
+  const g = dragPage(f, -100); f.flush();
+  assert.equal(tabIndicator(f).transform[0].translateX, 3, "readiness pins the label with the covered source");
+  f.ready("festivals");
+  closeTo(tabIndicator(f).transform[0].translateX, 22); closeTo(tabIndicator(f).width, 84.5);
+  assert.equal(f.translation("shows"), -100);
+  assert.deepEqual(f.calls, []);
+  assert.equal(tabButtons(f).find(n => n.props.accessibilityState.selected).props.accessibilityLabel, "Shows");
+  const queued = f.queue.length, renders = f.browseRenders.length;
+  for (const dx of [-180, -40, -120]) { g.onUpdate({ absoluteX: 260 + dx }); f.react(); closeTo(tabIndicator(f).transform[0].translateX, 3 - dx / 400 * 76); }
+  assert.equal(f.queue.length, queued); assert.equal(f.browseRenders.length, renders, "finger frames never rerender pages");
+});
+
+test("Discover strip cancellation and reversal follow source geometry without selecting a preview", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close); f.render({ programme: "artists" }); measureSectionTabs(f);
+  const g = dragPage(f, 100); f.flush(); f.ready("festivals");
+  closeTo(tabIndicator(f).transform[0].translateX, 161.5);
+  g.onUpdate({ absoluteX: 160 }); f.flush();
+  assert.equal(tabIndicator(f).transform[0].translateX, 189, "unready reversed page stays pinned");
+  f.ready("venues"); closeTo(tabIndicator(f).transform[0].translateX, 211.5);
+  release(g, { x: 240, success: false }); g.onFinalize();
+  f.springFrame(-40); f.react(); closeTo(tabIndicator(f).transform[0].translateX, 198);
+  f.springFrame(0); f.finishSpring(); f.flush(); f.react();
+  assert.equal(tabIndicator(f).transform[0].translateX, 189); assert.deepEqual(f.calls, []);
+});
+
+test("Discover strip and page share continuous geometry through a delayed atomic promotion", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close); measureSectionTabs(f);
+  const strip = tabStrip(f), g = dragPage(f); f.flush(); f.ready("festivals"); release(g); g.onFinalize();
+  assert.equal(tabIndicator(f).transform[0].translateX, 79);
+  f.holdUI(true); f.finish(); f.flush();
+  assert.deepEqual(f.calls, ["festivals"]); assert.equal(tabIndicator(f).transform[0].translateX, 79);
+  assert.equal(tabButtons(f).find(n => n.props.accessibilityState.selected).props.accessibilityLabel, "Festivals");
+  f.flushUI(); f.react(); assert.equal(tabIndicator(f).transform[0].translateX, 79);
+  assert.equal(tabStrip(f), strip, "promotion retains the fixed strip and its native measurements");
+});
+
+test("Discover scroll visibility follows unequal-width interpolation and far section taps", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close); f.render({ programme: "artists" }); measureSectionTabs(f);
+  assert.equal(f.scrolls.at(-1).x, 84);
+  const g = dragPage(f, -100); f.flush(); f.ready("venues");
+  closeTo(f.scrolls.at(-1).x, 107.125);
+  f.press("Photos"); f.react();
+  assert.equal(f.scrolls.at(-1).x, 257); assert.equal(f.scrolls.at(-1).animated, false);
+  assert.equal(tabIndicator(f).transform[0].translateX, 454);
+  assert.deepEqual(f.calls, ["photos"]); g.onFinalize(); f.finish(); f.flush(); assert.deepEqual(f.calls, ["photos"]);
+});
+
+test("idle manual strip browsing stays free and retires pending page settlement", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close); measureSectionTabs(f);
+  const g = dragPage(f); f.flush(); f.ready("festivals"); release(g); g.onFinalize();
+  const scroll = tabStrip(f).props.onScroll;
+  scroll.onBeginDrag({}); const count = f.scrolls.length; f.flush(); f.react();
+  assert.equal(f.scrolls.length, count, "cancel/rebase cannot fight the finger scrolling the header");
+  scroll.onEndDrag({}); scroll.onMomentumEnd({});
+  f.react(); f.react(); f.finish(); f.flush(); f.react();
+  assert.equal(f.scrolls.length, count, "idle selection never recenters a manually browsed strip");
+  assert.deepEqual(f.calls, []);
+  f.press("Cities"); f.react(); assert.equal(f.scrolls.at(-1).x, 257);
+});
+
+for (const changed of ["font", "width"]) test(`Discover ${changed} change replaces measurements without remounting the page`, t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close); f.render({ programme: "artists" }); measureSectionTabs(f);
+  const page = f.surface("artists"), strip = tabStrip(f);
+  f.dimensions[changed === "font" ? "fontScale" : "width"] = changed === "font" ? 3.2 : 760; f.render();
+  assert.equal(f.surface("artists"), page); assert.notEqual(tabStrip(f), strip);
+  assert.equal(tabIndicator(f).opacity, 0, "old widths are never reused for the new layout");
+  measureSectionTabs(f, [180, 240, 200, 220, 170, 210], 350);
+  assert.equal(tabIndicator(f).width, 200); assert.equal(tabIndicator(f).transform[0].translateX, 423);
+  assert.equal(f.scrolls.at(-1).x, 348);
+});
+
+for (const change of ["disabled", "route", "preview", "background"]) test(`Discover strip disables selection and scrolling when ${change}`, t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close); measureSectionTabs(f);
+  const stale = tabButtons(f)[2].props.onPress;
+  f.render(change === "disabled" ? { swipeEnabled: false } : change === "route" ? { routeCurrent: false }
+    : change === "preview" ? { outerPreview: true } : { appActive: false });
+  assert.equal(tabStrip(f).props.scrollEnabled, false);
+  assert.ok(tabButtons(f).every(n => n.props.disabled && n.props.accessibilityState.disabled));
+  f.act(stale); f.flush(); assert.deepEqual(f.calls, []);
+});
+
+test("Discover Reduce Motion live change cancels displacement and keeps accessible tab actions", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close); measureSectionTabs(f);
+  const g = dragPage(f); f.flush(); f.ready("festivals"); assert.ok(tabIndicator(f).transform[0].translateX > 3);
+  f.reduced(true); f.react(); assert.equal(tabIndicator(f).transform[0].translateX, 3);
+  release(g); g.onFinalize(); f.finish(); f.flush(); assert.deepEqual(f.calls, []);
+  f.press("Artists"); f.react(); assert.equal(tabIndicator(f).transform[0].translateX, 189);
+  f.reader(true); f.press("Shows"); f.react(); assert.equal(tabIndicator(f).transform[0].translateX, 3);
+  assert.deepEqual(f.calls, ["artists", "shows"]);
+});
+
+test("Discover header is outside the page pan and uses consistent physical LTR coordinates", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close); measureSectionTabs(f);
+  const detector = f.all().find(n => n.type === "GestureDetector" && n.props.gesture.handlers === f.gesture);
+  assert.ok(!nodes(detector).includes(tabStrip(f)));
+  assert.equal(tabStrip(f).props.style.direction, "ltr");
+  assert.equal(tabStrip(f).props.contentContainerStyle.direction, "ltr");
+  assert.equal(tabIndicator(f).transform[0].translateX, 3);
+  assert.equal(tabButtons(f).some(n => n.children[0].props.numberOfLines != null), false);
+});
+
+test("installed Expo preset compiles Discover indicator, scroll, and geometry worklets", () => {
+  for (const [relative, minimum] of [["./discover/DiscoverSectionTabs.ios.jsx", 6], ["../domain/iosDiscoverTabGeometry.mjs", 3]]) {
+    const file = new URL(relative, import.meta.url);
+    const result = transformSync(readFileSync(file, "utf8"), { filename: file.pathname, babelrc: false, configFile: false,
+      presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: true } });
+    assert.ok((result.code.match(/__workletHash/g) || []).length >= minimum, relative);
+    if (relative.includes("SectionTabs")) {
+      assert.match(result.code, /discoverTabPosition/); assert.match(result.code, /discoverTabFrame/);
+      assert.match(result.code, /scrollTo/); assert.match(result.code, /scheduleOnRN/);
+    }
+  }
+});
+
+
+test("Discover re-admission reveals selection measured while disabled and clears interrupted manual scroll", t => {
+  const f = fixture({ discoverScreen: true }); t.after(f.close);
+  f.render({ programme: "photos", swipeEnabled: false }); measureSectionTabs(f);
+  assert.equal(f.scrolls.length, 0);
+  f.render({ swipeEnabled: true }); f.react(); assert.equal(f.scrolls.at(-1).x, 257);
+  tabStrip(f).props.onScroll.onBeginDrag({}); f.flush();
+  f.render({ swipeEnabled: false }); f.react();
+  const count = f.scrolls.length;
+  f.render({ swipeEnabled: true }); f.react();
+  assert.equal(f.scrolls.length, count + 1); assert.equal(f.scrolls.at(-1).x, 257);
+});
+
+test("compiled Discover UI worklet closures execute geometry and synchronous scrolling", () => {
+  const compiledBodies = relative => {
+    const file = new URL(relative, import.meta.url);
+    const { code } = transformSync(readFileSync(file, "utf8"), { filename: file.pathname, babelrc: false, configFile: false,
+      presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: true } });
+    const ast = parse(code, { sourceType: "module" });
+    return ast.program.body.filter(node => node.type === "VariableDeclaration").flatMap(node => node.declarations)
+      .filter(node => /_worklet_.*_init_data/.test(node.id.name)).map(node => node.init.properties.find(property => property.key.name === "code").value.value);
+  };
+  const geometryBodies = compiledBodies("../domain/iosDiscoverTabGeometry.mjs");
+  const make = body => new Function(`return (${body});`)();
+  const geometry = Object.fromEntries(["discoverTabFrame", "discoverTabPosition", "discoverTabScroll"].map(name => {
+    const fn = make(geometryBodies.find(body => body.startsWith(`function ${name}_`)));
+    return [name, (...args) => fn.call({ __closure: {} }, ...args)];
+  }));
+  const bodies = compiledBodies("./discover/DiscoverSectionTabs.ios.jsx");
+  const style = make(bodies.find(body => body.includes("transform:")));
+  const prepare = make(bodies.find(body => body.includes("contentWidth:contentWidth.get()")));
+  const react = make(bodies.find(body => body.includes("scrollTo(scroll,")));
+  const shared = value => ({ get: () => value, set: next => { value = next; } });
+  const calls = [];
+  const closure = { ...geometry, enabled: true, reduced: false, index: 2, x: shared(-100), width: shared(400), origin: shared(2),
+    sections: sectionKeys, frames: shared([{ x: 3, width: 76 }, { x: 79, width: 110 }, { x: 189, width: 90 }, { x: 279, width: 95 }]),
+    viewport: shared(300), contentWidth: shared(557), manual: shared(false), scroll: {}, scrollTo: (...args) => calls.push(args) };
+  const receiver = { __closure: closure };
+  closeTo(style.call(receiver).transform[0].translateX, 211.5);
+  const state = prepare.call(receiver); react.call(receiver, state, null);
+  assert.deepEqual(calls, [[closure.scroll, 107.125, 0, false]]);
+  closure.manual.set(true); closure.x.set(-160); react.call(receiver, prepare.call(receiver), state);
+  assert.equal(calls.length, 1);
+  closure.reduced = true; assert.equal(style.call(receiver).transform[0].translateX, 189);
 });
