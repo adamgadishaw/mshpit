@@ -119,7 +119,7 @@ test("the feed uses the Mshpit brand and separates For You from Discover", () =>
   assert.match(feed, /homeGuideStorageKey\(accountId\)/);
   assert.match(feed, /label="Find a show" onPress=\{onOpenDiscover\}/);
   assert.match(feed, /label="Log a show" onPress=\{onLogShow\}/);
-  assert.match(app, /onOpenDiscover=\{\(\) => switchTab\("discover"\)\}/);
+  assert.match(app, /onOpenDiscover=\{openFindShow\}/);
 });
 
 test("universal search offers typed result filters without member-count marketing", () => {

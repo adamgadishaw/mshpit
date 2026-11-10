@@ -18,6 +18,7 @@ import { useStore } from "../store";
 import PostSwipeActions from "./PostSwipeActions";
 import { RepostButton, RepostAttribution } from "./SocialReactionButtons";
 import { BadgeRow } from "./Badge";
+import { displayedProfileBadges } from "../domain/profileBadges.mjs";
 import { formatDate, relativeTime } from "../domain/dates.mjs";
 import { mediaDisplayItems } from "../domain/postMediaDisplay.mjs";
 import { recommendationDisclosure } from "../domain/feedExperience.mjs";
@@ -372,7 +373,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           <Pressable style={{ flex: 1 }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
             <View style={styles.nameRow}>
               <Text style={[styles.name, campaignPresentation && { color: campaignTreatment.textColor }]}>{author.name}</Text>
-              <BadgeRow badges={userBadges(author)} size={14} />
+              <BadgeRow badges={displayedProfileBadges(userBadges(author), author.profileBadges)} size={14} />
             </View>
             <Text style={[styles.sub, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={campaignPresentation ? { color: campaignTreatment.accentColor, fontWeight: "800" } : roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</PublicTextLink> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
           </Pressable>
@@ -479,7 +480,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
         <Pressable style={{ flex: 1 }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
           <View style={styles.nameRow}>
             <Text style={styles.name}>{author.name}</Text>
-            <BadgeRow badges={userBadges(author)} size={14} />
+            <BadgeRow badges={displayedProfileBadges(userBadges(author), author.profileBadges)} size={14} />
           </View>
           <Text style={styles.sub}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</PublicTextLink> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
         </Pressable>

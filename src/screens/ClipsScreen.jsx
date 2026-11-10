@@ -15,6 +15,7 @@ import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import ClipPoster from "../components/ClipPoster";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import { PageTitle } from "../components/PageReturnContext";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import useAppActive from "../lib/useAppActive";
 import { recordFeedImpressionForSession } from "../features/feedImpressions/feedImpressionService";
@@ -450,7 +451,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
         <Pressable style={styles.topBtn} onPress={onClose} hitSlop={10} accessibilityRole="button" accessibilityLabel="Back to feed">
           <Icon name="chevron-left" size={22} color={colors.text} />
         </Pressable>
-        <Text style={styles.topTitle}>CLIPS</Text>
+        <PageTitle label="Clips"><Text style={styles.topTitle}>CLIPS</Text></PageTitle>
         <View style={styles.topBtn} />
       </View>
 

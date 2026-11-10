@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, ScrollView, Pressable, Linking } from "react-native";
+import { View, Text, StyleSheet, Pressable, Linking } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { colors, radius, mono } from "../theme";
 import SheetHeader from "../components/SheetHeader";
 

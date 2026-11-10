@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet, ScrollView, Pressable, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, Pressable, useWindowDimensions } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { colors, displayFont, focusRing, font, mono, radius, shadow, space, THEMES, themeKey } from "../theme";
 import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { useStore } from "../store";

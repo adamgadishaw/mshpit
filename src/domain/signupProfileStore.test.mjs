@@ -35,10 +35,11 @@ function fixture() {
   const state = { session: initial, users: [publicProfileCacheEntry(initial), { ...neighbor }] };
   const sessionRef = { current: initial };
   const accountMutationEpochRef = { current: 1 };
-  const calls = [], writes = [], pendingState = [];
+  const calls = [], writes = [], pendingState = [], badgeReconciliations = [];
   const dependencies = {
     session: initial, authReadyRef: { current: true },
     sessionRef, accountMutationEpochRef, captureAccountMutation, accountMutationIsCurrent,
+    reconcileAuthorBadges: user => { assert.equal(user.id, sessionRef.current.id); badgeReconciliations.push(structuredClone(user)); },
     clean, cleanName, cleanHandle, isHandle, LIMITS, profileGenreSelection, publicProfileCacheEntry,
     ENABLE_DEMO_DATA: false,
     api: (path, options) => new Promise((resolve, reject) => calls.push({ path, options, resolve, reject })),
@@ -58,7 +59,7 @@ function fixture() {
     state.users = user ? [publicProfileCacheEntry(user), { ...neighbor }] : [{ ...neighbor }];
   };
   const save = (patch, options = {}) => updateProfile(patch, { optimistic: false, expectedAccountId: owner.id, ...options });
-  return { save, calls, writes, state, sessionRef, accountMutationEpochRef, flush, adopt };
+  return { save, calls, writes, state, badgeReconciliations, sessionRef, accountMutationEpochRef, flush, adopt };
 }
 
 test("concert map preference crosses the confirmed profile wire and keeps false in the public cache", async () => {
@@ -97,6 +98,7 @@ test("setup photo saves remain unchanged while pending and publish only confirme
   f.calls[0].resolve({ user });
   const result = await pending;
   assert.deepEqual(result, { ok: true, user: expectedUser, patch });
+  assert.deepEqual(f.badgeReconciliations, [user], "only confirmed server state reaches historical author reconciliation");
   assert.deepEqual(f.sessionRef.current, expectedUser, "confirmed changed fields update before React renders, not unrelated cooldown data");
   assert.deepEqual(f.state.session, before.session, "the fixture still has an uncommitted React state update");
   f.flush();

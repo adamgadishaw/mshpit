@@ -1,3 +1,4 @@
+import { PageTitle } from "../components/PageReturnContext";
 import { Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../theme";
@@ -605,7 +606,7 @@ export default function DiscoverScreen({
       <View style={[styles.hero, compact && styles.heroCompact]}>
         <View pointerEvents="none" style={styles.heroStripe} />
         <View style={styles.heroCopy}>
-          <Text style={[styles.title, compact && styles.titleCompact]} accessibilityRole="header">Discover</Text>
+          <PageTitle label="Discover"><Text style={[styles.title, compact && styles.titleCompact]} accessibilityRole="header">Discover</Text></PageTitle>
           {!compact && <Text style={styles.tagline}>See upcoming events, popular artists, venues, and fan picks in one place.</Text>}
         </View>
         <Pressable

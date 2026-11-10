@@ -3,22 +3,23 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {createRequire} from "node:module";
 import {transformSync} from "@babel/core";
+import { reconcilePostAuthorBadges } from "../../domain/postBadgeBundle.mjs";
 const require=createRequire(import.meta.url);
 const compiled=transformSync(readFileSync(new URL("./useFollowingFeed.js",import.meta.url),"utf8"),{
   filename:"useFollowingFeed.js",babelrc:false,configFile:false,plugins:[require("@babel/plugin-transform-modules-commonjs")],
 }).code;
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 function fixture() {
-  const slots=[],effects=[],calls=[],listeners=new Set();let cursor=0;let props={accountId:"viewer",enabled:true,privacyScope:"clear"};
+  const slots=[],effects=[],calls=[],listeners=new Set(),badgeListeners=new Set();let cursor=0;let props={accountId:"viewer",enabled:true,privacyScope:"clear"};
   const react={
     useRef(initial){const i=cursor++;return slots[i] ||= {current:initial};},
     useState(initial){const i=cursor++;if(!(i in slots))slots[i]=typeof initial==="function"?initial():initial;return[slots[i],v=>{slots[i]=typeof v==="function"?v(slots[i]):v;}];},
     useEffect(fn,deps){const i=cursor++;const old=slots[i];if(old && deps.every((v,j)=>Object.is(v,old.deps[j])))return;effects.push(()=>{old?.cleanup?.();slots[i]={deps,cleanup:fn()};});},
   };
-  const api={readFollowingFeed:args=>new Promise((resolve,reject)=>calls.push({args,resolve,reject})),subscribeSocialReactionChanges:listener=>{listeners.add(listener);return()=>listeners.delete(listener);}};
+  const api={readLocalFeed:args=>new Promise((resolve,reject)=>calls.push({args:{...args,mode:"local"},resolve,reject})),readFollowingFeed:args=>new Promise((resolve,reject)=>calls.push({args,resolve,reject})),subscribeSocialReactionChanges:listener=>{listeners.add(listener);return()=>listeners.delete(listener);}};
   const module={exports:{}};
-  new Function("require","module","exports","setInterval","clearInterval",compiled)(name=>name==="react"?react:api,module,module.exports,()=>1,()=>{});
-  return {calls,changed(accountId="viewer"){for(const listener of listeners)listener(accountId);},unmount(){for(const slot of slots)slot?.cleanup?.();},render(update={}){props={...props,...update};cursor=0;const result=module.exports.default(props);effects.splice(0).forEach(fn=>fn());return result;}};
+  new Function("require","module","exports","setInterval","clearInterval",compiled)(name=>name==="react"?react:name.includes("authorBadgeChanges")?{subscribeAuthorBadgeChanges:listener=>{badgeListeners.add(listener);return()=>badgeListeners.delete(listener);}}:name.includes("postBadgeBundle")?{reconcilePostAuthorBadges}:api,module,module.exports,()=>1,()=>{});
+  return {calls,badges(event){for(const listener of badgeListeners)listener(event);},changed(accountId="viewer"){for(const listener of listeners)listener(accountId);},unmount(){for(const slot of slots)slot?.cleanup?.();},render(update={}){props={...props,...update};cursor=0;const result=module.exports.default(props);effects.splice(0).forEach(fn=>fn());return result;}};
 }
 
 test("Following hook clears authority failures but preserves transient-failure content with retry",async()=>{
@@ -31,6 +32,34 @@ test("Following hook clears authority failures but preserves transient-failure c
   result=f.render();assert.equal(result.status,"error");assert.deepEqual(result.posts,[]);assert.equal(result.nextCursor,null);
   void result.reload();assert.equal(f.calls.length,4);f.calls[3].resolve({posts:[{id:"back"}]});await settle();
   assert.equal(f.render().posts[0].id,"back");
+});
+
+test("Local uses independent city scope and refresh invalidates interrupted pagination",async()=>{
+  const f=fixture(); f.render({mode:"local",homeCity:"Toronto"});
+  assert.equal(f.calls[0].args.mode,"local");
+  f.calls[0].resolve({posts:[{id:"one"}],nextCursor:"old"}); await settle();
+  void f.render().loadMore(); const page=f.calls[1];
+  void f.render().reload(); assert.equal(page.args.signal.aborted,true);
+  f.calls[2].resolve({posts:[{id:"new"}],nextCursor:"new-cursor"}); await settle();
+  page.resolve({posts:[{id:"obsolete"}],nextCursor:null}); await settle();
+  assert.deepEqual(f.render().posts,[{id:"new"}]);
+  assert.equal(f.render().nextCursor,"new-cursor");
+  assert.deepEqual(f.render({homeCity:"Montreal"}).posts,[]);
+  f.unmount();
+});
+
+test("confirmed badge changes reconcile loaded section cards and reject stale pages",async()=>{
+  const f=fixture();f.render();
+  f.calls[0].resolve({posts:[{id:"one",userId:"author",user:{sponsor:true}}],nextCursor:"older"});await settle();
+  void f.render().loadMore();const old=f.calls[1];
+  f.badges({accountId:"other",user:{id:"author",sponsor:false}});
+  assert.equal(old.args.signal.aborted,false);
+  f.badges({accountId:"viewer",user:{id:"author",sponsor:false}});
+  assert.equal(old.args.signal.aborted,true);
+  old.resolve({posts:[{id:"stale"}],nextCursor:null});await settle();
+  assert.equal(f.render().posts[0].user.sponsor,false);
+  assert.equal(f.render().nextCursor,"older");
+  assert.equal(f.render().posts.length,1);f.unmount();
 });
 
 test("Following hook scopes immediately across accounts/privacy and discards obsolete responses",async()=>{

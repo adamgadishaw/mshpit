@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, mono, radius, space } from "../theme";
 import { useStore } from "../store";
@@ -7,7 +7,6 @@ import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import { api } from "../lib/api";
 import { isCurrentNotificationPostRequest, normalizeFetchedNotificationPost, notificationPostFailureNotice, resolveNotificationPost } from "../domain/notificationDeepLink.mjs";
-import { bundleNotifications } from "../domain/notification-bundles.mjs";
 import { accountTargetScope } from "../domain/screenScope.mjs";
 import { postTagNotificationCopy, postTagNotificationPhrase } from "../domain/postTagNotification.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
@@ -60,19 +59,13 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
   const postRequestRef = useRef({ sequence: 0, accountId, postId: null, controller: null });
   const [openingNotificationId, setOpeningNotificationId] = useState(null);
   const [unavailableNotice, setUnavailableNotice] = useState(null);
-  const [viewMode, setViewMode] = useState("recent");
   const notificationReadScope = accountTargetScope(accountId, "notifications:read");
   const notificationReadRequestRef = useRef({ sequence: 0, scope: notificationReadScope, controller: null });
   const [notificationReadState, setNotificationReadState] = useState({ scope: notificationReadScope, status: "idle", error: null });
   const scopedNotificationReadState = notificationReadState.scope === notificationReadScope
     ? notificationReadState
     : { scope: notificationReadScope, status: "idle", error: null };
-  const bundles = useMemo(() => bundleNotifications(items), [items]);
-  const activityRows = viewMode === "digest"
-    ? bundles.map((bundle) => ({ key: bundle.id, notification: bundle.primary, bundle }))
-    : items.map((notification) => ({ key: notification.id, notification, bundle: null }));
-
-  const readCurrentNotifications = async ({ signal: externalSignal, replace = false } = {}) => {
+  const readCurrentNotifications = async ({ signal: externalSignal, replace = false, rows } = {}) => {
     if (!accountIdRef.current) return null;
     if (notificationReadRequestRef.current.controller) {
       if (!replace) return null;
@@ -91,7 +84,8 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
     notificationReadRequestRef.current = operation;
     setNotificationReadState({ scope, status: "pending", error: null });
     try {
-      const result = await markNotificationsRead({ signal: controller.signal });
+      const result = await markNotificationsRead({ signal: controller.signal,
+        rows: rows ? [...rows, ...items.filter((row) => row.type === "welcome")] : undefined });
       if (notificationReadRequestRef.current !== operation
         || accountTargetScope(accountIdRef.current, "notifications:read") !== scope) return null;
       setNotificationReadState(result.ok
@@ -111,19 +105,6 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
       }
     }
   };
-  // Marking read is a server-first command. Account changes and unmounts abort
-  // the old scope so its completion cannot clear the next account's badge.
-  useEffect(() => {
-    const active = notificationReadRequestRef.current;
-    active.controller?.abort();
-    notificationReadRequestRef.current = { sequence: active.sequence + 1, scope: notificationReadScope, controller: null };
-    setNotificationReadState({ scope: notificationReadScope, status: "idle", error: null });
-    if (accountId) void readCurrentNotifications();
-    return () => notificationReadRequestRef.current.controller?.abort();
-    // The Store command is intentionally omitted: Context recreates its facade
-    // after reconciliation, but account scope alone owns this one-shot effect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, notificationReadScope]);
   useEffect(() => () => postRequestRef.current.controller?.abort(), []);
   useEffect(() => {
     const active = postRequestRef.current;
@@ -138,14 +119,30 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
   const { refresh: refreshActivity, refreshing: activityRefreshing } = useScopedRefresh({
     scope: activityRefreshScope,
     enabled: !!accountId,
+    onError: (error) => setNotificationReadState({ scope: notificationReadScope, status: "error", error }),
     task: async ({ signal }) => {
+      setNotificationReadState({ scope: notificationReadScope, status: "pending", error: null });
       const rows = await refreshNotifications({ signal, accountId });
       if (rows === false) throw new Error("Activity could not be refreshed.");
       if (signal.aborted || rows == null) return { stale: true };
-      const readResult = await readCurrentNotifications({ signal, replace: true });
+      const readResult = await readCurrentNotifications({ signal, replace: true, rows });
       return { rows, readResult };
     },
   });
+
+  // Marking read is a server-first command. Account changes and unmounts abort
+  // the old scope so its completion cannot clear the next account's badge.
+  useEffect(() => {
+    const active = notificationReadRequestRef.current;
+    active.controller?.abort();
+    notificationReadRequestRef.current = { sequence: active.sequence + 1, scope: notificationReadScope, controller: null };
+    setNotificationReadState({ scope: notificationReadScope, status: "idle", error: null });
+    if (accountId) void refreshActivity();
+    return () => notificationReadRequestRef.current.controller?.abort();
+    // The Store command is intentionally omitted: Context recreates its facade
+    // after reconciliation, but account scope alone owns this one-shot effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, notificationReadScope, refreshActivity]);
 
   // Tapping the ROW goes to the thing the notification is about; tapping the
   // AVATAR always goes to the person who did it.
@@ -218,10 +215,10 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
           <View style={styles.readNotice} accessibilityRole="alert" accessibilityLiveRegion="assertive">
             <Icon name="shield" size={16} color={colors.danger} />
             <Text selectable style={styles.readNoticeText}>
-              Activity could not be marked read, so the unread badge is unchanged. {scopedNotificationReadState.error?.userMessage || scopedNotificationReadState.error?.message || "Try again."}
+              Some activity could not be loaded or marked read. Unconfirmed notifications remain new. {scopedNotificationReadState.error?.userMessage || scopedNotificationReadState.error?.message || "Try again."}
             </Text>
-            {scopedNotificationReadState.error?.retryable ? (
-              <Pressable style={styles.readRetry} onPress={() => void readCurrentNotifications()} accessibilityRole="button" accessibilityLabel="Retry marking activity read">
+            {scopedNotificationReadState.error?.retryable !== false ? (
+              <Pressable style={styles.readRetry} onPress={() => void refreshActivity()} accessibilityRole="button" accessibilityLabel="Retry marking activity read">
                 <Text style={styles.readRetryText}>Try again</Text>
               </Pressable>
             ) : null}
@@ -236,52 +233,25 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
             </Pressable>
           </View>
         )}
-        <View style={styles.modePanel}>
-          <View style={styles.modeTabs} accessibilityRole="tablist">
-            {[
-              ["recent", "Recent"],
-              ["digest", "Digest"],
-            ].map(([value, label]) => {
-              const selected = viewMode === value;
-              return (
-                <Pressable
-                  key={value}
-                  onPress={() => setViewMode(value)}
-                  accessibilityRole="tab"
-                  accessibilityState={{ selected }}
-                  accessibilityLabel={`${label} activity view`}
-                  style={[styles.modeTab, selected && styles.modeTabSelected]}
-                >
-                  <Text style={[styles.modeTabText, selected && styles.modeTabTextSelected]}>{label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          <Text style={styles.modeScope}>
-            {viewMode === "digest"
-              ? "Digest groups only the activity currently loaded here. It does not schedule or send push or email updates."
-              : "Recent shows each loaded activity item separately."}
-          </Text>
-        </View>
-        {items.length === 0 && (
+        {items.length === 0 && activityRefreshing && <ActivityIndicator accessibilityLabel="Loading activity" color={colors.amber} />}
+        {items.length === 0 && !activityRefreshing && scopedNotificationReadState.status !== "error" && (
           <View style={styles.empty}>
             <Icon name="heart" size={28} color={colors.textFaint} />
             <Text style={styles.emptyTitle}>No activity yet</Text>
             <Text style={styles.emptySub}>When people follow you, tag you, like your reviews, comment, or message you, it shows up here.</Text>
           </View>
         )}
-        {activityRows.map(({ key, notification: n, bundle }) => {
+        {items.map((n) => {
           const meta = META[n.type] || META.like;
-          const actorName = bundle?.actorSummary || n.actorName || "Someone";
+          const actorName = n.actorName || "Someone";
           const rowCopy = notificationCopy(n, actorName);
-          const groupedCopy = bundle?.count > 1 ? `${rowCopy}. ${bundle.count} related activities.` : rowCopy;
           return (
             <Pressable
-              key={key}
-              style={[styles.row, !(bundle ? bundle.read : n.read) && styles.rowUnread]}
+              key={n.id}
+              style={[styles.row, !n.read && styles.rowUnread]}
               onPress={() => { void open(n); }}
               accessibilityRole="button"
-              accessibilityLabel={groupedCopy}
+              accessibilityLabel={rowCopy}
               accessibilityHint="Opens the related profile, conversation, or post"
               accessibilityState={{ busy: openingNotificationId === n.id }}
             >
@@ -312,11 +282,10 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
                 {n.type === "comment" && n.text ? <Text style={styles.preview} numberOfLines={1}>“{n.text}”</Text> : null}
                 {n.type === "dm" && n.text ? <Text style={styles.preview} numberOfLines={1}>“{n.text}”</Text> : null}
                 {n.type === "plan_join" && n.text ? <Text style={styles.preview} numberOfLines={1}>“{n.text}”</Text> : null}
-                {bundle?.count > 1 ? <Text style={styles.bundleCount}>{bundle.count} RELATED ACTIVITIES</Text> : null}
               </View>
               {openingNotificationId === n.id && <ActivityIndicator size="small" color={colors.amber} />}
-              <Text style={styles.time}>{ago(bundle?.ts ?? n.ts)}</Text>
-              {!(bundle ? bundle.read : n.read) && <View style={styles.dot} />}
+              <Text style={styles.time}>{ago(n.ts)}</Text>
+              {!n.read && <View style={styles.dot} />}
             </Pressable>
           );
         })}
@@ -335,13 +304,6 @@ const styles = StyleSheet.create({
   readRetryText: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
   notice: { flexDirection: "row", alignItems: "center", gap: 9, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, padding: 11, marginBottom: 10 },
   noticeText: { flex: 1, color: colors.text, fontSize: 13, lineHeight: 18 },
-  modePanel: { marginBottom: space(3), gap: 8 },
-  modeTabs: { flexDirection: "row", padding: 3, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
-  modeTab: { flex: 1, minHeight: 40, alignItems: "center", justifyContent: "center", borderRadius: radius.pill },
-  modeTabSelected: { backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.amber },
-  modeTabText: { color: colors.textDim, fontSize: 12, fontWeight: "800" },
-  modeTabTextSelected: { color: colors.amber },
-  modeScope: { color: colors.textFaint, fontSize: 11.5, lineHeight: 17, paddingHorizontal: 4 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, padding: 12, borderRadius: radius.md, marginBottom: 4 },
   rowUnread: { backgroundColor: colors.bgElev },
   avatarWrap: { width: 40, height: 40 },
@@ -351,7 +313,6 @@ const styles = StyleSheet.create({
   who: { fontWeight: "800" },
   ref: { color: colors.amber, fontWeight: "600" },
   preview: { color: colors.textDim, fontSize: 13, marginTop: 2, fontStyle: "italic" },
-  bundleCount: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 0.7, marginTop: 5 },
   time: { color: colors.textFaint, fontFamily: mono, fontSize: 11 },
   dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.amberStrong },
   empty: { alignItems: "center", gap: 8, paddingTop: 60, paddingHorizontal: 30 },

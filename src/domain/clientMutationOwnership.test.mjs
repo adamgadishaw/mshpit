@@ -42,7 +42,7 @@ const aggregateKey = (accountId) => `${accountId || "guest"}:album:${ratingKey}`
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 function fixture({ actor = owner, ready = true, demo = false } = {}) {
-  const calls = [], writes = [], effects = [];
+  const calls = [], writes = [], effects = [], badgeReconciliations = [];
   const sessionRef = { current: actor }, authReadyRef = { current: ready }, accountMutationEpochRef = { current: 1 };
   const state = { session: actor, users: actor ? [actor] : [], clubs: {}, directory: [{ artist: "Artist", members: 2 }], reviews: {} };
   state.comments = {};
@@ -63,6 +63,7 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
     setComments: update("comments"), setFeed: update("feed"), feed: state.feed, feedMutationRevisionRef: { current: 0 },
     postOwner: () => "post-owner", notify: (...args) => effects.push(["notify", ...args]),
     setUsers: update("users"), setSession: update("session"), publicProfileCacheEntry: (user) => user,
+    reconcileAuthorBadges: user => { assert.equal(user.id, sessionRef.current.id); badgeReconciliations.push(structuredClone(user)); },
     api: request("api"), track: (...args) => effects.push(args),
     applyTheme: (...args) => effects.push(["theme", ...args]),
     setFanClubs: update("clubs"), setFanClubDirectorySnapshot: update("directory"),
@@ -79,7 +80,7 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
   const adopt = (user, epoch = 1) => {
     sessionRef.current = user; state.session = user; accountMutationEpochRef.current += epoch;
   };
-  return { actions, state, calls, writes, effects, adopt, sessionRef, ratingRegistry, setAlbums: update("albums") };
+  return { actions, state, calls, writes, effects, badgeReconciliations, adopt, sessionRef, ratingRegistry, setAlbums: update("albums") };
 }
 
 const commands = {
@@ -326,6 +327,7 @@ test("concurrent different profile fields merge independently and profile timest
   assert.equal(f.state.session.avatarUri, "https://media.example.test/new-avatar.jpg");
   assert.equal(f.state.session.banner, "https://media.example.test/new-banner.jpg");
   assert.equal(f.state.session.profileUpdatedAt, 20);
+  assert.equal(f.badgeReconciliations.length, 2, "each confirmed response reaches the author reconciliation seam");
 });
 
 test("old profile rollback preserves a newer different field and a replaced same-field value", async () => {

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Share } from "react-native";
+import { View, Text, StyleSheet, Pressable, Share } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { colors, radius, shadow, displayFont } from "../theme";
 import Icon from "../components/Icon";
 import ConcertMemoryModal from "../components/ConcertMemoryModal";

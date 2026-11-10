@@ -62,7 +62,7 @@ function visit(node) {
 }
 visit(parse(app, { sourceType: "module", plugins: ["jsx"] }));
 assert.ok(keyExpression);
-const discoverKey = new Function("session", `return (${keyExpression});`);
+const discoverKey = new Function("session", "discoverDestination = {}", `return (${keyExpression});`);
 
 const noop = () => {};
 const context = {};

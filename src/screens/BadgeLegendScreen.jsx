@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { View, Text, StyleSheet, ScrollView } from "react-native";
+import { View, Text, StyleSheet, } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { colors, mono, radius, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";

@@ -1,4 +1,6 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { postAuthorBadgeProjection } from "./postAuthorBadgeProjection.js";
+import { postBadgeBundle } from "../src/domain/postBadgeBundle.mjs";
 import { mapLibreServerEnabled } from "./mapLibreConfiguration.mjs";
 import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
 import { createVenueMapCatalogueResponse } from "./venueMapCatalogueResponse.mjs";
@@ -3078,7 +3080,8 @@ function postJson(p, viewerId) {
     id: p.id,
     userId: p.user_id,
     kind: p.kind || "review",
-    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0, membershipBadge: memberBadgeFor(db, { id: p.user_id }) },
+    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0,
+      ...postAuthorBadgeProjection({ user: q.userById.get(p.user_id), viewerId, projectUser: publicUser }) },
     artist: p.artist,
     venue: online.experienceType === "online" ? "" : p.venue,
     city: online.experienceType === "online" ? "" : p.city,
@@ -3173,12 +3176,8 @@ const COMMENT_AUTHOR_IDENTITY_SQL = `u.email_verified_at,
     WHERE a.owner_id=u.id AND a.artist_key=lower(trim(u.artist_name))
       AND a.identity_review_status IN ('pending','rejected')) THEN 1 ELSE 0 END AS artist_identity_held`;
 
-function commentAuthorStatus(comment) {
-  return {
-    role: comment.artist_identity_held ? "fan" : comment.role,
-    verified: !comment.artist_identity_held && !!comment.verified,
-    membershipBadge: memberBadgeFor(db, { id: comment.user_id, email_verified_at: comment.email_verified_at }),
-  };
+function commentAuthorStatus(comment, viewerId) {
+  return postAuthorBadgeProjection({ user: q.userById.get(comment.user_id), viewerId, projectUser: publicUser });
 }
 
 function withCommentPreviews(posts, viewerId) {
@@ -3212,7 +3211,7 @@ function withCommentPreviews(posts, viewerId) {
       avatarUri: safePublicProfileImage(comment.user_id, comment.avatar_uri),
       avatarColor: comment.avatar_color,
       profileUpdatedAt: Number(comment.profile_updated_at) || 0,
-      ...commentAuthorStatus(comment),
+      ...commentAuthorStatus(comment, viewerId),
       text: comment.text,
       deleted: false,
       parentId: comment.parent_id || null,
@@ -3617,7 +3616,7 @@ function safePublicProfileImage(ownerId, value) {
 function publicUser(row, options = {}) {
   const projected = storedPublicUser(row, options);
   if (!projected) return projected;
-  if (options.self) return { ...projected, owner: isOwnerId(db, row.id) };
+  if (options.self) return { ...projected, owner: isOwnerId(db, row.id), postBadgeSnapshot: postBadgeBundle(storedPublicUser(row)) };
   return {
     ...projected,
     avatarUri: safePublicProfileImage(row.id, projected.avatarUri),
@@ -6893,10 +6892,14 @@ export const routes = {
     const blockSql = viewer ? `AND NOT EXISTS (
       SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
     ) AND NOT EXISTS (SELECT 1 FROM account_mutes mute WHERE mute.muter_id=? AND mute.muted_id=p.user_id)` : "";
+    const local = ctx.query?.mode === "local";
+    const homeCity = local ? String(user.home_city || "").trim() : "";
+    const localSql = local ? "AND trim(lower(u.home_city))=trim(lower(?)) AND length(trim(u.home_city))>0" : "";
     const cursorSql = cursor ? "AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))" : "";
     const args = [];
     if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
     if (viewer) args.push(viewer, viewer, viewer);
+    if (local) args.push(homeCity);
     args.push(lim + 1);
     if (!cursor) args.push(off);
     // Moderators see which cards carry open reports right on the feed, so
@@ -6912,7 +6915,7 @@ export const routes = {
           WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
         ${SEEN_ORDINAL_SQL}${flagSql}
       FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE p.removed=0 AND substr(p.id,1,5)<>'news_' AND ${activeAccountSql("u")} ${cursorSql} ${blockSql}
+      WHERE p.removed=0 AND substr(p.id,1,5)<>'news_' AND ${activeAccountSql("u")} ${cursorSql} ${blockSql} ${localSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
     const projectedRows = attachPostImpressionStats(db, attachViewerLikes(
@@ -7943,7 +7946,7 @@ export const routes = {
         parentId: c.parent_id || null, createdAt: c.created_at,
       } : {
         id: c.id, userId: c.user_id, name: c.name, initials: c.initials,
-        avatarUri: safePublicProfileImage(c.user_id, c.avatar_uri), avatarColor: c.avatar_color, ...commentAuthorStatus(c),
+        avatarUri: safePublicProfileImage(c.user_id, c.avatar_uri), avatarColor: c.avatar_color, ...commentAuthorStatus(c, viewerId),
         profileUpdatedAt: Number(c.profile_updated_at) || 0, text: c.text, deleted: false,
         parentId: c.parent_id || null, createdAt: c.created_at,
         ...commentLikeInfo(db, c.id, viewerId),

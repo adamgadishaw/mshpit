@@ -17,7 +17,7 @@ test("vinyl refresh keeps React Native's controlled pull mechanism", () => {
   assert.match(nativeSource, /progressViewOffset=\{progressViewOffset\}/);
   assert.match(nativeSource, /enabled=\{canRefresh\}/);
   assert.match(nativeSource, /Children\.only\(children\)/);
-  assert.match(nativeSource, /cloneElement\(child, \{ refreshControl \}\)/);
+  assert.match(nativeSource, /cloneElement\(child, \{ ref: composedRef, refreshControl \}\)/);
   assert.doesNotMatch(nativeSource, /PanResponder|GestureDetector|onScroll\s*=|setNativeProps/);
 });
 
@@ -29,13 +29,13 @@ test("native refresh uses one themed platform indicator without an absolute head
 
 test("web returns the exact child for incapable devices and only marks phone scroll owners", () => {
   assert.match(webSource, /Children\.only\(children\)/);
-  assert.match(webSource, /if \(!touchPhoneCapable\) return child;/);
+  assert.match(webSource, /if \(!touchPhoneCapable\) return page \? cloneElement\(child, \{ ref: composedRef \}\) : child;/);
   assert.match(webSource, /cloneElement\(child, \{/);
   assert.match(webSource, /dataSet:\s*\{ \.\.\.child\.props\.dataSet, pitRefreshScrollOwner: "true" \}/);
   assert.match(webSource, /style:\s*\[child\.props\.style, styles\.scrollOwner\]/);
   assert.match(webSource, /overscrollBehaviorY: "contain"/);
   assert.ok(
-    webSource.indexOf("if (!touchPhoneCapable) return child;") < webSource.indexOf("const scrollChild = cloneElement"),
+    webSource.indexOf("if (!touchPhoneCapable) return page ? cloneElement(child, { ref: composedRef }) : child;") < webSource.indexOf("const scrollChild = cloneElement"),
     "the incapable return must occur before cloning or merging child props",
   );
   assert.match(webSource, /boundaryRef\.current\?\.firstElementChild/);

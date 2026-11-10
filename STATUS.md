@@ -1,5 +1,18 @@
 # Pit current status
 
+## 2026-11-10 PC feature follow-up (local review)
+
+- Isolated branch `fix/pc-feature-followup-20261110` starts at verified remote
+  master `6a51cb7a79605625602beb91dd7e55e26d3b1455`.
+- Existing post badges use current server authority and confirmed-profile
+  reconciliation; title/tab gestures return to top and refresh data pages.
+  Activity uses one history list with confirmed ID-scoped acknowledgement.
+- For You, Local and Following load eligible older pages automatically. Find a
+  Show opens the saved home city with a dismissible Discover Cities prompt.
+- Preservation, validation, integration instructions and remaining native/Mac
+  limits are recorded in [the local review](docs/PC_FEATURE_FOLLOWUP_2026-11-10.md).
+  No push, merge, deployment, production write or phone interaction occurred.
+
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 
 - Local branch `fix/catalog-event-festival-20261027` uses a source snapshot of

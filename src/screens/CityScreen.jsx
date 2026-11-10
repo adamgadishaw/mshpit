@@ -135,7 +135,9 @@ export function CityGuideContent({ guide, width, onOpenVenue, onOpenArtist, onOp
     </View> : null}
   </>;
 }
-function CityGuideScreen({ city, accountId, onClose, ...navigation }) {
+function CityGuideScreen({ city, accountId, onClose, onChooseCity, ...navigation }) {
+  const [promptDismissed, setPromptDismissed] = useState(false);
+  useEffect(() => setPromptDismissed(false), [accountId, city?.citySlug, city?.homeShowPrompt]);
   const { width } = useWindowDimensions();
   const countryCode = city?.countryCode || "";
   const citySlug = city?.citySlug || "";
@@ -159,12 +161,22 @@ function CityGuideScreen({ city, accountId, onClose, ...navigation }) {
         {guide ? <CityGuideContent key={`${accountId || "guest"}:${countryCode}:${citySlug}`} guide={guide} width={width} {...navigation} /> : null}
       </ScrollView>
     </VinylRefreshBoundary>
+    {city?.homeShowPrompt && !promptDismissed ? <View style={styles.homeCityPrompt}>
+      <Text style={styles.body}>Not in {guide?.city?.city || city?.city || "your home city"} right now?</Text>
+      <View style={styles.homeCityPromptActions}>
+        <Button title="Choose another city" variant="secondary" onPress={onChooseCity} />
+        <Pressable accessibilityRole="button" accessibilityLabel="Dismiss city prompt" onPress={() => setPromptDismissed(true)} style={({ focused }) => [styles.homeCityPromptDismiss, focused && focusRing]}><Text style={styles.link}>Dismiss</Text></Pressable>
+      </View>
+    </View> : null}
   </View>;
 }
 export default function CityScreen(props) {
   return props.city?.directory ? <CityDirectoryScreen accountId={props.accountId} onClose={props.onClose} onOpenCity={props.onOpenCity} /> : <CityGuideScreen {...props} />;
 }
 const styles = StyleSheet.create({
+  homeCityPrompt: { padding: space(4), gap: space(2), borderTopWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  homeCityPromptActions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(3) },
+  homeCityPromptDismiss: { minHeight: 44, justifyContent: "center", paddingHorizontal: space(3) },
   root: { flex: 1, backgroundColor: colors.bg, minWidth: 0 },
   scroll: { width: "100%", maxWidth: 1160, alignSelf: "center", padding: space(4), paddingBottom: space(13), gap: space(6) }, loader: { padding: space(10) },
   marquee: { overflow: "hidden", borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },

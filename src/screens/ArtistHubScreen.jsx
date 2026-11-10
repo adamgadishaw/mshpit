@@ -2,13 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
   useWindowDimensions,
 } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { useStore } from "../store";
 import { artistMeta } from "../seed/ingested";
 import { artistWorkspaceModel } from "../domain/artistWorkspace.mjs";

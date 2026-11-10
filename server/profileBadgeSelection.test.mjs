@@ -146,6 +146,7 @@ test("unchanged website Store edits retain preferences through the real API and 
     const state = { session: initial, users: [publicProfileCacheEntry(initial)] }, calls = [];
     const dependencies = { session: initial, authReadyRef: { current: true }, sessionRef, accountMutationEpochRef,
       captureAccountMutation, accountMutationIsCurrent, publicProfileCacheEntry, profileGenreSelection,
+      reconcileAuthorBadges: () => {},
       clean, cleanName, cleanHandle, isHandle, LIMITS, ENABLE_DEMO_DATA: false,
       api: async (path, options) => {
         calls.push({ path, options });

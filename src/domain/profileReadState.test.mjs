@@ -97,7 +97,7 @@ function profileHarness() {
   const state = { users: [...cachedUsers], posts: [...cachedPosts], stats: {}, follows: {} };
   const sessionRef = { current: { id: "A" } };
   const accountMutationEpochRef = { current: 1 };
-  const calls = [];
+  const calls = [], badgeReconciliations = [];
   const load = (id, options) => {
     const dependencies = {
       sessionRef, accountMutationEpochRef, captureAccountMutation, assertCurrentProfileRead,
@@ -110,11 +110,12 @@ function profileHarness() {
       setUserStats: (update) => { state.stats = update(state.stats); },
       setFollows: (update) => { state.follows = update(state.follows); },
       absorbUsers: (users) => { state.users = [...state.users.filter((row) => !users.some((user) => row.id === user.id)), ...users]; },
+      reconcileAuthorBadges: user => { badgeReconciliations.push(structuredClone(user)); },
     };
     const reader = new Function(...Object.keys(dependencies), `"use strict"; ${loadUserSource}; return loadUser;`)(...Object.values(dependencies));
     return reader(id, options);
   };
-  return { state, sessionRef, accountMutationEpochRef, calls, load };
+  return { state, sessionRef, accountMutationEpochRef, calls, badgeReconciliations, load };
 }
 
 test("prior-account profile successes and access denials cannot publish or quarantine current data", async () => {
@@ -126,10 +127,12 @@ test("prior-account profile successes and access denials cannot publish or quara
     const currentRead = h.load("u_target");
     h.calls[1].resolve({ user: { id: "u_target", name: "B-authorized profile" }, followers: 5, following: 3, isFollowing: true });
     assert.equal((await currentRead).status, "ready");
+    assert.deepEqual(h.badgeReconciliations, [{ id: "u_target", name: "B-authorized profile" }]);
     const before = structuredClone(h.state);
     if (status) h.calls[0].reject({ status });
     else h.calls[0].resolve({ user: { id: "u_target", name: "Old A-only data" }, followers: 99, isFollowing: true });
     await assert.rejects(oldRead, { name: "AbortError" });
+    assert.equal(h.badgeReconciliations.length, 1, "obsolete profile responses cannot reconcile badges");
     assert.deepEqual(h.state, before);
     assert.deepEqual(h.state.follows, { B: ["u_target"] });
     assert.deepEqual(h.state.stats.u_target, { followers: 5, following: 3 });

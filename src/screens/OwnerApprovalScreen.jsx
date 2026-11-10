@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import ScrollView from "../components/PageScrollView";
 
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";

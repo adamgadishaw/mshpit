@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Constants from "expo-constants";
-import { Linking, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { Linking, View, Text, StyleSheet, Pressable } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { colors, focusRing, radius, mono, THEMES, themeKey, space } from "../theme";
 import { isMod, useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
 import Icon from "../components/Icon";

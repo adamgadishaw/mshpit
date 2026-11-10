@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { colors, mono, radius } from "../theme";
 import { clearDiagnostics, getDiagnostics, subscribeDiagnostics } from "../lib/diagnostics";
 import SheetHeader from "../components/SheetHeader";

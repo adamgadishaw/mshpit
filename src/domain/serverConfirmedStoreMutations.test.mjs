@@ -55,12 +55,12 @@ test("artist update deletion is server-first and exposes scoped retry feedback",
 
 test("notification read is server-first and never clears uncaptured rows", () => {
   const source = mutationSlice("const markNotificationsRead =", "const postOwner =");
-  assertServerFirst(source, "setNotifications(");
+  assertServerFirst(source, "setNotifications(", "acknowledgeNotificationBatch");
   assert.match(source, /reconcileConfirmedNotificationReads/);
-  assert.match(source, /const notificationIds = notifications/);
-  assert.match(notifications, /await markNotificationsRead\(\{ signal: controller\.signal \}\)/);
+  assert.match(source, /const notificationIds = rows/);
+  assert.match(notifications, /await markNotificationsRead\(\{ signal: controller\.signal,[\s\S]*?rows:/);
   assert.match(notifications, /notificationReadState\.scope === notificationReadScope/);
-  assert.match(notifications, /unread badge is unchanged/);
+  assert.match(notifications, /Unconfirmed notifications remain new/);
 });
 
 test("a post response cannot enter a different account's local feed", () => {

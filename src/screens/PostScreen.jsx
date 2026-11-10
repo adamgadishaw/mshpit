@@ -7,6 +7,7 @@ import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import TicketStub from "../components/TicketStub";
 import { BadgeRow } from "../components/Badge";
+import { displayedProfileBadges } from "../domain/profileBadges.mjs";
 import { LIMITS } from "../domain/validation.mjs";
 import { applyPostLocalOverride, withRemovedSelfPostTag } from "../domain/postLocalOverrides.mjs";
 import { accountTargetScope } from "../domain/screenScope.mjs";
@@ -32,7 +33,7 @@ const ago = (ts) => {
 // One comment row + its nested replies. A reply-to-comment is indented and shows
 // who it answers, so the thread reads like a forum, not a flat list.
 function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId, onOpenProfile, userById, userBadges, postId, onLike, onRequireAuth }) {
-  const author = resolvePostAuthor({ userId: c.userId, cached: userById?.(c.userId), embedded: { name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, membershipBadge: c.membershipBadge, profileUpdatedAt: c.profileUpdatedAt } });
+  const author = resolvePostAuthor({ userId: c.userId, cached: userById?.(c.userId), embedded: { name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, sponsor: c.sponsor, artistName: c.artistName, membershipBadge: c.membershipBadge, profileBadges: c.profileBadges, badgeSnapshot: c.badgeSnapshot, profileUpdatedAt: c.profileUpdatedAt } });
   const own = !c.deleted && !!sessionId && c.userId === sessionId;
   return (
     <View style={depth > 0 ? (depth <= 3 ? styles.replyWrap : styles.deepReplyWrap) : null}>
@@ -51,7 +52,7 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
                 {author.name}
               </PublicTextLink>
             )}
-            {!c.deleted && <BadgeRow badges={userBadges(author)} size={12} />}
+            {!c.deleted && <BadgeRow badges={displayedProfileBadges(userBadges(author), author.profileBadges)} size={12} />}
             <Text style={styles.cTime}>· {ago(c.at)}</Text>
           </View>
           <Text style={[styles.cText, c.deleted && styles.deletedText]}>{c.deleted ? "Comment deleted" : c.text}</Text>

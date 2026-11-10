@@ -1,3 +1,5 @@
+import { postBadgeBundle } from "./postBadgeBundle.mjs";
+
 const definedFields = (value) => Object.fromEntries(Object.entries(value && typeof value === "object" ? value : {})
   .filter(([, field]) => field !== undefined));
 const profileVersion = (value) => {
@@ -14,9 +16,13 @@ export function resolvePostAuthor({ userId, embedded, cached } = {}) {
   const cachedVersion = profileVersion(cachedFields);
   const embeddedVersion = profileVersion(embeddedFields);
   const cachedIsNewer = cachedVersion > 0 && cachedVersion > embeddedVersion;
+  // Badge authority travels atomically in the current response. A newer avatar
+  // version in the people cache must never resurrect a revoked role/check.
+  const badgeSource = embeddedFields.badgeSnapshot === true ? embeddedFields : null;
   return {
     ...(cachedIsNewer ? embeddedFields : cachedFields),
     ...(cachedIsNewer ? cachedFields : embeddedFields),
+    ...(badgeSource ? postBadgeBundle(badgeSource) : {}),
     ...(userId ? { id: userId } : {}),
   };
 }

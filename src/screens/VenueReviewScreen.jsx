@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform } from "react-native";
+import { View, Text, StyleSheet, TextInput, Pressable, Image, Platform } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";

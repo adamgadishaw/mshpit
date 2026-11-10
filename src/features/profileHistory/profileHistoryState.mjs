@@ -5,6 +5,7 @@ import {
   rejectLoadState,
   resolveLoadState,
 } from "../../domain/loadState.mjs";
+import { reconcilePostAuthorBadges } from "../../domain/postBadgeBundle.mjs";
 
 const text = (value) => value == null ? "" : String(value).trim();
 const DEFAULT_CACHE_ENTRIES = 32;
@@ -267,7 +268,7 @@ export function createProfileHistoryStore({ fetchPage, now = () => Date.now(), m
         evictInactive();
       }
     })();
-    active.set(scope, { ticket, controller, promise });
+    active.set(scope, { ticket, controller, promise, params, refresh });
     return promise;
   };
 
@@ -343,6 +344,26 @@ export function createProfileHistoryStore({ fetchPage, now = () => Date.now(), m
         return next;
       });
       return changed ? publish(scope, { ...current, data: { ...current.data, posts } }) : current;
+    },
+    reconcileAuthorBadges(accountId, user) {
+      for (const scope of accountScopes(accountId)) {
+        // A profile wall contains only its target's posts. Unrelated histories
+        // must keep their request and loading state untouched.
+        if (JSON.parse(scope)[1] !== text(user?.id)) continue;
+        const interrupted = active.get(scope);
+        const stopped = stopScopeRead(scope);
+        const current = entries.get(scope);
+        if (!current) continue;
+        const posts = reconcilePostAuthorBadges(current.data?.posts, user);
+        transformOverlay(scope, post => reconcilePostAuthorBadges([post], user)[0]);
+        if (stopped || posts !== current.data?.posts) {
+          publish(scope, settledState(scope, current, { ...current.data, posts }));
+        }
+        if (stopped) invalidatedScopes.add(scope);
+        // loadUser and the initial wall read commonly finish together. Resume
+        // the exact interrupted page so reconciliation cannot strand it idle.
+        if (interrupted) void run(interrupted.params, { refresh: interrupted.refresh });
+      }
     },
     invalidateAccount(accountId) {
       const scopes = accountScopes(accountId);

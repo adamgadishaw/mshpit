@@ -1,6 +1,7 @@
 import MediaUploadProgress from "../components/MediaUploadProgress";
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Alert, AppState } from "react-native";
+import { View, Text, StyleSheet, TextInput, Pressable, KeyboardAvoidingView, Platform, Alert, AppState } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import * as ImagePicker from "expo-image-picker";
 import { colors, mono, radius, font, displayFont, shadow, space } from "../theme";
 import { useStore } from "../store";

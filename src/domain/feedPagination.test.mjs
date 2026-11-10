@@ -160,20 +160,20 @@ test("obsolete head responses cannot change feed mode or start a legacy fallback
   }
 });
 
-test("valid current-account fallback keeps card positions and adopts a legacy cursor", async () => {
+test("failed recommended pagination retains order and cursor for a truthful retry", async () => {
   const h = feedHarness();
   const page = h.render().loadMoreFeed();
   assert.equal(await h.render().loadMoreFeed(), false, "duplicate end-reached is locked immediately");
   h.calls[0].reject({ status: 503 });
-  await Promise.resolve();
-  assert.match(h.calls[1].url, /^\/api\/feed\?limit=/);
-  assert.equal(h.calls[1].options.signal, h.calls[0].options.signal);
-  h.calls[1].resolve({ posts: [{ id: "legacy-page" }], nextCursor: "legacy-next" });
-  assert.equal(await page, true);
-  assert.deepEqual(h.state.posts, [{ id: "head" }, { id: "legacy-page" }]);
-  assert.equal(h.state.cursor, "legacy-next");
-  assert.equal(h.refs.feedModeRef.current, "legacy");
-  assert.equal(h.refs.feedAlgorithmRef.current, "chronological-v1");
+  assert.equal(await page, false);
+  assert.equal(h.calls.length, 1, "never substitute a different feed halfway through a snapshot");
+  assert.deepEqual(h.state.posts, [{ id: "head" }]);
+  assert.equal(h.state.cursor, "initial-cursor");
+  const retry = h.render().loadMoreFeed();
+  assert.match(h.calls[1].url, /cursor=initial-cursor/);
+  h.calls[1].resolve({ posts: [{ id: "retry-page" }], nextCursor: null });
+  assert.equal(await retry, true);
+  assert.equal(h.state.hasMore, false);
 });
 
 test("local mutations invalidate pending pages without changing existing feed state", async () => {

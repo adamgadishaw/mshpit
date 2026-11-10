@@ -54,6 +54,8 @@ function fixture() {
     "../components/SmartImage": "SmartImage",
     "../components/ConcertMemoryModal": "ConcertMemoryModal",
     "../lib/lazyWithRetry": { lazyWithRetry: () => "ProfileScreen" },
+    "../components/PageReturnContext": { PageTitle: "PageTitle" },
+    "../components/PageScrollView": "ScrollView",
     "../components/VinylRefreshBoundary": "VinylRefreshBoundary",
     "../components/Badge": { BadgeRow: "BadgeRow" },
     "../features/artistRecommendations/ArtistRecommendationsRail": "ArtistRecommendationsRail",

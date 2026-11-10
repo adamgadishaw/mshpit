@@ -24,6 +24,7 @@ import { memberCalendarModel } from "../domain/calendarShows.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import useAppActive from "../lib/useAppActive";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import { PageTitle } from "../components/PageReturnContext";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import ExpandableText from "../components/ExpandableText";
@@ -452,13 +453,13 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
     <View style={styles.wrap}>
       <View testID="profile-header" style={styles.topbar}>
         {asTab ? (
-          <Text style={[styles.topTitle, styles.topTitleTab]} numberOfLines={1} accessibilityRole="header">@{user.handle}</Text>
+          <PageTitle label="Your profile" style={{ flex: 1 }}><Text style={[styles.topTitle, styles.topTitleTab]} numberOfLines={1} accessibilityRole="header">@{user.handle}</Text></PageTitle>
         ) : (
           <>
             <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
               <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
             </Pressable>
-            <Text style={styles.topTitle}>@{user.handle}</Text>
+            <PageTitle label="Profile" style={{ flex: 1 }}><Text style={styles.topTitle}>@{user.handle}</Text></PageTitle>
           </>
         )}
         {asTab && isSelf && ownerTools?.length ? null : session && !isSelf && onReport ? (

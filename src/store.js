@@ -5,6 +5,8 @@ import { createContext, useContext, useState, useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
 import { seedFeed, ratedShows, haversineKm, installDemoCatalogShows } from "./data";
 import { memberBadgeTypes } from "./domain/memberBadges.mjs";
+import { reconcilePostAuthorBadges, reconcileCommentAuthorBadges } from "./domain/postBadgeBundle.mjs";
+import { publishAuthorBadgeChange } from "./domain/authorBadgeChanges.mjs";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
 import { load, remove, save } from "./lib/persist";
 import { api, AppError, captureAppError, configureApiIdentity } from "./lib/api";
@@ -164,7 +166,8 @@ import {
   reconcileConfirmedArtistRequestDecision,
 } from "./domain/artistRequestMutation.mjs";
 import { reconcileConfirmedArtistPostRemoval } from "./domain/artistPostMutation.mjs";
-import { reconcileConfirmedNotificationReads } from "./domain/notificationReadMutation.mjs";
+import { acknowledgeNotificationBatch, loadNotificationHistory } from "./lib/notificationService";
+import { reconcileConfirmedNotificationReads, mergeNotificationHistory, confirmedNotificationIds } from "./domain/notificationReadMutation.mjs";
 import {
   directMessageUnreadCount,
   latestDirectMessageReadCursor,
@@ -1153,7 +1156,7 @@ export function StoreProvider({ children }) {
         const replaced = current.map((post) => byId.get(post.id) || post);
         const existingIds = new Set(current.map((post) => post.id));
         const missing = normalized.filter((post) => !existingIds.has(post.id));
-        next = [...replaced, ...missing].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+        next = [...replaced, ...missing];
       } else {
         next = prepend ? [...normalized, ...remaining] : [...remaining, ...normalized];
       }
@@ -1288,29 +1291,13 @@ export function StoreProvider({ children }) {
       let mode = feedModeRef.current;
       let algorithm = feedAlgorithmRef.current;
       if (mode === "for-you") {
-        try {
-          payload = await api(`/api/feed/for-you?limit=${FEED_PAGE_LIMIT}&cursor=${encodeURIComponent(feedNextCursor)}`, {
-            expectedAccountId: request.read.accountId,
-            context: "Loading more recommended concert posts",
-            silent: true,
-            signal,
-          });
-          algorithm = payload?.algorithm?.id || algorithm;
-        } catch (error) {
-          if (!isCurrent(error) || error?.status === 401 || error?.status === 403) throw error;
-          // Recommendation cursors are intentionally incompatible with the
-          // chronological endpoint. Preserve existing card positions while a
-          // legacy first page establishes a compatible cursor.
-          fallback = true;
-          payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}`, {
-            expectedAccountId: request.read.accountId,
-            context: "Loading the chronological concert feed",
-            silent: true,
-            signal,
-          });
-          mode = "legacy";
-          algorithm = "chronological-v1";
-        }
+        payload = await api(`/api/feed/for-you?limit=${FEED_PAGE_LIMIT}&cursor=${encodeURIComponent(feedNextCursor)}`, {
+          expectedAccountId: request.read.accountId,
+          context: "Loading more recommended concert posts",
+          silent: true,
+          signal,
+        });
+        algorithm = payload?.algorithm?.id || algorithm;
       } else {
         payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}&before=${encodeURIComponent(feedNextCursor)}`, {
           expectedAccountId: request.read.accountId,
@@ -1323,7 +1310,7 @@ export function StoreProvider({ children }) {
       const { posts, nextCursor } = payload || {};
       feedModeRef.current = mode;
       feedAlgorithmRef.current = algorithm;
-      mergeServerFeed(posts, { prepend: false, preserveOrder: fallback });
+      mergeServerFeed(posts, { prepend: false, preserveOrder: true });
       setFeedNextCursor(nextCursor || null);
       setFeedHasMore(!!nextCursor);
       feedPageRef.current += 1;
@@ -1588,6 +1575,17 @@ export function StoreProvider({ children }) {
 
   // Merge found users (people search) into local state so their profiles, avatars,
   // and follow buttons resolve everywhere, without touching the session.
+  const reconcileAuthorBadges = (user) => {
+    if (!user?.id) return;
+    const publicAuthor = user.postBadgeSnapshot ? { ...user.postBadgeSnapshot, id: user.id } : user;
+    // A confirmed response owns this bundle, never optimistic profile fields.
+    // Invalidate older feed reads before they can restore obsolete claims.
+    feedMutationRevisionRef.current += 1;
+    accountMutationEpochRef.commentRevision = (accountMutationEpochRef.commentRevision || 0) + 1;
+    setFeed(posts => reconcilePostAuthorBadges(posts, publicAuthor));
+    setComments(groups => reconcileCommentAuthorBadges(groups, publicAuthor));
+    publishAuthorBadgeChange({ accountId: sessionRef.current?.id || null, user: publicAuthor });
+  };
   const absorbUsers = (list) => {
     if (!Array.isArray(list) || !list.length) return;
     setUsers((all) => {
@@ -1650,6 +1648,7 @@ export function StoreProvider({ children }) {
     }
 
     absorbUsers([su]);
+    reconcileAuthorBadges(su);
     setUserStats((m) => ({ ...m, [su.id]: { followers: followers || 0, following: following || 0 } }));
     // Sync my follow state for this person (another device may have followed).
     if (session && fol && !(follows[session.id] || []).includes(su.id)) {
@@ -2571,6 +2570,7 @@ export function StoreProvider({ children }) {
     configureProductAnalytics(merged);
     sessionRef.current = merged;
     setSession(merged);
+    reconcileAuthorBadges(su);
     if (announce) broadcastAuthEpoch();
     if (!hydrateAccount) return merged;
     // Hydrate the follow graph for this account from the server (see MIGRATION.md,
@@ -3474,6 +3474,7 @@ export function StoreProvider({ children }) {
           : u)));
         sessionRef.current = mergeConfirmed(sessionRef.current);
         setSession((current) => current?.id === actor.id ? mergeConfirmed(current) : current);
+        reconcileAuthorBadges(user);
         return { ok: true, user: sessionRef.current, patch: safe };
       })
       .catch((error) => {
@@ -4065,17 +4066,14 @@ export function StoreProvider({ children }) {
     // architecture: allow-ambiguous-result -- this optional activity read preserves the current account snapshot on stale, abort, or offline failure
     if (!accountId || sessionRef.current?.id !== accountId) return null;
     try {
-      const { notifications: rows } = await api("/api/me/notifications", {
-        context: "Refreshing activity",
-        silent: true,
-        signal,
-      });
-      if (signal?.aborted || sessionRef.current?.id !== accountId || !Array.isArray(rows)) return null;
+      const capturedRows = notifications.filter((row) => row.userId === accountId);
+      const readScope = captureAccountMutation(accountId, accountMutationEpochRef.current);
+      const rows = await loadNotificationHistory({ signal, expectedAccountId: accountId,
+        isCurrent: () => accountMutationIsCurrent(readScope, sessionRef.current?.id, accountMutationEpochRef.current) });
+      if (rows == null) return null;
       const mine = rows.map((row) => ({ ...row, userId: accountId }));
-      setNotifications((all) => [
-        ...mine,
-        ...all.filter((notification) => notification.userId !== accountId || notification.type === "welcome"),
-      ]);
+      setNotifications((all) => accountMutationIsCurrent(readScope, sessionRef.current?.id, accountMutationEpochRef.current)
+        ? mergeNotificationHistory(all, mine, { accountId, capturedRows }) : all);
       return mine;
     } catch (error) {
       // architecture: allow-ambiguous-result -- this optional activity read preserves the current account snapshot on stale, abort, or offline failure
@@ -4083,32 +4081,39 @@ export function StoreProvider({ children }) {
       return false;
     }
   };
-  const markNotificationsRead = async ({ signal } = {}) => {
+  const markNotificationsRead = async ({ signal, rows = notifications } = {}) => {
     const actor = sessionRef.current;
     const context = "Marking activity as read";
     if (!actor) return localCommandError("PIT-AUTH-001", context);
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     // Only rows present when this command began are eligible for the confirmed
     // local projection. A notification arriving concurrently must stay unread.
-    const notificationIds = notifications
-      .filter((notification) => notification.userId === actor.id && !notification.read)
+    const notificationIds = rows
+      .filter((notification) => notification.userId === actor.id && !notification.read && notification.type !== "welcome")
       .map((notification) => notification.id);
     try {
-      const response = await api("/api/me/notifications/read", {
-        method: "POST",
-        context,
-        silent: true,
-        signal,
-      });
-      if (response?.ok !== true) return localCommandError("PIT-API-001", context);
-      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
+      const confirmed = [];
+      for (let offset = 0; offset < notificationIds.length; offset += 100) {
+        const batch = notificationIds.slice(offset, offset + 100);
+        const response = await acknowledgeNotificationBatch(batch, { context, signal, expectedAccountId: actor.id });
+        if (signal?.aborted || !accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
+          return localCommandError("PIT-AUTH-004", context);
+        }
+        const ids = confirmedNotificationIds(response, batch);
+        confirmed.push(...ids);
+        setNotifications((current) => reconcileConfirmedNotificationReads(current, {
+          accountId: actor.id, notificationIds: ids,
+        }));
+      }
+      if (signal?.aborted || !accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
         return localCommandError("PIT-AUTH-004", context);
       }
+      // Welcome is a device-local row with no server record to acknowledge.
+      const welcomeIds = rows.filter((row) => row.userId === actor.id && row.type === "welcome").map((row) => row.id);
       setNotifications((current) => reconcileConfirmedNotificationReads(current, {
-        accountId: actor.id,
-        notificationIds,
+        accountId: actor.id, notificationIds: welcomeIds,
       }));
-      return commandSuccess({ accountId: actor.id, notificationIds });
+      return commandSuccess({ accountId: actor.id, notificationIds: confirmed });
     } catch (error) {
       if (isLoadCancellation(error, signal)) throw error;
       return commandError(error, context);

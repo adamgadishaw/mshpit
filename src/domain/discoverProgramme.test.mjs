@@ -30,7 +30,7 @@ test("Discover restores its in-app destination while explicit directory links ke
   assert.match(app, /rememberedProgramme=\{rememberedDiscoverProgramme\}/);
   assert.match(app, /onProgrammeChange=\{\(programme\) => setDiscoverDestination/);
   assert.match(app, /discoverDestination\.accountId === \(session\?\.id \|\| null\)/);
-  assert.match(app, /<DiscoverScreen key=\{session\?\.id \|\| "guest"\}/);
+  assert.ok(app.includes('<DiscoverScreen key={`${session?.id || "guest"}:${discoverDestination.requestId || 0}`}'));
 });
 
 test("a departed render cannot overwrite the URL just restored by browser Back", () => {

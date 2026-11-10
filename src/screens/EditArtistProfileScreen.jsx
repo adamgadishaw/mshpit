@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform } from "react-native";
+import { ActivityIndicator, View, Text, StyleSheet, TextInput, Pressable, Image, Platform } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";

@@ -11,6 +11,8 @@ import { colors, font, mono, radius, themeIsDark } from "./src/theme";
 import { StoreProvider, useStore, isMod, isStaff } from "./src/store";
 import { NewsInteractionContext } from "./src/components/news/NewsInteractionContext";
 import { PostNavigationContext } from "./src/components/PostNavigationContext";
+import { PageReturnProvider } from "./src/components/PageReturnContext";
+import { createPageReturnController } from "./src/domain/pageReturn.mjs";
 import { newsFeedSurfaceVisible } from "./src/domain/newsReaderState.mjs";
 import Icon from "./src/components/Icon";
 import NativeGestureRoot from "./src/components/NativeGestureRoot";
@@ -101,7 +103,7 @@ import { lazyWithRetry } from "./src/lib/lazyWithRetry";
 import { recordFeedImpressionForSession } from "./src/features/feedImpressions/feedImpressionService";
 import useFeedImpressionSession from "./src/features/feedImpressions/useFeedImpressionSession";
 import { artistPath, eventPath, parsePublicCollectionPath } from "./src/domain/urls.mjs";
-import { cityIdentityForLocation } from "./src/cityIdentity.js";
+import { cityIdentityForLocation, findShowFrame } from "./src/cityIdentity.js";
 import { CityNavigationContext } from "./src/components/cities/CityNavigationContext";
 import { shouldRestorePersistedStack, MAIN_TAB_PATHS, mainTabForPath, serverDocumentNavigationPath } from "./src/domain/browserNavigation.mjs";
 import { createBrowserHistory, publicPresentationHintFromHistory } from "./src/domain/browserHistory.mjs";
@@ -603,6 +605,8 @@ function Root() {
     readPersisted: load,
   }));
   const navigationRef = useRef({ stack, tab, landing, accountId: session?.id || null });
+  const pageReturnRef = useRef(null);
+  if (!pageReturnRef.current) pageReturnRef.current = createPageReturnController();
   navigationRef.current = { stack, tab, landing, accountId: session?.id || null };
   const browserHistoryRef = useRef(null);
   const browserEntryPresentationRef = useRef(web ? publicPresentationHintFromHistory(window.history.state, window.location.pathname) : null);
@@ -869,6 +873,11 @@ function Root() {
   const clear = () => runAfterComposerClose(commitClear);
   const switchTab = (key) => runAfterComposerClose(() => {
     if (!session && memberTabRequiresAccount(key)) { openSignIn(); return; }
+    const current = navigationRef.current;
+    if (current.tab === key && current.stack.length === 1 && !current.landing) {
+      pageReturnRef.current.request(`${session?.id || "guest"}|tab:${key}`);
+      return;
+    }
     // Discover is a secondary, comparatively rich surface. Keep it out of the
     // first-load bundle, but start its guarded chunk request in the same user
     // gesture that selects the tab so the suspense state is as short as the
@@ -1309,6 +1318,9 @@ function Root() {
     track("view_artist_tour");
     go({ artistTour: { name, artistKey: artistKey || null, tourKey: tour.key, tourName: tour.name || "Live tour" } });
   };
+  const openFindShow = () => {
+    go(findShowFrame(session?.home));
+  };
   const openCity = (value) => {
     const identity = cityIdentityForLocation(value);
     if (identity) go({ cityGuide: identity });
@@ -1454,7 +1466,7 @@ function Root() {
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
   else if (nav.auth) overlay = <AuthScreen navigationAbortRef={authNavigationAbortRef} initialMode={nav.authMode} onModeChange={(mode) => { const frame = updatedAuthFrame(stackRef.current[stackRef.current.length - 1], mode); if (frame) commitReplace(frame); }} onDone={finishAuthentication} onCancel={back} onOpenCity={(city) => replace({ cityGuide: city })} />;
   else if (nav.signupSetup && session) overlay = <SignupOnboardingScreen key={session.id} session={session} onComplete={(options) => finishSignupOnboarding(options)} onClose={back} closeGuardRef={composerCloseGuardRef} />;
-  else if (nav.welcomeGuide && session) overlay = <WelcomeScreen onClose={back} onOpenFanClubs={() => replace({ fanClubs: true })} onOpenNearby={() => replace({ nearby: true, nearbyTab: "shows" })} onOpenArtists={() => replace({ pickArtists: true })} onReview={() => requireVerifiedMutation("review", () => replace({ logging: true }))} />;
+  else if (nav.welcomeGuide && session) overlay = <WelcomeScreen onClose={back} onOpenFanClubs={() => replace({ fanClubs: true })} onOpenNearby={() => replace(findShowFrame(session?.home))} onOpenArtists={() => replace({ pickArtists: true })} onReview={() => requireVerifiedMutation("review", () => replace({ logging: true }))} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} onRequireVerification={() => setVerificationPrompt("artistPicks")} />;
   else if (nav.editingPost) overlay = <LogScreen user={session} editing={nav.editingPost} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onEditLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "status"} legacyArtistProfile={nav.legacyArtistProfile === true} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onAddLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
@@ -1478,7 +1490,7 @@ function Root() {
   else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenArtist={openArtist} onOpenPost={openPost} onOpenNewsStory={openNewsStory} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onShareMemory={(name, artistKey, options = {}) => requireVerifiedMutation("post", () => go({ logging: true, postMode: "memory", legacyArtistProfile: options.legacyProfile === true, prefill: { artist: name, artistKey } }))} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} venueIdentity={nav.venue || null} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.nearby) overlay = <NearbyScreen key={session?.id || "guest"} onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenEvent={openShow} initialTab={nav.nearbyTab} initialSelection={nearbySelectionRef.current?.accountId === (session?.id || null) ? nearbySelectionRef.current.value : null} onSelectionChange={value => { nearbySelectionRef.current = { accountId: session?.id || null, value }; }} />;
-  else if (nav.cityGuide) overlay = <CityScreen city={nav.cityGuide} accountId={session?.id || null} onClose={back} onOpenCity={openCity} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenShow={openShow} onOpenPhotos={openPhotos} />;
+  else if (nav.cityGuide) overlay = <CityScreen city={nav.cityGuide} onChooseCity={() => { setDiscoverDestination({ accountId: session?.id || null, programme: "cities", requestId: Date.now() }); switchTab("discover"); }} accountId={session?.id || null} onClose={back} onOpenCity={openCity} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenShow={openShow} onOpenPhotos={openPhotos} />;
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
   else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
@@ -1540,6 +1552,15 @@ function Root() {
   // only changes when a different page shows, so a page never re-animates
   // while it updates in place.
   const screenKey = screenTransitionKey(overlay ? nav : null, activeTab);
+  const tabReturnScope = `${session?.id || "guest"}|tab:${activeTab}`;
+  const pageReturnScope = overlay ? `${session?.id || "guest"}|${screenKey}|${JSON.stringify(nav)}` : tabReturnScope;
+  // Only committed navigation owns gestures. A suspended or abandoned render
+  // must leave the currently displayed page's title/tab handler active.
+  useLayoutEffect(() => {
+    pageReturnRef.current.setBeforeRequest(cancelPublicRoute);
+    pageReturnRef.current.activate(pageReturnScope);
+  }, [pageReturnScope, cancelPublicRoute]);
+  const pageOverlay = overlay ? <PageReturnProvider controller={pageReturnRef.current} scope={pageReturnScope}>{overlay}</PageReturnProvider> : null;
   if (screenMotionRef.current.key !== screenKey) {
     screenMotionRef.current = {
       key: screenKey,
@@ -1595,6 +1616,7 @@ function Root() {
   const retainNativeFeed = retainNativeFeedForMedia({ platform: Platform.OS, wide, accountId: session?.id, tab: activeTab, frames: stack, hasOverlay: !!overlay });
 
   const tabScreens = (
+            <PageReturnProvider controller={pageReturnRef.current} scope={tabReturnScope}>
             <View style={styles.screen}>
               {activeTab === "feed" && !!session && (
                 <FeedScreen
@@ -1628,7 +1650,7 @@ function Root() {
                   onOpenCountdown={openShow}
                   onViewAllCountdown={() => go({ calendar: true })}
                   onLogShow={() => requireVerifiedMutation("review", () => go({ logging: true, postMode: "show" }))}
-                  onOpenDiscover={() => switchTab("discover")}
+                  onOpenDiscover={openFindShow}
                   onOpenInbox={openInbox}
                   onOpenNotifications={openNotifications}
                   onOpen={openShow}
@@ -1670,7 +1692,7 @@ function Root() {
                 />
               )}
               {activeTab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
+              {activeTab === "discover" && <DiscoverScreen key={`${session?.id || "guest"}:${discoverDestination.requestId || 0}`} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
               {activeTab === "you" && !!session && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}
@@ -1691,6 +1713,7 @@ function Root() {
                 />
               )}
             </View>
+            </PageReturnProvider>
   );
 
   const mobileTabBar = (
@@ -1751,11 +1774,11 @@ function Root() {
             onOpenEvent={openShow}
           />
           <Suspense fallback={<ScreenLoading />}>
-            <ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay || tabScreens}</ScreenTransition>
+            <ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{pageOverlay || tabScreens}</ScreenTransition>
           </Suspense>
           {!wide && !overlay ? mobileTabBar : null}
         </View>
-        {wide && showRightRail && <Suspense fallback={null}><RightRail showSponsorPlaceholder={showSponsorPlaceholders} showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} /></Suspense>}
+        {wide && showRightRail && <Suspense fallback={null}><RightRail showSponsorPlaceholder={showSponsorPlaceholders} showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={openFindShow} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} /></Suspense>}
       </View>
     </View>
   );
@@ -1784,7 +1807,7 @@ function Root() {
     if (result?.ok && expectedAccountId === sessionRef.current?.id && !signal?.aborted) {
       if (destination === "artistPage") commitReplace({ reqArtist: true });
       else if (openArtistPicker || destination === "artists") commitReplace({ pickArtists: true });
-      else if (destination === "shows") commitReplace({ nearby: true, nearbyTab: "shows" });
+      else if (destination === "shows") commitReplace(findShowFrame(sessionRef.current?.home));
       else if (destination === "review") {
         if (!requireVerifiedMutation("review", () => { commitReplace({ logging: true, postMode: "show" }); return true; })) finishComposerBack();
       } else finishComposerBack();
@@ -1901,9 +1924,9 @@ function Root() {
                   {retainNativeFeed ? <NativeFeedMediaLayer key={session.id} obscured={!!overlay}
                     header={<NativeAppHeader onHome={() => switchTab("discover")} loggedIn onAccount={() => openProfileManagement()} />}
                     tabBar={mobileTabBar}
-                    media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense>}>
+                    media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{pageOverlay}</ScreenTransition></Suspense>}>
                     <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey="main:feed">{tabScreens}</ScreenTransition></Suspense>
-                  </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense> : (
+                  </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{pageOverlay}</ScreenTransition></Suspense> : (
                     <>
                       <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{tabScreens}</ScreenTransition></Suspense>
                       {mobileTabBar}
