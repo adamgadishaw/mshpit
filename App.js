@@ -153,6 +153,7 @@ const { createIOSArtistReturnStore } = Platform.OS === "ios" ? require("./src/do
 const { createBrowseReturnStore } = Platform.OS === "ios" ? require("./src/domain/iosBrowseReturn.mjs") : {};
 import { createCommentDraftOwner } from "./src/domain/commentDraftOwner";
 import { createIOSMessageDrafts } from "./src/domain/messageDraftOwner";
+const { createCalendarBrowseMemory } = Platform.OS === "ios" ? require("./src/domain/calendarBrowseMemory.mjs") : {};
 import { createLinkedNavigationOwner } from "./src/domain/linkedNavigationOwner";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
@@ -328,6 +329,11 @@ function Root() {
       onAvailable: () => { if (messageDraftsMountedRef.current) refreshDraftCapacity(value => value + 1); },
     });
     commentDraftsRef.current.account(session?.id || null, chatAuthEpoch);
+  }
+  const calendarBrowseMemoryRef = useRef(null);
+  if (Platform.OS === "ios") {
+    if (!calendarBrowseMemoryRef.current) calendarBrowseMemoryRef.current = createCalendarBrowseMemory();
+    calendarBrowseMemoryRef.current.account(session?.id || null, chatAuthEpoch);
   }
   const linkedNavigationRef = useRef(null);
   if (Platform.OS === "ios" && !linkedNavigationRef.current) linkedNavigationRef.current = createLinkedNavigationOwner();
@@ -1643,7 +1649,7 @@ function Root() {
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (MUSIC_PLAYER_ENABLED && nav.listeningHistory) overlay = <ListeningHistoryScreen onClose={back} onPlay={musicPlayerAction} />;
   else if (nav.notifications) overlay = <NotificationsScreen isCurrentIOSRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} onOpenPlans={ENABLE_CREW ? () => go({ crew: { tab: "plans" } }) : undefined} onOpenArtist={openArtist} />;
-  else if (nav.calendar) overlay = <CalendarScreen initialDate={nav.calendarDate} initialView={nav.calendarView} onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
+  else if (nav.calendar) overlay = <CalendarScreen initialDate={nav.calendarDate} initialView={nav.calendarView} onClose={back} onOpen={openShow} onOpenArtist={openArtist} browseMemory={Platform.OS === "ios" ? calendarBrowseMemoryRef.current : undefined} browseOccurrence={Platform.OS === "ios" ? nav : undefined} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} initialSection={nav.profileSection} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onEditProfileDetails={openProfileDetails} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} onRequireAuth={openSignIn} />;
   else if (nav.fanClub) overlay = <FanClubScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.fanClub]) : undefined} draftOwner={Platform.OS === "ios" ? communityDraftsRef.current : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} onRequireAuth={openSignIn} />;
