@@ -5,6 +5,7 @@ import vm from "node:vm";
 import test from "node:test";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import { chatDeliveryPresentation } from "../domain/chatDeliveryPresentation.mjs";
 import useIOSCommunityComposer from "../hooks/useIOSCommunityComposer.js";
 
 const require = createRequire(import.meta.url);
@@ -53,6 +54,7 @@ function screenFixture(name, session = null, { loungeStatus = "open", provideAut
     "../hooks/useIOSCommunityComposer": useIOSCommunityComposer,
     "../domain/screenScope.mjs": { accountTargetScope, scopedScreenValue },
     "../domain/scopedRefresh.mjs": { refreshScope },
+    "../domain/chatDeliveryPresentation.mjs": { chatDeliveryPresentation },
     "../domain/showSocial.mjs": { normalizeLoungeMeta: (value) => value },
     "../config/runtime.mjs": { ENABLE_CREW: false },
     "../domain/postAuthor.mjs": { resolvePostAuthor: (value) => value },

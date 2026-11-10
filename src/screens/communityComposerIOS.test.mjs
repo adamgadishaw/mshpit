@@ -95,7 +95,7 @@ function fixture({ kind = "fan", platform = "ios", strict = false, capacity = 32
   const navigationRef = { current: { stack: [] } }, suspension = new Promise(() => {});
   const native = { Platform: { OS: platform }, StyleSheet: { create: value => value },
     ...Object.fromEntries(["View", "Text", "TextInput", "Pressable", "ScrollView", "KeyboardAvoidingView"].map(name => [name, name])) };
-  const commitChatOutbox = update => { chatOutboxRef.current = update(chatOutboxRef.current); };
+  const commitChatOutbox = update => (chatOutboxRef.current = update(chatOutboxRef.current));
   const api = (path, options) => {
     const request = { path, options, ...deferred() };
     if (path.endsWith("/meta")) {
@@ -105,7 +105,7 @@ function fixture({ kind = "fan", platform = "ios", strict = false, capacity = 32
     return request.promise;
   };
   const deliverChatMessage = storeFunction("deliverChatMessage", { ...delivery, chatOutboxRef, sessionRef, chatAuthEpochRef, commitChatOutbox, api,
-    commitConfirmedChatMessage: (item, id) => { confirmed.push({ ...item, id, pending: false, failed: false }); } });
+    commitConfirmedChatMessage: (item, acknowledgement) => { confirmed.push({ ...item, ...delivery.confirmedChatMessage(item, acknowledgement) }); } });
   const queueChatMessage = storeFunction("queueChatMessage", { ...delivery, commitChatOutbox, deliverChatMessage });
   const dependencies = { ...delivery, clean, LIMITS, currentMutationActor: () => sessionRef.current,
     fcKey: value => String(value).trim().toLowerCase(), chatAuthEpochRef,
@@ -114,7 +114,7 @@ function fixture({ kind = "fan", platform = "ios", strict = false, capacity = 32
   const addFanClubMessage = storeFunction("addFanClubMessage", dependencies);
   const addLoungeMessage = storeFunction("addLoungeMessage", dependencies);
   const retryStore = storeFunction("retryChatMessage", { deliverChatMessage });
-  const cancelStore = storeFunction("cancelChatMessage", { ...delivery, chatOutboxRef, sessionRef, commitChatOutbox });
+  const cancelStore = storeFunction("cancelChatMessage", { ...delivery, chatOutboxRef, sessionRef, chatAuthEpochRef, commitChatOutbox });
   const messages = () => [{ id: "other", userId: "other", name: "Other", text: "Fixture message", ts: "now" },
     ...confirmed.filter(item => item.ownerId === sessionRef.current?.id && item.kind === kind && item.channelKey === canonical),
     ...delivery.chatOutboxFor(chatOutboxRef.current, { ownerId: sessionRef.current?.id, kind, channelKey: canonical })];
@@ -178,7 +178,7 @@ function fixture({ kind = "fan", platform = "ios", strict = false, capacity = 32
     get send() { return f.find(n => n.type === "Pressable" && n.props.accessibilityLabel?.startsWith("Send message")); },
     get metadataRetry() { return f.find(n => n.type === "Pressable" && n.props.accessibilityLabel === "Retry Lounge status"); },
     get retry() { return f.find(n => n.type === "Pressable" && n.props.accessibilityLabel?.startsWith("Retry ")); },
-    get cancel() { return f.find(n => n.type === "Pressable" && n.props.accessibilityLabel?.startsWith("Cancel failed")); },
+    get cancel() { return f.find(n => n.type === "Pressable" && /^(Cancel failed|Remove pending)/.test(n.props.accessibilityLabel || "")); },
     get avatar() { return f.find(n => n.type === "Avatar"); },
     get entry() { return f.find(n => n.type === "Pressable" && nodes(n).some(c => typeof c.props?.children === "string" && c.props.children.includes("Enter this show's"))); },
     get leave() { return f.find(n => n.type === "ScreenHeader").props.right.props.onPress; },
@@ -223,7 +223,15 @@ function fixture({ kind = "fan", platform = "ios", strict = false, capacity = 32
       assert.fail("Explicit Lounge entry did not adopt fresh current metadata");
     },
     async complete(index = requests.length - 1, result = { id: "confirmed" }) { requests[index].resolve(result); await f.settle(); },
-    async fail(index = requests.length - 1) { requests[index].reject(new Error("Unknown transport outcome")); await f.settle(); },
+    async fail(index = requests.length - 1, error = new Error("Unknown transport outcome")) { requests[index].reject(error); await f.settle(); },
+    fillOutbox() {
+      chatOutboxRef.current = Array.from({ length: delivery.CHAT_OUTBOX_LIMIT }, (_, index) => ({
+        id: `fixture_pending_${index}`, ownerId: sessionRef.current.id, authEpoch: chatAuthEpochRef.current,
+        userId: sessionRef.current.id, kind, channelKey: canonical, text: `Pending ${index}`,
+        status: "sending", pending: true, failed: false,
+      }));
+      f.render();
+    },
     async closed() { const promise = latestPolling.read({ signal: new AbortController().signal }); reads.at(-1).resolve({ closed: true }); await promise; await f.settle(); },
     setMetaStatus(status) { metaStatus = status; },
     fireCutoff() {
@@ -237,6 +245,42 @@ function fixture({ kind = "fan", platform = "ios", strict = false, capacity = 32
 }
 
 for (const kind of ["fan", "lounge"]) {
+  for (const platform of ["ios", "android", "web"]) test(`${platform} ${kind}: full outbox shows capacity feedback while preserving every pending message and the draft`, async () => {
+    const f = fixture({ kind, platform }); await f.ready(); f.fillOutbox();
+    const before = f.outbox;
+    f.edit("Keep this draft"); f.submit(); await f.settle();
+    assert.equal(f.requests.length, 0); assert.equal(f.outbox, before);
+    assert.equal(f.input.props.value, "Keep this draft");
+    assert.equal(f.send.props.accessibilityState.busy, false);
+    assert.ok(f.all().some(n => n.type === "Text" && n.props.accessibilityRole === "alert"
+      && n.props.children.startsWith("Too many messages are waiting.")));
+    f.close();
+  });
+  test(`${kind}: late capacity feedback cannot appear on a different route`, async () => {
+    const f = fixture({ kind }); await f.ready(); f.fillOutbox(); f.edit("Old room draft");
+    f.submit(); f.target("canonical-two"); await f.ready();
+    assert.equal(f.input.props.value, ""); assert.equal(f.requests.length, 0);
+    assert.equal(f.all().some(n => typeof n.props?.children === "string" && n.props.children.startsWith("Too many messages")), false);
+    f.close();
+  });
+  test(`${kind}: uncertain delivery is explained and local dismissal does not claim to unsend`, async () => {
+    const f = fixture({ kind }); await f.ready(); f.edit("Uncertain message"); f.submit(); await f.fail();
+    assert.ok(f.all().some(n => n.type === "Text" && n.props.children === "Not confirmed"));
+    assert.ok(f.all().some(n => n.type === "Text" && typeof n.props.children === "string" && n.props.children.startsWith("Delivery unconfirmed.")));
+    assert.equal(f.cancel.props.accessibilityLabel, "Remove pending message");
+    assert.match(f.cancel.props.accessibilityHint, /does not delete a message that already arrived/);
+    assert.ok(nodes(f.cancel).some(n => n.props?.children === "dismiss"));
+    assert.ok(f.retry); f.close();
+  });
+  test(`${kind}: permanent rejection has no retry control and retains the draft`, async () => {
+    const f = fixture({ kind }); await f.ready(); f.edit("Rejected message"); f.submit();
+    await f.fail(0, { status: 403, retryable: true });
+    assert.equal(f.input.props.value, "Rejected message");
+    assert.ok(f.all().some(n => n.type === "Text" && n.props.children === "Couldn’t send"));
+    assert.equal(f.all().some(n => n.type === "Pressable" && /^Retry (fan-club|lounge) message$/.test(n.props.accessibilityLabel || "")), false);
+    assert.equal(f.cancel.props.accessibilityLabel, "Cancel failed message");
+    f.close();
+  });
   test(`${kind}: Avatar/Profile/Back retains draft; Lounge requires fresh explicit confirmed entry`, async () => {
     const f = fixture({ kind }); await f.ready(); f.edit("Unsent community draft");
     f.act(() => f.avatar.props.onPress()); f.return(); await f.settle();

@@ -12,6 +12,7 @@ import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 import { api } from "../lib/api";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
+import { chatDeliveryPresentation } from "../domain/chatDeliveryPresentation.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 import useScopedRefresh from "../hooks/useScopedRefresh";
@@ -23,7 +24,7 @@ import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
 
 import useIOSCommunityComposer from "../hooks/useIOSCommunityComposer";
 
-const EMPTY_FAN_ACTIONS = Object.freeze({ text: "", joining: false, sending: false });
+const EMPTY_FAN_ACTIONS = Object.freeze({ sendFeedback: "", text: "", joining: false, sending: false });
 
 // The artist Fan Club - a permanent chat for fans, even with no show coming up.
 export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenProfileByHandle, onReport, onRequireAuth, draftOwner, isCurrentRoute }) {
@@ -125,17 +126,27 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
   };
 
   const send = async () => {
-    if (iosComposer) return iosComposer.send(draft => addFanClubMessage(fanClubTarget, draft));
+    if (iosComposer) {
+      const requestScope = actionScope;
+      return iosComposer.send(async draft => {
+        updateActions({ sendFeedback: "" });
+        const result = await addFanClubMessage(fanClubTarget, draft);
+        if (actionScopeRef.current === requestScope && iosComposer.current()) {
+          updateActions({ sendFeedback: result?.queueFull ? result.deliveryMessage : "" });
+        }
+        return result;
+      });
+    }
     const submitted = text;
     const draft = submitted.trim();
     if (!fanClubAllowed || !draft || sending) return;
     const requestScope = actionScope;
-    updateActions({ sending: true });
+    updateActions({ sending: true, sendFeedback: "" });
     const result = await addFanClubMessage(fanClubTarget, draft);
     if (actionScopeRef.current !== requestScope) return;
     setActionState((current) => {
       const value = scopedScreenValue(current, requestScope, EMPTY_FAN_ACTIONS);
-      return { scope: requestScope, value: { ...value, text: result?.ok && value.text === submitted ? "" : value.text, sending: false } };
+      return { scope: requestScope, value: { ...value, text: result?.ok && value.text === submitted ? "" : value.text, sending: false, sendFeedback: result?.queueFull ? result.deliveryMessage : "" } };
     });
   };
   const retry = async (message) => {
@@ -205,6 +216,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
         {messages.length === 0 && <Text style={styles.empty}>Be the first to post.</Text>}
         {messages.map((m) => {
           const mine = m.userId === session?.id;
+          const failure = mine ? chatDeliveryPresentation(m) : null;
           const u = resolvePostAuthor({ userId: m.userId, cached: userById(m.userId), embedded: m });
           return (
             <View key={m.id} style={[styles.msgRow, mine && styles.msgRowMine]}>
@@ -215,14 +227,14 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
                 <View style={styles.msgFoot}>
                   <Text style={[styles.msgTs, mine && { color: "rgba(26,18,6,0.6)" }]}>{m.ts}</Text>
                   {mine && m.pending ? <Text style={styles.deliveryMine} accessibilityLiveRegion="polite">sending…</Text> : null}
-                  {mine && m.failed ? (
+                  {failure ? (
                     <View style={styles.deliveryActions}>
-                      <Text style={styles.deliveryFailed} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel="Fan-club message not sent">not sent</Text>
-                      <Pressable onPress={() => retry(m)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry fan-club message">
+                      <Text style={styles.deliveryFailed} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel={failure.label}>{failure.label}</Text>
+                      {failure.retryable ? <Pressable onPress={() => retry(m)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry fan-club message">
                         <Text style={styles.deliveryAction}>retry</Text>
-                      </Pressable>
-                      <Pressable onPress={() => iosComposer ? iosComposer.cancel(m, cancelChatMessage) : cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel failed fan-club message">
-                        <Text style={styles.deliveryAction}>cancel</Text>
+                      </Pressable> : null}
+                      <Pressable onPress={() => iosComposer ? iosComposer.cancel(m, cancelChatMessage) : cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel={failure.dismissLabel} accessibilityHint={failure.dismissHint}>
+                        <Text style={styles.deliveryAction}>{failure.dismissText}</Text>
                       </Pressable>
                     </View>
                   ) : null}
@@ -245,12 +257,14 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
                     </Pressable>
                   ) : null}
                 </View>
+                {failure?.detail ? <Text style={styles.deliveryDetail}>{failure.detail}</Text> : null}
               </View>
             </View>
           );
         })}
       </ScrollView>
       </VinylRefreshBoundary>
+      {localActions.sendFeedback ? <Text style={styles.composerFeedback} accessibilityRole="alert" accessibilityLiveRegion="polite">{localActions.sendFeedback}</Text> : null}
       {session && (
         <View style={styles.inputBar}>
           <TextInput style={styles.input} editable={iosComposer ? iosComposer.canCompose : undefined} placeholder={unavailable ? "Wait for another message to finish sending" : `Message the ${displayArtistName} fan club…`} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => iosComposer ? iosComposer.edit(value) : updateActions({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
@@ -287,11 +301,13 @@ const styles = StyleSheet.create({
   bubbleFailed: { borderColor: colors.magenta, borderWidth: 1.5 },
   msgName: { color: colors.amber, fontSize: 11, fontWeight: "800", marginBottom: 2 },
   msgText: { color: colors.text, fontSize: 14, lineHeight: 19 },
-  msgFoot: { minHeight: 24, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 3 },
+  msgFoot: { flexWrap: "wrap", minHeight: 24, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 3 },
   msgTs: { color: colors.textFaint, fontSize: 10, fontFamily: mono },
   deliveryMine: { color: "rgba(26,18,6,0.65)", fontSize: 10, fontFamily: mono },
-  deliveryActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  deliveryActions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
   deliveryFailed: { color: "#7B1836", fontSize: 10, fontFamily: mono, fontWeight: "800" },
+  deliveryDetail: { color: "#7B1836", fontSize: 12, lineHeight: 17, marginTop: 5 },
+  composerFeedback: { color: colors.magenta, fontSize: 13, lineHeight: 18, paddingHorizontal: 16, paddingVertical: 8 },
   deliveryAction: { color: "#1A1206", fontSize: 11, fontWeight: "900", textDecorationLine: "underline" },
   reportBtn: { minWidth: 28, minHeight: 28, alignItems: "center", justifyContent: "center", marginVertical: -4, marginRight: -5 },
   inputBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 8, paddingBottom: Platform.OS === "ios" ? 24 : 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, backgroundColor: colors.bgElev },

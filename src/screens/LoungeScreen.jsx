@@ -10,6 +10,7 @@ import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 import { api } from "../lib/api";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
+import { chatDeliveryPresentation } from "../domain/chatDeliveryPresentation.mjs";
 import { normalizeLoungeMeta } from "../domain/showSocial.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
@@ -20,7 +21,7 @@ import LoungePlans from "../components/crew/LoungePlans";
 
 import useIOSCommunityComposer from "../hooks/useIOSCommunityComposer";
 
-const EMPTY_LOUNGE_ACTIONS = Object.freeze({ enteredRoom: null, entering: false, sending: false, text: "" });
+const EMPTY_LOUNGE_ACTIONS = Object.freeze({ sendFeedback: "", enteredRoom: null, entering: false, sending: false, text: "" });
 
 // One persistent Lounge belongs to this exact show before, during, and after.
 // Gated: you have to tap in, so conversation reads and polling stay off until
@@ -191,17 +192,27 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   }
 
   const send = async () => {
-    if (iosComposer) return iosComposer.send(draft => addLoungeMessage(key, draft));
+    if (iosComposer) {
+      const requestScope = actionScope;
+      return iosComposer.send(async draft => {
+        updateActions({ sendFeedback: "" });
+        const result = await addLoungeMessage(key, draft);
+        if (actionScopeRef.current === requestScope && iosComposer.current()) {
+          updateActions({ sendFeedback: result?.queueFull ? result.deliveryMessage : "" });
+        }
+        return result;
+      });
+    }
     const submitted = text;
     const draft = submitted.trim();
     if (!draft || sending) return;
     const requestScope = actionScope;
-    updateActions({ sending: true });
+    updateActions({ sending: true, sendFeedback: "" });
     const result = await addLoungeMessage(key, draft);
     if (actionScopeRef.current !== requestScope) return;
     setActionState((current) => {
       const value = scopedScreenValue(current, requestScope, EMPTY_LOUNGE_ACTIONS);
-      return { scope: requestScope, value: { ...value, text: result?.ok && value.text === submitted ? "" : value.text, sending: false } };
+      return { scope: requestScope, value: { ...value, text: result?.ok && value.text === submitted ? "" : value.text, sending: false, sendFeedback: result?.queueFull ? result.deliveryMessage : "" } };
     });
   };
   const retry = async (message) => {
@@ -274,6 +285,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
         {messages.length === 0 && <Text style={styles.empty}>No messages yet - say hi.</Text>}
         {messages.map((m) => {
           const mine = m.userId === session?.id;
+          const failure = mine ? chatDeliveryPresentation(m) : null;
           const u = resolvePostAuthor({ userId: m.userId, cached: userById(m.userId), embedded: m });
           return (
             <View key={m.id} style={[styles.msgRow, mine && styles.msgRowMine]}>
@@ -284,14 +296,14 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
                 <View style={styles.msgFoot}>
                   <Text style={[styles.msgTs, mine && { color: "rgba(26,18,6,0.6)" }]}>{m.ts}</Text>
                   {mine && m.pending ? <Text style={styles.deliveryMine} accessibilityLiveRegion="polite">sending…</Text> : null}
-                  {mine && m.failed ? (
+                  {failure ? (
                     <View style={styles.deliveryActions}>
-                      <Text style={styles.deliveryFailed} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel="Lounge message not sent">not sent</Text>
-                      <Pressable onPress={() => retry(m)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry lounge message">
+                      <Text style={styles.deliveryFailed} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel={failure.label}>{failure.label}</Text>
+                      {failure.retryable ? <Pressable onPress={() => retry(m)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry lounge message">
                         <Text style={styles.deliveryAction}>retry</Text>
-                      </Pressable>
-                      <Pressable onPress={() => iosComposer ? iosComposer.cancel(m, cancelChatMessage) : cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel failed lounge message">
-                        <Text style={styles.deliveryAction}>cancel</Text>
+                      </Pressable> : null}
+                      <Pressable onPress={() => iosComposer ? iosComposer.cancel(m, cancelChatMessage) : cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel={failure.dismissLabel} accessibilityHint={failure.dismissHint}>
+                        <Text style={styles.deliveryAction}>{failure.dismissText}</Text>
                       </Pressable>
                     </View>
                   ) : null}
@@ -319,12 +331,14 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
                     </Pressable>
                   )}
                 </View>
+                {failure?.detail ? <Text style={styles.deliveryDetail}>{failure.detail}</Text> : null}
               </View>
             </View>
           );
         })}
       </ScrollView>
       </VinylRefreshBoundary>
+      {localActions.sendFeedback ? <Text style={styles.composerFeedback} accessibilityRole="alert" accessibilityLiveRegion="polite">{localActions.sendFeedback}</Text> : null}
 
       {session ? (
         <View style={styles.inputBar}>
@@ -373,11 +387,13 @@ const styles = StyleSheet.create({
   bubbleFailed: { borderColor: colors.magenta, borderWidth: 1.5 },
   msgName: { color: colors.amber, fontSize: 11, fontWeight: "800", marginBottom: 2 },
   msgText: { color: colors.text, fontSize: 14, lineHeight: 19 },
-  msgFoot: { flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "flex-end", marginTop: 3 },
+  msgFoot: { flexWrap: "wrap", flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "flex-end", marginTop: 3 },
   msgTs: { color: colors.textFaint, fontSize: 10, fontFamily: mono },
   deliveryMine: { color: "rgba(26,18,6,0.65)", fontSize: 10, fontFamily: mono },
-  deliveryActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  deliveryActions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
   deliveryFailed: { color: "#7B1836", fontSize: 10, fontFamily: mono, fontWeight: "800" },
+  deliveryDetail: { color: "#7B1836", fontSize: 12, lineHeight: 17, marginTop: 5 },
+  composerFeedback: { color: colors.magenta, fontSize: 13, lineHeight: 18, paddingHorizontal: 16, paddingVertical: 8 },
   deliveryAction: { color: "#1A1206", fontSize: 11, fontWeight: "900", textDecorationLine: "underline" },
   reportBtn: { minWidth: 28, minHeight: 28, alignItems: "center", justifyContent: "center", marginVertical: -4 },
   inputBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 8, paddingBottom: Platform.OS === "ios" ? 24 : 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, backgroundColor: colors.bgElev },
