@@ -136,6 +136,8 @@ import { mediaDisplayItems, sameMediaDisplayItems } from "./domain/postMediaDisp
 import { normalizeArtistCampaign } from "./domain/artistCampaignPost.mjs";
 import { normalizeTaggedPeople, taggedUserIdsFromPeople } from "./domain/postFriendTags.mjs";
 import { fetchDirectMessageSummaries, writeDirectMessageRead } from "./features/chat/services/dmReadApi.mjs";
+import { writeDMRequestAcceptance } from "./features/chat/services/dmConsentApi.mjs";
+import { applyDMRequestState, dmInboxBucket, dmRequestState, normalizeDMRequestState } from "./features/chat/directMessageConsent.mjs";
 import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.mjs";
 import { saveMemoryPostEdit } from "./features/postEditing/services/memoryPostEditApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
@@ -2666,7 +2668,7 @@ export function StoreProvider({ children }) {
               server: true,
               relationshipContext,
             }));
-            n[key] = mergeChatMessages(n[key] || [], incoming, removedIds, 750);
+            n[key] = applyDMRequestState(mergeChatMessages(n[key] || [], incoming, removedIds, 750), su.id, t.requestState);
           });
           return n;
         });
@@ -6435,7 +6437,7 @@ export function StoreProvider({ children }) {
               server: true,
               relationshipContext,
             }));
-            next[key] = mergeChatMessages(next[key] || [], incoming, removedIds, 750);
+            next[key] = applyDMRequestState(mergeChatMessages(next[key] || [], incoming, removedIds, 750), accountId, thread.requestState);
           }
           return next;
         });
@@ -6483,7 +6485,7 @@ export function StoreProvider({ children }) {
       silent: true,
       context: "Refreshing direct messages",
     })
-      .then(({ messages, removedIds = [], syncCursor, hasMore, relationshipContext }) => {
+      .then(({ messages, removedIds = [], syncCursor, hasMore, relationshipContext, requestState }) => {
         if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) {
           return { syncCursor: after || null, hasMore: false, stale: true };
         }
@@ -6505,7 +6507,7 @@ export function StoreProvider({ children }) {
             server: true,
             ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
           }));
-          const live = mergeChatMessages(existing, incoming, removedIds, 750);
+          const live = applyDMRequestState(mergeChatMessages(existing, incoming, removedIds, 750), read.scope, requestState);
           const next = { ...d };
           if (live.length) next[key] = live;
           else delete next[key];
@@ -6514,6 +6516,7 @@ export function StoreProvider({ children }) {
         return {
           syncCursor: syncCursor || after || null,
           hasMore: !!hasMore,
+          requestState: normalizeDMRequestState(requestState),
           ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
         };
       })
@@ -6522,6 +6525,29 @@ export function StoreProvider({ children }) {
         if (strict) throw error;
         return { syncCursor: after || null, hasMore: false };
       });
+  };
+  const getDMRequestState = (otherId) => session?.id && otherId
+    ? dmRequestState(dms[dmKey(session.id, otherId)], session.id)
+    : null;
+  const acceptDMRequest = async (otherId) => {
+    const actor = currentMutationActor();
+    const context = "Accepting this message request";
+    if (!actor || !otherId) return localCommandError("PIT-AUTH-001", context);
+    if (blockedIdsRef.current.includes(otherId)) return localCommandError("PIT-AUTH-004", context);
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const key = dmKey(actor.id, otherId);
+    try {
+      const response = ENABLE_DEMO_DATA
+        ? { ok: true, requestState: "accepted" }
+        : await writeDMRequestAcceptance(otherId, { expectedAccountId: actor.id });
+      if (response?.ok !== true || response?.requestState !== "accepted") return localCommandError("PIT-API-001", context);
+      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
+        || blockedIdsRef.current.includes(otherId)) return localCommandError("PIT-AUTH-004", context);
+      setDms((current) => ({ ...current, [key]: applyDMRequestState(current[key], actor.id, response.requestState) }));
+      return commandSuccess({ accountId: actor.id, otherId, requestState: response.requestState });
+    } catch (error) {
+      return commandError(error, context);
+    }
   };
   const sendDM = (otherId, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
@@ -6609,11 +6635,9 @@ export function StoreProvider({ children }) {
           cursor: marker,
           legacyReadCount: Number.isSafeInteger(marker) ? marker : undefined,
         });
-        // A thread is a "request" until you accept it: someone you don't follow
-        // messaged you and you haven't replied yet. Following them or sending a
-        // single reply promotes it to the main inbox (Instagram-style gating).
-        const iReplied = msgs.some((m) => m.from === session.id);
-        const bucket = (isFollowing(otherId) || iReplied) ? "main" : "requests";
+        // Server acceptance survives history-window trimming and fresh devices.
+        // Queued/failed sends never count as consent to an incoming request.
+        const bucket = dmInboxBucket({ messages: msgs, accountId: session.id, following: isFollowing(otherId), demo: ENABLE_DEMO_DATA });
         const lastAt = Number(last?.at || last?.createdAt) || 0;
         return { otherId, otherUser: userById(otherId), last, lastAt, unread, count: msgs.length, bucket, relationshipContext };
       })
@@ -7288,7 +7312,7 @@ export function StoreProvider({ children }) {
     venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, artistFanPhotos, loadArtistPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
     chatAuthEpoch, retryChatMessage, cancelChatMessage,
-    threadMessages, sendDM, loadThread, loadInboxThreads, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
+    threadMessages, sendDM, loadThread, loadInboxThreads, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount, getDMRequestState, acceptDMRequest,
     track,
     myNotifications, unreadNotifications, refreshNotifications, markNotificationsRead,
   };

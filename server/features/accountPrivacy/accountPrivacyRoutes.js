@@ -199,6 +199,8 @@ export function accountPrivacyRoutes({
           .map((row) => ({ to: accountReference(row.to_id), text: row.text, removed: !!row.removed, createdAt: row.created_at })),
         messagesReceived: database.prepare("SELECT from_id,text,removed,created_at FROM dms WHERE to_id=? ORDER BY created_at DESC LIMIT 1000").all(user.id)
           .map((row) => ({ from: accountReference(row.from_id), text: row.text, removed: !!row.removed, createdAt: row.created_at })),
+        messageAcceptances: database.prepare("SELECT other_id,accepted_at,source FROM dm_acceptances WHERE user_id=? ORDER BY accepted_at DESC,other_id").all(user.id)
+          .map((row) => ({ other: accountReference(row.other_id), acceptedAt: row.accepted_at, source: row.source })),
         artistAccount: {
           ...exportArtistVerification(database, user.id),
           requests: database.prepare("SELECT id,artist_name,note,status,created_at FROM artist_requests WHERE user_id=? ORDER BY created_at DESC").all(user.id)

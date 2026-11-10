@@ -92,6 +92,7 @@ import {
 import { mediaAssetRoutes } from "./mediaAssetRoutes.js";
 import { mediaLegacyFinalizeRoutes } from "./mediaLegacyFinalizeRoutes.js";
 import { directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
+import { directMessageConsentFor, directMessageConsentProjection, directMessageConsentRoutes } from "./features/messaging/directMessageConsent.js";
 import { createMessageRelationshipContextService } from "./features/messaging/messageRelationshipContext.js";
 import { postTagRoutes } from "./postTagRoutes.js";
 import { artistReviewRoutes } from "./features/artistReviews/artistReviewRoutes.js";
@@ -4890,6 +4891,17 @@ export const routes = {
     atomicWrite,
     ApiError,
   }),
+  ...directMessageConsentRoutes({
+    database: db,
+    requireUser,
+    userById: q.userById,
+    blockedEitherWay,
+    atomicWrite,
+    limit,
+    now,
+    mayStartDirectMessage,
+    ApiError,
+  }),
   ...showAttendanceRoutes({
     database: db,
     attendanceRepository: showAttendanceRepository,
@@ -8031,6 +8043,7 @@ export const routes = {
     const u = requireUser(ctx);
     const hidden = blockedIdSet(u.id);
     const readProjection = directMessageReadProjection(db, u.id);
+    const consentProjection = directMessageConsentProjection(db, u.id);
     // Inbox refreshes need only one latest message per conversation. A windowed
     // query avoids downloading up to 500 messages for every thread every time the
     // inbox is opened or refreshed, while the full route remains for hydration.
@@ -8058,6 +8071,7 @@ export const routes = {
           messages: [{ id: message.id, from: message.from_id, text: message.text, createdAt: message.created_at }],
           relationshipContext: relationshipContexts.get(message.other_id) || null,
           ...readProjection.forOther(message.other_id),
+          ...consentProjection.forOther(message.other_id),
         } : null;
       }).filter(Boolean), removedIds: removedDmIdsFor(u.id) };
     }
@@ -8081,6 +8095,7 @@ export const routes = {
         messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })),
         relationshipContext: relationshipContexts.get(o.other) || null,
         ...readProjection.forOther(o.other),
+        ...consentProjection.forOther(o.other),
       };
     }).filter(Boolean);
     return { threads, removedIds: removedDmIdsFor(u.id) };
@@ -8090,6 +8105,7 @@ export const routes = {
     const u = requireUser(ctx);
     const other = ctx.params.otherId;
     if (blockedEitherWay(u.id, other)) throw new ApiError(403, "This conversation isn't available.", "FORBIDDEN");
+    const consent = directMessageConsentFor(db, u.id, other);
     const { cursor, limit } = pageRequest(ctx, 500, 500);
     const after = decodeCursor(ctx.query?.after);
     if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
@@ -8113,6 +8129,7 @@ export const routes = {
         syncCursor: rows.length ? encodeCursor(rows.at(-1)) : String(ctx.query.after),
         hasMore,
         removedIds: removedDmIdsFor(u.id, other),
+        ...consent,
         ...(relationshipContext !== undefined ? { relationshipContext } : {}),
       };
     }
@@ -8131,6 +8148,7 @@ export const routes = {
       syncCursor,
       hasMore: false,
       removedIds: removedDmIdsFor(u.id, other),
+      ...consent,
       ...(relationshipContext !== undefined ? { relationshipContext } : {}),
     };
   },
