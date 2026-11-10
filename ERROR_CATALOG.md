@@ -29,6 +29,7 @@ reuse a published `PIT-*` code for a different meaning.
 | `PIT-UPLOAD-007` | Upload | Deterministic video conversion/output validation failed | Contact support; no automatic retry |
 | `PIT-MEDIA-001` | Playback | Audio/video could not start | Yes |
 | `PIT-STORE-001` | Storage | Device-local persistence failed | Yes |
+| `PIT-STORE-004` | Storage | Sign-in intent could not be confirmed in device storage | Yes, check storage and sign in again |
 | `PIT-APP-001` | Application | React render failure caught by the app boundary | Yes |
 | `PIT-UNK-001` | Unknown | Unclassified client failure | Yes |
 

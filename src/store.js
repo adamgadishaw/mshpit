@@ -3013,6 +3013,7 @@ export function StoreProvider({ children }) {
           return { ok: true };
         }, signal);
       } catch (e) {
+        if (e.code === "PIT-STORE-004") return { ok: false, error: e.userMessage };
         if (e.status) return { ok: false, error: e.message }; // real server verdict
       }
       return { ok: false, error: "Couldn't connect. Check your connection and try again." };
@@ -3176,6 +3177,9 @@ export function StoreProvider({ children }) {
           return { ok: false, error: "That request did not complete. Please try again." };
         }, signal);
       } catch (e) {
+        if (e.code === "PIT-STORE-004") return e.authIntentPhase === "pending"
+          ? { ok: false, error: "Mshpit could not prepare sign-in on your device. Check available storage, then try creating your account again." }
+          : { ok: false, outcome: "uncertain", error: "Your account may already have been created, but Mshpit could not save its sign-in on this device. Check available storage, then try logging in with these details." };
         if (e.status >= 400 && e.status < 500) return { ok: false, error: e.message };
       }
       return { ok: false, outcome: "uncertain", error: "Your account may already have been created. Try logging in with these details before signing up again. Check your connection if login is unavailable." };

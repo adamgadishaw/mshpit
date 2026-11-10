@@ -263,6 +263,15 @@ export const ERROR_CATALOG = Object.freeze({
     guidance: "Check available storage, then retry.",
     retryable: true,
   }),
+  "PIT-STORE-004": Object.freeze({
+    category: "storage",
+    severity: "warning",
+    title: "Sign-in could not be saved",
+    message: "Mshpit could not save this sign-in on your device. Check available storage, then try signing in again.",
+    failurePoint: "Durable sign-in intent",
+    guidance: "Check available storage, then try signing in again.",
+    retryable: true,
+  }),
   "PIT-CHAT-003": Object.freeze({
     category: "conversation",
     severity: "info",
