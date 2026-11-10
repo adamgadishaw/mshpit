@@ -3,6 +3,10 @@ function readCursor(row) {
 }
 
 export function directMessageReadProjection(database, userId) {
+  // Acceptance depends on all retained outgoing history, not the latest preview.
+  const repliedPeers = new Set(database.prepare(
+    "SELECT DISTINCT to_id FROM dms WHERE from_id=? AND removed=0",
+  ).all(userId).map((row) => row.to_id));
   const cursors = new Map(database.prepare(
     "SELECT other_id,last_read_at,last_read_id FROM dm_reads WHERE user_id=?",
   ).all(userId).map((row) => [row.other_id, readCursor(row)]));
@@ -13,9 +17,33 @@ export function directMessageReadProjection(database, userId) {
     ) GROUP BY d.from_id`).all(userId).map((row) => [row.other_id, row.count]));
   return {
     forOther(otherId) {
-      return { readCursor: cursors.get(otherId) || null, unread: unread.get(otherId) || 0 };
+      return { readCursor: cursors.get(otherId) || null, unread: unread.get(otherId) || 0, hasReplied: repliedPeers.has(otherId) };
     },
   };
+}
+
+// Count accepted incoming messages on the server, independently of the 200-row
+// inbox summary and its one-message preview. Requests stay in their own bucket.
+export function directMessageInboxUnread(database, accountId) {
+  // Resolve acceptance/privacy and the read cursor once per sender, then count
+  // that sender's unread index range. Do not recheck relationships per message
+  // or scan an entire mostly-read history through a joined cursor predicate.
+  return database.prepare(`WITH peers AS MATERIALIZED (
+      SELECT DISTINCT from_id AS other_id FROM dms WHERE to_id=$viewer
+    ) SELECT COALESCE(SUM(CASE WHEN r.user_id IS NULL THEN (
+        SELECT COUNT(*) FROM dms d WHERE d.to_id=$viewer AND d.from_id=peers.other_id AND d.removed=0
+      ) ELSE (
+        SELECT COUNT(*) FROM dms d WHERE d.to_id=$viewer AND d.from_id=peers.other_id AND d.removed=0
+          AND (d.created_at,d.id)>(r.last_read_at,r.last_read_id)
+      ) END),0) AS count FROM peers
+    JOIN users actor ON actor.id=peers.other_id
+    LEFT JOIN dm_reads r ON r.user_id=$viewer AND r.other_id=peers.other_id
+    WHERE NOT EXISTS (SELECT 1 FROM blocks b
+      WHERE (b.blocker_id=$viewer AND b.blocked_id=peers.other_id)
+         OR (b.blocker_id=peers.other_id AND b.blocked_id=$viewer))
+    AND (EXISTS (SELECT 1 FROM follows f WHERE f.follower_id=$viewer AND f.followee_id=peers.other_id)
+      OR EXISTS (SELECT 1 FROM dms sent WHERE sent.from_id=$viewer AND sent.to_id=peers.other_id AND sent.removed=0))
+  `).get({ $viewer: accountId }).count;
 }
 
 function markThreadRead(database, atomicWrite, userId, otherId) {
