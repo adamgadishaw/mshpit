@@ -166,3 +166,45 @@ test("accepted Inbox total uses all unread messages, independent of latest previ
   assert.equal(page(owner).inboxUnread, 328);
   assert.equal(page(request).inboxUnread, 0);
 });
+
+
+test("reply proof agrees with Inbox totals outside the summary and full-history windows", () => {
+  const owner = account(), replied = account(), request = account(), removedReply = account(), another = account();
+  const insert = db.prepare("INSERT INTO dms(id,from_id,to_id,text,created_at,removed) VALUES(?,?,?,?,?,?)");
+  const send = (from, to, at, removed = 0) => {
+    const id = `dm_reply_proof_${++sequence}`;
+    insert.run(id, from.id, to.id, "synthetic message", at, removed);
+    return id;
+  };
+  const oldReply = send(owner, replied, 1);
+  for (let i = 0; i < 505; i++) send(replied, owner, 100 + i);
+  send(request, owner, 1000);
+  send(owner, removedReply, 1, 1); send(removedReply, owner, 1001);
+  send(another, request, 2); // Another account's reply cannot accept this owner's request.
+  for (const query of [{ summary: "1" }, {}]) {
+    const threads = routes["GET /api/me/threads"]({ user: owner, query }).threads;
+    const accepted = threads.find(t => t.otherId === replied.id);
+    assert.equal(accepted.hasReplied, true);
+    assert.equal(accepted.readCursor, null);
+    assert.ok(accepted.messages.every(m => m.from === replied.id), "proof survives outside both message windows");
+    assert.equal(threads.find(t => t.otherId === request.id).hasReplied, false);
+    assert.equal(threads.find(t => t.otherId === removedReply.id).hasReplied, false);
+  }
+  assert.equal(page(owner).inboxUnread, 505);
+  db.prepare("UPDATE dms SET removed=1 WHERE id=?").run(oldReply);
+  const refreshed = routes["GET /api/me/threads"]({ user: owner, query: { summary: "1" } }).threads;
+  assert.equal(refreshed.find(t => t.otherId === replied.id).hasReplied, false);
+  assert.equal(page(owner).inboxUnread, 0);
+  db.prepare("UPDATE dms SET removed=0 WHERE id=?").run(oldReply);
+  assert.equal(routes["GET /api/me/threads"]({ user: owner, query: { summary: "1" } }).threads.find(t => t.otherId === replied.id).hasReplied, true);
+  const secondReply = send(owner, replied, 3);
+  db.prepare("UPDATE dms SET removed=1 WHERE id=?").run(oldReply);
+  assert.equal(routes["GET /api/me/threads"]({ user: owner, query: { summary: "1" } }).threads.find(t => t.otherId === replied.id).hasReplied, true, "a remaining retained reply still accepts the peer");
+  db.prepare("UPDATE dms SET removed=1 WHERE id=?").run(secondReply);
+  assert.equal(routes["GET /api/me/threads"]({ user: owner, query: { summary: "1" } }).threads.find(t => t.otherId === replied.id).hasReplied, false);
+  db.prepare("INSERT INTO follows(follower_id,followee_id) VALUES(?,?)").run(owner.id, request.id);
+  assert.equal(page(owner).inboxUnread, 1, "following accepts a peer without inventing reply evidence");
+  db.prepare("INSERT INTO blocks(blocker_id,blocked_id,created_at) VALUES(?,?,?)").run(request.id, owner.id, 1);
+  assert.equal(page(owner).inboxUnread, 0);
+  assert.ok(!routes["GET /api/me/threads"]({ user: owner, query: { summary: "1" } }).threads.some(t => t.otherId === request.id));
+});

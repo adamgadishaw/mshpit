@@ -1,6 +1,6 @@
 import SessionValidationPending from "./src/components/SessionValidationPending";
 import NativeAccountLinks from "./src/screens/NativeAccountLinks";
-import { nativeNewsLinkFrame } from "./src/domain/nativeNewsLink.mjs";
+const nativeNewsLinkFrame = Platform.OS === "web" ? null : require("./src/domain/nativeNewsLink.mjs").nativeNewsLinkFrame;
 import { publicDiscoveryRailAllowed } from "./src/domain/publicPlacementPolicy.mjs";
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, Suspense } from "react";
 import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler, Linking } from "react-native";
@@ -19,7 +19,7 @@ import NativeTabRail from "./src/components/NativeTabRail";
 import IosTabBar from "./src/components/IosTabBar";
 import IosMenuDrawer from "./src/components/IosMenuDrawer";
 import IosDetailNavigation from "./src/components/IosDetailNavigation";
-import { iosBackGestureAllowed } from "./src/domain/iosNavigationPolicy.mjs";
+const iosBackGestureAllowed = Platform.OS === "ios" ? require("./src/domain/iosNavigationPolicy.mjs").iosBackGestureAllowed : null;
 import ErrorBoundary from "./src/components/ErrorBoundary";
 import RuntimeErrorMonitor from "./src/components/RuntimeErrorMonitor";
 import useAppActive from "./src/lib/useAppActive";
@@ -149,8 +149,8 @@ import {
 } from "./src/domain/musicPlayerAvailability.mjs";
 import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
 import { createFeedReturnOwner } from "./src/lib/feedReturnOwner";
-import { createIOSArtistReturnStore } from "./src/domain/iosArtistReturn.mjs";
-import { createBrowseReturnStore } from "./src/domain/iosBrowseReturn.mjs";
+const { createIOSArtistReturnStore } = Platform.OS === "ios" ? require("./src/domain/iosArtistReturn.mjs") : {};
+const { createBrowseReturnStore } = Platform.OS === "ios" ? require("./src/domain/iosBrowseReturn.mjs") : {};
 import { createCommentDraftOwner } from "./src/domain/commentDraftOwner";
 import { createIOSMessageDrafts } from "./src/domain/messageDraftOwner";
 import { createLinkedNavigationOwner } from "./src/domain/linkedNavigationOwner";
@@ -340,9 +340,9 @@ function Root() {
     return () => owner?.unmount();
   }, []);
   const browseReturnRef = useRef(null);
-  if (!browseReturnRef.current) browseReturnRef.current = createBrowseReturnStore();
+  if (Platform.OS === "ios" && !browseReturnRef.current) browseReturnRef.current = createBrowseReturnStore();
   // Change ownership during render: an old screen's effect/scroll callback cannot write for the new viewer.
-  browseReturnRef.current.account(session?.id || null);
+  if (Platform.OS === "ios") browseReturnRef.current.account(session?.id || null);
   const searchReturn = Platform.OS === "ios" ? browseReturnRef.current.lease("search") : null;
   const discoverReturn = Platform.OS === "ios" ? browseReturnRef.current.lease("discover") : null;
   // Detail overlays unmount Discover. Keep only its public destination here,
@@ -389,8 +389,8 @@ function Root() {
     activeTab === "feed" && stack[0] && !Object.keys(stack[0]).length ? stack[0] : null,
   ) || null;
   const artistReturnRef = useRef(null);
-  if (!artistReturnRef.current) artistReturnRef.current = createIOSArtistReturnStore();
-  artistReturnRef.current.reconcile(session?.id || null, chatAuthEpoch, stack);
+  if (Platform.OS === "ios" && !artistReturnRef.current) artistReturnRef.current = createIOSArtistReturnStore();
+  if (Platform.OS === "ios") artistReturnRef.current.reconcile(session?.id || null, chatAuthEpoch, stack);
   const artistReturn = Platform.OS === "ios" ? artistReturnRef.current.lease(nav, nav.artistPreview || nav.artistName) : null;
   const [iosMenuOpen, setIOSMenuOpenState] = useState(false);
   const iosTabSwipeRevisionRef = useRef(0);

@@ -3,6 +3,10 @@ function readCursor(row) {
 }
 
 export function directMessageReadProjection(database, userId) {
+  // Acceptance depends on all retained outgoing history, not the latest preview.
+  const repliedPeers = new Set(database.prepare(
+    "SELECT DISTINCT to_id FROM dms WHERE from_id=? AND removed=0",
+  ).all(userId).map((row) => row.to_id));
   const cursors = new Map(database.prepare(
     "SELECT other_id,last_read_at,last_read_id FROM dm_reads WHERE user_id=?",
   ).all(userId).map((row) => [row.other_id, readCursor(row)]));
@@ -13,7 +17,7 @@ export function directMessageReadProjection(database, userId) {
     ) GROUP BY d.from_id`).all(userId).map((row) => [row.other_id, row.count]));
   return {
     forOther(otherId) {
-      return { readCursor: cursors.get(otherId) || null, unread: unread.get(otherId) || 0 };
+      return { readCursor: cursors.get(otherId) || null, unread: unread.get(otherId) || 0, hasReplied: repliedPeers.has(otherId) };
     },
   };
 }

@@ -182,7 +182,7 @@ import { reconcileConfirmedNotificationReads } from "./domain/notificationReadMu
 import useNotificationActivity from "./features/notifications/useNotificationActivity";
 import {
   directMessageUnreadCount,
-  latestDirectMessageReadCursor,
+  mergeDirectMessageReadSummary,
   normalizeDirectMessageReadCursor,
 } from "./domain/directMessageRead.mjs";
 import {
@@ -2673,10 +2673,9 @@ export function StoreProvider({ children }) {
         setDmRead((current) => {
           const next = { ...current };
           threads.forEach((thread) => {
-            const cursor = normalizeDirectMessageReadCursor(thread.readCursor);
-            if (!cursor) return;
             const key = dmKey(su.id, thread.otherId);
-            next[key] = latestDirectMessageReadCursor(next[key], cursor);
+            const summary = mergeDirectMessageReadSummary(next[key], thread);
+            if (summary != null) next[key] = summary;
           });
           return next;
         });
@@ -5092,6 +5091,9 @@ export function StoreProvider({ children }) {
     const message = confirmedChatMessage(item, serverId);
     if (!message) return;
     if (item.kind === "dm") {
+      // A confirmed reply supersedes any Inbox snapshot begun before the send.
+      chatReadsRef.current.invalidate("dm-inbox", sessionRef.current);
+      if (!ENABLE_DEMO_DATA) setDmRead((all) => ({ ...all, [item.channelKey]: mergeDirectMessageReadSummary(all[item.channelKey], { hasReplied: true }) }));
       setDms((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 750) }));
     } else if (item.kind === "fan") {
       setFanClubMsgs((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 600) }));
@@ -6367,10 +6369,9 @@ export function StoreProvider({ children }) {
         setDmRead((current) => {
           const next = { ...current };
           for (const thread of threads) {
-            const cursor = normalizeDirectMessageReadCursor(thread.readCursor);
-            if (!cursor) continue;
             const key = dmKey(accountId, thread.otherId);
-            next[key] = latestDirectMessageReadCursor(next[key], cursor);
+            const summary = mergeDirectMessageReadSummary(next[key], thread);
+            if (summary != null) next[key] = summary;
           }
           return next;
         });
@@ -6496,7 +6497,7 @@ export function StoreProvider({ children }) {
       if (!cursor) return commandSuccess({ accountId: actor.id, otherId, readCursor: null });
       setDmRead((current) => ({
         ...current,
-        [key]: latestDirectMessageReadCursor(current[key], cursor),
+        [key]: mergeDirectMessageReadSummary(current[key], { readCursor: cursor }),
       }));
       setNotifications((current) => reconcileConfirmedNotificationReads(current, {
         accountId: actor.id,
@@ -6537,7 +6538,8 @@ export function StoreProvider({ children }) {
         // A thread is a "request" until you accept it: someone you don't follow
         // messaged you and you haven't replied yet. Following them or sending a
         // single reply promotes it to the main inbox (Instagram-style gating).
-        const iReplied = msgs.some((m) => m.from === session.id);
+        const iReplied = typeof marker?.hasReplied === "boolean" ? marker.hasReplied
+          : msgs.some((m) => m.from === session.id && !m.pending && !m.failed && (ENABLE_DEMO_DATA || m.server === true));
         const bucket = (isFollowing(otherId) || iReplied) ? "main" : "requests";
         const lastAt = Number(last?.at || last?.createdAt) || 0;
         return { otherId, otherUser: userById(otherId), last, lastAt, unread, count: msgs.length, bucket, relationshipContext };

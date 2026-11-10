@@ -18,6 +18,17 @@ export function latestDirectMessageReadCursor(left, right) {
   return b.createdAt > a.createdAt || (b.createdAt === a.createdAt && b.id > a.id) ? b : a;
 }
 
+// Reply evidence shares the existing account-private read record. Explicit false
+// withdraws an older proof; a legacy response without the field cannot invent it.
+export function mergeDirectMessageReadSummary(current, summary) {
+  const cursor = latestDirectMessageReadCursor(current, summary?.readCursor);
+  // A cursor-free summary must not discard the demo mode's read count.
+  if (!cursor && Number.isSafeInteger(current) && current >= 0) return current;
+  const hasReplied = typeof summary?.hasReplied === "boolean" ? summary.hasReplied : current?.hasReplied;
+  if (!cursor && typeof hasReplied !== "boolean") return current;
+  return { ...cursor, ...(typeof hasReplied === "boolean" ? { hasReplied } : {}) };
+}
+
 export function latestIncomingDirectMessageId(messages, accountId) {
   const ownerId = typeof accountId === "string" ? accountId.trim() : "";
   if (!ownerId || !Array.isArray(messages)) return null;
