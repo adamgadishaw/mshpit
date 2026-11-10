@@ -60,8 +60,8 @@ const photo = { ...basic, id: 'photo-post', createdAt: 5, photosPublic: true,
   photos: ['https://media.test/original.jpg'], media: [{ id: 'asset-a', uri: 'https://media.test/original.jpg', kind: 'image', width: 2000, height: 1500, altText: 'A real fixture photo' }] };
 const offline = () => Object.assign(new Error('Synthetic offline'), { name: 'AppError', code: 'PIT-NET-001', retryable: true });
 const flatten = style => Object.assign({}, ...(Array.isArray(style) ? style.flat(Infinity).filter(Boolean) : [style]));
-function fixture({ managed = false, strict = false, platform = 'ios', self = true, guest = false, cached = [], banner = 'https://media.test/banner-original.jpg', withViewer = true, now = () => 0 } = {}) {
-  const renderer = createRenderer(), reads = [], opened = [], rewards = [], readiness = [], profileReads = [], mutations = [], sheets = [];
+function fixture({ guidance = false, managed = false, strict = false, platform = 'ios', self = true, guest = false, cached = [], banner = 'https://media.test/banner-original.jpg', withViewer = true, now = () => 0 } = {}) {
+  const renderer = createRenderer(), reads = [], opened = [], rewards = [], readiness = [], profileReads = [], mutations = [], sheets = [], edits = [];
   const detailContext = require('../components/iosDetailPresentationContext.mjs');
   const privacy = require('../domain/iosDetailPrivacyEpoch.mjs').createIOSDetailPrivacyEpoch();
   let admission = null, life = null;
@@ -93,6 +93,7 @@ function fixture({ managed = false, strict = false, platform = 'ios', self = tru
     if (name.endsWith("/useIOSDetailPresentation")) return execute('../hooks/useIOSDetailPresentation.ios.js', imports);
     if (name === '../components/iosDetailPresentationContext.mjs') return detailContext;
     if (name === './useProfileHistory.js') return baseHistoryHook;
+    if (name.endsWith('/ProfileGuidance')) return execute('../components/ProfileGuidance.jsx', imports);
     if (name.endsWith('/NativeTabScroll')) return native;
     if (name.endsWith('/NativeTabSwipeExclusion')) return { __esModule: true, default: p => p.children };
     if (name === 'react' || name === 'react/jsx-runtime') return require(name);
@@ -149,14 +150,14 @@ function fixture({ managed = false, strict = false, platform = 'ios', self = tru
     React.createElement(detailContext.IOSDetailPresentationContext.Provider, { value: admission },
       React.createElement(tabContext.NativeTabPreviewContext.Provider, { value: state.preview },
         React.createElement(tabContext.NativeTabReadinessContext.Provider, { value: reportReady },
-          React.createElement(Screen, { userId: state.user.id, asTab: state.session?.id === state.user.id, initialSection: state.initialSection, ownerTools: state.ownerTools, onManageProfile: noop,
+          React.createElement(Screen, { userId: state.user.id, asTab: state.session?.id === state.user.id, initialSection: state.initialSection, ownerTools: state.ownerTools, onManageProfile: noop, onEditProfileDetails: guidance ? () => edits.push(state.session?.id) : undefined,
             onOpenPost: (...args) => opened.push(args), onOpenShow: (...args) => opened.push(args), onOpenPhotos: state.withViewer ? (...args) => opened.push(args) : undefined }, React.createElement('PrivateMemories', null, 'Private memories')))))));
   const all = () => nodes(renderer.container);
   const byId = id => all().find(n => n.props?.testID === id);
   const text = () => all().map(n => n.text || '').join(' ');
   const image = fragment => all().find(n => n.type === 'ExpoImage' && decodeURIComponent(n.props.source.uri).includes(fragment));
   const flush = async () => { for (let i=0; i<6; i++) { await new Promise(r => setImmediate(r)); renderer.act(noop); } };
-  return { state, render, all, byId, text, image, reads, opened, rewards, readiness, flush, store, act: renderer.act, profileReads, mutations, sheets,
+  return { state, render, all, byId, text, image, reads, opened, rewards, readiness, flush, store, act: renderer.act, profileReads, mutations, sheets, edits,
     invalidatePrivacy() { privacy.invalidate(); },
     commitPrivacy() { publishCommands(); render(); },
     get presentation() { return admission; },
@@ -648,4 +649,32 @@ test('active Profile projects removed posts and photos out of history, pins, map
   assert.deepEqual(f.all().find(n => n.type === 'ConcertHistory').props.concerts, []);
   assert.equal(f.all().some(n => n.props?.accessibilityLabel?.startsWith('Saved artist')), false);
   f.act(oldGallery); assert.deepEqual(f.opened, []); f.unmount();
+});
+
+
+test('actual iOS profile guidance is owner-only and retained edit/dismiss callbacks cannot revive', async t => {
+  const f = fixture({ guidance: true, managed: true }); t.after(f.unmount);
+  f.render(); await f.flush();
+  assert.match(f.text(), /Personalize your profile/);
+  assert.match(f.text(), /Optional: add/);
+  const capturedEdit = f.all().find(n => n.props?.accessibilityLabel === 'Review profile details').props.onPress;
+  const capturedDismiss = f.all().find(n => n.props?.accessibilityLabel === 'Dismiss profile suggestions').props.onPress;
+  f.cover(); f.act(() => { capturedEdit(); capturedDismiss(); });
+  assert.deepEqual(f.edits, []);
+  f.reveal(); await f.flush();
+  assert.match(f.text(), /Personalize your profile/, 'A covered callback must not dismiss a later presentation');
+  f.act(() => { capturedEdit(); capturedDismiss(); });
+  assert.deepEqual(f.edits, []);
+  f.pressLabel('Review profile details'); assert.deepEqual(f.edits, ['self']);
+  const staleEdit = f.all().find(n => n.props?.accessibilityLabel === 'Review profile details').props.onPress;
+  f.invalidatePrivacy(); f.act(staleEdit); assert.deepEqual(f.edits, ['self']);
+  f.commitPrivacy(); f.pressLabel('Dismiss profile suggestions');
+  assert.doesNotMatch(f.text(), /Personalize your profile/);
+  assert.deepEqual(f.mutations, [], 'Dismissing guidance must not mutate profile or onboarding');
+  f.state.user = { ...f.state.user, id: 'another-owner' }; f.state.session = f.state.user;
+  f.state.epoch++; f.render(); await f.flush();
+  assert.match(f.text(), /Personalize your profile/, 'Dismissal belongs to the previous account');
+  const other = fixture({ guidance: true, managed: true, self: false }); t.after(other.unmount);
+  other.render(); await other.flush();
+  assert.doesNotMatch(other.text(), /Personalize your profile/);
 });
