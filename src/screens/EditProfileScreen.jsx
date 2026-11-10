@@ -6,6 +6,7 @@ import { useStore } from "../store";
 import { useIOSProfileEditor } from "../hooks/useIOSProfileEditor";
 import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
 import { useProfileImageUpload } from "../hooks/useProfileImageUpload";
+import useReducedMotion from "../hooks/useReducedMotion";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import LocationPicker from "../components/LocationPicker";
@@ -43,6 +44,9 @@ const BANNER_IMAGE_HINT = profileImageSelectionHint("banner", { platform:Platfor
 export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRoute }) {
   const { session, updateProfile, locationCenter, chatAuthEpoch, userBadges } = useStore();
   const scrollRef = useRef(null);
+  const reducedMotion = useReducedMotion();
+  const reducedMotionRef = useRef(reducedMotion);
+  reducedMotionRef.current = reducedMotion;
   const accountTasks = useAccountTaskScope(session?.id);
   const { uploadProfileImage, imageCropDialog } = useProfileImageUpload();
   const uploadSelectedImage = (asset, purpose, task) => uploadProfileImage(asset, purpose, {
@@ -63,7 +67,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
   const [uploadingBanner, setUploadingBanner] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
-  useEffect(() => { if (saveError) scrollRef.current?.scrollTo?.({ y: 0, animated: true }); }, [saveError]);
+  useEffect(() => { if (saveError) scrollRef.current?.scrollTo?.({ y: 0, animated: !reducedMotionRef.current }); }, [saveError]);
   const [mediaError, setMediaError] = useState("");
   // Make it yours: pronouns, an accent colour and up to four favorite shows.
   const [pronouns, setPronouns] = useState(session?.pronouns || "");
@@ -268,7 +272,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
   return (
     <View style={styles.wrap}>
       {imageCropDialog}
-      <SheetHeader title="Edit your profile" onClose={requestClose} action={{ label: saving ? "Saving..." : mediaBusy ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : "Save", onPress: save, disabled: iosEditor?.confirmed || locked || mediaBusy || saving || genresInvalid || handleInvalid || nameInvalid }} />
+      <SheetHeader title="Edit your profile" onClose={requestClose} action={{ label: saving ? "Saving..." : mediaBusy ? (Platform.OS === "web" ? "Preparing..." : "Uploading...") : "Save", onPress: save, loading: saving || mediaBusy, disabled: iosEditor?.confirmed || locked || mediaBusy || saving || genresInvalid || handleInvalid || nameInvalid }} />
 
       <ScrollView ref={scrollRef} style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"
         {...(Platform.OS === "ios" ? { automaticallyAdjustKeyboardInsets: true, keyboardDismissMode: "interactive" } : {})}>
@@ -470,7 +474,7 @@ export default function EditProfileScreen({ onClose, closeGuardRef, isCurrentRou
           })}
         </View>
 
-        <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} disabled={iosEditor?.confirmed || locked || mediaBusy || saving || genresInvalid || handleInvalid || nameInvalid} style={{ marginTop: 28 }} />
+        <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} loading={saving || mediaBusy} disabled={iosEditor?.confirmed || locked || mediaBusy || saving || genresInvalid || handleInvalid || nameInvalid} style={{ marginTop: 28 }} />
       </ScrollView>
     </View>
   );

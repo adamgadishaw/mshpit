@@ -42,6 +42,7 @@ function fixture(os, overrides = {}, options = {}) {
     "../store": { useStore: () => ({ session, locationCenter: (place) => place, updateProfile: (profile) => { saves.push(profile); return options.save ? options.save(profile) : { ok: true }; } }) },
     "../hooks/useAccountTaskScope": { useAccountTaskScope: () => ({ begin: () => ({ controller: { signal: {} }, accountId: session.id, isCurrent: () => true, finish() {} }) }) },
     "../hooks/useProfileImageUpload": { useProfileImageUpload: () => ({ uploadProfileImage() { throw new Error("Unexpected image upload"); }, imageCropDialog: null }) },
+    "../hooks/useReducedMotion": () => false,
     "../features/profileHistory/useProfileHistory": { useProfileHistory: () => ({ status: "ready", posts: [], nextCursor: null }) },
     "../lib/lazyWithRetry": { lazyWithRetry: () => "PickArtistsScreen" },
     "../lib/mediaUpload": { isDurableMediaUrl: () => false },

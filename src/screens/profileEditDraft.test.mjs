@@ -67,6 +67,7 @@ function fixture(platform, overrides = {}) {
       updateProfile: (...args) => { const request = { ...deferred(), args }; requests.push(request); return request.promise; } }) };
     if (name === "../hooks/useIOSProfileEditor") return execute(`../hooks/useIOSProfileEditor${platform === "ios" ? ".ios" : ""}.js`, imports);
     if (name === "../hooks/useAccountTaskScope") return execute("../hooks/useAccountTaskScope.js", imports);
+    if (name === "../hooks/useReducedMotion") return () => false;
     if (name === "expo-image-picker") return { launchImageLibraryAsync: (...args) => { const picker = { ...deferred(), args }; pickers.push(picker); return picker.promise; } };
     if (name === "../hooks/useProfileImageUpload") return { useProfileImageUpload: () => ({ imageCropDialog: null, uploadProfileImage: (asset, purpose, options) => options.upload(asset, { signal: options.signal }) }) };
     if (name === "../lib/mediaUpload") return { isDurableMediaUrl: value => /^https?:/.test(value || ""), reportMediaPickerError: noop,

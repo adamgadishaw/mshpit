@@ -17,7 +17,7 @@ function execute(path, imports, timers = { setTimeout, clearTimeout }) {
     name => imports(name, createRequire(file)), module, module.exports, timers.setTimeout, timers.clearTimeout);
   return module.exports;
 }
-function createRenderer() {
+function createRenderer(onScroll = noop) {
   const context = {}, container = { children: [] };
   let priority = 0;
   const append = (parent, child) => parent.children.push(child);
@@ -27,7 +27,7 @@ function createRenderer() {
     supportsMutation: true, isPrimaryRenderer: true, supportsPersistence: false, supportsHydration: false,
     getRootHostContext: () => context, getChildHostContext: () => context, getPublicInstance: node => node,
     prepareForCommit: () => null, resetAfterCommit: noop,
-    createInstance: (type, props) => ({ type, props, children: [], focus() {}, scrollToEnd() {} }), createTextInstance: text => ({ text }),
+    createInstance: (type, props) => ({ type, props, children: [], focus() {}, scrollToEnd() {}, scrollTo(options) { onScroll(options); } }), createTextInstance: text => ({ text }),
     appendInitialChild: append, appendChild: append, appendChildToContainer: append,
     removeChild: remove, removeChildFromContainer: remove, insertBefore: insert, insertInContainerBefore: insert,
     finalizeInitialChildren: () => false, shouldSetTextContent: () => false,
@@ -50,8 +50,8 @@ const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 
 // Real component, React, account-task scope and close guard. No native or network writes.
-function fixture({ platform = "ios", strict = false, closeBehavior = "count", badgeSupport = true, profileBadges = null } = {}) {
-  const renderer = createRenderer(), requests = [], pickers = [], uploads = [], alerts = [];
+function fixture({ platform = "ios", strict = false, closeBehavior = "count", badgeSupport = true, profileBadges = null, reducedMotion = false } = {}) {
+  const scrolls = [], renderer = createRenderer(options => scrolls.push(options)), requests = [], pickers = [], uploads = [], alerts = [];
   let closed = 0, route = true, epoch = 1, hidden = false;
   const suspension = deferred();
   let session = { id: "synthetic-account", name: "Fixture", handle: "fixture_fan", bio: "Original bio", genres: ["Rock"], favoriteShows: [], avatarUri: "https://media.example.org/old.jpg", profileBadgeSelectionSupported: badgeSupport, profileBadges };
@@ -67,6 +67,7 @@ function fixture({ platform = "ios", strict = false, closeBehavior = "count", ba
       updateProfile: (...args) => { const request = { ...deferred(), args }; requests.push(request); return request.promise; } }) };
     if (name === "../hooks/useIOSProfileEditor") return execute(`../hooks/useIOSProfileEditor${platform === "ios" ? ".ios" : ""}.js`, imports);
     if (name === "../hooks/useAccountTaskScope") return execute("../hooks/useAccountTaskScope.js", imports);
+    if (name === "../hooks/useReducedMotion") return () => reducedMotion;
     if (name === "expo-image-picker") return { launchImageLibraryAsync: (...args) => { const picker = { ...deferred(), args }; pickers.push(picker); return picker.promise; } };
     if (name === "../hooks/useProfileImageUpload") return { useProfileImageUpload: () => ({ imageCropDialog: null, uploadProfileImage: (asset, purpose, options) => options.upload(asset, { signal: options.signal }) }) };
     if (name === "../lib/mediaUpload") return { isDurableMediaUrl: value => /^https:/.test(value || ""), reportMediaPickerError: noop,
@@ -79,7 +80,7 @@ function fixture({ platform = "ios", strict = false, closeBehavior = "count", ba
   const Screen = execute("./EditProfileScreen.jsx", imports).default;
   function Hide() { if (hidden) throw suspension.promise; return null; }
   const back = () => { if (closeBehavior === "throw") throw new Error("Synthetic navigation failure"); if (closeBehavior === "noop") return; return closeGuardRef.current ? closeGuardRef.current({ proceed: () => { closed++; } }) : closed++; };
-  const f = { requests, pickers, uploads, alerts, closeGuardRef,
+  const f = { requests, pickers, uploads, alerts, closeGuardRef, scrolls,
     get closed() { return closed; },
     all: () => nodes(renderer.container),
     find(predicate) { const found = f.all().find(predicate); assert.ok(found); return found; },
@@ -94,6 +95,7 @@ function fixture({ platform = "ios", strict = false, closeBehavior = "count", ba
     save() { let result; f.act(() => { result = f.header().onPress(); }); return result; },
     scope(id, nextEpoch = epoch) { session = { ...session, id }; epoch = nextEpoch; f.render(); },
     rerenderSession() { session = { ...session }; f.render(); },
+    setReducedMotion(value) { reducedMotion = value; f.render(); },
     refreshSession(patch) { session = { ...session, ...patch }; f.render(); },
     leave() { route = false; },
     hide() { hidden = true; f.render(); },
@@ -104,6 +106,20 @@ function fixture({ platform = "ios", strict = false, closeBehavior = "count", ba
   };
   f.render(); return f;
 }
+
+for (const reducedMotion of [false, true]) test(`save failure respects current Reduce Motion without losing the draft (${reducedMotion})`, async t => {
+  const f = fixture({ reducedMotion: !reducedMotion }); t.after(f.close);
+  f.edit("Keep this draft"); void f.save();
+  assert.equal(f.header().loading, true); assert.equal(f.footer().loading, true);
+  f.setReducedMotion(reducedMotion);
+  await f.complete({ ok: false, error: "Please retry" });
+  assert.deepEqual(f.scrolls, [{ y: 0, animated: !reducedMotion }]);
+  assert.equal(f.header().loading, false); assert.equal(f.footer().loading, false);
+  assert.equal(f.input().props.value, "Keep this draft");
+  f.setReducedMotion(!reducedMotion);
+  assert.equal(f.scrolls.length, 1, "changing the preference must not move someone reading the error");
+  assert.equal(f.requests.length, 1);
+});
 
 test("badge choices toggle repeatedly, participate in cancel protection and save one confirmed draft", async t => {
   const f = fixture(); t.after(f.close);

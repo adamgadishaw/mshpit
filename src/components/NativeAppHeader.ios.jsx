@@ -17,7 +17,7 @@ export function NativeActivityIcons({ unread, notifications, onOpenInbox, onOpen
     ...(onOpenNotifications ? [{ label: "Notifications", icon: "bell", count: unreadBadgeCount(notifications), press: onOpenNotifications }] : []),
   ];
   return <View style={styles.activity} testID="native-activity-icons">{items.map(item => <Pressable key={item.label}
-    onPress={item.press} disabled={!enabled} style={styles.control} accessibilityRole="button"
+    onPress={item.press} disabled={!enabled} style={({ pressed }) => [styles.control, pressed && enabled && styles.pressed]} accessibilityRole="button"
     accessibilityLabel={`${item.label}${item.count ? `, ${item.count} unread` : ""}`} accessibilityState={{ disabled: !enabled }}>
     <Icon name={item.icon} size={22} color={colors.text} strokeWidth={1.8} />
     {item.count > 0 ? <View style={[styles.badge, fontScale > 1.5 && styles.badgeDot]} accessible={false}
@@ -50,15 +50,15 @@ export default function NativeAppHeader({ onHome, onAccount, loggedIn, onMenu, m
       <NativeTabRail active={active} onChange={guard(onChange)} swipeScope={swipeScope} swipeEnabled={swipeEnabled} isCurrentSwipeRoute={isCurrentSwipeRoute}>
         <View onLayout={chrome?.measure} testID="native-activity-bar">
         <View style={styles.header}>
-          <Pressable ref={menuRef} onPress={guard(onMenu)} style={styles.control} accessibilityRole="button" accessibilityLabel="Open side menu" accessibilityHint="Shows your account, music community and settings">
+          <Pressable ref={menuRef} onPress={guard(onMenu)} style={({ pressed }) => [styles.control, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="Open side menu" accessibilityHint="Shows your account, music community and settings">
             <Icon name="menu" size={23} color={colors.text} strokeWidth={1.8} />
           </Pressable>
-          <Pressable onPress={guard(onHome)} style={styles.brand} accessibilityRole="button" accessibilityLabel="Mshpit Discover">
+          <Pressable onPress={guard(onHome)} style={({ pressed }) => [styles.brand, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel="Mshpit Discover">
             <BrandMark size={22} color={colors.amber} />{fontScale <= 1.5 ? <Text style={styles.wordmark}>MSHPIT</Text> : null}
           </Pressable>
           {loggedIn ? <NativeActivityIcons unread={unread} notifications={notifications} onOpenInbox={onOpenInbox && guard(onOpenInbox)}
             onOpenNotifications={onOpenNotifications && guard(onOpenNotifications)} enabled={swipeEnabled !== false} /> : null}
-          <Pressable onPress={guard(loggedIn ? onPost : onAccount)} style={styles.control} accessibilityRole="button" accessibilityLabel={loggedIn ? "Make a post" : "Sign in"}>
+          <Pressable onPress={guard(loggedIn ? onPost : onAccount)} style={({ pressed }) => [styles.control, pressed && styles.pressed]} accessibilityRole="button" accessibilityLabel={loggedIn ? "Make a post" : "Sign in"}>
             <Icon name={loggedIn ? "plus" : "you"} size={24} color={colors.amber} strokeWidth={1.9} />
           </Pressable>
         </View>

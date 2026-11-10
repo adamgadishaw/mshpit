@@ -48,7 +48,7 @@ function createRenderer() {
 
 // Exercise production JSX, its real hooks, preparation and native adapter. Only
 // host components, the network/filesystem and native SDK calls are synthetic.
-function fixture({ managed = true, entry = "modal", strict = false, os = "ios", delayImport = false,
+function fixture({ managed = true, entry = "modal", strict = false, os = "ios", reducedMotion = false, delayImport = false,
   delayAvailability = false, delayHandoff = false, delayEditor = false } = {}) {
   const renderer = createRenderer(), context = { IOSDetailPresentationContext: React.createContext(null) };
   const files = new Map(), requests = [], external = [], imports = [], availability = [], handoffs = [], diagnostics = [], editorLoads = [];
@@ -87,6 +87,7 @@ function fixture({ managed = true, entry = "modal", strict = false, os = "ios", 
     if (name.endsWith("/theme")) return { colors: {}, radius: {}, shadow: {}, space: value => value };
     if (name === "./Icon") return "Icon";
     if (name === "./ShareCardReveal") return { __esModule: true, default: "ShareCardReveal", ShareCardPrinting: "ShareCardPrinting" };
+    if (name.endsWith("/useReducedMotion")) return () => reducedMotion;
     if (name.endsWith("/useIOSDetailPresentation")) return load("src/hooks/useIOSDetailPresentation.ios.js");
     if (name.endsWith("/useIOSDetailPresentation.js")) return require("./src/hooks/useIOSDetailPresentation.js");
     if (name.endsWith("/iosDetailPresentationContext.mjs")) return context;
@@ -143,6 +144,7 @@ function fixture({ managed = true, entry = "modal", strict = false, os = "ios", 
       assert.ok(node, label); node.props.onPress();
     }),
     act: renderer.act, closes: () => closes,
+    setReducedMotion(value) { reducedMotion = value; render(); },
     cover() { active = false; },
     back() { active = true; token = Object.freeze({}); commandToken = Object.freeze({}); renewPresentation(); render(); },
     privacy({ render: update = false } = {}) { epoch++; commandToken = Object.freeze({}); if (update) { renewPresentation(); render(); } },
@@ -157,6 +159,22 @@ function fixture({ managed = true, entry = "modal", strict = false, os = "ios", 
     dispose() { renderer.render(null); },
   };
 }
+
+test("Reduce Motion changes presentation without restarting preparation or replacing current controls", async () => {
+  const f = fixture({ reducedMotion: true });
+  try {
+    assert.equal(nodes(f.tree()).find(node => node.type === "Modal").props.animationType, "none");
+    await f.ready();
+    const requestCount = f.requests.length, copy = f.button("Copy link").props.onPress;
+    f.setReducedMotion(false);
+    assert.equal(nodes(f.tree()).find(node => node.type === "Modal").props.animationType, "slide");
+    f.setReducedMotion(true);
+    assert.equal(nodes(f.tree()).find(node => node.type === "Modal").props.animationType, "none");
+    assert.equal(f.requests.length, requestCount);
+    f.act(copy); await f.settle();
+    assert.deepEqual(f.external, [["copy", model.url]]);
+  } finally { f.dispose(); }
+});
 
 for (const expiration of ["cover", "privacy", "expireAction", "dispose"]) {
   test(`captured production modal controls cannot act after ${expiration}`, async () => {

@@ -78,8 +78,27 @@ test('iOS primary controls preserve tap destinations and 44-point targets',()=>{
  assert.deepEqual(choices,['feed','search','discover','you']);assert.equal(tabs[2].props.accessibilityState.selected,true);
  tabs.forEach(n=>assert.ok(n.props.style({pressed:false})[0].minHeight>=44));
  const header=load('./NativeAppHeader.ios.jsx').render({loggedIn:true,onMenu:()=>choices.push('menu'),onPost:()=>choices.push('post')});
- for(const label of ['Open side menu','Make a post']){const b=nodes(header).find(n=>n.props.accessibilityLabel===label);b.props.onPress();assert.ok(b.props.style.minHeight>=44);}
+ for(const label of ['Open side menu','Make a post']){const b=nodes(header).find(n=>n.props.accessibilityLabel===label);b.props.onPress();assert.ok(b.props.style({pressed:false})[0].minHeight>=44);}
  assert.deepEqual(choices.slice(-2),['menu','post']);
+});
+
+test('iOS detail header reserves matching space as the trailing action grows, shrinks or disappears',()=>{
+ const f=load('./ScreenHeader.ios.jsx');let backs=0;
+ const props={title:'A long concert title',onBack:()=>backs++,right:{type:'Action',props:{}}};
+ for(const width of [44,100,64,44]){
+  let tree=f.render(props);
+  nodes(tree).find(n=>typeof n.props.onLayout==='function').props.onLayout({nativeEvent:{layout:{width}}});
+  tree=f.render(props);
+  const leading=tree.props.children[0],back=nodes(leading).find(n=>n.type==='Pressable');
+  assert.equal(leading.props.style[1].width,width);
+  assert.equal(back.props.style({pressed:false})[0].width,44,'extra reservation does not widen the Back control');
+  assert.equal(tree.props.children[1].props.children[1].props.numberOfLines,2);
+ }
+ let tree=f.render({...props,right:null});
+ nodes(tree).find(n=>typeof n.props.onLayout==='function').props.onLayout({nativeEvent:{layout:{width:44}}});
+ tree=f.render({...props,right:null});
+ assert.equal(tree.props.children[0].props.style[1].width,44);
+ nodes(tree).find(n=>n.props.accessibilityRole==='button').props.onPress();assert.equal(backs,1);
 });
 
 test('detail back owns only a 20-point edge and commits deliberate completed drags',()=>{

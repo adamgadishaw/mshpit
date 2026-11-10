@@ -19,6 +19,7 @@ import { AppError, captureAppError } from "../lib/diagnostics";
 import { colors, displayFont, font, radius, shadow, space } from "../theme";
 import Icon from "./Icon";
 import useIOSDetailPresentation from "../hooks/useIOSDetailPresentation";
+import useReducedMotion from "../hooks/useReducedMotion";
 import ShareCardReveal, { ShareCardPrinting } from "./ShareCardReveal";
 
 const KIND_ACCENTS = Object.freeze({
@@ -113,6 +114,7 @@ export default function SocialShareModal({ accountId = null, model, onClose, act
     return () => { if (mounted.current === owner) mounted.current = null; };
   }, []);
   const { width } = useWindowDimensions();
+  const reducedMotion = useReducedMotion();
   const desktop = Platform.OS === "web" && width >= 760;
   const nativeStory = Platform.OS !== "web";
   const storyConfigured = instagramStorySharingConfigured();
@@ -307,7 +309,7 @@ export default function SocialShareModal({ accountId = null, model, onClose, act
 
   return (
     <Modal
-      animationType={Platform.OS === "web" ? "fade" : "slide"}
+      animationType={reducedMotion ? "none" : Platform.OS === "web" ? "fade" : "slide"}
       onRequestClose={close}
       presentationStyle="overFullScreen"
       statusBarTranslucent
