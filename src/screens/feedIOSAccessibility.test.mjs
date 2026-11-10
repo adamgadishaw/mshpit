@@ -89,3 +89,40 @@ for (const platform of ["ios", "android", "web"]) {
     }
   });
 }
+
+const nativeSource = readFileSync(new URL("./FeedScreen.ios.jsx", import.meta.url), "utf8");
+const nativeAst = parse(nativeSource, { sourceType: "module", plugins: ["jsx"] });
+const nativeStylesNode = nativeAst.program.body.find(node => node.type === "VariableDeclaration" && node.declarations.some(item => item.id.name === "styles"));
+const nativeStyles = new vm.Script(nativeSource.slice(nativeStylesNode.start, nativeStylesNode.end) + "\nstyles;").runInNewContext({ StyleSheet: { create: value => value }, colors: {}, font: "System" });
+const activityNode = nativeAst.program.body.find(node => node.type === "ExportNamedDeclaration" && node.declaration?.id?.name === "FeedActivityControls").declaration;
+const activityCode = transformSync(nativeSource.slice(activityNode.start, activityNode.end), { babelrc: false, configFile: false, plugins: [[transformJSX, { runtime: "classic" }]] }).code;
+const activityTree = (fontScale, overrides = {}) => new vm.Script(activityCode + "\nFeedActivityControls(props);").runInNewContext({
+  React: { createElement: (type, props, ...children) => ({ type, props, children }) },
+  Pressable: "Pressable", Text: "Text", View: "View", Icon: "Icon", colors: {}, styles: nativeStyles,
+  useWindowDimensions: () => ({ fontScale }), props: { enabled: true, hasInbox: true, hasNotifications: true, unread: 0, notifications: 0, ...overrides },
+});
+const activityNodes = node => !node ? [] : Array.isArray(node) ? node.flatMap(activityNodes) : typeof node !== "object" ? [] : [node, ...activityNodes(node.children)];
+for (const scale of [1, 1.25, 1.5, 2, 3]) test(`Feed activity controls keep readable targets at text scale ${scale}`, () => {
+  const tree = activityTree(scale);
+  assert.equal(tree.props.style.flexWrap, "wrap");
+  const buttons = activityNodes(tree).filter(node => node.type === "Pressable");
+  assert.equal(buttons.length, 2);
+  for (const button of buttons) {
+    const style = button.props.style({ pressed: false });
+    assert.ok(style[0].minHeight >= 44);
+    assert.equal(style[0].height, undefined);
+    if (scale > 1.25) assert.equal(style[1].flexBasis, "100%");
+    assert.equal(button.props.accessibilityState.disabled, false);
+  }
+  assert.equal(nativeStyles.activityLabel.flexShrink, 1);
+  assert.doesNotMatch(nativeSource, /allowFontScaling=\{false\}|maxFontSizeMultiplier|adjustsFontSizeToFit/);
+});
+test("Feed activity announces actual unread values, caps only visible badges and rejects invalid counts", () => {
+  for (const value of [-4, NaN, Infinity, undefined, "malformed"]) {
+    const buttons = activityNodes(activityTree(1, { unread: value, notifications: value })).filter(node => node.type === "Pressable");
+    assert.deepEqual(buttons.map(node => node.props.accessibilityLabel), ["Messages", "Notifications"]);
+  }
+  const buttons = activityNodes(activityTree(1, { unread: 123.9, notifications: 7, enabled: false })).filter(node => node.type === "Pressable");
+  assert.deepEqual(buttons.map(node => node.props.accessibilityLabel), ["Messages, 123 unread", "Notifications, 7 unread"]);
+  assert.ok(buttons.every(node => node.props.disabled && node.props.accessibilityState.disabled));
+});

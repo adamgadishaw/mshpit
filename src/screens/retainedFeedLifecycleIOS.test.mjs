@@ -65,7 +65,7 @@ function createRenderer() {
 const walk = node => [node, ...(node.children || []).flatMap(walk)];
 const settle = () => new Promise(resolve => setImmediate(resolve));
 let serial = 0;
-function fixture({ filter = "everyone", platform = "ios", countdown = false, actualCards = false, posts = null } = {}) {
+function fixture({ filter = "everyone", platform = "ios", countdown = false, actualCards = false, posts = null, activity = false, unread = 0, notifUnread = 0 } = {}) {
   const renderer = createRenderer(), modules = new Map(), persisted = new Map(), intervals = new Map(), reactions = new Set();
   const timers = { set(fn, delay) { const key = {}; intervals.set(key, { fn, delay }); return key; }, clear(key) { intervals.delete(key); } };
   const calls = { news: [], live: [], following: [], intro: [], refresh: [], loadMore: [], actions: [], impressions: [], dwell: [], mutations: [] };
@@ -157,7 +157,8 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
   const event = label => { const node = all().find(node => node.props?.accessibilityLabel === label); assert.ok(node, label + ": " + JSON.stringify(all().filter(n => n.props?.accessibilityLabel).map(n => n.props.accessibilityLabel)) + " rows=" + list()?.props.data.length); return node.props.onPress; };
   const render = () => { const element = React.createElement(Feed, { visible, accountId, loggedIn: !!accountId, swipeScope: presentation, swipeEnabled: visible && appActive,
     isCurrentSwipeRoute: presentation.current, feedPresentation: presentation, feedReturn: { key: "lease", current: () => true, read: () => null, save: noop, clear: noop },
-    feed: source, localFeed: source, hasMore: true, onLoadMore: pending("loadMore"), onRefresh: pending("refresh"),
+    feed: source, localFeed: source, hasMore: true, unread, notifUnread,
+    onOpenInbox: activity ? () => calls.actions.push("inbox") : undefined, onOpenNotifications: activity ? () => calls.actions.push("notifications") : undefined, onLoadMore: pending("loadMore"), onRefresh: pending("refresh"),
     onOpenNewsStory: value => calls.actions.push(value), onOpen: value => calls.actions.push(value), onOpenProfile: value => calls.actions.push(value), onNotInterested: value => calls.actions.push(value),
     onImpression: (...args) => calls.impressions.push(args), onDwell: (...args) => calls.dwell.push(args),
     newUser: true, onOpenCountdown: value => calls.actions.push(value), onOpenDiscover: value => calls.actions.push(value),
@@ -463,4 +464,49 @@ for (const surface of ["news", "everyone"]) test(`full production Feed/${surface
     f.act(old); assert.equal(f.calls.mutations.length, 1);
     f.press("4 likes"); assert.equal(f.calls.mutations.length, 2, "The actual NewsPostActions owner is admitted on Back");
   } finally { f.close(); }
+});
+
+
+for (const control of ["Messages", "Notifications"]) {
+  test(`fixed Feed ${control} stays with the list and retires stale presentation presses`, () => {
+    const f = fixture({ activity: true, unread: 3, notifUnread: 2 });
+    try {
+      const label = `${control}, ${control === "Messages" ? 3 : 2} unread`;
+      const old = f.event(label), instance = f.list().props.instance;
+      const bar = () => f.all().filter(node => node.props?.testID === "feed-activity-controls");
+      assert.equal(bar().length, 1);
+      f.act(old); assert.deepEqual(f.calls.actions, [control === "Messages" ? "inbox" : "notifications"]);
+      f.precommit(); f.act(old); assert.equal(f.calls.actions.length, 1);
+      f.cover(); f.act(old); assert.equal(f.calls.actions.length, 1);
+      assert.equal(f.all().find(node => node.props?.accessibilityLabel === label).props.disabled, true);
+      f.uncover(); assert.equal(f.list().props.instance, instance); assert.equal(bar().length, 1);
+      f.act(old); assert.equal(f.calls.actions.length, 1);
+      f.press(label); assert.equal(f.calls.actions.length, 2);
+      const resumed = f.event(label);
+      f.active(false); f.act(resumed); assert.equal(f.calls.actions.length, 2);
+      f.active(true); f.act(resumed); assert.equal(f.calls.actions.length, 2);
+      f.press(label); assert.equal(f.calls.actions.length, 3);
+      const backgroundResumed = f.event(label);
+      f.suspend(true); f.act(backgroundResumed); assert.equal(f.calls.actions.length, 3);
+      f.suspend(false); f.act(backgroundResumed); assert.equal(f.calls.actions.length, 3);
+      f.press(label); assert.equal(f.calls.actions.length, 4);
+      const reconnect = f.event(label);
+      f.account("B"); f.act(reconnect); assert.equal(f.calls.actions.length, 4);
+      f.press(label); assert.equal(f.calls.actions.length, 5);
+      const replacement = f.event(label);
+      f.close(); f.act(replacement); assert.equal(f.calls.actions.length, 5);
+    } finally { f.close(); }
+  });
+}
+
+test("Feed activity counts remain truthful, readable and absent for missing actions", () => {
+  const f = fixture({ activity: true, unread: 123.8, notifUnread: -4 });
+  try {
+    assert.ok(f.event("Messages, 123 unread")); assert.ok(f.event("Notifications"));
+    assert.ok(f.all().some(node => node.text === "99+"));
+    assert.ok(!f.all().some(node => node.props?.accessibilityLabel?.includes("-4")));
+  } finally { f.close(); }
+  const missing = fixture();
+  try { assert.ok(!missing.all().some(node => node.props?.testID === "feed-activity-controls")); }
+  finally { missing.close(); }
 });

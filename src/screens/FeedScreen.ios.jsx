@@ -1,5 +1,7 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { View } from "react-native";
+import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import Icon from "../components/Icon";
+import { colors, font } from "../theme";
 import { FeedContent, FeedNavigation, useFeedSelection } from "./FeedScreen.jsx";
 import NativeFeedFilterPager from "../components/NativeFeedFilterPager.ios";
 import useAppActive from "../lib/useAppActive";
@@ -18,7 +20,7 @@ function FeedOwner(props) {
   const inheritedPreview = useNativeTabPreview();
   const currentRef = useRef(null);
   currentRef.current = props;
-  const scope = useMemo(() => ({ route: props.swipeScope, visible: props.visible, active }), [props.swipeScope, props.visible, active]);
+  const scope = useMemo(() => ({ route: props.swipeScope, visible: props.visible, active, inheritedPreview }), [props.swipeScope, props.visible, active, inheritedPreview]);
   const owner = scope;
   const selection = useMemo(() => ({ filter }), [filter]);
   const selected = useRef(selection);
@@ -34,9 +36,9 @@ function FeedOwner(props) {
   const current = useCallback(() => {
     if (!admission || live.current !== admission || admission.owner !== owner) return false;
     const value = currentRef.current;
-    return active && value.visible && value.swipeEnabled !== false && (!value.isCurrentSwipeRoute || value.isCurrentSwipeRoute())
+    return !inheritedPreview && active && value.visible && value.swipeEnabled !== false && (!value.isCurrentSwipeRoute || value.isCurrentSwipeRoute())
       && (!value.feedPresentation || value.feedPresentation.current());
-  }, [admission, owner, active]);
+  }, [admission, owner, active, inheritedPreview]);
   const choose = value => {
     if (!active || selected.current !== selection || !current()) return;
     // Even a tap on the selected filter invalidates queued intent/release.
@@ -44,11 +46,15 @@ function FeedOwner(props) {
     if (value !== filter) select(value);
   };
   const commit = value => { if (selected.current !== selection || !current()) return false; select(value); return true; };
-  const enabled = !!props.loggedIn && !!props.visible && active && props.swipeEnabled !== false;
+  const enabled = !inheritedPreview && !!props.loggedIn && !!props.visible && active && props.swipeEnabled !== false;
   return <NativeTabPreviewContext.Provider value={inheritedPreview || !props.visible || !active}>
   <View style={{ flex: 1, minHeight: 0 }}>
     <View testID="feed-fixed-navigation" style={{ paddingHorizontal: 12, paddingTop: 4 }}>
       <FeedNavigation filter={filter} loggedIn={props.loggedIn} onSelect={choose} />
+      {props.loggedIn && <FeedActivityControls unread={props.unread} notifications={props.notifUnread}
+        enabled={!inheritedPreview && current()} onOpenInbox={() => { if (!inheritedPreview && current()) props.onOpenInbox?.(); }}
+        onOpenNotifications={() => { if (!inheritedPreview && current()) props.onOpenNotifications?.(); }}
+        hasInbox={typeof props.onOpenInbox === "function"} hasNotifications={typeof props.onOpenNotifications === "function"} />}
     </View>
     <NativeFeedFilterPager active={filter} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
       swipeEnabled={enabled} isCurrentSwipeRoute={current}
@@ -85,3 +91,32 @@ function FeedPane({ preview, feedReturn, visible, ...props }) {
   }
   return <FeedContent {...guarded} localNavigation visible={permitted.current} feedReturn={lease} />;
 }
+
+// These controls belong to the fixed Feed owner, not an individual filter pane.
+// They remain in place during swipes and never mark activity read themselves.
+export function FeedActivityControls({ unread, notifications, enabled, onOpenInbox, onOpenNotifications, hasInbox, hasNotifications }) {
+  const { fontScale } = useWindowDimensions();
+  const count = value => Number.isFinite(Number(value)) ? Math.max(0, Math.trunc(Number(value))) : 0;
+  const items = [
+    ...(hasInbox ? [{ title: "Messages", icon: "mail", count: count(unread), press: onOpenInbox }] : []),
+    ...(hasNotifications ? [{ title: "Notifications", icon: "bell", count: count(notifications), press: onOpenNotifications }] : []),
+  ];
+  if (!items.length) return null;
+  return <View style={styles.activity} testID="feed-activity-controls">
+    {items.map(item => <Pressable key={item.title} onPress={item.press} disabled={!enabled}
+      accessibilityRole="button" accessibilityLabel={`${item.title}${item.count ? `, ${item.count} unread` : ""}`}
+      accessibilityState={{ disabled: !enabled }} style={({ pressed }) => [styles.activityButton, fontScale > 1.25 && styles.activityButtonLarge, pressed && styles.activityPressed]}>
+      <Icon name={item.icon} size={19} color={colors.amber} />
+      <Text style={styles.activityLabel}>{item.title}</Text>
+      {item.count > 0 && <Text style={styles.activityBadge}>{item.count > 99 ? "99+" : item.count}</Text>}
+    </Pressable>)}
+  </View>;
+}
+const styles = StyleSheet.create({
+  activity: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 8, paddingBottom: 6 },
+  activityButton: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 12, backgroundColor: colors.surface },
+  activityButtonLarge: { flexBasis: "100%" },
+  activityLabel: { flexShrink: 1, minWidth: 0, fontFamily: font, fontSize: 14, color: colors.text },
+  activityBadge: { flexShrink: 0, fontSize: 12, fontWeight: "700", color: colors.amber },
+  activityPressed: { backgroundColor: colors.surfaceAlt },
+});
