@@ -35,10 +35,12 @@ export default function ProfileImageCropDialog({ request }) {
   useEffect(() => {
     mounted.current = true;
     let retired = false, image;
+    const releaseImage = () => { image?.release?.(); image = null; };
     if (Number(asset.fileSize) > MEDIA_PHOTO_SOURCE_MAX_BYTES) {
       setError(`Choose a photo smaller than ${mediaUploadLimitLabel(MEDIA_PHOTO_SOURCE_MAX_BYTES)}.`);
       return () => { mounted.current = false; };
     }
+    signal.addEventListener("abort", releaseImage, { once: true });
     let context;
     void Promise.resolve().then(() => {
       if (retired || signal.aborted) return null;
@@ -47,13 +49,17 @@ export default function ProfileImageCropDialog({ request }) {
     }).then(value => {
       if (!value) return;
       image = value;
-      if (retired || signal.aborted) { value.release?.(); image = null; return; }
+      if (retired || signal.aborted) { releaseImage(); return; }
       if (![value.width, value.height].every(n => Number.isFinite(n) && n > 0)) throw new Error("Unreadable photo dimensions");
       setSource(value);
     }).catch(() => {
       if (!retired && !signal.aborted) setError("This photo could not be opened. Cancel and choose another photo.");
     }).finally(() => context?.release?.());
-    return () => { retired = true; mounted.current = false; image?.release?.(); };
+    return () => {
+      retired = true; mounted.current = false;
+      signal.removeEventListener("abort", releaseImage);
+      releaseImage();
+    };
   }, [asset, signal]);
   const responder = useRef(null);
   if (!responder.current) responder.current = PanResponder.create({

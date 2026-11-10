@@ -135,7 +135,7 @@ test("real crop dialog applies an exact portrait 3:1 crop, blocks duplicate uplo
 });
 test("crop cancel aborts upload, ignores its late completion, and decoding after dismissal releases native pixels",async()=>{
  const f=dialogFixture();await f.ready();f.renderer.act(()=>void f.button("Use this banner").props.onPress());
- f.renderer.act(()=>f.button("Cancel banner adjustment").props.onPress());assert.equal(f.uploads[0].args[1].signal.aborted,true);
+ f.renderer.act(()=>f.button("Cancel banner adjustment").props.onPress());assert.equal(f.uploads[0].args[1].signal.aborted,true);assert.ok(f.releases.includes("image"),"cancellation releases the full-resolution preview before unmount");
  f.uploads[0].resolve("stale");await settle(f.renderer);assert.deepEqual(f.finishes,[null]);f.close();
  const late=dialogFixture();await Promise.resolve();late.close();late.decode.resolve(late.image);await settle(late.renderer);assert.deepEqual(late.releases.sort(),["context","image"]);
 });
