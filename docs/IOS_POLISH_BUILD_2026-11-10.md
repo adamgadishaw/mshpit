@@ -37,3 +37,11 @@ Local signed Release artifact: `.tmp/ios-phone-checkpoints/polish-296ce4b/Mshpit
 ## Remaining acceptance and hold
 
 No phone interaction, installation, reset, push or deployment occurred. The installed app remains `cc04472`. The new artifact is ready for an in-place device review only after fresh phone availability. Physical gesture feel, tab-strip glyph layout, VoiceOver, large-text rendering, native Photos/HEIC/color-space behavior and actual crop/upload behavior remain unverified. These source tests do not certify them. Profile-badge selection remains a separate backend-first rollout; no nonfunctional badge control is exposed here.
+
+## In-place install and launch, 10 November 2026
+
+After Adam explicitly requested installation, the connected physical iPhone and all 52 preserved artifact files were verified again. Strict deep signature verification passed. CoreDevice then successfully installed this exact `296ce4b` app in place and launched `com.mshpit.app.dev`. There was no uninstall, reset, production deployment or authentication-setting change. The app was briefly locked pending the user's normal unlock.
+
+The live Device Hub view then showed Feed with the new Messages and Notifications controls, existing content and signed-in navigation, without login/onboarding. This confirms the visible launch, not a comprehensive audit of all local account data. One supported tap toward Discover returned `-10005 noWindowsAvailable`; the subsequent screenshot remained on Feed. No gesture, VoiceOver or crop/upload acceptance is claimed, and no further phone input was attempted. The phone was returned to Adam.
+
+Dated install/launch evidence: `.tmp/ios-phone-checkpoints/polish-296ce4b/phone-review-20261110T0040/review.json` and its `install.json`, `launch.json`, before/after app receipts. `.tmp/ios-phone-checkpoints/polish-296ce4b/current-status.json` records the installed state. These supersede the historical pre-install hold in the immutable build receipt. Runtime remains `296ce4b`; only this document changes.
