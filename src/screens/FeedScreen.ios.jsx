@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import NativeLargeTitle, { NativeLargeTitleProvider } from "../components/NativeLargeTitle.ios";
 import Icon from "../components/Icon";
 import { colors, font } from "../theme";
 import { unreadBadgeCount, unreadBadgeText } from "../domain/unreadBadge.mjs";
@@ -49,9 +50,10 @@ function FeedOwner(props) {
   const commit = value => { if (selected.current !== selection || !current()) return false; select(value); return true; };
   const enabled = !inheritedPreview && !!props.loggedIn && !!props.visible && active && props.swipeEnabled !== false;
   return <NativeTabPreviewContext.Provider value={inheritedPreview || !props.visible || !active}>
-  <View style={{ flex: 1, minHeight: 0 }}>
+  <NativeLargeTitleProvider><View style={{ flex: 1, minHeight: 0 }}>
     <View testID="feed-fixed-navigation" style={{ paddingHorizontal: 12, paddingTop: 4 }}>
-      <FeedNavigation filter={filter} loggedIn={props.loggedIn} onSelect={choose} />
+      <NativeLargeTitle style={styles.largeTitleBox}><Text style={styles.largeTitle} accessibilityRole="header">Feed</Text></NativeLargeTitle>
+      <FeedNavigation hideTitle filter={filter} loggedIn={props.loggedIn} onSelect={choose} />
       {props.loggedIn && <FeedActivityControls unread={props.unread} notifications={props.notifUnread}
         enabled={!inheritedPreview && current()} onOpenInbox={() => { if (!inheritedPreview && current()) props.onOpenInbox?.(); }}
         onOpenNotifications={() => { if (!inheritedPreview && current()) props.onOpenNotifications?.(); }}
@@ -61,7 +63,7 @@ function FeedOwner(props) {
       swipeEnabled={enabled} isCurrentSwipeRoute={current}
       renderPage={(page, preview, mayRead) => <FeedPane {...props} filter={page} preview={preview}
         readEnabled={mayRead && active && current()} onSelectFilter={choose} />} />
-  </View></NativeTabPreviewContext.Provider>;
+  </View></NativeLargeTitleProvider></NativeTabPreviewContext.Provider>;
 }
 function FeedPane({ preview, feedReturn, visible, ...props }) {
   const permitted = useRef(false);
@@ -116,6 +118,8 @@ export function FeedActivityControls({ unread, notifications, enabled, onOpenInb
   </View>;
 }
 const styles = StyleSheet.create({
+  largeTitleBox: { minHeight: 50, justifyContent: "center" },
+  largeTitle: { color: colors.text, fontSize: 34, lineHeight: 41, fontWeight: "700", letterSpacing: -1 },
   activity: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 8, paddingBottom: 6 },
   activityButton: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 12, backgroundColor: colors.surface },
   activityButtonLarge: { flexBasis: "100%" },

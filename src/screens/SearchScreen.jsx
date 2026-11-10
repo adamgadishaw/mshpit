@@ -1,6 +1,7 @@
 import useNativeTabContentReady from "../hooks/useNativeTabContentReady";
 import useNativeTabPreview from "../hooks/useNativeTabPreview";
 import NativeTabSwipeExclusion from "../components/NativeTabSwipeExclusion";
+import NativeLargeTitle from "../components/NativeLargeTitle";
 import { ScrollView } from "../components/NativeTabScroll";
 import { Fragment, useMemo, useState, useEffect, useLayoutEffect, useRef } from "react";
 import { ActivityIndicator, View, Text, StyleSheet, TextInput, Pressable, Image, Platform, useWindowDimensions } from "react-native";
@@ -689,7 +690,7 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
 
   const searchHeader = (
       <View style={styles.header}>
-        {IS_IOS && <Text style={styles.pageTitle} accessibilityRole="header">Search</Text>}
+        {IS_IOS && <NativeLargeTitle inFlow><Text style={styles.pageTitle} accessibilityRole="header">Search</Text></NativeLargeTitle>}
         <NativeTabSwipeExclusion><SearchControls {...(IS_IOS ? { style: [styles.searchControls, largeText && styles.searchControlsReflow] } : {})}>
         <View style={[styles.field, focused && styles.fieldFocused, largeText && styles.fieldReflow]}>
           <Icon name="search" size={18} color={focused ? colors.amber : colors.textDim} />
@@ -762,7 +763,7 @@ export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpe
         accessibilityLabel="Refresh search results"
         testID="search-refresh"
       >
-      <ScrollView ref={resultScrollRef} {...(IS_IOS ? { onLayout: scrollReturn.current.onLayout, onContentSizeChange: scrollReturn.current.onContentSizeChange, onScroll: scrollReturn.current.onScroll, onScrollBeginDrag: scrollReturn.current.onScrollBeginDrag, scrollEventThrottle: 32 } : {})} style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic"
+      <ScrollView {...(IS_IOS ? { collapsingTitle: true } : {})} ref={resultScrollRef} {...(IS_IOS ? { onLayout: scrollReturn.current.onLayout, onContentSizeChange: scrollReturn.current.onContentSizeChange, onScroll: scrollReturn.current.onScroll, onScrollBeginDrag: scrollReturn.current.onScrollBeginDrag, scrollEventThrottle: 32 } : {})} style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic"
         {...(IS_IOS ? { keyboardDismissMode: "interactive", automaticallyAdjustKeyboardInsets: true } : {})}>
         {IS_IOS && searchHeader}
         {!IS_IOS && cityDiscovery}

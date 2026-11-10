@@ -66,11 +66,12 @@ const walk = node => [node, ...(node.children || []).flatMap(walk)];
 const settle = () => new Promise(resolve => setImmediate(resolve));
 let serial = 0;
 function fixture({ filter = "everyone", platform = "ios", countdown = false, actualCards = false, posts = null, activity = false, unread = 0, notifUnread = 0 } = {}) {
-  const renderer = createRenderer(), modules = new Map(), persisted = new Map(), intervals = new Map(), reactions = new Set();
+  const renderer = createRenderer(), modules = new Map(), persisted = new Map(), intervals = new Map(), pagingTimers = new Map(), reactions = new Set();
   const timers = { set(fn, delay) { const key = {}; intervals.set(key, { fn, delay }); return key; }, clear(key) { intervals.delete(key); } };
   const calls = { news: [], live: [], following: [], intro: [], refresh: [], loadMore: [], actions: [], impressions: [], dwell: [], mutations: [] };
   const pending = name => args => new Promise((resolve, reject) => calls[name].push({ args, resolve, reject }));
-  const source = posts || Array.from({ length: 60 }, (_, index) => ({ id: "post" + index, userId: "other" }));
+  let hasMore = true;
+  let source = posts || Array.from({ length: 60 }, (_, index) => ({ id: "post" + index, userId: "other" }));
   let accountId = "A", visible = true, appActive = true, admitted = true, revision = 0, suspended = false, inheritedPreview = false;
   const pendingReveal = new Promise(() => {});
   const ReconnectGate = ({ children }) => { if (suspended) throw pendingReveal; return children; };
@@ -123,6 +124,7 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
     if (name === "react-native-reanimated") return { __esModule: true, default: { View: "AnimatedView" }, useAnimatedStyle: fn => fn() };
     if (name.endsWith("/nativeTabPreviewContext.mjs")) return contexts;
     if (name.endsWith("/NativeTabScroll")) return native;
+    if (name.endsWith("/NativeLargeTitle.ios")) return { __esModule: true, default: component("NativeLargeTitle"), NativeLargeTitleProvider: props => props.children };
     if (name.endsWith("/useNativeTabPreview")) return { __esModule: true, default: usePreview };
     if (name.endsWith("/useNativeTabContentReady")) return load("src/hooks/useNativeTabContentReady.ios.js");
     if (name.endsWith("/NativeTabPages.ios")) return load("src/components/NativeTabPages.ios.jsx");
@@ -134,13 +136,16 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
     if (name.endsWith("/feedImageRetry")) return { useFeedImageRetry: () => ({ value: null, isCurrent: () => true, accept: noop }), FeedImageRetryProvider: p => p.children };
     if (name.endsWith("/theme")) return { colors: new Proxy({}, { get: (_, key) => String(key) }), radius: {}, shadow: {}, glow: {}, font: "", roleColor: () => null, space: value => value * 4 };
     if (name.endsWith("/persist")) return { load: (key, value) => persisted.get(key) ?? value, save: (key, value) => persisted.set(key, value) };
+    if (name.endsWith("/useEndlessFeed")) return load(platform === "ios" ? "src/hooks/useEndlessFeed.ios.js" : "src/hooks/useEndlessFeed.js");
+    if (name.endsWith("/endlessFeed.mjs")) return { createEndlessFeed: args => local(name).createEndlessFeed({ ...args,
+      schedule: (fn, delay) => { const key = {}; pagingTimers.set(key, { fn, delay }); return key; }, cancel: key => pagingTimers.delete(key) }) };
     if (name.endsWith("/useFeedPresentation")) return load("src/hooks/useFeedPresentation.ios.js");
     if (name.endsWith("/useAppActive")) return { __esModule: true, default: () => appActive };
     if (name.endsWith("/useFollowingFeed")) return load("src/features/socialReactions/useFollowingFeed.ios.js");
     if (name.endsWith("/socialReactionsApi")) return { readFollowingFeed: pending("following"), subscribeSocialReactionChanges: listener => { reactions.add(listener); return () => reactions.delete(listener); } };
     if (name.endsWith("/useNewsDeskStories")) return load("src/components/news/useNewsDeskStories.ios.js");
     if (name.endsWith("/useNewsIntroduction")) return load("src/components/news/useNewsIntroduction.ios.js");
-    if (name.endsWith("/diagnostics")) return { toAppError: error => ({ kind: "app-error", code: "PIT-API-001", message: "Unable to load", ...error }) };
+    if (name.endsWith("/diagnostics")) return { toAppError: error => Object.assign(new Error("Unable to load"), { name: "AppError", code: "PIT-API-001", retryable: true }, error) };
     if (name.endsWith("/newsIntroductionSession.mjs")) return { newsIntroductionSession: introductionSession };
     if (name.endsWith("/newsDeskApi")) return { fetchNewsDeskStories: pending("news"), requestNewsIntroduction: pending("intro"), fetchLiveCoverage: pending("live") };
     if (name.endsWith("/NewsInteractionContext")) return { useNewsInteractions: () => interactions };
@@ -160,7 +165,7 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
   const event = label => { const node = all().find(node => node.props?.accessibilityLabel === label); assert.ok(node, label + ": " + JSON.stringify(all().filter(n => n.props?.accessibilityLabel).map(n => n.props.accessibilityLabel)) + " rows=" + list()?.props.data.length); return node.props.onPress; };
   const render = () => { const element = React.createElement(Feed, { visible, accountId, loggedIn: !!accountId, swipeScope: presentation, swipeEnabled: visible && appActive,
     isCurrentSwipeRoute: presentation.current, feedPresentation: presentation, feedReturn: { key: "lease", current: () => true, read: () => null, save: noop, clear: noop },
-    feed: source, localFeed: source, hasMore: true, unread, notifUnread,
+    feed: source, localFeed: source, hasMore, unread, notifUnread,
     onOpenInbox: activity ? () => calls.actions.push("inbox") : undefined, onOpenNotifications: activity ? () => calls.actions.push("notifications") : undefined, onLoadMore: pending("loadMore"), onRefresh: pending("refresh"),
     onOpenNewsStory: value => calls.actions.push(value), onOpen: value => calls.actions.push(value), onOpenProfile: value => calls.actions.push(value), onNotInterested: value => calls.actions.push(value),
     onImpression: (...args) => calls.impressions.push(args), onDwell: (...args) => calls.dwell.push(args),
@@ -169,7 +174,22 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
     renderer.render(React.createElement(React.Suspense, { fallback: React.createElement("Loading") }, React.createElement(ReconnectGate, null, React.createElement(contexts.NativeTabPreviewContext.Provider, { value: inheritedPreview }, element))));
   };
   render();
-  return { all, list, listFor, page, calls, intervals, render, act: renderer.act, event,
+  return { all, list, listFor, page, calls, intervals, pagingTimers, render, act: renderer.act, event,
+    data(rows, more) { source = rows; hasMore = more; render(); },
+    endReached: () => list().props.onEndReached,
+    advance() {
+      renderer.act(() => { list().props.onContentSizeChange(393, 10000); list().props.onEndReached(); });
+      const [key, timer] = [...pagingTimers][0] || [];
+      assert.ok(timer, "end-reached schedules pagination");
+      pagingTimers.delete(key); renderer.act(() => timer.fn());
+      // This lifecycle suite takes one step at a time. Measurement moves the
+      // end away after each step, as the newly revealed cards do on device.
+      renderer.act(() => { list().props.onLayout({ nativeEvent: { layout: { height: 800 } } }); list().props.onContentSizeChange(393, 10000); list().props.onScroll({ nativeEvent: { contentOffset: { y: 0 } } }); });
+    },
+    measure({ height = 800, content = 600, offset = 0 } = {}) { renderer.act(() => {
+      list().props.onLayout({ nativeEvent: { layout: { height } } }); list().props.onContentSizeChange(393, content); list().props.onScroll({ nativeEvent: { contentOffset: { y: offset } } });
+    }); },
+    tickPage() { const [key, timer] = [...pagingTimers][0] || []; assert.ok(timer, "pagination timer"); pagingTimers.delete(key); renderer.act(() => timer.fn()); return timer.delay; },
     press(label) { renderer.act(() => event(label)()); },
     suspend(value) { suspended = value; render(); },
     preview(value) { inheritedPreview = value; render(); },
@@ -189,9 +209,9 @@ test("actual iOS Feed owner/pager retains expanded list and denies covered/preco
   const f = fixture({ countdown: true });
   try {
     await f.resolve(f.calls.intro[0], { post: null });
-    f.press("Show more posts"); f.press("Show more posts");
+    f.advance(); f.advance();
     const instance = f.list().props.instance;
-    const oldMore = f.event("Show more posts"), oldGuide = f.event("Dismiss getting started guide");
+    const oldMore = f.endReached(), oldGuide = f.event("Dismiss getting started guide");
     const oldOpen = f.event("Find a show");
     const oldRefresh = f.all().find(node => node.props?.testID === "feed-refresh").props.onRefresh;
     const analytics = f.list().props.viewabilityConfigCallbackPairs[1].onViewableItemsChanged;
@@ -233,17 +253,17 @@ test("actual iOS Following owner keeps multiple pages, count and cursor through 
   const f = fixture({ filter: "following" });
   try {
     await f.resolve(f.calls.following[0], { posts: Array.from({ length: 8 }, (_, i) => ({ id: "first" + i })), nextCursor: "page2" });
-    f.press("Load older posts");
+    f.advance();
     assert.equal(f.calls.following[1].args.cursor, "page2");
     await f.resolve(f.calls.following[1], { posts: Array.from({ length: 8 }, (_, i) => ({ id: "second" + i })), nextCursor: "page3" });
     assert.equal(f.calls.following.length, 2, JSON.stringify(f.calls.following.map(c => ({ cursor: c.args.cursor, aborted: c.args.signal.aborted }))));
-    const oldMore = f.event("Load older posts"), instance = f.list().props.instance;
+    const oldMore = f.endReached(), instance = f.list().props.instance;
     assert.equal(f.list().props.data.length, 16);
     f.cover(); assert.equal(f.list().props.data.length, 16); assert.equal(f.intervals.size, 0);
     f.uncover(); assert.equal(f.list().props.instance, instance); assert.equal(f.list().props.data.length, 16);
     assert.equal(f.calls.following.length, 2, "No first-page revalidation on Back");
     f.act(() => oldMore()); assert.equal(f.calls.following.length, 2);
-    f.press("Load older posts"); assert.equal(f.calls.following[2].args.cursor, "page3");
+    f.advance(); assert.equal(f.calls.following[2].args.cursor, "page3");
     f.cover(); assert.equal(f.calls.following[2].args.signal.aborted, true);
     f.privacy(); assert.deepEqual(f.list().props.data, []);
   } finally { f.close(); }
@@ -255,11 +275,11 @@ test("actual iOS News owner preserves story pages/cursor and silences live cover
     const latest = f.calls.news.find(call => call.args.sort === "latest"), top = f.calls.news.find(call => call.args.sort === "top");
     await f.resolve(latest, { stories: [{ id: "one" }], nextCursor: "older" });
     await f.resolve(top, { stories: [{ id: "top" }], nextCursor: null });
-    f.press("Load older stories");
+    f.advance();
     await f.resolve(f.calls.news.at(-1), { stories: [{ id: "two" }], nextCursor: "oldest" });
     await f.resolve(f.calls.live[0], { events: [{ id: "live", title: "Coverage", live: true, items: [] }] });
     const oldPoll = [...f.intervals.values()].find(timer => timer.delay === 60_000).fn;
-    const oldMore = f.event("Load older stories"), instance = f.list().props.instance;
+    const oldMore = f.endReached(), instance = f.list().props.instance;
     assert.deepEqual(f.list().props.data.map(row => row.id), ["one", "two"]);
     assert.equal(f.intervals.size, 2);
     f.precommit(); f.act(() => { oldMore(); oldPoll(); }); assert.equal(f.calls.news.length, 3); assert.equal(f.calls.live.length, 1);
@@ -267,7 +287,7 @@ test("actual iOS News owner preserves story pages/cursor and silences live cover
     f.act(() => { oldMore(); oldPoll(); }); assert.equal(f.calls.news.length, 3); assert.equal(f.calls.live.length, 1);
     f.uncover(); assert.equal(f.list().props.instance, instance); assert.equal(f.calls.news.length, 3);
     f.act(() => { oldMore(); oldPoll(); }); assert.equal(f.calls.news.length, 3); assert.equal(f.calls.live.length, 2);
-    f.press("Load older stories"); assert.equal(f.calls.news.at(-1).args.cursor, "oldest");
+    f.advance(); assert.equal(f.calls.news.at(-1).args.cursor, "oldest");
   } finally { f.close(); }
 });
 
@@ -307,7 +327,7 @@ test("backgrounding the actual iOS owner pauses clocks, reads and analytics with
   const f = fixture({ countdown: true });
   try {
     await f.resolve(f.calls.intro[0], { post: null });
-    f.press("Show more posts");
+    f.advance();
     const instance = f.list().props.instance;
     const oldOpen = f.event("Find a show");
     const analytics = f.list().props.viewabilityConfigCallbackPairs[1].onViewableItemsChanged;
@@ -328,7 +348,7 @@ test("account replacement and unmount retire real iOS owner callbacks instead of
   const f = fixture();
   try {
     await f.resolve(f.calls.intro[0], { post: null });
-    f.press("Show more posts");
+    f.advance();
     const firstInstance = f.list().props.instance;
     const oldRefresh = f.all().find(node => node.props?.testID === "feed-refresh").props.onRefresh;
     const oldOpen = f.event("Find a show");
@@ -345,9 +365,9 @@ test("account replacement and unmount retire real iOS owner callbacks instead of
 test("a completed primary page read cannot expand the covered Feed count or replay on Back", async () => {
   const f = fixture();
   try {
-    for (let index = 0; index < 7; index++) f.press("Show more posts");
+    for (let index = 0; index < 7; index++) f.advance();
     assert.equal(f.list().props.data.length, 60);
-    f.press("Load older posts"); assert.equal(f.calls.loadMore.length, 1);
+    f.advance(); assert.equal(f.calls.loadMore.length, 1);
     f.cover(); await f.resolve(f.calls.loadMore[0], true); f.uncover();
     assert.equal(f.list().props.data.length, 60);
     assert.equal(f.calls.loadMore.length, 1);
@@ -359,7 +379,7 @@ test("real Suspense reconnect retains the Feed but never readmits callbacks from
   const f = fixture();
   try {
     await f.resolve(f.calls.intro[0], { post: null });
-    f.press("Show more posts");
+    f.advance();
     const instance = f.list().props.instance;
     const oldRefresh = f.all().find(node => node.props?.testID === "feed-refresh").props.onRefresh;
     const oldOpen = f.event("Find a show");
@@ -410,7 +430,7 @@ test("Following reconciles hidden reaction changes on Back without fetching whil
   const f = fixture({ filter: "following" });
   try {
     await f.resolve(f.calls.following[0], { posts: Array.from({ length: 40 }, (_, i) => ({ id: "old" + i })), nextCursor: "older" });
-    for (let index = 0; index < 4; index++) f.press("Show more posts");
+    for (let index = 0; index < 4; index++) f.advance();
     assert.equal(f.list().props.data.length, 40);
     f.cover(); f.changed("another-account"); f.uncover();
     assert.equal(f.calls.following.length, 1); assert.equal(f.list().props.data.length, 40);
@@ -519,8 +539,8 @@ test("Feed activity counts remain truthful, readable and absent for missing acti
 test("returning to visited Feed filters retains each exact expanded list and pauses hidden actions", () => {
   const f = fixture({ activity: true });
   try {
-    for (let index = 0; index < 4; index++) f.press("Show more posts");
-    const original = f.list(), oldMore = f.event("Show more posts");
+    for (let index = 0; index < 4; index++) f.advance();
+    const original = f.list(), oldMore = f.endReached();
     assert.equal(original.props.data.length, 40);
     f.press("Local feed");
     const local = f.list(); assert.notEqual(local, original);
@@ -532,7 +552,7 @@ test("returning to visited Feed filters retains each exact expanded list and pau
     assert.equal(f.calls.following.length, 0); assert.equal(f.calls.news.length, 0);
     f.press("For You feed"); assert.equal(f.list(), original); assert.equal(f.list().props.data.length, 40);
     f.act(oldMore); assert.equal(original.props.data.length, 40, "Returning does not revive old callbacks");
-    f.press("Show more posts"); assert.equal(original.props.data.length, 48);
+    f.advance(); assert.equal(original.props.data.length, 48);
     f.press("Local feed"); assert.equal(f.list(), local);
     f.press("For You feed"); assert.equal(f.list(), original); assert.equal(f.list().props.data.length, 48);
     assert.equal(f.all().filter(node => node.props?.testID === "feed-activity-controls").length, 1);
@@ -545,14 +565,14 @@ test("visited Following preserves loaded pages and cursor, pauses reads, and rec
   const f = fixture({ filter: "following" });
   try {
     await f.resolve(f.calls.following[0], { posts: Array.from({ length: 40 }, (_, i) => ({ id: "followed" + i })), nextCursor: "older" });
-    for (let index = 0; index < 4; index++) f.press("Show more posts");
-    const following = f.list(), oldMore = f.event("Load older posts");
+    for (let index = 0; index < 4; index++) f.advance();
+    const following = f.list(), oldMore = f.endReached();
     assert.equal(following.props.data.length, 40);
     f.press("Local feed"); assert.equal(f.listFor("following"), following); assert.equal(f.intervals.size, 0);
     f.act(oldMore); assert.equal(f.calls.following.length, 1);
     f.press("Following feed"); assert.equal(f.list(), following); assert.equal(following.props.data.length, 40);
     assert.equal(f.calls.following.length, 1, "An unchanged visited filter does not refetch");
-    f.press("Load older posts"); assert.equal(f.calls.following[1].args.cursor, "older");
+    f.advance(); assert.equal(f.calls.following[1].args.cursor, "older");
     await f.resolve(f.calls.following[1], { posts: [{ id: "page2" }], nextCursor: "last" });
     f.press("Local feed"); f.changed(); assert.equal(f.calls.following.length, 2, "Hidden mutation only invalidates");
     f.press("Following feed"); assert.equal(f.calls.following.length, 3); assert.equal(f.calls.following[2].args.cursor, null);
@@ -567,14 +587,14 @@ test("visited News keeps paginated stories and pending replies cannot mutate it 
     await f.resolve(f.calls.news.find(call => call.args.sort === "latest"), { stories: [{ id: "story1" }], nextCursor: "page2" });
     await f.resolve(f.calls.news.find(call => call.args.sort === "top"), { stories: [], nextCursor: null });
     const news = f.list();
-    f.press("Load older stories");
+    f.advance();
     const page = f.calls.news.at(-1); assert.equal(page.args.cursor, "page2");
     await f.resolve(page, { stories: [{ id: "story2" }], nextCursor: "page3" });
     f.press("Local feed"); assert.equal(f.listFor("news"), news); assert.equal(f.intervals.size, 0);
     const reads = f.calls.news.length;
     f.press("News feed"); assert.equal(f.list(), news); assert.equal(f.calls.news.length, reads);
     assert.deepEqual(news.props.data.map(story => story.id), ["story1", "story2"]);
-    f.press("Load older stories"); const late = f.calls.news.at(-1); assert.equal(late.args.cursor, "page3");
+    f.advance(); const late = f.calls.news.at(-1); assert.equal(late.args.cursor, "page3");
     f.press("Local feed"); assert.equal(late.args.signal.aborted, true);
     await f.resolve(late, { stories: [{ id: "late" }], nextCursor: null });
     f.press("News feed"); assert.deepEqual(news.props.data.map(story => story.id), ["story1", "story2"]);
@@ -609,3 +629,90 @@ test("hidden visited News drops old private-scope stories before it can be shown
     assert.deepEqual(f.list().props.data.map(story => story.id), ["new-scope"]);
   } finally { f.close(); }
 });
+
+for (const filter of ["everyone", "local", "following", "news"]) {
+  test(`actual ${filter} Feed automatically traverses short pages, stops on error and retries the same page`, async () => {
+    const f = fixture({ filter, posts: [] });
+    const collection = filter === "following" ? "following" : filter === "news" ? "news" : "loadMore";
+    const payload = (rows, cursor) => filter === "news" ? { stories: rows, nextCursor: cursor } : { posts: rows, nextCursor: cursor };
+    try {
+      if (filter === "following") await f.resolve(f.calls.following[0], payload([], "page2"));
+      else if (filter === "news") {
+        await f.resolve(f.calls.news.find(call => call.args.sort === "latest"), payload([], "page2"));
+        await f.resolve(f.calls.news.find(call => call.args.sort === "top"), payload([], null));
+      } else if (filter === "everyone") await f.resolve(f.calls.intro[0], { post: null });
+      const before = f.calls[collection].length;
+      assert.equal(f.all().some(node => /^(?:Show more|Load older|See more|Load more)/.test(node.props?.accessibilityLabel || "")), false);
+      f.measure(); assert.equal(f.tickPage(), 250);
+      assert.equal(f.calls[collection].length, before + 1);
+      if (collection === "loadMore") assert.equal(f.calls.loadMore.at(-1).args.requireProgress, true);
+      else assert.equal(f.calls[collection].at(-1).args.cursor, "page2");
+      await f.resolve(f.calls[collection].at(-1), collection === "loadMore" ? true : payload([], "page3"));
+      assert.equal(f.tickPage(), 500, "empty projection continues without another scroll or end-reached event");
+      const failed = f.calls[collection].at(-1);
+      if (collection === "loadMore") await f.resolve(failed, false);
+      else { failed.reject(Error("offline")); await settle(); f.render(); }
+      assert.equal(f.pagingTimers.size, 0);
+      f.act(() => { f.list().props.onEndReached(); f.list().props.onScroll({ nativeEvent: { contentOffset: { y: 0 } } }); });
+      assert.equal(f.pagingTimers.size, 0, "failed pages do not automatically retry");
+      const count = f.calls[collection].length;
+      f.press("Retry loading feed"); assert.equal(f.calls[collection].length, count + 1);
+      if (collection !== "loadMore") assert.equal(f.calls[collection].at(-1).args.cursor, "page3");
+      if (collection === "loadMore") f.data([{ id: "found" }], false);
+      await f.resolve(f.calls[collection].at(-1), collection === "loadMore" ? true : payload([{ id: "found" }], null));
+      assert.deepEqual(f.list().props.data.map(row => row.id), ["found"]);
+      assert.equal(f.pagingTimers.size, 0);
+      assert.equal(f.all().some(node => node.text === "You're caught up"), true);
+    } finally { f.close(); }
+  });
+}
+
+test("pagination timers from a real preview/covered Feed cannot load after its admission retires", async () => {
+  const f = fixture({ posts: [] });
+  try {
+    await f.resolve(f.calls.intro[0], { post: null });
+    f.measure(); const old = [...f.pagingTimers.values()][0].fn;
+    f.preview(true); assert.equal(f.pagingTimers.size, 0); f.act(old); assert.equal(f.calls.loadMore.length, 0);
+    f.preview(false); f.measure();
+    const current = [...f.pagingTimers.values()][0].fn;
+    f.cover(); assert.equal(f.pagingTimers.size, 0); f.act(current); assert.equal(f.calls.loadMore.length, 0);
+    f.uncover(); f.measure(); f.tickPage(); assert.equal(f.calls.loadMore.length, 1);
+  } finally { f.close(); }
+});
+
+for (const filter of ["following", "news"]) {
+  test(`actual ${filter} retry replays a failed head refresh instead of revealing cache or appending`, async () => {
+    const f = fixture({ filter });
+    const payload = rows => filter === "following" ? { posts: rows, nextCursor: "page2" } : { stories: rows, nextCursor: "page2" };
+    const source = Array.from({ length: 40 }, (_, i) => ({ id: "retained" + i }));
+    try {
+      if (filter === "following") await f.resolve(f.calls.following[0], payload(source));
+      else {
+        await f.resolve(f.calls.news.find(call => call.args.sort === "latest"), payload(source));
+        await f.resolve(f.calls.news.find(call => call.args.sort === "top"), { stories: [], nextCursor: null });
+      }
+      const visibleBefore = f.list().props.data.length;
+      const before = f.calls[filter].length;
+      f.act(() => { void f.all().find(node => node.props?.testID === "feed-refresh").props.onRefresh(); });
+      for (const call of f.calls[filter].slice(before)) call.reject(Error("offline head"));
+      await settle(); f.render();
+      assert.equal(f.pagingTimers.size, 0);
+      f.press("Retry loading feed");
+      const retry = f.calls[filter].at(-1);
+      assert.equal(retry.args.cursor, null);
+      assert.equal(f.list().props.data.length, visibleBefore, "retry never merely expands cached rows");
+      await f.resolve(retry, payload(source));
+      assert.equal(f.all().some(node => node.props?.accessibilityLabel === "Retry loading feed"), false);
+    } finally { f.close(); }
+  });
+  test(`actual ${filter} initial error retries without an existing page cursor`, async () => {
+    const f = fixture({ filter });
+    try {
+      for (const call of f.calls[filter]) call.reject(Error("offline"));
+      await settle(); f.render();
+      const before = f.calls[filter].length;
+      f.press("Retry loading feed");
+      assert.equal(f.calls[filter].length, before + 1); assert.equal(f.calls[filter].at(-1).args.cursor, null);
+    } finally { f.close(); }
+  });
+}

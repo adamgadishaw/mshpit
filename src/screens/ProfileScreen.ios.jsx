@@ -1,5 +1,6 @@
 // iOS retains this screen while another detail covers it. Other platforms use ProfileScreen.jsx.
 import ProfileGuidance from "../components/ProfileGuidance";
+import NativeLargeTitle, { NativeLargeTitleProvider } from "../components/NativeLargeTitle.ios";
 import { ScrollView } from "../components/NativeTabScroll";
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ActionSheetIOS, ActivityIndicator, View, Text, StyleSheet, Pressable, Platform, useWindowDimensions } from "react-native";
@@ -587,10 +588,10 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   const ownerUnread = isSelf ? (ownerTools || []).reduce((total, tool) => total + (tool.badge || 0), 0) : 0;
   const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? user.verified ? "VERIFIED ARTIST" : "ARTIST" : "FAN";
   return (
-    <View style={styles.wrap}>
+    <NativeLargeTitleProvider reserveSpace><View style={styles.wrap}>
       <View testID="profile-header" style={styles.topbar}>
         {asTab ? (
-          <Text style={[styles.topTitle, styles.topTitleTab]} numberOfLines={1} accessibilityRole="header">{IS_IOS ? "You" : `@${user.handle}`}</Text>
+          <NativeLargeTitle containerStyle={{ flex: 1, minWidth: 0 }}><Text style={[styles.topTitle, styles.topTitleTab, { flex: 0 }]} accessibilityRole="header">{IS_IOS ? "You" : `@${user.handle}`}</Text></NativeLargeTitle>
         ) : (
           <>
             <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
@@ -975,7 +976,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
       </ScrollView>
       </VinylRefreshBoundary>
       </ProfileMediaRetryBoundary>
-    </View>
+    </View></NativeLargeTitleProvider>
   );
 }
 

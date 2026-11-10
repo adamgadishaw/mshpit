@@ -1162,7 +1162,7 @@ export function StoreProvider({ children }) {
   // Pull server posts (with current counts and viewer-like state) and upsert them
   // into the local cache. Existing IDs must be replaced, not skipped, otherwise
   // edits and cross-device likes/comments remain stale forever.
-  const mergeServerFeed = (posts, { prepend = true, preserveOrder = false, authoritative = false } = {}) => {
+  const mergeServerFeed = (posts, { prepend = true, preserveOrder = false, authoritative = false, stableAppend = false } = {}) => {
     if (!Array.isArray(posts) || !posts.length) return;
     const incoming = posts.map(normalizeServerPost);
     setFeed((current) => {
@@ -1175,7 +1175,10 @@ export function StoreProvider({ children }) {
       const remaining = current.filter((post) => !serverIds.has(post.id)
         && (!authoritative || post.pending || String(post.id || "").startsWith("p_local_")));
       let next;
-      if (preserveOrder) {
+      if (stableAppend) {
+        const byId = new Map(normalized.map(post => [post.id, post]));
+        next = [...current.map(post => byId.get(post.id) || post), ...[...byId.values()].filter(post => !currentById.has(post.id))];
+      } else if (preserveOrder) {
         const byId = new Map(normalized.map((post) => [post.id, post]));
         const replaced = current.map((post) => byId.get(post.id) || post);
         const existingIds = new Set(current.map((post) => post.id));
@@ -1276,6 +1279,7 @@ export function StoreProvider({ children }) {
         setFeedNextCursor(nextCursor || null);
         setFeedHasMore(!!nextCursor);
         feedPageRef.current = 1;
+        refresh.pageCursors = new Set();
       }
       trackProductEvent("feed_request", { surface: "everyone", algorithm: feedAlgorithmRef.current, page: 1, fallback });
       trackProductEvent("performance", {
@@ -1301,11 +1305,12 @@ export function StoreProvider({ children }) {
       if (sequence === refresh.sequence) refresh.inFlight = false;
     }
   };
-  const loadMoreFeed = async () => {
+  const loadMoreFeed = async ({ requireProgress = false } = {}) => {
     if (!authReadyRef.current || !feedAccountIdRef.current) return false;
     // React state does not update until the next render. FlatList may fire
     // onEndReached more than once in that window, so use an immediate lock too.
     if (feedRefreshRef.current.inFlight || feedLoadMoreRef.current || feedLoadingMore || !feedHasMore || !feedNextCursor) return false;
+    if (requireProgress && feedRefreshRef.current.pageCursors?.has(`${feedModeRef.current}:${feedNextCursor}`)) return false;
     const request = { controller: new AbortController(), read: captureFeedRead(currentFeedReadState()) };
     const signal = request.controller.signal;
     const isCurrent = (error) => feedLoadMoreRef.current === request
@@ -1352,9 +1357,21 @@ export function StoreProvider({ children }) {
       }
       if (!isCurrent()) return false;
       const { posts, nextCursor } = payload || {};
+      // Endless pagination must not mistake a malformed response for the end,
+      // or repeatedly request a cursor that the server has already consumed.
+      const cursors = feedRefreshRef.current.pageCursors || new Set();
+      const requestedCursor = `${feedModeRef.current}:${feedNextCursor}`;
+      const returnedCursor = nextCursor ? `${mode}:${nextCursor}` : null;
+      if (requireProgress && (!Array.isArray(posts) || !Object.prototype.hasOwnProperty.call(payload, "nextCursor")
+        || (nextCursor != null && (typeof nextCursor !== "string" || !nextCursor))
+        || (returnedCursor && (returnedCursor === requestedCursor || cursors.has(returnedCursor))))) return false;
+      if (requireProgress) {
+        cursors.add(requestedCursor);
+        feedRefreshRef.current.pageCursors = cursors;
+      }
       feedModeRef.current = mode;
       feedAlgorithmRef.current = algorithm;
-      mergeServerFeed(posts, { prepend: false, preserveOrder: fallback });
+      mergeServerFeed(posts, { prepend: false, preserveOrder: fallback, stableAppend: requireProgress });
       setFeedNextCursor(nextCursor || null);
       setFeedHasMore(!!nextCursor);
       feedPageRef.current += 1;

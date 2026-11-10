@@ -13,7 +13,7 @@ export default function useNewsDeskStories({ enabled = true, limit = 20, artist 
   const ready = !!enabled && !!authReady && active;
   const admission = useRef(null);
   if (admission.current?.scope !== scope || admission.current?.authReady !== authReady || admission.current?.retainOnInactive !== retainOnInactive) {
-    admission.current = { scope, authReady, retainOnInactive, complete: false, cursor: null, retry: null, status: "idle" };
+    admission.current = { scope, authReady, retainOnInactive, complete: false, cursor: null, cursors: new Set(), retry: null, status: "idle" };
   }
   const data = admission.current;
   const boundary = useRef(null);
@@ -36,22 +36,29 @@ export default function useNewsDeskStories({ enabled = true, limit = 20, artist 
     const controller = new AbortController();
     controllerRef.current = controller;
     const operation = { controller };
+    const requestedCursor = more ? data.cursor : null;
     pendingRef.current = operation;
     const valid = () => current() && mounted.current && boundary.current === attempt && controllerRef.current === controller && !controller.signal.aborted;
     setState((current) => ({ ...(current.data === data ? current : emptyNewsState(scope)), data, status: "loading" }));
     try {
-      const result = await fetchNewsDeskStories({ cursor: more ? data.cursor : null, limit, artist, sort, signal: controller.signal });
+      const result = await fetchNewsDeskStories({ cursor: requestedCursor, limit, artist, sort, signal: controller.signal });
       if (!valid()) return false;
-      const incoming = Array.isArray(result?.stories) ? result.stories : [];
-      const nextCursor = result?.nextCursor || null;
+      if (!Array.isArray(result?.stories) || !Object.prototype.hasOwnProperty.call(result, "nextCursor")) throw new Error("Invalid news page");
+      const incoming = result.stories;
+      const nextCursor = result.nextCursor;
+      if ((nextCursor != null && (typeof nextCursor !== "string" || !nextCursor))
+        || (more && nextCursor && (nextCursor === requestedCursor || data.cursors.has(nextCursor)))) throw new Error("News cursor did not advance");
+      if (!more) data.cursors.clear();
+      else data.cursors.add(requestedCursor);
       data.cursor = nextCursor;
       data.complete = true;
       data.status = "ready";
       data.retry = null;
       setState((current) => {
         const previous = more && current.data === data ? current.stories : [];
-        const seen = new Set(previous.map((story) => story.id));
-        const stories = more ? [...previous, ...incoming.filter((story) => !seen.has(story.id))] : incoming;
+        const byId = new Map(previous.map(story => [story.id, story]));
+        for (const story of incoming) byId.set(story.id, story);
+        const stories = [...byId.values()];
         return { data, scope, stories, nextCursor, status: "ready" };
       });
       return true;

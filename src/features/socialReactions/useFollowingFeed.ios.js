@@ -11,7 +11,7 @@ export default function useFollowingFeed({ accountId, enabled, privacyScope, ret
     // A fresh identity prevents an A -> B -> A privacy round trip from admitting
     // the first A's resource, even when its serialized query scope matches again.
     const identity = {};
-    admission.current = { scope, identity, retainOnInactive, complete: false, revision: 0, reconciledRevision: 0,
+    admission.current = { scope, identity, retainOnInactive, complete: false, retry: null, cursors: new Set(), revision: 0, reconciledRevision: 0,
       settled: createLoadState({ scope: identity, data: emptyFeed() }) };
   }
   const data = admission.current;
@@ -28,21 +28,31 @@ export default function useFollowingFeed({ accountId, enabled, privacyScope, ret
   const admitted = () => mounted.current && current.current === owner && owner.enabled && owner.presentation?.current() !== false;
   const request = async (more = false) => {
     if (!admitted() || !owner.accountId || owner.request || (more && !owner.resource.data.nextCursor)) return false;
+    const requestedCursor = more ? owner.resource.data.nextCursor : null;
     const token = { controller: new AbortController(), revision: data.revision };
     owner.request = token;
     owner.resource = beginLoadState(owner.resource, { scope: data.identity, emptyData: emptyFeed() });
     setResource(owner.resource);
     const valid = () => admitted() && owner.request === token && !token.controller.signal.aborted;
     try {
-      const result = await readFollowingFeed({ accountId: owner.accountId, cursor: more ? owner.resource.data.nextCursor : null, signal: token.controller.signal });
+      const result = await readFollowingFeed({ accountId: owner.accountId, cursor: requestedCursor, signal: token.controller.signal });
       if (!valid()) return false;
       if (!Array.isArray(result?.posts)) throw toAppError(null, { code: "PIT-API-001", context: "Loading Following feed", source: "api" });
+      const nextCursor = result.nextCursor;
+      if (!Object.prototype.hasOwnProperty.call(result, "nextCursor")
+        || (nextCursor != null && (typeof nextCursor !== "string" || !nextCursor))
+        || (more && nextCursor && (nextCursor === requestedCursor || data.cursors.has(nextCursor)))) {
+        throw toAppError(null, { code: "PIT-API-001", context: "Advancing Following feed", source: "api" });
+      }
+      if (!more) data.cursors.clear();
+      else data.cursors.add(requestedCursor);
       const previousPosts = more ? owner.resource.data.posts : [];
       const byId = new Map(previousPosts.map(post => [post.id, post]));
       for (const post of result.posts) byId.set(post.id, post);
       const next = resolveLoadState({ scope: data.identity, data: { posts: [...byId.values()], nextCursor: result.nextCursor || null } });
       owner.resource = next;
       data.complete = true;
+      data.retry = null;
       if (!more) data.reconciledRevision = token.revision;
       data.settled = next;
       setResource(next);
@@ -59,7 +69,7 @@ export default function useFollowingFeed({ accountId, enabled, privacyScope, ret
           retainData: ![401, 403, 404, 410].includes(Number(error?.status)),
         });
         owner.resource = next;
-        if (!isLoadCancellation(error, token.controller.signal)) data.complete = true;
+        if (!isLoadCancellation(error, token.controller.signal)) { data.complete = true; data.retry = { more }; }
         data.settled = next;
         setResource(next);
       }
@@ -112,5 +122,6 @@ export default function useFollowingFeed({ accountId, enabled, privacyScope, ret
   // Keep the screen's established presentation API while the owned resource is
   // canonical: a refresh is its existing spinner, and loaded means admitted data.
   return { scope, posts: view.data.posts, nextCursor: view.data.nextCursor, status: view.status === "refreshing" ? "loading" : view.status,
-    loaded: view.updatedAt != null, reload: () => request(false), loadMore: () => request(true) };
+    loaded: view.updatedAt != null, failedMore: view.status === "error" && data.retry?.more === true,
+    reload: () => request(false), loadMore: () => request(true), retry: () => request(data.retry?.more === true) };
 }

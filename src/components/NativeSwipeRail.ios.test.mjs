@@ -54,9 +54,9 @@ const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 const sleepForever = new Promise(() => {});
 // Actual React, platform-resolved rail and shell components. The native gesture,
 // UI/RN scheduler and actions are synthetic: this does not validate a device.
-function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "following", entryDirection = 0, scrollChild = null, pager = false, shell = false, scrollRef = null, scrollProps = {}, feedScreen = false, discoverScreen = false, selectedFilter = "everyone" } = {}) {
+function fixture({ component = "rail", strict = false, reader = false, reduced = false, onCommit, onChange, nativeReader = false, retained = false, page = false, excludedChild = false, active = "following", entryDirection = 0, scrollChild = null, pager = false, shell = false, scrollRef = null, scrollProps = {}, feedScreen = false, discoverScreen = false, selectedFilter = "everyone", titleMode = null } = {}) {
   const dimensions = { width: 412, fontScale: 1 };
-  const scrolls = [];
+  const scrolls = [], titleOffsets = [];
   const renderer = createRenderer(), gestures = [], queue = [], calls = [], shared = [], reactions = [], springs = [], timings = [], animatedStyles = [], appListeners = new Set(), appHistory = [], springCompletions = [], canceledAnimations = [];
   let props = { page, entryDirection, enabled: true, active, onCommit: onCommit || (direction => calls.push(direction)), onChange: onChange || (tab => calls.push(tab)), hint: "Swipe for an action",
     post: { id: "post-A", likes: 0 }, accountId: "account-A", likeInfo: () => ({ liked: false }),
@@ -78,14 +78,16 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
         const ref = React.useRef(null); if (!ref.current) { ref.current = {}; reactions.push(ref.current); }
         Object.assign(ref.current, { prepare, react });
         React.useLayoutEffect(() => { ref.current.active = true; return () => { ref.current.active = false; }; }, []);
-      }, useAnimatedRef: () => React.useRef(null), useAnimatedScrollHandler: handlers => handlers,
+      }, useDerivedValue: callback => { const current = React.useRef(callback); current.current = callback; return React.useMemo(() => ({ get: () => current.current() }), []); },
+      useScrollOffset: ref => { const offset = useSharedValue(0); React.useEffect(() => { titleOffsets.push({ ref, offset }); }, [ref, offset]); return offset; },
+      useAnimatedRef: () => { const ref = React.useRef(null); if (!ref.current) { const bind = node => { bind.current = node; }; ref.current = bind; } return ref.current; }, useAnimatedScrollHandler: handlers => handlers,
       scrollTo: (ref, x, y, animated) => { scrolls.push({ target: ref.current, x, y, animated }); }, withSpring: (value, config, done) => { springs.push(config); springCompletions.push(done); return value; }, withTiming: (value, config, done) => { timings.push({ value, config, done }); return value; } },
     "react-native-worklets": { scheduleOnRN: (fn, ...args) => { queue.push(() => fn(...args)); }, scheduleOnUI: (fn, ...args) => { if (holdUI) uiQueue.push(() => fn(...args)); else fn(...args); } },
     "../theme": { colors: { bg: "bg", surface: "surface" }, font: "System" }, "./Icon": "Icon", "./BrandMark": "BrandMark",
     "../hooks/useReducedMotion": () => reduced, "../hooks/useScreenReaderEnabled": { __esModule: true, default: () => reader,
       getConfirmedScreenReaderEnabled: () => confirmed,
       subscribeConfirmedScreenReaderEnabled: callback => { const entry = { callback, active: true }; confirmedSubscriptions.push(entry); return () => { entry.active = false; }; } },
-    "react-native-gesture-handler": { GestureDetector: "GestureDetector", Gesture: { Pan() {
+    "react-native-gesture-handler": { GestureDetector: p => React.createElement("GestureDetector", p, React.cloneElement(React.Children.only(p.children), { collapsable: false })), Gesture: { Pan() {
       const handlers = {};
       const builder = new Proxy({ handlers }, { get: (target, name) => name === "handlers" ? handlers : (...values) => { handlers[name] = values.length > 1 ? values : values[0]; return builder; } });
       gestures.push(handlers); return builder;
@@ -121,6 +123,10 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   const Exclusion = exclusionModule.default;
   modules["./NativeTabSwipeExclusion"] = exclusionModule;
   if (component === "social-ios") { modules["./RetainedPostSwipeActions.ios.jsx"] = execute("./RetainedPostSwipeActions.ios.jsx"); Component = execute("./PostSwipeActions.ios.jsx").default; }
+  modules["../hooks/useNativeTabPreview"] = execute("../hooks/useNativeTabPreview.ios.js");
+  modules["./NativeLargeTitle.ios"] = execute("./NativeLargeTitle.ios.jsx");
+  modules["../NativeLargeTitle.ios"] = modules["./NativeLargeTitle.ios"];
+  modules["../components/NativeLargeTitle.ios"] = modules["./NativeLargeTitle.ios"];
   const Scroll = execute("./NativeTabScroll.ios.jsx");
   const Child = () => scrollChild === "nested" ? React.createElement(Scroll.ScrollView, { testID: "vertical" }, React.createElement(Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: true, testID: "horizontal", snapToInterval: 180 }, React.createElement("Pressable", { onPress: () => calls.push("card") }))) : scrollChild ? React.createElement(scrollChild === "input" ? Scroll.TextInput : Scroll.ScrollView, { ...scrollProps, ref: scrollRef, horizontal: scrollChild === "horizontal" }, React.createElement("ExplicitButton")) : excludedChild ? React.createElement(Exclusion, null, React.createElement("ExplicitButton")) : React.createElement("ExplicitButton", { onPress: () => calls.push("explicit") });
   const useContentReady = execute("../hooks/useNativeTabContentReady.ios.js").default;
@@ -165,7 +171,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
         p.data.length ? p.data.map((item, index) => React.createElement(React.Fragment, { key: item.id }, p.renderItem({ item, index }))) : p.ListEmptyComponent, p.ListFooterComponent);
     };
     Object.assign(modules["react-native"], { FlatList, Platform: { OS: "ios" }, StyleSheet: installedStyleSheet });
-    modules["../components/NativeTabScroll"] = { FlatList, ScrollView: "ScrollView" };
+    modules["../components/NativeTabScroll"] = execute("./NativeTabScroll.ios.jsx");
     modules["../hooks/useNativeTabPreview"] = execute("../hooks/useNativeTabPreview.ios.js");
     modules["../hooks/useNativeTabContentReady"] = execute("../hooks/useNativeTabContentReady.ios.js");
     modules["../hooks/useIOSFeedReturn"] = execute("../hooks/useIOSFeedReturn.ios.js");
@@ -275,12 +281,26 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
       },
     };
   }
+  if (titleMode) {
+    const { default: Title, NativeLargeTitleProvider: Provider } = modules["./NativeLargeTitle.ios"];
+    Component = () => {
+    const heading = React.createElement(Title, { inFlow: titleMode === "flow" }, React.createElement("Text", { accessibilityRole: "header" }, "Page"));
+    return React.createElement(Provider, { reserveSpace: titleMode === "row" },
+      titleMode === "flow" ? null : heading,
+      React.createElement(Scroll.ScrollView, { observePageTitle: false, testID: "area" }, "Area options"),
+      React.createElement(Scroll.ScrollView, { ...scrollProps, ref: scrollRef, testID: "primary" },
+        titleMode === "flow" ? heading : null,
+        React.createElement(Scroll.ScrollView, { horizontal: true, testID: "rail" }, "Horizontal cards"),
+        React.createElement(Scroll.ScrollView, { testID: "nested" }, "Nested content")));
+    };
+  }
   const Layer = execute("./NativeFeedMediaLayer.jsx").default;
   function Gate() { if (suspended) throw sleepForever; return null; }
   const componentKey = () => pager ? `${props.accountId}:${props.authEpoch || 0}` : component === "social" ? `${props.accountId || "guest"}:${props.post.id}` : "component";
   const f = {
-    calls, queue, gestures, shared, reactions, scrolls, dimensions, springs, timings, animatedStyles, unmounted, reads, writes, impressions, dwell, leaseWrites, introductions, persisted, browseRenders, canceledAnimations,
-    springFrame(value) { shared[3].set(value); },
+    calls, queue, gestures, shared, reactions, scrolls, titleOffsets, dimensions, springs, timings, animatedStyles, unmounted, reads, writes, impressions, dwell, leaseWrites, introductions, persisted, browseRenders, canceledAnimations,
+    springFrame(value) { shared[discoverScreen ? 5 : 3].set(value); },
+    preferences(next) { reduced = !!next.reduced; reader = !!next.reader; f.render(); },
     holdUI(value) { holdUI = value; }, flushUI() { while (uiQueue.length) uiQueue.shift()(); },
     pages: () => f.all().filter(node => node.type === "ActualPage"),
     lists: () => f.all().filter(node => node.type === "FlatList"),
@@ -834,7 +854,7 @@ test("fixed Feed navigation and body header contribute one original strip-to-car
   const f = fixture({ feedScreen: true }); t.after(f.close);
   const flatten = style => Array.isArray(style) ? Object.assign({}, ...style.filter(Boolean).map(flatten)) : style || {};
   const fixed = f.all().find(node => node.props?.testID === "feed-fixed-navigation");
-  const navigation = flatten(fixed.children[0].props.style);
+  const navigation = flatten(fixed.children.find(node => node.type === "View").props.style);
   const list = f.lists()[0];
   const bodyHeader = flatten(list.props.ListHeaderComponent.props.style);
   const content = flatten(list.props.contentContainerStyle);
@@ -1470,4 +1490,118 @@ test("iOS Feed exposes distinct notification/message badges capped visually at 9
   assert.ok(!f.all().some(n => n.text === "99+"));
   assert.ok(!f.all().some(n => n.props?.testID?.startsWith("feed-activity-badge-")));
   f.render({ routeCurrent: false }); f.act(bell.props.onPress); assert.equal(opened.length, 2);
+});
+
+const titleRegion = f => f.all().find(node => node.type === "AnimatedView" && node.props.style?.[0]?.overflow === "hidden");
+const titleStyle = f => titleRegion(f).props.style.at(-1).__animate();
+const measureTitle = (f, height = 60) => f.act(() => titleRegion(f).children[0].props.onLayout({ nativeEvent: { layout: { height } } }));
+const measureTitleList = (f, content = 1000, viewport = 500, list = f.lists()[0]) => f.act(() => {
+  list.props.onLayout({ nativeEvent: { layout: { height: viewport, width: 390 } } });
+  list.props.onContentSizeChange(390, content);
+});
+
+test("actual Feed title collapses continuously, clamps bounce, and expands on return to top", t => {
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  measureTitle(f); measureTitleList(f); f.react();
+  const offset = f.titleOffsets[0].offset;
+  assert.equal(f.lists()[0].props.collapsable, false, "forward RNGH native attachment guarantee through title observer");
+  for (const [y, height, opacity] of [[0, 60, 1], [30, 30, 0.5], [60, 0, 0], [400, 0, 0], [-25, 60, 1], [0, 60, 1]]) {
+    offset.set(y); f.react();
+    assert.equal(titleStyle(f).height, height);
+    assert.equal(titleStyle(f).opacity, opacity);
+  }
+  assert.equal(f.all().filter(node => node.type === "Text" && node.children.some(child => child.text === "Feed")).length, 1);
+  assert.equal(f.all().filter(node => node.props?.testID === "feed-fixed-navigation").length, 1);
+});
+
+test("short Feed content cannot oscillate as collapsing the title expands its viewport", t => {
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  measureTitle(f); measureTitleList(f, 619); f.titleOffsets[0].offset.set(60); f.react();
+  assert.equal(titleStyle(f).height, 60, "needs enough range for both scroll and expanded viewport");
+  measureTitleList(f, 620); f.react();
+  assert.equal(titleStyle(f).height, 0);
+  measureTitleList(f, 620, 560); f.react();
+  assert.equal(titleStyle(f).height, 0, "our own resize is excluded from expanded viewport measurement");
+  f.titleOffsets[0].offset.set(0); f.react(); measureTitleList(f, 620, 500); f.react();
+  assert.equal(titleStyle(f).height, 60);
+});
+
+test("actual retained Feed filters restore their own title offset and ignore hidden scroll events", t => {
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  measureTitle(f); measureTitleList(f); f.titleOffsets[0].offset.set(60); f.react();
+  assert.equal(titleStyle(f).height, 0);
+  f.press("Local feed"); f.react();
+  assert.equal(titleStyle(f).height, 60, "new selected filter starts expanded");
+  f.titleOffsets[0].offset.set(300); f.react();
+  assert.equal(titleStyle(f).height, 60, "parked pane cannot overwrite selected heading");
+  f.press("For You feed"); f.react();
+  assert.equal(titleStyle(f).height, 0, "retained filter reuses its native offset without scrollTo");
+});
+
+test("title responds to larger text and live accessibility preferences without losing its heading", t => {
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  measureTitle(f); measureTitleList(f); f.titleOffsets[0].offset.set(30); f.react();
+  measureTitle(f, 120); f.react();
+  assert.equal(titleStyle(f).height, 90);
+  assert.equal(titleStyle(f).opacity, 0.75);
+  f.preferences({ reduced: true }); f.react();
+  assert.equal(titleStyle(f).height, 90);
+  assert.equal(titleStyle(f).opacity, 1);
+  assert.equal(titleStyle(f).transform[0].translateY, 0);
+  f.preferences({ reader: true }); f.react();
+  assert.equal(titleStyle(f).height, 120);
+  assert.equal(titleStyle(f).opacity, 1);
+  assert.ok(nodes(titleRegion(f)).some(node => node.props?.accessibilityRole === "header"));
+});
+
+test("native title observer preserves original events/ref and excludes area, horizontal and nested scrolls", t => {
+  const scrollEvents = [], layoutEvents = [], sizes = [], refs = [];
+  const onScroll = event => scrollEvents.push(event);
+  const f = fixture({ titleMode: "fixed", scrollRef: node => { refs.push(node); }, scrollProps: {
+    onScroll, onLayout: event => layoutEvents.push(event), onContentSizeChange: (...args) => sizes.push(args), scrollEventThrottle: 32,
+  } }); t.after(f.close);
+  const main = f.all().find(node => node.props?.testID === "primary");
+  const event = { nativeEvent: { layout: { height: 500, width: 390 }, contentOffset: { x: 0, y: 40 } } };
+  assert.equal(main.props.onScroll, onScroll, "no event replacement or JS relay");
+  main.props.onScroll(event); main.props.onLayout(event); main.props.onContentSizeChange(390, 1000);
+  assert.equal(scrollEvents[0], event); assert.equal(layoutEvents[0], event);
+  assert.deepEqual(sizes, [[390, 1000]]);
+  assert.equal(refs.at(-1), main);
+  assert.equal(main.props.scrollEventThrottle, 16);
+  assert.equal(f.titleOffsets.length, 1, "only the primary vertical scroll subscribes");
+  f.close(); assert.equal(refs.at(-1), null);
+});
+
+for (const mode of ["flow", "row"]) test(`${mode} title animates without changing existing content/action row height`, t => {
+  const f = fixture({ titleMode: mode }); t.after(f.close);
+  measureTitle(f);
+  const main = f.all().find(node => node.props?.testID === "primary");
+  measureTitleList(f, 1000, 500, main); f.titleOffsets[0].offset.set(30); f.react();
+  assert.equal(titleStyle(f).height, undefined);
+  assert.equal(titleStyle(f).opacity, 0.5);
+  assert.equal(titleStyle(f).transform[0].translateY, -4);
+  f.preferences({ reduced: true }); f.react();
+  assert.equal(titleStyle(f).height, undefined);
+  assert.equal(titleStyle(f).opacity, 1);
+});
+
+test("installed Expo 57 preset compiles native title observers and animated styles as UI worklets", () => {
+  for (const name of ["NativeLargeTitle", "NativeTabScroll"]) {
+    const file = new URL(`./${name}.ios.jsx`, import.meta.url);
+    const result = transformSync(readFileSync(file, "utf8"), { filename: file.pathname, babelrc: false, configFile: false,
+      presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: true } });
+    assert.ok((result.code.match(/__workletHash/g) || []).length >= 2, name);
+  }
+});
+
+test("Metro keeps new large-title animation out of Android and web", () => {
+  const { resolve } = require("metro-resolver");
+  const context = { originModulePath: fileURLToPath(new URL("../../App.js", import.meta.url)), assetExts: new Set(), sourceExts: ["js", "jsx", "json", "ts", "tsx"],
+    preferNativePlatform: true, mainFields: ["react-native", "browser", "main"], getPackageForModule: () => null,
+    fileSystemLookup(path) { try { const stat = statSync(path); return { exists: true, type: stat.isDirectory() ? "d" : "f", realPath: realpathSync(path) }; } catch { return { exists: false }; } },
+  };
+  for (const platform of ["ios", "android", "web"]) {
+    const result = resolve({ ...context, preferNativePlatform: platform !== "web" }, "./src/components/NativeLargeTitle", platform);
+    assert.equal(result.filePath, fileURLToPath(new URL(`./NativeLargeTitle${platform === "ios" ? ".ios" : ""}.jsx`, import.meta.url)));
+  }
 });

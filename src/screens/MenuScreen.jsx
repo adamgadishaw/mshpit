@@ -1,4 +1,6 @@
-import { View, Text, StyleSheet, ScrollView, Pressable, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, Platform, Pressable, useWindowDimensions } from "react-native";
+import { ScrollView } from "../components/NativeTabScroll";
+import NativeLargeTitle from "../components/NativeLargeTitle";
 import { colors, displayFont, focusRing, font, mono, radius, shadow, space, THEMES, themeKey } from "../theme";
 import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { useStore } from "../store";
@@ -114,7 +116,7 @@ function JourneyHero({ session, onProfile, onLogin, wide }) {
 
       <View style={styles.heroCopy}>
         <Text style={styles.heroEyebrow}>MSHPIT · YOUR STORY IN SOUND</Text>
-        <Text style={styles.heroTitle} accessibilityRole="header" selectable>{JOURNEY_TAGLINE}</Text>
+        <NativeLargeTitle inFlow><Text style={styles.heroTitle} accessibilityRole="header" selectable>{JOURNEY_TAGLINE}</Text></NativeLargeTitle>
         <Text style={styles.heroBody} selectable>
           Revisit the nights that shaped you, stay close to your music community, and find the room worth showing up for next.
         </Text>
@@ -186,6 +188,7 @@ export default function MenuScreen({ onClose, onCrew, onNews, onNear, onVenues, 
     <View style={styles.wrap}>
       <ScreenHeader title="Menu" onBack={onClose} />
       <ScrollView
+        {...(Platform.OS === "ios" ? { collapsingTitle: true } : {})}
         contentInsetAdjustmentBehavior="automatic"
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}

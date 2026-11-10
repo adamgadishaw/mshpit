@@ -454,3 +454,30 @@ test("Following failed or interrupted reconciliation keeps hidden invalidations 
     f.render({ ...props, enabled: false }); f.commit(); f.render(props); f.commit(); assert.equal(f.calls.length, 3); f.unmount();
   }
 });
+
+for (const kind of ["news", "following"]) {
+  test(`${kind}: endless pages reject repeated/cyclic cursors and retry the failed page without replacing history`, async () => {
+    const f = fixture(kind); f.render(options(kind)); f.commit();
+    f.calls[0].resolve(result(kind, ["one"], "page-two")); await settle();
+    const bad = f.render().loadMore();
+    f.calls[1].resolve(result(kind, ["untrusted"], "page-two")); assert.equal(await bad, false);
+    assert.deepEqual(ids(kind, f.render()), ["one"]); assert.equal(f.render().nextCursor, "page-two"); assert.equal(f.render().status, "error");
+    const retry = kind === "news" ? f.render().retry() : f.render().loadMore();
+    assert.equal(f.calls[2].cursor, "page-two");
+    f.calls[2].resolve(result(kind, ["one", "two", "two"], "page-three")); assert.equal(await retry, true);
+    assert.deepEqual(ids(kind, f.render()), ["one", "two"]);
+    const cycle = f.render().loadMore();
+    f.calls[3].resolve(result(kind, [], "page-two")); assert.equal(await cycle, false);
+    assert.equal(f.render().nextCursor, "page-three");
+    const last = f.render().loadMore(); f.calls[4].resolve(result(kind, [], null)); assert.equal(await last, true);
+    assert.equal(f.render().nextCursor, null); assert.deepEqual(ids(kind, f.render()), ["one", "two"]);
+    f.unmount();
+  });
+  test(`${kind}: malformed pages retain cursor and data rather than becoming authoritative exhaustion`, async () => {
+    const f = fixture(kind); f.render(options(kind)); f.commit();
+    f.calls[0].resolve(result(kind, ["one"], "next")); await settle();
+    const malformed = f.render().loadMore(); f.calls[1].resolve({}); assert.equal(await malformed, false);
+    assert.equal(f.render().nextCursor, "next"); assert.deepEqual(ids(kind, f.render()), ["one"]); assert.equal(f.render().status, "error");
+    f.unmount();
+  });
+}

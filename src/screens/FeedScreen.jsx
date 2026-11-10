@@ -22,6 +22,7 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import SuggestedPittersRail from "../components/SuggestedPittersRail";
 import useAppActive from "../lib/useAppActive";
 import useFeedPresentation from "../hooks/useFeedPresentation";
+import useEndlessFeed from "../hooks/useEndlessFeed";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import useNewsDeskStories from "../components/news/useNewsDeskStories";
 import useNewsIntroduction from "../components/news/useNewsIntroduction";
@@ -333,6 +334,29 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
   };
   const footer = feedFooterState({ visibleCount: count, loadedCount: full.length, hasMore: effectiveHasMore, loading: filteredPageLoading });
   const advanceFeed = filter === "everyone" ? loadMore : loadOlderFiltered;
+  const endless = useEndlessFeed({
+    scope: JSON.stringify([accountId, loggedIn, filter, homeCity, blockedIds, mutedIds, removedIds, followedArtists]),
+    listProps: returnUI?.props,
+    current: actionCurrent,
+    enabled: feedActive && readEnabled && !tabPreview && !refreshing,
+    ready: newsTab ? news.status !== "idle" && news.status !== "loading"
+      : filter === "following" ? following.loaded || following.status === "error"
+      : !primaryHead || primaryHead.verified && primaryHead.status !== "loading",
+    loading: newsTab ? news.status === "loading" : effectiveLoading,
+    sourceError: newsTab ? news.status === "error" : filter === "following" && following.status === "error",
+    hasMore: newsTab ? !!news.nextCursor : effectiveHasMore,
+    visibleCount: newsTab ? news.stories.length : count,
+    loadedCount: newsTab ? news.stories.length : full.length,
+    rowsCount: baseListData.length,
+    reveal: () => setCount(current => current + PAGE),
+    load: async () => {
+      const loaded = newsTab ? await (news.status === "error" ? news.retry() : news.loadMore())
+        : filter === "following" ? await (following.status === "error" ? following.retry() : following.loadMore())
+        : await onLoadMore?.({ requireProgress: true });
+      if (loaded && actionCurrent() && !newsTab && !(filter === "following" && following.status === "error" && !following.failedMore)) setCount(current => current + PAGE);
+      return loaded;
+    },
+  });
   const hideRecommendation = async (log) => {
     if (!actionCurrent() || !log?.id || !onNotInterested) return;
     setUndoItem(log);
@@ -364,6 +388,7 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
       || (feedPresentation && !feedPresentation.current()))) return false;
     if (refreshControllerRef.current || !onRefresh) return false;
     returnUI?.cancel();
+    endless?.reset();
     if (filter === "everyone") introduction.dismiss();
     const controller = new AbortController();
     refreshControllerRef.current = controller;
@@ -479,6 +504,7 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
     >
     <FlatList
       {...returnUI?.props}
+      {...endless?.props}
       {...(localNavigation ? { ref: bindList } : {})}
       data={listData}
       extraData={visibleMediaPostIds}
@@ -651,7 +677,7 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
             {filter === "following"
               ? (following.status === "error" ? "Refresh to try again. Your existing posts are kept." : "Posts and reposts from people you follow appear here, always credited to their original authors.")
               : filter === "local"
-              ? (hasMore ? "Load one older page at a time to look for nearby concert posts." : primaryHead ? "New local concert posts will appear here. Tap the + to log a show." : "Be the first to log a show in your city, tap the + to post one.")
+              ? (hasMore ? (Platform.OS === "ios" ? "Looking for nearby concert posts…" : "Load one older page at a time to look for nearby concert posts.") : primaryHead ? "New local concert posts will appear here. Tap the + to log a show." : "Be the first to log a show in your city, tap the + to post one.")
               : primaryHead ? "New concert posts will appear here. Tap the + to log a show." : "Log the first show, tap the + to rate the band and the room."}
           </Text>
           <View style={styles.emptyActions}>
@@ -660,7 +686,32 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
           </View>
         </View>
       )}
-      ListFooterComponent={newsTab ? (news.nextCursor ? (
+      ListFooterComponent={Platform.OS === "ios" ? (
+        <View>
+          {endless?.error ? (
+            <Pressable style={styles.olderBtn} onPress={endless.retry}
+              accessibilityRole="button" accessibilityLabel="Retry loading feed">
+              <Text style={styles.olderTxt}>Couldn't load more. Try again</Text>
+            </Pressable>
+          ) : endless?.loading ? (
+            <View style={styles.olderBtn} accessibilityLiveRegion="polite"><Text style={styles.olderTxt}>Loading…</Text></View>
+          ) : (newsTab ? news.status === "ready" && !news.nextCursor && news.stories.length > 0
+            : footer.kind === "caught-up" && (filter === "following" ? following.loaded : !primaryHead || primaryHead.verified && primaryHead.status === "ready")) ? (
+            <View style={styles.caughtUp} accessibilityRole="summary">
+              <Icon name="check" size={17} color={colors.good} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.caughtTitle}>You're caught up</Text>
+                <Text style={styles.caughtSub}>Pit will keep your place. Come back when the community has something new.</Text>
+              </View>
+            </View>
+          ) : null}
+          {!newsTab && loggedIn && showHomeCountdown && !countdownPlan ? (
+            <View style={styles.countdownBottom}>
+              <Suspense fallback={<Text style={styles.tag}>Loading show suggestions…</Text>}><HomeShowCountdown active={feedActive} compact onFindShow={onOpenDiscover} /></Suspense>
+            </View>
+          ) : null}
+        </View>
+      ) : newsTab ? (news.nextCursor ? (
         <Pressable style={[styles.olderBtn, news.status === "loading" && styles.olderBtnOff]} onPress={() => actionCurrent() && news.loadMore()}
           disabled={news.status === "loading"} accessibilityRole="button" accessibilityLabel="Load older stories">
           <Text style={styles.olderTxt}>{news.status === "loading" ? "Loading..." : "Load older stories"}</Text>
