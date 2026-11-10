@@ -25,9 +25,9 @@ function execute(file, imports, timers) {
 function createRenderer() {
   const context = {}, container = { children: [] };
   let priority = 0;
-  const append = (parent, child) => parent.children.push(child);
+  const append = (parent, child) => { const existing = parent.children.indexOf(child); if (existing >= 0) parent.children.splice(existing, 1); parent.children.push(child); };
   const remove = (parent, child) => { const index = parent.children.indexOf(child); if (index >= 0) parent.children.splice(index, 1); };
-  const insert = (parent, child, before) => parent.children.splice(parent.children.indexOf(before), 0, child);
+  const insert = (parent, child, before) => { const existing = parent.children.indexOf(child); if (existing >= 0) parent.children.splice(existing, 1); parent.children.splice(parent.children.indexOf(before), 0, child); };
   const renderer = reconciler({
     supportsMutation: true, isPrimaryRenderer: true, supportsPersistence: false, supportsHydration: false,
     getRootHostContext: () => context, getChildHostContext: () => context, getPublicInstance: node => node,
@@ -71,7 +71,7 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
   const calls = { news: [], live: [], following: [], intro: [], refresh: [], loadMore: [], actions: [], impressions: [], dwell: [], mutations: [] };
   const pending = name => args => new Promise((resolve, reject) => calls[name].push({ args, resolve, reject }));
   const source = posts || Array.from({ length: 60 }, (_, index) => ({ id: "post" + index, userId: "other" }));
-  let accountId = "A", visible = true, appActive = true, admitted = true, revision = 0, suspended = false;
+  let accountId = "A", visible = true, appActive = true, admitted = true, revision = 0, suspended = false, inheritedPreview = false;
   const pendingReveal = new Promise(() => {});
   const ReconnectGate = ({ children }) => { if (suspended) throw pendingReveal; return children; };
   let interactions = { session: { id: accountId }, authReady: true, followedArtists: ["Artist"], blockedIds: [], mutedIds: [], removedIds: [],
@@ -153,7 +153,10 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
   const introductionSession = require("./src/domain/newsIntroductionSession.mjs").createNewsIntroductionSession();
   persisted.set(require("./src/domain/feedExperience.mjs").feedFilterStorageKey(accountId), filter);
   const Feed = load("src/screens/FeedScreen.ios.jsx").default;
-  const all = () => walk(renderer.container), list = () => all().find(node => node.type === "FlatList");
+  const all = () => walk(renderer.container);
+  const page = filter => all().find(node => node.props?.testID === `main-tab-page-${filter}`);
+  const listFor = filter => page(filter) && walk(page(filter)).find(node => node.type === "FlatList");
+  const list = () => { const selected = all().find(node => node.props?.testID?.startsWith("main-tab-page-") && node.props.pointerEvents === "auto"); return selected ? walk(selected).find(node => node.type === "FlatList") : all().find(node => node.type === "FlatList"); };
   const event = label => { const node = all().find(node => node.props?.accessibilityLabel === label); assert.ok(node, label + ": " + JSON.stringify(all().filter(n => n.props?.accessibilityLabel).map(n => n.props.accessibilityLabel)) + " rows=" + list()?.props.data.length); return node.props.onPress; };
   const render = () => { const element = React.createElement(Feed, { visible, accountId, loggedIn: !!accountId, swipeScope: presentation, swipeEnabled: visible && appActive,
     isCurrentSwipeRoute: presentation.current, feedPresentation: presentation, feedReturn: { key: "lease", current: () => true, read: () => null, save: noop, clear: noop },
@@ -163,12 +166,13 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
     onImpression: (...args) => calls.impressions.push(args), onDwell: (...args) => calls.dwell.push(args),
     newUser: true, onOpenCountdown: value => calls.actions.push(value), onOpenDiscover: value => calls.actions.push(value),
     showHomeCountdown: countdown, countdownPlan: countdown ? { targetMs: Date.now() + 100_000, event: { artist: "Artist" }, state: "going" } : null });
-    renderer.render(React.createElement(React.Suspense, { fallback: React.createElement("Loading") }, React.createElement(ReconnectGate, null, element)));
+    renderer.render(React.createElement(React.Suspense, { fallback: React.createElement("Loading") }, React.createElement(ReconnectGate, null, React.createElement(contexts.NativeTabPreviewContext.Provider, { value: inheritedPreview }, element))));
   };
   render();
-  return { all, list, calls, intervals, render, act: renderer.act, event,
+  return { all, list, listFor, page, calls, intervals, render, act: renderer.act, event,
     press(label) { renderer.act(() => event(label)()); },
     suspend(value) { suspended = value; render(); },
+    preview(value) { inheritedPreview = value; render(); },
     precommit() { admitted = false; },
     cover() { visible = false; presentation = newPresentation(); render(); },
     uncover() { admitted = true; visible = true; presentation = newPresentation(); render(); },
@@ -509,4 +513,99 @@ test("Feed activity counts remain truthful, readable and absent for missing acti
   const missing = fixture();
   try { assert.ok(!missing.all().some(node => node.props?.testID === "feed-activity-controls")); }
   finally { missing.close(); }
+});
+
+
+test("returning to visited Feed filters retains each exact expanded list and pauses hidden actions", () => {
+  const f = fixture({ activity: true });
+  try {
+    for (let index = 0; index < 4; index++) f.press("Show more posts");
+    const original = f.list(), oldMore = f.event("Show more posts");
+    assert.equal(original.props.data.length, 40);
+    f.press("Local feed");
+    const local = f.list(); assert.notEqual(local, original);
+    assert.equal(f.listFor("everyone"), original); assert.equal(original.props.data.length, 40);
+    assert.equal(f.page("everyone").props.pointerEvents, "none");
+    assert.equal(f.page("everyone").props.accessibilityElementsHidden, true);
+    assert.equal(f.page("everyone").props.style[2].opacity, 0);
+    f.act(oldMore); assert.equal(original.props.data.length, 40);
+    assert.equal(f.calls.following.length, 0); assert.equal(f.calls.news.length, 0);
+    f.press("For You feed"); assert.equal(f.list(), original); assert.equal(f.list().props.data.length, 40);
+    f.act(oldMore); assert.equal(original.props.data.length, 40, "Returning does not revive old callbacks");
+    f.press("Show more posts"); assert.equal(original.props.data.length, 48);
+    f.press("Local feed"); assert.equal(f.list(), local);
+    f.press("For You feed"); assert.equal(f.list(), original); assert.equal(f.list().props.data.length, 48);
+    assert.equal(f.all().filter(node => node.props?.testID === "feed-activity-controls").length, 1);
+    f.account("B"); assert.notEqual(f.listFor("everyone"), original); assert.notEqual(f.list(), original);
+    assert.equal(f.all().filter(node => node.type === "FlatList").length, 1);
+  } finally { f.close(); }
+});
+
+test("visited Following preserves loaded pages and cursor, pauses reads, and reconciles hidden changes", async () => {
+  const f = fixture({ filter: "following" });
+  try {
+    await f.resolve(f.calls.following[0], { posts: Array.from({ length: 40 }, (_, i) => ({ id: "followed" + i })), nextCursor: "older" });
+    for (let index = 0; index < 4; index++) f.press("Show more posts");
+    const following = f.list(), oldMore = f.event("Load older posts");
+    assert.equal(following.props.data.length, 40);
+    f.press("Local feed"); assert.equal(f.listFor("following"), following); assert.equal(f.intervals.size, 0);
+    f.act(oldMore); assert.equal(f.calls.following.length, 1);
+    f.press("Following feed"); assert.equal(f.list(), following); assert.equal(following.props.data.length, 40);
+    assert.equal(f.calls.following.length, 1, "An unchanged visited filter does not refetch");
+    f.press("Load older posts"); assert.equal(f.calls.following[1].args.cursor, "older");
+    await f.resolve(f.calls.following[1], { posts: [{ id: "page2" }], nextCursor: "last" });
+    f.press("Local feed"); f.changed(); assert.equal(f.calls.following.length, 2, "Hidden mutation only invalidates");
+    f.press("Following feed"); assert.equal(f.calls.following.length, 3); assert.equal(f.calls.following[2].args.cursor, null);
+    await f.resolve(f.calls.following[2], { posts: [{ id: "current" }], nextCursor: null });
+    assert.equal(f.list(), following); assert.deepEqual(following.props.data.map(post => post.id), ["current"]);
+  } finally { f.close(); }
+});
+
+test("visited News keeps paginated stories and pending replies cannot mutate it after switching filters", async () => {
+  const f = fixture({ filter: "news" });
+  try {
+    await f.resolve(f.calls.news.find(call => call.args.sort === "latest"), { stories: [{ id: "story1" }], nextCursor: "page2" });
+    await f.resolve(f.calls.news.find(call => call.args.sort === "top"), { stories: [], nextCursor: null });
+    const news = f.list();
+    f.press("Load older stories");
+    const page = f.calls.news.at(-1); assert.equal(page.args.cursor, "page2");
+    await f.resolve(page, { stories: [{ id: "story2" }], nextCursor: "page3" });
+    f.press("Local feed"); assert.equal(f.listFor("news"), news); assert.equal(f.intervals.size, 0);
+    const reads = f.calls.news.length;
+    f.press("News feed"); assert.equal(f.list(), news); assert.equal(f.calls.news.length, reads);
+    assert.deepEqual(news.props.data.map(story => story.id), ["story1", "story2"]);
+    f.press("Load older stories"); const late = f.calls.news.at(-1); assert.equal(late.args.cursor, "page3");
+    f.press("Local feed"); assert.equal(late.args.signal.aborted, true);
+    await f.resolve(late, { stories: [{ id: "late" }], nextCursor: null });
+    f.press("News feed"); assert.deepEqual(news.props.data.map(story => story.id), ["story1", "story2"]);
+  } finally { f.close(); }
+});
+
+
+test("Feed controls and cached filters cannot act from an inherited preview or revive its callbacks", () => {
+  const f = fixture({ activity: true });
+  try {
+    const old = f.event("Messages"); f.press("Local feed");
+    const local = f.list(), oldLocal = f.event("Notifications");
+    f.preview(true); f.act(old); f.act(oldLocal);
+    assert.deepEqual(f.calls.actions, []);
+    assert.equal(f.all().find(node => node.props?.accessibilityLabel === "Messages").props.disabled, true);
+    f.preview(false); f.act(old); f.act(oldLocal); assert.deepEqual(f.calls.actions, []);
+    assert.equal(f.list(), local);
+    f.press("Messages"); assert.deepEqual(f.calls.actions, ["inbox"]);
+  } finally { f.close(); }
+});
+
+test("hidden visited News drops old private-scope stories before it can be shown again", async () => {
+  const f = fixture({ filter: "news" });
+  try {
+    await f.resolve(f.calls.news.find(call => call.args.sort === "latest"), { stories: [{ id: "old-scope" }], nextCursor: "page2" });
+    await f.resolve(f.calls.news.find(call => call.args.sort === "top"), { stories: [], nextCursor: null });
+    f.press("Local feed"); const reads = f.calls.news.length;
+    f.privacy(); assert.deepEqual(f.listFor("news").props.data, []); assert.equal(f.calls.news.length, reads);
+    f.press("News feed"); assert.deepEqual(f.list().props.data, []); assert.equal(f.calls.news.length, reads + 2);
+    const latest = f.calls.news.slice(reads).find(call => call.args.sort === "latest");
+    await f.resolve(latest, { stories: [{ id: "new-scope" }], nextCursor: null });
+    assert.deepEqual(f.list().props.data.map(story => story.id), ["new-scope"]);
+  } finally { f.close(); }
 });

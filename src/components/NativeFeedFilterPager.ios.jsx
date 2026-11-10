@@ -6,11 +6,14 @@ import { colors } from "../theme";
 export const FEED_FILTERS = ["following", "local", "everyone", "news"];
 const tabs = FEED_FILTERS;
 
-// One current page and at most one deliberate neighboring preview. Cancellation
-// keeps the source; commit promotes the exact incoming instance without a reload.
-export default function NativeFeedFilterPager({ active, onChange, swipeScope, swipeEnabled = true, isCurrentSwipeRoute, renderPage, loading, tapRevision = 0 }) {
+// One current page and at most one deliberate neighboring preview. Visited
+// Feed filters can stay mounted offscreen, with reads and actions paused, so a
+// return swipe preserves the exact list, scroll position and pagination state.
+export default function NativeFeedFilterPager({ active, onChange, swipeScope, swipeEnabled = true, isCurrentSwipeRoute, renderPage, loading, tapRevision = 0, retainVisited = false }) {
   const callbacks = useRef(null);
   callbacks.current = { onChange, isCurrentSwipeRoute };
+  const visited = useRef(new Set());
+  useLayoutEffect(() => { if (retainVisited && tabs.includes(active)) visited.current.add(active); else visited.current.clear(); }, [active, retainVisited]);
   const [candidate, setCandidate] = useState(null);
   const [ready, setReady] = useState(null);
   const [contentReady, setContentReady] = useState(null);
@@ -44,8 +47,10 @@ export default function NativeFeedFilterPager({ active, onChange, swipeScope, sw
   }, [pending, owner, swipeEnabled]);
   const index = tabs.indexOf(active);
   const readyDirection = useMemo(() => pending && ready === pending ? { direction: pending.direction, gesture: pending.gesture, contentReady: contentReady === pending } : null, [pending, ready, contentReady]);
-  const renderPages = (x, width, origin) => [active, ...(pending ? [pending.target] : [])].map(tab =>
-    <NativeTabPage key={tab} tab={tab} active={active} position={tabs.indexOf(tab)} origin={origin}
+  const visiblePages = [active, ...(pending ? [pending.target] : [])];
+  const pages = retainVisited ? [...new Set([...visited.current, ...visiblePages])] : visiblePages;
+  const renderPages = (x, width, origin) => pages.map(tab =>
+    <NativeTabPage key={tab} tab={tab} active={active} parked={!visiblePages.includes(tab)} position={tabs.indexOf(tab)} origin={origin}
       x={x} width={width} loading={loading} renderPage={(key, preview) => renderPage(key, preview, key === active || key === pending?.target)} onReady={tab === pending?.target ? destinationReady : undefined} onContentReady={tab === pending?.target ? destinationContentReady : undefined} />);
   return <NativeSwipeRail page pageKey={active} pageIndex={index} enabled={swipeEnabled} onCommit={commit}
     canPrevious={index > 0} canNext={index < tabs.length - 1}

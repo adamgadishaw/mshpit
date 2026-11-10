@@ -12,13 +12,13 @@ function Ready({ onReady, children }) {
   useLayoutEffect(() => { if (laidOut.current) onReady?.(); }, [onReady]);
   return <View style={styles.fill} onLayout={() => { laidOut.current = true; onReady?.(); }}>{children}</View>;
 }
-function NativeTabPage({ tab, active, position, origin, x, width, renderPage, loading, onReady, onContentReady }) {
+function NativeTabPage({ tab, active, parked = false, position, origin, x, width, renderPage, loading, onReady, onContentReady }) {
   const inheritedPreview = useContext(NativeTabPreviewContext);
   const candidate = tab !== active;
   // A nested current page must not erase its obscured ancestor's effect fence.
   const preview = inheritedPreview || candidate;
   const motion = useAnimatedStyle(() => ({ transform: [{ translateX: pageTranslation(x.get(), width.get(), position - origin.get()) }] }));
-  return <Animated.View testID={`main-tab-page-${tab}`} style={[styles.page, motion]}
+  return <Animated.View testID={`main-tab-page-${tab}`} style={[styles.page, motion, parked && styles.parked]}
     pointerEvents={preview ? "none" : "auto"}
     accessibilityElementsHidden={preview} importantForAccessibility={preview ? "no-hide-descendants" : "auto"}>
     <NativeTabPreviewContext.Provider value={preview}>
@@ -27,4 +27,4 @@ function NativeTabPage({ tab, active, position, origin, x, width, renderPage, lo
   </Animated.View>;
 }
 export default memo(NativeTabPage);
-const styles = StyleSheet.create({ fill: { flex: 1, minHeight: 0 }, page: { ...StyleSheet.absoluteFill, backgroundColor: colors.bg, minHeight: 0 } });
+const styles = StyleSheet.create({ parked: { opacity: 0 }, fill: { flex: 1, minHeight: 0 }, page: { ...StyleSheet.absoluteFill, backgroundColor: colors.bg, minHeight: 0 } });

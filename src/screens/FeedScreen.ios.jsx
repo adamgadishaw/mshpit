@@ -56,7 +56,7 @@ function FeedOwner(props) {
         onOpenNotifications={() => { if (!inheritedPreview && current()) props.onOpenNotifications?.(); }}
         hasInbox={typeof props.onOpenInbox === "function"} hasNotifications={typeof props.onOpenNotifications === "function"} />}
     </View>
-    <NativeFeedFilterPager active={filter} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
+    <NativeFeedFilterPager retainVisited active={filter} onChange={commit} swipeScope={scope} tapRevision={tapRevision}
       swipeEnabled={enabled} isCurrentSwipeRoute={current}
       renderPage={(page, preview, mayRead) => <FeedPane {...props} filter={page} preview={preview}
         readEnabled={mayRead && active && current()} onSelectFilter={choose} />} />

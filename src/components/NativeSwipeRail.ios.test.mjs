@@ -738,11 +738,15 @@ test("actual Following GET starts mid-drag and survives promotion without restar
   assert.equal(request.args.signal.aborted, false); assert.deepEqual(f.writes, []);
   release(g, { x: 400 }); g.onFinalize(); f.flush();
   f.act(() => t.mock.timers.tick(2500)); f.react(); f.finish(); f.flush();
-  assert.equal(f.lists()[0].props.instance, destination);
+  const followingList = () => nodes(f.surface("following")).find(node => node.type === "FlatList");
+  assert.equal(followingList().props.instance, destination);
+  assert.equal(f.surface("local").props.pointerEvents, "none");
+  assert.equal(f.surface("local").props.accessibilityElementsHidden, true);
+  assert.equal(f.surface("local").props.style[2].opacity, 0);
   assert.equal(f.writes.length, 1); assert.equal(f.writes[0][1], "following");
   assert.equal(f.reads.length, 1); assert.equal(request.args.signal.aborted, false);
   request.resolve({ posts: [{ id: "followed", review: "A real followed post" }], nextCursor: "older" }); await f.settle();
-  assert.equal(f.lists()[0].props.data[0].id, "followed");
+  assert.equal(followingList().props.data[0].id, "followed");
   f.act(() => t.mock.timers.tick(999)); assert.ok(f.impressions.every(args => args[2] !== "following"));
   f.act(() => t.mock.timers.tick(1)); assert.equal(f.impressions.filter(args => args[2] === "following").length, 1);
 });
@@ -1382,4 +1386,61 @@ test("compiled Discover UI worklet closures execute geometry and synchronous scr
   closure.manual.set(true); closure.x.set(-160); react.call(receiver, prepare.call(receiver), state);
   assert.equal(calls.length, 1);
   closure.reduced = true; assert.equal(style.call(receiver).transform[0].translateX, 189);
+});
+
+
+test("actual Feed swipes back into the visited native list and preserves one activity header", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  f.render({ onOpenInbox: () => f.calls.push("inbox"), onOpenNotifications: () => f.calls.push("notifications") });
+  const listFor = tab => nodes(f.surface(tab)).find(node => node.type === "FlatList");
+  const original = listFor("everyone").props.instance;
+  f.ready("everyone");
+  const forward = dragPage(f, 120); f.flush(); f.ready("local");
+  release(forward, { x: 400 }); forward.onFinalize(); f.flush(); f.finish(); f.flush();
+  assert.equal(f.surface("local").props.pointerEvents, "auto");
+  assert.equal(listFor("everyone").props.instance, original);
+  assert.equal(f.surface("everyone").props.style[2].opacity, 0);
+  const backward = dragPage(f); f.flush();
+  assert.equal(listFor("everyone").props.instance, original);
+  assert.equal(f.surface("everyone").props.style[2], false, "The visited page reveals instead of remounting");
+  release(backward); backward.onFinalize(); f.flush(); f.finish(); f.flush();
+  assert.equal(f.surface("everyone").props.pointerEvents, "auto");
+  assert.equal(listFor("everyone").props.instance, original);
+  assert.equal(f.all().filter(node => node.props?.testID === "feed-activity-controls").length, 1);
+  assert.deepEqual(f.writes.map(write => write[1]), ["local", "everyone"]);
+  assert.deepEqual(f.reads, []);
+});
+
+test("Feed retains at most four visited filters and cancels unvisited previews without caching them", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  const canceled = dragPage(f); f.flush(); assert.ok(f.surface("news"));
+  release(canceled, { x: 240 }); canceled.onFinalize(); f.finishSpring(); f.flush();
+  assert.equal(f.surface("news"), undefined);
+  for (const label of ["Local feed", "Following feed", "News feed", "For You feed"]) f.press(label);
+  assert.equal(f.lists().length, 4);
+  const ids = new Set(f.lists().map(list => list.props.instance));
+  for (const label of ["News feed", "Following feed", "For You feed", "Local feed"]) f.press(label);
+  assert.equal(f.lists().length, 4); assert.deepEqual(new Set(f.lists().map(list => list.props.instance)), ids);
+  const pending = f.reads.filter(read => !read.args.signal.aborted);
+  assert.ok(pending.length === 0, "Only Local is selected; hidden remote filters have no active read");
+  f.render({ accountId: "account-B" });
+  assert.equal(f.lists().length, 1); assert.ok(!ids.has(f.lists()[0].props.instance));
+});
+
+test("a visited Feed preview is ready after a resize and reversal without losing the current source", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true }); t.after(f.close);
+  f.ready("everyone"); f.press("Local feed"); f.ready("local"); Object.assign(f.dimensions, { width: 320, fontScale: 1.5 }); f.render();
+  const source = nodes(f.surface("local")).find(node => node.type === "FlatList").props.instance;
+  const visited = nodes(f.surface("everyone")).find(node => node.type === "FlatList").props.instance;
+  const gesture = dragPage(f); f.flush();
+  assert.equal(nodes(f.surface("everyone")).find(node => node.type === "FlatList").props.instance, visited);
+  gesture.onUpdate({ absoluteX: 380 }); f.flush();
+  assert.ok(f.surface("following")); assert.equal(f.surface("everyone").props.style[2].opacity, 0);
+  release(gesture, { x: 280 }); gesture.onFinalize(); f.finishSpring(); f.flush();
+  assert.equal(f.surface("following"), undefined);
+  assert.equal(nodes(f.surface("local")).find(node => node.type === "FlatList").props.instance, source);
+  assert.ok(f.reads.filter(read => read.kind === "following").every(read => read.args.signal.aborted));
 });
