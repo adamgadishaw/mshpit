@@ -6,6 +6,8 @@ import { composerDraftFingerprint, normalizeComposerDraft } from "../domain/comp
 import { hasDetailedComposerRatings, restoredComposerDate } from "../domain/composerLogDetails.mjs";
 import { normalizeMediaProject, originalMediaProjectAsset } from "../domain/mediaProject.mjs";
 import { normalizeReviewExperienceType, ONLINE_REVIEW_EXPERIENCE } from "../domain/onlineReview.mjs";
+import { clampRating } from "../domain/validation.mjs";
+import { computeReview } from "../data.js";
 import { festivalDays, lineupFromPost } from "../domain/lineup.mjs";
 
 const source = readFileSync(new URL("./LogScreen.jsx", import.meta.url), "utf8");
@@ -29,9 +31,9 @@ function callback(name, bindings) {
 
 test("real draft restoration preserves unknown date, city-only location, sparse ratings, friends and media", () => {
   const values = {};
-  const setters = ["DraftId", "SavedDraftFingerprint", "PostType", "Campaign", "ExperienceType", "Artist", "ArtistPicked", "ArtistKey", "Venue", "VenuePicked", "City", "EventAddress", "Tour", "ShowFormat", "EndDate", "Lineup", "TimesSeen", "Date", "OnlineTitle", "YoutubeUrl", "OnlineRating", "Dims", "Review", "TaggedPeople", "Song", "SongUrl", "PreservedPlaylist", "Photos", "MediaProject", "PendingMediaAssets", "PhotosPublic", "LandingShowcase", "ShowDetailedRatings", "ShowTour", "ShowSong", "ShowPhotos", "ShowPeople"];
+  const setters = ["DraftId", "SavedDraftFingerprint", "PostType", "Campaign", "ExperienceType", "Artist", "ArtistPicked", "ArtistKey", "Venue", "VenuePicked", "City", "EventAddress", "Tour", "ShowFormat", "EndDate", "Lineup", "TimesSeen", "Date", "OnlineTitle", "YoutubeUrl", "OnlineRating", "OverallRating", "Dims", "Review", "TaggedPeople", "Song", "SongUrl", "PreservedPlaylist", "Photos", "MediaProject", "PendingMediaAssets", "PhotosPublic", "LandingShowcase", "ShowDetailedRatings", "ShowTour", "ShowSong", "ShowPhotos", "ShowPeople"];
   const bindings = {
-    normalizeComposerDraft, composerDraftFingerprint, restoredComposerDate, hasDetailedComposerRatings,
+    normalizeComposerDraft, composerDraftFingerprint, restoredComposerDate, hasDetailedComposerRatings, clampRating, computeReview,
     normalizeMediaProject, originalMediaProjectAsset, ONLINE_REVIEW_EXPERIENCE, lineupFromPost,
     draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: "new" },
     composerId: "composer", onDraftIdentity: () => {}, isDurableMediaUrl: () => true,
@@ -51,6 +53,7 @@ test("real draft restoration preserves unknown date, city-only location, sparse 
   assert.equal(values.Date, "");
   assert.equal(values.Venue, "");
   assert.equal(values.City, "Toronto, Ontario, Canada");
+  assert.equal(values.OverallRating, 4, "Old drafts restore their former computed score once");
   assert.equal(values.Dims.experience, 4);
   assert.equal(values.Dims.performance, 0);
   assert.equal(values.ShowDetailedRatings, undefined, "Restoring a sparse draft must not collapse detailed ratings.");

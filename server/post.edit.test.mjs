@@ -423,3 +423,61 @@ test("post delete is author-only, content-scrubbing, and idempotent", () => {
   const audit = db.prepare("SELECT COUNT(*) c FROM moderation_actions WHERE target_type='post' AND target_id=? AND action='delete'").get(id);
   assert.equal(audit.c, 1, "one audit record, not one per idempotent call");
 });
+
+
+test("concert reviews count normalized text, reject overflow and preserve legacy content and precision", async () => {
+  const { normalizeReviewText, reviewTextLength } = await import("../src/domain/validation.mjs");
+  const user = addUser("reviewlimits");
+  const create = routes["POST /api/posts"];
+  const edit = routes["PATCH /api/posts/:id"];
+  const base = { artist: "Artist", city: "Toronto", overall: 2, dims: { performance: 5, experience: 5 } };
+  const raw = "  " + "Great drums and vocals. ".repeat(100).repeat(20).slice(0, 31998) + "😀" + "  ​\r";
+  assert.equal(reviewTextLength(raw), 32000);
+  const created = create({ user, ip: "review-limit-create", body: { ...base, review: raw } });
+  assert.equal(created.post.review, normalizeReviewText(raw));
+  assert.equal(created.post.overall, 2, "API preserves independent overall despite five-star details");
+  const overflow = normalizeReviewText(raw) + "a";
+  for (const body of [{ ...base, review: overflow }, { ...base, experienceType: "online", youtubeUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", review: overflow }]) {
+    assert.throws(() => create({ user, ip: "review-limit-reject", body }), (e) => e.status === 400 && e.code === "VALIDATION_FAILED");
+  }
+  assert.throws(() => edit({ user, params: { id: created.id }, body: { review: overflow } }), (e) => e.status === 400 && e.code === "VALIDATION_FAILED");
+  assert.equal(db.prepare("SELECT review FROM posts WHERE id=?").get(created.id).review, normalizeReviewText(raw), "rejected edits leave stored content intact");
+  edit({ user, params: { id: created.id }, body: { review: "Shortened review" } });
+  edit({ user, params: { id: created.id }, body: { review: raw } });
+  assert.equal(db.prepare("SELECT review FROM posts WHERE id=?").get(created.id).review, normalizeReviewText(raw));
+  const legacy = "Great drums and vocals. ".repeat(2000);
+  db.prepare("UPDATE posts SET overall=4.2, band=NULL, room=3.7, dims='{}', review=? WHERE id=?").run(legacy, created.id);
+  edit({ user, params: { id: created.id }, body: { overall: 4.2, band: null, room: 3.7, review: legacy, city: "Montreal" } });
+  const saved = db.prepare("SELECT overall,band,room,dims,review FROM posts WHERE id=?").get(created.id);
+  assert.equal(saved.overall, 4.2);
+  assert.equal(saved.band, null);
+  assert.equal(saved.room, 3.7);
+  assert.equal(saved.review, legacy);
+  assert.equal(saved.dims, "{}");
+  edit({ user, params: { id: created.id }, body: { review: "shorter", overall: 3.2 } });
+  assert.equal(db.prepare("SELECT overall FROM posts WHERE id=?").get(created.id).overall, 3, "new selections keep the API half-star policy");
+});
+
+test("long concert reviews support 2,000 prose words, Unicode boundaries and full database round trips", async () => {
+  const { twoThousandWordReview: review } = await import("../scripts/fixtures/concert-review-text.mjs");
+  const { LIMITS, reviewTextLength } = await import("../src/domain/validation.mjs");
+  assert.equal(review.split(/\s+/u).length, 2000);
+  assert.ok(review.length > 10000 && review.length < LIMITS.concertReview);
+  assert.equal(LIMITS.review, 2000, "Other content scopes are separate");
+  const user = addUser("longreviewroundtrip"), create = routes["POST /api/posts"], edit = routes["PATCH /api/posts/:id"];
+  for (const online of [false, true]) {
+    const body = { clientMutationId: `long_review_${online ? "online" : "live"}_001`, artist: "Artist", city: "Toronto", overall: 2, review,
+      ...(online ? { experienceType: "online", onlineTitle: "Synthetic performance", youtubeUrl: "https://youtu.be/dQw4w9WgXcQ" } : {}) };
+    const result = create({ user, ip: `long-create-${online}`, body });
+    assert.equal(result.post.review, review);
+    assert.equal(db.prepare("SELECT review FROM posts WHERE id=?").get(result.id).review, review);
+    assert.equal(create({ user, ip: "long-retry", body }).duplicate, true);
+    assert.throws(() => create({ user, ip: "long-changed-tail", body: { ...body, review: review.slice(0, -1) + "!" } }), e => e.status === 409 && e.code === "POST_MUTATION_CONFLICT");
+    const atLimit = "We go ".repeat(5333) + "😀";
+    assert.equal(reviewTextLength(atLimit), LIMITS.concertReview);
+    assert.equal(edit({ user, params: { id: result.id }, body: { review: atLimit } }).post.review, atLimit);
+    assert.throws(() => edit({ user, params: { id: result.id }, body: { review: atLimit + "!" } }), e => e.status === 400 && e.code === "VALIDATION_FAILED");
+    assert.equal(db.prepare("SELECT review FROM posts WHERE id=?").get(result.id).review, atLimit);
+    assert.equal(edit({ user, params: { id: result.id }, body: { review } }).post.review, review);
+  }
+});

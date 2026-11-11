@@ -2497,6 +2497,12 @@ function canonicalAttendanceTicketCreateRequest(user, source, storedPost) {
   };
 }
 
+function acceptedReviewText(value) {
+  const normalized = clean(value, { max: Infinity, newlines: true });
+  if (normalized.length > LIMITS.concertReview) throw new ApiError(400, "Concert reviews must be 32,000 characters or fewer after formatting cleanup.", "VALIDATION_FAILED");
+  return normalized;
+}
+
 function canonicalCreateRequest(user, body, storedPost = null) {
   const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
   const eventAddress = cleanEventAddress(source.eventAddress);
@@ -2634,7 +2640,11 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     band: { parse: (x) => clampRating(x) },
     room: { parse: (x) => clampRating(x) },
     dims: { parse: cleanPostRatingDims },
-    review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
+    // Known tokens can contain a historical oversized request. Preserve its
+    // full canonical text; retry resolution separately checks the old digest.
+    review: { parse: (value) => storedPost
+      ? clean(value, { max: Infinity, newlines: true })
+      : acceptedReviewText(value) },
     photos: { parse: (x) => cleanStringArray(x, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 }) },
     photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
     landingShowcase: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
@@ -2803,7 +2813,7 @@ function canonicalStoredPost(row) {
     band: kind === "status" || online.experienceType === "online" || row?.band == null ? null : clampRating(row.band),
     room: kind === "status" || online.experienceType === "online" || row?.room == null ? null : clampRating(row.room),
     dims: kind === "status" || online.experienceType === "online" ? {} : dims,
-    review: clean(row?.review, { max: LIMITS.review, newlines: true }),
+    review: clean(row?.review, { max: kind === "status" ? LIMITS.review : Infinity, newlines: true }),
     photos: cleanStringArray(parseJsonArray(row?.photos), { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 }),
     mediaAssetIds: row?.id ? postMediaAssetIds(db, row.id) : [],
     photosPublic: row?.photos_public ? 1 : 0,
@@ -4272,18 +4282,22 @@ function postJsonWithImpressions(p, viewerId) {
 function resolvePostCreateRetry(userId, mutationId, mutationHash, { canonical } = {}) {
   if (!mutationId) return null;
   const receipt = postReceiptByClientMutation.get(userId, mutationId);
+  // Before long-form reviews, creates hashed only the first 2,000 units. This
+  // fallback can return an existing post, never authorize a new truncated write.
+  const canonicalVariants = [canonical];
+  if (canonical?.kind === "review" && canonical.review.length > LIMITS.review) {
+    canonicalVariants.push({ ...canonical, review: canonical.review.slice(0, LIMITS.review) });
+  }
+  const retryHashes = new Set([mutationHash]);
+  for (const candidate of canonicalVariants.filter(Boolean)) {
+    retryHashes.add(postMutationHash(candidate));
+    if (candidate.mediaAssetIds?.length) retryHashes.add(postMutationHash(candidate, { legacyMediaUrls: true }));
+  }
   if (receipt?.state === "removed") {
     throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
   }
   if (receipt) {
-    let matches = receipt.client_mutation_hash === mutationHash;
-    if (!matches && canonical?.mediaAssetIds?.length) {
-      // Compatibility is an exact legacy digest check, never a comparison
-      // waiver. Keep all authored fields, ordered IDs and current ready URLs.
-      // An old receipt whose pending URL subset has since changed cannot be
-      // reconstructed from attempt-start timestamps: retain a safe conflict.
-      matches = receipt.client_mutation_hash === postMutationHash(canonical, { legacyMediaUrls: true });
-    }
+    const matches = retryHashes.has(receipt.client_mutation_hash);
     if (!matches) {
       throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
     }
@@ -4303,17 +4317,17 @@ function resolvePostCreateRetry(userId, mutationId, mutationHash, { canonical } 
   }
   const stored = feedPostById.get(existing.id);
   const storedHash = stored ? postMutationHash(canonicalStoredPost(stored)) : null;
-  if (!storedHash || storedHash !== mutationHash) {
+  if (!storedHash || !retryHashes.has(storedHash)) {
     throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
   }
   // Rows created before canonical hashing may contain a raw-payload hash or
   // NULL. Heal only after proving the stored post means exactly the same
   // thing as this request; never guess that a missing hash implies success.
-  if (existing.client_mutation_hash !== mutationHash) {
+  if (existing.client_mutation_hash !== storedHash) {
     db.prepare("UPDATE posts SET client_mutation_hash=? WHERE id=? AND user_id=?")
-      .run(mutationHash, existing.id, userId);
+      .run(storedHash, existing.id, userId);
   }
-  insertPostCreateReceipt.run(userId, mutationId, mutationHash, existing.id, now(), now());
+  insertPostCreateReceipt.run(userId, mutationId, storedHash, existing.id, now(), now());
   return {
     id: existing.id,
     post: postJsonWithImpressions(feedPostById.get(existing.id), userId),
@@ -7242,6 +7256,9 @@ export const routes = {
     const retryMedia = { canonical: request.canonical };
     const duplicate = resolvePostCreateRetry(u.id, mutationId, mutationHash, retryMedia);
     if (duplicate) return duplicate;
+    // Compatibility above can only return an already committed identical post.
+    // No oversized request may reach a new write, including a raced retry.
+    if (request.kind === "review") acceptedReviewText(ctx.body?.review);
     postWriteLimits(ctx, {
       campaign: request.kind === "status" && !!request.values.campaign,
     });
@@ -7393,7 +7410,7 @@ export const routes = {
       if (body[key] === null && !required) { next[key] = null; return; }
       const numeric = Number(body[key]);
       if (!Number.isFinite(numeric)) throw new ApiError(400, `${key} is invalid`, "VALIDATION_FAILED");
-      const value = clampRating(numeric);
+      const value = numeric === Number(current[key]) ? current[key] : clampRating(numeric);
       if (required && value <= 0) throw new ApiError(400, `${key} is required`, "VALIDATION_FAILED");
       next[key] = value;
     };
@@ -7418,7 +7435,12 @@ export const routes = {
       if (raw && !value) throw new ApiError(400, "date is invalid", "VALIDATION_FAILED");
       next.date = value;
     }
-    textField("review", LIMITS.review, { newlines: true });
+    if (has("review") && current.kind !== "status") {
+      if (typeof body.review !== "string") throw new ApiError(400, "review is invalid", "VALIDATION_FAILED");
+      next.review = body.review === current.review ? current.review : acceptedReviewText(body.review);
+    } else {
+      textField("review", LIMITS.review, { newlines: true });
+    }
     if (has("review")) assertSafeAuthoredText(next.review, { field: current.kind === "status" ? "post" : "review" });
     ratingField("overall", { required: true });
     ratingField("band");
