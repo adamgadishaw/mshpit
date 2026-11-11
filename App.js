@@ -7,7 +7,9 @@ import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
-import { colors, font, mono, radius, themeIsDark } from "./src/theme";
+import { colors, font, mono, radius, themeIsDark, themeKey } from "./src/theme";
+import { canAccessTheme } from "./src/domain/themeAccess.mjs";
+import { reloadTheme } from "./src/lib/themeRuntime";
 import { StoreProvider, useStore, isMod, isStaff } from "./src/store";
 import { NewsInteractionContext } from "./src/components/news/NewsInteractionContext";
 import { PostNavigationContext } from "./src/components/PostNavigationContext";
@@ -215,12 +217,27 @@ export default function App() {
         <>
           <RuntimeErrorMonitor />
           <StoreProvider>
-            <Root />
+            <ThemeAccessBoundary />
           </StoreProvider>
         </>
       </ErrorBoundary>
     </SafeAreaProvider></NativeGestureRoot>
   );
+}
+
+function ThemeAccessBoundary() {
+  const { authReady, session } = useStore();
+  const allowed = canAccessTheme(themeKey, authReady ? session : null);
+  useEffect(() => {
+    if (authReady && !allowed) reloadTheme();
+  }, [authReady, allowed]);
+  if (allowed) return <Root />;
+  // Conceal restricted static styles synchronously while identity is pending
+  // or a role/account transition requires a freshly authorized app instance.
+  return <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+    <ActivityIndicator accessibilityLabel="Checking appearance access" />
+    {authReady && <Pressable accessibilityRole="button" onPress={reloadTheme}><Text>Reload appearance</Text></Pressable>}
+  </View>;
 }
 
 let publicRecoveryModule;
@@ -1116,12 +1133,12 @@ function Root() {
       sensitiveFlow: !!(resetToken || ownerApprovalToken || nativeAccountLinkActive),
     })) return;
     const previous = accountThemeSyncRef.current;
-    if (previous?.accountId === session.id && previous?.theme === session.theme) return;
-    accountThemeSyncRef.current = { accountId: session.id, theme: session.theme };
+    if (previous?.accountId === session.id && previous?.theme === session.theme && previous?.role === session.role) return;
+    accountThemeSyncRef.current = { accountId: session.id, theme: session.theme, role: session.role };
     syncAccountTheme();
     // Account theme synchronization reads the authoritative Store refs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authReady, session?.id, session?.theme, stack, resetToken, ownerApprovalToken, nativeAccountLinkActive]);
+  }, [authReady, session?.id, session?.theme, session?.role, stack, resetToken, ownerApprovalToken, nativeAccountLinkActive]);
 
   useEffect(() => {
     if (web && !nav.routeLoading) browserHistoryRef.current?.capture(navigationRef.current);

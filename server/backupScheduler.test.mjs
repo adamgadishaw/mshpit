@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { startPeriodicJob } from "./periodicJobScheduler.js";
+import { backupStorageIdentity } from "./backupStorageIdentity.js";
 import {
   backupDirectory,
   backupChildEnvironment,
@@ -78,9 +79,11 @@ test("enabling private off-host storage does not wait for a fresh local-only sna
 for (const [label, receipt, expectedCalls] of [
   ["missing", () => null, 1],
   ["malformed", () => "{torn", 1],
-  ["future-dated", (backupName) => JSON.stringify({ version: 1, backupName, uploadedAt: Date.now() + 60 * 60_000 }), 1],
-  ["overdue", (backupName) => JSON.stringify({ version: 1, backupName, uploadedAt: Date.now() - 27 * 60 * 60_000 }), 1],
-  ["current", (backupName) => JSON.stringify({ version: 1, backupName, uploadedAt: Date.now() - 2 * 60 * 60_000 }), 0],
+  ["legacy", (backupName) => JSON.stringify({ version: 1, backupName, uploadedAt: Date.now() }), 1],
+  ["wrong-destination", (backupName) => JSON.stringify({ version: 2, backupName, storageIdentity: "other", uploadedAt: Date.now() }), 1],
+  ["future-dated", (backupName, storageIdentity) => JSON.stringify({ version: 2, backupName, storageIdentity, uploadedAt: Date.now() + 60 * 60_000 }), 1],
+  ["overdue", (backupName, storageIdentity) => JSON.stringify({ version: 2, backupName, storageIdentity, uploadedAt: Date.now() - 27 * 60 * 60_000 }), 1],
+  ["current", (backupName, storageIdentity) => JSON.stringify({ version: 2, backupName, storageIdentity, uploadedAt: Date.now() - 2 * 60 * 60_000 }), 0],
 ]) {
   test(`a fresh local snapshot respects ${label} off-host receipt evidence`, async () => {
     const directory = mkdtempSync(join(tmpdir(), "pit-backup-evidence-"));
@@ -91,7 +94,7 @@ for (const [label, receipt, expectedCalls] of [
       mkdirSync(backupDirectory(env));
       const backupName = "pit-20260914-130000.db";
       writeFileSync(join(backupDirectory(env), backupName), "verified local snapshot");
-      const content = receipt(backupName);
+      const content = receipt(backupName, backupStorageIdentity(env));
       if (content !== null) writeFileSync(join(backupDirectory(env), ".offhost-upload-receipt-v1.json"), content);
       scheduler = startBackupScheduler({
         env, logger: { log() {}, warn() {}, error() {} },
@@ -200,6 +203,147 @@ test("missing off-host proof coalesces concurrent triggers without overlapping b
     assert.equal(calls, 1);
   } finally {
     release();
+    await scheduler?.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("restarts preserve the receipt deadline instead of postponing an 18h-old upload to 42h", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-restart-deadline-"));
+  const env = privateBackupFixtureEnvironment(directory);
+  const timers = backupSchedulerTimers();
+  const restartedTimers = backupSchedulerTimers();
+  const restartAt = Date.parse("2026-11-11T14:39:06Z");
+  const uploadedAt = Date.parse("2026-11-10T20:24:51Z");
+  const cadenceMs = 24 * 60 * 60_000;
+  let now = restartAt;
+  t.mock.method(Date, "now", () => now);
+  const calls = [];
+  let scheduler;
+  let restarted;
+  try {
+    mkdirSync(backupDirectory(env));
+    const backupName = "pit-20261111-143843.db";
+    const snapshot = join(backupDirectory(env), backupName);
+    writeFileSync(snapshot, "synthetic fresh startup snapshot");
+    utimesSync(snapshot, new Date(now), new Date(now));
+    recordOffhostBackupReceipt(env, { backupName, uploadedAt });
+    const options = {
+      env, logger: { log() {}, warn() {}, error() {} },
+      run: async () => {
+        calls.push(now);
+        utimesSync(snapshot, new Date(now), new Date(now));
+        recordOffhostBackupReceipt(env, { backupName, uploadedAt: now });
+        return { uploaded: true };
+      },
+    };
+    scheduler = startBackupScheduler({
+      ...options, schedule: (configuration) => startPeriodicJob({ ...configuration, ...timers }),
+    });
+    assert.equal(timers.repeating.length, 0, "the ordinary interval starts at the persisted deadline");
+    const due = timers.once[1];
+    const dueAt = restartAt + due.delay;
+    assert.equal(dueAt, uploadedAt + cadenceMs - 40 * 60_000);
+    now = restartAt + timers.once[0].delay;
+    await timers.once[0].callback();
+    assert.equal(calls.length, 0, "the restart itself does not upload a recent recovery point");
+
+    now = restartAt + 60 * 60_000;
+    utimesSync(snapshot, new Date(now), new Date(now));
+    restarted = startBackupScheduler({
+      ...options, schedule: (configuration) => startPeriodicJob({ ...configuration, ...restartedTimers }),
+    });
+    assert.equal(now + restartedTimers.once[1].delay, dueAt, "another restart retains the absolute deadline");
+    await restarted.stop();
+
+    now = dueAt;
+    assert.equal(backupOperationalStatus(env, { now }).offhostStatus, "current");
+    await due.callback();
+    assert.deepEqual(calls, [dueAt]);
+    assert.equal(timers.repeating[0].delay, cadenceMs);
+    await scheduler.trigger();
+    assert.equal(calls.length, 1, "fresh evidence suppresses another upload");
+    now += cadenceMs;
+    await timers.repeating[0].callback();
+    assert.deepEqual(calls, [dueAt, dueAt + cadenceMs], "normal uploads remain daily after alignment");
+  } finally {
+    await restarted?.stop();
+    await scheduler?.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("an aligned due check gets one recovery retry before the next daily window", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-aligned-retry-"));
+  const env = privateBackupFixtureEnvironment(directory);
+  const timers = backupSchedulerTimers();
+  const startedAt = Date.parse("2026-11-11T14:00:00Z");
+  let now = startedAt;
+  t.mock.method(Date, "now", () => now);
+  let calls = 0;
+  let scheduler;
+  try {
+    mkdirSync(backupDirectory(env));
+    const backupName = "pit-20261111-140000.db";
+    const snapshot = join(backupDirectory(env), backupName);
+    writeFileSync(snapshot, "synthetic snapshot");
+    utimesSync(snapshot, new Date(now), new Date(now));
+    recordOffhostBackupReceipt(env, { backupName, uploadedAt: now - 18 * 60 * 60_000 });
+    scheduler = startBackupScheduler({
+      env, logger: { log() {}, warn() {}, error() {} },
+      run: async () => { calls += 1; throw new Error("synthetic provider unavailable"); },
+      schedule: (options) => startPeriodicJob({ ...options, ...timers }),
+    });
+    now += timers.once[0].delay;
+    await timers.once[0].callback();
+    assert.equal(calls, 0);
+    now = startedAt + timers.once[1].delay;
+    await timers.once[1].callback();
+    assert.equal(calls, 1);
+    assert.equal(timers.once[2].delay, 15 * 60_000);
+    now += timers.once[2].delay;
+    await timers.once[2].callback();
+    assert.equal(calls, 2);
+    assert.equal(timers.once.length, 3, "a failed recovery cannot create a polling retry loop");
+    now = startedAt + timers.once[1].delay + timers.repeating[0].delay;
+    await timers.repeating[0].callback();
+    assert.equal(calls, 3);
+    assert.equal(timers.once.length, 4);
+  } finally {
+    await scheduler?.stop();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("evidence already due at startup does not open a second nearby retry window", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "pit-backup-near-due-retry-"));
+  const env = privateBackupFixtureEnvironment(directory);
+  const timers = backupSchedulerTimers();
+  let now = Date.parse("2026-11-11T14:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  let calls = 0;
+  let scheduler;
+  try {
+    mkdirSync(backupDirectory(env));
+    const backupName = "pit-20261111-140000.db";
+    const snapshot = join(backupDirectory(env), backupName);
+    writeFileSync(snapshot, "synthetic snapshot");
+    utimesSync(snapshot, new Date(now), new Date(now));
+    recordOffhostBackupReceipt(env, { backupName, uploadedAt: now - (23 * 60 + 18) * 60_000 });
+    scheduler = startBackupScheduler({
+      env, logger: { log() {}, warn() {}, error() {} },
+      run: async () => { calls += 1; throw new Error("synthetic provider unavailable"); },
+      schedule: (options) => startPeriodicJob({ ...options, ...timers }),
+    });
+    assert.equal(timers.once.length, 1, "the startup pass owns the due window");
+    assert.equal(timers.repeating[0].delay, 24 * 60 * 60_000);
+    now += timers.once[0].delay;
+    await timers.once[0].callback();
+    now += timers.once[1].delay;
+    await timers.once[1].callback();
+    assert.equal(calls, 2);
+    assert.equal(timers.once.length, 2);
+  } finally {
     await scheduler?.stop();
     rmSync(directory, { recursive: true, force: true });
   }
@@ -357,9 +501,10 @@ test("off-host receipts report only confirmed, bounded freshness evidence", () =
       uploadedAt,
     });
     assert.deepEqual(offhostBackupReceipt(complete), {
-      version: 1,
+      version: 2,
       backupName: "pit-20260831-000000.db",
       uploadedAt,
+      storageIdentity: backupStorageIdentity(complete),
     });
     assert.deepEqual(backupOperationalStatus(complete, { now: uploadedAt + 2 * 60 * 60 * 1000 }), {
       schedulerEnabled: true,
@@ -418,6 +563,119 @@ test("a successful scheduled off-host child records the newly published snapshot
     assert.equal(offhostBackupReceipt(env).backupName, "pit-20260901-010203.db");
     assert.equal(backupOperationalStatus(env).offhostStatus, "current");
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("upload receipts follow storage identity and survive credential rotation only", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-destination-proof-"));
+  const env = privateBackupFixtureEnvironment(root);
+  let scheduler;
+  let calls = 0;
+  try {
+    mkdirSync(backupDirectory(env));
+    const backupName = "pit-20261111-140000.db";
+    writeFileSync(join(backupDirectory(env), backupName), "synthetic snapshot");
+    recordOffhostBackupReceipt(env, { backupName });
+    assert.equal(backupOperationalStatus(env).offhostStatus, "current");
+    assert.equal(backupOperationalStatus({
+      ...env, BACKUP_S3_ACCESS_KEY_ID: "rotated-id", BACKUP_S3_SECRET_ACCESS_KEY: "rotated-secret",
+    }).offhostStatus, "current");
+    for (const changed of [
+      { BACKUP_S3_BUCKET: "different-backups" },
+      { BACKUP_S3_ENDPOINT: "https://different.example" },
+      { BACKUP_S3_ENDPOINT: "https://private.example/other-prefix" },
+    ]) {
+      const target = { ...env, ...changed };
+      assert.equal(offhostBackupReceipt(target), null);
+      assert.equal(backupOperationalStatus(target).offhostStatus, "unverified");
+      scheduler = startBackupScheduler({
+        env: target, logger: { log() {}, warn() {}, error() {} },
+        run: async () => { calls += 1; return { uploaded: true }; },
+      });
+      await scheduler.trigger();
+      await scheduler.stop();
+    }
+    assert.equal(calls, 3, "a fresh local snapshot cannot suppress proof for a different destination");
+    const receiptText = readFileSync(join(backupDirectory(env), ".offhost-upload-receipt-v1.json"), "utf8");
+    for (const value of [env.BACKUP_S3_BUCKET, env.BACKUP_S3_ENDPOINT, env.BACKUP_S3_ACCESS_KEY_ID, env.BACKUP_S3_SECRET_ACCESS_KEY]) {
+      assert.equal(receiptText.includes(value), false, "the marker stores only an opaque identity");
+    }
+  } finally {
+    await scheduler?.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an in-flight upload records its captured destination and directory after configuration changes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-captured-proof-"));
+  const env = privateBackupFixtureEnvironment(join(root, "original"));
+  const original = { ...env };
+  try {
+    mkdirSync(backupDirectory(env), { recursive: true });
+    const fakeSpawn = (_command, args, { env: childEnv }) => {
+      assert.equal(args.at(-1), "--upload");
+      assert.equal(childEnv.BACKUP_S3_BUCKET, original.BACKUP_S3_BUCKET);
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      queueMicrotask(() => {
+        env.BACKUP_S3_BUCKET = "new-destination";
+        env.PIT_DATA_DIR = join(root, "changed");
+        mkdirSync(backupDirectory(env), { recursive: true });
+        writeFileSync(join(backupDirectory(childEnv), "pit-20261111-140000.db"), "synthetic uploaded snapshot");
+        child.emit("close", 0);
+      });
+      return child;
+    };
+    assert.equal((await runScheduledBackup({ env, spawnProcess: fakeSpawn })).uploaded, true);
+    assert.equal(backupOperationalStatus(original).offhostStatus, "current");
+    assert.equal(offhostBackupReceipt(original).storageIdentity, backupStorageIdentity(original));
+    assert.equal(backupOperationalStatus(env).offhostStatus, "unverified");
+    assert.equal(offhostBackupReceipt(env), null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a pending receipt cannot certify a destination changed before its repair retry", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-pending-destination-"));
+  const env = privateBackupFixtureEnvironment(root);
+  const timers = backupSchedulerTimers();
+  let spawns = 0;
+  let scheduler;
+  try {
+    mkdirSync(backupDirectory(env));
+    const receiptPath = join(backupDirectory(env), ".offhost-upload-receipt-v1.json");
+    mkdirSync(receiptPath);
+    const originalIdentity = backupStorageIdentity(env);
+    const fakeSpawn = (_command, _args, { env: childEnv }) => {
+      spawns += 1;
+      const name = `pit-20261111-14000${spawns}.db`;
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      queueMicrotask(() => {
+        writeFileSync(join(backupDirectory(childEnv), name), "synthetic uploaded snapshot");
+        child.emit("close", 0);
+      });
+      return child;
+    };
+    scheduler = startBackupScheduler({
+      env, logger: { log() {}, warn() {}, error() {} },
+      run: ({ signal }) => runScheduledBackup({ env, signal, spawnProcess: fakeSpawn }),
+      schedule: (options) => startPeriodicJob({ ...options, ...timers }),
+    });
+    assert.equal(await timers.once[0].callback(), false);
+    assert.equal(spawns, 1);
+    rmSync(receiptPath, { recursive: true });
+    env.BACKUP_S3_BUCKET = "new-destination";
+    assert.equal(await timers.once[1].callback(), true);
+    assert.equal(spawns, 2, "the new destination needs its own confirmed upload");
+    assert.notEqual(offhostBackupReceipt(env).storageIdentity, originalIdentity);
+    assert.equal(offhostBackupReceipt(env).backupName, "pit-20261111-140002.db");
+  } finally {
+    await scheduler?.stop();
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -1,4 +1,5 @@
-export function accountMuteRoutes({ database, ApiError, requireUser, rateLimit, now, desiredState, userById, projectUser, invalidateRecommendations }) {
+export function accountMuteRoutes({ database, ApiError, requireUser, rateLimit, now, desiredState, userById, projectManagedUser, invalidateRecommendations }) {
+  if (typeof projectManagedUser !== "function") throw new TypeError("Mute management requires a viewer-bound projection");
   const mutedBy = (muterId, mutedId) => !!database.prepare(
     "SELECT 1 FROM account_mutes WHERE muter_id=? AND muted_id=?",
   ).get(muterId, mutedId);
@@ -18,9 +19,10 @@ export function accountMuteRoutes({ database, ApiError, requireUser, rateLimit, 
     },
     "GET /api/me/muted": (ctx) => {
       const user = requireUser(ctx);
+      ctx.setHeader?.("Cache-Control", "private, no-store");
       const rows = database.prepare(`SELECT us.* FROM account_mutes mute JOIN users us ON us.id=mute.muted_id
         WHERE mute.muter_id=? ORDER BY mute.created_at DESC LIMIT 500`).all(user.id);
-      return { users: rows.map(projectUser) };
+      return { users: rows.map((row) => projectManagedUser(row, user)) };
     },
   };
 }

@@ -1,4 +1,5 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { canAccessTheme, isThemeKey } from "../src/domain/themeAccess.mjs";
 import { calendarEventTiming } from "../src/domain/calendarEventTiming.mjs";
 import {
   encodeTourDateCalendarCursor, tourDateCalendarPublicRange,
@@ -9,6 +10,7 @@ import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
 import { createVenueMapCatalogueResponse } from "./venueMapCatalogueResponse.mjs";
 import { LEGACY_ARTIST_DEATH_DATE_CUTOFF, isLegacyArtistMemorial } from "../src/domain/artistLegacy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
+import { reparentRepliesForAccountErasure } from "./features/accountPrivacy/commentErasure.js";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
 import { retainedProfileProjection, retainedContributor } from "./features/artistAccounts/artistAccessPublication.js";
 // API routes. Conventions that keep this hard to crash and easy to fix:
@@ -97,6 +99,7 @@ import {
 import { mediaAssetRoutes } from "./mediaAssetRoutes.js";
 import { mediaLegacyFinalizeRoutes } from "./mediaLegacyFinalizeRoutes.js";
 import { directMessageReadFor, directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
+import { directMessageInboxRemovedIds, directMessageLatestPerPeer } from "./features/messaging/directMessageThreads.js";
 import { directMessageConsentFor, directMessageConsentProjection, directMessageConsentRoutes } from "./features/messaging/directMessageConsent.js";
 import { createMessageRelationshipContextService } from "./features/messaging/messageRelationshipContext.js";
 import { notificationRoutes } from "./features/notifications/notificationRoutes.js";
@@ -149,6 +152,7 @@ import { showAttendanceRoutes } from "./features/shows/showAttendanceRoutes.js";
 import { showRoutes } from "./features/shows/showRoutes.js";
 import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
 import { normalizeShowAliasKey, normalizeTourDateId } from "./features/shows/showIdentity.js";
+import { tourDateShowLifecycle } from "./features/shows/showLifecycle.js";
 import { socialShareCardRoutes } from "./features/socialSharing/socialShareCardRoutes.js";
 import { createSocialShareCardRenderer } from "./features/socialSharing/socialShareCardRenderer.js";
 import { createLoungeLifecycleService } from "./features/lounges/loungeLifecycleService.js";
@@ -253,6 +257,7 @@ import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { jobRoutes } from "./features/jobs/jobRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
 import { accountMuteRoutes } from "./features/accountMute/accountMuteRoutes.js";
+import { createRelationshipManagementProjection } from "./relationshipManagementProjection.js";
 import { accountOnboardingRoutes } from "./features/accountOnboarding/accountOnboardingRoutes.js";
 import { accountSecurityRoutes } from "./features/accountOnboarding/accountSecurityRoutes.js";
 import { createLinkedAccounts } from "./features/accountOnboarding/linkedAccounts.js";
@@ -2283,21 +2288,6 @@ function visibleTicketTourDate(user, tourDateId, at = now()) {
   return row;
 }
 
-function tourDateShowLifecycle(row, at) {
-  const status = String(row?.event_status || "").trim().toLowerCase();
-  if (status === "cancelled" || status === "canceled") return "cancelled";
-  if (status === "postponed") return "postponed";
-  const startAt = Date.parse(row?.start_date_time || "");
-  if (Number.isFinite(startAt)) {
-    if (at < startAt) return "upcoming";
-    return at <= startAt + 12 * 60 * 60 * 1000 ? "happening" : "completed";
-  }
-  const today = liveEventQueryFloorDate(at);
-  if (row?.date < today) return "completed";
-  if (row?.date > today) return "upcoming";
-  return "unknown";
-}
-
 function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
   const id = normalizeTourDateId(tourDateId);
   const row = id ? visibleTourDateRows(user, { id, limit: 2, at })
@@ -2865,9 +2855,7 @@ function removedDmIdsFor(userId, otherId = null) {
       ORDER BY created_at DESC,id DESC`)
       .all(userId, otherId, otherId, userId).map((row) => row.id);
   }
-  return db.prepare(`SELECT id FROM dms WHERE removed=1 AND (from_id=? OR to_id=?)
-    ORDER BY created_at DESC,id DESC LIMIT ?`)
-    .all(userId, userId, DM_TOMBSTONE_LIMIT).map((row) => row.id);
+  return directMessageInboxRemovedIds(db, userId, DM_TOMBSTONE_LIMIT);
 }
 
 const REPORTABLE_TARGET_TYPES = new Set([
@@ -4680,6 +4668,9 @@ function eraseAccountData(u, { at = now(), journal = true } = {}) {
   // Structured post tags are JSON rather than foreign-key rows, so account
   // erasure must explicitly remove this id from posts authored by others.
   scrubTaggedUserFromPosts(u.id);
+  // Preserve other authors' reply chains before authored comments cascade.
+  // This shares the deletion transaction, including inactivity and replay.
+  reparentRepliesForAccountErasure(db, u.id);
   // Off-host record so restoring an older backup cannot bring the account back.
   if (journal) recordPrivacyEvent(db, { kind: "account_erased", subjectId: u.id, at });
   db.prepare("DELETE FROM users WHERE id=?").run(u.id);
@@ -4705,12 +4696,12 @@ function setMarketingPreferenceJournaled(preference) {
 export function replayPrivacyJournalOnRestore(options = {}) {
   return replayPrivacyJournalIfRestored(db, {
     ...options,
-    erase: (userId) => atomicWrite(() => {
+    erase: (userId) => {
       const user = q.userById.get(userId);
       if (!user || isOwnerId(db, user.id)) return false;
       eraseAccountData(user, { at: now(), journal: false });
       return true;
-    }),
+    },
     optOut: (userId) => {
       const user = q.userById.get(userId);
       if (!user || user.marketing_opt_out === 1) return false;
@@ -4750,6 +4741,9 @@ const connections = createConnections({
   projectUser: publicUser, projectArtist: publicArtist, resolveArtist: resolveCatalogArtistReference,
   decodeKey: (ctx) => decodedPathParam(ctx, "key", { max: 200, label: "artist link" }), atomicWrite, now,
 });
+const projectManagedUser = createRelationshipManagementProjection({
+  visibleProfileOrNull, blockedEitherWay, projectUser: publicUser,
+});
 
 export const routes = {
   ...jobRoutes({ database: db, ApiError, assertSafeAuthoredText, requireAdmin, rateLimit: limit, now }),
@@ -4780,7 +4774,7 @@ export const routes = {
     now,
     desiredState,
     userById: (id) => q.userById.get(id),
-    projectUser: publicUser,
+    projectManagedUser,
     invalidateRecommendations: invalidateRecommendationSnapshotForViewer,
   }),
   ...accountOnboardingRoutes({
@@ -6451,10 +6445,7 @@ export const routes = {
       directMessagePolicy: { parse: (x) => (DIRECT_MESSAGE_POLICIES.includes(x) ? x : undefined) },
       profileAudience: { parse: (x) => (PROFILE_AUDIENCES.includes(x) ? x : undefined) },
       ageBand: { parse: (x) => (isClassifiedAccountAgeBand(x) ? x : undefined) },
-      // Keep this server allow-list aligned with theme.js. If it falls behind,
-      // newer themes get silently rejected here, the server then re-hydrates the
-      // stale theme on /api/me and the client "snaps back" to a previous theme.
-      theme: { parse: (x) => (["stage", "neon", "forest", "ember", "backstage", "vinyl", "daylight", "ice", "rose", "mint", "sunset", "lavender"].includes(x) ? x : undefined) },
+      theme: { parse: (x) => (isThemeKey(x) ? x : undefined) },
       searchIndexingOptOut: { parse: (x) => (typeof x === "boolean" ? x : undefined) },
       concertMapVisible: { parse: (x) => (typeof x === "boolean" ? x : undefined) },
       extras: { parse: () => serializedExtras },
@@ -6524,6 +6515,13 @@ export const routes = {
     atomicWrite(() => {
       ctx.assertCurrentSession?.();
       const identityMember = q.userById.get(u.id);
+      // Validate BOTH write surfaces under the lock against the current role.
+      // A public direct field must not mask a restricted extras.theme request.
+      for (const requested of [v.theme, incomingExtras?.value?.theme]) {
+        if (requested !== undefined && !canAccessTheme(requested, identityMember)) {
+          throw new ApiError(403, "That appearance is reserved for the Pit Team.", "FORBIDDEN");
+        }
+      }
       // Another request may replace these slots while this writer waits. Use
       // the locked row for both finalized-media authority and old-object cleanup.
       const replacedProfileMedia = [
@@ -6740,10 +6738,11 @@ export const routes = {
   },
   "GET /api/me/blocked": (ctx) => {
     const u = requireUser(ctx);
+    ctx.setHeader?.("Cache-Control", "private, no-store");
     const rows = db.prepare(`
       SELECT us.* FROM blocks b JOIN users us ON us.id = b.blocked_id
       WHERE b.blocker_id = ? ORDER BY b.created_at DESC LIMIT 500`).all(u.id);
-    return { users: rows.map((r) => publicUser(r)) };
+    return { users: rows.map((row) => projectManagedUser(row, u)) };
   },
 
 
@@ -8095,27 +8094,17 @@ export const routes = {
   },
 
   // ---- direct messages (SQLite migration slice 4) ----
-  // Every user I've DM'd + that thread's messages. At prototype scale returning
-  // all messages is cheap and lets the client compute the Requests/Friends split
-  // and unread exactly as it does locally (read markers stay client-side).
+  // Thread previews and server-owned read/consent state. Older messages remain
+  // available through the existing cursor-paginated single-conversation route.
   "GET /api/me/threads": (ctx) => {
     const u = requireUser(ctx);
     const hidden = blockedIdSet(u.id);
     const readProjection = directMessageReadProjection(db, u.id);
     const consentProjection = directMessageConsentProjection(db, u.id);
-    // Inbox refreshes need only one latest message per conversation. A windowed
-    // query avoids downloading up to 500 messages for every thread every time the
-    // inbox is opened or refreshed, while the full route remains for hydration.
+    // Seek the latest visible row in each direction instead of ranking history.
+    // The full route remains available for hydration with its existing limits.
     if (String(ctx.query?.summary || "") === "1") {
-      const latest = db.prepare(`SELECT id,from_id,to_id,text,created_at,other_id FROM (
-        SELECT id,from_id,to_id,text,created_at,
-          CASE WHEN from_id=? THEN to_id ELSE from_id END AS other_id,
-          ROW_NUMBER() OVER (
-            PARTITION BY CASE WHEN from_id=? THEN to_id ELSE from_id END
-            ORDER BY created_at DESC,id DESC
-          ) AS row_number
-        FROM dms WHERE removed=0 AND (from_id=? OR to_id=?)
-      ) WHERE row_number=1 ORDER BY created_at DESC,id DESC LIMIT 200`).all(u.id, u.id, u.id, u.id);
+      const latest = directMessageLatestPerPeer(db, u.id);
       const visibleLatest = latest.filter((message) => !hidden.has(message.other_id));
       const relationshipContexts = messageRelationshipContextService.forPeers(
         u.id,
@@ -8126,7 +8115,7 @@ export const routes = {
         const other = q.userById.get(message.other_id);
         return other ? {
           otherId: message.other_id,
-          otherUser: publicUser(other),
+          otherUser: projectManagedUser(other, u),
           messages: [{ id: message.id, from: message.from_id, text: message.text, createdAt: message.created_at }],
           relationshipContext: relationshipContexts.get(message.other_id) || null,
           ...readProjection.forOther(message.other_id),
@@ -8134,8 +8123,7 @@ export const routes = {
         } : null;
       }).filter(Boolean), removedIds: removedDmIdsFor(u.id) };
     }
-    const others = db.prepare(`SELECT DISTINCT CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other
-                               FROM dms WHERE removed=0 AND (from_id = ? OR to_id = ?)`).all(u.id, u.id, u.id);
+    const others = directMessageLatestPerPeer(db, u.id, -1).map(message => ({ other: message.other_id }));
     const visibleOthers = others.filter((entry) => !hidden.has(entry.other));
     const relationshipContexts = messageRelationshipContextService.forPeers(
       u.id,
@@ -8150,7 +8138,7 @@ export const routes = {
         .all(u.id, o.other, o.other, u.id);
       return {
         otherId: o.other,
-        otherUser: publicUser(other),
+        otherUser: projectManagedUser(other, u),
         messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })),
         relationshipContext: relationshipContexts.get(o.other) || null,
         ...readProjection.forOther(o.other),
@@ -8215,7 +8203,10 @@ export const routes = {
     };
   },
 
-  "POST /api/dms/:otherId": (ctx) => {
+  // Acquire the writer lock before resolving current authority or retry state.
+  // The message, directional consent triggers and any required notification
+  // either commit together or leave no failed-looking delivery behind.
+  "POST /api/dms/:otherId": (ctx) => atomicWrite(() => {
     const u = requireUser(ctx);
     const other = ctx.params.otherId;
     if (other === u.id) throw new ApiError(400, "You can't message yourself.");
@@ -8271,7 +8262,7 @@ export const routes = {
     }
     addNotif(other, u.id, "dm", { postId: id, text: text.slice(0, 80) });
     return { id };
-  },
+  }),
 
   ...notificationRoutes({ database: db, requireUser, ApiError, pageRequest, finishPage, safePublicProfileImage }),
 

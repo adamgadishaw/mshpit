@@ -151,13 +151,13 @@ test("primary branding is Mshpit across entry, navigation, and recovery surfaces
 });
 
 test("enthusiast themes are progressively disclosed without losing saved choices", () => {
-  assert.match(settings, /visibleThemeChoices\(THEMES, \{ expanded: showMoreThemes, selectedKey: themeKey \}\)/);
+  assert.match(settings, /visibleThemeChoices\(THEMES, \{ expanded: showMoreThemes, selectedKey: themeKey, account: authReady \? session : null \}\)/);
   assert.match(settings, /themeChoices\.map/);
   assert.match(settings, /Show more themes/);
   assert.match(settings, /accessibilityState=\{\{ expanded: showMoreThemes \}\}/);
   assert.match(settings, /isMod\(session\?\.role\) && <Row icon="discover" label="Diagnostics"/);
 
-  assert.match(pickArtists, /visibleThemeChoices\(THEMES, \{ selectedKey: theme \}\)/);
+  assert.match(pickArtists, /visibleThemeChoices\(THEMES, \{ selectedKey: theme, account: authReady \? session : null \}\)/);
   assert.match(pickArtists, /onboardingThemes\.map/);
   assert.doesNotMatch(pickArtists, /\{THEMES\.map/);
 

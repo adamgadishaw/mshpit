@@ -1,5 +1,69 @@
 # Pit current status
 
+## 2026-11-11 Separate database and theme integration candidate
+
+- Branch `integrate/database-themes-20261111` combines standalone DB release
+  `3fa6bc81a94d74856771a7df93c5bdbc49015936` with theme access
+  `4cc6211f4a5aabd107bfd88cfdc081ee461461df` in a separate worktree.
+- The clean standalone DB release and its verified delivery remain unchanged and
+  independently available. No publication, deployment or device action is included.
+- Both shared-file policies and architecture tightenings are retained. Exact-source
+  validation and release-order limits accompany the delivery receipt; see
+  [the integration record](docs/DATABASE_THEME_INTEGRATION_2026-11-11.md).
+
+## 2026-11-11 Database audit remediation (local review)
+
+- Isolated branch `fix/database-audit-20261111` starts from released server
+  `c2bbe88246f249a5fa7cd60f3184f55b6b8794bf`; prior audit and mobile sources are preserved.
+- DB01–03 and DB11 add privacy-safe mute/block management, enforce Nobody for
+  first contact across age rules, atomically save DMs/consent/notifications, and
+  include owned mutes and festival plans in password-confirmed account export.
+- DB09–10/DB12–13 source `6652e88a` is locally integrated with both histories
+  retained: reply ancestry during erasure, current-source Here eligibility,
+  unread indexing and indexed inbox/read projections. Combined focused checks
+  pass 225 tests with no failures/skips; independent overlap review passes.
+- The own-only focused selection passes 73 tests. Its required aggregate gate
+  passes (7,252 tests, 0 failures, 1 Windows file-link skip; dependency audit,
+  syntax, architecture and web export pass). Recovery DB04–08 source `389105e`
+  is integrated, including reviewed replay-resume and zero-pending health fixes.
+  Both inbox participant projections also close the confirmed inherited private
+  profile disclosure. Exact final-source checks accompany the delivery manifest;
+  earlier workstream results are not substituted for that combined receipt. This candidate
+  is local only; no production, account, device or deployment action occurred.
+- Root causes, compatibility and validation limits are in
+  [the remediation record](docs/DATABASE_REMEDIATION_2026-11-11.md).
+
+## 2026-11-11 Database recovery remediation DB04-DB08 (local candidate)
+
+- Isolated `fix/db04-db08-recovery` starts at released `c2bbe88246f249a5fa7cd60f3184f55b6b8794bf`.
+  Production remains that release. No deployment, push, IAM change or real
+  production restore was performed.
+- Backup receipts now bind to storage identity, and privacy replay requires a
+  complete destination-bound signed chain/checkpoint. Unknown legacy coverage
+  requires the existing recorded recovery decision. Conditional checkpoint
+  writes preserve newer progress across interrupted/concurrent work.
+- Backup timing follows the persisted due time across restarts. Aged, proven
+  abandoned owned partials are reconciled before capacity admission. The daily
+  health digest includes aggregate journal readiness, backlog and failures.
+- The runbook specifies both object prefixes, exact checkpoint access, scoped
+  listing and disposable permission/restore verification. No real IAM policy
+  was inspected or modified.
+- Implementation, synthetic matrix, checks and operational limits are recorded
+  in `docs/DATABASE_RECOVERY_REMEDIATION_2026-11-11.md`. Original audit/evidence,
+  its checkout, other worktrees and the prior transfer artifacts remain intact.
+
+## 2026-11-11 Pit Team theme access (local candidate)
+
+- Isolated branch `fix/pit-team-themes` starts at released base
+  `c2bbe88246f249a5fa7cd60f3184f55b6b8794bf`; its original standalone delivery
+  excludes the DB work. The separate combined candidate is recorded above.
+- Guests and non-team accounts have Daylight and Stage. The existing admin/Pit
+  Team role retains all 12 themes, with selection, startup, restoration, account
+  transition and server-write enforcement. Dormant preferences are preserved.
+- No monetization, membership, production-data or release operation is included.
+  Behavior, validation scope and Mac/iOS limits are in the
+  [theme access review](docs/THEME_ACCESS_REVIEW_2026-11-11.md).
+
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 
 - Local branch `fix/catalog-event-festival-20261027` uses a source snapshot of

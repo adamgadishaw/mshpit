@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 import {
@@ -21,6 +23,7 @@ import {
 import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
 import { PIT_SQLITE_APPLICATION_ID } from "../server/dataDirectory.js";
 import { assertDatabaseRecoveryPathReady } from "../server/databaseRecovery.js";
+import { BACKUP_PARTIAL_MIN_AGE_MS } from "./backup-db-partials.mjs";
 
 const BACKUP_SCRIPT = fileURLToPath(new URL("./backup-db.mjs", import.meta.url));
 const snapshotCounts = (overrides = {}) => ({
@@ -532,6 +535,102 @@ test("an invalid retention value fails before it can prune existing snapshots", 
     assert.notEqual(result.status, 0);
     assert.deepEqual(verifyBackupSnapshot(existing), snapshotCounts());
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a real SIGKILL partial is reconciled before the next backup's disk admission", async () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-killed-child-"));
+  const dataDirectory = join(root, "data");
+  const backupDirectory = join(root, "backups");
+  mkdirSync(dataDirectory);
+  mkdirSync(backupDirectory);
+  const hookPath = join(root, "synthetic-pause.mjs");
+  const marker = join(root, "vacuum-completed");
+  // Isolated preload, never a production test bypass: run the actual VACUUM,
+  // then pause deterministically before verification/publication. All network
+  // transports are disabled and the child receives no service credentials.
+  writeFileSync(hookPath, `
+    import { DatabaseSync } from 'node:sqlite';
+    import fs from 'node:fs';
+    import net from 'node:net';
+    import tls from 'node:tls';
+    import http from 'node:http';
+    import https from 'node:https';
+    import { join } from 'node:path';
+    import { syncBuiltinESMExports } from 'node:module';
+    const blocked = () => { throw new Error('Synthetic regression blocks outbound services'); };
+    globalThis.fetch = blocked;
+    net.connect = net.createConnection = tls.connect = http.request = http.get = https.request = https.get = blocked;
+    if (process.env.PIT_TEST_CAPACITY_BYTES) fs.statfsSync = (directory) => ({ bsize: 1,
+      bavail: Number(process.env.PIT_TEST_CAPACITY_BYTES) - fs.readdirSync(directory)
+        .reduce((bytes, name) => bytes + fs.lstatSync(join(directory, name)).size, 0) });
+    syncBuiltinESMExports();
+    const original = DatabaseSync.prototype.exec;
+    DatabaseSync.prototype.exec = function(sql) {
+      const result = original.call(this, sql);
+      if (/^VACUUM INTO /u.test(sql) && process.env.PIT_TEST_PAUSE_MARKER) {
+        fs.writeFileSync(process.env.PIT_TEST_PAUSE_MARKER, 'real copy completed');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000);
+      }
+      return result;
+    };
+  `);
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+    /^(PATH|PATHEXT|SystemRoot|WINDIR|TEMP|TMP|USERPROFILE|APPDATA|LOCALAPPDATA)$/i.test(key)));
+  Object.assign(env, { NODE_ENV: "test", PIT_DATA_DIR: dataDirectory, BACKUP_DIR: backupDirectory,
+    BACKUP_KEEP: "1", BACKUP_ENABLED: "false", NODE_NO_WARNINGS: "1" });
+  let child;
+  let closed;
+  try {
+    const source = createSnapshot(dataDirectory, "pit.db");
+    const sourceHash = createHash("sha256").update(readFileSync(source)).digest("hex");
+    const args = ["--import", pathToFileURL(hookPath).href, BACKUP_SCRIPT];
+    child = spawn(process.execPath, args, { env: { ...env, PIT_TEST_PAUSE_MARKER: marker },
+      windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.stderr.on("data", (chunk) => { output += chunk; });
+    closed = once(child, "close");
+    const deadline = Date.now() + 10000;
+    while (!existsSync(marker) && child.exitCode === null && Date.now() < deadline) {
+      await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+    }
+    assert.equal(existsSync(marker), true, output);
+    const name = readdirSync(backupDirectory).find((entry) => entry.includes(".partial-") && !entry.endsWith(".owner.json"));
+    assert.ok(name);
+    const partial = join(backupDirectory, name);
+    assert.ok(statSync(partial).size > 0, "the actual SQLite copy finished before termination");
+    assert.equal(child.kill("SIGKILL"), true);
+    await closed;
+    assert.equal(existsSync(partial), true, "SIGKILL bypassed the child's catch cleanup");
+    const ownerPath = `${partial}.owner.json`;
+    const owner = JSON.parse(readFileSync(ownerPath, "utf8"));
+    assert.equal(owner.pid, child.pid);
+    const old = Date.now() - BACKUP_PARTIAL_MIN_AGE_MS - 10000;
+    writeFileSync(ownerPath, JSON.stringify({ ...owner, createdAt: old }));
+    utimesSync(partial, old / 1000, old / 1000);
+    utimesSync(ownerPath, old / 1000, old / 1000);
+    const legacy = join(backupDirectory, "pit-20000101-000000.db.partial-123");
+    writeFileSync(legacy, "unproven legacy partial");
+    // This filesystem fixture can admit a copy only after abandoned bytes have
+    // been reclaimed. The unknown legacy file is accounted for, never deleted.
+    const capacity = requiredBackupBytes(statSync(source).size) + statSync(legacy).size;
+    const next = spawnSync(process.execPath, args, { encoding: "utf8", windowsHide: true, timeout: 30000,
+      env: { ...env, PIT_TEST_CAPACITY_BYTES: String(capacity) } });
+    assert.equal(next.status, 0, next.stderr || next.stdout);
+    assert.match(next.stdout, /partials\s+1 abandoned removed .*1 preserved/);
+    assert.match(next.stdout, /capacity\s+.*required including write headroom/);
+    assert.equal(existsSync(partial), false);
+    assert.equal(existsSync(ownerPath), false);
+    assert.equal(readFileSync(legacy, "utf8"), "unproven legacy partial");
+    const published = readdirSync(backupDirectory).filter((entry) => /^pit-\d{8}-\d{6}\.db$/.test(entry));
+    assert.equal(published.length, 1);
+    assert.deepEqual(verifyBackupSnapshot(join(backupDirectory, published[0])), snapshotCounts({ app_meta: 2 }));
+    assert.equal(createHash("sha256").update(readFileSync(source)).digest("hex"), sourceHash);
+  } finally {
+    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (closed) await closed;
     rmSync(root, { recursive: true, force: true });
   }
 });

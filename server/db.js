@@ -6,6 +6,7 @@
 // pit.db-wal until a checkpoint, so a bare copy can be torn or stale. Use
 // `npm run backup` (VACUUM INTO), which asks SQLite for a consistent snapshot.
 import { DatabaseSync } from "node:sqlite";
+import { resolveTheme } from "../src/domain/themeAccess.mjs";
 import { ensureJobSchema } from "./features/jobs/jobRepository.js";
 import { ensureArtistAccessRetentionSchema } from "./features/artistAccounts/artistAccessRetention.js";
 import { assertDatabaseRecoveryReady } from "./databaseRecovery.js";
@@ -593,6 +594,8 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifs_user ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifs_cursor ON notifications(user_id, created_at DESC, id DESC);
+-- Count candidates without revisiting read history; visibility remains a query-time check.
+CREATE INDEX IF NOT EXISTS idx_notifs_unread_user ON notifications(user_id) WHERE read=0;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notifs_post_tag_unique
   ON notifications(user_id, post_id, type) WHERE type='post_tag' AND post_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_notifs_post_tag_actor_recipient_created
@@ -3151,6 +3154,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
   // picks). They are user-controlled, so they must never replace typed/trusted
   // DB columns or expose a raw column under its database or public name.
   const extras = canonicalProfileExtras(parseJsonObject(u.extras)).value;
+  if (extras.theme !== undefined) extras.theme = resolveTheme(extras.theme, u);
   for (const key of Object.keys(u)) delete extras[key];
   for (const key of [
     "id", "email", "name", "handle", "role", "verified", "sponsor",
