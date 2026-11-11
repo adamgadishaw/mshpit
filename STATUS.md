@@ -11,6 +11,20 @@
 - This local checkpoint is not a release. Messaging07ce622 and iPhone handoff
   histories are next; no device, production or remote-write action.
 
+## 2026-11-11 iPhone build input handoff (local preparation)
+
+- Isolated `codex/iphone-build-handoff` starts at combined PC `266a25de`;
+  original iOS `9857d67` is preserved. Runtime/config/dependencies are unchanged.
+- Retained iOS export matches 698 project modules; 21 focused checks pass.
+  Offline verifier checks actual Expo template migration, config, 27 Expo
+  modules/28 pods, 9 RN iOS modules and no native duplicates.
+- [Build handoff](docs/IPHONE_BUILD_HANDOFF_2026-11-11.md) records scheme/signing
+  prerequisites, Mac/cloud commands, costs and native acceptance. Preview is
+  Release and uses the production API; dev read-only flags do not protect it.
+- Parent reports the recovery ZIP is verified on PC; calendar/messaging owners
+  are integrating it. This build handoff remains provisional for that combined
+  source. Xcode generation/compilation, signing and device
+  acceptance remain pending. No Mac, phone, cloud submission or deployment used.
 
 ## 2026-11-10 Combined PC reliability candidate (local review)
 
