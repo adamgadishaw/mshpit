@@ -339,6 +339,15 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     confirmed(value, entry) { confirmed = value; f.act(() => { if (entry) entry.callback(); else for (const current of confirmedSubscriptions.filter(item => item.active)) current.callback(); }); },
     nativeEvents(...values) { f.act(() => { for (const value of values) for (const callback of [...nativeReaderListeners]) callback(value); }); },
     async settle() { for (let i = 0; i < 8; i++) await Promise.resolve(); await new Promise(setImmediate); f.act(noop); },
+    async untilRendered(predicate, message) {
+      // An async endpoint and a concurrent React commit can occupy different
+      // scheduler turns. Observe the committed result without advancing app timers.
+      for (let turn = 0; turn < 20; turn++) {
+        await f.settle();
+        if (predicate()) return;
+      }
+      assert.ok(predicate(), message);
+    },
     close(passive = true) { renderer.render(null, passive); },
   };
   f.render(); return f;
@@ -750,7 +759,7 @@ test("actual Feed menu selection changes only the selected retained native pane"
   f.render({ feedSelection: { filter: "everyone", select: noop } });
   const source = f.lists()[0];
   f.render({ feedSelection: { filter: "local", select: noop } });
-  await f.settle();
+  await f.untilRendered(() => f.lists().some(node => node.props.data?.[0]?.id === "nearby"), "Local endpoint result must render");
   const local = nodes(f.surface("local")).find(node => node.type === "FlatList");
   assert.equal(local.props.data[0].id, "nearby");
   assert.equal(nodes(f.surface("everyone")).find(node => node.type === "FlatList"), source);
@@ -1399,7 +1408,7 @@ test("actual iOS Feed previews Local endpoint posts beneath the shared activity-
   assert.ok(bar); assert.equal(f.chrome.sources, 1);
   assert.equal(f.lists()[0].props.data[0].id, "global");
   const before = f.leaseWrites.length, g = dragPage(f, 120); f.flush(); f.ready("local");
-  await f.settle();
+  await f.untilRendered(() => f.lists()[1]?.props.data?.[0]?.id === "nearby", "Local endpoint preview must render beneath the shared tabs");
   assert.equal(f.lists().length, 2);
   assert.equal(f.lists()[1].props.data[0].id, "nearby");
   assert.equal(f.all().filter(n => n.props?.accessibilityLabel === "Following").length, 1);
