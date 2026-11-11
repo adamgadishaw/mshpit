@@ -15,7 +15,7 @@ const FeedBackContext = React.createContext(false);
 function execute(path, imports) {
   const file = new URL(path, import.meta.url);
   if (!codes.has(path)) codes.set(path, transformSync(readFileSync(file, "utf8"), {
-    filename: file.pathname, babelrc: false, configFile: false,
+    filename: fileURLToPath(file), babelrc: false, configFile: false,
     plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
   }).code);
   const module = { exports: {} };
@@ -216,9 +216,10 @@ test('default Android/web component remains import-free passthrough', () => {
 });
 test('Worklets transform accepts real iOS gesture component', () => {
   const file = new URL('./IosDetailNavigation.ios.jsx', import.meta.url);
-  const code = transformSync(readFileSync(file, 'utf8'), { filename: file.pathname, babelrc: false, configFile: false,
-    plugins: [[require('@babel/plugin-transform-react-jsx'), { runtime: 'automatic' }], require('react-native-worklets/plugin')] }).code;
-  assert.match(code, /__workletHash/);
+  const result = transformSync(readFileSync(file, 'utf8'), { filename: fileURLToPath(file), babelrc: false, configFile: false,
+    plugins: [[require('@babel/plugin-transform-react-jsx'), { runtime: 'automatic' }], require('react-native-worklets/plugin')] });
+  assert.equal(result.options.filename, fileURLToPath(file));
+  assert.match(result.code, /__workletHash/);
 });
 
 test('installed Metro resolves only iOS to edge navigation and confirmed reader hook', () => {

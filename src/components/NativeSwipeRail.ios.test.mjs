@@ -424,6 +424,7 @@ test("installed Expo/worklets Babel preset compiles every iOS rail UI callback",
   const file = new URL("./NativeSwipeRail.ios.jsx", import.meta.url);
   const result = transformSync(readFileSync(file, "utf8"), { filename: fileURLToPath(file), babelrc: false, configFile: false,
     presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: true } });
+  assert.equal(result.options.filename, fileURLToPath(file));
   assert.ok((result.code.match(/__workletHash/g) || []).length >= 10);
   assert.match(result.code, /scheduleOnRN/);
 });
@@ -1291,6 +1292,7 @@ test("installed Expo preset compiles Discover indicator, scroll, and geometry wo
     const file = new URL(relative, import.meta.url);
     const result = transformSync(readFileSync(file, "utf8"), { filename: fileURLToPath(file), babelrc: false, configFile: false,
       presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: true } });
+    assert.equal(result.options.filename, fileURLToPath(file));
     assert.ok((result.code.match(/__workletHash/g) || []).length >= minimum, relative);
     if (relative.includes("SectionTabs")) {
       assert.match(result.code, /discoverTabPosition/); assert.match(result.code, /discoverTabFrame/);
@@ -1315,9 +1317,10 @@ test("Discover re-admission reveals selection measured while disabled and clears
 test("compiled Discover UI worklet closures execute geometry and synchronous scrolling", () => {
   const compiledBodies = relative => {
     const file = new URL(relative, import.meta.url);
-    const { code } = transformSync(readFileSync(file, "utf8"), { filename: fileURLToPath(file), babelrc: false, configFile: false,
+    const result = transformSync(readFileSync(file, "utf8"), { filename: fileURLToPath(file), babelrc: false, configFile: false,
       presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: true } });
-    const ast = parse(code, { sourceType: "module" });
+    assert.equal(result.options.filename, fileURLToPath(file));
+    const ast = parse(result.code, { sourceType: "module" });
     return ast.program.body.filter(node => node.type === "VariableDeclaration").flatMap(node => node.declarations)
       .filter(node => /_worklet_.*_init_data/.test(node.id.name)).map(node => node.init.properties.find(property => property.key.name === "code").value.value);
   };

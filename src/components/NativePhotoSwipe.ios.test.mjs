@@ -111,7 +111,7 @@ function fixture({ strict = false, platform = "ios", reader = false, reduced = f
   };
   function execute(path) {
     const url = new URL(path, import.meta.url);
-    if (!codes.has(path)) codes.set(path, transformSync(readFileSync(url, "utf8"), { filename: url.pathname, babelrc: false, configFile: false,
+    if (!codes.has(path)) codes.set(path, transformSync(readFileSync(url, "utf8"), { filename: fileURLToPath(url), babelrc: false, configFile: false,
       plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
     }).code);
     const module = { exports: {} }, local = createRequire(url);
@@ -327,8 +327,9 @@ test("installed Metro resolves only iOS gallery to its owned detector", () => {
 });
 test("installed Expo/worklets Babel preset compiles the owned gallery worklets", () => {
   const file = new URL("./NativePhotoSwipe.ios.jsx", import.meta.url);
-  const result = transformSync(readFileSync(file, "utf8"), { filename: file.pathname, babelrc: false, configFile: false,
+  const result = transformSync(readFileSync(file, "utf8"), { filename: fileURLToPath(file), babelrc: false, configFile: false,
     presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: true } });
+  assert.equal(result.options.filename, fileURLToPath(file));
   assert.ok((result.code.match(/__workletHash/g) || []).length >= 6);
   assert.match(result.code, /scheduleOnRN/);
 });
