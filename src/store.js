@@ -6084,7 +6084,7 @@ export function StoreProvider({ children }) {
       context: "Refreshing venue reviews",
       expectedAccountId: accountId,
     })
-      .then(({ reviews }) => {
+      .then(({ reviews, stats }) => {
         if (!Array.isArray(reviews) || (sessionRef.current?.id || null) !== accountId
           || venuePhotoCacheRef.current.privacy.revision !== privacyRevision) return { ok: false, stale: true };
         const blocked = new Set(blockedIdsRef.current);
@@ -6101,7 +6101,7 @@ export function StoreProvider({ children }) {
             ts: ago(r.createdAt),
           }));
         setVenueReviews((m) => replaceVenueReviewSnapshot(m, venueKey, snapshot));
-        return { ok: true, reviews: snapshot };
+        return { ok: true, reviews: snapshot, stats };
       })
       .catch((error) => (isLoadCancellation(error, signal)
         ? { ok: false, aborted: true }

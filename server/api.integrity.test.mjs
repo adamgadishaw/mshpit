@@ -5572,3 +5572,32 @@ test("the show swipe and Lounge plans are on the back burner: none of their API 
   assert.deepEqual(Object.keys(routes).filter((key) => /\/api\/crew|\/plans\b|\/api\/plans/u.test(key)), [],
     "Switch Crew on in src/domain/crewAvailability.mjs only when the owner decides to launch it.");
 });
+
+test('venue profile aggregate matches SEO independently of the review page', async () => {
+ const { createPublicVenueReviewService } = await import('./features/seo/publicVenueReviews.js');
+ const one=addUser('profile_parity_one','parity1@example.test','parity_one');
+ const two=addUser('profile_parity_two','parity2@example.test','parity_two');
+ const insert=db.prepare('INSERT INTO venue_reviews(id,venue_key,user_id,rating,text,created_at) VALUES(?,?,?,?,?,?)');
+ for(let i=0;i<205;i++) insert.run('profile_parity_'+i,'profile parity',one.id,5,'A substantive review describing this venue and the experience in detail.',i+10);
+ insert.run('profile_parity_old','profile parity',two.id,1,'A substantive review describing this venue and the experience in detail.',1);
+ const response=routes['GET /api/venues/:key/reviews']({params:{key:'profile parity'},query:{limit:'2'}});
+ assert.equal(response.reviews.length,2);
+ assert.ok(response.nextCursor);
+ assert.deepEqual(response.stats,createPublicVenueReviewService(db).read({venueKey:'profile parity'}).stats);
+ assert.equal(response.stats.averageRating,3);
+});
+
+test('unchanged venue submissions accept star-only half ratings and profile API matches public stats', async () => {
+ const {createPublicVenueReviewService}=await import('./features/seo/publicVenueReviews.js');
+ const one=verifiedUser('half_api_one','half-api-one@example.test','half_api_one');
+ const two=verifiedUser('half_api_two','half-api-two@example.test','half_api_two');
+ const submit=(user,rating,text='')=>routes['POST /api/venues/:key/reviews']({user,ip:'half-rating-'+user.id,params:{key:'half api hall'},body:{rating,text,photos:[]}});
+ submit(one,5); submit(one,0.5); submit(two,1);
+ // Fix fixture timestamps explicitly so the test never depends on clock ties.
+ db.prepare("UPDATE venue_reviews SET created_at=CASE WHEN rating=5 THEN 1 WHEN rating=0.5 THEN 2 ELSE 3 END WHERE venue_key='half api hall'").run();
+ const response=routes['GET /api/venues/:key/reviews']({params:{key:'half api hall'},query:{limit:'1'}});
+ assert.equal(response.reviews.length,1);
+ assert.deepEqual(response.stats,{reviewCount:0,ratingCount:2,averageRating:0.75});
+ assert.deepEqual(response.stats,createPublicVenueReviewService(db).read({venueKey:'half api hall'}).stats);
+ assert.equal(db.prepare("SELECT COUNT(*) count FROM venue_reviews WHERE venue_key='half api hall'").get().count,3);
+});

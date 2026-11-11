@@ -119,6 +119,11 @@ function rating(value) {
   return Number.isFinite(parsed) && parsed >= 1 && parsed <= 5 ? parsed : null;
 }
 
+function profileRating(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0.5 && parsed <= 5 ? parsed : null;
+}
+
 function timestamp(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
@@ -1088,7 +1093,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const bioSource = bio ? projectArtistKnowledgeSource(knowledgeData, { mbid: source.mbid, bio: displayBio }) : null;
       const reviewCount = count(raw.stats?.review_count);
       const ratingCount = count(raw.stats?.rating_count ?? raw.stats?.review_count);
-      const averageRating = memorial ? null : rating(raw.stats?.average_rating);
+      const averageRating = memorial ? null : profileRating(raw.stats?.average_rating);
       const events = memorial ? [] : (raw.events || []).map((event) => eventCard(event, publicPaths)).filter(Boolean);
       const concerts = (legacyMode ? [] : raw.concerts || []).flatMap((concert) => {
         const date = validDate(concert.date);
@@ -1127,7 +1132,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const hasUpcomingShows = events.length > 0;
       const hasFanPhotos = Boolean(fanImage);
       const reviewSignal = averageRating != null && hasReviews
-        ? `${averageRating.toFixed(1)}/5 live rating from ${ratingCount} ${ratingCount === 1 ? "rating" : "ratings"}`
+        ? `${averageRating.toFixed(1)}/5 performance rating from ${ratingCount} ${ratingCount === 1 ? "rating" : "ratings"}`
         : hasReviews ? `${reviewCount} concert ${reviewCount === 1 ? "review" : "reviews"}` : null;
       const upcomingTotal = count(raw.upcomingTotal ?? events.length);
       const upcomingSignal = hasUpcomingShows
@@ -1704,7 +1709,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         }));
         if (!id || (!text && photos.length === 0)) return [];
         const ratingValue = Number(review?.rating);
-        const rating = Number.isFinite(ratingValue) && ratingValue >= 1 && ratingValue <= 5
+        const rating = Number.isFinite(ratingValue) && ratingValue >= 0.5 && ratingValue <= 5
           ? ratingValue : null;
         return [Object.freeze({
           id,
@@ -1723,7 +1728,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const ratingCount = count(raw.venueReviews?.stats?.ratingCount);
       const rawAverageRating = Number(raw.venueReviews?.stats?.averageRating);
       const averageRating = ratingCount > 0 && Number.isFinite(rawAverageRating)
-        && rawAverageRating >= 1 && rawAverageRating <= 5 ? rawAverageRating : null;
+        && rawAverageRating >= 0.5 && rawAverageRating <= 5 ? rawAverageRating : null;
       const licensedVenuePhotos = Object.freeze(publicVenuePhotoPool(name, {
         limit: 3,
         source: raw.venue?.source,
@@ -1791,6 +1796,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ? `${visitTopics.slice(0, -1).join(", ")} and ${visitTopics.at(-1)}`
         : visitTopics.join(" and ");
       const hasVenueReviews = reviewCount > 0;
+      const hasVenueRatings = ratingCount > 0 && averageRating != null;
       const hasUpcomingConcerts = events.length > 0;
       const hasCapacity = Boolean(guide.capacityLabel);
       const hasVisitLinks = visitTopics.length > 0;
@@ -1799,6 +1805,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ? `${venueTitleName} reviews & upcoming concerts | Mshpit`
         : hasVenueReviews && ratingCount > 0
         ? `${venueTitleName} venue reviews & ratings | Mshpit`
+        : hasVenueRatings
+        ? `${venueTitleName} venue ratings | Mshpit`
         : hasVenueReviews
         ? `${venueTitleName} venue reviews | Mshpit`
         : hasUpcomingConcerts && (hasCapacity || hasVisitLinks)
@@ -1813,9 +1821,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ? `${venueTitleName} venue guide: directions & visitor info | Mshpit`
         : `${venueTitleName} music venue | Mshpit`;
       const descriptionParts = [`Explore ${name}${place ? ` in ${place}` : ""} on Mshpit.`];
-      if (hasVenueReviews) {
+      if (hasVenueReviews || hasVenueRatings) {
         descriptionParts.push(averageRating != null && ratingCount > 0
-          ? `${reviewCount} public ${reviewCount === 1 ? "review" : "reviews"} with a ${averageRating.toFixed(1)}/5 community rating from ${ratingCount} ${ratingCount === 1 ? "rating" : "ratings"}.`
+          ? `${averageRating.toFixed(1)}/5 community rating from ${ratingCount} ${ratingCount === 1 ? "rating" : "ratings"}; ${reviewCount} public review ${reviewCount === 1 ? "excerpt" : "excerpts"}.`
           : `${reviewCount} public ${reviewCount === 1 ? "review" : "reviews"}.`);
       }
       if (hasUpcomingConcerts) descriptionParts.push(`See ${eventsHasMore ? "the next " : ""}${events.length} upcoming ${events.length === 1 ? "concert" : "concerts"}.`);
@@ -1843,7 +1851,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           itemReviewed: { "@id": venueEntityId },
           ...(review.text ? { reviewBody: review.text } : {}),
           ...(review.rating != null ? {
-            reviewRating: { "@type": "Rating", ratingValue: review.rating, bestRating: 5, worstRating: 1 },
+            reviewRating: { "@type": "Rating", ratingValue: review.rating, bestRating: 5, worstRating: 0.5 },
           } : {}),
           ...(isoTimestamp(review.createdAt) ? { datePublished: isoTimestamp(review.createdAt) } : {}),
         }];

@@ -415,9 +415,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const overviewResource = artistOverview.resource;
   const reputation = overviewResource.data?.reputation;
   const reputationReady = overviewResource.updatedAt != null && !!reputation;
-  const displayedAverage = reputationReady ? Number(reputation.average ?? reputation.avgRating) || 0 : 0;
-  const displayedRatingCount = reputationReady ? Number(reputation.ratingCount) || 0 : 0;
-  const displayedShowCount = reputationReady ? Number(reputation.showCount) || 0 : 0;
+  const displayedAverage = reputationReady ? Number(reputation.performanceRating) || 0 : 0;
+  const displayedRatingCount = reputationReady ? Number(reputation.performanceRatingCount) || 0 : 0;
   const topPerformances = liveArchive?.topShows || [];
   const canModerate = isStaff(session?.role);
   const genre = a.genre || "Genre not listed yet";
@@ -1052,7 +1051,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             )}
         {!legacyMode && artworkContributors.length ? <Text style={styles.postTs}>Page artwork contributed by {[...new Set(artworkContributors.map(author => author.handle ? `@${author.handle}` : author.name))].join(", ")}</Text> : null}
         {!legacyMode ? <View style={styles.repCard}>
-          <Text style={styles.repLabel}>{deceased ? "CREATIVE LEGACY" : liveAvailable ? "CONCERT RATINGS" : "ARTIST STATUS"}</Text>
+          <Text style={styles.repLabel}>{deceased ? "CREATIVE LEGACY" : liveAvailable ? "LIVE PERFORMANCE" : "ARTIST STATUS"}</Text>
           {deceased ? (
             <View style={styles.legacyRow}>
               <View style={styles.legacyMark}><Icon name="dove" size={27} color={colors.gold} strokeWidth={1.5} /></View>
@@ -1065,12 +1064,13 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             <View style={styles.repRow}>
               <Text style={styles.bigScore}>{reputationReady && displayedRatingCount ? displayedAverage.toFixed(1) : "—"}</Text>
               <View style={{ flex: 1 }}>
-                <Stars value={displayedAverage} size={18} />
+                {displayedRatingCount > 0 ? <Stars value={displayedAverage} size={18} /> : null}
                 <Text style={styles.repSub}>
                   {displayedRatingCount
-                    ? `${displayedShowCount} show${displayedShowCount === 1 ? "" : "s"} · ${displayedRatingCount} rating${displayedRatingCount === 1 ? "" : "s"}`
-                    : !reputationReady ? overviewResource.status === "error" ? "Concert ratings could not load" : "Loading concert ratings…" : "No concert ratings yet"}
+                    ? `${displayedRatingCount} performance rating${displayedRatingCount === 1 ? "" : "s"} from ${reputation.performanceMemberCount} member${reputation.performanceMemberCount === 1 ? "" : "s"}`
+                    : !reputationReady ? overviewResource.status === "error" ? "Concert ratings could not load" : "Loading concert ratings…" : "No performance ratings yet"}
                 </Text>
+                {reputationReady && reputation.ratingCount > 0 ? <Text style={styles.repSub}>Show experience {reputation.avgRating.toFixed(1)}/5 · {reputation.ratingCount} {reputation.ratingCount === 1 ? "rating" : "ratings"}</Text> : null}
               </View>
             </View>
           ) : (
