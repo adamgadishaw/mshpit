@@ -18,9 +18,13 @@ const SHOW_ID = `show_${"a".repeat(64)}`;
 
 function fixture() {
   const database = new DatabaseSync(":memory:");
+  let clock = Date.parse("2026-11-11T21:00:00Z");
   database.exec(`
     PRAGMA foreign_keys=ON;
-    CREATE TABLE tour_dates (id TEXT PRIMARY KEY,owner_id TEXT,artist_identity_status TEXT,source TEXT,provider_event_id TEXT);
+    CREATE TABLE tour_dates (
+      id TEXT PRIMARY KEY,owner_id TEXT,artist_identity_status TEXT,source TEXT,provider_event_id TEXT,
+      date TEXT,start_date_time TEXT,start_local_time TEXT,event_timezone TEXT,event_status TEXT
+    );
     CREATE TABLE users (
       id TEXT PRIMARY KEY, is_banned INTEGER NOT NULL DEFAULT 0,
       suspended_until INTEGER, email_verified_at INTEGER NOT NULL DEFAULT 1
@@ -48,8 +52,10 @@ function fixture() {
   database.prepare(`INSERT INTO show_performers
     (show_id,performer_key,performer_name,role,position,created_at) VALUES (?,?,?,?,?,?)`)
     .run(SHOW_ID, "the-artist", "The Artist", "headliner", 0, 1);
+  const repository = createShowRepository(database, { now: () => clock });
   const routes = showRoutes({
     database,
+    showRepository: repository,
     ApiError,
     decodeShowKey: (ctx) => decodeURIComponent(ctx.params.key),
     requireUser(ctx) {
@@ -57,7 +63,7 @@ function fixture() {
       return ctx.user;
     },
   });
-  return { database, repository: createShowRepository(database), routes };
+  return { database, repository, routes, setNow(value) { clock = value; } };
 }
 
 function context(key, user = null) {
@@ -105,6 +111,104 @@ test("canonical ID and provider alias resolve the same bounded public Show docum
   assert.deepEqual(byAlias.show.performers.map(({ name }) => name), ["The Artist"]);
   assert.equal(byId.show.viewerAttendance, null, "guest reads never expose private viewer state");
   assert.equal(byAlias.show.viewerAttendance.visibility, "private");
+});
+
+function addTimingSource(database, { linked = true } = {}) {
+  database.prepare(`INSERT INTO tour_dates
+    (id,source,provider_event_id,artist_identity_status,date,start_date_time,start_local_time,event_timezone,event_status)
+    VALUES ('source-7','ticketmaster','event-7','registered','2026-11-11','2026-11-11T20:00:00Z','15:00','America/Toronto','onsale')`).run();
+  if (linked) database.prepare("UPDATE shows SET tour_date_id='source-7',lifecycle='happening' WHERE id=?").run(SHOW_ID);
+}
+
+test("public Show routes reflect authoritative cancellation without rewriting identity or attendance history", () => {
+  const { database, routes } = fixture();
+  try {
+    addTimingSource(database);
+    database.prepare(`INSERT INTO show_attendance
+      (show_id,user_id,state,visibility,checked_in_at,legacy_date,legacy_venue,created_at,updated_at)
+      VALUES (?,?,'here','private',71,'2026-09-03','Historical Room',70,72)`).run(SHOW_ID, "fan-a");
+    const showBefore = { ...database.prepare("SELECT * FROM shows WHERE id=?").get(SHOW_ID) };
+    const historyBefore = { ...database.prepare("SELECT * FROM show_attendance WHERE show_id=?").get(SHOW_ID) };
+    const before = routes["GET /api/shows/:key"](context(SHOW_ID, { id: "fan-a" })).show;
+    assert.equal(before.lifecycle, "happening");
+    database.prepare("UPDATE tour_dates SET event_status='cancelled' WHERE id='source-7'").run();
+    database.exec("PRAGMA query_only=ON");
+    for (const key of [SHOW_ID, "ticketmaster:event-7", "provider:tm:event-7"]) {
+      const current = routes["GET /api/shows/:key"](context(key, { id: "fan-a" })).show;
+      assert.equal(current.lifecycle, "cancelled");
+      assert.equal(current.id, before.id);
+      assert.equal(current.canonicalKey, before.canonicalKey);
+      assert.deepEqual(current.aliases, before.aliases);
+      assert.deepEqual(current.viewerAttendance, before.viewerAttendance);
+      assert.equal(current.publicEligible, true, "cancellation remains published event information");
+    }
+    assert.deepEqual({ ...database.prepare("SELECT * FROM shows WHERE id=?").get(SHOW_ID) }, showBefore);
+    assert.deepEqual({ ...database.prepare("SELECT * FROM show_attendance WHERE show_id=?").get(SHOW_ID) }, historyBefore);
+  } finally { database.close(); }
+});
+
+test("public Show timing follows rescheduling and clock passage without another attendance write", () => {
+  const { database, routes, setNow } = fixture();
+  try {
+    addTimingSource(database);
+    const startsAt = Date.parse("2026-11-12T20:00:00Z");
+    database.prepare(`UPDATE tour_dates SET date='2026-11-12',start_date_time='2026-11-12T20:00:00Z',
+      start_local_time='12:00',event_timezone='America/Los_Angeles',event_status='rescheduled'
+      WHERE id='source-7'`).run();
+    database.exec("PRAGMA query_only=ON");
+    const upcoming = routes["GET /api/shows/:key"](context(SHOW_ID)).show;
+    assert.deepEqual({
+      date: upcoming.date, localDate: upcoming.localDate, startsAt: upcoming.startsAt,
+      startLocalTime: upcoming.startLocalTime, timezone: upcoming.timezone, lifecycle: upcoming.lifecycle,
+    }, {
+      date: "2026-11-12", localDate: "2026-11-12", startsAt,
+      startLocalTime: "12:00", timezone: "America/Los_Angeles", lifecycle: "upcoming",
+    });
+    setNow(startsAt);
+    assert.equal(routes["GET /api/shows/:key"](context(SHOW_ID)).show.lifecycle, "happening");
+    setNow(startsAt + 12 * 60 * 60 * 1000);
+    assert.equal(routes["GET /api/shows/:key"](context(SHOW_ID)).show.lifecycle, "happening");
+    setNow(startsAt + 12 * 60 * 60 * 1000 + 1);
+    assert.equal(routes["GET /api/shows/:key"](context(SHOW_ID)).show.lifecycle, "completed");
+    assert.equal(database.prepare("SELECT lifecycle FROM shows WHERE id=?").get(SHOW_ID).lifecycle, "happening");
+  } finally { database.close(); }
+});
+
+test("public Show timing discards obsolete provider clocks and respects postponement", () => {
+  const { database, repository } = fixture();
+  try {
+    addTimingSource(database);
+    database.exec(`UPDATE tour_dates SET event_status='postponed',start_date_time=NULL,
+      start_local_time=NULL,event_timezone=NULL WHERE id='source-7'`);
+    const postponed = repository.read(SHOW_ID);
+    assert.equal(postponed.lifecycle, "postponed");
+    assert.equal(postponed.startsAt, null);
+    assert.equal(postponed.startLocalTime, null);
+    assert.equal(postponed.timezone, null);
+    database.exec("UPDATE tour_dates SET event_status='onsale',date='2026-11-10' WHERE id='source-7'");
+    assert.equal(repository.read(SHOW_ID).lifecycle, "unknown", "a date without a trusted start cannot advertise happening");
+    database.exec("UPDATE tour_dates SET date='2026-11-01' WHERE id='source-7'");
+    assert.equal(repository.read(SHOW_ID).lifecycle, "completed");
+  } finally { database.close(); }
+});
+
+test("provider-only Show timing requires one matching provider source and ignores member-owned changes", () => {
+  const { database, repository } = fixture();
+  try {
+    addTimingSource(database, { linked: false });
+    database.exec("UPDATE tour_dates SET event_status='cancelled' WHERE id='source-7'");
+    assert.equal(repository.read(SHOW_ID).lifecycle, "cancelled");
+    database.exec(`INSERT INTO tour_dates
+      (id,source,provider_event_id,date,event_status) VALUES ('source-duplicate','ticketmaster','event-7','2027-01-01','postponed')`);
+    assert.equal(repository.read(SHOW_ID).lifecycle, "upcoming", "ambiguous provider identities keep the existing snapshot");
+    database.exec("DELETE FROM tour_dates WHERE id='source-duplicate'; UPDATE tour_dates SET owner_id='private-owner',date='2027-01-01'");
+    database.prepare("UPDATE shows SET tour_date_id='source-7' WHERE id=?").run(SHOW_ID);
+    const privateSource = repository.read(SHOW_ID);
+    assert.equal(privateSource.date, "2026-09-03", "member-owned source changes never become public timing fields");
+    assert.equal(privateSource.lifecycle, "upcoming");
+    database.exec("UPDATE tour_dates SET owner_id=NULL,provider_event_id='different-event'");
+    assert.equal(repository.read(SHOW_ID).date, "2026-09-03", "an unrelated provider event cannot update this Show");
+  } finally { database.close(); }
 });
 
 test("unknown and malformed identities return 404 without allocating catalogue rows", () => {

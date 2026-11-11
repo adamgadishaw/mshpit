@@ -1,5 +1,7 @@
 import { normalizeShowAliasKey, normalizeStableShowId } from "./showIdentity.js";
 import { tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
+import { liveEventTimeZone } from "../../../src/domain/eventLifecycle.mjs";
+import { tourDateShowLifecycle } from "./showLifecycle.js";
 
 function attendanceView(row) {
   if (!row) return null;
@@ -17,16 +19,38 @@ function providerBacked(row) {
   return !!row?.provider && !!row?.provider_event_id;
 }
 
-export function createShowRepository(database) {
+function providerSourceMatches(show, source) {
+  return !!source && source.owner_id == null && providerBacked(show)
+    && String(source.source || "").toLowerCase() === String(show.provider).toLowerCase()
+    && source.provider_event_id === show.provider_event_id;
+}
+
+function sourceTiming(source, at) {
+  const startAt = Date.parse(source.start_date_time || "");
+  return {
+    date: source.date || "",
+    localDate: source.date || null,
+    startsAt: Number.isFinite(startAt) ? startAt : null,
+    startLocalTime: source.start_local_time || null,
+    timezone: liveEventTimeZone(source),
+    lifecycle: tourDateShowLifecycle(source, at),
+  };
+}
+
+export function createShowRepository(database, { now = () => Date.now() } = {}) {
   if (!database?.prepare) throw new TypeError("Show repository requires a database");
 
   // All identity lookups use primary/unique indexes. This read path never calls
   // the lazy attendance allocator, so an unknown URL cannot create catalogue data.
   const byId = database.prepare("SELECT * FROM shows WHERE id=?");
-  const sourceById = database.prepare("SELECT owner_id,artist_identity_status FROM tour_dates WHERE id=?");
+  const sourceFields = `owner_id,artist_identity_status,source,provider_event_id,
+    date,start_date_time,start_local_time,event_timezone,event_status`;
+  const sourceById = database.prepare(`SELECT ${sourceFields} FROM tour_dates WHERE id=?`);
   const sourceByProvider = database.prepare(`SELECT owner_id,artist_identity_status FROM tour_dates
     WHERE owner_id IS NULL AND source=? AND provider_event_id=?
       AND artist_identity_status IN ('pending','conflict') LIMIT 1`);
+  const timingSourcesByProvider = database.prepare(`SELECT ${sourceFields} FROM tour_dates
+    WHERE owner_id IS NULL AND source=? AND provider_event_id=? LIMIT 2`);
   const canonicalId = database.prepare("SELECT id FROM shows WHERE canonical_key=?");
   const aliasShowIds = database.prepare(`SELECT show_id AS id FROM show_aliases
     WHERE alias_value=? GROUP BY show_id ORDER BY show_id LIMIT 2`);
@@ -69,6 +93,14 @@ export function createShowRepository(database) {
     const sources = exactSource ? [exactSource] : providerBacked(row)
       ? sourceByProvider.all(row.provider, row.provider_event_id) : [];
     const artistIdentityPending = sources.some(tourDateArtistIdentityPending);
+    // Timing is mutable provider evidence, unlike the stable Show identity and
+    // member's historical attendance snapshot. Resolve it on every read without
+    // writing to either. A legacy provider-only Show needs one exact source;
+    // an ambiguous match or a member-owned row cannot supply public facts.
+    const timingSources = exactSource ? [exactSource] : providerBacked(row)
+      ? timingSourcesByProvider.all(row.provider, row.provider_event_id) : [];
+    const timing = timingSources.length === 1 && providerSourceMatches(row, timingSources[0])
+      ? sourceTiming(timingSources[0], now()) : null;
     return {
       id: row.id,
       canonicalKey: row.canonical_key,
@@ -95,6 +127,7 @@ export function createShowRepository(database) {
       startLocalTime: row.start_local_time || null,
       timezone: row.timezone || null,
       lifecycle: row.lifecycle || "unknown",
+      ...timing,
       provider: providerBacked(row) ? {
         name: row.provider,
         eventId: row.provider_event_id,

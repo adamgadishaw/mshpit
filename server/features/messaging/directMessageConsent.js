@@ -1,3 +1,5 @@
+import { INCOMING_MESSAGE_PEERS_CTE } from "./directMessageThreads.js";
+
 // Directional inbox acceptance is independent of read position and message
 // retention. It never grants permission to send: the existing age/contact/block
 // checks remain authoritative for every new message.
@@ -49,7 +51,10 @@ export function ensureDirectMessageConsentSchema(db, at = Date.now()) {
 
 export function directMessageConsentProjection(db, userId) {
   const accepted = new Set(db.prepare("SELECT other_id FROM dm_acceptances WHERE user_id=?").all(userId).map(row => row.other_id));
-  const inbound = new Set(db.prepare("SELECT DISTINCT from_id FROM dms WHERE to_id=? AND removed=0").all(userId).map(row => row.from_id));
+  const inbound = new Set(db.prepare(`WITH RECURSIVE ${INCOMING_MESSAGE_PEERS_CTE}
+    SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL
+      AND EXISTS (SELECT 1 FROM dms WHERE from_id=incoming_peers.other_id AND to_id=$viewer AND removed=0)`)
+    .all({ $viewer: userId }).map(row => row.other_id));
   return {
     forOther(otherId) {
       return { requestState: accepted.has(otherId) ? "accepted" : inbound.has(otherId) ? "pending" : "none" };

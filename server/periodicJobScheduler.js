@@ -28,6 +28,7 @@ export function startPeriodicJob({
   report = () => {},
   initialDelayMs,
   intervalMs,
+  initialIntervalDelayMs,
   retryDelayMs = 0,
   setTimer = setTimeout,
   clearTimer = clearTimeout,
@@ -42,6 +43,10 @@ export function startPeriodicJob({
 
   const firstDelay = boundedDelay(initialDelayMs, MIN_RETRY_MS, 0);
   const repeatingDelay = boundedDelay(intervalMs, MIN_INTERVAL_MS, MIN_INTERVAL_MS);
+  const requestedIntervalDelay = Number(initialIntervalDelayMs);
+  const firstIntervalDelay = Number.isFinite(requestedIntervalDelay) && requestedIntervalDelay > 0
+    ? Math.min(repeatingDelay, boundedDelay(requestedIntervalDelay, repeatingDelay, MIN_RETRY_MS))
+    : repeatingDelay;
   const retryDelay = Number(retryDelayMs) > 0
     ? boundedDelay(retryDelayMs, MIN_RETRY_MS, MIN_RETRY_MS)
     : 0;
@@ -50,6 +55,9 @@ export function startPeriodicJob({
   let activeController = null;
   let retryTimer = null;
   let retryConsumed = false;
+  let intervalStartTimer = null;
+  let intervalTimer = null;
+  let intervalStarted = false;
 
   const clearRetry = () => {
     if (retryTimer === null) return;
@@ -105,10 +113,28 @@ export function startPeriodicJob({
     return active;
   };
 
+  const startRepeating = () => {
+    if (stopped || intervalStarted) return false;
+    intervalStarted = true;
+    intervalTimer = setRepeatingTimer(() => trigger({ openRetryWindow: true }), repeatingDelay);
+    intervalTimer?.unref?.();
+    return true;
+  };
   const firstTimer = setTimer(() => trigger({ openRetryWindow: true }), firstDelay);
-  const intervalTimer = setRepeatingTimer(() => trigger({ openRetryWindow: true }), repeatingDelay);
+  if (firstIntervalDelay === repeatingDelay) {
+    startRepeating();
+  } else {
+    // A persisted recovery point may become due before one full interval after
+    // process startup. Align the recurring cadence to that first regular tick,
+    // preserving the separate startup check and its bounded recovery retry.
+    intervalStartTimer = setTimer(() => {
+      intervalStartTimer = null;
+      if (!startRepeating()) return Promise.resolve(false);
+      return trigger({ openRetryWindow: true });
+    }, firstIntervalDelay);
+    intervalStartTimer?.unref?.();
+  }
   firstTimer?.unref?.();
-  intervalTimer?.unref?.();
 
   return Object.freeze({
     trigger: () => trigger(),
@@ -116,7 +142,8 @@ export function startPeriodicJob({
       if (!stopped) {
         stopped = true;
         clearTimer(firstTimer);
-        clearRepeatingTimer(intervalTimer);
+        if (intervalStartTimer !== null) clearTimer(intervalStartTimer);
+        if (intervalTimer !== null) clearRepeatingTimer(intervalTimer);
         clearRetry();
       }
       if (abortActive && activeController && !activeController.signal.aborted) {

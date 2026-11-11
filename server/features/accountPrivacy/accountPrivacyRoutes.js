@@ -12,6 +12,11 @@ function parseJson(value, fallback) {
   }
 }
 
+function portableStringSelections(value) {
+  const selections = parseJson(value, []);
+  return Array.isArray(selections) ? selections.filter((entry) => typeof entry === "string") : [];
+}
+
 // Owner media projections can include a short-lived storage capability in
 // `sourceUrl` so the authenticated editor can reopen an original. A portability
 // archive is durable and may be copied elsewhere, so it carries only stable
@@ -94,7 +99,7 @@ export function accountPrivacyRoutes({
           "Password hashes, reset credentials, provider tokens, session cookies, raw IP addresses, and user-agent strings are intentionally excluded.",
           "Uploaded media files are represented by attached URLs and stable media descriptors; storage-provider audit metadata is not part of the account export.",
           "Other accounts are represented by stable internal ids only; live names and handles are excluded so an export cannot bypass blocks or profile visibility.",
-          "This synchronous export includes all current feed preferences plus up to 5,000 recently viewed posts, 300 plays, 1,000 sent and received messages, 200 notifications, 5,000 activity events, 1,000 posts tagging you, and 1,000 tags you removed. A queued archive job is required before production-scale launch.",
+          "This synchronous export includes all current feed preferences, account mutes and festival plans, plus up to 5,000 recently viewed posts, 300 plays, 1,000 sent and received messages, 200 notifications, 5,000 activity events, 1,000 posts tagging you, and 1,000 tags you removed. A queued archive job is required before production-scale launch.",
         ],
         profile: projectSelf(user),
         // Where this account's news comes from: "auto" follows the home city.
@@ -128,6 +133,8 @@ export function accountPrivacyRoutes({
         following: database.prepare("SELECT followee_id id FROM follows WHERE follower_id=?").all(user.id).map((row) => accountReference(row.id)),
         followers: database.prepare("SELECT follower_id id FROM follows WHERE followee_id=?").all(user.id).map((row) => accountReference(row.id)),
         blocked: database.prepare("SELECT blocked_id id FROM blocks WHERE blocker_id=?").all(user.id).map((row) => accountReference(row.id)),
+        muted: database.prepare("SELECT muted_id,created_at FROM account_mutes WHERE muter_id=? ORDER BY created_at DESC,muted_id").all(user.id)
+          .map((row) => ({ id: row.muted_id, createdAt: row.created_at })),
         feedPreferences: database.prepare("SELECT post_id,action,created_at FROM recommendation_preferences WHERE user_id=? ORDER BY created_at DESC").all(user.id)
           .map((row) => ({ postId: row.post_id, action: row.action, createdAt: row.created_at })),
         feedImpressions: {
@@ -157,6 +164,15 @@ export function accountPrivacyRoutes({
         listeningHistory: database.prepare("SELECT title,artist,url,video_id,provider,source_id,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300").all(user.id)
           .map((row) => ({ title: row.title, artist: row.artist, url: row.url, videoId: row.video_id, provider: row.provider, sourceId: row.source_id, at: row.created_at })),
         going: database.prepare("SELECT artist,venue,city,date FROM going WHERE user_id=?").all(user.id),
+        // Saved plans remain owned data when an edition is past, hidden, or
+        // later changes its dates/lineup. Do not apply public catalog filters
+        // or rewrite the member's selections against today's catalog.
+        festivalPlans: database.prepare(`SELECT p.edition_id,e.festival_slug,p.days,p.must_see,p.created_at,p.updated_at
+          FROM festival_plans p LEFT JOIN festival_editions e ON e.id=p.edition_id
+          WHERE p.user_id=? ORDER BY p.updated_at DESC,p.edition_id`).all(user.id)
+          .map((row) => ({ editionId: row.edition_id, festivalSlug: row.festival_slug,
+            days: portableStringSelections(row.days), mustSee: portableStringSelections(row.must_see),
+            createdAt: row.created_at, updatedAt: row.updated_at })),
         attendance: database.prepare(`SELECT a.show_id,s.canonical_key,
           COALESCE(a.legacy_concert_key,
             (SELECT sa.alias_value FROM show_aliases sa
