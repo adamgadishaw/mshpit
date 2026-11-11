@@ -465,3 +465,12 @@ test("calendar refresh reads canonical failed and successful command results", a
     assert.equal(f.text().includes("Some details could not refresh."), !ok);
   }
 });
+
+test("initial calendar links retain valid dates across the supported browse range", t => {
+  for (const date of ["1900-01-01", "2029-06-30", "2100-12-31"]) {
+    const f = fixture({ initialDate: date, projected: projection([], []) }); t.after(f.close);
+    assert.equal(f.state().selected, date);
+    assert.equal(f.catalogueQueries.at(-1).selected, date);
+    assert.ok(f.selectedDay(date));
+  }
+});

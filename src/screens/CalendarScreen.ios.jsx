@@ -7,7 +7,8 @@ import Icon from "../components/Icon";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { openTicketLink } from "../lib/ticketLinks";
 import { memberCalendarModel } from "../domain/calendarShows.mjs";
-import { localCalendarIso, toIsoDate } from "../domain/dates.mjs";
+import { localCalendarIso } from "../domain/dates.mjs";
+import { calendarReadDate } from "../domain/calendarDates.mjs";
 import { CALENDAR_HISTORY_PAGE_SIZE, calendarHistoryWindow, nextCalendarHistoryLimit } from "../domain/calendarHistoryWindow.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import useIOSCalendarExport from "../hooks/useIOSCalendarExport";
@@ -85,7 +86,7 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
   const [clock, setClock] = useState(() => new Date());
   const [catalogueRestoreReady, setCatalogueRestoreReady] = useState(false);
   const todayKey = localCalendarIso(clock);
-  const initial = toIsoDate(initialDate) || todayKey;
+  const initial = calendarReadDate(initialDate) || todayKey;
   const initialDay = calendarLocalDate(initial);
   const browse = useCalendarBrowseState({ memory: browseMemory, occurrence: browseOccurrence, accountId, authEpoch: chatAuthEpoch,
     initialState: { selected: initial, cursor: { y: initialDay.getFullYear(), m: initialDay.getMonth() },
