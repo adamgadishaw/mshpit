@@ -35,7 +35,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const { width } = useWindowDimensions();
   const wide = width >= 760;
   const {
-    venueSummary, venueReviewsFor, loadVenueReviews, venueRating, venueTopPhotos,
+    venueSummary, venueReviewsFor, loadVenueReviews, venueTopPhotos,
     session, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, userByHandle,
   } = useStore();
   const publicVenue = usePublicVenueSnapshot({ name: venueName, identity: venueIdentity, accountId: session?.id });
@@ -53,6 +53,15 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const photos = venuePhotos(venue.name, photoIdentity);
   const photoState = venuePhotoState(venue.name, photoIdentity);
   const reviews = venueReviewsFor(venue.name);
+  const scoreScope = JSON.stringify([venue.name, session?.id, venuePhotoPrivacyRevision]);
+  const [profileScore, setProfileScore] = useState(null);
+  const scoreStats = profileScore?.scope === scoreScope ? profileScore.stats : null;
+  const readProfileReviews = async (signal) => {
+    const result = await loadVenueReviews(venue.name, { signal });
+    if (result?.ok && !signal?.aborted) setProfileScore({ scope: scoreScope, stats: result.stats });
+    return result;
+  };
+  const reviewRevision = reviews.map(review => review.id).join("|");
   const [visibleReviewCount, setVisibleReviewCount] = useState(REVIEW_BATCH);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_BATCH);
   const [visibleUpcomingCount, setVisibleUpcomingCount] = useState(UPCOMING_BATCH);
@@ -70,12 +79,12 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
     setVisibleReviewCount(REVIEW_BATCH);
     setVisibleHistoryCount(HISTORY_BATCH);
     setVisibleUpcomingCount(UPCOMING_BATCH);
-    if (session) void loadVenueReviews(venue.name, { signal: controller.signal });
+    if (session) void readProfileReviews(controller.signal);
     void loadVenuePhotos(venue.name, { ...photoIdentity, signal: controller.signal }).catch(() => { /* architecture: allow-empty-catch -- the venue page retains its licensed empty state and visible retry control */ });
     return () => controller.abort();
-  }, [venue.name, photoIdentity?.source, photoIdentity?.providerVenueId, venuePhotoPrivacyRevision, session?.id]);
+  }, [venue.name, photoIdentity?.source, photoIdentity?.providerVenueId, venuePhotoPrivacyRevision, session?.id, reviewRevision]);
 
-  const fanRating = venueRating(venue.name);
+  const fanRating = scoreStats?.averageRating ?? null;
   const fullGridPhotos = venueTopPhotos(venue.name, wide ? 24 : 18);
   const gridPhotos = venuePagePreview(fullGridPhotos, { condensed: true, limit: 3 });
   const reviewWindow = venueRowWindow(reviews, visibleReviewCount, REVIEW_BATCH);
@@ -101,7 +110,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
     scope: venueRefreshScope,
     task: async ({ signal }) => {
       const [reviewResult, refreshedPhotos] = await Promise.all([
-        session ? loadVenueReviews(venue.name, { signal }) : Promise.resolve(null),
+        session ? readProfileReviews(signal) : Promise.resolve(null),
         loadVenuePhotos(venue.name, { ...photoIdentity, force: true, signal }),
         publicVenue.load({ signal }),
       ]);
@@ -147,8 +156,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
 
         <View style={styles.metrics}>
           {session ? <>
-            <Metric value={venue.avgRoom > 0 ? venue.avgRoom.toFixed(1) : "—"} label="ROOM SCORE" icon="volume" accent={venue.avgRoom > 0} />
-            <Metric value={fanRating > 0 ? fanRating.toFixed(1) : "—"} label="FAN SCORE" icon="star" />
+            <Metric value={fanRating > 0 ? fanRating.toFixed(1) : "—"} label="VENUE SCORE" icon="star" />
             <Metric value={venue.totalShows} label="SHOWS LOGGED" icon="music" />
           </> : null}
           <Metric value={upcomingMetric.value} label={upcomingMetric.label} icon="calendar" accent={venue.upcoming.length > 0} />
@@ -232,16 +240,16 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         <Section title="The room, according to fans">
           <View style={[styles.reputationGrid, wide && styles.reputationGridWide]}>
             <View style={styles.scorePanel}>
-              <Text style={styles.scoreValue}>{venue.avgRoom > 0 ? venue.avgRoom.toFixed(1) : "—"}</Text>
-              <Stars value={venue.avgRoom} size={18} color={colors.cool} />
-              <Text style={styles.scoreLabel}>COMMUNITY ROOM SCORE</Text>
+              <Text style={styles.scoreValue}>{fanRating > 0 ? fanRating.toFixed(1) : "—"}</Text>
+              {fanRating > 0 ? <Stars value={fanRating} size={18} color={colors.cool} /> : null}
+              <Text style={styles.scoreLabel}>VENUE REVIEWS</Text>
             </View>
             <View style={styles.reputationCopy}>
-              <Text style={styles.reputationTitle}>{venue.totalShows > 0 ? `Built from ${venue.totalShows} logged ${venue.totalShows === 1 ? "show" : "shows"}` : "This room is waiting for its first concert log"}</Text>
-              <Text style={styles.reputationBody}>Sound, sightlines and crowd energy stay with the venue, separate from the artist’s performance.</Text>
+              <Text style={styles.reputationTitle}>{scoreStats?.ratingCount ? `Rated by ${scoreStats.ratingCount} ${scoreStats.ratingCount === 1 ? "member" : "members"}` : "No venue score yet"}</Text>
+              <Text style={styles.reputationBody}>The latest eligible venue rating from each member.</Text>
               <View style={styles.reviewSignal}>
                 <Icon name="star" size={13} color={colors.gold} />
-                <Text style={styles.reviewSignalText}>{reviews.length ? `${reviews.length} written ${reviews.length === 1 ? "review" : "reviews"} · ${fanRating.toFixed(1)} average` : "No written reviews yet"}</Text>
+                <Text style={styles.reviewSignalText}>{scoreStats?.ratingCount ? `${scoreStats.ratingCount} member ${scoreStats.ratingCount === 1 ? "rating" : "ratings"} · ${fanRating.toFixed(1)} average` : "No scored venue reviews yet"}</Text>
               </View>
             </View>
           </View>

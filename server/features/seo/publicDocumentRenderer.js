@@ -229,8 +229,8 @@ function artistMain(document) {
       : memorialMode
       ? `<div><dt>Concert history</dt><dd>${esc(document.archiveTotal || document.concerts.length)} nights</dd></div>`
       : stats.averageRating != null
-        ? `<div><dt>Live rating</dt><dd>${esc(stats.averageRating.toFixed(1))}<small>/5</small></dd></div>`
-        : `<div><dt>Live rating</dt><dd>No rating yet</dd></div>`,
+        ? `<div><dt>Live performance</dt><dd>${esc(stats.averageRating.toFixed(1))}<small>/5</small></dd></div>`
+        : `<div><dt>Live performance</dt><dd>No rating yet</dd></div>`,
     !memorialMode ? `<div><dt>Upcoming</dt><dd>${esc(upcomingTotal)} ${upcomingTotal === 1 ? "show" : "shows"}</dd></div>` : "",
     artist.country ? `<div><dt>From</dt><dd>${esc(artist.country)}</dd></div>` : "",
   ].filter(Boolean).join("");
@@ -439,7 +439,7 @@ function venueMain(document) {
   const rating = reviewStats.ratingCount > 0 && Number.isFinite(Number(reviewStats.averageRating))
     ? `<strong>${esc(Number(reviewStats.averageRating).toFixed(1))}<small>/5</small></strong> from ${esc(reviewStats.ratingCount)} ${reviewStats.ratingCount === 1 ? "rating" : "ratings"}`
     : "No community rating yet";
-  const publicReviewCount = `${esc(reviewStats.reviewCount)} public ${reviewStats.reviewCount === 1 ? "review" : "reviews"}`;
+  const publicReviewCount = `${esc(reviewStats.reviewCount)} public review ${reviewStats.reviewCount === 1 ? "excerpt" : "excerpts"}`;
   const venueReviews = (document.venueReviews || []).map((review) => {
     const author = review.author?.handle
       ? `${esc(review.author.name)} <span class="muted">@${esc(review.author.handle)}</span>`

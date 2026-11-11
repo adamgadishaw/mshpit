@@ -14,6 +14,8 @@ import { pitArtistIdentity } from "../../sqliteFunctions.js";
 import { artistScheduleCandidateIndex } from "./artistScheduleCandidateIndex.js";
 import { isCurrentOrUpcomingLiveEvent, liveEventQueryFloorDate } from "../../../src/domain/eventLifecycle.mjs";
 
+import { artistPerformanceRating } from "../../../src/domain/profileScoring.mjs";
+
 const DIMENSIONS = ["performance", "setlist", "sound", "venue", "crowd", "experience"];
 const FRESH_MS = 12 * 60 * 60 * 1000;
 const clean = (value, maximum) => typeof value === "string" ? value.trim().slice(0, maximum) : "";
@@ -72,7 +74,7 @@ function coverageProjection(row, { at, disabled, configured, count }) {
 }
 
 function emptyReputation() {
-  return { ratingCount: 0, reviewCount: 0, showCount: 0, avgRating: null, avgBand: null, avgRoom: null,
+  return { performanceRating: null, performanceRatingCount: 0, performanceMemberCount: 0, ratingCount: 0, reviewCount: 0, showCount: 0, avgRating: null, avgBand: null, avgRoom: null,
     dimensions: Object.fromEntries(DIMENSIONS.map((key) => [key, null])), basis: "in-person-reviews" };
 }
 
@@ -91,13 +93,18 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
     (source, evidence, billed, name) => storedBillingAllowsArtistBinding(source, evidence, billed, name) ? 1 : 0);
   database.function("pit_artist_event_current", { deterministic: true }, (date, end, timezone, at) =>
     isCurrentOrUpcomingLiveEvent({ date, eventEndDate: end, eventTimezone: timezone }, Number(at)) ? 1 : 0);
+  database.function("pit_profile_performance", { deterministic: true }, (dims, band) => {
+    let parsed = {};
+    try { parsed = JSON.parse(dims || "{}"); } catch { /* Invalid legacy dimensions have no explicit category evidence. */ }
+    return artistPerformanceRating(parsed, band);
+  });
   const candidates = artistScheduleCandidateIndex(database);
   const exactNameCount = database.prepare("SELECT COUNT(*) total FROM artists WHERE name=? COLLATE NOCASE");
 
   const dimensionSql = DIMENSIONS.map((key) => {
     const json = "CASE WHEN json_valid(dims) THEN dims ELSE '{}' END";
     const value = `json_extract(${json},'$.${key}')`;
-    return `AVG(CASE WHEN json_type(${json},'$.${key}') IN ('integer','real') AND ${value} BETWEEN 1 AND 5 THEN ${value} END) AS dim_${key}`;
+    return `AVG(CASE WHEN json_type(${json},'$.${key}') IN ('integer','real') AND ${value} BETWEEN 0.5 AND 5 THEN ${value} END) AS dim_${key}`;
   }).join(",");
   const reputation = database.prepare(`WITH ranked AS (
     SELECT p.*,ROW_NUMBER() OVER (
@@ -114,13 +121,17 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
         OR (u.profile_audience='members' AND @viewer IS NOT NULL))
       AND (@viewer IS NULL OR NOT EXISTS(SELECT 1 FROM blocks b WHERE
         (b.blocker_id=@viewer AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=@viewer)))
-  ) SELECT COUNT(CASE WHEN overall BETWEEN 1 AND 5 THEN 1 END) rating_count,
+  ), votes AS (SELECT *,pit_profile_performance(dims,band) AS performance_score FROM ranked WHERE vote_order=1),
+    members AS (SELECT user_id,AVG(performance_score) AS score FROM votes WHERE performance_score IS NOT NULL GROUP BY user_id)
+    SELECT (SELECT AVG(score) FROM members) performance_rating,
+    (SELECT COUNT(*) FROM members) performance_member_count,
+    COUNT(performance_score) performance_rating_count,COUNT(CASE WHEN overall BETWEEN 0.5 AND 5 THEN 1 END) rating_count,
     COUNT(CASE WHEN TRIM(review)<>'' THEN 1 END) review_count,
     COUNT(DISTINCT pit_artist_identity(COALESCE(NULLIF(TRIM(venue_key),''),venue))||char(0)||date) show_count,
-    AVG(CASE WHEN overall BETWEEN 1 AND 5 THEN overall END) avg_rating,
-    AVG(CASE WHEN band BETWEEN 1 AND 5 THEN band END) avg_band,
-    AVG(CASE WHEN room BETWEEN 1 AND 5 THEN room END) avg_room,${dimensionSql}
-    FROM ranked WHERE vote_order=1`);
+    AVG(CASE WHEN overall BETWEEN 0.5 AND 5 THEN overall END) avg_rating,
+    AVG(CASE WHEN band BETWEEN 0.5 AND 5 THEN band END) avg_band,
+    AVG(CASE WHEN room BETWEEN 0.5 AND 5 THEN room END) avg_room,${dimensionSql}
+    FROM votes`);
 
   const candidateSql = `WITH candidate_ids AS (
     SELECT id FROM tour_dates WHERE artist_key=@key
@@ -162,7 +173,8 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
     if (artistHasLegacyMemorial(database, { artistKey: artist.norm })) return emptyReputation();
     const row = reputation.get({ key: artist.norm, name: artist.name, viewer: viewer?.id || null,
       today: new Date(at).toISOString().slice(0, 10) });
-    return { ratingCount: Number(row.rating_count), reviewCount: Number(row.review_count), showCount: Number(row.show_count),
+    return { performanceRating: numericAverage(row.performance_rating), performanceRatingCount: Number(row.performance_rating_count),
+      performanceMemberCount: Number(row.performance_member_count), ratingCount: Number(row.rating_count), reviewCount: Number(row.review_count), showCount: Number(row.show_count),
       avgRating: numericAverage(row.avg_rating), avgBand: numericAverage(row.avg_band), avgRoom: numericAverage(row.avg_room),
       dimensions: Object.fromEntries(DIMENSIONS.map((key) => [key, numericAverage(row[`dim_${key}`])])), basis: "in-person-reviews" };
   }

@@ -454,3 +454,40 @@ test("actual artist client request, response and controller load all mixed-forma
     controller.dispose();
   } finally { f.database.close(); }
 });
+
+test('profile performance stays separate from room and overall, balances members, and keeps unknowns empty', () => {
+ const f = fixture();
+ try {
+  f.addPost('one', { dims: JSON.stringify({performance:5, venue:1}), overall:3.7, band:5 });
+  assert.equal(f.read().reputation.performanceRating,5);
+  assert.equal(f.read().reputation.avgRating,3.7);
+  f.addPost('skip', {date:'2026-08-02',dims:JSON.stringify({performance:0,setlist:null,venue:1}),band:5});
+  f.addPost('overall-only', {date:'2026-08-03',overall:2});
+  assert.equal(f.read().reputation.performanceRatingCount,1);
+  f.addPost('legacy', {date:'2026-08-04',band:3});
+  f.addPost('second-member', {user_id:'viewer',band:2});
+  assert.equal(f.read().reputation.performanceRating,3);
+  assert.equal(f.read().reputation.performanceMemberCount,2);
+  f.addPost('newest-same-show', {created_at:5,dims:JSON.stringify({performance:1}),overall:1});
+  assert.equal(f.read().reputation.performanceRating,2);
+  f.database.exec("UPDATE users SET profile_audience='private' WHERE id='fan'");
+  assert.equal(f.read().reputation.performanceRating,2);
+  f.database.exec("UPDATE users SET is_banned=1 WHERE id='viewer'");
+  assert.equal(f.read().reputation.performanceRating,null);
+ } finally { f.database.close(); }
+});
+
+test('artist profile includes half-star dimensions, legacy band and show experience without premature rounding', () => {
+ const f=fixture();
+ try {
+  f.addPost('half-mixed',{dims:JSON.stringify({performance:0.5,setlist:5}),overall:0.5,band:2.8});
+  let reputation=f.read().reputation;
+  assert.equal(reputation.performanceRating,2.75);
+  assert.equal(reputation.avgRating,0.5);
+  assert.equal(reputation.ratingCount,1);
+  f.database.prepare("UPDATE posts SET dims=? WHERE id='half-mixed'").run(JSON.stringify({performance:0.5,setlist:0}));
+  assert.equal(f.read().reputation.performanceRating,0.5);
+  f.database.exec("UPDATE posts SET dims='{}',band=0.5 WHERE id='half-mixed'");
+  assert.equal(f.read().reputation.performanceRating,0.5);
+ } finally { f.database.close(); }
+});

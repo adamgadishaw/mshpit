@@ -408,11 +408,12 @@ test("artist SEO and the app share complete public calendar counts and eligible 
     for (let i = 0; i < 7; i += 1) event.run(`coheadline-${i}`, null, 0);
     database.exec("UPDATE tour_dates SET start_local_time='2027-05-01T20:00:00' WHERE id='coheadline-0'");
     event.run("scheduled", "active", NOW + 1000);
+    database.exec("UPDATE posts SET dims=json_object('performance',overall) WHERE id IN ('old','latest','second','private')");
     const summary = createArtistLiveSummaryService({ database, projectDate: (row) => row, clock: () => NOW })
       .read({ artist: database.prepare("SELECT * FROM artists WHERE norm='alpha'").get(), query: { publicPreview: 1, limit: 3 } });
     const documents = service(database);
     const document = documents.artistDocument({ artistKey: "alpha", at: NOW });
-    assert.equal(document.stats.averageRating, summary.reputation.avgRating);
+    assert.equal(document.stats.averageRating, summary.reputation.performanceRating);
     assert.equal(document.stats.averageRating, 3);
     assert.equal(document.stats.ratingCount, 2);
     assert.equal(document.stats.upcomingTotal, 7);
@@ -585,11 +586,12 @@ test("artist metadata identifies ambiguous names without advertising absent modu
         artistKey: key,
         review: "A detailed concert review covering the performance, sound, crowd, and encore.",
       });
+      database.prepare("UPDATE posts SET dims=json_object('performance',overall) WHERE id=?").run(`${key}-review`);
       const document = documents.artistDocument({ artistKey: key, at: NOW });
       assert.equal(document.title, `${name} concert reviews & live ratings | Mshpit`);
       assert.equal(
         document.description,
-        `${name} on Mshpit: 4.5/5 live rating from 1 rating. Read firsthand concert reviews.`,
+        `${name} on Mshpit: 4.5/5 performance rating from 1 rating. Read firsthand concert reviews.`,
       );
       assert.equal(document.description.length <= 160, true);
       assert.doesNotMatch(document.title, new RegExp(`^${name.replace(".", "\\.")} live\\b`, "iu"));
@@ -655,6 +657,7 @@ test("artist document uses only active UGC and references Event leaf pages witho
       .run("event-hidden", "Alpha", "Secret Hall", "Nowhere", "2026-09-02", 0, "banned", 0);
     addArtist(database, { key: "bad-mbid", name: "Bad MBID", mbid: "not-a-musicbrainz-id" });
 
+    database.exec("UPDATE posts SET dims=json_object('performance',overall) WHERE id='visible'");
     const documents = service(database);
     const document = documents.artistDocument({ artistKey: "alpha", today: "2026-08-25", at: NOW });
     const html = documents.render(document);
@@ -663,7 +666,7 @@ test("artist document uses only active UGC and references Event leaf pages witho
 
     assert.equal(document.jsonLd[0]["@type"], "CollectionPage");
     assert.equal(document.title, "Alpha Tour 2026: Dates, Tickets & Concert Reviews | Mshpit", "tour searches name the artist and the year");
-    assert.match(document.description, /live rating from 1 rating and 1 upcoming show/u);
+    assert.match(document.description, /performance rating from 1 rating and 1 upcoming show/u);
     assert.match(document.description, /fan-shared photos/u);
     assert.equal(document.jsonLd[0].about["@type"], "Thing");
     assert.equal(document.jsonLd[0].about["@id"], "https://www.example.com/artist/alpha#artist");
@@ -2855,4 +2858,53 @@ test("public document service delegates artist collections and shows load more o
   } finally {
     database.close();
   }
+});
+
+test('overall-only historical feedback remains a review without a performance score', () => {
+ const database=createDatabase();
+ try {
+  addArtist(database); addUser(database,'active');
+  addPost(database,{id:'overall-history',overall:5,review:'A detailed historical concert review describing the night and the atmosphere.'});
+  const document=service(database).artistDocument({artistKey:'alpha',at:NOW});
+  assert.equal(document.stats.averageRating,null);
+  assert.equal(document.stats.ratingCount,0);
+  assert.equal(document.stats.reviewCount,1);
+  assert.doesNotMatch(document.description,/5\/5|performance rating/);
+ } finally {database.close();}
+});
+
+test('venue ratings without excerpts and half-star Review schema retain their separate counts and valid bounds', () => {
+ const database=createDatabase();
+ try {
+  addUser(database,'active'); addUser(database,'half-second');
+  addVenueReview(database,{id:'half-old',venueKey:'half hall',rating:5,text:'',createdAt:1});
+  addVenueReview(database,{id:'half-new',venueKey:'half hall',rating:0.5,text:'short',createdAt:2});
+  addVenueReview(database,{id:'half-b',venueKey:'half hall',userId:'half-second',rating:1,text:'',createdAt:1});
+  const documents=service(database);
+  let document=documents.venueDocument({name:'Half Hall',venueKey:'half hall',at:NOW});
+  assert.deepEqual(document.venueReviewStats,{reviewCount:0,ratingCount:2,averageRating:0.75});
+  assert.deepEqual(document.venueReviews,[]);
+  assert.equal(document.title,'Half Hall venue ratings | Mshpit');
+  let html=documents.render(document);
+  assert.match(html,/0.8<small>\/5<\/small><\/strong> from 2 ratings/);
+  assert.match(html,/0 public review excerpts/);
+  assert.doesNotMatch(JSON.stringify(document.jsonLd),/AggregateRating|reviewRating/);
+  addVenueReview(database,{id:'half-excerpt',venueKey:'half hall',rating:0.5,createdAt:3});
+  document=documents.venueDocument({name:'Half Hall',venueKey:'half hall',at:NOW});
+  const venueSchema=document.jsonLd.find(node=>node['@type']==='MusicVenue');
+  assert.equal(document.venueReviewStats.ratingCount,2);
+  assert.equal(document.venueReviewStats.reviewCount,1);
+  assert.deepEqual(venueSchema.review[0].reviewRating,{'@type':'Rating',ratingValue:0.5,bestRating:5,worstRating:0.5});
+ } finally {database.close();}
+});
+
+test('artist public profile preserves a half-star performance headline', () => {
+ const database=createDatabase();
+ try {
+  addArtist(database); addUser(database,'active'); addPost(database,{id:'half-artist',overall:0.5});
+  database.exec("UPDATE posts SET dims=json_object('performance',0.5) WHERE id='half-artist'");
+  const document=service(database).artistDocument({artistKey:'alpha',at:NOW});
+  assert.equal(document.stats.averageRating,0.5);
+  assert.equal(document.stats.ratingCount,1);
+ } finally {database.close();}
 });
