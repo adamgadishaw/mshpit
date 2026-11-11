@@ -171,7 +171,7 @@ import {
   startPrivateListening,
 } from "./domain/privateListening.mjs";
 import { createGoingIntentCoordinator, goingIntentKey } from "./domain/goingIntent.mjs";
-import { reconcileAttendancePlan } from "./domain/attendancePlanCache.mjs";
+import { attendancePlanDetails, hydrateAttendanceGoingRows, reconcileAttendancePlan, replaceGoingPlan } from "./domain/attendancePlanCache.mjs";
 import { accountMutationIsCurrent, captureAccountMutation } from "./domain/accountMutation.mjs";
 import { captureFeedRead, feedReadIsCurrent } from "./domain/feedPagination.mjs";
 import { commandFailure, commandSuccess } from "./domain/commandResult.mjs";
@@ -4972,19 +4972,7 @@ export function StoreProvider({ children }) {
       || goingMutationRevisionRef.current !== mutationRevision
       || goingRef.attendance.accountId !== accountId) return false;
     const canonicalAttendance = Array.isArray(attendanceRows) ? attendanceRows : [];
-    const exactGoingRows = canonicalAttendance.filter((entry) => entry?.state === "going"
-      && typeof entry?.tourDateId === "string" && entry.tourDateId.trim());
-    const exactDisplayKeys = new Set(exactGoingRows
-      .map((entry) => entry.key || concertKey(entry))
-      .filter(Boolean));
-    const hydratedGoingRows = rows.filter((entry) => goingTourDateId(entry)
-      || !exactDisplayKeys.has(entry?.key));
-    exactGoingRows.forEach((entry) => {
-      const identity = goingEntryIdentity(entry);
-      if (!hydratedGoingRows.some((candidate) => goingEntryIdentity(candidate) === identity)) {
-        hydratedGoingRows.push(entry);
-      }
-    });
+    const hydratedGoingRows = hydrateAttendanceGoingRows(rows, canonicalAttendance, goingRef.current[accountId]);
     goingRef.attendance = { accountId, rows: canonicalAttendance };
     const next = { ...goingRef.current, [accountId]: hydratedGoingRows };
     goingRef.current = next;
@@ -5039,13 +5027,8 @@ export function StoreProvider({ children }) {
   const commitGoingState = (accountId, entry, desired) => {
     const current = goingRef.current;
     const mine = current[accountId] || [];
-    const identity = goingEntryIdentity(entry);
-    const exactUpgrade = !!goingTourDateId(entry);
-    const nextMine = desired
-      ? [...mine.filter((item) => goingEntryIdentity(item) !== identity
-        && !(exactUpgrade && !goingTourDateId(item) && item.key === entry.key)), entry]
-      : mine.filter((item) => goingEntryIdentity(item) !== identity
-        && !(exactUpgrade && !goingTourDateId(item) && item.key === entry.key));
+    const context = [...mine, ...(goingRef.attendance.accountId === accountId ? goingRef.attendance.rows : [])];
+    const nextMine = replaceGoingPlan(mine, entry, desired, context);
     const next = { ...current, [accountId]: nextMine };
     goingRef.current = next;
     setGoing(next);
@@ -5055,7 +5038,11 @@ export function StoreProvider({ children }) {
     if (!actor || !log) return Promise.resolve({ ok: false });
     const key = concertKey(log);
     const tourDateId = goingTourDateId(log);
+    const previousEntry = (goingRef.current[actor.id] || [])
+      .find((item) => goingEntryMatches(item, key, tourDateId));
     const entry = {
+      ...attendancePlanDetails(previousEntry),
+      ...attendancePlanDetails(log),
       key,
       ...(tourDateId ? { tourDateId } : {}),
       artist: log.artist,
@@ -5066,19 +5053,25 @@ export function StoreProvider({ children }) {
       date: log.date,
       tour: log.tourName || log.tour || null,
     };
+    // Keep the network contract unchanged; richer timing and identity belong
+    // to the local display projection and are not attendance mutation inputs.
+    const requestEntry = {
+      key, ...(tourDateId ? { tourDateId } : {}), artist: entry.artist, artistKey: entry.artistKey,
+      venue: entry.venue, venueKey: entry.venueKey, city: entry.city, date: entry.date, tour: entry.tour,
+    };
     const scope = goingIntentKey(actor.id, goingEntryIdentity(entry));
     const currentGoing = (goingRef.current[actor.id] || [])
       .some((item) => goingEntryMatches(item, key, tourDateId));
-    if (!goingConfirmedRef.current.has(scope)) goingConfirmedRef.current.set(scope, currentGoing);
+    if (!Object.prototype.hasOwnProperty.call(goingPendingRef.current, scope)) goingConfirmedRef.current.set(scope, currentGoing);
     goingMutationRevisionRef.current += 1;
     commitGoingState(actor.id, entry, desired);
     const operation = goingIntentRef.current.begin({
       accountId: actor.id,
-      showKey: key,
+      showKey: goingEntryIdentity(entry),
       desired,
       send: () => api("/api/going", {
         method: "POST",
-        body: { ...entry, going: desired },
+        body: { ...requestEntry, going: desired },
         context,
         expectedAccountId: actor.id,
       }),
@@ -5095,7 +5088,10 @@ export function StoreProvider({ children }) {
         : goingConfirmedRef.current.get(scope);
       if (result.ok && typeof result.value?.going === "boolean") goingConfirmedRef.current.set(scope, confirmed);
       if (!coordinator.isLatest(operation, sessionRef.current?.id)) return { ok: false, stale: true };
-      commitGoingState(actor.id, entry, !!confirmed);
+      const confirmedEntry = result.ok
+        ? { ...entry, ...(result.value?.showId ? { showId: result.value.showId } : {}) }
+        : entry;
+      commitGoingState(actor.id, confirmedEntry, !!confirmed);
       if (goingPendingRef.current[scope] === operation.revision) {
         const { [scope]: _finished, ...rest } = goingPendingRef.current;
         goingPendingRef.current = rest;
