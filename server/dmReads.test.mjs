@@ -51,7 +51,7 @@ test("direct-message reads have cursor indexes in both directions", () => {
   );
 });
 
-test("opening a DM thread durably clears only messages through its read cursor", () => {
+test("a targeted receipt durably clears only messages through its read cursor", () => {
   insertDm.run("dm_read_a", sender.id, recipient.id, "first", 100);
   insertDm.run("dm_read_b", sender.id, recipient.id, "second", 100);
   insertDm.run("dm_outgoing", recipient.id, sender.id, "reply", 101);
@@ -61,14 +61,19 @@ test("opening a DM thread durably clears only messages through its read cursor",
   const before = routes["GET /api/me/threads"]({ user: recipient, query: { summary: "1" } }).threads[0];
   assert.equal(before.unread, 2);
   assert.equal(before.readCursor, null);
+  assert.deepEqual(before.latestIncomingCursor, { createdAt: 100, id: "dm_read_b" });
 
   const marked = routes["POST /api/dms/:otherId/read"]({
     user: recipient,
     params: { otherId: sender.id },
+    body: { messageId: "dm_read_b" },
   });
   assert.equal(marked.ok, true);
   assert.deepEqual(marked.readCursor, { createdAt: 100, id: "dm_read_b" });
   assert.deepEqual(marked.notificationIds.sort(), ["notif_read_a", "notif_read_b"]);
+  assert.equal(marked.unread, 0);
+  assert.deepEqual(marked.latestIncomingCursor, before.latestIncomingCursor);
+  assert.equal(marked.hasReplied, true);
 
   const afterReload = routes["GET /api/me/threads"]({ user: recipient, query: { summary: "1" } }).threads[0];
   assert.equal(afterReload.unread, 0, "server hydration must not resurrect opened messages");
@@ -84,6 +89,7 @@ test("opening a DM thread durably clears only messages through its read cursor",
   const markedAgain = routes["POST /api/dms/:otherId/read"]({
     user: recipient,
     params: { otherId: sender.id },
+    body: { messageId: "dm_read_c" },
   });
   assert.deepEqual(markedAgain.readCursor, { createdAt: 100, id: "dm_read_c" });
   assert.deepEqual(markedAgain.notificationIds, ["notif_read_c"]);
@@ -94,7 +100,7 @@ test("reading one conversation never marks another sender's messages", () => {
   insertDm.run("dm_other_a", other.id, recipient.id, "separate thread", 200);
   insertNotification.run("notif_other_a", recipient.id, other.id, "dm", "dm_other_a", "separate thread", 200);
 
-  routes["POST /api/dms/:otherId/read"]({ user: recipient, params: { otherId: sender.id } });
+  routes["POST /api/dms/:otherId/read"]({ user: recipient, params: { otherId: sender.id }, body: { messageId: "dm_read_c" } });
   const thread = routes["GET /api/me/threads"]({ user: recipient, query: { summary: "1" } })
     .threads.find((item) => item.otherId === other.id);
   assert.equal(thread.unread, 1);

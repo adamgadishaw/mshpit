@@ -98,7 +98,7 @@ import {
 } from "./mediaAssets.js";
 import { mediaAssetRoutes } from "./mediaAssetRoutes.js";
 import { mediaLegacyFinalizeRoutes } from "./mediaLegacyFinalizeRoutes.js";
-import { directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
+import { directMessageReadFor, directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
 import { directMessageConsentFor, directMessageConsentProjection, directMessageConsentRoutes } from "./features/messaging/directMessageConsent.js";
 import { createMessageRelationshipContextService } from "./features/messaging/messageRelationshipContext.js";
 import { notificationRoutes } from "./features/notifications/notificationRoutes.js";
@@ -8171,6 +8171,7 @@ export const routes = {
     const other = ctx.params.otherId;
     if (blockedEitherWay(u.id, other)) throw new ApiError(403, "This conversation isn't available.", "FORBIDDEN");
     const consent = directMessageConsentFor(db, u.id, other);
+    const readSummary = directMessageReadFor(db, u.id, other);
     const { cursor, limit } = pageRequest(ctx, 500, 500);
     const after = decodeCursor(ctx.query?.after);
     if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
@@ -8195,6 +8196,7 @@ export const routes = {
         hasMore,
         removedIds: removedDmIdsFor(u.id, other),
         ...consent,
+        ...readSummary,
         ...(relationshipContext !== undefined ? { relationshipContext } : {}),
       };
     }
@@ -8214,6 +8216,7 @@ export const routes = {
       hasMore: false,
       removedIds: removedDmIdsFor(u.id, other),
       ...consent,
+      ...readSummary,
       ...(relationshipContext !== undefined ? { relationshipContext } : {}),
     };
   },
