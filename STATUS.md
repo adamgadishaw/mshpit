@@ -71,6 +71,17 @@
 - Preservation, validation, integration instructions and remaining native/Mac
   limits are recorded in [the local review](docs/PC_FEATURE_FOLLOWUP_2026-11-10.md).
   No push, merge, deployment, production write or phone interaction occurred.
+## 2026-11-11 Recovered calendar review candidate
+
+- Exact archive, Git, index/status and all 2,914 source files verified; immutable
+  snapshot preserved separately at c45b153, with recovered changes checkpointed
+  in 4fa645b before fixes. Full shared Mac history retained.
+- Clock/paging/accessibility/localization/menu and attendance schedule regressions
+  corrected. Final focus:133 pass,0 fail,1 Windows file-link skip; independent
+  review clear. Aggregate combined integration/export gates remain pending.
+- See [the recovery audit](docs/PC_CALENDAR_RECOVERY_2026-11-11.md).
+
+
 ## 2026-11-09 completed clean iOS navigation and card build
 
 - Validated runtime source `cc04472` combines retained Feed/detail Back and iOS-only content-aware post cards on `8060121`, excluding the held notification feature. Navigation-only `867e38c`, original candidates and main `942e1f3` are preserved.
