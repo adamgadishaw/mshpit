@@ -1,4 +1,4 @@
-import { toIsoDate } from "./dates.mjs";
+import { calendarReadDate } from "./calendarDates.mjs";
 import { ticketUrlDecision } from "./ticketLinks.mjs";
 import { calendarEventTiming, nextCalendarDay } from "./calendarEventTiming.mjs";
 import { calendarPerformanceKey } from "./calendarPerformanceIdentity.mjs";
@@ -81,7 +81,7 @@ function confirmedTicketUrlSet(values) {
 }
 
 export function normalizeCalendarEvent(event, { confirmedTicketUrls = [] } = {}) {
-  const date = toIsoDate(event?.date);
+  const date = calendarReadDate(event?.date);
   const artist = cleanText(event?.artist, 120);
   if (!date || !artist) return null;
   const venue = cleanText(event?.venue || event?.place, 140);

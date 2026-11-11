@@ -1,4 +1,5 @@
-import { localCalendarIso, toIsoDate } from "./dates.mjs";
+import { localCalendarIso } from "./dates.mjs";
+import { calendarReadDate } from "./calendarDates.mjs";
 import { calendarEventTiming, nextCalendarDay } from "./calendarEventTiming.mjs";
 import { calendarPerformanceGroups, calendarPerformanceKey, calendarSourceIds } from "./calendarPerformanceIdentity.mjs";
 
@@ -12,7 +13,7 @@ const text = (value) => String(value || "").trim();
 function calendarDay(value) {
   return value instanceof Date || typeof value === "number"
     ? localCalendarIso(value)
-    : toIsoDate(value);
+    : calendarReadDate(value);
 }
 
 function mergeShow(previous, incoming) {
@@ -54,7 +55,7 @@ export function calendarShowFromPost(post) {
   const source = ticket || post;
   const artist = text(source.artist || post.artist);
   const venue = text(source.venue || post.venue);
-  const date = toIsoDate(source.date || post.date);
+  const date = calendarReadDate(source.date || post.date);
   if (!artist || !venue || !date) return null;
   if (kind !== "review" && kind !== "status") return null;
 
@@ -138,7 +139,7 @@ export function memberCalendarModel({
 
   const entries = [];
   const add = (show, patch = {}, scope = {}) => {
-    const dayKey = toIsoDate(show?.date || show?.localDate);
+    const dayKey = calendarReadDate(show?.date || show?.localDate);
     if (!dayKey || !text(show?.artist) || !text(show?.venue)) return;
     const row = { ...show, date: dayKey, dayKey, calendarSourceIds: calendarSourceIds(show) };
     entries.push({ row, patch, scope, order: entries.length });

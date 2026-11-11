@@ -1,24 +1,27 @@
-import { toIsoDate } from "./dates.mjs";
+import { calendarReadDate } from "./calendarDates.mjs";
 import { liveEventTimeZone } from "./eventLifecycle.mjs";
 
 const DAY_MS = 86_400_000;
 const text = (value) => typeof value === "string" ? value.trim() : "";
 const pad = (value) => String(value).padStart(2, "0");
 const formatters = new Map();
+// A venue date at either browsing boundary can cross into the adjacent UTC
+// day. This permits the instant, without widening selectable calendar dates.
+const instantDate = (value) => calendarReadDate(value) || (["1899-12-31", "2101-01-01"].includes(value) ? value : "");
 
 export function nextCalendarDay(date) {
   return new Date(Date.parse(`${date}T00:00:00Z`) + DAY_MS).toISOString().slice(0, 10);
 }
 
 function absoluteTime(value) {
-  if (value instanceof Date || (typeof value === "number" && Number.isFinite(value) && value > 0)) {
+  if (value instanceof Date || (typeof value === "number" && Number.isFinite(value) && value !== 0)) {
     const date = new Date(value);
-    return Number.isFinite(date.getTime()) && toIsoDate(date.toISOString().slice(0, 10)) ? date.toISOString() : null;
+    return Number.isFinite(date.getTime()) && instantDate(date.toISOString().slice(0, 10)) ? date.toISOString() : null;
   }
   const candidate = text(value);
   // Offset-less ISO strings must never acquire the viewer's device timezone.
   if (!/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)$/i.test(candidate)
-    || !toIsoDate(candidate.slice(0, 10))) return null;
+    || !instantDate(candidate.slice(0, 10))) return null;
   const date = new Date(candidate);
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
@@ -70,8 +73,8 @@ function firstAbsolute(values) {
 
 /** Venue timing only: doors/access/countdown defaults are never show starts. */
 export function calendarEventTiming(event = {}) {
-  const date = toIsoDate(event.date || event.localDate);
-  const proposedEnd = toIsoDate(event.eventEndDate || event.endDate);
+  const date = calendarReadDate(event.date || event.localDate);
+  const proposedEnd = calendarReadDate(event.eventEndDate || event.endDate);
   // Bound malformed spans before the calendar expands them into day cells.
   const span = Date.parse(proposedEnd) - Date.parse(date);
   const endDate = proposedEnd && span >= 0 && span <= 366 * DAY_MS ? proposedEnd : date;
