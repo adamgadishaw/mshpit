@@ -181,6 +181,21 @@ async function scenario(browser, origin, width, theme, mode = "archive") {
       await page.goForward();
       await section("Reviews").waitFor();
       await page.getByLabel("4.7 out of 5", { exact: true }).waitFor();
+      if (mode === "individual-archive") {
+        assert.equal(new URL(page.url()).pathname, path);
+        // A fresh canonical concert read owns the aggregate. Its score and
+        // attribution must differ from the review carried by the in-app action.
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await page.getByText("Overall show rating", { exact: true }).waitFor();
+        await page.getByLabel("4.3 out of 5", { exact: true }).waitFor();
+        await page.getByText("17 ratings", { exact: true }).waitFor();
+        assert.equal(await page.getByText("Alex Fixture's overall show rating", { exact: true }).count(), 0);
+        await page.goBack();
+        await page.getByText("No comments yet. Start the conversation.", { exact: true }).waitFor();
+        await page.getByRole("link", { name: "View Fixture Artist show", exact: true }).click();
+        await page.getByText("Alex Fixture's overall show rating", { exact: true }).waitFor();
+        await page.getByLabel("4.7 out of 5", { exact: true }).waitFor();
+      }
     }
     if (upcoming) {
       await page.getByText("Event artwork · Fixture promoter", { exact: true }).waitFor();
