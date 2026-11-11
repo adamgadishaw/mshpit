@@ -9,7 +9,7 @@ import MentionText from "../components/MentionText";
 import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
-import { latestIncomingDirectMessageId } from "../domain/directMessageRead.mjs";
+import useVisibleDirectMessageRead from "../hooks/useVisibleDirectMessageRead";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
@@ -21,10 +21,10 @@ import {
 
 const EMPTY_COMPOSER = Object.freeze({ text: "", sending: false });
 
-export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
+export default function ThreadScreen({ otherId, isCurrentRoute, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
   const {
     session, chatAuthEpoch, userById, threadMessages, sendDM, retryChatMessage,
-    cancelChatMessage, loadThread, markThreadRead, loadUser,
+    cancelChatMessage, loadThread, markThreadRead, loadUser, isBlocked,
   } = useStore();
   const other = userById(otherId);
   const composerScope = accountTargetScope(session?.id, `dm:${otherId || ""}`);
@@ -42,7 +42,10 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
   }));
   const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
   const messages = threadMessages(otherId);
-  const incomingReadTarget = latestIncomingDirectMessageId(messages, session?.id);
+  const visibleRead = useVisibleDirectMessageRead({
+    accountId: session?.id, authEpoch: chatAuthEpoch, otherId,
+    blocked: isBlocked?.(otherId), messages, scrollRef, markThreadRead, isCurrentRoute,
+  });
   const messageRelationshipContext = [...messages].reverse()
     .find((message) => message?.relationshipContext)?.relationshipContext || null;
   const relationshipContext = normalizeMessageRelationshipContext(
@@ -89,21 +92,13 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
       if (userResult?.status === "error") {
         throw userResult.error instanceof Error ? userResult.error : new Error(userResult.error || "This member could not be refreshed.");
       }
+      if (!signal?.aborted && !threadResult?.stale) visibleRead.recover();
       return { threadResult, userResult };
     },
   });
   // A DM notification can open a chat with someone this device never cached;
   // fetch them so the name + avatar resolve instead of a nameless "Chat".
   useEffect(() => { if (otherId && !userById(otherId)) loadUser(otherId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [otherId]);
-  // Opening a thread and receiving a new inbound message advance the durable
-  // marker. The viewer's own optimistic send must not manufacture a read write.
-  useEffect(() => {
-    if (otherId && incomingReadTarget) void markThreadRead(otherId);
-    // The Store command is intentionally omitted: Context recreates the facade,
-    // while account + thread + latest inbound identity own this mutation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [incomingReadTarget, otherId, session?.id]);
-
   const send = async () => {
     const submitted = text;
     const draft = submitted.trim();
@@ -140,7 +135,9 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
         accessibilityLabel={`Refresh messages with ${other?.name || "this member"}`}
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
-        onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}>
+        onScroll={(event) => { onScroll(event); visibleRead.onScroll(event); }}
+        onContentSizeChange={(...size) => { visibleRead.onContentSizeChange(); onContentSizeChange(...size); }}
+        onLayout={visibleRead.onLayout} scrollEventThrottle={100}>
         {(relationshipChips.length > 0 || relationshipSummary) && (
           <View
             style={styles.relationshipCard}
@@ -163,7 +160,8 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
         {messages.map((m) => {
           const mine = m.from === session?.id;
           return (
-            <View key={m.id} style={[styles.row, mine && styles.rowMine]}>
+            <View key={m.id} ref={visibleRead.rowRef(m.id)} collapsable={false}
+              onLayout={(event) => visibleRead.rowLayout(m.id, event)} style={[styles.row, mine && styles.rowMine]}>
               <View style={[styles.bubble, mine && styles.bubbleMine, m.failed && styles.bubbleFailed]}>
                 <MentionText text={m.text} style={[styles.msgText, mine && { color: "#1A1206" }]} onMention={onMention} />
                 <View style={styles.msgFoot}>

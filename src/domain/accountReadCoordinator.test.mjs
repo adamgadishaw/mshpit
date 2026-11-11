@@ -34,3 +34,13 @@ test("invalidation makes an in-flight snapshot stale", () => {
   assert.equal(reads.isCurrent(snapshot, { id: "u_1" }), false);
   assert.equal(reads.invalidate("friends", null), false);
 });
+
+test("account snapshot issue order spans independent lanes without changing lane ownership", () => {
+  const reads = createAccountReadCoordinator(), account = { id: "owner" };
+  const inbox = reads.claim("dm-inbox", account), thread = reads.claim("dm-thread:peer", account);
+  assert.ok(thread.ordinal > inbox.ordinal);
+  assert.equal(reads.isCurrent(inbox, account), true);
+  reads.reset();
+  assert.ok(reads.claim("dm-inbox", account).ordinal > thread.ordinal);
+  assert.equal(reads.isCurrent(inbox, account), false);
+});

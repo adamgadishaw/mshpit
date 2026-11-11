@@ -167,7 +167,7 @@ import { reconcileConfirmedArtistPostRemoval } from "./domain/artistPostMutation
 import { reconcileConfirmedNotificationReads } from "./domain/notificationReadMutation.mjs";
 import {
   directMessageUnreadCount,
-  latestDirectMessageReadCursor,
+  mergeDirectMessageReadSummary,
   normalizeDirectMessageReadCursor,
 } from "./domain/directMessageRead.mjs";
 import {
@@ -2603,6 +2603,7 @@ export function StoreProvider({ children }) {
       .then(({ threads, removedIds = [] }) => {
         if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current) || !Array.isArray(threads)) return;
         setUsers((all) => {
+          if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current)) return all;
           let next = all;
           threads.forEach((t) => {
             if (t.otherUser && !next.some((x) => x.id === t.otherUser.id)) next = [...next,
@@ -2611,6 +2612,7 @@ export function StoreProvider({ children }) {
           return next;
         });
         setDms((d) => {
+          if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current)) return d;
           const n = { ...reconcileRemovedDirectMessages(d, su.id, removedIds) };
           threads.forEach((t) => {
             const key = dmKey(su.id, t.otherId);
@@ -2629,12 +2631,12 @@ export function StoreProvider({ children }) {
           return n;
         });
         setDmRead((current) => {
+          if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current)) return current;
           const next = { ...current };
           threads.forEach((thread) => {
-            const cursor = normalizeDirectMessageReadCursor(thread.readCursor);
-            if (!cursor) return;
             const key = dmKey(su.id, thread.otherId);
-            next[key] = latestDirectMessageReadCursor(next[key], cursor);
+            const summary = mergeDirectMessageReadSummary(next[key], thread, { revision: dmHydrationRead.ordinal });
+            if (summary != null) next[key] = summary;
           });
           return next;
         });
@@ -6289,11 +6291,12 @@ export function StoreProvider({ children }) {
     const read = chatReadsRef.current.claim("dm-inbox", sessionRef.current);
     if (!read) return Promise.resolve([]);
     const accountId = read.scope;
-    return api("/api/me/threads?summary=1", { signal, silent: true, context: "Refreshing your inbox" })
+    return api("/api/me/threads?summary=1", { signal, expectedAccountId: accountId, silent: true, context: "Refreshing your inbox" })
       .then(({ threads, removedIds = [] }) => {
         if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current) || !Array.isArray(threads)) return [];
         absorbUsers(threads.map((thread) => thread.otherUser).filter(Boolean));
         setDms((all) => {
+          if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return all;
           const next = { ...reconcileRemovedDirectMessages(all, accountId, removedIds) };
           for (const thread of threads) {
             const key = dmKey(accountId, thread.otherId);
@@ -6312,12 +6315,12 @@ export function StoreProvider({ children }) {
           return next;
         });
         setDmRead((current) => {
+          if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return current;
           const next = { ...current };
           for (const thread of threads) {
-            const cursor = normalizeDirectMessageReadCursor(thread.readCursor);
-            if (!cursor) continue;
             const key = dmKey(accountId, thread.otherId);
-            next[key] = latestDirectMessageReadCursor(next[key], cursor);
+            const summary = mergeDirectMessageReadSummary(next[key], thread, { revision: read.ordinal });
+            if (summary != null) next[key] = summary;
           }
           return next;
         });
@@ -6352,10 +6355,11 @@ export function StoreProvider({ children }) {
     const query = queryString ? `?${queryString}` : "";
     return api(`/api/dms/${encodeURIComponent(otherId)}${query}`, {
       signal,
+      expectedAccountId: read.scope,
       silent: true,
       context: "Refreshing direct messages",
     })
-      .then(({ messages, removedIds = [], syncCursor, hasMore, relationshipContext }) => {
+      .then(({ messages, removedIds = [], syncCursor, hasMore, relationshipContext, ...readSummary }) => {
         if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) {
           return { syncCursor: after || null, hasMore: false, stale: true };
         }
@@ -6365,6 +6369,7 @@ export function StoreProvider({ children }) {
           ? normalizeMessageRelationshipContext(relationshipContext)
           : null;
         setDms((d) => {
+          if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return d;
           const existing = hasRelationshipContext
             ? (d[key] || []).map((message) => ({ ...message, relationshipContext: normalizedRelationshipContext }))
             : (d[key] || []);
@@ -6382,6 +6387,11 @@ export function StoreProvider({ children }) {
           if (live.length) next[key] = live;
           else delete next[key];
           return next;
+        });
+        if (Number.isSafeInteger(readSummary.unread)) setDmRead((current) => {
+          if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return current;
+          const summary = mergeDirectMessageReadSummary(current[key], readSummary, { revision: read.ordinal });
+          return summary == null ? current : { ...current, [key]: summary };
         });
         return {
           syncCursor: syncCursor || after || null,
@@ -6423,35 +6433,45 @@ export function StoreProvider({ children }) {
       failed: false,
     });
   };
-  const markThreadRead = async (otherId) => {
+  const markThreadRead = async (otherId, { messageId, signal, isCurrent } = {}) => {
     const actor = currentMutationActor();
     const context = "Marking this conversation as read";
     if (!actor || !otherId) return localCommandError("PIT-AUTH-001", context);
+    if (typeof messageId !== "string" || !messageId.trim() || signal?.aborted
+      || (isCurrent && !isCurrent()) || blockedIdsRef.current.includes(otherId)) return localCommandError("PIT-API-001", context);
     const key = dmKey(actor.id, otherId);
     if (ENABLE_DEMO_DATA) {
-      setDmRead((current) => ({ ...current, [key]: dms[key]?.length || 0 }));
+      const index = dms[key]?.findIndex(message => message.id === messageId && message.from !== actor.id) ?? -1;
+      if (index < 0) return localCommandError("PIT-API-001", context);
+      setDmRead((current) => ({ ...current, [key]: Math.max(Number(current[key]) || 0, index + 1) }));
       return commandSuccess({ accountId: actor.id, otherId });
     }
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const read = chatReadsRef.current.claim(`dm-read:${otherId}`, actor);
+    const currentReceipt = () => !signal?.aborted && (!isCurrent || isCurrent())
+      && accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
+      && chatReadsRef.current.isCurrent(read, sessionRef.current)
+      && !blockedIdsRef.current.includes(otherId);
     try {
-      const response = await writeDirectMessageRead(otherId, { expectedAccountId: actor.id });
+      // Only the server may resolve the target's timestamp and conversation.
+      // The dedicated route fails safely on an older backend; never fall back
+      // to a blanket "latest stored message" acknowledgement.
+      const response = await writeDirectMessageRead(otherId, { messageId, signal, expectedAccountId: actor.id });
       const cursor = normalizeDirectMessageReadCursor(response?.readCursor);
-      if (response?.ok !== true) return localCommandError("PIT-API-001", context);
-      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
-        return localCommandError("PIT-AUTH-004", context);
-      }
-      if (!cursor) return commandSuccess({ accountId: actor.id, otherId, readCursor: null });
-      setDmRead((current) => ({
+      if (response?.ok !== true || !cursor) return localCommandError("PIT-API-001", context);
+      if (!currentReceipt()) return localCommandError("PIT-AUTH-004", context);
+      setDmRead((current) => currentReceipt() ? ({
         ...current,
-        [key]: latestDirectMessageReadCursor(current[key], cursor),
-      }));
-      setNotifications((current) => reconcileConfirmedNotificationReads(current, {
+        [key]: mergeDirectMessageReadSummary(current[key], response, { revision: read.ordinal }),
+      }) : current);
+      setNotifications((current) => currentReceipt() ? reconcileConfirmedNotificationReads(current, {
         accountId: actor.id,
         notificationIds: response.notificationIds,
-      }));
+      }) : current);
       return commandSuccess({ accountId: actor.id, otherId, readCursor: cursor });
     } catch (error) {
-      // Keep the badge visible when the server cannot durably save the read.
+      // Keep the badge visible and let the active viewport owner retry its
+      // retained observed target after recovery; no optimistic read state.
       return commandError(error, context);
     }
   };
@@ -6484,8 +6504,8 @@ export function StoreProvider({ children }) {
         // A thread is a "request" until you accept it: someone you don't follow
         // messaged you and you haven't replied yet. Following them or sending a
         // single reply promotes it to the main inbox (Instagram-style gating).
-        const iReplied = msgs.some((m) => m.from === session.id);
-        const bucket = (isFollowing(otherId) || iReplied) ? "main" : "requests";
+        const iReplied = marker?.hasReplied === true || msgs.some((m) => m.from === session.id && !m.pending && !m.failed && (ENABLE_DEMO_DATA || m.server));
+        const bucket = (marker?.requestState === "accepted" || isFollowing(otherId) || iReplied) ? "main" : "requests";
         const lastAt = Number(last?.at || last?.createdAt) || 0;
         return { otherId, otherUser: userById(otherId), last, lastAt, unread, count: msgs.length, bucket, relationshipContext };
       })
