@@ -1,5 +1,16 @@
 # Pit current status
 
+## 2026-11-11 Pit Team theme access (local candidate)
+
+- Isolated branch `fix/pit-team-themes` starts at released base
+  `c2bbe88246f249a5fa7cd60f3184f55b6b8794bf`; concurrent database integration is excluded.
+- Guests and non-team accounts have Daylight and Stage. The existing admin/Pit
+  Team role retains all 12 themes, with selection, startup, restoration, account
+  transition and server-write enforcement. Dormant preferences are preserved.
+- No monetization, membership, production-data or release operation is included.
+  Behavior, validation scope and Mac/iOS limits are in the
+  [theme access review](docs/THEME_ACCESS_REVIEW_2026-11-11.md).
+
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 
 - Local branch `fix/catalog-event-festival-20261027` uses a source snapshot of

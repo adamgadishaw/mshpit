@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "@babel/parser";
 import { accountMutationIsCurrent, captureAccountMutation } from "./accountMutation.mjs";
+import { canAccessTheme } from "./themeAccess.mjs";
 import { clean, clampRating, LIMITS } from "./validation.mjs";
 import { createChatClientMutationId } from "./chatDelivery.mjs";
 import { createTicketRegistry } from "./latestWins.mjs";
@@ -53,7 +54,7 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
   const update = (key) => (value) => { writes.push(key); state[key] = typeof value === "function" ? value(state[key]) : value; };
   const request = (name) => (...args) => new Promise((resolve, reject) => calls.push({ name, args, resolve, reject }));
   const dependencies = {
-    session: actor, sessionRef, authReadyRef, accountMutationEpochRef,
+    canAccessTheme, commandError: error => ({ ok: false, error }), session: actor, sessionRef, authReadyRef, accountMutationEpochRef,
     captureAccountMutation, accountMutationIsCurrent, clean, clampRating, LIMITS, createChatClientMutationId, createAccountPreferenceWrites,
     ENABLE_DEMO_DATA: demo, MEDIA_POST_MAX_ATTACHMENTS: 20,
     norm: (value) => String(value || "").trim().toLowerCase(), fcKey: (value) => String(value || "").trim().toLowerCase(),
@@ -450,16 +451,16 @@ test("the account-transition boundary clears both production optimistic rating m
 
 test("theme selection preserves deliberate guest use but rejects stale or unready account callbacks", async () => {
   const guest = fixture({ actor: null });
-  assert.equal((await guest.actions.chooseTheme("light")).ok, true);
+  assert.equal((await guest.actions.chooseTheme("daylight")).ok, true);
   assert.deepEqual(guest.calls, []);
-  assert.deepEqual(guest.effects, [["theme", "light", null]]);
+  assert.deepEqual(guest.effects, [["theme", "daylight", null, null]]);
   for (const mode of ["unready", "logout", "switch", "roundtrip", "guest-login"]) {
     const f = fixture({ actor: mode === "guest-login" ? null : owner, ready: mode !== "unready" });
     if (mode === "logout") f.adopt(null);
     if (mode === "switch") f.adopt(other);
     if (mode === "roundtrip") { f.adopt(other); f.adopt(owner); }
     if (mode === "guest-login") f.adopt(owner);
-    assert.equal((await f.actions.chooseTheme("light")).ok, false);
+    assert.equal((await f.actions.chooseTheme("daylight")).ok, false);
     assert.deepEqual(f.calls, []);
     assert.deepEqual(f.writes, []);
     assert.deepEqual(f.effects, []);
@@ -469,16 +470,37 @@ test("theme selection preserves deliberate guest use but rejects stale or unread
 test("theme persistence binds the owner and cannot reload another account after late success or failure", async () => {
   for (const failed of [false, true]) {
     for (const changed of [false, true]) {
-      const f = fixture(), pending = f.actions.chooseTheme("light");
+      const f = fixture(), pending = f.actions.chooseTheme("daylight");
       assert.equal(f.calls[0].args[1].expectedAccountId, owner.id);
       if (changed) { f.adopt(other); f.writes.length = 0; }
       if (failed) f.calls[0].reject(new Error("Offline"));
-      else f.calls[0].resolve({});
-      assert.equal((await pending).ok, !changed);
-      assert.deepEqual(f.effects, changed ? [] : [["theme", "light", owner.id]]);
+      else f.calls[0].resolve({ user: { ...owner, theme: "daylight" } });
+      assert.equal((await pending).ok, !changed && !failed);
+      assert.deepEqual(f.effects, changed || failed ? [] : [["theme", "daylight", owner.id, { ...owner, theme: "daylight" }]]);
       if (changed) assert.deepEqual(f.writes, []);
     }
   }
+});
+
+test("theme writes reject badge-only access, repeated submissions and role loss during an in-flight save", async () => {
+  for (const role of ["fan", "artist", "moderator", "editor"]) {
+    const f = fixture({ actor: { ...owner, role, badges: ["staff"] } });
+    assert.equal((await f.actions.chooseTheme("forest")).ok, false);
+    assert.deepEqual(f.calls, []);
+  }
+  const admin = { ...owner, role: "admin" };
+  const f = fixture({ actor: admin });
+  const pending = f.actions.chooseTheme("forest");
+  assert.equal((await f.actions.chooseTheme("neon")).ok, false);
+  assert.equal(f.calls.length, 1);
+  f.adopt({ ...owner, role: "fan" }, 0);
+  f.calls[0].resolve({ user: { ...admin, theme: "forest" } });
+  assert.equal((await pending).ok, false);
+  assert.deepEqual(f.effects, []);
+  assert.equal(f.state.session.role, "fan");
+  const retry = f.actions.chooseTheme("daylight");
+  f.calls[1].resolve({ user: { ...owner, role: "fan", theme: "daylight" } });
+  assert.equal((await retry).ok, true);
 });
 
 for (const name of ["joinFanClub", "addVenueReview"]) {

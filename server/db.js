@@ -6,6 +6,7 @@
 // pit.db-wal until a checkpoint, so a bare copy can be torn or stale. Use
 // `npm run backup` (VACUUM INTO), which asks SQLite for a consistent snapshot.
 import { DatabaseSync } from "node:sqlite";
+import { resolveTheme } from "../src/domain/themeAccess.mjs";
 import { ensureJobSchema } from "./features/jobs/jobRepository.js";
 import { ensureArtistAccessRetentionSchema } from "./features/artistAccounts/artistAccessRetention.js";
 import { assertDatabaseRecoveryReady } from "./databaseRecovery.js";
@@ -3151,6 +3152,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
   // picks). They are user-controlled, so they must never replace typed/trusted
   // DB columns or expose a raw column under its database or public name.
   const extras = canonicalProfileExtras(parseJsonObject(u.extras)).value;
+  if (extras.theme !== undefined) extras.theme = resolveTheme(extras.theme, u);
   for (const key of Object.keys(u)) delete extras[key];
   for (const key of [
     "id", "email", "name", "handle", "role", "verified", "sponsor",

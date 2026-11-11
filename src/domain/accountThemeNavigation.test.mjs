@@ -72,17 +72,16 @@ test("actual Store theme reconciliation binds the current confirmed account", ()
   const sync = runInNewContext(`(${source.slice(node.init.start, node.init.end)})`, scope);
   sync(); assert.deepEqual(calls, []);
   scope.authReadyRef.current = true;
-  sync(); assert.deepEqual(calls, [["apply", "daylight", "member"]]);
+  sync(); assert.deepEqual(calls, [["apply", "daylight", "member", scope.sessionRef.current]]);
   calls.length = 0;
   stored = { theme: "forest", ownerId: "member" };
-  sync(); assert.equal(calls[0][2].expectedAccountId, "member");
-  assert.equal(calls[0][2].body.theme, "forest");
+  sync(); assert.deepEqual(calls, [["apply", "daylight", "member", scope.sessionRef.current]], "restoration never sends an account write");
   calls.length = 0;
   scope.sessionRef.current = { id: "second-member", theme: "stage" };
-  sync(); assert.deepEqual(calls, [["apply", "stage", "second-member"]], "a stored choice never crosses account ownership");
+  sync(); assert.deepEqual(calls, [["apply", "stage", "second-member", scope.sessionRef.current]], "a stored choice never crosses account ownership");
   calls.length = 0;
   scope.sessionRef.current = null;
-  sync(); assert.deepEqual(calls, []);
+  sync(); assert.deepEqual(calls, [["apply", undefined, null, null]]);
 });
 
 test("native Root reconciles a settled guest and Store performs no account mutation", () => {
