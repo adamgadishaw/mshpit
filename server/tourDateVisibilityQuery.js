@@ -3,6 +3,7 @@ import { artistAuthoredTourDateVisibleSql } from "./artistAuthoredTourDateVisibi
 import {
   currentOrUpcomingTourDateSql,
   effectiveTourDateEndSql,
+  normalizedTourDateStartSql,
 } from "./tourDateLifecycle.js";
 import { tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
 import { tourDateArtistBindingAllowedSql } from "./providerArtistBinding.js";
@@ -14,6 +15,7 @@ export function visibleTourDateRowsFrom(database, viewer, {
   id = null,
   today = null,
   through = null,
+  calendarThrough = null,
   artist = null,
   city = null,
   countryCode = null,
@@ -44,6 +46,12 @@ export function visibleTourDateRowsFrom(database, viewer, {
     // multi-day event starts before it and remains eligible through today.
     filters.push("td.date<=?");
     prefix.push(through);
+  }
+  if (calendarThrough) {
+    // Calendar promises literal month/day bounds, including retained legacy
+    // date separators whose raw lexical ordering differs from ISO dates.
+    filters.push(`${normalizedTourDateStartSql("td")}<=?`);
+    prefix.push(calendarThrough);
   }
   if (artist) {
     filters.push(tourDateArtistBindingAllowedSql("td"));

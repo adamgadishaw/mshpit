@@ -1437,6 +1437,17 @@ function Root() {
   const openVenueReview = (name) => requireVerifiedMutation("review", () => go({ venueReview: name }));
   const removePostTag = (postId) => requireVerifiedMutation("interact", () => removeMyPostTag(postId));
 
+  // Only the currently exposed thread may earn a read target. The ref also
+  // fences measurements and completions queued before an overlay or navigation.
+  const threadReadVisibleRef = useRef(false);
+  threadReadVisibleRef.current = appActive && authReady && !!session
+    && accountStatus(session) === "ok" && !acctOpen && !welcome
+    && !nativeAccountLinkActive && !nativeAccountLinkActiveRef.current && !authLinkError
+    && !resetToken && !unsubToken && !verifyToken && !ownerApprovalToken
+    && !verificationPrompt && !publicNavigationNotice && !newsStoryNotice;
+  const isCurrentMessageThread = () => threadReadVisibleRef.current
+    && navigationRef.current.stack.at(-1) === nav;
+
   let overlay = nav.routeLoading ? <ScreenLoading /> : nav.routeError ? (
     <View style={[styles.screenLoading, { padding: 24 }]} testID="public-route-error">
       <Text accessibilityRole="header" style={{ color: colors.text, fontSize: 22, fontWeight: "700" }}>This page couldn’t load.</Text>
@@ -1461,7 +1472,7 @@ function Root() {
   else if (nav.reporting) overlay = <ReportScreen target={nav.reporting} onClose={back} />;
   else if (nav.editProfile) overlay = <EditProfileScreen onClose={back} />;
   else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
-  else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
+  else if (nav.thread) overlay = <ThreadScreen isCurrentRoute={isCurrentMessageThread} otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (MUSIC_PLAYER_ENABLED && nav.listeningHistory) overlay = <ListeningHistoryScreen onClose={back} onPlay={musicPlayerAction} />;
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} onOpenPlans={ENABLE_CREW ? () => go({ crew: { tab: "plans" } }) : undefined} onOpenArtist={openArtist} />;

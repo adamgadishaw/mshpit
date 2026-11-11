@@ -93,7 +93,7 @@ const commands = {
   addFanClubMessage: (f) => f.actions.addFanClubMessage("Artist", "Hello"),
   sendDM: (f) => f.actions.sendDM(other.id, "Hello"),
   rate: (f) => f.actions.rate("album", () => assert.fail("no optimistic write"), "Artist", "Album", 4),
-  markThreadRead: (f) => f.actions.markThreadRead(other.id),
+  markThreadRead: (f) => f.actions.markThreadRead(other.id, { messageId: "observed-message" }),
   joinFanClub: (f) => f.actions.joinFanClub("Artist"),
   addVenueReview: (f) => f.actions.addVenueReview("Venue", { rating: 4, text: "Good room" }),
   applyMyAttendanceMutation: (f) => f.actions.applyMyAttendanceMutation({ id: "show" }, { showId: "show" }),

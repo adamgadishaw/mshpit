@@ -1,4 +1,9 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { calendarEventTiming } from "../src/domain/calendarEventTiming.mjs";
+import {
+  encodeTourDateCalendarCursor, tourDateCalendarPublicRange,
+  tourDateCalendarRequest, tourDateCalendarSummary,
+} from "./tourDateCalendarRange.mjs";
 import { mapLibreServerEnabled } from "./mapLibreConfiguration.mjs";
 import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
 import { createVenueMapCatalogueResponse } from "./venueMapCatalogueResponse.mjs";
@@ -91,7 +96,8 @@ import {
 } from "./mediaAssets.js";
 import { mediaAssetRoutes } from "./mediaAssetRoutes.js";
 import { mediaLegacyFinalizeRoutes } from "./mediaLegacyFinalizeRoutes.js";
-import { directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
+import { directMessageReadFor, directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
+import { directMessageConsentFor, directMessageConsentProjection, directMessageConsentRoutes } from "./features/messaging/directMessageConsent.js";
 import { createMessageRelationshipContextService } from "./features/messaging/messageRelationshipContext.js";
 import { notificationRoutes } from "./features/notifications/notificationRoutes.js";
 import { postTagRoutes } from "./postTagRoutes.js";
@@ -1054,17 +1060,24 @@ function tourDateRangePage(viewer, range, timestamp) {
   let lastScanned = null;
   let scanned = 0;
   let exhausted = false;
+  const rawScanLimit = Math.min(range.rawScanLimit ?? TOUR_DATE_RANGE_MAX_RAW_SCAN, TOUR_DATE_RANGE_MAX_RAW_SCAN);
+  const scanBatch = Math.min(range.scanBatch ?? TOUR_DATE_RANGE_SCAN_BATCH, TOUR_DATE_RANGE_SCAN_BATCH);
+  const queryFloor = liveEventQueryFloorDate(timestamp);
+  // Calendar is an explicit month archive; discovery remains current/upcoming.
+  const today = range.calendarFrom || queryFloor;
+  const encodeCursor = (row) => range.cursorScope ? encodeTourDateCalendarCursor(row, range) : encodeTourDateCursor(row);
 
-  // The SQL lifecycle predicate deliberately includes one prior UTC day so a
-  // negative-offset event is not dropped before its local day ends. Apply the
-  // timezone-aware predicate while filling the requested page, rather than
-  // limiting raw candidates first and returning a short or empty page.
-  while (visible.length <= range.limit && scanned < TOUR_DATE_RANGE_MAX_RAW_SCAN) {
-    const batchLimit = Math.min(TOUR_DATE_RANGE_SCAN_BATCH, TOUR_DATE_RANGE_MAX_RAW_SCAN - scanned);
+  // Discovery includes one prior UTC day and then checks each venue's local
+  // lifecycle. Calendar instead checks its explicit, renderable date window.
+  // Fill visible pages after either filter, preserving progress through rows
+  // that cannot be shown rather than mistaking a short page for exhaustion.
+  while (visible.length <= range.limit && scanned < rawScanLimit) {
+    const batchLimit = Math.min(scanBatch, rawScanLimit - scanned);
     const candidates = visibleTourDateRows(viewer, {
-      today: liveEventQueryFloorDate(timestamp),
+      today,
       at: timestamp,
-      through: range.through,
+      through: range.calendarThrough ? null : range.through,
+      calendarThrough: range.calendarThrough,
       city: range.city,
       countryCode: range.countryCode,
       country: range.country,
@@ -1081,12 +1094,15 @@ function tourDateRangePage(viewer, range, timestamp) {
     const tail = candidates.at(-1);
     lastScanned = { date: tail.date, id: tail.id };
     for (const row of candidates) {
-      if (lifecycle.isCurrentOrUpcoming({
-        date: row.date,
-        eventEndDate: row.event_end_date,
-        eventTimezone: row.event_timezone,
-        eventStatus: row.event_status,
-      })) visible.push(row);
+      const eligible = range.calendarFrom
+        ? calendarTourDateJson(row, range) != null
+        : lifecycle.isCurrentOrUpcoming({
+          date: row.date,
+          eventEndDate: row.event_end_date,
+          eventTimezone: row.event_timezone,
+          eventStatus: row.event_status,
+        });
+      if (eligible) visible.push(row);
       if (visible.length > range.limit) break;
     }
 
@@ -1100,13 +1116,13 @@ function tourDateRangePage(viewer, range, timestamp) {
 
   const rows = visible.slice(0, range.limit);
   if (visible.length > range.limit && rows.length) {
-    return { rows, nextCursor: encodeTourDateCursor(rows.at(-1)) };
+    return { rows, nextCursor: encodeCursor(rows.at(-1)), scanned };
   }
   // A pathological prior-day backlog can consume the bounded scan budget. In
   // that case advance past every inspected row (all eligible rows were already
   // returned) so the next request makes progress without losing unseen data.
-  const nextCursor = !exhausted && lastScanned ? encodeTourDateCursor(lastScanned) : null;
-  return { rows, nextCursor };
+  const nextCursor = !exhausted && lastScanned ? encodeCursor(lastScanned) : null;
+  return { rows, nextCursor, scanned };
 }
 
 const tourDateArtistPhotos = createTourDateArtistPhotoReader(db);
@@ -1145,6 +1161,23 @@ function tourDateJson(row) {
       eventSourceUrl: row.event_source_url || null,
       billedArtists,
     } : {}),
+  };
+}
+
+function calendarTourDateJson(row, range) {
+  if (["cancelled", "canceled"].includes(String(row.event_status || "").trim().toLowerCase())) return null;
+  const event = tourDateJson(row);
+  const artist = typeof event.artist === "string"
+    ? event.artist.replace(/[\u0000-\u001f\u007f]/gu, "").replace(/\s+/gu, " ").trim().slice(0, 240) : "";
+  const venue = publicTourDateVenueName(row);
+  // Match the calendar model's projectable dates and spans. The summary and
+  // selected rows must never advertise a performance that the client drops.
+  const timing = calendarEventTiming({ date: event.date, eventEndDate: event.eventEndDate });
+  if (!timing.date || !artist || !venue
+    || timing.date > range.calendarThrough || timing.endDate < range.calendarFrom) return null;
+  return {
+    ...event, artist, venue, date: timing.date,
+    eventEndDate: timing.endDate > timing.date ? timing.endDate : null,
   };
 }
 
@@ -2823,10 +2856,14 @@ function blockedIdSet(userId) {
 const DM_TOMBSTONE_LIMIT = 750;
 function removedDmIdsFor(userId, otherId = null) {
   if (otherId) {
+    // A mounted conversation can retain explicitly paged history beyond the
+    // recent750 cache. Return every removal in this authorized pair so an old
+    // removed row cannot survive behind newer tombstones. Inbox remains bounded;
+    // a future deletion stream can paginate this per-thread payload separately.
     return db.prepare(`SELECT id FROM dms WHERE removed=1
       AND ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?))
-      ORDER BY created_at DESC,id DESC LIMIT ?`)
-      .all(userId, otherId, otherId, userId, DM_TOMBSTONE_LIMIT).map((row) => row.id);
+      ORDER BY created_at DESC,id DESC`)
+      .all(userId, otherId, otherId, userId).map((row) => row.id);
   }
   return db.prepare(`SELECT id FROM dms WHERE removed=1 AND (from_id=? OR to_id=?)
     ORDER BY created_at DESC,id DESC LIMIT ?`)
@@ -4891,6 +4928,17 @@ export const routes = {
     atomicWrite,
     ApiError,
   }),
+  ...directMessageConsentRoutes({
+    database: db,
+    requireUser,
+    userById: q.userById,
+    blockedEitherWay,
+    atomicWrite,
+    limit,
+    now,
+    mayStartDirectMessage,
+    ApiError,
+  }),
   ...showAttendanceRoutes({
     database: db,
     attendanceRepository: showAttendanceRepository,
@@ -6765,6 +6813,25 @@ export const routes = {
     // in the artist archive; letting expired provider rows consume this bounded
     // 5,000-row window would hide current worldwide dates as coverage grows.
     const timestamp = now();
+    let calendarRange;
+    try {
+      calendarRange = tourDateCalendarRequest(ctx.query || {}, { viewerId: ctx.user?.id || null });
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      throw new ApiError(400, error.message, "VALIDATION_FAILED");
+    }
+    if (calendarRange) {
+      ctx.setHeader?.("Cache-Control", "private, no-store");
+      const result = tourDateRangePage(ctx.user, calendarRange, timestamp);
+      return {
+        tourDates: result.rows.map((row) => calendarTourDateJson(row, calendarRange)),
+        nextCursor: result.nextCursor,
+        complete: result.nextCursor === null,
+        range: tourDateCalendarPublicRange(calendarRange),
+        monthSummary: tourDateCalendarSummary(calendarRange,
+          (range) => tourDateRangePage(ctx.user, range, timestamp)),
+      };
+    }
     if (ctx.query?.view === "venue-map" && mapLibreServerEnabled(process.env)) {
       return venueMapCatalogue.get({ signal: ctx.signal }).then(createVenueMapCatalogueResponse).catch(cause => {
         const error = new ApiError(503, "Venue map could not refresh. Try again shortly.", "DATABASE_UNAVAILABLE", cause);
@@ -8035,6 +8102,7 @@ export const routes = {
     const u = requireUser(ctx);
     const hidden = blockedIdSet(u.id);
     const readProjection = directMessageReadProjection(db, u.id);
+    const consentProjection = directMessageConsentProjection(db, u.id);
     // Inbox refreshes need only one latest message per conversation. A windowed
     // query avoids downloading up to 500 messages for every thread every time the
     // inbox is opened or refreshed, while the full route remains for hydration.
@@ -8062,6 +8130,7 @@ export const routes = {
           messages: [{ id: message.id, from: message.from_id, text: message.text, createdAt: message.created_at }],
           relationshipContext: relationshipContexts.get(message.other_id) || null,
           ...readProjection.forOther(message.other_id),
+          ...consentProjection.forOther(message.other_id),
         } : null;
       }).filter(Boolean), removedIds: removedDmIdsFor(u.id) };
     }
@@ -8085,6 +8154,7 @@ export const routes = {
         messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })),
         relationshipContext: relationshipContexts.get(o.other) || null,
         ...readProjection.forOther(o.other),
+        ...consentProjection.forOther(o.other),
       };
     }).filter(Boolean);
     return { threads, removedIds: removedDmIdsFor(u.id) };
@@ -8094,6 +8164,8 @@ export const routes = {
     const u = requireUser(ctx);
     const other = ctx.params.otherId;
     if (blockedEitherWay(u.id, other)) throw new ApiError(403, "This conversation isn't available.", "FORBIDDEN");
+    const consent = directMessageConsentFor(db, u.id, other);
+    const readSummary = directMessageReadFor(db, u.id, other);
     const { cursor, limit } = pageRequest(ctx, 500, 500);
     const after = decodeCursor(ctx.query?.after);
     if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
@@ -8117,6 +8189,8 @@ export const routes = {
         syncCursor: rows.length ? encodeCursor(rows.at(-1)) : String(ctx.query.after),
         hasMore,
         removedIds: removedDmIdsFor(u.id, other),
+        ...consent,
+        ...readSummary,
         ...(relationshipContext !== undefined ? { relationshipContext } : {}),
       };
     }
@@ -8135,6 +8209,8 @@ export const routes = {
       syncCursor,
       hasMore: false,
       removedIds: removedDmIdsFor(u.id, other),
+      ...consent,
+      ...readSummary,
       ...(relationshipContext !== undefined ? { relationshipContext } : {}),
     };
   },
