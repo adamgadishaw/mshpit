@@ -19,7 +19,7 @@ const openLink = (url) => { if (url) void Linking.openURL(url).catch(() => {}); 
 // One festival: its next edition (dates, lineup by day, who's going, your
 // plan), what fans said about past years, when the next one is expected,
 // past editions, and its history from Wikipedia.
-export default function FestivalScreen({ slug, editionId = null, signedIn = false, accountId = null, author = null, onClose, onOpenArtist, onRequireAuth, onReviewFestival }) {
+export default function FestivalScreen({ slug, editionId = null, signedIn = false, accountId = null, author = null, onClose, onOpenArtist, onRequireAuth, onReviewFestival, renderEventAccount }) {
   const openPostById = useContext(PostNavigationContext);
   const { width } = useWindowDimensions();
   const wide = width >= 900;
@@ -69,6 +69,7 @@ export default function FestivalScreen({ slug, editionId = null, signedIn = fals
   return <View style={styles.screen}>
     <Header title={festival.name} onClose={onClose} />
     <ScrollView contentContainerStyle={[styles.content, wide && styles.contentWide]} keyboardShouldPersistTaps="handled">
+      {renderEventAccount?.({ targetKind: "festival", targetId: festival.slug, accountId, onOpenPost: post => openPostById?.(post.id), onRequireAuth })}
       {page.upcoming.length > 1 ? <EditionSelector horizontal={Platform.OS !== "web"} showsHorizontalScrollIndicator={false}
         style={Platform.OS !== "web" && styles.nativeEditionSelector}
         contentContainerStyle={Platform.OS !== "web" ? styles.nativeEditionChips : undefined}

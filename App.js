@@ -90,6 +90,7 @@ const BadgeLegendScreen = lazyWithRetry(() => import("./src/screens/BadgeLegendS
 const CrewScreen = lazyWithRetry(() => import("./src/screens/CrewScreen"), "CrewScreen");
 const NewsScreen = lazyWithRetry(() => import("./src/components/news/NewsViews").then((module) => ({ default: module.NewsScreen })), "NewsScreen");
 const NewsroomScreen = lazyWithRetry(() => import("./src/features/newsroom/newsroomEntry").then((module) => ({ default: module.NewsroomScreen })), "NewsroomScreen");
+const EventAccountPanel = lazyWithRetry(() => import("./src/screens/EventAccountPanel"), "EventAccountPanel");
 const FestivalScreen = lazyWithRetry(() => import("./src/features/festivals/festivalsEntry").then((module) => ({ default: module.FestivalScreen })), "FestivalScreen");
 const FestivalsHubScreen = lazyWithRetry(() => import("./src/features/festivals/festivalsEntry").then((module) => ({ default: module.FestivalsHubScreen })), "FestivalsHubScreen");
 const WelcomeScreen = lazyWithRetry(() => import("./src/screens/WelcomeScreen"), "WelcomeScreen");
@@ -1522,6 +1523,7 @@ function Root() {
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
   else if (nav.festival?.slug) overlay = <FestivalScreen key={`${session?.id || "guest"}:${nav.festival.slug}`} slug={nav.festival.slug} editionId={nav.festival.editionId || null}
     signedIn={!!session} accountId={session?.id || null} author={session ? { name: session.name } : null} onClose={back} onOpenArtist={openArtist} onRequireAuth={openSignIn}
+    renderEventAccount={props => <Suspense fallback={null}><EventAccountPanel {...props} onCompose={entity => requireVerifiedMutation("post", () => go({ logging: true, postMode: "creator", prefill: { creatorEntity: entity } }))} /></Suspense>}
     onReviewFestival={(prefill) => requireVerifiedMutation("review", () => go({ logging: true, prefill }))} />;
   else if (nav.newsroom) overlay = <NewsroomScreen closeGuardRef={composerCloseGuardRef} key={`${session?.id || "guest"}:newsroom`} accountId={session?.id || null} role={session?.role || null} active={appActive} onClose={back} />;
   else if (nav.festivals) overlay = <FestivalsHubScreen onClose={back} onOpenFestival={openFestival} />;

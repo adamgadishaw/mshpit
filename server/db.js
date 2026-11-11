@@ -5,6 +5,7 @@
 // WAL is also why copying pit.db is NOT a backup: committed transactions live in
 // pit.db-wal until a checkpoint, so a bare copy can be torn or stale. Use
 // `npm run backup` (VACUUM INTO), which asks SQLite for a consistent snapshot.
+import { ensureEventAccountSchema } from "./features/eventAccounts/eventAccountSchema.js";
 import { ensureCreatorPostSchema } from "./features/creatorPosts/creatorPostSchema.js";
 import { DatabaseSync } from "node:sqlite";
 import { resolveTheme } from "../src/domain/themeAccess.mjs";
@@ -2195,6 +2196,7 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_i
 ensureCommentMutationSchema(db);
 ensureSocialReactionSchema(db);
 ensureCreatorPostSchema(db);
+ensureEventAccountSchema(db);
 ensureJobSchema(db);
 ensureArtistAccessRetentionSchema(db);
 ensureLineupSchema(db);

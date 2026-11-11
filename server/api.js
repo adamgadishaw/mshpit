@@ -127,6 +127,7 @@ import { newsLiveRoutes } from "./features/newsDesk/newsLiveRoutes.js";
 import { providerProfileRoutes } from "./features/providerProfiles/providerProfileRoutes.js";
 import { crewRoutes } from "./features/crew/crewRoutes.js";
 import { assertCreatorUpdate, persistCreatorUpdate, projectedCreatorUpdate } from "./features/creatorPosts/creatorPostService.js";
+import { eventAccountRoutes } from "./features/eventAccounts/eventAccountRoutes.js";
 import { creatorPostRoutes } from "./features/creatorPosts/creatorPostRoutes.js";
 import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoutes.js";
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
@@ -10157,6 +10158,7 @@ export const routes = {
       return row && !row.removed && !blockedEitherWay(viewerId, row.user_id) ? postJsonWithImpressions(row, viewerId) : null;
     },
   }),
+  ...eventAccountRoutes({ database: db, requireUser, requireAdmin, rateLimit: limit, moderationRecord, uid, pageRequest, finishPage, now }),
   ...creatorPostRoutes({ database: db, requireUser, rateLimit: limit, artistIdentity: fanClubArtistIdentity, readPost: (ctx, id) => routes["GET /api/posts/:id"]({ ...ctx, params: { id } }) }),
   ...artistUpdatesRoutes({
     ApiError,
