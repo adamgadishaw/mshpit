@@ -1,5 +1,20 @@
 # Pit current status
 
+## 2026-11-11 Database audit remediation (local review)
+
+- Isolated branch `fix/database-audit-20261111` starts from released server
+  `c2bbe88246f249a5fa7cd60f3184f55b6b8794bf`; prior audit and mobile sources are preserved.
+- DB01–03 and DB11 add privacy-safe mute/block management, enforce Nobody for
+  first contact across age rules, atomically save DMs/consent/notifications, and
+  include owned mutes and festival plans in password-confirmed account export.
+- The combined focused selection passes 73 tests. The required aggregate gate
+  passes (7,252 tests, 0 failures, 1 Windows file-link skip; dependency audit,
+  syntax, architecture and web export pass). Parallel recovery/data-integrity
+  integration and final combined checks remain pending. This candidate
+  is local only; no production, account, device or deployment action occurred.
+- Root causes, compatibility and validation limits are in
+  [the remediation record](docs/DATABASE_REMEDIATION_2026-11-11.md).
+
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 
 - Local branch `fix/catalog-event-festival-20261027` uses a source snapshot of

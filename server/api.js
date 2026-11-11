@@ -253,6 +253,7 @@ import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { jobRoutes } from "./features/jobs/jobRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
 import { accountMuteRoutes } from "./features/accountMute/accountMuteRoutes.js";
+import { createRelationshipManagementProjection } from "./relationshipManagementProjection.js";
 import { accountOnboardingRoutes } from "./features/accountOnboarding/accountOnboardingRoutes.js";
 import { accountSecurityRoutes } from "./features/accountOnboarding/accountSecurityRoutes.js";
 import { createLinkedAccounts } from "./features/accountOnboarding/linkedAccounts.js";
@@ -4750,6 +4751,9 @@ const connections = createConnections({
   projectUser: publicUser, projectArtist: publicArtist, resolveArtist: resolveCatalogArtistReference,
   decodeKey: (ctx) => decodedPathParam(ctx, "key", { max: 200, label: "artist link" }), atomicWrite, now,
 });
+const projectManagedUser = createRelationshipManagementProjection({
+  visibleProfileOrNull, blockedEitherWay, projectUser: publicUser,
+});
 
 export const routes = {
   ...jobRoutes({ database: db, ApiError, assertSafeAuthoredText, requireAdmin, rateLimit: limit, now }),
@@ -4780,7 +4784,7 @@ export const routes = {
     now,
     desiredState,
     userById: (id) => q.userById.get(id),
-    projectUser: publicUser,
+    projectManagedUser,
     invalidateRecommendations: invalidateRecommendationSnapshotForViewer,
   }),
   ...accountOnboardingRoutes({
@@ -6740,10 +6744,11 @@ export const routes = {
   },
   "GET /api/me/blocked": (ctx) => {
     const u = requireUser(ctx);
+    ctx.setHeader?.("Cache-Control", "private, no-store");
     const rows = db.prepare(`
       SELECT us.* FROM blocks b JOIN users us ON us.id = b.blocked_id
       WHERE b.blocker_id = ? ORDER BY b.created_at DESC LIMIT 500`).all(u.id);
-    return { users: rows.map((r) => publicUser(r)) };
+    return { users: rows.map((row) => projectManagedUser(row, u)) };
   },
 
 
@@ -8215,7 +8220,10 @@ export const routes = {
     };
   },
 
-  "POST /api/dms/:otherId": (ctx) => {
+  // Acquire the writer lock before resolving current authority or retry state.
+  // The message, directional consent triggers and any required notification
+  // either commit together or leave no failed-looking delivery behind.
+  "POST /api/dms/:otherId": (ctx) => atomicWrite(() => {
     const u = requireUser(ctx);
     const other = ctx.params.otherId;
     if (other === u.id) throw new ApiError(400, "You can't message yourself.");
@@ -8271,7 +8279,7 @@ export const routes = {
     }
     addNotif(other, u.id, "dm", { postId: id, text: text.slice(0, 80) });
     return { id };
-  },
+  }),
 
   ...notificationRoutes({ database: db, requireUser, ApiError, pageRequest, finishPage, safePublicProfileImage }),
 
