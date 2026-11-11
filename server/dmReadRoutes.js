@@ -28,6 +28,8 @@ export function directMessageInboxUnread(database, accountId) {
   // Resolve acceptance/privacy and the read cursor once per sender, then count
   // that sender's unread index range. Do not recheck relationships per message
   // or scan an entire mostly-read history through a joined cursor predicate.
+  // Durable directional consent survives unfollowing/removing message content;
+  // retain follow/sent evidence for compatibility with legacy writers.
   return database.prepare(`WITH peers AS MATERIALIZED (
       SELECT DISTINCT from_id AS other_id FROM dms WHERE to_id=$viewer
     ) SELECT COALESCE(SUM(CASE WHEN r.user_id IS NULL THEN (
@@ -41,7 +43,8 @@ export function directMessageInboxUnread(database, accountId) {
     WHERE NOT EXISTS (SELECT 1 FROM blocks b
       WHERE (b.blocker_id=$viewer AND b.blocked_id=peers.other_id)
          OR (b.blocker_id=peers.other_id AND b.blocked_id=$viewer))
-    AND (EXISTS (SELECT 1 FROM follows f WHERE f.follower_id=$viewer AND f.followee_id=peers.other_id)
+    AND (EXISTS (SELECT 1 FROM dm_acceptances a WHERE a.user_id=$viewer AND a.other_id=peers.other_id)
+      OR EXISTS (SELECT 1 FROM follows f WHERE f.follower_id=$viewer AND f.followee_id=peers.other_id)
       OR EXISTS (SELECT 1 FROM dms sent WHERE sent.from_id=$viewer AND sent.to_id=peers.other_id AND sent.removed=0))
   `).get({ $viewer: accountId }).count;
 }

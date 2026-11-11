@@ -75,7 +75,7 @@ const fixtureColors = { amber: "theme-amber", amberStrong: "theme-amber-strong" 
 // Actual ThreadScreen, keyboard owner, React and retained DM draft. Native
 // bounds/events and Store are fixtures: this does not certify native glyphs,
 // per-frame interactive dismissal or VoiceOver, and never touches live DMs.
-function fixture({ platform = "ios", metrics = null, strict = false, failure = false } = {}) {
+function fixture({ platform = "ios", metrics = null, strict = false, failure = false, failureState, retryable, sendResult } = {}) {
   const measurements = [], listeners = new Map(), animations = [], sends = [], retries = [];
   const renderer = createRenderer(measurements);
   let window = { width: 390, height: 844, fontScale: 1 };
@@ -97,7 +97,7 @@ function fixture({ platform = "ios", metrics = null, strict = false, failure = f
   const rows = [
     { id: "received", text: "Hello there", from: "recipient", ts: "10:01" },
     { id: "sent", text: "Testing", from: "member", ts: "10:02" },
-    { id: "failed", text: "Failed draft", from: "member", ts: "10:03", failed: true },
+    { id: "failed", text: "Failed draft", from: "member", ts: "10:03", failed: true, deliveryState: failureState, retryable },
   ];
   const imports = (name, local) => {
     if (name === "react") return React;
@@ -107,7 +107,7 @@ function fixture({ platform = "ios", metrics = null, strict = false, failure = f
     if (name === "../theme") return { colors: fixtureColors, radius: {}, mono: "mono" };
     if (name === "../store") return { useStore: () => ({
       session: { id: "member" }, chatAuthEpoch: 1, userById: () => recipient, threadMessages: () => rows,
-      sendDM: async (...args) => { sends.push(args); return { ok: sendSucceeds }; },
+      sendDM: async (...args) => { sends.push(args); return sendResult || { ok: sendSucceeds }; },
       retryChatMessage: async (...args) => { retries.push(args); return { ok: true }; },
       cancelChatMessage: noop, loadThread: async () => ({}), markThreadRead: noop, loadUser: noop,
     }) };
@@ -297,7 +297,7 @@ test("iOS compact painted bubbles exclude timestamps and controls, with recipien
   const report = f.button("Report message from Fixture member");
   assert.ok(row.children.includes(report), "Report belongs beside the incoming message");
   assert.ok(!nodes(column).includes(report), "Report does not enlarge the timestamp/footer column");
-  for (const label of ["Retry direct message", "Cancel failed direct message", "Report message from Fixture member"]) {
+  for (const label of ["Retry direct message", "Cancel failed message", "Report message from Fixture member"]) {
     const style = flattenStyle(f.button(label).props.style);
     assert.ok(style.minWidth >= 44 && style.minHeight >= 44);
     assert.equal(style.marginVertical, 0, "controls occupy their layout space rather than overlapping adjacent messages");
@@ -345,4 +345,27 @@ for (const platform of ["android", "web"]) test(`${platform} retains its existin
   assert.equal(scroll.props.keyboardDismissMode, undefined); assert.equal(scroll.props.automaticallyAdjustKeyboardInsets, undefined);
   f.edit("Original platform send"); await f.input.props.onSubmitEditing(); await f.settle();
   assert.deepEqual(f.sends[0], ["recipient", "Original platform send"]);
+});
+
+test("uncertain sends explain local dismissal without claiming remote deletion", async t => {
+  const f = fixture({ failureState: "unconfirmed", retryable: true }); t.after(f.close); await f.settle();
+  f.find(n => n.props?.accessibilityLabel === "Direct message not confirmed");
+  assert.match(f.button("Remove pending message").props.accessibilityHint, /does not delete/);
+  f.button("Retry direct message");
+  assert.equal(f.all().some(n => n.props?.accessibilityLabel === "Direct message not sent"), false);
+});
+
+test("permanently rejected sends keep dismissal but hide retry", async t => {
+  const f = fixture({ failureState: "rejected", retryable: false }); t.after(f.close); await f.settle();
+  f.button("Cancel failed message");
+  assert.equal(f.all().some(n => n.props?.accessibilityLabel === "Retry direct message"), false);
+});
+
+test("queue capacity feedback remains visible beside the preserved draft", async t => {
+  const message = "Too many messages are waiting. Resolve a pending message, then try again.";
+  const f = fixture({ sendResult: { ok: false, queueFull: true, deliveryMessage: message } }); t.after(f.close); await f.settle();
+  f.edit("Keep this plan");
+  await f.button("Send direct message to Fixture member").props.onPress(); await f.settle();
+  assert.equal(f.input.props.value, "Keep this plan");
+  f.find(n => n.type === "Text" && n.props.children === message);
 });

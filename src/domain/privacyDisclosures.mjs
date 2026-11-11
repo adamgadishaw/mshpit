@@ -2,7 +2,7 @@ export const PRIVACY_POLICY_UPDATED = "September 28, 2026";
 export const TERMS_POLICY_UPDATED = "September 28, 2026";
 // Sent by current clients and persisted with account creation so an acceptance
 // record identifies the exact materially revised Terms + Privacy pair.
-export const LEGAL_ACCEPTANCE_VERSION = "2026-09-28";
+export { LEGAL_ACCEPTANCE_VERSION } from "./legalAcceptanceVersion.mjs";
 
 // This describes a separate, item-specific permission. Terms acceptance and
 // existing spotlight/email/analytics flags are NOT promotional-media consent.

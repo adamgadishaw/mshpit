@@ -4,10 +4,11 @@ import test from "node:test";
 import { parse } from "@babel/parser";
 import { createAccountReadCoordinator } from "./accountReadCoordinator.mjs";
 import { accountMutationIsCurrent, captureAccountMutation } from "./accountMutation.mjs";
-import { chatOutboxFor, confirmedChatMessage, updateChatOutboxItem, withoutChatOutboxItem } from "./chatDelivery.mjs";
+import { chatDeliveryFailure, chatOutboxFor, confirmedChatMessage, updateChatOutboxItem, withoutChatOutboxItem } from "./chatDelivery.mjs";
 import { mergeChatMessages, reconcileRemovedDirectMessages } from "./chatMessages.mjs";
 import { directMessageUnreadCount, mergeDirectMessageReadSummary, normalizeDirectMessageReadCursor } from "./directMessageRead.mjs";
 import { normalizeMessageRelationshipContext } from "./messageRelationshipContext.mjs";
+import { applyDMRequestState, dmInboxBucket } from "../features/chat/directMessageConsent.mjs";
 
 const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
@@ -36,19 +37,23 @@ const owner = { id: "A" }, peer = "peer", key = "A__peer";
 const incoming = { id: "incoming", from: peer, text: "hello", createdAt: 50 };
 const summary = hasReplied => ({ threads: [{ otherId: peer, messages: [incoming], readCursor: null, hasReplied }], removedIds: [] });
 
-function fixture({ demo = false } = {}) {
+function fixture({ demo = false, queued = false } = {}) {
   const calls = [], following = new Set();
   const state = { dms: {}, dmRead: {}, users: [], outbox: [], blocked: [] };
   const sessionRef = { current: owner }, chatReadsRef = { current: createAccountReadCoordinator() };
   const chatOutboxRef = { current: state.outbox }, chatAuthEpochRef = { current: 1 }, accountMutationEpochRef = { current: 1 };
-  const setter = field => update => { state[field] = typeof update === "function" ? update(state[field]) : update; };
+  const updates = [];
+  const setter = field => update => {
+    const apply = () => { state[field] = typeof update === "function" ? update(state[field]) : update; };
+    if (queued) updates.push(apply); else apply();
+  };
   const request = (...args) => new Promise((resolve, reject) => calls.push({ args, resolve, reject }));
   function dependencies() {
     return {
       session: sessionRef.current, sessionRef, chatReadsRef, chatOutboxRef, chatAuthEpochRef, accountMutationEpochRef,
       dms: state.dms, dmRead: state.dmRead, chatOutbox: state.outbox, blockedIds: state.blocked,
       ENABLE_DEMO_DATA: demo, mergeChatMessages, reconcileRemovedDirectMessages, chatOutboxFor, confirmedChatMessage,
-      updateChatOutboxItem, withoutChatOutboxItem, normalizeMessageRelationshipContext,
+      updateChatOutboxItem, withoutChatOutboxItem, normalizeMessageRelationshipContext, chatDeliveryFailure, applyDMRequestState, dmInboxBucket,
       directMessageUnreadCount, mergeDirectMessageReadSummary, normalizeDirectMessageReadCursor,
       captureAccountMutation, accountMutationIsCurrent,
       setDms: setter("dms"), setDmRead: setter("dmRead"), setUsers: setter("users"),
@@ -81,7 +86,8 @@ function fixture({ demo = false } = {}) {
     chatReadsRef.current.reset(); chatAuthEpochRef.current++; accountMutationEpochRef.current++;
     state.dms = {}; state.dmRead = {}; state.outbox = []; chatOutboxRef.current = [];
   };
-  return { state, calls, actions, hydrate, following, outbox, adopt };
+  return { state, calls, actions, hydrate, following, outbox, adopt,
+    flush: () => { while (updates.length) updates.shift()(); } };
 }
 
 test("reply-only read records preserve explicit false, unknown legacy data and monotonic cursors", () => {
@@ -105,13 +111,14 @@ test("startup hydration classifies a prior reply from only the latest incoming p
   assert.deepEqual(f.state.dmRead[key], { hasReplied: true });
 });
 
-test("authoritative false replaces true despite stale outgoing cache; following remains independent", async () => {
+test("legacy reply summary updates independently of durable confirmed-send acceptance", async () => {
   const f = fixture(); f.hydrate()(summary(true));
   f.state.dms[key].push({ id: "old-outgoing", from: "A", at: 1, server: true });
   const pending = f.actions().loadInboxThreads(); f.calls[0].resolve(summary(false)); await pending;
-  assert.equal(f.actions().inboxThreads()[0].bucket, "requests");
+  assert.equal(f.state.dmRead[key].hasReplied, false);
+  assert.equal(f.actions().inboxThreads()[0].bucket, "main");
   f.following.add(peer); assert.equal(f.actions().inboxThreads()[0].bucket, "main");
-  f.following.clear(); assert.equal(f.actions().inboxThreads()[0].bucket, "requests");
+  f.following.clear(); assert.equal(f.actions().inboxThreads()[0].bucket, "main");
   f.state.blocked = [peer]; assert.deepEqual(f.actions().inboxThreads(), []);
 });
 
@@ -124,11 +131,11 @@ test("requests and legacy fallback never treat pending, failed or unconfirmed ou
     f.state.outbox = []; f.state.dms[key].push({ id: "unconfirmed", from: "A", at: 60 });
     assert.equal(f.actions().inboxThreads()[0].bucket, "requests");
     f.state.dms[key].push({ id: "confirmed", from: "A", at: 70, server: true });
-    assert.equal(f.actions().inboxThreads()[0].bucket, proof === false ? "requests" : "main");
+    assert.equal(f.actions().inboxThreads()[0].bucket, "main", "a confirmed send establishes durable consent independently of a legacy summary");
   }
 });
 
-test("confirmed retry promotes once and retires a pre-send summary; later server false still wins", async () => {
+test("confirmed retry promotes once and retires pre-send summaries; deletion cannot revoke consent", async () => {
   const f = fixture(); f.hydrate()(summary(false)); f.outbox();
   let send = f.actions().deliverChatMessage("pending"); f.calls[0].reject(new Error("offline"));
   assert.equal((await send).retryable, true);
@@ -141,7 +148,8 @@ test("confirmed retry promotes once and retires a pre-send summary; later server
   assert.equal(f.state.dmRead[key].hasReplied, true);
   assert.equal(f.state.dms[key].filter(row => row.id === "confirmed").length, 1);
   const fresh = f.actions().loadInboxThreads(); f.calls[3].resolve({ ...summary(false), removedIds: ["confirmed"] }); await fresh;
-  assert.equal(f.actions().inboxThreads()[0].bucket, "requests");
+  assert.equal(f.state.dmRead[key].hasReplied, false);
+  assert.equal(f.actions().inboxThreads()[0].bucket, "main");
 });
 
 test("old summaries and send receipts cannot publish after logout, account switch or A-B-A", async () => {
@@ -181,4 +189,27 @@ test("a confirmed demo reply preserves numeric read markers and does not resurre
   assert.equal(f.state.dmRead[key], 2);
   assert.equal(f.actions().inboxThreads()[0].unread, 0);
   assert.equal(f.actions().inboxThreads()[0].bucket, "main");
+});
+
+test("authoritative consent state overrides a legacy reply-only summary", () => {
+  for (const requestState of ["pending", "accepted"]) {
+    const f = fixture();
+    const payload = summary(requestState === "pending");
+    payload.threads[0].requestState = requestState;
+    f.hydrate()(payload);
+    assert.equal(f.actions().inboxThreads()[0].bucket, requestState === "accepted" ? "main" : "requests");
+  }
+});
+
+test("confirmed thread read queued before identity rotation cannot restore the previous read record", async () => {
+  for (const transition of [null, "B", "A-B-A"]) {
+    const f = fixture({ queued: true });
+    const pending = f.actions().markThreadRead(peer);
+    f.calls[0].resolve({ ok: true, readCursor: { createdAt: 50, id: "incoming" }, notificationIds: [] });
+    assert.equal((await pending).ok, true);
+    f.adopt(transition === "A-B-A" ? "B" : transition);
+    if (transition === "A-B-A") f.adopt("A");
+    f.flush();
+    assert.deepEqual(f.state.dmRead, {});
+  }
 });

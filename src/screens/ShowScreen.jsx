@@ -15,7 +15,7 @@ import RatingSplit from "../components/RatingSplit";
 import RatingBreakdown from "../components/RatingBreakdown";
 import NearbyAfterparty from "../components/NearbyAfterparty";
 import Icon from "../components/Icon";
-import VenuePhotoWidget from "../components/VenuePhotoWidget";
+import VenuePhotoWidget from "../components/VenuePhotoPanel";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";

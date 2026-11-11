@@ -66,6 +66,7 @@ import { mergeUniquePage, reconcileMemberMutationPage } from "./domain/pageMerge
 import { mergeChatMessages, reconcileRemovedDirectMessages } from "./domain/chatMessages.mjs";
 import { normalizeMessageRelationshipContext } from "./domain/messageRelationshipContext.mjs";
 import {
+  chatDeliveryFailure,
   chatOutboxFor,
   chatOutboxMessageId,
   confirmedChatMessage,
@@ -84,7 +85,7 @@ import {
   upsertAccountDraft,
 } from "./domain/draftPolicy.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./domain/mediaUploadPolicy.mjs";
-import { LEGAL_ACCEPTANCE_VERSION } from "./domain/privacyDisclosures.mjs";
+import { LEGAL_ACCEPTANCE_VERSION } from "./domain/legalAcceptanceVersion.mjs";
 import { buildMemoryCreateBody, buildMemoryEditBody, buildReviewCreateBody, buildReviewEditBody, buildStatusCreateBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { isInPersonConcertReview } from "./domain/onlineReview.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
@@ -138,6 +139,8 @@ import { mediaDisplayItems, sameMediaDisplayItems } from "./domain/postMediaDisp
 import { normalizeArtistCampaign } from "./domain/artistCampaignPost.mjs";
 import { normalizeTaggedPeople, taggedUserIdsFromPeople } from "./domain/postFriendTags.mjs";
 import { fetchDirectMessageSummaries, writeDirectMessageRead } from "./features/chat/services/dmReadApi.mjs";
+import { writeDMRequestAcceptance } from "./features/chat/services/dmConsentApi.mjs";
+import { applyDMRequestState, dmInboxBucket, dmRequestState, normalizeDMRequestState } from "./features/chat/directMessageConsent.mjs";
 import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.mjs";
 import { saveMemoryPostEdit } from "./features/postEditing/services/memoryPostEditApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
@@ -1645,9 +1648,10 @@ export function StoreProvider({ children }) {
     setComments(groups => reconcileCommentAuthorBadges(groups, publicAuthor));
     publishAuthorBadgeChange({ accountId: sessionRef.current?.id || null, user: publicAuthor });
   };
-  const absorbUsers = (list) => {
+  const absorbUsers = (list, isCurrent = () => true) => {
     if (!Array.isArray(list) || !list.length) return;
     setUsers((all) => {
+      if (!isCurrent()) return all;
       let next = all;
       for (const su of list) {
         if (!su?.id) continue;
@@ -2677,6 +2681,7 @@ export function StoreProvider({ children }) {
       .then(({ threads, removedIds = [] }) => {
         if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current) || !Array.isArray(threads)) return;
         setUsers((all) => {
+          if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current)) return all;
           let next = all;
           threads.forEach((t) => {
             if (t.otherUser && !next.some((x) => x.id === t.otherUser.id)) next = [...next,
@@ -2685,6 +2690,7 @@ export function StoreProvider({ children }) {
           return next;
         });
         setDms((d) => {
+          if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current)) return d;
           const n = { ...reconcileRemovedDirectMessages(d, su.id, removedIds) };
           threads.forEach((t) => {
             const key = dmKey(su.id, t.otherId);
@@ -2698,11 +2704,12 @@ export function StoreProvider({ children }) {
               server: true,
               relationshipContext,
             }));
-            n[key] = mergeChatMessages(n[key] || [], incoming, removedIds, 750);
+            n[key] = applyDMRequestState(mergeChatMessages(n[key] || [], incoming, removedIds, 750), su.id, t.requestState, d[key]);
           });
           return n;
         });
         setDmRead((current) => {
+          if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current)) return current;
           const next = { ...current };
           threads.forEach((thread) => {
             const key = dmKey(su.id, thread.otherId);
@@ -5137,18 +5144,28 @@ export function StoreProvider({ children }) {
     }
     return candidate;
   };
-  const commitConfirmedChatMessage = (item, serverId) => {
-    const message = confirmedChatMessage(item, serverId);
+  const commitConfirmedChatMessage = (item, acknowledgement) => {
+    const message = confirmedChatMessage(item, acknowledgement);
     if (!message) return;
+    if (Number.isFinite(acknowledgement?.createdAt) && acknowledgement.createdAt >= 0) message.ts = ago(message.at);
+    // React may execute this updater after the acknowledgement's account check
+    // and a subsequent auth reset. Never repopulate the replacement account.
+    const mergeConfirmed = (all, limit) => item.ownerId === sessionRef.current?.id
+      && item.authEpoch === chatAuthEpochRef.current
+      ? { ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], limit) }
+      : all;
     if (item.kind === "dm") {
       // A confirmed reply supersedes any Inbox snapshot begun before the send.
       chatReadsRef.current.invalidate("dm-inbox", sessionRef.current);
-      if (!ENABLE_DEMO_DATA) setDmRead((all) => ({ ...all, [item.channelKey]: mergeDirectMessageReadSummary(all[item.channelKey], { hasReplied: true }) }));
-      setDms((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 750) }));
+      if (!ENABLE_DEMO_DATA) setDmRead((all) => item.ownerId === sessionRef.current?.id
+        && item.authEpoch === chatAuthEpochRef.current
+        ? { ...all, [item.channelKey]: mergeDirectMessageReadSummary(all[item.channelKey], { hasReplied: true }) }
+        : all);
+      setDms((all) => mergeConfirmed(all, 750));
     } else if (item.kind === "fan") {
-      setFanClubMsgs((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 600) }));
+      setFanClubMsgs((all) => mergeConfirmed(all, 600));
     } else if (item.kind === "lounge") {
-      setLounge((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 600) }));
+      setLounge((all) => mergeConfirmed(all, 600));
     }
   };
   const deliverChatMessage = async (localId) => {
@@ -5157,47 +5174,57 @@ export function StoreProvider({ children }) {
       return { ok: false, stale: true };
     }
     if (item.status === "sending") return { ok: false, pending: true, localId };
+    if (item.retryable === false || (Number.isFinite(item.retryAt) && item.retryAt > Date.now())) {
+      return { ok: false, localId, retryable: item.retryable, retryAt: item.retryAt,
+        deliveryState: item.deliveryState, deliveryMessage: item.deliveryMessage };
+    }
     commitChatOutbox((current) => updateChatOutboxItem(current, localId, {
       status: "sending",
       pending: true,
       failed: false,
+      deliveryState: "sending",
+      deliveryMessage: null,
+      retryAt: null,
     }));
     try {
-      const { id } = await api(item.endpoint, {
+      const acknowledgement = await api(item.endpoint, {
         method: "POST",
         body: { text: item.text, clientMutationId: item.clientMutationId },
         context: item.context,
         expectedAccountId: item.ownerId,
       });
-      if (!id) throw new Error("Message delivery was not confirmed");
+      const id = acknowledgement?.id;
+      if (typeof id !== "string" || !id.trim()) throw new Error("Message delivery was not confirmed");
       const live = chatOutboxRef.current.find((entry) => entry.id === localId);
       if (!live || live.ownerId !== sessionRef.current?.id || live.authEpoch !== chatAuthEpochRef.current) {
         return { ok: false, stale: true };
       }
       commitChatOutbox((current) => withoutChatOutboxItem(current, localId));
-      commitConfirmedChatMessage(live, id);
+      commitConfirmedChatMessage(live, acknowledgement);
       return { ok: true, id, localId };
-    } catch {
+    } catch (error) {
       const live = chatOutboxRef.current.find((entry) => entry.id === localId);
       if (live && live.ownerId === sessionRef.current?.id && live.authEpoch === chatAuthEpochRef.current) {
-        commitChatOutbox((current) => updateChatOutboxItem(current, localId, {
-          status: "failed",
-          pending: false,
-          failed: true,
-        }));
-        return { ok: false, retryable: true, localId };
+        const failure = chatDeliveryFailure(error, { previouslyUnconfirmed: live.deliveryUncertain === true });
+        commitChatOutbox((current) => updateChatOutboxItem(current, localId, failure));
+        return { ok: false, ...failure, localId };
       }
       return { ok: false, stale: true };
     }
   };
   const queueChatMessage = (item) => {
-    commitChatOutbox((current) => withChatOutboxItem(current, item));
+    const next = commitChatOutbox((current) => withChatOutboxItem(current, item));
+    if (!next.includes(item)) {
+      return Promise.resolve({ ok: false, queued: false, queueFull: true, retryable: false,
+        deliveryState: "queue_full",
+        deliveryMessage: "Too many messages are waiting. Resolve or dismiss a pending message, then try again." });
+    }
     return deliverChatMessage(item.id);
   };
   const retryChatMessage = (localId) => deliverChatMessage(localId);
   const cancelChatMessage = (localId) => {
     const item = chatOutboxRef.current.find((entry) => entry.id === localId);
-    if (!item || item.ownerId !== sessionRef.current?.id || item.status !== "failed") return false;
+    if (!item || item.ownerId !== sessionRef.current?.id || item.authEpoch !== chatAuthEpochRef.current || item.status !== "failed") return false;
     commitChatOutbox((current) => withoutChatOutboxItem(current, localId));
     return true;
   };
@@ -6397,8 +6424,10 @@ export function StoreProvider({ children }) {
     return api("/api/me/threads?summary=1", { signal, silent: true, context: "Refreshing your inbox" })
       .then(({ threads, removedIds = [] }) => {
         if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current) || !Array.isArray(threads)) return [];
-        absorbUsers(threads.map((thread) => thread.otherUser).filter(Boolean));
+        absorbUsers(threads.map((thread) => thread.otherUser).filter(Boolean),
+          () => !signal?.aborted && chatReadsRef.current.isCurrent(read, sessionRef.current));
         setDms((all) => {
+          if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return all;
           const next = { ...reconcileRemovedDirectMessages(all, accountId, removedIds) };
           for (const thread of threads) {
             const key = dmKey(accountId, thread.otherId);
@@ -6412,11 +6441,12 @@ export function StoreProvider({ children }) {
               server: true,
               relationshipContext,
             }));
-            next[key] = mergeChatMessages(next[key] || [], incoming, removedIds, 750);
+            next[key] = applyDMRequestState(mergeChatMessages(next[key] || [], incoming, removedIds, 750), accountId, thread.requestState, all[key]);
           }
           return next;
         });
         setDmRead((current) => {
+          if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return current;
           const next = { ...current };
           for (const thread of threads) {
             const key = dmKey(accountId, thread.otherId);
@@ -6445,11 +6475,15 @@ export function StoreProvider({ children }) {
   };
   // Slice 4: pull a thread's messages from the server and merge them (dedupe by
   // id, keeping any optimistic local-only message not yet echoed back).
-  const loadThread = (otherId, { after, signal, strict = false, includeContext = true } = {}) => {
-    const read = otherId ? chatReadsRef.current.claim(`dm-thread:${otherId}`, sessionRef.current) : null;
+  const loadThread = (otherId, { before, after, signal, strict = false, includeContext = true } = {}) => {
+    if (before && after) return Promise.reject(new Error("Use either earlier history or live updates, not both."));
+    // Historical pages do not compete with the serialized live/head lane. They
+    // are retained by the mounted thread owner, never its 750-row recent cache.
+    const read = otherId ? chatReadsRef.current.claim(`${before ? "dm-history" : "dm-thread"}:${otherId}`, sessionRef.current) : null;
     if (!read) return Promise.resolve({ syncCursor: after || null, hasMore: false });
     const key = dmKey(read.scope, otherId);
     const queryParams = new URLSearchParams();
+    if (before) queryParams.set("before", before);
     if (after) queryParams.set("after", after);
     if (!includeContext) queryParams.set("context", "0");
     const queryString = queryParams.toString();
@@ -6459,45 +6493,96 @@ export function StoreProvider({ children }) {
       silent: true,
       context: "Refreshing direct messages",
     })
-      .then(({ messages, removedIds = [], syncCursor, hasMore, relationshipContext }) => {
+      .then(({ messages, removedIds = [], nextCursor, syncCursor, hasMore, relationshipContext, requestState }) => {
         if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) {
           return { syncCursor: after || null, hasMore: false, stale: true };
         }
-        if (!Array.isArray(messages)) return { syncCursor: after || null, hasMore: false };
+        if (!Array.isArray(messages)) throw new Error("Messages could not be loaded.");
         const hasRelationshipContext = relationshipContext !== undefined;
         const normalizedRelationshipContext = hasRelationshipContext
           ? normalizeMessageRelationshipContext(relationshipContext)
           : null;
-        setDms((d) => {
+        const incoming = messages.map((m) => ({
+          id: m.id,
+          from: m.from,
+          text: m.text,
+          at: m.createdAt,
+          ts: ago(m.createdAt),
+          server: true,
+          ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
+        }));
+        if (!before) setDms((d) => {
+          if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return d;
           const existing = hasRelationshipContext
             ? (d[key] || []).map((message) => ({ ...message, relationshipContext: normalizedRelationshipContext }))
             : (d[key] || []);
-          const incoming = messages.map((m) => ({
-            id: m.id,
-            from: m.from,
-            text: m.text,
-            at: m.createdAt,
-            ts: ago(m.createdAt),
-            server: true,
-            ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
-          }));
-          const live = mergeChatMessages(existing, incoming, removedIds, 750);
+          const live = applyDMRequestState(mergeChatMessages(existing, incoming, removedIds, 750), read.scope, requestState, existing);
           const next = { ...d };
           if (live.length) next[key] = live;
           else delete next[key];
           return next;
         });
         return {
+          messages: incoming,
+          removedIds,
+          nextCursor: nextCursor || null,
           syncCursor: syncCursor || after || null,
           hasMore: !!hasMore,
+          requestState: normalizeDMRequestState(requestState),
           ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
         };
       })
       .catch((error) => {
         if (signal?.aborted) throw error;
-        if (strict) throw error;
+        // A superseded denial cannot revoke a newer authorized history owner.
+        if (!chatReadsRef.current.isCurrent(read, sessionRef.current)) {
+          return { syncCursor: after || null, hasMore: false, stale: true };
+        }
+        const unavailable = [401, 403, 404].includes(Number(error?.status));
+        if (unavailable) {
+          setDms((current) => {
+            if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return current;
+            const next = { ...current }; delete next[key]; return next;
+          });
+        }
+        if (strict || unavailable) throw error;
         return { syncCursor: after || null, hasMore: false };
       });
+  };
+  const getDMRequestState = (otherId) => session?.id && otherId
+    ? dmRequestState(dms[dmKey(session.id, otherId)], session.id)
+    : null;
+  const acceptDMRequest = async (otherId) => {
+    const actor = currentMutationActor();
+    const context = "Accepting this message request";
+    if (!actor || !otherId) return localCommandError("PIT-AUTH-001", context);
+    if (blockedIdsRef.current.includes(otherId)) return localCommandError("PIT-AUTH-004", context);
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const key = dmKey(actor.id, otherId);
+    try {
+      const response = ENABLE_DEMO_DATA
+        ? { ok: true, requestState: "accepted" }
+        : await writeDMRequestAcceptance(otherId, { expectedAccountId: actor.id });
+      if (response?.ok !== true || response?.requestState !== "accepted") return localCommandError("PIT-API-001", context);
+      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
+        || blockedIdsRef.current.includes(otherId)) return localCommandError("PIT-AUTH-004", context);
+      // Retire every read begun before the server confirmed this choice, even
+      // when its state updater is queued or its eventual response is a denial.
+      for (const lane of ["dm-inbox", `dm-thread:${otherId}`, `dm-history:${otherId}`]) {
+        chatReadsRef.current.invalidate(lane, sessionRef.current);
+      }
+      setDms((current) => {
+        if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
+          || blockedIdsRef.current.includes(otherId)) return current;
+        return { ...current, [key]: applyDMRequestState(current[key], actor.id, response.requestState) };
+      });
+      // Accept changes the server's Inbox count without marking any message read.
+      // The existing activity facade retires older counts and fences this scope.
+      setNotifications(current => current, { refreshSummary: true });
+      return commandSuccess({ accountId: actor.id, otherId, requestState: response.requestState });
+    } catch (error) {
+      return commandError(error, context);
+    }
   };
   const sendDM = (otherId, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
@@ -6545,10 +6630,10 @@ export function StoreProvider({ children }) {
         return localCommandError("PIT-AUTH-004", context);
       }
       if (!cursor) return commandSuccess({ accountId: actor.id, otherId, readCursor: null });
-      setDmRead((current) => ({
+      setDmRead((current) => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current) ? ({
         ...current,
         [key]: mergeDirectMessageReadSummary(current[key], { readCursor: cursor }),
-      }));
+      }) : current);
       setNotifications((current) => reconcileConfirmedNotificationReads(current, {
         accountId: actor.id,
         notificationIds: response.notificationIds,
@@ -6585,12 +6670,10 @@ export function StoreProvider({ children }) {
           cursor: marker,
           legacyReadCount: Number.isSafeInteger(marker) ? marker : undefined,
         });
-        // A thread is a "request" until you accept it: someone you don't follow
-        // messaged you and you haven't replied yet. Following them or sending a
-        // single reply promotes it to the main inbox (Instagram-style gating).
-        const iReplied = typeof marker?.hasReplied === "boolean" ? marker.hasReplied
-          : msgs.some((m) => m.from === session.id && !m.pending && !m.failed && (ENABLE_DEMO_DATA || m.server === true));
-        const bucket = (isFollowing(otherId) || iReplied) ? "main" : "requests";
+        // Durable consent is authoritative. Older servers may supply only the
+        // account-private reply summary when the sent row is outside the cache.
+        const bucket = dmInboxBucket({ messages: msgs, accountId: session.id,
+          following: isFollowing(otherId) || marker?.hasReplied === true, demo: ENABLE_DEMO_DATA });
         const lastAt = Number(last?.at || last?.createdAt) || 0;
         return { otherId, otherUser: userById(otherId), last, lastAt, unread, count: msgs.length, bucket, relationshipContext };
       })
@@ -7267,7 +7350,7 @@ export function StoreProvider({ children }) {
     venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, artistFanPhotos, loadArtistPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
     chatAuthEpoch, retryChatMessage, cancelChatMessage,
-    threadMessages, sendDM, loadThread, loadInboxThreads, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
+    threadMessages, sendDM, loadThread, loadInboxThreads, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount, getDMRequestState, acceptDMRequest,
     track,
     myNotifications, unreadNotifications, notificationActivity, refreshNotifications, loadMoreNotifications, markNotificationsRead,
   };

@@ -9,7 +9,7 @@ import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../
 import { useStore } from "../store";
 import Stars from "../components/Stars";
 import Icon from "../components/Icon";
-import VenuePhotoWidget from "../components/VenuePhotoWidget";
+import VenuePhotoWidget from "../components/VenuePhotoPanel";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
 import MentionText from "../components/MentionText";

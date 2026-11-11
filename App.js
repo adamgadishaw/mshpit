@@ -81,8 +81,8 @@ const SettingsScreen = lazyWithRetry(() => import("./src/screens/SettingsScreen"
 const SuggestionBoxScreen = lazyWithRetry(() => import("./src/screens/SuggestionBoxScreen"), "SuggestionBoxScreen");
 const DeleteAccountScreen = lazyWithRetry(() => import("./src/screens/DeleteAccountScreen"), "DeleteAccountScreen");
 const DiagnosticsScreen = lazyWithRetry(() => import("./src/screens/DiagnosticsScreen"), "DiagnosticsScreen");
-const PrivacyScreen = lazyWithRetry(() => import("./src/screens/PrivacyScreen"), "PrivacyScreen");
-const TermsScreen = lazyWithRetry(() => import("./src/screens/TermsScreen"), "TermsScreen");
+const PrivacyScreen = lazyWithRetry(() => import("./src/screens/PolicyEntry").then(module => ({ default: module.PrivacyScreen })), "PrivacyScreen");
+const TermsScreen = lazyWithRetry(() => import("./src/screens/PolicyEntry").then(module => ({ default: module.TermsScreen })), "TermsScreen");
 const AccountMenu = lazyWithRetry(() => import("./src/components/AccountMenu"), "AccountMenu");
 const PlayerBar = lazyWithRetry(() => import("./src/components/PlayerBar"), "PlayerBar");
 const PlaylistPickerScreen = lazyWithRetry(() => import("./src/screens/PlaylistPickerScreen"), "PlaylistPickerScreen");

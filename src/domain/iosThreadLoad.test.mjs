@@ -196,7 +196,7 @@ test("actual relationship loader rejects old account/epoch/recipient and unmount
     const load = compile(named("loadRelationshipThread"), {
       isIOS: true,
       relationshipScope: "account:epoch:recipient", relationshipOwner, activeOwner, otherId: "recipient",
-      loadThread: () => pending.promise,
+      loadThreadPage: () => pending.promise,
       normalizeMessageRelationshipContext: value => value,
       setRelationshipState: value => updates.push(value),
     });
@@ -216,7 +216,7 @@ test("actual non-iOS relationship path preserves legacy context and scope behavi
   let pending;
   const load = compile(named("loadRelationshipThread"), {
     isIOS: false, relationshipScopeRef, relationshipLoadedRef, otherId: "recipient",
-    loadThread: (id, options) => { calls.push({ id, options }); return pending.promise; },
+    loadThreadPage: (options) => { calls.push({ id: "recipient", options }); return pending.promise; },
     normalizeMessageRelationshipContext: value => value,
     setRelationshipState: value => updates.push(value),
   });

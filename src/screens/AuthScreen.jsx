@@ -14,8 +14,8 @@ import { lazyWithRetry } from "../lib/lazyWithRetry";
 
 // The policy pages load only when someone opens them, and share one chunk
 // with the app's own /privacy and /terms routes.
-const PrivacyScreen = lazyWithRetry(() => import("./PrivacyScreen"), "PrivacyScreen");
-const TermsScreen = lazyWithRetry(() => import("./TermsScreen"), "TermsScreen");
+const PrivacyScreen = lazyWithRetry(() => import("./PolicyEntry").then(module => ({ default: module.PrivacyScreen })), "PrivacyScreen");
+const TermsScreen = lazyWithRetry(() => import("./PolicyEntry").then(module => ({ default: module.TermsScreen })), "TermsScreen");
 import { PROFILE_GENRE_MAX, PROFILE_GENRE_OPTIONS } from "../domain/genrePreferences.mjs";
 import { cleanHandle, isEmail } from "../domain/validation.mjs";
 import { SIGNUP_STEPS, signupAccountError, signupAriaProps, signupFormPayload, signupHandlePresentation, signupMusicError, signupStepError, signupStepForField } from "../domain/signupForm.mjs";

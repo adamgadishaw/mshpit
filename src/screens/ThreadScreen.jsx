@@ -5,16 +5,19 @@ import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import IOSPostKeyboardView from "../components/IOSPostKeyboardView";
 import Avatar from "../components/Avatar";
+import MessagePrivacyControls from "../components/MessagePrivacyControls";
 import Icon from "../components/Icon";
 import MentionText from "../components/MentionText";
 import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { latestIncomingDirectMessageId } from "../domain/directMessageRead.mjs";
+import { chatDeliveryPresentation } from "../domain/chatDeliveryPresentation.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { createIOSThreadLoad } from "../domain/iosThreadLoad.mjs";
+import { createDirectMessageHistory, createDirectMessageHistoryAnchor, isMessageHistoryAccessError } from "../domain/directMessageHistory.mjs";
 import useIOSThreadControls from "../hooks/useIOSThreadControls";
 import useIOSThreadRefreshAnnouncement from "../hooks/useIOSThreadRefreshAnnouncement";
 import {
@@ -35,6 +38,8 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
   const {
     session, chatAuthEpoch, userById, threadMessages, sendDM, retryChatMessage,
     cancelChatMessage, loadThread, markThreadRead, loadUser,
+    getDMRequestState, acceptDMRequest,
+    isBlocked, blockUser, unblockUser, isBlockMutationPending, isMuted, muteUser, unmuteUser,
   } = useStore();
   const other = userById(otherId);
   const isIOS = Platform.OS === "ios";
@@ -45,20 +50,37 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
   const composerMinHeight = Math.max(44, Math.ceil(22 * fontScale + 22));
   const composerMaxHeight = Math.min(Math.max(44, composerViewportHeight - 17), Math.max(composerMinHeight, Math.min(132, composerViewportHeight * 0.4)));
   const threadRefreshScope = refreshScope(session?.id, "message-thread", `${chatAuthEpoch}:${otherId || ""}`);
+  const historyBlocked = !!isBlocked?.(otherId);
+  const activeHistory = useRef(null);
+  const history = useMemo(() => {
+    const owner = createDirectMessageHistory({ isCurrent: () => activeHistory.current === owner });
+    return owner;
+  }, [threadRefreshScope, historyBlocked]);
+  activeHistory.current = history;
+  const historyState = useSyncExternalStore(history.subscribe, history.read, history.read);
+  useEffect(() => {
+    history.activate();
+    return () => history.dispose();
+  }, [history]);
   const composerScope = accountTargetScope(session?.id, `dm:${otherId || ""}`);
   const composerScopeRef = useRef(composerScope);
   composerScopeRef.current = composerScope;
   const [composerState, setComposerState] = useState(() => ({ scope: composerScope, value: EMPTY_COMPOSER }));
+  const [composerFeedback, setComposerFeedback] = useState(null);
   const relationshipScope = isIOS ? threadRefreshScope : composerScope;
   const [relationshipState, setRelationshipState] = useState(() => ({ scope: relationshipScope, value: null }));
   const relationshipScopeRef = useRef(composerScope);
   relationshipScopeRef.current = composerScope;
   const relationshipLoadedRef = useRef(false);
-  const relationshipOwner = useMemo(() => ({ loaded: false, alive: true }), [relationshipScope]);
+  const relationshipOwner = useMemo(() => ({ loaded: false, alive: true }), [relationshipScope, chatAuthEpoch]);
   const threadAnnouncement = useIOSThreadRefreshAnnouncement(session?.id, chatAuthEpoch, otherId, relationshipOwner, THREAD_READ_ERROR);
   const activeOwner = useRef(relationshipOwner);
   activeOwner.current = relationshipOwner;
   const [threadLoad, setThreadLoad] = useState(null);
+  const [requestFeedback, setRequestFeedback] = useState(null);
+  const requestFlight = useRef(null);
+  const requestPending = requestFeedback?.owner === relationshipOwner && requestFeedback.pending;
+  const requestState = getDMRequestState?.(otherId);
   const threadStatus = threadLoad?.owner === relationshipOwner ? threadLoad.status : "loading";
   const threadLoader = useMemo(() => createIOSThreadLoad((status) => {
     if (activeOwner.current === relationshipOwner && relationshipOwner.alive) setThreadLoad({ owner: relationshipOwner, status });
@@ -79,14 +101,46 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
   const { text, sending, unavailable } = iosDraft ? retainedComposer : scopedScreenValue(composerState, composerScope, EMPTY_COMPOSER);
   const updateComposer = (changes) => {
     if (!admitComposerAction()) return;
+    setComposerFeedback(null);
     if (iosDraft) return iosDraft.edit(changes.text);
     setComposerState((current) => ({
       scope: composerScope,
       value: { ...scopedScreenValue(current, composerScope, EMPTY_COMPOSER), ...changes },
     }));
   };
-  const messages = threadMessages(otherId);
+  const recentMessages = threadMessages(otherId);
+  useEffect(() => {
+    if (!historyBlocked) history.remember(recentMessages);
+  }, [history, historyBlocked, recentMessages]);
+  const messages = historyBlocked ? [] : history.display(recentMessages);
   const { scrollRef, onScroll, onContentSizeChange, onLayout, onScrollBeginDrag } = useChatScroll({ messageCount: messages.length, scopeKey: `${chatAuthEpoch}:${composerScope}` });
+  const historyAnchor = useMemo(() => createDirectMessageHistoryAnchor({
+    web: Platform.OS === "web",
+    isCurrent: () => activeHistory.current === history,
+    scrollTo: (options) => scrollRef.current?.scrollTo(options),
+  }), [history, scrollRef]);
+  const loadThreadPage = async (options = {}) => {
+    if (historyBlocked || activeHistory.current !== history) return { stale: true };
+    const request = history.read().unavailable ? { ...options, after: undefined } : options;
+    try {
+      const result = await loadThread(otherId, request);
+      if (!request.signal?.aborted && activeHistory.current === history) history.receive(result, request);
+      return result;
+    } catch (error) {
+      if (!request.signal?.aborted && isMessageHistoryAccessError(error)) history.deny();
+      throw error;
+    }
+  };
+  const loadEarlier = () => {
+    if (historyBlocked || !admitComposerAction()) return Promise.resolve(null);
+    return history.loadEarlier({
+      load: (options) => loadThread(otherId, options),
+      beforeCommit: (nextMessages) => {
+        const survivingIds = new Set(nextMessages.map((message) => message.id));
+        historyAnchor.prepare(messages.filter((message) => survivingIds.has(message.id)).map((message) => message.id));
+      },
+    });
+  };
   const incomingReadTarget = latestIncomingDirectMessageId(messages, session?.id);
   const messageRelationshipContext = [...messages].reverse()
     .find((message) => message?.relationshipContext)?.relationshipContext || null;
@@ -102,7 +156,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
     if (!isIOS) {
       const requestScope = relationshipScopeRef.current;
       const includeContext = forceContext || !relationshipLoadedRef.current;
-      const result = await loadThread(otherId, { after, signal, strict, includeContext });
+      const result = await loadThreadPage({ after, signal, strict, includeContext });
       if (relationshipScopeRef.current === requestScope
         && result
         && Object.prototype.hasOwnProperty.call(result, "relationshipContext")) {
@@ -116,7 +170,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
     }
     const requestScope = relationshipScope;
     const includeContext = forceContext || !relationshipOwner.loaded;
-    const result = await loadThread(otherId, { after, signal, strict, includeContext });
+    const result = await loadThreadPage({ after, signal, strict, includeContext });
     if (activeOwner.current === relationshipOwner && relationshipOwner.alive
       && !signal?.aborted && !result?.stale
       && result
@@ -143,7 +197,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
     ({ after, signal }) => isIOS
       ? threadLoader.run({ after, signal, load: loadRelationshipThread })
       : loadRelationshipThread({ after, signal }),
-    { channelKey: `dm:${chatAuthEpoch}:${session?.id || "guest"}:${otherId}`, enabled: !!session && !!otherId },
+    { channelKey: `dm:${chatAuthEpoch}:${session?.id || "guest"}:${otherId}`, enabled: !!session && !!otherId && !historyBlocked },
   );
   const { refresh: runThreadRefresh, refreshing: threadRefreshing } = useScopedRefresh({
     scope: threadRefreshScope,
@@ -212,6 +266,14 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
 
   const send = async () => {
     if (!admitComposerAction()) return;
+    setComposerFeedback(null);
+    const feedbackOwner = relationshipOwner;
+    const showSendFeedback = (result) => {
+      if (activeOwner.current !== feedbackOwner || !feedbackOwner.alive) return;
+      if (!result?.ok && result?.deliveryMessage && !result?.localId) {
+        setComposerFeedback({ owner: feedbackOwner, message: result.deliveryMessage });
+      }
+    };
     if (iosDraft) {
       // Claim synchronously: keyboard submit + tap cannot enqueue twice, even
       // before React renders. Completion belongs to the owner across navigation.
@@ -220,6 +282,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
       try {
         const result = await sendDM(otherId, claim.text);
         iosDraft.settle(claim, result);
+        showSendFeedback(result);
       } catch {
         iosDraft.settle(claim, { ok: false });
       }
@@ -231,6 +294,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
     const requestScope = composerScope;
     updateComposer({ sending: true });
     const result = await sendDM(otherId, draft);
+    showSendFeedback(result);
     if (composerScopeRef.current !== requestScope) return;
     setComposerState((current) => {
       const value = scopedScreenValue(current, requestScope, EMPTY_COMPOSER);
@@ -257,6 +321,25 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
     if (admitComposerAction()) return cancelChatMessage(message.id);
   };
   const onMention = (h) => onOpenProfileByHandle?.(h);
+  const acceptRequest = async () => {
+    if (activeOwner.current !== relationshipOwner || !relationshipOwner.alive || !session?.id
+      || !admitComposerAction() || !acceptDMRequest || requestFlight.current?.owner === relationshipOwner) return;
+    const flight = { owner: relationshipOwner };
+    requestFlight.current = flight;
+    setRequestFeedback({ owner: relationshipOwner, pending: true });
+    try {
+      const result = await acceptDMRequest(otherId);
+      if (activeOwner.current !== flight.owner || !flight.owner.alive) return;
+      setRequestFeedback({ owner: flight.owner, pending: false,
+        message: result?.ok ? "Message request accepted." : "This request couldn’t be accepted. Try again." });
+    } catch {
+      if (activeOwner.current === flight.owner && flight.owner.alive) {
+        setRequestFeedback({ owner: flight.owner, pending: false, message: "This request couldn’t be accepted. Try again." });
+      }
+    } finally {
+      if (requestFlight.current === flight) requestFlight.current = null;
+    }
+  };
 
   return (
     <ThreadContainer style={styles.wrap} testID="message-thread-shell">
@@ -273,8 +356,27 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
         accessibilityLabel={`Refresh messages with ${other?.name || "this member"}`}
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
-        onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}
+        onScroll={(event) => { historyAnchor.onScroll(event); onScroll(event); }}
+        onContentSizeChange={(...size) => { if (!historyAnchor.contentChanged()) onContentSizeChange(...size); }} scrollEventThrottle={100}
+        {...(Platform.OS !== "web" && historyState.initialized ? { maintainVisibleContentPosition: { minIndexForVisible: 1 } } : {})}
         {...(isIOS ? { style: styles.history, onLayout, onScrollBeginDrag, keyboardDismissMode: "interactive", keyboardShouldPersistTaps: "handled", automaticallyAdjustKeyboardInsets: false, contentInsetAdjustmentBehavior: "never" } : {})}>
+        <View collapsable={false} style={styles.historyHeader}>
+        {session && <MessagePrivacyControls otherId={otherId} admitAction={admitComposerAction}
+          controls={{ session, chatAuthEpoch, isBlocked, blockUser, unblockUser, isBlockMutationPending, isMuted, muteUser, unmuteUser }} />}
+        {session && requestState === "pending" && (
+          <View style={styles.requestCard}>
+            <Text style={styles.requestTitle}>Message request</Text>
+            <Text style={styles.readText}>Accept to keep this conversation in Messages. Your messaging safety settings still apply.</Text>
+            <Pressable style={styles.retryRead} onPress={acceptRequest} disabled={requestPending}
+              accessibilityRole="button" accessibilityLabel="Accept message request"
+              accessibilityState={{ disabled: !!requestPending, busy: !!requestPending }}>
+              <Text style={styles.retryReadText}>{requestPending ? "Accepting…" : "Accept request"}</Text>
+            </Pressable>
+          </View>
+        )}
+        {requestFeedback?.owner === relationshipOwner && !!requestFeedback.message && (
+          <Text style={styles.readText} accessibilityLiveRegion="polite">{requestFeedback.message}</Text>
+        )}
         {(relationshipChips.length > 0 || relationshipSummary) && (
           <View
             style={styles.relationshipCard}
@@ -306,9 +408,25 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
             </Pressable>
           </View>
         )}
-        {messages.length === 0 && (!isIOS || (session && threadStatus === "ready")) && <Text style={styles.empty}>Say hi to {other?.name?.split(" ")[0]}.</Text>}
+        {(historyBlocked || historyState.unavailable) ? <Text style={styles.readText}>This conversation isn’t available.</Text> : (
+          historyState.initialized && messages.length > 0 && (
+            <View style={styles.historyRecovery}>
+              {historyState.nextCursor ? (
+                <Pressable style={styles.retryRead} onPress={loadEarlier} disabled={historyState.loading}
+                  accessibilityRole="button" accessibilityLabel={historyState.error ? "Retry loading earlier messages" : "Load earlier messages"}
+                  accessibilityState={{ disabled: historyState.loading, busy: historyState.loading }}>
+                  <Text style={styles.retryReadText}>{historyState.loading ? "Loading earlier messages…" : historyState.error ? "Try earlier messages again" : "Load earlier messages"}</Text>
+                </Pressable>
+              ) : <Text style={styles.readText}>Beginning of conversation</Text>}
+              {historyState.error && <Text style={styles.readText} accessibilityLiveRegion="polite">Earlier messages couldn’t load. Your conversation is still here.</Text>}
+            </View>
+          )
+        )}
+        {!historyBlocked && !historyState.unavailable && messages.length === 0 && (!isIOS || (session && threadStatus === "ready")) && <Text style={styles.empty}>Say hi to {other?.name?.split(" ")[0]}.</Text>}
+        </View>
         {messages.map((m) => {
           const mine = m.from === session?.id;
+          const delivery = chatDeliveryPresentation(m);
           const reportAction = !mine && onReport ? (
             <Pressable
               style={[styles.reportBtn, isIOS && styles.reportBtnIOS]}
@@ -318,7 +436,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
                 ownerId: m.from,
                 targetName: "direct message",
                 title: `Message from ${other?.name || "a member"}`,
-                summary: "The message stays private and is reviewed only by the moderation team.",
+                summary: "The selected message and your report details are shared with the moderation team.",
               })}
               hitSlop={8}
               accessibilityRole="button"
@@ -333,13 +451,16 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
               {mine && m.pending ? <Text style={[styles.deliveryMine, isIOS && styles.deliveryMineIOS]} accessibilityLiveRegion="polite">sending…</Text> : null}
               {mine && m.failed ? (
                 <View style={[styles.deliveryActions, isIOS && styles.deliveryActionsIOS]}>
-                  <Text style={[styles.deliveryFailed, isIOS && styles.deliveryFailedIOS]} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel="Direct message not sent">not sent</Text>
+                  <Text style={[styles.deliveryFailed, isIOS && styles.deliveryFailedIOS]} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel={`Direct message ${delivery.label.toLowerCase()}`}>{delivery.label}</Text>
+                  {delivery.retryable && (
                   <Pressable style={[styles.deliveryButton, isIOS && styles.deliveryButtonIOS]} onPress={() => retry(m)} accessibilityRole="button" accessibilityLabel="Retry direct message">
                     <Text style={[styles.deliveryAction, isIOS && styles.deliveryActionIOS]}>retry</Text>
                   </Pressable>
-                  <Pressable style={[styles.deliveryButton, isIOS && styles.deliveryButtonIOS]} onPress={() => cancel(m)} accessibilityRole="button" accessibilityLabel="Cancel failed direct message">
-                    <Text style={[styles.deliveryAction, isIOS && styles.deliveryActionIOS]}>cancel</Text>
+                  )}
+                  <Pressable style={[styles.deliveryButton, isIOS && styles.deliveryButtonIOS]} onPress={() => cancel(m)} accessibilityRole="button" accessibilityLabel={delivery.dismissLabel} accessibilityHint={delivery.dismissHint}>
+                    <Text style={[styles.deliveryAction, isIOS && styles.deliveryActionIOS]}>{delivery.dismissText}</Text>
                   </Pressable>
+                  {!!delivery.detail && <Text style={styles.deliveryDetail}>{delivery.detail}</Text>}
                 </View>
               ) : null}
               {!isIOS && reportAction}
@@ -352,7 +473,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
             </View>
           );
           return (
-            <View key={m.id} style={[styles.row, mine && styles.rowMine, isIOS && styles.rowIOS, isIOS && mine && styles.rowMineIOS]}>
+            <View key={m.id} onLayout={Platform.OS === "web" ? (event) => historyAnchor.rowLayout(m.id, event) : undefined} style={[styles.row, mine && styles.rowMine, isIOS && styles.rowIOS, isIOS && mine && styles.rowMineIOS]}>
               {isIOS && !mine && <View style={styles.messageAvatar}><Avatar user={other} size={28} /></View>}
               {isIOS ? <View style={[styles.messageColumn, mine && styles.messageColumnMine]}>{bubble}{footer}</View> : bubble}
               {isIOS && reportAction}
@@ -362,6 +483,11 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
       </ScrollView>
       </VinylRefreshBoundary>
 
+      {session && composerFeedback?.owner === relationshipOwner && (
+        <View style={styles.composerFeedback} accessibilityLiveRegion="polite">
+          <Text style={styles.readText}>{composerFeedback.message}</Text>
+        </View>
+      )}
       {session ? (
         <View style={[styles.inputBar, isIOS && styles.inputBarIOS]}>
           <TextInput
@@ -400,6 +526,8 @@ const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   body: { flex: 1, minHeight: 0 },
   history: { flex: 1, minHeight: 0 },
+  historyHeader: { gap: 10 },
+  historyRecovery: { alignItems: "center", gap: 4 },
   chat: { padding: 16, paddingBottom: 24, gap: 10 },
   relationshipCard: { alignSelf: "stretch", gap: 7, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev, paddingHorizontal: 12, paddingVertical: 10 },
   relationshipChips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
@@ -426,6 +554,7 @@ const styles = StyleSheet.create({
   deliveryFailedIOS: { color: colors.magenta },
   deliveryActionIOS: { color: colors.amber },
   deliveryActionsIOS: { flexWrap: "wrap", flexShrink: 1 },
+  deliveryDetail: { color: colors.textDim, fontSize: 12, lineHeight: 17, flexShrink: 1, width: "100%" },
   deliveryButtonIOS: { marginVertical: 0 },
   reportBtnIOS: { marginVertical: 0, marginRight: 0 },
   bubble: { backgroundColor: colors.surface, borderRadius: 16, borderTopLeftRadius: 4, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 13, paddingVertical: 9 },
@@ -435,7 +564,7 @@ const styles = StyleSheet.create({
   msgFoot: { minHeight: 24, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 3 },
   ts: { color: colors.textFaint, fontSize: 10, fontFamily: mono },
   deliveryMine: { color: "rgba(26,18,6,0.65)", fontSize: 10, fontFamily: mono },
-  deliveryActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  deliveryActions: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 1 },
   deliveryFailed: { color: "#7B1836", fontSize: 10, fontFamily: mono, fontWeight: "800" },
   deliveryAction: { color: "#1A1206", fontSize: 11, fontWeight: "900", textDecorationLine: "underline" },
   deliveryButton: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center", marginVertical: -10 },
@@ -443,6 +572,9 @@ const styles = StyleSheet.create({
   profileButton: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   inputBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 8, paddingBottom: Platform.OS === "ios" ? 24 : 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, backgroundColor: colors.bgElev },
   inputBarIOS: { alignItems: "flex-end", paddingBottom: 8, flexShrink: 0 },
+  composerFeedback: { paddingHorizontal: 16, paddingVertical: 8, backgroundColor: colors.bgElev },
+  requestCard: { backgroundColor: colors.surface, borderColor: colors.lineSoft, borderWidth: 1, borderRadius: radius.md, padding: 12, gap: 8, marginBottom: 12 },
+  requestTitle: { color: colors.text, fontSize: 15, fontWeight: "700" },
   inputIOS: { minHeight: 44, borderRadius: 22, paddingVertical: 10, fontSize: 16, lineHeight: 22, textAlignVertical: "top" },
   input: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 16, paddingVertical: 11, fontSize: 15 },
   sendBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },

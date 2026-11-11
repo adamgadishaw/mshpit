@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { clusterConcertMapPins, concertCoordinates, concertHistoryFrame, concertHistoryModel, concertHistorySummary, concertLocationLabel, concertLocationPhrase, concertMapViewport, projectConcertPin } from "./concertHistoryModel.mjs";
+import { concertCoordinates, concertHistoryModel, concertHistorySummary, concertLocationLabel, concertLocationPhrase } from "./concertHistoryModel.mjs";
+import { clusterConcertMapPins, concertHistoryFrame, concertMapViewport, projectConcertPin } from "./concertMapGeometry.mjs";
 
 const row = (id, patch = {}) => ({ id, postId: id, artist: "The National", venue: "Massey Hall", venueKey: "massey-hall", city: "Toronto", date: "2026-06-14", rating: 4.5, lat: 43.654, lng: -79.379, countryCode: "CA", country: "Canada", ...patch });
 

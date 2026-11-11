@@ -102,6 +102,8 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
     return modules.get(file);
   };
   const imports = (name, local) => {
+    if (name.endsWith("/PageReturnContext")) return load("src/components/PageReturnContext.jsx");
+    if (name.endsWith("/useNativeTabPreview")) return load("src/hooks/useNativeTabPreview.ios.js");
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
     if (name.endsWith("/NativeScrollChrome.ios")) return { NativeScrollChromeContext: React.createContext(null) };

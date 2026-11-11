@@ -43,6 +43,7 @@ import { seedReviewedArtistIdentities } from "./reviewedArtistIdentities.js";
 import { ensureProviderArtistRegistrationSchema } from "./providerArtistRegistration.js";
 import { ensureCommentMutationSchema } from "./commentMutationSchema.js";
 import { ensureSocialReactionSchema } from "./features/socialReactions/socialReactions.js";
+import { ensureDirectMessageConsentSchema } from "./features/messaging/directMessageConsent.js";
 import { ensureArtistAccountSchema, pendingArtistSignupIntent } from "./features/artistAccounts/artistAccountPolicy.js";
 import { ensureMediaApiSchema } from "./features/mediaApi/mediaApiPolicy.js";
 import { createMusicBrainzCooldownStore } from "./musicBrainzCooldownStore.js";
@@ -2012,6 +2013,7 @@ try {
   // educational copy, which records durable provenance from that point on.
   ensurePostMediaCapacity(db);
   ensureErrorAlertSchema(db);
+  ensureDirectMessageConsentSchema(db);
   ensureShowSchema(db);
   ensureCitySchema(db);
   ensureLoungeSchema(db);

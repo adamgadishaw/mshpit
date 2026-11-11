@@ -168,7 +168,7 @@ test("accepted Inbox total uses all unread messages, independent of latest previ
 });
 
 
-test("reply proof agrees with Inbox totals outside the summary and full-history windows", () => {
+test("retained reply evidence and durable Inbox acceptance stay distinct beyond history windows", () => {
   const owner = account(), replied = account(), request = account(), removedReply = account(), another = account();
   const insert = db.prepare("INSERT INTO dms(id,from_id,to_id,text,created_at,removed) VALUES(?,?,?,?,?,?)");
   const send = (from, to, at, removed = 0) => {
@@ -190,11 +190,11 @@ test("reply proof agrees with Inbox totals outside the summary and full-history 
     assert.equal(threads.find(t => t.otherId === request.id).hasReplied, false);
     assert.equal(threads.find(t => t.otherId === removedReply.id).hasReplied, false);
   }
-  assert.equal(page(owner).inboxUnread, 505);
+  assert.equal(page(owner).inboxUnread, 506, "durable acceptance also retains the removed outgoing message choice");
   db.prepare("UPDATE dms SET removed=1 WHERE id=?").run(oldReply);
   const refreshed = routes["GET /api/me/threads"]({ user: owner, query: { summary: "1" } }).threads;
   assert.equal(refreshed.find(t => t.otherId === replied.id).hasReplied, false);
-  assert.equal(page(owner).inboxUnread, 0);
+  assert.equal(page(owner).inboxUnread, 506, "removing replies or blocking another peer cannot erase durable accepted history");
   db.prepare("UPDATE dms SET removed=0 WHERE id=?").run(oldReply);
   assert.equal(routes["GET /api/me/threads"]({ user: owner, query: { summary: "1" } }).threads.find(t => t.otherId === replied.id).hasReplied, true);
   const secondReply = send(owner, replied, 3);
@@ -203,8 +203,8 @@ test("reply proof agrees with Inbox totals outside the summary and full-history 
   db.prepare("UPDATE dms SET removed=1 WHERE id=?").run(secondReply);
   assert.equal(routes["GET /api/me/threads"]({ user: owner, query: { summary: "1" } }).threads.find(t => t.otherId === replied.id).hasReplied, false);
   db.prepare("INSERT INTO follows(follower_id,followee_id) VALUES(?,?)").run(owner.id, request.id);
-  assert.equal(page(owner).inboxUnread, 1, "following accepts a peer without inventing reply evidence");
+  assert.equal(page(owner).inboxUnread, 507, "following adds the pending peer without inventing reply evidence");
   db.prepare("INSERT INTO blocks(blocker_id,blocked_id,created_at) VALUES(?,?,?)").run(request.id, owner.id, 1);
-  assert.equal(page(owner).inboxUnread, 0);
+  assert.equal(page(owner).inboxUnread, 506, "blocking the newly followed peer leaves other accepted unread messages unchanged");
   assert.ok(!routes["GET /api/me/threads"]({ user: owner, query: { summary: "1" } }).threads.some(t => t.otherId === request.id));
 });
