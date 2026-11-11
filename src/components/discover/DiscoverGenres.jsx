@@ -107,14 +107,15 @@ function DiscoverGenres({
         </View>
       )}
 
-      {loadingArtists ? (
-        <View style={styles.genreLoading} accessibilityLiveRegion="polite"><ActivityIndicator color={colors.amber} /><Text style={styles.stateCopy}>Loading artists...</Text></View>
-      ) : status === "error" && selected ? (
+      {status === "error" && selected ? (
         <View style={styles.genreLoading} accessibilityLiveRegion="assertive">
-          <Text style={styles.emptyCopy} selectable>Could not load this genre right now.</Text>
+          <Text style={styles.emptyCopy} selectable>{rows?.length ? "Could not update this genre. Showing the last artists." : "Could not load this genre right now."}</Text>
           <Pressable style={styles.retryButton} onPress={onRetry} accessibilityRole="button" accessibilityLabel={"Retry loading " + selectedLabel}><Text style={styles.retryText}>Try again</Text></Pressable>
         </View>
-      ) : hasRankedGenreRows ? (
+      ) : null}
+      {loadingArtists ? (
+        <View style={styles.genreLoading} accessibilityLiveRegion="polite"><ActivityIndicator color={colors.amber} /><Text style={styles.stateCopy}>Loading artists...</Text></View>
+      ) : status === "error" && selected && !rows?.length ? null : hasRankedGenreRows ? (
         <View style={styles.rankedGroups}>
           {reviewedRows.length ? (
             <GenreArtistGroup

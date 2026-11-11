@@ -1,5 +1,5 @@
 import { ScrollView } from "../NativeTabScroll";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, focusRing, font, radius, space } from "../../theme";
 import Icon from "../Icon";
@@ -9,11 +9,27 @@ export default function DiscoverProgrammeNav({ selected, onSelect, compact = fal
   const tabs = useRef({});
   const scrollRef = useRef(null);
   const tabOffsets = useRef({});
+  const pressedSelection = useRef(null);
+  const [availableWidth, setAvailableWidth] = useState(null);
   const { width, fontScale } = useWindowDimensions();
   // Preserve larger text and whole words instead of squeezing six equal cells.
-  const scrollable = Platform.OS !== "web" && compact && (width < 390 || fontScale > 1);
+  // iOS must account for the screen's padding and Dynamic Type in landscape too.
+  const scrollable = Platform.OS === "ios"
+    ? (compact && (availableWidth ?? width) < 390) || fontScale > 1
+    : Platform.OS !== "web" && compact && (width < 390 || fontScale > 1);
+  const revealSelected = () => {
+    const x = tabOffsets.current[selected];
+    if (Platform.OS === "ios" && scrollable && x != null) scrollRef.current?.scrollTo?.({ x: Math.max(0, x - 8), animated: false });
+  };
+  useEffect(() => {
+    // A direct press already started its animated reveal. Only restore or
+    // programmatic selection needs another scroll command.
+    if (pressedSelection.current !== selected) revealSelected();
+    pressedSelection.current = null;
+  }, [selected, scrollable]);
+  const measureWidth = Platform.OS === "ios" ? (event) => setAvailableWidth(event.nativeEvent.layout.width) : undefined;
   const content = (
-    <View style={[styles.shell, scrollable && styles.scrollShell]} accessibilityRole="tablist" accessibilityLabel="Discover sections">
+    <View onLayout={scrollable ? undefined : measureWidth} style={[styles.shell, scrollable && styles.scrollShell]} accessibilityRole="tablist" accessibilityLabel="Discover sections">
       {DISCOVER_PROGRAMME_SECTIONS.map((section) => {
         const active = selected === section.key;
         return (
@@ -42,6 +58,7 @@ export default function DiscoverProgrammeNav({ selected, onSelect, compact = fal
               if (active) scrollRef.current?.scrollTo?.({ x: Math.max(0, x - 8), animated: false });
             } : undefined}
             onPress={() => {
+              pressedSelection.current = section.key;
               onSelect(section.key);
               if (scrollable) scrollRef.current?.scrollTo?.({ x: Math.max(0, (tabOffsets.current[section.key] || 0) - 8), animated: true });
             }}
@@ -55,7 +72,7 @@ export default function DiscoverProgrammeNav({ selected, onSelect, compact = fal
       })}
     </View>
   );
-  return scrollable ? <ScrollView ref={scrollRef} horizontal showsHorizontalScrollIndicator contentContainerStyle={styles.scrollContent} style={styles.scrollViewport}>{content}</ScrollView> : content;
+  return scrollable ? <ScrollView ref={scrollRef} horizontal showsHorizontalScrollIndicator onLayout={measureWidth} onContentSizeChange={revealSelected} contentContainerStyle={styles.scrollContent} style={styles.scrollViewport}>{content}</ScrollView> : content;
 }
 
 const styles = StyleSheet.create({

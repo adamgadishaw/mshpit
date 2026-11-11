@@ -354,10 +354,16 @@ function Root() {
   if (Platform.OS === "ios") browseReturnRef.current.account(session?.id || null);
   const searchReturn = Platform.OS === "ios" ? browseReturnRef.current.lease("search") : null;
   const discoverReturn = Platform.OS === "ios" ? browseReturnRef.current.lease("discover") : null;
-  // Detail overlays unmount Discover. Keep only its public destination here,
+  // Detail overlays unmount Discover. Keep its destination and filter choices here,
   // scoped to this viewer, so Back does not unexpectedly switch to Shows.
   const [discoverDestination, setDiscoverDestination] = useState(() => ({ accountId: session?.id || null, programme: Platform.OS === "web" ? "shows" : "artists" }));
-  const rememberedDiscoverProgramme = discoverDestination.accountId === (session?.id || null) ? discoverDestination.programme : "shows";
+  const rememberedDiscoverProgramme = discoverDestination.accountId === (session?.id || null) ? discoverDestination.programme : Platform.OS === "web" ? "shows" : "artists";
+  const discoverViewOwnerRef = useRef(null);
+  const discoverViewIdentity = JSON.stringify([session?.id || null, chatAuthEpoch]);
+  if (discoverViewOwnerRef.current?.identity !== discoverViewIdentity) {
+    discoverViewOwnerRef.current = { identity: discoverViewIdentity, view: { current: null }, venues: { current: null } };
+  }
+  const { view: discoverViewStateRef, venues: discoverVenueViewStateRef } = discoverViewOwnerRef.current;
   // Navigation is a STACK of frames. Each frame is one overlay screen, e.g.
   // { artistName } or { profileId }; the top frame is what's showing. An empty
   // base frame ({}) means "just the tab screens." Opening a screen PUSHES a
@@ -1914,7 +1920,7 @@ function Root() {
                 />
               )}
               {pageTab === "search" && <SearchScreen key={pager ? undefined : searchReturn?.key} browseReturn={searchReturn} onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {pageTab === "discover" && <DiscoverScreen key={pager ? undefined : discoverReturn?.key || `${session?.id || "guest"}:${discoverDestination.requestId || 0}`} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={Platform.OS === "ios" ? iosTabSwipeEnabled : undefined} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} browseReturn={discoverReturn} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme, requestId: discoverDestination.requestId })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
+              {pageTab === "discover" && <DiscoverScreen key={pager ? undefined : discoverReturn?.key || `${session?.id || "guest"}:${discoverDestination.requestId || 0}`} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={Platform.OS === "ios" ? iosTabSwipeEnabled : undefined} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} browseReturn={discoverReturn} viewStateRef={discoverViewStateRef} venueViewStateRef={discoverVenueViewStateRef} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme, requestId: discoverDestination.requestId })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
               {pageTab === "you" && !!session && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}

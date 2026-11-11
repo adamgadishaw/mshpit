@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { parse } from "@babel/parser";
 import { defaultDiscoverAreaChoice } from "./discoverArea.mjs";
+import { restoreDiscoverViewState } from "./discoverViewState.mjs";
 
 const read = (path) => readFile(new URL(path, import.meta.url), "utf8");
 
@@ -54,14 +55,12 @@ test("Discover retains upcoming events and deeper discovery alongside its connec
   assert.equal(area.init.callee.name, "useState", "area remains screen-local state");
   const initializer = area.init.arguments[0];
   assert.equal(initializer.type, "ArrowFunctionExpression");
-  const initialize = new Function("initialBrowse", "accountId", "areaContext", "defaultDiscoverAreaChoice",
-    `return (${source.slice(initializer.start, initializer.end)})();`);
+  const initialize = new Function("restoredView", `return (${source.slice(initializer.start, initializer.end)})();`);
   const context = { accountId: "viewer", homeCity: "Toronto", homeCountry: "Canada" };
-  assert.deepEqual(initialize(null, "viewer", context, defaultDiscoverAreaChoice), defaultDiscoverAreaChoice(context),
-    "a fresh visit, including Android/web, uses the existing account-aware default");
-  assert.deepEqual(initialize({ region: "France", scope: "country", touched: true, accountId: "old" }, "viewer", context, defaultDiscoverAreaChoice),
-    { accountId: "viewer", region: "France", scope: "country", touched: true },
-    "an iOS return restores only area preferences and binds them to the current viewer");
+  assert.deepEqual(initialize(restoreDiscoverViewState(null, context)), defaultDiscoverAreaChoice(context));
+  const saved = { accountId: "viewer", areaChoice: { accountId: "viewer", region: "France", scope: "country", touched: true } };
+  assert.equal(initialize(restoreDiscoverViewState(saved, context)).region, "France");
+  assert.deepEqual(initialize(restoreDiscoverViewState({ ...saved, accountId: "old" }, context)), defaultDiscoverAreaChoice(context));
   assert.match(source, /selectDiscoverCountryArea/);
   assert.match(source, /selectDiscoverScopeArea/);
   assert.doesNotMatch(source, /regionChoice|liveScopeChoice/);

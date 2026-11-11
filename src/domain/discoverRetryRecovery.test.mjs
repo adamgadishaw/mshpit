@@ -22,7 +22,7 @@ visit(tree);
 test("the visible Discover retry clears a failed refresh and retains errors if recovery still fails", async () => {
   assert.equal(retry?.type, "Identifier");
   assert.equal(retry.name, "refreshDiscover", "retry must own the aggregate warning as well as overview data");
-  let fail = true, warning = false, refreshing = false, overviewCalls = 0, dateCalls = 0;
+  let fail = true, warning = false, refreshing = false, overviewCalls = 0, dateCalls = 0, photoCalls = 0;
   const bindings = {
     pullRefreshControllerRef: { current: null },
     setPullRefreshing: value => { refreshing = value; },
@@ -33,7 +33,8 @@ test("the visible Discover retry clears a failed refresh and retains errors if r
     selectedGenre: null, requestGenre: async () => true,
     refreshTourDates: async ({ signal }) => { assert.equal(signal.aborted, false); dateCalls++; return true; },
     refreshDiscoverySidebar: async () => true,
-    programme: "artists", cityRefreshRef: { current: null }, festivalRefreshRef: { current: null },
+    programme: "photos", cityRefreshRef: { current: null }, festivalRefreshRef: { current: null },
+    photoRefreshRef: { current: async ({ signal }) => { assert.equal(signal.aborted, false); photoCalls++; return !fail; } },
     session: null, artistRecommendations: {},
   };
   const actualRefresh = new Function(...Object.keys(bindings), "return (" + source.slice(refresh.start, refresh.end) + ");")(...Object.values(bindings));
@@ -46,6 +47,7 @@ test("the visible Discover retry clears a failed refresh and retains errors if r
   assert.equal(refreshing, false);
   assert.equal(overviewCalls, 2);
   assert.equal(dateCalls, 2);
+  assert.equal(photoCalls, 2, "Photos participates in the screen refresh and retry");
   fail = true;
   assert.equal(await actualRefresh(), false);
   assert.equal(warning, true);

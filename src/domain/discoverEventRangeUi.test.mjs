@@ -14,14 +14,14 @@ test("Discover shows four event cards, a week-by-week list, and fetches the sele
   assert.match(screen, /HOW FAR AHEAD\?/);
   assert.match(screen, /accessibilityLabel="Choose how far ahead to look for events"/);
   assert.match(screen, /onPress=\{\(\) => \{ selectEventRange\(days\); setDateExpanded\(false\); dateDisclosureRef.current\?\.focus\?\.\(\); \}\}/);
-  assert.match(screen, /const selectedRangeDays[\s\S]*DISCOVER_RANGE_DAYS\[0\]/);
+  assert.match(screen, /const \[selectedRangeDays, setSelectedRangeDays\] = useState/);
   assert.match(screen, /const initialRangeEvents = useMemo\(\(\) => selectDiscoverRangeEvents\([\s\S]*days: DISCOVER_RANGE_DAYS\[0\]/);
   assert.match(screen, /const liveEvents = useMemo\(\(\) => upcomingEventsForScope\([\s\S]*worldwideEvents: initialRangeEvents[\s\S]*limit: 4,/);
   assert.match(screen, /const openEventList = useCallback[\s\S]*if \(!rangeMatchesScene\) requestEventRange\(selectedRangeDays\)/);
   assert.doesNotMatch(screen, /more events`/, "no endless load more");
   assert.match(screen, /See all \$\{rangeEvents\.length\} shows as a list/);
-  assert.match(screen, /<DiscoverEventList events=\{rangeEvents\}/);
-  assert.match(screen, /requestedCursorRef\.current === eventRange\.nextCursor/, "the list never asks for the same page twice");
+  assert.match(screen, /<DiscoverEventList events=\{listEvents\}/);
+  assert.match(screen, /requestedCursorRef\.current\.has\(eventRange\.nextCursor\)/, "the list never asks for the same page twice");
   assert.match(screen, /filter\(\(event\) => !isFestivalListing\(event\)\)/, "festivals stay in their own tab");
   assert.match(screen, /selectDiscoverRangeEvents/);
   assert.match(screen, /mergeDiscoverRangePages/);
@@ -32,13 +32,13 @@ test("Discover shows four event cards, a week-by-week list, and fetches the sele
     && n.expression.arguments[1]?.elements?.some((arg) => arg.name === "rangeScopeKey")
     && screen.slice(n.start, n.end).includes("rangeRequestRef.current.sequence += 1")).expression.arguments[0];
   assert.ok(effect, "scope changes own a request effect with cancellation");
-  const run = new Function("restoredRangeScope", "rangeScopeKey", "initialBrowse", "setEventWeek", "requestEventRange", "DISCOVER_RANGE_DAYS", "rangeRequestRef",
+  const run = new Function("restoredRangeScope", "rangeScopeKey", "selectedRangeDays", "setEventWeek", "requestEventRange", "rangeRequestRef",
     `return (${screen.slice(effect.start, effect.end)})();`);
-  for (const [snapshot, savedScope, days, clearWeek] of [[null, "scene", 30, true], [{ days: 90 }, "scene", 90, false], [{ days: 90 }, "old-scene", 30, true]]) {
+  for (const [savedScope, days, clearWeek] of [["scene", 30, false], ["scene", 90, false], ["old-scene", 90, true]]) {
     const requests = [], weeks = [], scope = { current: savedScope }, owner = { current: { sequence: 0, controller: { abort: () => requests.push("abort") } } };
-    const cleanup = run(scope, "scene", snapshot, (v) => weeks.push(v), (v) => requests.push(v), [30, 60, 90], owner);
+    const cleanup = run(scope, "scene", days, (v) => weeks.push(v), (v) => requests.push(v), owner);
     assert.deepEqual(requests, [days]); assert.deepEqual(weeks, clearWeek ? [null] : []);
-    assert.equal(scope.current, null, "restoration is consumed once"); cleanup();
+    assert.equal(scope.current, "scene"); cleanup();
     assert.deepEqual(requests, [days, "abort"]); assert.equal(owner.current.sequence, 1);
   }
   assert.match(screen, /const local = liveScope === LIVE_EVENT_SCOPE\.LOCAL/);

@@ -69,6 +69,33 @@ const props = (overrides = {}) => ({ programme: "shows", region: "Worldwide", co
   eventRecovery: { kind: "empty", message: "No events are listed here.", nextDays: 60, worldwide: false }, eventStatus: "ready",
   rangeHasMore: false, selectedRangeDays: 30, eventView: "cards", listView: false, loungeRows: [], panels: {}, ...overrides });
 
+test("native List keeps fallback shows visible while the scoped request recovers", () => {
+  const c = fixture();
+  const retained = [{ id: "retained-show", artist: "Fixture", date: "2026-11-12" }];
+  for (const eventStatus of ["loading", "error"]) {
+    const tree = c.render(c.exports.default, props({ eventRecovery: null, eventStatus, eventView: "list", listView: true,
+      events: retained, rangeEvents: [], listEvents: retained }));
+    assert.equal(nodes(tree).find(node => node.type === "EventList").props.events, retained);
+  }
+});
+
+test("native event-area controls stack at enlarged text without changing selection or actions", () => {
+  const c = fixture({ width: 320, fontScale: 3.1 }), choices = [];
+  const tree = c.render(c.exports.default, props({ homeCity: "Saint-Jean-sur-Richelieu", region: "Canada", local: true, onScope: value => choices.push(value) }));
+  const area = nodes(tree).find(node => node.props.accessibilityLabel === "Event area");
+  const flatten = value => Array.isArray(value) ? Object.assign({}, ...value.filter(Boolean).map(flatten)) : value || {};
+  assert.equal(flatten(area.props.style).flexDirection, "column");
+  assert.equal(flatten(area.props.style).width, "100%");
+  const options = nodes(area).filter(node => node.props.accessibilityRole === "radio");
+  assert.deepEqual(options.map(node => node.props.accessibilityState.checked), [false, true]);
+  for (const option of options) {
+    assert.ok(flatten(option.props.style({ pressed: false })).minHeight >= 44);
+    assert.equal(flatten(option.props.style({ pressed: false })).flexShrink, 0);
+  }
+  options[0].props.onPress(); options[1].props.onPress();
+  assert.deepEqual(choices, [false, true]);
+});
+
 test("iOS presentation is gated and the alternate entry is inert", () => {
   const screen = readFileSync(new URL("../../screens/DiscoverScreen.jsx", import.meta.url), "utf8");
   const ast = parse(screen, { sourceType: "module", plugins: ["jsx"] });

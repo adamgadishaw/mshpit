@@ -14,7 +14,7 @@ const nodes = value => !value || typeof value !== "object" ? [] : Array.isArray(
 function render(platform, width, fontScale, compact = true, selectedKey = "shows") {
   const componentRequire = name => {
     if (name.endsWith("/NativeTabScroll")) return { ScrollView: "ScrollView" };
-    if (name === "react") return { useRef: initial => ({ current: initial }) };
+    if (name === "react") return { useRef: initial => ({ current: initial }), useState: initial => [initial, () => {}], useEffect: () => {} };
     if (name === "react-native") return { Platform: { OS: platform }, useWindowDimensions: () => ({ width, height: 800, fontScale }),
       View: "View", Text: "Text", Pressable: "Pressable", ScrollView: "ScrollView", StyleSheet: { create: value => value } };
     if (name.endsWith("/theme")) return { colors: {}, radius: {}, space: n => n * 4 };

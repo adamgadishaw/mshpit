@@ -191,7 +191,7 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
   refreshing, onRefresh, refreshError, chart, overviewStatus, onRetryOverview,
   genres, selectedGenre, genreRows, genreStatus, onGenre, onRetryGenre, query, onQuery,
   slides, events, rangeEvents, eventRecovery, eventStatus, rangeLoadingMore, rangeHasMore, selectedRangeDays,
-  onRange, eventView, onEventView, listView, onEventList, eventWeek, onEventWeek,
+  onRange, eventView, onEventView, listView, listEvents = rangeEvents, onEventList, eventWeek, onEventWeek,
   onOpen, onOpenArtist, onOpenEvents, onOpenTopRated, onOpenCrew, onOpenFanClubs, onOpenLounge,
   loungeRows, panels, renderPanel, recommendations, attendanceRows = [],
   localSection = false, navigation, sectionGenreFocused, onSectionGenreFocus, navigationRevision = 0,
@@ -292,10 +292,10 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
         <View style={styles.section}>
           <SectionHeader title="Upcoming shows" action="See all" onPress={() => onOpenEvents?.(region)} detail={`${local ? homeCity ? `Near ${homeCity}` : "Near you" : region} · Next ${selectedRangeDays} days`} />
           <View style={styles.showControls}>
-            <View style={styles.segment} accessibilityRole="radiogroup" accessibilityLabel="Event area">
+            <View style={[styles.segment, fontScale > 1.25 && styles.segmentStacked]} accessibilityRole="radiogroup" accessibilityLabel="Event area">
               {[[false, region], [true, homeCity ? `Near ${homeCity}` : "Near you"]].map(([value, label]) => <Pressable key={String(value)} accessibilityRole="radio"
                 accessibilityLabel={value ? homeCity ? `Near ${homeCity}` : "Near you" : region} accessibilityState={{ checked: local === value }}
-                onPress={() => pickScope(value)} style={({ pressed }) => [styles.segmentButton, local === value && styles.segmentSelected, pressed && styles.pressed]}>
+                onPress={() => pickScope(value)} style={({ pressed }) => [styles.segmentButton, fontScale > 1.25 && styles.segmentButtonStacked, local === value && styles.segmentSelected, pressed && styles.pressed]}>
                 <Text style={[styles.segmentText, local === value && styles.selectedText]}>{label}</Text>
               </Pressable>)}
             </View>
@@ -319,7 +319,7 @@ export default function DiscoverBrowse({ browseReturn, initialBrowse, programme,
           {eventStatus === "error" && events.length > 0 ? <View style={styles.notice}><Text style={styles.body}>More dates couldn’t load.</Text><TextAction onPress={() => onRange(selectedRangeDays)}>Try again</TextAction></View> : null}
           <Recovery recovery={eventRecovery} onRetry={() => onRange(selectedRangeDays)} onRange={pickRange} onWorldwide={() => pickRegion("Worldwide")}
             onArtists={popular.length ? () => chooseProgramme("artists") : null} onCities={() => chooseProgramme("cities")} />
-          {!eventRecovery && listView ? <View style={styles.inset}><DiscoverEventList events={rangeEvents} weekKey={eventWeek} onWeekChange={pickEventWeek} loadingMore={rangeLoadingMore} onOpen={onOpen} /></View>
+          {!eventRecovery && listView ? <View style={styles.inset}><DiscoverEventList events={listEvents} weekKey={eventWeek} onWeekChange={pickEventWeek} loadingMore={rangeLoadingMore} onOpen={onOpen} /></View>
             : !eventRecovery ? <BrowseRail label="Upcoming shows" cardWidth={Math.min(300, width - 64)} railKey={`${region}:${local}`}>
               {events.map((event) => <Pressable key={event.id || `${event.artist}:${event.venue}:${event.date}`} onPress={() => onOpen?.(event)} accessibilityRole="button"
                 accessibilityLabel={`Open ${liveEventTitle(event)} at ${event.venue || "the venue"}. ${browseDate(event.date)}`}
@@ -418,6 +418,8 @@ const styles = StyleSheet.create({
   inset: { paddingHorizontal: GUTTER, gap: 12 },
   showControls: { paddingHorizontal: GUTTER, flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8, justifyContent: "space-between" },
   segment: { flexDirection: "row", padding: 3, borderRadius: 12, backgroundColor: colors.surfaceAlt, flexShrink: 1 },
+  segmentStacked: { flexDirection: "column", width: "100%", alignItems: "stretch" },
+  segmentButtonStacked: { flexShrink: 0, alignItems: "flex-start" },
   segmentButton: { minHeight: 44, paddingVertical: 10, paddingHorizontal: 13, borderRadius: 9, alignItems: "center", justifyContent: "center", flexShrink: 1 },
   segmentSelected: { backgroundColor: colors.bgElev }, segmentText: { color: colors.textDim, fontFamily: "System", fontSize: 13, fontWeight: "600", flexShrink: 1 },
   viewControls: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 8, paddingHorizontal: GUTTER },

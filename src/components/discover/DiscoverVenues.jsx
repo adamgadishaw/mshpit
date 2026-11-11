@@ -14,21 +14,25 @@ import { reconcileVenueMapSelection, snapshotVenueMapSelection } from "../../dom
 const EMPTY = [];
 const feedback = ({ pressed, hovered, focused }) => [hovered && styles.hover, pressed && styles.pressed, focused && focusRing];
 
-export default function DiscoverVenues({ region = "Worldwide", homeCity = "", venueDirectoryIndex = EMPTY, tourDates = EMPTY, session, onOpenVenue, onOpenEvent, onOpenVenues }) {
-  const [query, setQuery] = useState("");
-  const [cityQuery, setCityQuery] = useState("");
-  const [cityPickerOpen, setCityPickerOpen] = useState(false);
+export default function DiscoverVenues({ region = "Worldwide", homeCity = "", venueDirectoryIndex = EMPTY, tourDates = EMPTY, session, onOpenVenue, onOpenEvent, onOpenVenues, viewStateRef, persistView = true }) {
+  const accountId = session?.id || null;
+  const viewScopeKey = JSON.stringify([accountId, region]);
+  const restoredView = useRef(viewStateRef?.current?.scopeKey === viewScopeKey ? viewStateRef.current : null).current;
+  const viewScopeRef = useRef(viewScopeKey);
+  const [query, setQuery] = useState(() => restoredView?.query || "");
+  const [cityQuery, setCityQuery] = useState(() => restoredView?.cityQuery || "");
+  const [cityPickerOpen, setCityPickerOpen] = useState(() => restoredView?.cityPickerOpen === true);
   // The map is a primary discovery feature. Hiding it is the viewer's choice,
   // never a prerequisite step before they can explore venues geographically.
-  const [mapOpen, setMapOpen] = useState(true);
-  const [chosenCity, setChosenCity] = useState(null);
-  const [chosenVenue, setChosenVenue] = useState(null);
+  const [mapOpen, setMapOpen] = useState(() => restoredView?.mapOpen !== false);
+  const [chosenCity, setChosenCity] = useState(() => restoredView?.chosenCity || null);
+  const [chosenVenue, setChosenVenue] = useState(() => restoredView?.chosenVenue || null);
   const [mapLocationIds, setMapLocationIds] = useState(null);
-  const [expandedShowsFor, setExpandedShowsFor] = useState(null);
-  const [visible, setVisible] = useState(8);
-  const [cityLimit, setCityLimit] = useState(6);
-  const [allVenuesOpen, setAllVenuesOpen] = useState(true);
-  const [page, setPage] = useState(0);
+  const [expandedShowsFor, setExpandedShowsFor] = useState(() => restoredView?.expandedShowsFor || null);
+  const [visible, setVisible] = useState(() => restoredView?.visible || 8);
+  const [cityLimit, setCityLimit] = useState(() => restoredView?.cityLimit || 6);
+  const [allVenuesOpen, setAllVenuesOpen] = useState(() => restoredView?.allVenuesOpen !== false);
+  const [page, setPage] = useState(() => restoredView?.page || 0);
   const venueRows = useRef(new Map());
   const pendingReveal = useRef(null);
   const chosenSnapshot = useRef(null);
@@ -76,11 +80,19 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
     setPage(Math.max(0, Math.floor(venues.findIndex(row => row.id === nextId) / 12)));
   }, [venues, chosenVenue, catalogueEnabled]);
   useEffect(() => {
+    // Only choices survive a detail page or programme change; rows and map data reload.
+    // A changed scope is reset by the next effect before it can become a saved view.
+    if (!persistView || !viewStateRef || viewScopeRef.current !== viewScopeKey) return;
+    viewStateRef.current = { scopeKey: viewScopeKey, query, cityQuery, cityPickerOpen, mapOpen, chosenCity, chosenVenue, expandedShowsFor, visible, cityLimit, allVenuesOpen, page };
+  }, [persistView, viewStateRef, viewScopeKey, query, cityQuery, cityPickerOpen, mapOpen, chosenCity, chosenVenue, expandedShowsFor, visible, cityLimit, allVenuesOpen, page]);
+  useEffect(() => {
+    if (viewScopeRef.current === viewScopeKey) return;
+    viewScopeRef.current = viewScopeKey;
     setChosenCity(null); setChosenVenue(null); setExpandedShowsFor(null); setQuery("");
     setCityQuery(""); setVisible(8); setPage(0); setAllVenuesOpen(true); setCityLimit(6); setCityPickerOpen(false); setMapOpen(true);
     pendingReveal.current = null;
     chosenSnapshot.current = null;
-  }, [region]);
+  }, [viewScopeKey]);
 
   return <View style={styles.root}>
     <View style={styles.heading}>
