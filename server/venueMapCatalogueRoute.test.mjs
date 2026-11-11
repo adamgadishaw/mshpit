@@ -5,6 +5,7 @@ import { parse } from "@babel/parser";
 import { mapLibreServerEnabled } from "./mapLibreConfiguration.mjs";
 import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
 import { ApiError } from "./errors.js";
+import { tourDateCalendarRequest } from "./tourDateCalendarRange.mjs";
 
 // Execute the actual route with public-page dependencies, without importing the
 // application database or starting any background providers.
@@ -16,7 +17,7 @@ const route = routes.properties.find(entry => entry.key?.value === "GET /api/tou
 const cache = ast.program.body.find(node => node.type === "VariableDeclaration" && node.declarations.some(entry => entry.id.name === "venueMapCatalogue"))
   .declarations.find(entry => entry.id.name === "venueMapCatalogue").init;
 function actualRoute(env, overrides = {}) {
-  const dependencies = { now: () => Date.parse("2026-10-21T14:15:00Z"), process: { env }, mapLibreServerEnabled, createVenueMapCatalogueCache, ApiError,
+  const dependencies = { now: () => Date.parse("2026-10-21T14:15:00Z"), process: { env }, mapLibreServerEnabled, createVenueMapCatalogueCache, ApiError, tourDateCalendarRequest,
     createVenueMapCatalogueResponse: value => value,
     tourDateAllUpcomingRequest: () => { throw new Error("normal query parser"); },
     tourDateJson: row => row, ...overrides };

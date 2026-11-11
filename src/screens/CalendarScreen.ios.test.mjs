@@ -474,3 +474,11 @@ test("initial calendar links retain valid dates across the supported browse rang
     assert.ok(f.selectedDay(date));
   }
 });
+
+test("agenda continuation starts the next month at day one without skipping earlier shows", t => {
+  for (const [date, expected] of [["2028-11-20", "2028-12-01"], ["2028-12-31", "2029-01-01"]]) {
+    const f = fixture({ initialDate: date, initialPresentation: "agenda", projected: projection([], []) }); t.after(f.close);
+    f.pressText("Next month"); assert.equal(f.state().selected, expected);
+    assert.equal(f.catalogueQueries.at(-1).selected, expected); assert.equal(f.state().scrollY, 0);
+  }
+});

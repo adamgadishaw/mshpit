@@ -182,6 +182,13 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
     const next = calendarMonthSelection(cursor, delta, selected);
     if (next) choose(next);
   };
+  const continueAgenda = () => {
+    if (!isCurrent()) return;
+    const next = calendarMonthSelection(cursor, 1, calendarDateKey(cursor.y, cursor.m, 1));
+    if (!next) return;
+    choose({ ...next, scrollY: 0 });
+    browse.scrollRef.current?.scrollTo({ y: 0, animated: false });
+  };
   const choosePeriod = next => {
     if (!isCurrent()) return;
     if (next === view) return;
@@ -393,7 +400,7 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
           </View> : null}
           {remaining ? <Pressable onPress={() => update({ agendaLimit: state.agendaLimit + CALENDAR_AGENDA_PAGE })} style={styles.loadButton} accessibilityRole="button"><Text style={styles.actionText}>Show more ({remaining})</Text></Pressable> : null}
           {publicShows && !remaining && catalogue.hasMore ? <Pressable onPress={() => { void catalogue.loadMore(); }} style={styles.loadButton} disabled={catalogue.loadingMore} accessibilityRole="button" accessibilityState={{ busy: catalogue.loadingMore, disabled: catalogue.loadingMore }}><Text style={styles.actionText}>{catalogue.loadingMore ? "Loading…" : "Load more shows"}</Text></Pressable> : null}
-          {publicShows && presentation === "agenda" && !remaining && !catalogue.hasMore && catalogue.coverage?.complete ? <Pressable onPress={() => moveMonth(1)} style={styles.loadButton} accessibilityRole="button"><Text style={styles.actionText}>Next month</Text></Pressable> : null}
+          {publicShows && presentation === "agenda" && !remaining && !catalogue.hasMore && catalogue.coverage?.complete && !(cursor.y === CALENDAR_MAX_YEAR && cursor.m === 11) ? <Pressable onPress={continueAgenda} style={styles.loadButton} accessibilityRole="button"><Text style={styles.actionText}>Next month</Text></Pressable> : null}
           {accountId && (historyInitialLoading || history.error || olderFailure === isCurrent || historyWindow.hasMore) ? <View style={styles.historyBox}>
             {historyInitialLoading ? <ActivityIndicator color={colors.amber} /> : null}
             <Text style={styles.statusText}>{historyInitialLoading ? "Loading your logged shows. Confirmed attendance can appear first."
