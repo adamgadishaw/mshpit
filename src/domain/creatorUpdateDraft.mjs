@@ -9,4 +9,3 @@ export function creatorUpdateDraft(value) {
     kind: Object.hasOwn(CREATOR_UPDATE_KINDS, value.kind) ? value.kind : "update",
     title: text(value.title), date: text(value.date), location: text(value.location), url: text(value.url) };
 }
-
