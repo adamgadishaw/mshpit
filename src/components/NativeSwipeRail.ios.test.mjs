@@ -281,6 +281,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     modules["../../components/NativeTabSwipeExclusion"] = exclusionModule;
     const Photos = execute("../features/discoverPhotos/DiscoverPhotoPanel.ios.jsx").default;
     const Browser = execute("./discover/DiscoverSectionBrowser.ios.jsx").default;
+    const venueViewStateRef = { current: null };
     Component = p => React.createElement(previewContext.Provider, { value: !!p.outerPreview }, React.createElement(Browser, p));
     props = { ...props, programme: "shows", region: "Worldwide", countries: [{ country: "Worldwide" }],
       chart: { rows: [{ name: "Actual cached artist", genre: "rock" }] }, overviewStatus: "ready", genres: [],
@@ -296,8 +297,8 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
         const bindings = { FestivalsPanel: DeferredFestival, CityDiscoveryTiles: Cities, DiscoverPhotoPanel: Photos,
           DiscoverVenues: p => React.createElement("SectionPanel", { ...p, section: "venues" }),
           Suspense: React.Suspense, ActivityIndicator: "ActivityIndicator", colors: {}, region: props.region,
-          onOpenFestival: noop, registerFestivalRefresh: fn => introductions.push(fn), registerCityRefresh: fn => introductions.push(fn),
-          openCity: noop, homeCity: null, session: { id: props.accountId }, venueDirectoryIndex: [], tourDates: [],
+          onOpenFestival: noop, registerFestivalRefresh: fn => introductions.push(fn), registerCityRefresh: fn => introductions.push(fn), registerPhotoRefresh: fn => introductions.push(fn),
+          openCity: noop, homeCity: null, session: { id: props.accountId }, venueViewStateRef, venueDirectoryIndex: [], tourDates: [],
           onOpenVenue: noop, onOpen: noop, onOpenVenues: noop, compact: true, width: 412, openPhotos: noop,
           removedIds: [], blockedIds: [],
         };
@@ -326,7 +327,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     } },
     appHistory,
     finishSpring(success = true) { springCompletions.at(-1)?.(success); },
-    appState(value) { f.act(() => { for (const callback of [...appListeners]) callback(value); }); },
+    appState(value) { modules["react-native"].AppState.currentState = value; f.act(() => { for (const callback of [...appListeners]) callback(value); }); },
     finish(index = timings.findLastIndex(item => typeof item.done === "function"), success = true) { timings[index]?.done?.(success); }, confirmedSubscriptions, nativeReaderListeners, nativeReaderHistory,
     all: () => nodes(renderer.container).filter(node => !node.hidden),
     get gesture() { return f.all().find(node => node.type === "GestureDetector").props.gesture.handlers; },
@@ -640,6 +641,31 @@ for (const change of ["scope", "reader", "background", "disabled", "reduced", "u
   if (change === "unmount") f.close();
   f.act(staleLayout); f.react(); f.finish(); f.flush();
   assert.deepEqual(f.calls, []); assert.ok(f.pages().length <= 1);
+});
+test("real pager reconnect admits a foreground return missed while suspended", t => {
+  const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
+  const retired = dragPage(f); f.flush(); f.ready("local");
+  release(retired); retired.onFinalize();
+  f.appState("background"); f.suspend(true);
+  f.appState("active"); f.suspend(false);
+  assert.equal(f.gesture.enabled, true, "reconnect reads current OS state without another AppState event");
+  f.finish(); f.flush(); assert.deepEqual(f.calls, [], "retired settlement cannot navigate after reconnect");
+  const current = dragPage(f); f.flush(); f.ready("local");
+  release(current); current.onFinalize(); f.finish(); f.flush();
+  assert.deepEqual(f.calls, ["local"], "a fresh swipe works immediately after foreground reconnect");
+});
+for (const state of ["inactive", "background"]) test(`real pager reconnect denies a missed ${state} transition`, t => {
+  const f = fixture({ component: "tabs", page: true, pager: true }); t.after(f.close);
+  const retired = dragPage(f); f.flush(); f.ready("local");
+  release(retired); retired.onFinalize();
+  f.suspend(true); f.appState(state); f.suspend(false);
+  assert.equal(f.gesture.enabled, false, "reconnect cannot reuse foreground permission from before suspension");
+  const denied = down(f.gesture); assert.equal(denied.failed, 1);
+  f.finish(); f.flush(); assert.deepEqual(f.calls, []);
+  f.appState("active");
+  const current = dragPage(f); f.flush(); f.ready("local");
+  release(current); current.onFinalize(); f.finish(); f.flush();
+  assert.deepEqual(f.calls, ["local"], "normal foreground notification restores a fresh swipe");
 });
 test("superseded destination layout cannot ready A after A to B to A direction changes", t => {
   const f = fixture({ component: "tabs", page: true, pager: true, active: "local" }); t.after(f.close);
@@ -1498,6 +1524,26 @@ test("same-filter explicit tap cancels actual pending preview without saving the
   const g = dragPage(f, 120); f.flush(); f.ready("following"); release(g, { x: 400 }); g.onFinalize(); f.flush();
   f.press("Local"); f.finish(); f.flush();
   assert.deepEqual(f.writes, []); assert.equal(f.lists().length, 1); assert.equal(f.reads[0].args.signal.aborted, true);
+});
+
+test("actual Feed accepts rapid header taps immediately after a swipe and rejects its late completion", t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
+  const f = fixture({ feedScreen: true, selectedFilter: "local" }); t.after(f.close);
+  const g = dragPage(f, 120); f.flush(); f.ready("following");
+  release(g, { x: 400 }); g.onFinalize();
+  const settlement = f.timings.findLastIndex(item => typeof item.done === "function");
+  f.finish(settlement); f.flush();
+  assert.equal(f.selection.filter, "following");
+  for (const [label, filter] of [["For You", "everyone"], ["Following", "following"], ["Local", "local"], ["For You", "everyone"]]) {
+    f.press(label);
+    assert.equal(f.selection.filter, filter);
+    assert.equal(f.surface(filter).props.pointerEvents, "auto");
+    f.finish(settlement); f.flush();
+    assert.equal(f.selection.filter, filter, "an old release cannot overwrite the newer explicit tap");
+  }
+  const fresh = dragPage(f, 120); f.flush(); f.ready("local");
+  release(fresh, { x: 400 }); fresh.onFinalize(); f.finish(); f.flush();
+  assert.equal(f.selection.filter, "local", "rapid taps leave a fresh horizontal swipe usable");
 });
 
 test("actual Feed Reduce Motion commits a body swipe without a sliding preview and keeps shared tabs selected", t => {

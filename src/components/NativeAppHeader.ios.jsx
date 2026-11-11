@@ -32,21 +32,28 @@ export default function NativeAppHeader({ onHome, onAccount, loggedIn, onMenu, m
   const reduced = useReducedMotion();
   const { fontScale } = useWindowDimensions();
   const progress = useSharedValue(0);
-  useLayoutEffect(() => () => cancelAnimation(progress), [progress, chrome?.owner]);
+  useLayoutEffect(() => {
+    // A reconnected route/foreground owns a fresh visible presentation. An
+    // interrupted animation must not leave its successor partway offscreen.
+    progress.set(0);
+    return () => cancelAnimation(progress);
+  }, [progress, chrome?.owner]);
   useAnimatedReaction(() => chrome ? chrome.shown.get() : true, shown => {
     if (chrome && chrome.epoch.get() !== chrome.revision) return;
     progress.set(withTiming(shown ? 0 : 1, { duration: reduced ? 0 : 190, reduceMotion: ReduceMotion.System }));
   }, [chrome?.owner, reduced]);
   const motion = useAnimatedStyle(() => ({ transform: [{ translateY: -progress.get() * (chrome?.height || 48) }] }));
   const exposure = useAnimatedProps(() => ({
-    pointerEvents: chrome && !chrome.shown.get() ? "none" : "auto",
-    accessibilityElementsHidden: !!chrome && !chrome.shown.get(),
+    accessibilityElementsHidden: !!chrome && progress.get() >= 1,
   }));
   const guard = callback => (...args) => {
-    if (swipeEnabled !== false && isCurrentSwipeRoute?.() !== false && (!chrome || chrome.current())) callback?.(...args);
+    if (swipeEnabled !== false && isCurrentSwipeRoute?.() !== false && (!chrome || chrome.current(progress.get() < 1))) callback?.(...args);
   };
   return <View pointerEvents="box-none" style={chrome ? [styles.overlay, { height: chrome.height }] : undefined}>
-    <Animated.View style={motion} animatedProps={exposure}>
+    {/* Native transformed bounds own taps for every visible animation frame.
+        The clipped box-none parent naturally exposes content only where the
+        header has moved away; target visibility must never create a hit hole. */}
+    <Animated.View pointerEvents="auto" style={motion} animatedProps={exposure}>
       <NativeTabRail active={active} onChange={guard(onChange)} swipeScope={swipeScope} swipeEnabled={swipeEnabled} isCurrentSwipeRoute={isCurrentSwipeRoute}>
         <View onLayout={chrome?.measure} testID="native-activity-bar">
         <View style={styles.header}>

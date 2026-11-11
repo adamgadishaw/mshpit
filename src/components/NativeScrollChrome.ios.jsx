@@ -36,7 +36,7 @@ export function NativeScrollChromeProvider({ children, scope, page, enabled = tr
       if (!activeSources.current.size) shown.set(true);
     };
   }, [shown]);
-  const current = useCallback(() => presentation && presentation.owner === owner && lifetime.current === presentation && enabled && foreground && shown.get(), [owner, presentation, enabled, foreground, shown]);
+  const current = useCallback((visible = shown.get()) => presentation && presentation.owner === owner && lifetime.current === presentation && enabled && foreground && visible, [owner, presentation, enabled, foreground, shown]);
   const measure = useCallback(event => {
     const next = event.nativeEvent.layout.height;
     if (Number.isFinite(next) && next > 0) setHeight(value => Math.abs(value - next) >= 0.5 ? next : value);

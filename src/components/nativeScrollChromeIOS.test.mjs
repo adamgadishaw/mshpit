@@ -40,12 +40,17 @@ function createRenderer() {
 const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 function fixture() {
   const renderer = createRenderer(), modules = new Map(), samples = [], reactions = [], animations = [], canceled = [], calls = [];
+  const motions = new Map();
+  let holdMotion = false;
   const previewContext = require('./nativeTabPreviewContext.mjs').NativeTabPreviewContext;
   const persisted = new Map();
   let config = { fontScale: 1, accountId: 'account-A', tabs: false, scope: {}, page: 'feed', enabled: true, reader: false, reduced: false, foreground: true, active: 'a', scrolls: true };
   const shared = initial => {
     const ref = React.useRef(null);
-    if (!ref.current) { let value = initial; ref.current = { get: () => value, set: next => { value = next; } }; }
+    if (!ref.current) { let value = initial; ref.current = { get: () => value, set: next => {
+      if (next?.timingFrame) { motions.set(ref.current, { ...next, sample: next => { value = next; } }); return; }
+      motions.delete(ref.current); value = next;
+    } }; }
     return ref.current;
   };
   const native = { View: 'View', Text: 'Text', Pressable: 'Pressable', ScrollView: 'ScrollView', FlatList: 'FlatList', TextInput: 'TextInput',
@@ -64,7 +69,8 @@ function fixture() {
       useAnimatedStyle: fn => ({ ...fn(), animate: fn }), useAnimatedProps: fn => ({ ...fn(), animate: fn }),
       useAnimatedReaction: (prepare, react) => { const ref = React.useRef(null); if (!ref.current) { ref.current = {}; reactions.push(ref.current); }
         Object.assign(ref.current, { prepare, react }); React.useLayoutEffect(() => { ref.current.active = true; return () => { ref.current.active = false; }; }, []); },
-      withTiming: (value, options) => { animations.push({ value, options }); return value; }, cancelAnimation: value => canceled.push(value),
+      withTiming: (value, options) => { animations.push({ value, options }); return holdMotion && options.duration ? { timingFrame: true, target: value } : value; },
+      cancelAnimation: value => { canceled.push(value); motions.delete(value); },
     },
     'react-native-gesture-handler': { GestureDetector: p => p.children, Gesture: { Native: () => ({ simultaneousWithExternalGesture() { return this; } }) } },
     './NativeTabSwipeExclusion': { __esModule: true, default: p => p.children, useNativeTabSwipeExclusionGesture: () => null },
@@ -95,6 +101,8 @@ function fixture() {
       React.createElement(Scroll, { ...scrollProps, testID: id }, React.createElement(Scroll, { horizontal: true, testID: `rail-${id}` }, 'Cards'), React.createElement(Scroll, { testID: `nested-${id}` }, 'Nested')))) : React.createElement('Loading'))); }
   const f = {
     samples, reactions, animations, canceled, calls, persisted,
+    holdMotion() { holdMotion = true; },
+    frame(progress) { for (const motion of motions.values()) motion.sample(progress); },
     act: callback => renderer.act(callback),
     get selection() { return selection; },
     render(next = {}) { config = { ...config, ...next }; renderer.render(React.createElement(App)); f.tick(); },
@@ -164,7 +172,8 @@ test('hidden controls reject queued presses, VoiceOver stays visible, Reduce Mot
   const press = f.all().find(n => n.props?.accessibilityLabel === 'Messages, 5 unread').props.onPress;
   f.begin('a'); f.offset('a', 100); press(); assert.ok(!f.calls.includes('inbox'));
   const header = f.all().find(n => n.type === 'AnimatedView' && n.props.animatedProps);
-  assert.equal(header.props.animatedProps.animate().pointerEvents, 'none');
+  assert.equal(header.props.pointerEvents, 'auto', 'native transformed bounds own touches without a separate visibility switch');
+  assert.equal(header.props.animatedProps.animate().pointerEvents, undefined);
   assert.equal(header.props.animatedProps.animate().accessibilityElementsHidden, true);
   assert.equal(header.props.style.animate().transform[0].translateY, -48);
   f.render({ reader: true }); f.begin('a'); f.offset('a', 500); assert.equal(f.chrome.shown.get(), true);
@@ -308,4 +317,80 @@ test('tapping the selected native Feed filter requests the active page return on
   const local = nodes(f.node('native-feed-tabs')).find(n => n.props?.accessibilityLabel === 'Local');
   f.act(local.props.onPress);
   assert.equal(f.calls.filter(call => Array.isArray(call) && call[0] === 'tab').length, 1, 'switching filters does not refresh the departed pane');
+});
+
+// Model the installed Fabric View's clipped, transform-aware hit test. This
+// exercises actual rendered props at intermediate animation frames; it is not
+// a substitute for a physical UIKit tap. The photo occupies the scrolled area
+// behind the absolute header, so any hole in its hit ownership opens the photo.
+function tapOverPhoto(f, label, y) {
+  const header = f.all().find(n => n.type === 'AnimatedView' && n.props.animatedProps);
+  const overlay = f.all().find(n => n.props?.pointerEvents === 'box-none');
+  const overlayStyle = Object.assign({}, ...overlay.props.style);
+  assert.equal(overlayStyle.overflow, 'hidden');
+  assert.ok(overlayStyle.zIndex > 0);
+  const props = { ...header.props, ...header.props.animatedProps.animate() };
+  const localY = y - header.props.style.animate().transform[0].translateY;
+  if (props.pointerEvents === 'none' || y < 0 || y >= overlayStyle.height || localY < 0 || localY >= f.chrome.height) {
+    f.calls.push('photo'); return 'photo';
+  }
+  const bar = f.node('native-activity-bar');
+  const activityHeight = bar.children[0].props.style.minHeight;
+  assert.ok(localY >= activityHeight, 'the test point lies inside the visible filter row');
+  const tab = nodes(f.node('native-feed-tabs')).find(n => n.props?.accessibilityLabel === label);
+  f.act(tab.props.onPress);
+  return 'tab';
+}
+
+test('visible Feed tabs own taps throughout hide/reveal above a scrolled photo', t => {
+  const f = fixture(); t.after(f.close); f.render({ tabs: true });
+  f.act(() => f.node('native-activity-bar').props.onLayout({ nativeEvent: { layout: { height: 92 } } }));
+  f.holdMotion(); f.begin('a'); f.offset('a', 100);
+  assert.equal(f.chrome.shown.get(), false, 'the destination is hidden while the header is still visible');
+  for (const [progress, label] of [[0, 'Following'], [.25, 'Local'], [.6, 'For You'], [.9, 'Following']]) {
+    f.frame(progress);
+    const y = Math.max(0, 48 - progress * 92) + (92 - progress * 92 - Math.max(0, 48 - progress * 92)) / 2;
+    assert.equal(tapOverPhoto(f, label, y), 'tab');
+    assert.equal(f.selection.filter, label === 'Following' ? 'following' : label === 'Local' ? 'local' : 'everyone');
+  }
+  assert.ok(!f.calls.includes('photo'), 'no visible tab tap reaches the underlying photo');
+  f.frame(.25);
+  assert.equal(tapOverPhoto(f, 'Following', 80), 'photo', 'the uncovered strip already belongs to feed content');
+  assert.equal(tapOverPhoto(f, 'Following', 47), 'tab', 'the remaining visible strip still owns its tab');
+  f.frame(1);
+  assert.equal(tapOverPhoto(f, 'Following', 70), 'photo', 'fully hidden header leaves content usable');
+  f.offset('a', 60); assert.equal(f.chrome.shown.get(), true);
+  f.frame(.5); assert.equal(tapOverPhoto(f, 'Local', 24), 'tab');
+  assert.equal(f.selection.filter, 'local');
+  f.frame(0);
+  assert.equal(tapOverPhoto(f, 'Following', 70), 'tab');
+  assert.equal(f.selection.filter, 'following');
+  assert.equal(f.calls.filter(value => value === 'photo').length, 2);
+});
+
+test('interrupted chrome motion resets on route and foreground reconnection without reviving old presses', t => {
+  const f = fixture(); t.after(f.close); f.render({ tabs: true });
+  f.act(() => f.node('native-activity-bar').props.onLayout({ nativeEvent: { layout: { height: 92 } } }));
+  const header = () => f.all().find(n => n.type === 'AnimatedView' && n.props.animatedProps);
+  const press = () => nodes(f.node('native-feed-tabs')).find(n => n.props?.accessibilityLabel === 'Following').props.onPress;
+  f.holdMotion(); f.begin('a'); f.offset('a', 100); f.frame(.4);
+  const retired = press();
+  f.render({ foreground: false }); f.act(retired);
+  assert.equal(f.selection.filter, 'everyone');
+  f.render({ foreground: true });
+  assert.equal(Math.abs(header().props.style.animate().transform[0].translateY), 0, 'new presentation starts visibly at rest');
+  f.act(retired); assert.equal(f.selection.filter, 'everyone', 'old foreground does not regain authority');
+  for (let index = 0; index < 20; index++) {
+    const label = index % 2 ? 'For You' : 'Following';
+    assert.equal(tapOverPhoto(f, label, 70), 'tab');
+  }
+  assert.equal(f.selection.filter, 'everyone');
+  f.begin('a'); f.offset('a', 200); f.frame(.7);
+  const oldRoute = press();
+  f.render({ scope: {} });
+  assert.equal(Math.abs(header().props.style.animate().transform[0].translateY), 0);
+  f.act(oldRoute); assert.equal(f.selection.filter, 'everyone');
+  assert.equal(tapOverPhoto(f, 'Following', 70), 'tab');
+  assert.equal(f.selection.filter, 'following');
+  assert.ok(!f.calls.includes('photo'));
 });

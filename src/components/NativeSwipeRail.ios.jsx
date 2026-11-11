@@ -41,6 +41,8 @@ export default function NativeSwipeRail({ children, onCommit, positive = "Like",
   // Captured worklets and RN dispatches from a retired presentation stay inert.
   // A replaced onCommit is a different action; never retarget its queued swipe.
   useLayoutEffect(() => {
+    // Suspense can disconnect this listener across an OS activity change.
+    appActive.current = AppState?.currentState !== "background" && AppState?.currentState !== "inactive";
     const next = { epoch: ++sequence.current, allowed: enabled && (!page || appActive.current) && !screenReader && getConfirmedScreenReaderEnabled() !== true, onCommit };
     live.current = next;
     epoch.set(next.epoch); touching.set(false); excluded.set(false); settling.set(false); setArmed(null);
