@@ -96,7 +96,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
   modules["react-native-gesture-handler"].Gesture.Simultaneous = (...gestures) => ({ simultaneous: gestures });
   function execute(path) {
     const url = new URL(path, import.meta.url);
-    if (!codes.has(path)) codes.set(path, transformSync(readFileSync(url, "utf8"), { filename: url.pathname, babelrc: false, configFile: false,
+    if (!codes.has(path)) codes.set(path, transformSync(readFileSync(url, "utf8"), { filename: fileURLToPath(url), babelrc: false, configFile: false,
       plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
     }).code);
     const module = { exports: {} }, local = createRequire(url);
@@ -389,8 +389,9 @@ test("installed Metro resolves only iOS rails to this implementation", () => {
 });
 test("installed Expo/worklets Babel preset compiles every iOS rail UI callback", () => {
   const file = new URL("./NativeSwipeRail.ios.jsx", import.meta.url);
-  const result = transformSync(readFileSync(file, "utf8"), { filename: file.pathname, babelrc: false, configFile: false,
+  const result = transformSync(readFileSync(file, "utf8"), { filename: fileURLToPath(file), babelrc: false, configFile: false,
     presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: true } });
+  assert.equal(result.options.filename, fileURLToPath(file));
   assert.ok((result.code.match(/__workletHash/g) || []).length >= 10);
   assert.match(result.code, /scheduleOnRN/);
 });
@@ -1332,8 +1333,9 @@ test("Discover header is outside the page pan and uses consistent physical LTR c
 test("installed Expo preset compiles Discover indicator, scroll, and geometry worklets", () => {
   for (const [relative, minimum] of [["./discover/DiscoverSectionTabs.ios.jsx", 6], ["../domain/iosDiscoverTabGeometry.mjs", 3]]) {
     const file = new URL(relative, import.meta.url);
-    const result = transformSync(readFileSync(file, "utf8"), { filename: file.pathname, babelrc: false, configFile: false,
+    const result = transformSync(readFileSync(file, "utf8"), { filename: fileURLToPath(file), babelrc: false, configFile: false,
       presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: true } });
+    assert.equal(result.options.filename, fileURLToPath(file));
     assert.ok((result.code.match(/__workletHash/g) || []).length >= minimum, relative);
     if (relative.includes("SectionTabs")) {
       assert.match(result.code, /discoverTabPosition/); assert.match(result.code, /discoverTabFrame/);
@@ -1358,9 +1360,10 @@ test("Discover re-admission reveals selection measured while disabled and clears
 test("compiled Discover UI worklet closures execute geometry and synchronous scrolling", () => {
   const compiledBodies = relative => {
     const file = new URL(relative, import.meta.url);
-    const { code } = transformSync(readFileSync(file, "utf8"), { filename: file.pathname, babelrc: false, configFile: false,
+    const result = transformSync(readFileSync(file, "utf8"), { filename: fileURLToPath(file), babelrc: false, configFile: false,
       presets: [[require("babel-preset-expo"), { platform: "ios" }]], caller: { name: "metro", platform: "ios", supportsStaticESM: true } });
-    const ast = parse(code, { sourceType: "module" });
+    assert.equal(result.options.filename, fileURLToPath(file));
+    const ast = parse(result.code, { sourceType: "module" });
     return ast.program.body.filter(node => node.type === "VariableDeclaration").flatMap(node => node.declarations)
       .filter(node => /_worklet_.*_init_data/.test(node.id.name)).map(node => node.init.properties.find(property => property.key.name === "code").value.value);
   };
