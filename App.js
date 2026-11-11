@@ -1,9 +1,10 @@
 import SessionValidationPending from "./src/components/SessionValidationPending";
 import NativeAccountLinks from "./src/screens/NativeAccountLinks";
+import { startupLinkingFor } from "./src/lib/nativeStartupLinks";
 const nativeNewsLinkFrame = Platform.OS === "web" ? null : require("./src/domain/nativeNewsLink.mjs").nativeNewsLinkFrame;
 import { publicDiscoveryRailAllowed } from "./src/domain/publicPlacementPolicy.mjs";
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, Suspense } from "react";
-import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler, Linking } from "react-native";
+import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
@@ -242,12 +243,13 @@ export default function App() {
 }
 
 function ThemeAccessBoundary() {
-  const { authReady, session } = useStore();
+  const { authReady, session, sessionValidationStatus } = useStore();
   const allowed = canAccessTheme(themeKey, authReady ? session : null);
   useEffect(() => {
     if (authReady && !allowed) reloadTheme();
   }, [authReady, allowed]);
   if (allowed) return <Root />;
+  if (!authReady && Platform.OS === "ios") return <SessionValidationPending status={sessionValidationStatus} neutral />;
   // Conceal restricted static styles synchronously while identity is pending
   // or a role/account transition requires a freshly authorized app instance.
   return <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
@@ -1185,9 +1187,10 @@ function Root() {
   };
   useEffect(() => {
     if (web) return undefined;
+    const linking = startupLinkingFor("news", nativeNewsIngressRef.current);
     const ingress = nativeNewsIngressRef.current;
     ingress.active = true;
-    const subscription = Linking.addEventListener("url", ({ url }) => {
+    const subscription = linking.addEventListener("url", ({ url }) => {
       // Any newer native intent supersedes a launch News link, including an
       // account link handled by the separate account gateway.
       ingress.warmSeen = true;
@@ -1196,7 +1199,7 @@ function Root() {
     });
     if (!ingress.initialRequested) {
       ingress.initialRequested = true;
-      Linking.getInitialURL().then((url) => {
+      linking.getInitialURL().then((url) => {
         if (ingress.warmSeen) return;
         ingress.pending = nativeNewsLinkFrame(url);
         flushNativeNews();
