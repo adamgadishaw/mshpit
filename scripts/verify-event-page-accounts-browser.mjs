@@ -154,6 +154,9 @@ try {
         }
       }
       assert.deepEqual(state.errors, []); assert.deepEqual(state.external, []);
+      // Navigation animates the outgoing page. Keep the overflow assertion,
+      // but measure the settled layout rather than a frame of that transition.
+      await page.waitForFunction(() => document.documentElement.scrollWidth <= innerWidth + 1, null, { timeout: 3000 }).catch(() => {});
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
       await page.screenshot({ path: join(shots, `${name}.png`) });
       console.log(JSON.stringify({ name, passed: true, accessReads: state.reads.length, simulatedWrites: state.writes.length }));

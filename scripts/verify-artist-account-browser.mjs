@@ -59,7 +59,7 @@ async function scenario(browser, origin, width, kind) {
   page.on("console", message => {
     if (message.type() !== "error") return;
     if (["/api/artist-pages", "/api/artist-account", "/api/artist-verification-challenges", "/api/artist-requests"].map(path => origin + path).includes(message.location().url) && /409|503/.test(message.text())) return;
-    state.errors.push(message.text());
+    state.errors.push(`${message.text()} (${message.location().url})`);
   });
   await context.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url());
