@@ -14,7 +14,9 @@ import { MAX_FOLLOWED_ARTISTS, artistFollowReceipt } from "./domain/artistFollow
 import { authTransitions, AUTH_INTENT_KEY } from "./lib/authTransitions";
 import { classifyAccountAgeBand, requestAccountExport, updateAnnouncementEmailPreference, updateDirectMessagePreference, updateProfileAudience, updateProfileSearchIndexingPreference } from "./lib/accountPrivacyApi";
 import { requestFreshDeezerPreview } from "./lib/playbackApi";
-import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount, syncNativeAccountTheme } from "./theme";
+import { clearStoredTheme, setTheme as applyTheme, syncThemeFromAccount, syncNativeAccountTheme } from "./theme";
+import { isStaff } from "./domain/staffRoles.mjs";
+import { canAccessTheme } from "./domain/themeAccess.mjs";
 import { artistMeta, installIngestedCatalog } from "./seed/ingested";
 import { arenaVenues } from "./seed/arenas";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
@@ -402,7 +404,7 @@ const seedRequests = demoSeed(
   [],
 );
 
-export const isStaff = (role) => role === "admin";
+export { isStaff } from "./domain/staffRoles.mjs";
 // Moderators can moderate (reports, members, content) but not administer roles,
 // see ad analytics, or approve artists, those stay admin-only. Discord-style tier.
 export const isMod = (role) => role === "admin" || role === "moderator";
@@ -442,7 +444,7 @@ export const artistRankOf = (name) => ARTIST_RANK.get((name || "").trim().toLowe
 
 // role → the official badge it earns (Pit team / moderator / verified artist).
 export const roleBadge = (role) =>
-  role === "admin" ? "staff" : role === "moderator" ? "mod" : null;
+  isStaff(role) ? "staff" : role === "moderator" ? "mod" : null;
 
 // Bump when the Terms/Privacy change materially, so we can tell who consented to
 // which version (recorded on the account at sign-up).
@@ -1114,15 +1116,7 @@ export function StoreProvider({ children }) {
     const account = sessionRef.current;
     if (!authReadyRef.current) return;
     if (syncNativeAccountTheme(account)) return;
-    if (!account?.theme) return;
-    const { theme: localTheme, ownerId } = storedThemeSelection();
-    if (localTheme && ownerId === account.id) {
-      if (account.theme !== localTheme) api("/api/me", { method: "PATCH", body: { theme: localTheme }, expectedAccountId: account.id }).catch(() => {
-        // architecture: allow-empty-catch -- The owner-scoped device appearance remains usable when best-effort cross-device preference synchronization is offline; this never changes authentication.
-      });
-    } else {
-      syncThemeFromAccount(account.theme, account.id);
-    }
+    syncThemeFromAccount(account?.theme, account?.id || null, account);
   };
   // Keep dormant playlist data intact while avoiding hidden bootstrap traffic.
   useEffect(() => {
@@ -3357,24 +3351,32 @@ export function StoreProvider({ children }) {
     const mutation = renderedAccountMutation;
     const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     if (!isCurrent() || (session?.id && !actor)) return { ok: false, stale: true };
+    if (!canAccessTheme(next, actor)) return localCommandError("PIT-AUTH-002");
     if (actor) {
+      if (sessionRef.themeWrite && accountMutationIsCurrent(sessionRef.themeWrite, actor.id, accountMutationEpochRef.current)) {
+        return localCommandError("PIT-REQ-003");
+      }
+      sessionRef.themeWrite = mutation;
       const extra = mergePatch || {};
-      const updated = { ...actor, ...extra, theme: next };
-      setUsers((all) => all.map((u) => (u.id === actor.id
-        ? (ENABLE_DEMO_DATA ? { ...u, ...extra, theme: next } : publicProfileCacheEntry({ ...u, ...extra, theme: next }))
-        : u)));
-      setSession(updated);
-      if (ENABLE_DEMO_DATA) save("pit.session", updated); // demo-only local identity
       try {
-        await api("/api/me", { method: "PATCH", body: { theme: next, ...extra }, expectedAccountId: actor.id });
-      } catch {
-        // API reports sync failures; local appearance remains usable offline.
-        // A departed account must never cause a reload of the replacement one.
+        const { user } = await api("/api/me", { method: "PATCH", body: { ...extra, theme: next }, expectedAccountId: actor.id });
         if (!isCurrent()) return { ok: false, stale: true };
+        if (user?.id !== actor.id || user.theme !== next || !canAccessTheme(next, user)
+          || !canAccessTheme(next, currentMutationActor())) return localCommandError("PIT-AUTH-002");
+        // Adopt only appearance here; a delayed preference response cannot
+        // resurrect an old role or overwrite newer profile fields.
+        const updated = { ...sessionRef.current, theme: next };
+        sessionRef.current = updated;
+        setSession(updated);
+        if (ENABLE_DEMO_DATA) save("pit.session", updated);
+      } catch (error) {
+        return commandError(error);
+      } finally {
+        if (sessionRef.themeWrite === mutation) sessionRef.themeWrite = null;
       }
     }
     if (!isCurrent()) return { ok: false, stale: true };
-    applyTheme(next, actor?.id || null);
+    applyTheme(next, actor?.id || null, actor ? sessionRef.current : null);
     return { ok: true };
   };
 

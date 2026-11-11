@@ -1,4 +1,5 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { canAccessTheme, isThemeKey } from "../src/domain/themeAccess.mjs";
 import { calendarEventTiming } from "../src/domain/calendarEventTiming.mjs";
 import {
   encodeTourDateCalendarCursor, tourDateCalendarPublicRange,
@@ -6444,10 +6445,7 @@ export const routes = {
       directMessagePolicy: { parse: (x) => (DIRECT_MESSAGE_POLICIES.includes(x) ? x : undefined) },
       profileAudience: { parse: (x) => (PROFILE_AUDIENCES.includes(x) ? x : undefined) },
       ageBand: { parse: (x) => (isClassifiedAccountAgeBand(x) ? x : undefined) },
-      // Keep this server allow-list aligned with theme.js. If it falls behind,
-      // newer themes get silently rejected here, the server then re-hydrates the
-      // stale theme on /api/me and the client "snaps back" to a previous theme.
-      theme: { parse: (x) => (["stage", "neon", "forest", "ember", "backstage", "vinyl", "daylight", "ice", "rose", "mint", "sunset", "lavender"].includes(x) ? x : undefined) },
+      theme: { parse: (x) => (isThemeKey(x) ? x : undefined) },
       searchIndexingOptOut: { parse: (x) => (typeof x === "boolean" ? x : undefined) },
       concertMapVisible: { parse: (x) => (typeof x === "boolean" ? x : undefined) },
       extras: { parse: () => serializedExtras },
@@ -6517,6 +6515,13 @@ export const routes = {
     atomicWrite(() => {
       ctx.assertCurrentSession?.();
       const identityMember = q.userById.get(u.id);
+      // Validate BOTH write surfaces under the lock against the current role.
+      // A public direct field must not mask a restricted extras.theme request.
+      for (const requested of [v.theme, incomingExtras?.value?.theme]) {
+        if (requested !== undefined && !canAccessTheme(requested, identityMember)) {
+          throw new ApiError(403, "That appearance is reserved for the Pit Team.", "FORBIDDEN");
+        }
+      }
       // Another request may replace these slots while this writer waits. Use
       // the locked row for both finalized-media authority and old-object cleanup.
       const replacedProfileMedia = [

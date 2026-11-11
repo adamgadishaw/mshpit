@@ -48,12 +48,12 @@ test("map visibility is a confirmed boolean preference preserving every other st
 
 test("generic extras and unrelated profile writes cannot erase or forge the map visibility choice", () => {
   let account = user({ concertMapVisible: false, theme: "forest", analyticsOptOut: true });
-  for (const body of [{ name: "Renamed Fan" }, { theme: "neon" }, { extras: { theme: "forest" } }, { extras: { concertMapVisible: true } }]) {
+  for (const body of [{ name: "Renamed Fan" }, { theme: "daylight" }, { extras: { theme: "stage" } }, { extras: { concertMapVisible: true } }]) {
     patch(account, body);
     account = q.userById.get(account.id);
     assert.equal(publicUser(account).concertMapVisible, false);
   }
-  patch(account, { extras: { theme: "forest" }, concertMapVisible: true });
+  patch(account, { extras: { theme: "stage" }, concertMapVisible: true });
   assert.equal(publicUser(q.userById.get(account.id)).concertMapVisible, true);
 });
 

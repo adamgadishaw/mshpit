@@ -1,5 +1,16 @@
 # Pit current status
 
+## 2026-11-11 Separate database and theme integration candidate
+
+- Branch `integrate/database-themes-20261111` combines standalone DB release
+  `3fa6bc81a94d74856771a7df93c5bdbc49015936` with theme access
+  `4cc6211f4a5aabd107bfd88cfdc081ee461461df` in a separate worktree.
+- The clean standalone DB release and its verified delivery remain unchanged and
+  independently available. No publication, deployment or device action is included.
+- Both shared-file policies and architecture tightenings are retained. Exact-source
+  validation and release-order limits accompany the delivery receipt; see
+  [the integration record](docs/DATABASE_THEME_INTEGRATION_2026-11-11.md).
+
 ## 2026-11-11 Database audit remediation (local review)
 
 - Isolated branch `fix/database-audit-20261111` starts from released server
@@ -40,6 +51,18 @@
 - Implementation, synthetic matrix, checks and operational limits are recorded
   in `docs/DATABASE_RECOVERY_REMEDIATION_2026-11-11.md`. Original audit/evidence,
   its checkout, other worktrees and the prior transfer artifacts remain intact.
+
+## 2026-11-11 Pit Team theme access (local candidate)
+
+- Isolated branch `fix/pit-team-themes` starts at released base
+  `c2bbe88246f249a5fa7cd60f3184f55b6b8794bf`; its original standalone delivery
+  excludes the DB work. The separate combined candidate is recorded above.
+- Guests and non-team accounts have Daylight and Stage. The existing admin/Pit
+  Team role retains all 12 themes, with selection, startup, restoration, account
+  transition and server-write enforcement. Dormant preferences are preserved.
+- No monetization, membership, production-data or release operation is included.
+  Behavior, validation scope and Mac/iOS limits are in the
+  [theme access review](docs/THEME_ACCESS_REVIEW_2026-11-11.md).
 
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 

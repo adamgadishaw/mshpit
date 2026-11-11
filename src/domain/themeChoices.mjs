@@ -1,8 +1,9 @@
-export const PRIMARY_THEME_KEYS = Object.freeze(["stage", "daylight"]);
+import { canAccessTheme, PRIMARY_THEME_KEYS } from "./themeAccess.mjs";
+export { PRIMARY_THEME_KEYS } from "./themeAccess.mjs";
 
-export function visibleThemeChoices(themes, { expanded = false, selectedKey = null } = {}) {
+export function visibleThemeChoices(themes, { expanded = false, selectedKey = null, account = null } = {}) {
   const available = Array.isArray(themes)
-    ? themes.filter((theme) => theme && typeof theme.key === "string")
+    ? themes.filter((theme) => theme && canAccessTheme(theme.key, account))
     : [];
 
   if (expanded) return available;

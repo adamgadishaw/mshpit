@@ -16,14 +16,14 @@ test("collapsed theme choices expose the primary dark and light pair", () => {
 
 test("a saved enthusiast theme stays visible while choices are collapsed", () => {
   assert.deepEqual(
-    visibleThemeChoices(themes, { selectedKey: "neon" }).map(({ key }) => key),
+    visibleThemeChoices(themes, { selectedKey: "neon", account: { id: "team", role: "admin" } }).map(({ key }) => key),
     ["stage", "neon", "daylight"],
   );
 });
 
 test("expanding returns every valid theme in its configured order", () => {
   assert.deepEqual(
-    visibleThemeChoices(themes, { expanded: true, selectedKey: "neon" }),
+    visibleThemeChoices(themes, { expanded: true, selectedKey: "neon", account: { id: "team", role: "admin" } }),
     themes,
   );
 });
