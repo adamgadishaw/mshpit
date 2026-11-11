@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { venueHydrationAlias, venueHydrationPath, venueHydrationIdentity, venueHydrationText } from "./venue-hydration-fixture.mjs";
-import { fixtureApiResponse, injectCollectionFixture, navigationCases, serverCollectionPaths, clientCollectionPaths, postPath, eventPath, artistPath, navigationArtist, navigationArtistCard, discoverShowArtist, discoverArtistEvent, discoverArtistEventPath, cancelledEventFixture } from "./verify-navigation-browser.mjs";
+import { fixtureApiResponse, injectCollectionFixture, navigationCases, serverCollectionPaths, clientCollectionPaths, postPath, eventPath, artistPath, navigationArtist, navigationArtistCard, discoverShowArtist, discoverArtistEvent, discoverArtistEventPath, cancelledEventFixture, archiveReviewFixture } from "./verify-navigation-browser.mjs";
 
 test("navigation fixture import is inert and scenarios cover both mobile and desktop", () => {
   assert.equal(new Set(navigationCases.map(item => item.name)).size, navigationCases.length);
@@ -143,4 +143,18 @@ test("cold guest venue fixtures cover alias/canonical on mobile/desktop with an 
   assert.equal(second.events.length, 2); assert.equal(second.hasMore, false);
   assert.equal(fixtureApiResponse(`/api/catalog-text/venue/ticketmaster%3A${venueHydrationIdentity.providerVenueId}`, options).text.summary, venueHydrationText);
   assert.throws(() => fixtureApiResponse("/api/venue-snapshot", { ...options, resolvedPath: "/venue/other" }), /canonical provider/);
+});
+
+
+test("archive review fixture reproduces canonical-show identity for both session states and layouts", () => {
+  for (const width of [390, 1280]) for (const member of [false, true]) {
+    assert.ok(navigationCases.some(item => item.kind === "archive-review" && item.width === width && item.member === member));
+    const options = { archiveReview: true, member, resolvedPath: postPath };
+    const post = fixtureApiResponse("/api/posts/p_navigation_fixture", options).post;
+    assert.equal(post, archiveReviewFixture);
+    assert.equal(post.kind, "review"); assert.ok(post.userId); assert.ok(post.archiveShowKey);
+    assert.equal(post.artistKey, null, "The reported combined festival label has no canonical artist binding.");
+    assert.equal(fixtureApiResponse("/api/resolve", options).entity.path, postPath);
+    assert.equal(fixtureApiResponse("/api/me", options).user !== null, member);
+  }
 });

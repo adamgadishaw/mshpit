@@ -22,6 +22,16 @@ export const navigationUser = Object.freeze({
   profileAudience: "everyone", analyticsOptOut: true, ageBand: "18_plus", termsVersion: "2026-09-02",
 });
 export const postPath = "/post/p_navigation_fixture";
+// Mirrors the reported public review's route identity, with synthetic author/content.
+export const archiveReviewFixture = Object.freeze({
+  id: "p_navigation_fixture", userId: "public-fixture-author",
+  user: { id: "public-fixture-author", name: "Public Fixture Author", handle: "publicfixture", role: "fan" },
+  kind: "review", experienceType: "live", artist: "Hollowfest / Nessfest", artistKey: null,
+  venue: "The Woods", city: "Perth, Ontario, Canada", date: "2026-10-16", at: 1792195200000,
+  archiveShowKey: "show.WyJob2xsb3dmZXN0IC8gbmVzc2Zlc3QiLCJ0aGUgd29vZHMiLCIiLCIyMDI2LTEwLTE2Il0",
+  text: "Archive-linked review permalink fixture.", review: "Archive-linked review permalink fixture.",
+  overall: 8, likes: 3, comments: 0, photos: [],
+});
 export const eventPath = "/event/tm_navigation_fixture";
 export const cancelledEventFixture = Object.freeze({
   id: "tm_navigation_fixture", kind: "event", path: eventPath, publicEventSnapshot: true,
@@ -71,6 +81,7 @@ export const serverCollectionPaths = Object.freeze([
 export const clientCollectionPaths = Object.freeze(["/artists", "/events", "/venues"]);
 export const navigationCases = Object.freeze([
   ...[390, 1280].flatMap(width => [
+    ...[false, true].map(member => ({ name: `archive-review-${member ? "member" : "guest"}-${width}`, kind: "archive-review", path: postPath, member, width })),
     ...[venueHydrationAlias, venueHydrationPath].map(path => ({ name: `cold-guest-venue-${path.split("/").at(-1)}-${width}`, kind: "venue-hydration", path, width })),
     ...[postPath, eventPath].map(path => ({ name: `deep-link-${width < 620 ? "home" : "intro"}-${path.startsWith("/post") ? "post" : "event"}-${width}`, kind: "deep-link", path, width })),
     ...["canonical-404", "stale-upcoming", "artist-fallback"].map(mode => ({
@@ -118,7 +129,7 @@ function injectQueryMetadataFixture(html, url) {
     .replace("</head>", head + "</head>");
 }
 
-export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, discoverArtwork = false, artistLookupTransient = false, artistIdentityPending = false, cancelledEvent = false, venueHydration = false, after = null } = {}) {
+export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, discoverArtwork = false, artistLookupTransient = false, artistIdentityPending = false, cancelledEvent = false, venueHydration = false, after = null, archiveReview = false } = {}) {
   if (pathname === "/api/client-errors" && method === "POST") return { ok: true };
   assert.equal(method, "GET", `Navigation must not mutate data: ${method} ${pathname}`);
   if (venueHydration) {
@@ -166,6 +177,7 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
     assert.equal(resolvedPath, postPath, "The fixture must not resolve an unrelated URL as a post.");
     return { entity: { kind: "show", id: "p_navigation_fixture", path: postPath } };
   }
+  if (archiveReview && pathname === "/api/posts/p_navigation_fixture") return { post: archiveReviewFixture };
   if (pathname === "/api/posts/p_navigation_fixture") return { post: {
     id: "p_navigation_fixture", userId: "public-fixture-author",
     user: { id: "public-fixture-author", name: "Public Fixture Author", handle: "publicfixture", role: "fan" },
@@ -401,7 +413,7 @@ async function runCase(browser, origin, item) {
         state.lookupAttempts += 1;
       }
       const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist", discoverShow, discoverArtwork: item.kind === "discover-event-back",
-        venueHydration: item.kind === "venue-hydration", after: url.searchParams.get("after"),
+        archiveReview: item.kind === "archive-review", venueHydration: item.kind === "venue-hydration", after: url.searchParams.get("after"),
         cancelledEvent: item.kind === "cancelled-event",
         artistIdentityPending: (item.kind === "discover-show-artist-conflict" && !state.identityConfirmed) || (item.kind === "cancelled-event" && item.mode === "artist-fallback"),
         artistLookupTransient: item.kind === "discover-show-artist-recovery" && !state.catalogRepaired });
@@ -425,7 +437,24 @@ async function runCase(browser, origin, item) {
       await page.goto(origin + "/", { waitUntil: "networkidle" }); await landing(page);
     }
     await page.goto(origin + start, { waitUntil: item.kind === "delayed" ? "domcontentloaded" : "networkidle", timeout: timeoutMs });
-    if (item.kind === "venue-hydration") {
+    if (item.kind === "archive-review") {
+      const assertReview = async () => {
+        await page.getByText(archiveReviewFixture.review, { exact: true }).last().waitFor();
+        await page.getByText("No comments yet. Start the conversation.", { exact: true }).waitFor();
+        await assertPath(page, postPath); await assertPageIdentity(page, postPath);
+        assert.equal(await page.getByRole("button", { name: "Sign in to comment", exact: true }).count(), item.member ? 0 : 1);
+        assert.equal(state.calls.some(call => call.path.startsWith("/api/shows/")), false,
+          "A review permalink must not hydrate a concert or gate content on artist identity.");
+      };
+      await assertReview(); await snapshot("archive review direct entry");
+      await page.reload({ waitUntil: "networkidle" }); await assertReview();
+      await page.getByRole("link", { name: item.width >= 620 ? "Pit home" : "Home", exact: true }).first().click();
+      await landing(page); await assertPath(page, "/");
+      await page.goBack({ waitUntil: "networkidle" }); await assertReview();
+      await page.goForward({ waitUntil: "networkidle" }); await landing(page); await assertPath(page, "/");
+      await page.goBack({ waitUntil: "networkidle" }); await assertReview();
+      await snapshot("review restored through Back/Forward");
+    } else if (item.kind === "venue-hydration") {
       const assertVenue = async () => {
         await page.getByRole("heading", { name: "Lee's Palace", exact: true }).waitFor();
         await assertPath(page, venueHydrationPath);
