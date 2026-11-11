@@ -13,6 +13,7 @@ const directory = mkdtempSync(join(tmpdir(), "pit-calendar-month-"));
 process.env.PIT_DATA_DIR = directory;
 const { db, q } = await import("./db.js");
 const { routes } = await import("./api.js");
+const { hashPassword } = await import("./auth.js");
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 const at = Date.now();
 const current = new Date(at);
@@ -45,6 +46,25 @@ function member() {
   q.insertUser.run(id, `${id}@example.com`, id, id, "fixture-hash", "fan", "Toronto", 43.65, -79.38, "AD", "#123456", at);
   db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(at, id);
   return q.userById.get(id);
+}
+
+function authoredFixture() {
+  const account = member();
+  const city = `Calendar Access ${sequence}`;
+  const artist = routes["POST /api/artist-pages"]({ user: account, ip: account.id,
+    body: { artistName: `Calendar Access Artist ${sequence}` } }).artist;
+  const owner = q.userById.get(account.id);
+  const show = routes["POST /api/tourdates"]({ user: owner, ip: owner.id,
+    body: { dates: [{ venue: "Calendar Access Hall", place: `${city}, Testland`, date: day(15) }] } }).tourDates[0];
+  db.prepare("UPDATE tour_dates SET venue_city=?,venue_country_code='ZZ',venue_country='Testland' WHERE id=?").run(city, show.id);
+  return { owner, artist, id: show.id, city };
+}
+
+function assertDayVisibility({ city, id }, viewer, expected, label = "viewer") {
+  const result = page({ city, date: day(15) }, viewer);
+  assert.equal(result.tourDates.some((row) => row.id === id), expected, `${label}: selected rows`);
+  assert.equal(result.monthSummary.dayPresence[day(15)], expected, `${label}: month presence`);
+  assert.equal(result.monthSummary.complete, true);
 }
 
 function clientPage(query, { after = null, limit = 100 } = {}) {
@@ -150,6 +170,90 @@ test("month queries preserve authored privacy, release timing and blocks without
   assert.deepEqual(ids(viewer), [provider]);
 });
 
+const authoredAccessCases = [
+  { name: "unreleased nonowner", publication: "unreleased", readers: [false, false, true] },
+  { name: "private owner", audience: "only_me", readers: [false, false, true] },
+  { name: "members-only owner", audience: "members", readers: [false, true, true] },
+  { name: "banned owner", accountField: "is_banned", accountValue: 1 },
+  { name: "dormant owner", accountField: "dormant_at", accountValue: at },
+  { name: "suspended owner", accountField: "suspended_until", accountValue: at + 86400000 },
+  { name: "removed artist page", profileField: "removed", profileValue: 1 },
+  { name: "pending identity hold", profileField: "identity_review_status", profileValue: "pending" },
+  { name: "rejected identity hold", profileField: "identity_review_status", profileValue: "rejected" },
+  { name: "withdrawn page ownership", profileField: "owner_id", profileValue: null },
+  { name: "hidden retained publication", publication: "withheld" },
+  { name: "creator blocks viewer", block: "creator", readers: [true, false, true] },
+  { name: "viewer blocks creator", block: "viewer", readers: [true, false, true] },
+];
+
+for (const scenario of authoredAccessCases) {
+  test(`month rows and presence enforce authored visibility: ${scenario.name}`, () => {
+    const fixture = authoredFixture();
+    const viewer = member();
+    for (const actor of [null, viewer, fixture.owner]) assertDayVisibility(fixture, actor, true, "before restriction");
+    if (scenario.audience) db.prepare("UPDATE users SET profile_audience=? WHERE id=?").run(scenario.audience, fixture.owner.id);
+    // Column names come only from the fixed local scenario table above.
+    if (scenario.accountField) db.prepare(`UPDATE users SET ${scenario.accountField}=? WHERE id=?`).run(scenario.accountValue, fixture.owner.id);
+    if (scenario.profileField) db.prepare(`UPDATE artist_profiles SET ${scenario.profileField}=? WHERE artist_key=?`).run(scenario.profileValue, fixture.artist.key);
+    if (scenario.publication === "unreleased") db.prepare("UPDATE tour_dates SET release_at=? WHERE id=?").run(at + 86400000, fixture.id);
+    if (scenario.publication === "withheld") {
+      const revocation = `calendar_retained_${sequence}`;
+      db.prepare("INSERT INTO artist_access_revocations(id,artist_key,owner_id,reason,created_at,profile_json) VALUES(?,?,?,?,?,?)")
+        .run(revocation, fixture.artist.key, fixture.owner.id, "Calendar privacy fixture", at, "{}");
+      db.prepare("INSERT INTO artist_access_retained_content(revocation_id,target_type,target_id,record_json,publication,original_public,superseded) VALUES(?,'tour_date',?,'{}','hidden',1,0)")
+        .run(revocation, fixture.id);
+    }
+    if (scenario.block) db.prepare("INSERT INTO blocks(blocker_id,blocked_id,created_at) VALUES(?,?,?)")
+      .run(...(scenario.block === "creator" ? [fixture.owner.id, viewer.id] : [viewer.id, fixture.owner.id]), at);
+    const expected = scenario.readers || [false, false, false];
+    for (const [index, actor] of [null, viewer, fixture.owner].entries()) {
+      assertDayVisibility(fixture, actor && q.userById.get(actor.id), expected[index], ["anonymous", "member", "owner"][index]);
+    }
+  });
+}
+
+test("month rows and presence do not resurrect authored shows after account deletion", async () => {
+  const fixture = authoredFixture();
+  const viewer = member();
+  assertDayVisibility(fixture, viewer, true);
+  const password = "CalendarDeletionFixture9";
+  db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword(password), fixture.owner.id);
+  await routes["DELETE /api/me"]({ user: q.userById.get(fixture.owner.id), ip: fixture.owner.id, body: { password } });
+  assert.equal(q.userById.get(fixture.owner.id), undefined);
+  assert.equal(db.prepare("SELECT id FROM tour_dates WHERE id=?").get(fixture.id), undefined);
+  assertDayVisibility(fixture, null, false, "anonymous after erasure");
+  assertDayVisibility(fixture, viewer, false, "member after erasure");
+});
+
+test("month rows and presence retain only active administrators' existing management preview", () => {
+  const fixture = authoredFixture();
+  const admin = member();
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(admin.id);
+  db.prepare("UPDATE users SET profile_audience='only_me' WHERE id=?").run(fixture.owner.id);
+  db.prepare("UPDATE tour_dates SET release_at=? WHERE id=?").run(at + 86400000, fixture.id);
+  assertDayVisibility(fixture, null, false, "guest cannot preview");
+  assertDayVisibility(fixture, q.userById.get(admin.id), true, "active administrator management preview");
+  db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(admin.id);
+  assertDayVisibility(fixture, q.userById.get(admin.id), false, "inactive administrator has no bypass");
+});
+
+for (const scenario of [
+  { name: "unqualified", column: "music_qualified", value: 0 },
+  { name: "cancelled", column: "event_status", value: "cancelled" },
+  { name: "canceled spelling", column: "event_status", value: " CANCELED " },
+  { name: "inactive future provider", column: "provider_active", value: 0 },
+]) {
+  test(`month rows and presence exclude provider listings: ${scenario.name}`, () => {
+    const city = `Calendar Provider ${++sequence}`;
+    const fixture = { city, id: event({ city, date: day(15) }) };
+    const viewer = member();
+    assertDayVisibility(fixture, viewer, true, "before exclusion");
+    db.prepare(`UPDATE tour_dates SET ${scenario.column}=? WHERE id=?`).run(scenario.value, fixture.id);
+    assertDayVisibility(fixture, null, false, "anonymous exclusion");
+    assertDayVisibility(fixture, viewer, false, "member exclusion");
+  });
+}
+
 test("empty bounded pages advance their cursor and leave unproved presence unknown", () => {
   const city = "Calendar Backlog";
   db.exec("BEGIN");
@@ -232,6 +336,7 @@ test("summary and selected rows share canonical, renderable calendar eligibility
   event({ city, date: day(22), artist: "   " });
   event({ city, date: day(23), venue: "   " });
   event({ city, date: day(24), artist: "\u0000" });
+  event({ city, date: day(25), venue: "\u0000\t" });
   const query = calendarShowsQuery({ cursor: { y: first.getUTCFullYear(), m: first.getUTCMonth() }, selected: day(21), scope: "local", homeCity: city, homeCountry: "ZZ" });
   const result = clientPage(query);
   assert.equal(result.payload.tourDates[0].date, day(21));
@@ -240,6 +345,7 @@ test("summary and selected rows share canonical, renderable calendar eligibility
   assert.equal(result.parsed.monthSummary.dayPresence[day(22)], false);
   assert.equal(result.parsed.monthSummary.dayPresence[day(23)], false);
   assert.equal(result.parsed.monthSummary.dayPresence[day(24)], false);
+  assert.equal(result.parsed.monthSummary.dayPresence[day(25)], false);
   const distantId = event({ city, date: "2100-02-15" });
   const distantQuery = calendarShowsQuery({ cursor: { y: 2100, m: 1 }, selected: "2100-02-15", scope: "local", homeCity: city, homeCountry: "ZZ" });
   const distant = clientPage(distantQuery);
