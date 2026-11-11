@@ -1,5 +1,6 @@
+import { TextInput } from "../NativeTabScroll";
 import { memo, useMemo, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, font, mono, radius, shadow } from "../../theme";
 import Icon from "../Icon";
 import { discoverSectionState, filterDiscoverRows } from "../../domain/discoverView.mjs";

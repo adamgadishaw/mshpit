@@ -1,3 +1,4 @@
+import { createIOSArtistSeenCount, createIOSArtistRatingLoader } from "../features/artistOverview/artistDetailReadsService.ios.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -53,6 +54,9 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
   const update = (key) => (value) => { writes.push(key); state[key] = typeof value === "function" ? value(state[key]) : value; };
   const request = (name) => (...args) => new Promise((resolve, reject) => calls.push({ name, args, resolve, reject }));
   const dependencies = {
+    createIOSArtistSeenCount, createIOSArtistRatingLoader,
+    Platform: { OS: "ios" },
+    invalidateIOSDetailPrivacy: () => 0,
     session: actor, sessionRef, authReadyRef, accountMutationEpochRef,
     captureAccountMutation, accountMutationIsCurrent, clean, clampRating, LIMITS, createChatClientMutationId, createAccountPreferenceWrites,
     ENABLE_DEMO_DATA: demo, MEDIA_POST_MAX_ATTACHMENTS: 20,
@@ -256,13 +260,14 @@ test("comment writes for different posts stay independent and queued writes stop
   assert.equal(f.calls.length, 2);
 });
 
-test("new comments adopt authoritative counts and notify once, while late comment results stay out of replacement accounts", async () => {
+test("new comments adopt authoritative counts without duplicating server notifications, while late results stay out of replacement accounts", async () => {
   const f = fixture();
   const first = f.actions.addComment("post", "My comment");
   f.calls[0].resolve({ id: "server-comment", parentId: null, commentCount: 4 });
   assert.equal((await first).ok, true);
   assert.equal(f.state.feed[0].comments, 4);
-  assert.equal(f.effects.filter(([name]) => name === "notify").length, 1);
+  assert.equal(f.effects.filter(([name]) => name === "notify").length, 0, "cross-account notifications are server-owned");
+  assert.equal(f.effects.filter(([name]) => name === "interaction").length, 1, "the confirmed comment still records one interaction");
   const second = f.actions.addComment("post", "Another comment");
   f.adopt(other); f.adopt(owner);
   const before = JSON.stringify(f.state);

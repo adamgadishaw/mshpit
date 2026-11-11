@@ -5,6 +5,7 @@ import { colors, radius } from "../theme";
 import { useStore } from "../store";
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
+import useIOSReportComposer from "../hooks/useIOSReportComposer";
 
 const REASONS = [
   ["harassment", "Harassment or bullying"],
@@ -33,8 +34,8 @@ const TARGET_NAMES = {
   artist_profile: "artist profile",
 };
 
-export default function ReportScreen({ target: suppliedTarget, log, onClose }) {
-  const { reportContent, blockUser, isBlocked, session } = useStore();
+export default function ReportScreen({ target: suppliedTarget, log, onClose, closeGuardRef, isCurrentRoute }) {
+  const { reportContent, blockUser, isBlocked, session, chatAuthEpoch } = useStore();
   // `log` preserves old deep-navigation state while every new surface sends a
   // typed target. The server remains authoritative for target visibility.
   const target = suppliedTarget || log || {};
@@ -46,11 +47,17 @@ export default function ReportScreen({ target: suppliedTarget, log, onClose }) {
     || `Selected ${targetName}`;
   const targetSummary = target.summary || target.mediaLabel || "Only the selected item and your reason are sent to moderators.";
   // null = choosing; "sending"; "sent"; anything else = failure copy.
-  const [status, setStatus] = useState(null);
-  const [duplicate, setDuplicate] = useState(false);
-  const [selected, setSelected] = useState(null);
-  const [details, setDetails] = useState("");
-  const [blockStatus, setBlockStatus] = useState(null);
+  const [legacyStatus, setStatus] = useState(null);
+  const [legacyDuplicate, setDuplicate] = useState(false);
+  const [legacySelected, setSelected] = useState(null);
+  const [legacyDetails, setDetails] = useState("");
+  const [legacyBlockStatus, setBlockStatus] = useState(null);
+  const reportIOS = useIOSReportComposer({ accountId: session?.id || null, authEpoch: chatAuthEpoch,
+    target, targetType, targetId, reasons: REASONS, reportContent, blockUser, isBlocked, onClose, closeGuardRef, isCurrentRoute });
+  const { status, duplicate, selected, details, blockStatus } = reportIOS || {
+    status: legacyStatus, duplicate: legacyDuplicate, selected: legacySelected, details: legacyDetails, blockStatus: legacyBlockStatus,
+  };
+  const requestClose = reportIOS ? reportIOS.close : onClose;
   const sending = status === "sending";
   const sent = status === "sent";
   const failure = status && !sending && !sent ? status : null;
@@ -71,7 +78,7 @@ export default function ReportScreen({ target: suppliedTarget, log, onClose }) {
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title={`Report ${targetName}`} onClose={onClose} />
+      <SheetHeader title={`Report ${targetName}`} onClose={requestClose} />
 
       <ScrollView
         contentContainerStyle={styles.content}
@@ -88,11 +95,11 @@ export default function ReportScreen({ target: suppliedTarget, log, onClose }) {
                 : `Thanks. This ${targetName} was sent to the moderation queue.`}
             </Text>
             {target.ownerId && target.ownerId !== session?.id && !isBlocked(target.ownerId) ? (
-              <Pressable style={styles.blockButton} onPress={async () => { const result = await blockUser(target.ownerId); setBlockStatus(result?.ok ? "blocked" : "failed"); }} accessibilityRole="button" accessibilityLabel="Block this account">
+              <Pressable style={styles.blockButton} onPress={reportIOS ? reportIOS.block : async () => { const result = await blockUser(target.ownerId); setBlockStatus(result?.ok ? "blocked" : "failed"); }} disabled={reportIOS ? reportIOS.busy || blockStatus === "blocked" : undefined} accessibilityState={reportIOS ? { busy: reportIOS.busy, disabled: reportIOS.busy || blockStatus === "blocked" } : undefined} accessibilityRole="button" accessibilityLabel="Block this account">
                 <Text style={styles.blockText}>{blockStatus === "blocked" ? "ACCOUNT BLOCKED" : blockStatus === "failed" ? "TRY BLOCKING AGAIN" : "BLOCK THIS ACCOUNT"}</Text>
               </Pressable>
             ) : null}
-            <Pressable style={styles.primary} onPress={onClose} accessibilityRole="button" accessibilityLabel="Close report confirmation">
+            <Pressable style={styles.primary} onPress={requestClose} accessibilityRole="button" accessibilityLabel="Close report confirmation">
               <Text style={styles.primaryTxt}>DONE</Text>
             </Pressable>
           </View>
@@ -114,7 +121,7 @@ export default function ReportScreen({ target: suppliedTarget, log, onClose }) {
               <Pressable
                 key={key}
                 style={({ pressed }) => [styles.row, selected === key && styles.rowSelected, sending && styles.rowBusy, pressed && !sending && styles.rowPressed]}
-                onPress={() => { setSelected(key); setStatus(null); }}
+                onPress={() => { if (reportIOS) reportIOS.select(key); else { setSelected(key); setStatus(null); } }}
                 disabled={sending || !targetId}
                 accessibilityRole="radio"
                 accessibilityState={{ selected: selected === key, disabled: sending || !targetId, busy: sending }}
@@ -125,10 +132,10 @@ export default function ReportScreen({ target: suppliedTarget, log, onClose }) {
                 {selected === key ? <Icon name="check" size={15} color={colors.amber} /> : null}
               </Pressable>
             ))}
-            <TextInput style={styles.details} value={details} onChangeText={setDetails} maxLength={500} multiline placeholder="Add details for moderators (optional)" placeholderTextColor={colors.textFaint} accessibilityLabel="Optional report details" />
+            <TextInput style={styles.details} value={details} onChangeText={reportIOS ? reportIOS.changeDetails : setDetails} editable={reportIOS ? !sending : undefined} maxLength={500} multiline placeholder="Add details for moderators (optional)" placeholderTextColor={colors.textFaint} accessibilityLabel="Optional report details" />
             <Text style={styles.detailCount}>{details.length}/500</Text>
             {selected === "threats" || selected === "self_harm" ? <Text style={styles.urgentNote}>If someone is in immediate danger, contact local emergency services. A Pit report is not an emergency service.</Text> : null}
-            <Pressable style={[styles.primary, (!selected || sending) && styles.rowBusy]} onPress={submit} disabled={!selected || sending} accessibilityRole="button" accessibilityState={{ disabled: !selected || sending, busy: sending }}>
+            <Pressable style={[styles.primary, (!selected || sending) && styles.rowBusy]} onPress={reportIOS ? reportIOS.submit : submit} disabled={!selected || sending} accessibilityRole="button" accessibilityState={{ disabled: !selected || sending, busy: sending }}>
               <Text style={styles.primaryTxt}>SEND REPORT</Text>
             </Pressable>
             {sending ? <Text style={styles.sendingTxt} accessibilityLiveRegion="polite">Sending your report...</Text> : null}

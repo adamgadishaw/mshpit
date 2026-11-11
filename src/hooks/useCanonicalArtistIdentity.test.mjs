@@ -32,6 +32,7 @@ function fixture() {
     resolveArtist: (name, options) => new Promise((resolve, reject) => calls.push({ name, options, resolve, reject })),
   };
   const bindings = {
+    useIOSDetailPresentation: () => ({ active: true, current: () => true, token: null }),
     useMemo, useCallback: (fn, deps) => useMemo(() => fn, deps),
     useRef: (initial) => { const index = cursor++; return slots[index] ||= { current: initial }; },
     useState: (initial) => {

@@ -21,10 +21,12 @@ import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
 
+import useIOSCommunityComposer from "../hooks/useIOSCommunityComposer";
+
 const EMPTY_FAN_ACTIONS = Object.freeze({ text: "", joining: false, sending: false });
 
 // The artist Fan Club - a permanent chat for fans, even with no show coming up.
-export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenProfileByHandle, onReport, onRequireAuth }) {
+export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenProfileByHandle, onReport, onRequireAuth, draftOwner, isCurrentRoute }) {
   const {
     session, chatAuthEpoch, userById, fanClubFor, loadFanClub, addFanClubMessage,
     retryChatMessage, cancelChatMessage, isFanClubMember, joinFanClub, fanClubCount,
@@ -59,19 +61,23 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
   const displayArtistName = canonicalArtistName || routeArtistName;
   const fanClubTarget = canonicalArtistKey || routeArtistName;
   const artistKey = String(fanClubTarget || "").trim().toLowerCase();
-  const actionScope = accountTargetScope(session?.id, `fan:${artistKey}`);
+  const actionScope = accountTargetScope(session?.id, Platform.OS === "ios" ? JSON.stringify([chatAuthEpoch, "fan", artistKey]) : `fan:${artistKey}`);
   const actionScopeRef = useRef(actionScope);
   actionScopeRef.current = actionScope;
   const [actionState, setActionState] = useState(() => ({ scope: actionScope, value: EMPTY_FAN_ACTIONS }));
-  const { text, joining, sending } = scopedScreenValue(actionState, actionScope, EMPTY_FAN_ACTIONS);
+  const localActions = scopedScreenValue(actionState, actionScope, EMPTY_FAN_ACTIONS);
+  const { joining } = localActions;
   const updateActions = (changes) => setActionState((current) => ({
     scope: actionScope,
     value: { ...scopedScreenValue(current, actionScope, EMPTY_FAN_ACTIONS), ...changes },
   }));
   const [gateMeta, setGateMeta] = useState(null);
-  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
   const messages = fanClubAllowed ? fanClubFor(fanClubTarget) : [];
+  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll({ messageCount: messages.length, scopeKey: `${chatAuthEpoch}:${actionScope}` });
   const member = fanClubAllowed && isFanClubMember(fanClubTarget);
+  const iosComposer = useIOSCommunityComposer({ draftOwner, accountId: session?.id || null, authEpoch: chatAuthEpoch,
+    kind: "fan", target: canonicalArtistKey ? artistKey : null, enabled: fanClubAllowed && member && !joining, isCurrentRoute });
+  const { text, sending, unavailable } = iosComposer || localActions;
   useLiveChat(
     ({ after, signal }) => loadFanClub(fanClubTarget, { after, signal }),
     { channelKey: `fan-club:${chatAuthEpoch}:${session?.id || "guest"}:${artistKey}`, enabled: fanClubAllowed && !!artistKey && member },
@@ -108,15 +114,18 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
   const art = artistMeta(displayArtistName)?.photo;
 
   const toggleMembership = async () => {
+    if (iosComposer && !iosComposer.current()) return;
     if (!session) { onRequireAuth?.(); return; }
     if (!fanClubAllowed || joining) return;
     const requestScope = actionScope;
+    iosComposer?.pause();
     updateActions({ joining: true });
     await joinFanClub(fanClubTarget);
-    if (actionScopeRef.current === requestScope) updateActions({ joining: false });
+    if (actionScopeRef.current === requestScope && (!iosComposer || iosComposer.ownsRoute())) updateActions({ joining: false });
   };
 
   const send = async () => {
+    if (iosComposer) return iosComposer.send(draft => addFanClubMessage(fanClubTarget, draft));
     const submitted = text;
     const draft = submitted.trim();
     if (!fanClubAllowed || !draft || sending) return;
@@ -130,6 +139,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
     });
   };
   const retry = async (message) => {
+    if (iosComposer) return iosComposer.retry(message, retryChatMessage);
     const requestScope = actionScope;
     const result = await retryChatMessage(message.id);
     if (result?.ok && actionScopeRef.current === requestScope) {
@@ -211,7 +221,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
                       <Pressable onPress={() => retry(m)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry fan-club message">
                         <Text style={styles.deliveryAction}>retry</Text>
                       </Pressable>
-                      <Pressable onPress={() => cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel failed fan-club message">
+                      <Pressable onPress={() => iosComposer ? iosComposer.cancel(m, cancelChatMessage) : cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel failed fan-club message">
                         <Text style={styles.deliveryAction}>cancel</Text>
                       </Pressable>
                     </View>
@@ -243,14 +253,14 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
       </VinylRefreshBoundary>
       {session && (
         <View style={styles.inputBar}>
-          <TextInput style={styles.input} placeholder={`Message the ${displayArtistName} fan club…`} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateActions({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
+          <TextInput style={styles.input} editable={iosComposer ? iosComposer.canCompose : undefined} placeholder={unavailable ? "Wait for another message to finish sending" : `Message the ${displayArtistName} fan club…`} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => iosComposer ? iosComposer.edit(value) : updateActions({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
           <Pressable
             style={[styles.sendBtn, sending && { opacity: 0.65 }]}
             onPress={send}
-            disabled={sending || !text.trim()}
+            disabled={(iosComposer && !iosComposer.canCompose) || sending || !text.trim()}
             accessibilityRole="button"
             accessibilityLabel={`Send message to the ${displayArtistName} fan club`}
-            accessibilityState={{ disabled: sending || !text.trim(), busy: sending }}
+            accessibilityState={{ disabled: (iosComposer && !iosComposer.canCompose) || sending || !text.trim(), busy: sending }}
           ><Icon name="chevron-right" size={20} color="#1A1206" /></Pressable>
         </View>
       )}

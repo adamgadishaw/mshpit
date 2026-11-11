@@ -1,3 +1,5 @@
+import { concertDetailStyles, concertDetailWide } from "../components/concertDetailIOSPresentation.mjs";
+import useIOSTicketAction from "../components/useIOSTicketAction";
 import CatalogText from "../features/catalogEditor/CatalogText";
 import usePublicVenueSnapshot from "../features/venuePublic/usePublicVenueSnapshot";
 import { publicVenueArtistTarget, publicVenueUpcomingLabel } from "../domain/publicVenueSnapshot.mjs";
@@ -16,9 +18,9 @@ import { UpcomingEventCard } from "../components/VenueDiscoveryCards";
 import { formatDate } from "../domain/dates.mjs";
 import { venueRowWindow } from "../domain/venueDiscovery.mjs";
 import { VENUE_PAGE_SECTIONS, venuePagePreview, venuePageSectionModel, venuePhotoViewerIndex } from "../domain/venuePageSections.mjs";
-import { openTicketLink } from "../lib/ticketLinks";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
+import useIOSVenueReviews from "../hooks/useIOSVenueReviews";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
 import { venueGuideModel } from "../domain/venueGuide.mjs";
@@ -32,14 +34,15 @@ const HISTORY_BATCH = 12;
 const UPCOMING_BATCH = 6;
 
 export default function VenueScreen({ venueName, venueIdentity = null, onClose, onOpenShow, onOpenArtist, onReviewVenue, onOpenProfile, onOpenPhotos, onReport, onRequireAuth }) {
-  const { width } = useWindowDimensions();
-  const wide = width >= 760;
+  const { width, fontScale } = useWindowDimensions();
+  const wide = concertDetailWide(width, fontScale, Platform.OS, 760);
   const {
     venueSummary, venueReviewsFor, loadVenueReviews, venueRating, venueTopPhotos,
-    session, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, userByHandle,
+    session, chatAuthEpoch, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, userByHandle,
   } = useStore();
   const publicVenue = usePublicVenueSnapshot({ name: venueName, identity: venueIdentity, accountId: session?.id });
   const snapshot = publicVenue.resource.data;
+  const ticketAction = useIOSTicketAction(publicVenue.resource.scope);
   // Community history remains local; public facts/events never inherit a
   // same-name cache entry or the truncated global discovery calendar.
   const venue = { ...venueSummary(venueName), name: snapshot?.venue.name || venueName,
@@ -53,6 +56,11 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const photos = venuePhotos(venue.name, photoIdentity);
   const photoState = venuePhotoState(venue.name, photoIdentity);
   const reviews = venueReviewsFor(venue.name);
+  const iosReviewScope = JSON.stringify([session?.id ?? null, chatAuthEpoch, publicVenue.resource.scope, venuePhotoPrivacyRevision]);
+  const iosReviews = useIOSVenueReviews({
+    scope: iosReviewScope,
+    enabled: !!session, venueName: venue.name, loadVenueReviews,
+  });
   const [visibleReviewCount, setVisibleReviewCount] = useState(REVIEW_BATCH);
   const [visibleHistoryCount, setVisibleHistoryCount] = useState(HISTORY_BATCH);
   const [visibleUpcomingCount, setVisibleUpcomingCount] = useState(UPCOMING_BATCH);
@@ -70,7 +78,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
     setVisibleReviewCount(REVIEW_BATCH);
     setVisibleHistoryCount(HISTORY_BATCH);
     setVisibleUpcomingCount(UPCOMING_BATCH);
-    if (session) void loadVenueReviews(venue.name, { signal: controller.signal });
+    if (session && Platform.OS !== "ios") void loadVenueReviews(venue.name, { signal: controller.signal });
     void loadVenuePhotos(venue.name, { ...photoIdentity, signal: controller.signal }).catch(() => { /* architecture: allow-empty-catch -- the venue page retains its licensed empty state and visible retry control */ });
     return () => controller.abort();
   }, [venue.name, photoIdentity?.source, photoIdentity?.providerVenueId, venuePhotoPrivacyRevision, session?.id]);
@@ -91,7 +99,9 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const openPhotoWidget = photos.length
     ? (photo, fallbackIndex = 0) => { if (!session) return onRequireAuth?.(); onOpenPhotos?.(photos, venuePhotoViewerIndex(photos, photo, fallbackIndex)); }
     : undefined;
-  const venueRefreshScope = refreshScope(session?.id, "venue", publicVenue.resource.scope);
+  const venueRefreshScope = Platform.OS === "ios"
+    ? JSON.stringify(["venue-refresh", iosReviewScope, venue.name])
+    : refreshScope(session?.id, "venue", publicVenue.resource.scope);
   const openVenueGuideAction = (action) => {
     setVenueGuideError("");
     if (Platform.OS === "web") return;
@@ -101,7 +111,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
     scope: venueRefreshScope,
     task: async ({ signal }) => {
       const [reviewResult, refreshedPhotos] = await Promise.all([
-        session ? loadVenueReviews(venue.name, { signal }) : Promise.resolve(null),
+        session ? (Platform.OS === "ios" ? iosReviews.load() : loadVenueReviews(venue.name, { signal })) : Promise.resolve(null),
         loadVenuePhotos(venue.name, { ...photoIdentity, force: true, signal }),
         publicVenue.load({ signal }),
       ]);
@@ -123,6 +133,10 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
       >
+        {Platform.OS === "ios" ? <View style={styles.iosTitleBlock}>
+          <Text style={styles.iosKicker}>Venue</Text>
+          <Text style={styles.iosTitle} accessibilityRole="header">{venue.name}</Text>
+        </View> : null}
         <View style={styles.heroShell}>
           <VenuePhotoWidget
             photos={photos}
@@ -186,6 +200,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         {sectionModel.showUpcoming ? (
           venue.upcoming.length > 0 ? (
             <Section title="Upcoming shows" count={snapshot?.hasMore || snapshot?.after ? null : venue.upcoming.length}>
+              {ticketAction.error ? <Text style={styles.ticketError} accessibilityRole="alert">{ticketAction.error}</Text> : null}
               <View style={styles.stack}>
                 {visibleUpcoming.map((event) => (
                   <UpcomingEventCard
@@ -193,7 +208,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
                     event={event}
                     onOpenArtist={publicVenueArtistTarget(event) ? () => onOpenArtist?.(publicVenueArtistTarget(event)) : undefined}
                     onOpenEvent={() => onOpenShow?.(event)}
-                    onTickets={() => { void openTicketLink(event.ticketUrl); }}
+                    onTickets={() => { void ticketAction.open(event.ticketUrl); }}
                   />
                 ))}
                 {sectionModel.condensed && venue.upcoming.length > visibleUpcoming.length ? (
@@ -241,7 +256,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
               <Text style={styles.reputationBody}>Sound, sightlines and crowd energy stay with the venue, separate from the artist’s performance.</Text>
               <View style={styles.reviewSignal}>
                 <Icon name="star" size={13} color={colors.gold} />
-                <Text style={styles.reviewSignalText}>{reviews.length ? `${reviews.length} written ${reviews.length === 1 ? "review" : "reviews"} · ${fanRating.toFixed(1)} average` : "No written reviews yet"}</Text>
+                <Text style={styles.reviewSignalText}>{reviews.length ? `${reviews.length} written ${reviews.length === 1 ? "review" : "reviews"} · ${fanRating.toFixed(1)} average` : Platform.OS === "ios" && iosReviews.status !== "ready" ? (iosReviews.status === "error" ? "Fan notes unavailable" : "Loading fan notes…") : "No written reviews yet"}</Text>
               </View>
             </View>
           </View>
@@ -252,7 +267,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
             accessibilityLabel={`Review ${venue.name}`}
           >
             <Icon name="edit" size={16} color="#1A1206" />
-            <Text style={styles.reviewButtonText}>{reviews.length ? "Add your take" : "Write the first review"}</Text>
+            <Text style={styles.reviewButtonText}>{reviews.length ? "Add your take" : Platform.OS === "ios" && iosReviews.status !== "ready" ? "Write a review" : "Write the first review"}</Text>
           </Pressable>
         </Section>
         ) : null}
@@ -279,7 +294,23 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         ) : null}
 
         {sectionModel.showReviews ? (
-        <Section title="Fan notes" count={reviews.length}>
+        <Section title="Fan notes" count={Platform.OS === "ios" && iosReviews.status !== "ready" && !reviews.length ? null : reviews.length}>
+          {Platform.OS === "ios" && iosReviews.status !== "ready" ? (
+            <View style={styles.iosReviewStatus}>
+              <Text style={styles.emptyBody} accessibilityLiveRegion="polite">
+                {iosReviews.status === "error"
+                  ? (reviews.length ? "Fan notes could not update. Showing saved notes." : "Fan notes could not load. Try again.")
+                  : (reviews.length ? "Updating fan notes…" : "Loading fan notes…")}
+              </Text>
+              {iosReviews.status === "error" ? (
+                <Pressable onPress={() => { void iosReviews.load(); }}
+                  accessibilityRole="button" accessibilityLabel="Retry loading fan notes"
+                  style={({ pressed }) => [styles.iosReviewRetry, pressed && styles.buttonPressed]}>
+                  <Text style={styles.iosReviewRetryText}>Try again</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
           {reviews.length ? (
             <View style={styles.stack}>
               {visibleReviews.map((review) => {
@@ -375,13 +406,13 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
                 />
               ) : null}
             </View>
-          ) : (
+          ) : Platform.OS !== "ios" || iosReviews.status === "ready" ? (
             <View style={styles.emptyReviews}>
               <Icon name="comment" size={24} color={colors.textFaint} />
               <Text style={styles.emptyTitle}>Nobody has described this room yet</Text>
               <Text style={styles.emptyBody}>Share the sound, view and crowd experience after your next show here.</Text>
             </View>
-          )}
+          ) : null}
         </Section>
         ) : null}
 
@@ -565,7 +596,14 @@ function MoreButton({ label, remaining, onPress }) {
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = {
+  iosReviewStatus: { gap: 4, paddingVertical: 8 },
+  iosReviewRetry: { minHeight: 44, minWidth: 44, alignSelf: "flex-start", justifyContent: "center", paddingHorizontal: 12 },
+  iosReviewRetryText: { color: colors.amber, fontWeight: "600", fontSize: 15 },
+  ticketError: { color: colors.danger, fontSize: 15, lineHeight: 22 },
+  iosTitleBlock: { gap: 7, paddingTop: 4 },
+  iosKicker: { fontFamily: "System", fontSize: 13, fontWeight: "600", color: colors.amber },
+  iosTitle: { fontFamily: "System", fontSize: 32, fontWeight: "700", letterSpacing: -0.5, color: colors.text },
   wrap: { flex: 1, backgroundColor: colors.bg },
   content: { width: "100%", maxWidth: 980, minWidth: 0, alignSelf: "center", alignItems: "stretch", paddingHorizontal: space(4), paddingTop: space(4), paddingBottom: 96, gap: 14 },
   heroShell: { width: "100%", maxWidth: "100%", minWidth: 0, alignSelf: "stretch", padding: 7, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
@@ -653,4 +691,6 @@ const styles = StyleSheet.create({
   historyEmpty: { width: "100%", maxWidth: "100%", minWidth: 0, color: colors.textDim, fontSize: 13, fontStyle: "italic", padding: 16, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
   moreButton: { width: "100%", maxWidth: "100%", minWidth: 0, minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 16, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line, ...Platform.select({ web: { cursor: "pointer" } }) },
   moreButtonText: { color: colors.amber, fontFamily: displayFont, fontSize: 13, fontWeight: "900" },
-});
+};
+
+const styles = StyleSheet.create(concertDetailStyles(baseStyles, Platform.OS, "venue", colors));

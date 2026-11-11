@@ -3,12 +3,12 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { buildArtistSummary } from "../../domain/artistSummary.mjs";
-import { createArtistOverviewController } from "./artistOverviewController.mjs";
+import { createArtistOverviewController } from "./artistOverviewController.ios.mjs";
 import { fetchResolvedArtist } from "../artistSearch/artistSearchApi.mjs";
 
 const require = createRequire(import.meta.url);
 const hookSource = require("@babel/core").transformSync(
-  readFileSync(new URL("./useArtistOverview.js", import.meta.url), "utf8"), {
+  readFileSync(new URL("./useArtistOverview.ios.js", import.meta.url), "utf8"), {
     babelrc: false, configFile: false,
     plugins: [require.resolve("@babel/plugin-transform-modules-commonjs")],
   },
@@ -25,7 +25,8 @@ class AppError extends Error {
 // The tiny React adapter lets each render/effect/response be ordered explicitly;
 // it does not replace the loading, identity, cancellation, or failure logic.
 function harness() {
-  let memo, memoDeps, effectDeps, cleanup, nextEffect;
+  let memo, memoDeps, effectCursor = 0;
+  const effects = [];
   const calls = [];
   const same = (before, after) => before && before.length === after.length
     && before.every((value, index) => Object.is(value, after[index]));
@@ -35,15 +36,18 @@ function harness() {
       return memo;
     },
     useEffect(effect, deps) {
-      if (!same(effectDeps, deps)) { nextEffect = effect; effectDeps = deps; }
+      const index = effectCursor++;
+      const slot = effects[index] ||= {};
+      if (!same(slot.deps, deps)) { slot.pending = effect; slot.deps = deps; }
     },
     useSyncExternalStore(_subscribe, snapshot) { return snapshot(); },
   };
   const module = { exports: {} };
   const dependencies = {
     react,
+    "../../hooks/useIOSDetailPresentation": { default: () => ({ active: true, current: () => true, guard: value => value, token: null }), __esModule: true },
     "../../lib/diagnostics": { AppError },
-    "./artistOverviewController.mjs": { createArtistOverviewController },
+    "./artistOverviewController.ios.mjs": { createArtistOverviewController },
     "./services/artistOverviewApi.mjs": {
       readArtistOverview: (args) => new Promise((resolve, reject) => calls.push({ args, resolve, reject })),
     },
@@ -55,12 +59,14 @@ function harness() {
   return {
     calls,
     render(artist) {
+      effectCursor = 0;
       const summary = buildArtistSummary({ name: "A$AP Rocky", key: "a$ap rocky", remoteArtist: artist });
       const state = module.exports.useArtistOverview({ artistKey: summary.profileKey });
-      if (nextEffect) { cleanup?.(); cleanup = nextEffect(); nextEffect = null; }
+      for (const slot of effects) if (slot.pending) { slot.cleanup?.(); }
+      for (const slot of effects) if (slot.pending) { slot.cleanup = slot.pending(); slot.pending = null; }
       return state;
     },
-    dispose() { cleanup?.(); },
+    dispose() { for (const slot of effects) slot.cleanup?.(); },
   };
 }
 

@@ -1,3 +1,4 @@
+import { parse } from "@babel/parser";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { newsAwareFeed, newsPrivacyScope, newsStateForScope, newsFeedSurfaceVisible } from "./newsReaderState.mjs";
@@ -11,7 +12,16 @@ test("a mounted feed is not an introduction visit during deep-link hydration, ov
   for (const change of [{ pathname: "/post/news_one" }, { pathname: "/artist/russ" }, { pathname: "/" }, { tab: "discover" }, { hasOverlay: true }, { landing: true }, { obscured: true }, { pendingNavigation: true }]) assert.equal(newsFeedSurfaceVisible({ ...feed, ...change }), false);
   const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
   const screen = readFileSync(new URL("../screens/FeedScreen.jsx", import.meta.url), "utf8");
-  assert.match(app, /<FeedScreen\s+visible=\{feedSurfaceVisible\}/);
+  let visibleExpression;
+  const visit = node => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "JSXOpeningElement" && node.name.name === "FeedScreen") visibleExpression = node.attributes.find(a => a.name?.name === "visible").value.expression;
+    for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(visit); else if (value?.type) visit(value);
+  };
+  visit(parse(app, { sourceType: "module", plugins: ["jsx"] })); assert.ok(visibleExpression);
+  const visible = new Function("preview", "feedSurfaceVisible", `return (${app.slice(visibleExpression.start, visibleExpression.end)});`);
+  for (const preview of [true, false]) for (const surface of [true, false]) assert.equal(visible(preview, surface), !preview && surface,
+    "preparing a destination never admits an introduction visit, even if the committed feed surface is visible");
   assert.match(screen, /useNewsIntroduction\(visible && filter === "everyone" && loggedIn && appActive\)/);
 });
 test("news never leaks into Following, Local or guest feeds, including raw post fallback", () => {

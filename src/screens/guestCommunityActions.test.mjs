@@ -5,6 +5,7 @@ import vm from "node:vm";
 import test from "node:test";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import useIOSCommunityComposer from "../hooks/useIOSCommunityComposer.js";
 
 const require = createRequire(import.meta.url);
 const { transformSync, parseSync } = require("@babel/core");
@@ -49,6 +50,7 @@ function screenFixture(name, session = null, { loungeStatus = "open", provideAut
     "../lib/useLiveChat": (_read, options) => calls.poll.push(options),
     "../lib/useChatScroll": () => ({ scrollRef: { current: null }, onScroll: noop, onContentSizeChange: noop }),
     "../hooks/useScopedRefresh": () => ({ refresh: noop, refreshing: false }),
+    "../hooks/useIOSCommunityComposer": useIOSCommunityComposer,
     "../domain/screenScope.mjs": { accountTargetScope, scopedScreenValue },
     "../domain/scopedRefresh.mjs": { refreshScope },
     "../domain/showSocial.mjs": { normalizeLoungeMeta: (value) => value },
@@ -152,9 +154,14 @@ test("every artist album/song rating handler requests login for guests and write
   const screen = ast.program.body.find((node) => node.type === "ExportDefaultDeclaration").declaration;
   assert.ok(screen.params[0].properties.some((property) => property.key?.name === "onRequireAuth"),
     "the real screen receives the callback used by its rating handlers");
+  for (const IS_IOS of [false, true]) {
   const handlers = [];
   function visit(node) {
     if (!node || typeof node !== "object") return;
+    if (node.type === "ConditionalExpression" && node.test?.name === "IS_IOS") {
+      visit(IS_IOS ? node.consequent : node.alternate);
+      return;
+    }
     if (node.type === "JSXOpeningElement" && node.name?.name === "TapStars") {
       const attribute = node.attributes.find((entry) => entry.name?.name === "onChange");
       if (attribute?.value?.expression) handlers.push(attribute.value.expression);
@@ -165,12 +172,12 @@ test("every artist album/song rating handler requests login for guests and write
     }
   }
   visit(ast);
-  assert.equal(handlers.length, 4, "every visible artist rating surface is covered");
+  assert.equal(handlers.length, 4, `every visible artist rating surface is covered on ${IS_IOS ? "iOS" : "Android/web"}`);
   for (const handler of handlers) {
     for (const session of [null, undefined, { id: "member" }]) {
       const calls = { auth: [], rating: [] };
       const action = vm.runInNewContext(`(${source.slice(handler.start, handler.end)})`, {
-        session, a: { name: "Example" }, al: { title: "Album" }, t: { title: "Track" }, s: { title: "Song" },
+        guard: value => value, session, a: { name: "Example" }, al: { title: "Album" }, t: { title: "Track" }, s: { title: "Song" },
         onRequireAuth: (...args) => calls.auth.push(args),
         rateAlbum: (...args) => calls.rating.push(args), rateSong: (...args) => calls.rating.push(args),
       });
@@ -179,5 +186,6 @@ test("every artist album/song rating handler requests login for guests and write
       assert.equal(calls.rating.length, session ? 1 : 0);
       if (session) assert.equal(calls.rating[0][2], 4.5);
     }
+  }
   }
 });

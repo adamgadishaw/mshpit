@@ -268,7 +268,7 @@ test("the shell discards composer and navigation memory before a confirmed accou
 
 test("the feed filter projects the incoming account before passive adoption", () => {
   const source = readFileSync(new URL("../screens/FeedScreen.jsx", import.meta.url), "utf8");
-  assert.match(source, /const filterScope = feedFilterStorageKey\(accountId\)/);
-  assert.match(source, /const filter = filterState\.scope === filterScope/);
-  assert.match(source, /setFilterState\(\{ scope: filterScope, value: f \}\)/);
+  assert.match(source, /const scope = feedFilterStorageKey\(accountId\)/);
+  assert.match(source, /const filter = state\.scope === scope \? state\.value : normalizeFeedFilter\(load\(scope, "everyone"\), \{ loggedIn \}\)/);
+  assert.match(source, /select: value => \{ setState\(\{ scope, value \}\); save\(scope, value\); \}/);
 });

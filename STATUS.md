@@ -1,5 +1,17 @@
 # Pit current status
 
+## 2026-11-11 Combined restoration integration checkpoint
+
+- Preserves PC266a25de and full recovered iOS/calendar history through the
+  byte-verified4fa645b snapshot, with56e98a calendar corrections applied.
+- Native refresh/badge and feed/notification architecture overlaps are reconciled.
+  Focused workers passed340 navigation,342 feed/notification and107 native badge
+  composition checks; syntax and architecture pass. Full integration gate is
+  pending. Preliminary web export is521.4KiB against unchanged512KiB budget.
+- This local checkpoint is not a release. Messaging07ce622 and iPhone handoff
+  histories are next; no device, production or remote-write action.
+
+
 ## 2026-11-10 Combined PC reliability candidate (local review)
 
 - `fix/pc-integrated-reliability-20261110` integrates preserved privacy commit
@@ -59,6 +71,63 @@
 - Preservation, validation, integration instructions and remaining native/Mac
   limits are recorded in [the local review](docs/PC_FEATURE_FOLLOWUP_2026-11-10.md).
   No push, merge, deployment, production write or phone interaction occurred.
+## 2026-11-09 completed clean iOS navigation and card build
+
+- Validated runtime source `cc04472` combines retained Feed/detail Back and iOS-only content-aware post cards on `8060121`, excluding the held notification feature. Navigation-only `867e38c`, original candidates and main `942e1f3` are preserved.
+- Complete unchanged suite: **8,947/8,947 tests**, all 1,041 discovered files, zero failures/skips/cancellations, in 27 source-frozen resumable serial batches. Earlier interrupted monolithic runs are not passes. Correct actual-iOS composition is covered by the 104-case final review matrix; 60 Yoga cases also pass.
+- Production dependency audit, syntax (927 Node files), architecture, Blueprint, web budget (523,877/524,288), iOS/Android exports and exact source/platform isolation pass. Native Release build, strict signature and native source-map matching pass. Main source/native inputs remain unchanged.
+- The exact signed `cc04472` artifact was **installed in place and launched on the physical iPhone** around 23:43 UTC after renewed availability. The new Feed card renders. Device Hub coordinate input fails with `noWindowsAvailable`, so gestures, cancellation/reversal, full native layout, VoiceOver and performance remain unverified. No reset/uninstall or public account/content mutation occurred. The existing profile expires November 14 at 23:50 UTC. No backend, provisioning, push or deployment action occurred.
+- Current receipt: `docs/IOS_NAVIGATION_WITHOUT_NOTIFICATIONS_2026-11-09.md`. The next two sections are historical original-candidate records; their notification backend-first hold does not describe this clean build.
+
+## 2026-11-09 iOS nested detail Back (isolated local candidate)
+
+- Extends verified Feed candidate `48d3bd8` with up to six actual retained
+  Artist/Profile/Show/Post occurrences and cancellable previous-page reveal.
+  Other destinations remain fallback/barriers; this is not all-route completion.
+- Explicit lifecycle, command, privacy and inner-Suspense ownership preserve
+  state while retiring hidden actions. Current private denials revoke older
+  retained data; explicit retry recovers without automatic denial loops.
+- Independent review clears the four-family scope. All 9,033 tests pass in the
+  complete serial check chain, with dependency/syntax/architecture, web budget,
+  Blueprint and whitespace checks. Final iOS/Android Hermes exports and exact
+  source-map isolation/matching also pass.
+- No phone, install, push, backend, dependency or native-project change. Main
+  remains `942e1f3`; prior `48d3bd8` and Discover-only `8060121` are preserved.
+  The notification backend-first hold and physical-device acceptance remain.
+- Details: `docs/IOS_RETAINED_DETAIL_BACK_2026-11-09.md`.
+
+## 2026-11-09 iOS retained Feed Back reveal (isolated local candidate)
+
+- A signed-in Feed now remains beneath readable details for a cancellable,
+  real-page Back reveal. The exact list is retained. Nested detail-to-detail
+  reveals remain out of scope; protected editors and account boundaries keep
+  their existing unmount protection.
+- Hidden resource reads, timers, animated images and queued actions are fenced.
+  Fresh initial/Back controls, privacy changes, Following invalidation and
+  Suspense reconnects are covered through actual Feed/Ticket/News composition.
+- Independent review clears the final source. The complete check chain passes
+  with all 8,782 tests run serially, plus dependency/syntax/architecture checks,
+  native exports, web budget, Blueprint and source isolation. Two unchanged
+  default-parallel fixture failures are disclosed rather than hidden.
+- No push, backend deployment, phone operation, dependency or native-project
+  change. Main remains at `942e1f3`. The combined notification client's
+  backend-first rollout hold remains in place; `8060121` is preserved.
+- Scope, implementation, validation and remaining physical-device acceptance
+  are recorded in `docs/IOS_RETAINED_FEED_BACK_2026-11-09.md`.
+
+## 2026-11-08 iOS festival presentation (isolated local review)
+
+- New iOS-only festival variants replace spotlight artwork with credited,
+  uncropped existing images and truthful missing/error/retry states. Explicit
+  refresh, cached-read errors, calendar-day expiry, separate official
+  announcements and account-scoped plan controls have 24 new passing tests.
+- Shared loaders, APIs, server ingestion, Android/web and native dependencies
+  are unchanged. This is not a production content refresh or street-map fix.
+  Current production content could not be independently read (HTTP 403).
+- Scope, test limits and physical verification still needed are in
+  `docs/IOS_FESTIVAL_POLISH_2026-11-08.md`. Independent source review cleared
+  the final UTC-day correction; no push, deployment or device work is included.
+
 
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 

@@ -13,7 +13,7 @@ function fixture(sectionFeed = null) {
   const calls=[];
   const fetch=()=>new Promise((resolve,reject)=>calls.push({resolve,reject}));
   const render=()=>{
-    const values={feedActive:true,newsTab:false,refreshing:false,effectiveLoading:state.loading,pageRequestRef,pageError:state.error,
+    const values={actionCurrent:()=>true,readEnabled:true,tabPreview:false,feedActive:true,newsTab:false,refreshing:false,effectiveLoading:state.loading,pageRequestRef,pageError:state.error,
       sectionFeed,full:state.posts,count:state.count,effectiveHasMore:state.hasMore,pageScope:pageScopeRef.current,pageScopeRef,
       setCount:fn=>{state.count=fn(state.count);},setPageError:value=>{state.error=value;},PAGE:8,onLoadMore:fetch};
     return new Function(...Object.keys(values),`${reader}; return advanceFeed;`)(...Object.values(values));
@@ -22,7 +22,7 @@ function fixture(sectionFeed = null) {
 }
 
 test("scroll reveals loaded cards, then requests pages until exhaustion",async()=>{
-  assert.match(source,/onEndReached=\{\(\) => \{ void advanceFeed\(\); \}\}/);
+  assert.match(source,/onEndReached: \(\) => \{ void advanceFeed\(\); \}/);
   const f=fixture(); f.state.posts.push({id:9});
   await f.render()(); assert.equal(f.state.count,16);assert.equal(f.calls.length,0);
   const page=f.render()();assert.equal(f.calls.length,1);
@@ -61,7 +61,8 @@ test("failed explicit refresh keeps the expired-page control until a new head su
     const refreshControllerRef={current:null},pageRequestRef={current:null},pageScopeRef={current:"A:everyone"};
     let outcome=failure;
     const render=()=>{
-      const values={refreshControllerRef,pageRequestRef,pageScopeRef,pageScope:"A:everyone",pageError:state.pageError,
+      const values={actionCurrent:()=>true,imageRetry:{isCurrent:()=>true,accept(){}},Platform:{OS:"web"},returnUI:null,endless:null,onRefreshCounts:null,
+        refreshControllerRef,pageRequestRef,pageScopeRef,pageScope:"A:everyone",pageError:state.pageError,
         onRefresh:async()=>{if(outcome instanceof Error)throw outcome;return outcome;},filter:"everyone",introduction:{dismiss(){}},newsTab:false,sectionFeed:null,
         setPageError:value=>{state.pageError=value;},setRefreshing:value=>{state.refreshing=value;},setRefreshError:value=>{state.refreshError=value;}};
       return new Function(...Object.keys(values),`${source.slice(start,end)};return refresh;`)(...Object.values(values));

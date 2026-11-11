@@ -14,7 +14,6 @@
       "usePrivateEphemeral:fanClubs:setFanClubs",
       "usePrivateEphemeral:going:setGoing",
       "usePrivateEphemeral:lounge:setLounge",
-      "usePrivateEphemeral:notifications:setNotifications",
       "usePrivateEphemeral:requests:setRequests",
       "useState:adminMemberDirectory:setAdminMemberDirectory",
       "useState:adminMembers:setAdminMembers",
@@ -70,8 +69,9 @@
       "useAccountCommentCache": 1,
       "useContext": 1,
       "useEffect": 29,
+      "useNotificationActivity": 1,
       "usePersisted": 4,
-      "usePrivateEphemeral": 8,
+      "usePrivateEphemeral": 7,
       "useRef": 53,
       "useState": 47
     }

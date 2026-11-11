@@ -150,11 +150,11 @@ test("managed copy overrides interpolate without code changes", () => {
 });
 
 test("component preserves semantic links, compact bounds and explicit network states", () => {
-  const component = readFileSync(new URL("../../components/artist/ArtistUpcomingShows.jsx", import.meta.url), "utf8");
-  const hook = readFileSync(new URL("./useArtistOverview.js", import.meta.url), "utf8");
+  const component = readFileSync(new URL("../../components/artist/ArtistUpcomingShows.ios.jsx", import.meta.url), "utf8");
+  const hook = readFileSync(new URL("./useArtistOverview.ios.js", import.meta.url), "utf8");
   const service = readFileSync(new URL("./services/artistOverviewApi.mjs", import.meta.url), "utf8");
   assert.match(component, /rows\.slice\(0, 3\)/);
-  assert.match(component, /onPress=\{controller\.loadMore\}/);
+  assert.match(component, /onPress=\{guard\(controller\.loadMore\)\}/);
   assert.match(component, /onOpenShow\(event\)/);
   assert.match(component, /href=\{eventPath\(event\)\}/);
   assert.match(component, /openTicketLink\(ticketUrl/);

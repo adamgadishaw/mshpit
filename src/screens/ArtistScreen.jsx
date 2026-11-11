@@ -1,7 +1,8 @@
+import useIOSDetailBackBlock from "../hooks/useIOSDetailBackBlock";
 import CatalogText from "../features/catalogEditor/CatalogText";
 import { Suspense, useState, useEffect, useRef } from "react";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
-import { Platform, View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, Linking, Alert } from "react-native";
+import { Platform, View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, Linking, Alert, AccessibilityInfo, AppState, useWindowDimensions } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
@@ -55,6 +56,11 @@ import Button from "../components/Button";
 import ArtistLiveSets from "../components/ArtistLiveSets";
 import { fetchArtistSets } from "../lib/lineupApi";
 
+import { useIOSScreenReaderEnabled } from "../hooks/iosOnlyAccessibility";
+import { createIOSArtistAnnouncements, iosArtistLayout } from "../domain/iosArtistPresentation.mjs";
+import { createBrowseScrollReturn } from "../domain/iosBrowseReturn.mjs";
+const IS_IOS = Platform.OS === "ios";
+
 const ArtistNewsSection = lazyWithRetry(() => import("../components/news/NewsViews").then((module) => ({ default: module.ArtistNewsSection })), "ArtistNewsSection");
 
 const invalidArtistPageResponse = new AppError("This artist page could not be confirmed. Please try again.", {
@@ -103,6 +109,8 @@ function ArtistBiographyAttribution({ source }) {
 }
 
 function ArtistPageSectionNav({ active, onChange, memorialMode = false, legacyMode = false, statusPending = false }) {
+  const { fontScale } = useWindowDimensions();
+  const { largeText, singleColumn } = iosArtistLayout(Platform.OS, fontScale);
   const tabs = artistPageSectionsForMode({ legacyMode });
   const tabRefs = useRef([]);
   const moveFocus = (event, index) => {
@@ -118,7 +126,7 @@ function ArtistPageSectionNav({ active, onChange, memorialMode = false, legacyMo
     tabRefs.current[next]?.focus?.();
   };
   return (
-    <View style={styles.sectionNav} accessibilityRole="tablist" accessibilityLabel="Artist page sections">
+    <View style={[styles.sectionNav, largeText && { flexWrap: "wrap" }]} accessibilityRole="tablist" accessibilityLabel="Artist page sections">
       {tabs.map((section, index) => {
         const selected = active === section.key;
         const label = section.key === "shows"
@@ -132,6 +140,7 @@ function ArtistPageSectionNav({ active, onChange, memorialMode = false, legacyMo
             onKeyDown={(event) => moveFocus(event, index)}
             style={({ pressed, focused }) => [
               styles.sectionNavItem,
+              largeText && { flex: 0, flexGrow: 1, flexBasis: singleColumn ? "100%" : "45%", paddingVertical: 12 },
               selected && styles.sectionNavItemOn,
               pressed && styles.sectionNavItemPressed,
               focused && focusRing,
@@ -302,25 +311,31 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
 
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenArtist, onOpenPost, onOpenNewsStory, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onShareMemory, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport, onRequireAuth }) {
+export default function ArtistScreen({ artistReturn, initialSection, artistName, previewAsFan = false, onClose, onOpenArtist, onOpenPost, onOpenNewsStory, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onShareMemory, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport, onRequireAuth }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, artistPageCacheEpoch,
     artistGallery, loadArtistPhotos, removePhoto, artistBadges, remoteArtistMeta,
     artistDiscography, artistSeenCount, reportTrack, setArtistFollowing, isFanClubMember, joinFanClub,
   } = useStore();
   const a = artistSummary(artistName);
+  const { fontScale } = useWindowDimensions();
+  const { largeText } = iosArtistLayout(Platform.OS, fontScale);
+  const initialReturn = useRef(IS_IOS ? artistReturn?.read() : null).current;
+  const scrollReturn = useRef(null);
+  if (!scrollReturn.current) scrollReturn.current = createBrowseScrollReturn(initialSection ? 0 : initialReturn?.scrollY, artistReturn?.save);
   const artistPageProofScope = refreshScope(session?.id, "artist-page-proof", `${a.profileKey || a.name}:${artistPageCacheEpoch}`);
   const [confirmedArtistPage, setConfirmedArtistPage] = useState(() => createLoadState());
   const artistPageReadSequence = useRef(0);
   const artistPageResource = projectLoadState(confirmedArtistPage, artistPageProofScope);
   const currentConfirmedArtistPage = artistPageResource.data;
-  const [sectionSelection, setSectionSelection] = useState(() => ({ artistKey: a.profileKey, section: "overview" }));
+  const [sectionSelection, setSectionSelection] = useState(() => ({ artistKey: a.profileKey, section: IS_IOS ? initialSection || initialReturn?.section || "overview" : "overview" }));
   const activeSection = sectionSelection.artistKey === a.profileKey ? sectionSelection.section : "overview";
   const pageScroll = useRef(null);
   const [contentWidth, setContentWidth] = useState(0);
   const artistWide = contentWidth >= 840;
   const setActiveSection = (section) => {
     if (!session && section === "community") return onRequireAuth?.();
+    if (IS_IOS) scrollReturn.current.cancel();
     setSectionSelection({ artistKey: a.profileKey, section });
     pageScroll.current?.scrollTo?.({ y: 0, animated: false });
   };
@@ -502,6 +517,30 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     joinFanClub,
   });
   const followed = followUi.followed;
+  const screenReader = useIOSScreenReaderEnabled();
+  const announcements = useRef(null);
+  if (!announcements.current) announcements.current = createIOSArtistAnnouncements({
+    announce: (message, options) => AccessibilityInfo.announceForAccessibilityWithOptions(message, options),
+  });
+  announcements.current.configure(followUi.scope, IS_IOS && screenReader, AppState.currentState === "active");
+  useEffect(() => {
+    if (!IS_IOS) return undefined;
+    const subscription = AppState.addEventListener("change", (state) => {
+      announcements.current.configure(followUi.scope, screenReader, state === "active");
+    });
+    return () => { subscription.remove(); announcements.current.reset(); };
+  }, [followUi.scope, screenReader]);
+  useEffect(() => { if (IS_IOS) announcements.current.update(followUi, a.name); });
+  const announceFollow = () => {
+    if (followUi.busy || followUi.joining) return;
+    announcements.current.request();
+    return followUi.toggleFollow();
+  };
+  const announceJoin = () => {
+    if (followUi.busy || followUi.joining) return;
+    announcements.current.request();
+    return followUi.join();
+  };
 
   // Full discography (albums + tracklists) from Deezer, so the page has real depth:
   // open an album, see every song, rate them, play them in the top bar.
@@ -523,6 +562,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const [reportNote, setReportNote] = useState("");
   const [reportingBusy, setReportingBusy] = useState(false);
   const [reportedSongs, setReportedSongs] = useState({});
+  useIOSDetailBackBlock(!!reportingSong || reportingBusy);
   const submitSongReport = async (track) => {
     if (reportingBusy) return;
     const descriptor = trackReportDescriptor(track, a.name);
@@ -594,9 +634,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const [discoOwner, setDiscoOwner] = useState(a.name);
   const [discoStatus, setDiscoStatus] = useState("idle");
   const [discoError, setDiscoError] = useState("");
-  const [openAlbum, setOpenAlbum] = useState(null);
-  const [showAllSongs, setShowAllSongs] = useState(false);
-  const [showAllReleases, setShowAllReleases] = useState(false);
+  const [openAlbum, setOpenAlbum] = useState(initialReturn?.openAlbum ?? null);
+  const [showAllSongs, setShowAllSongs] = useState(initialReturn?.showAllSongs || false);
+  const [showAllReleases, setShowAllReleases] = useState(initialReturn?.showAllReleases || false);
   const [identityOpen, setIdentityOpen] = useState(false);
   const [candidates, setCandidates] = useState(null);
   const [candidatesLoading, setCandidatesLoading] = useState(false);
@@ -637,9 +677,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     setDisco(null);
     setDiscoStatus("idle");
     setDiscoError("");
-    setOpenAlbum(null);
-    setShowAllSongs(false);
-    setShowAllReleases(false);
+    setOpenAlbum(IS_IOS ? initialReturn?.openAlbum ?? null : null);
+    setShowAllSongs(IS_IOS && !!initialReturn?.showAllSongs);
+    setShowAllReleases(IS_IOS && !!initialReturn?.showAllReleases);
     setIdentityOpen(false);
     setCandidates(null);
     setCandidatesLoading(false);
@@ -758,6 +798,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   }));
   const songs = showAllSongs ? allSongs : allSongs.slice(0, 10);
   const toggleAlbum = (id, tracks) => {
+    if (IS_IOS) scrollReturn.current.cancel();
     setOpenAlbum((cur) => (cur === id ? null : id));
     (tracks || []).forEach((t) => loadRating("song", a.name, t.title));
   };
@@ -898,6 +939,11 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     songs.forEach((s) => loadRating("song", a.name, s.title));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a.name, scopedDisco, sectionModel.showMusic]);
+  useEffect(() => {
+    if (!IS_IOS) return;
+    artistReturn?.save({ section: activeSection, openAlbum, showAllSongs, showAllReleases });
+    scrollReturn.current.update(pageScroll.current, memorialKnown && (!sectionModel.loadDiscography || discoStatus === "ready") && (!sectionModel.loadFullArchive || liveArchive != null));
+  });
   return (
     <View style={styles.wrap}>
       <ScreenHeader
@@ -913,7 +959,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         onRefresh={refreshArtist}
         accessibilityLabel={`Refresh ${a.name} artist page`}
       >
-      <ScrollView ref={pageScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} onLayout={(event) => setContentWidth(event.nativeEvent.layout.width)}>
+      <ScrollView ref={pageScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} onLayout={(event) => { setContentWidth(event.nativeEvent.layout.width); if (IS_IOS) scrollReturn.current.onLayout(event); }}
+        {...(IS_IOS ? { onContentSizeChange: scrollReturn.current.onContentSizeChange, onScroll: scrollReturn.current.onScroll, onScrollBeginDrag: scrollReturn.current.onScrollBeginDrag, scrollEventThrottle: 16 } : {})}>
         {previewAsFan && (
           <View
             style={styles.fanPreviewNotice}
@@ -1022,7 +1069,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             {!followHidden ? (
               <Pressable
                 style={[styles.artistFollowBtn, followed && styles.artistFollowBtnOn, followUi.busy && styles.artistFollowBtnBusy]}
-                onPress={session ? followUi.toggleFollow : onRequireAuth}
+                onPress={session ? (IS_IOS ? announceFollow : followUi.toggleFollow) : onRequireAuth}
                 disabled={followUi.busy || followUi.joining}
                 accessibilityRole="button"
                 accessibilityLabel={`${followed ? "Unfollow" : "Follow"} ${a.name}`}
@@ -1165,7 +1212,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               <View style={styles.fanClubInviteActions}>
                 <Pressable
                   style={[styles.fanClubInviteJoin, followUi.joining && styles.artistFollowBtnBusy]}
-                  onPress={followUi.join}
+                  onPress={IS_IOS ? announceJoin : followUi.join}
                   disabled={followUi.joining}
                   accessibilityRole="button"
                   accessibilityLabel={`Join the ${a.name} Fan Club`}
@@ -1194,7 +1241,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         {profileServicesAvailable && sectionModel.active === "overview" && !legacyMode && (Platform.OS === "web" || !!session) ? (
           <Suspense fallback={null}>
             <ArtistNewsSection artistName={a.name} artistKey={a.profileKey || null} onOpenStory={onOpenNewsStory} following={!!session && followed}
-              onFollow={followHidden ? undefined : session ? followUi.toggleFollow : onRequireAuth} />
+              onFollow={followHidden ? undefined : session ? (IS_IOS ? announceFollow : followUi.toggleFollow) : onRequireAuth} />
           </Suspense>
         ) : null}
 
@@ -1715,6 +1762,23 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               return (
                 <View key={al.id} style={styles.discAlbum}>
                   <View style={styles.discHead}>
+                    {IS_IOS ? (
+                    <View style={{ flex: 1, gap: 6 }}>
+                    <View style={[styles.discHeadMain, { flex: 0 }, largeText && { flexDirection: "column", alignItems: "stretch" }]}>
+                      {al.cover ? <Image source={{ uri: al.cover }} style={styles.discCover} /> : <View style={[styles.discCover, styles.discCoverEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.discTitle, { flexShrink: 1 }]}>{al.title}</Text>
+                        <View style={styles.discMetaLine}>
+                          <View style={[styles.releaseTypeChip, releaseType(al) === "EP" && styles.releaseTypeEp]}>
+                            <Text style={[styles.releaseTypeTxt, releaseType(al) === "EP" && styles.releaseTypeEpTxt]}>{releaseType(al)}</Text>
+                          </View>
+                          <Text style={styles.discSub}>{al.year || "Year unknown"}{al.tracks?.length ? ` · ${al.tracks.length} songs` : ""}{ar.count > 0 ? ` · ${ar.avg.toFixed(1)}★` : ""}</Text>
+                        </View>
+                      </View>
+                    </View>
+                    <TapStars accessibilityLabel={`Your rating for album ${al.title} by ${a.name}`} value={ar.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateAlbum(a.name, al.title, n); }} size={20} gap={3} />
+                    </View>
+                    ) : (
                     <Pressable style={styles.discHeadMain} onPress={() => toggleAlbum(al.id, al.tracks)}>
                       {al.cover ? <Image source={{ uri: al.cover }} style={styles.discCover} /> : <View style={[styles.discCover, styles.discCoverEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
                       <View style={{ flex: 1 }}>
@@ -1728,6 +1792,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                         <TapStars value={ar.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateAlbum(a.name, al.title, n); }} size={13} gap={2} />
                       </View>
                     </Pressable>
+                    )}
                     {playerEnabled && playable && (
                       <>
                         <Pressable style={styles.albAct} onPress={() => playAlbum(al, null, true)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Shuffle ${al.title}`}>
@@ -1738,7 +1803,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                         </Pressable>
                       </>
                     )}
-                    <Pressable style={styles.albAct} onPress={() => toggleAlbum(al.id, al.tracks)} hitSlop={6}><Icon name={open ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} /></Pressable>
+                    <Pressable style={[styles.albAct, IS_IOS && { width: 44, height: 44 }]} onPress={() => toggleAlbum(al.id, al.tracks)} hitSlop={6} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `${open ? "Collapse" : "Expand"} ${al.title} tracklist`, accessibilityState: { expanded: open } } : {})}><Icon name={open ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} /></Pressable>
                   </View>
                   {open && (al.tracks || []).map((t, ti) => {
                     const sr = songRating(a.name, t.title);
@@ -1752,18 +1817,18 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                     const reportIdentity = trackReportIdentityKey(reportDescriptor);
                     return (
                       <View key={ti}>
-                        <View style={styles.discTrack}>
-                          <View style={styles.discTrackMain}>
+                        <View style={[styles.discTrack, largeText && { flexDirection: "column", alignItems: "stretch" }]}>
+                          <View style={[styles.discTrackMain, largeText && { flex: 0 }]}>
                             <Text style={styles.discTrackNo}>{ti + 1}</Text>
                             <View style={{ flex: 1 }}>
                               <View style={styles.discTrackTitleRow}>
                                 {isTop && <Icon name="star" size={11} color={colors.gold} filled />}
-                                <Text style={styles.discTrackTitle} numberOfLines={1}>{t.title}</Text>
+                                <Text style={[styles.discTrackTitle, IS_IOS && { flexShrink: 1 }]} numberOfLines={IS_IOS ? undefined : 1}>{t.title}</Text>
                               </View>
                               {sr.count > 0 && <View style={styles.songMeta}><Stars value={sr.avg} size={10} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>}
                             </View>
                           </View>
-                          <TapStars value={sr.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateSong(a.name, t.title, n); }} size={15} gap={2} />
+                          <TapStars accessibilityLabel={IS_IOS ? `Your rating for song ${t.title} by ${a.name}` : undefined} value={sr.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateSong(a.name, t.title, n); }} size={15} gap={2} />
                           {session && playerEnabled && (
                             <Pressable style={styles.songAdd} onPress={() => toggleReportBox(reportDescriptor)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${t.title}`}>
                               <Icon name="flag" size={12} color={reportedSongs[reportIdentity] ? colors.good : colors.textFaint} />
@@ -1788,7 +1853,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               );
             })}
             {releases.length > 6 && (
-              <Pressable style={styles.showAllBtn} onPress={() => setShowAllReleases((current) => !current)} accessibilityRole="button" accessibilityState={{ expanded: showAllReleases }} accessibilityLabel={showAllReleases ? "Show fewer releases" : `Show all ${releases.length} releases`}>
+              <Pressable style={styles.showAllBtn} onPress={() => { if (IS_IOS) scrollReturn.current.cancel(); setShowAllReleases((current) => !current); }} accessibilityRole="button" accessibilityState={{ expanded: showAllReleases }} accessibilityLabel={showAllReleases ? "Show fewer releases" : `Show all ${releases.length} releases`}>
                 <Text style={styles.showAllTxt}>{showAllReleases ? "Show fewer releases" : `Show all ${releases.length} releases`}</Text>
                 <Icon name={showAllReleases ? "chevron-up" : "chevron-down"} size={15} color={colors.amber} />
               </Pressable>
@@ -1806,7 +1871,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                     <AlbumArt uri={al.art} />
                     <Text style={styles.albumTitle} numberOfLines={2}>{al.title}</Text>
                     <Text style={styles.albumYear}>{al.year} · {kind}{ar.count > 0 ? `  ${ar.avg.toFixed(1)}★` : ""}</Text>
-                    <TapStars value={ar.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateAlbum(a.name, al.title, n); }} size={13} gap={2} />
+                    <TapStars accessibilityLabel={IS_IOS ? `Your rating for album ${al.title} by ${a.name}` : undefined} value={ar.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateAlbum(a.name, al.title, n); }} size={13} gap={2} />
                   </View>
                 );
               })}
@@ -1827,16 +1892,16 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               const reported = !!reportedSongs[reportIdentity];
               return (
                 <View key={s.id}>
-                  <View style={styles.songRow}>
-                    <View style={styles.songMain}>
-                      <Text style={styles.songTitle} numberOfLines={1}>{s.title}</Text>
+                  <View style={[styles.songRow, largeText && { flexDirection: "column", alignItems: "stretch" }]}>
+                    <View style={[styles.songMain, largeText && { flex: 0 }]}>
+                      <Text style={[styles.songTitle, IS_IOS && { flexShrink: 1 }]} numberOfLines={IS_IOS ? undefined : 1}>{s.title}</Text>
                       {sr.count > 0 ? (
                         <View style={styles.songMeta}><Stars value={sr.avg} size={11} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>
                       ) : (
-                        <Text style={styles.songMetaEmpty} numberOfLines={1}>{s.album ? s.album : "Not rated yet"}</Text>
+                        <Text style={[styles.songMetaEmpty, IS_IOS && { flexShrink: 1 }]} numberOfLines={IS_IOS ? undefined : 1}>{s.album ? s.album : "Not rated yet"}</Text>
                       )}
                     </View>
-                    <TapStars value={sr.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateSong(a.name, s.title, n); }} size={16} gap={3} />
+                    <TapStars accessibilityLabel={IS_IOS ? `Your rating for song ${s.title} by ${a.name}` : undefined} value={sr.mine} onChange={(n) => { if (!session) return onRequireAuth?.(); rateSong(a.name, s.title, n); }} size={16} gap={3} />
                     {session && playerEnabled && (
                       <Pressable style={styles.songAdd} onPress={() => toggleReportBox(reportDescriptor)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${s.title}`}>
                         <Icon name="flag" size={12} color={reported ? colors.good : colors.textFaint} />
@@ -1858,7 +1923,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               );
             })}
             {allSongs.length > 10 && (
-              <Pressable style={styles.showAllBtn} onPress={() => setShowAllSongs((v) => !v)} accessibilityRole="button" accessibilityLabel={showAllSongs ? "Show fewer songs" : `Show all ${allSongs.length} songs`}>
+              <Pressable style={styles.showAllBtn} onPress={() => { if (IS_IOS) scrollReturn.current.cancel(); setShowAllSongs((v) => !v); }} accessibilityRole="button" accessibilityLabel={showAllSongs ? "Show fewer songs" : `Show all ${allSongs.length} songs`}>
                 <Text style={styles.showAllTxt}>{showAllSongs ? "Show fewer" : `Show all ${allSongs.length} songs`}</Text>
                 <Icon name={showAllSongs ? "chevron-up" : "chevron-down"} size={15} color={colors.amber} />
               </Pressable>

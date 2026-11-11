@@ -304,6 +304,16 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     await page.getByRole("checkbox", { name: "Rock", exact: true }).click();
     await page.getByRole("button", { name: "Continue to the last step", exact: true }).click();
     await page.getByRole("heading", { name: "One last thing.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Review your choices", exact: true }).waitFor();
+    await page.getByText("City (optional): Not added", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("checkbox", { name: "Share optional limited account usage data", exact: true }).getAttribute("aria-checked"), "false");
+    await page.getByRole("button", { name: "Edit music and city", exact: true }).click();
+    await page.getByRole("heading", { name: "Find your kind of show.", exact: true }).waitFor();
+    assert.equal(await page.getByRole("checkbox", { name: "Rock", exact: true }).getAttribute("aria-checked"), "true");
+    assert.equal(await page.getByLabel("Password", { exact: true }).inputValue(), fixturePassword);
+    assert.equal(count("/api/signup"), 0, "Review edit link must never create an account.");
+    await page.getByRole("button", { name: "Continue to the last step", exact: true }).click();
+    assert.equal(await page.getByRole("checkbox", { name: "Share optional limited account usage data", exact: true }).getAttribute("aria-checked"), "false");
     await screenshot("-finish");
     await page.getByRole("radio", { name: "18+", exact: true }).click();
     await page.getByRole("checkbox", { name: "I agree to the Terms and Privacy policy", exact: true }).click();
@@ -312,7 +322,7 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     await waitFor(() => count("/api/signup") > 0, "Final signup submission was not sent.");
     await feed();
     assert.equal(count("/api/signup"), 1, "Signup was submitted more than once.");
-    assert.equal(await before.submissions(), 5, "Three advances, one after Back, and the final confirmation must use exactly five native form submissions.");
+    assert.equal(await before.submissions(), 6, "Advances, returning from the review, and final confirmation must each submit exactly once.");
   } else if (item.kind === "forms-reset") {
     await credentialFields(page, [["New password", "new-password"], ["Confirm new password", "new-password"]]);
     await page.getByLabel("New password", { exact: true }).fill(replacementPassword);
@@ -565,6 +575,8 @@ async function runCase(browser, origin, item) {
       if (url.pathname === "/api/signup/handle-availability") return await json({ handle: url.searchParams.get("handle"), available: true });
       if (url.pathname === "/api/signup") {
         assert.equal(request.method(), "POST"); assert.equal(body.password, fixturePassword); assert.equal(body.email, alice.email);
+        assert.equal(body.analyticsConsent, false);
+        assert.deepEqual(body.genres, ["Rock"]);
         state.user = alice;
         return await json({ created: true, user: alice });
       }

@@ -15,6 +15,8 @@ import {
 } from "../domain/calendarHistoryWindow.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import { calendarAccessibilityLayout } from "./calendarAccessibilityLayout.mjs";
+import useIOSCalendarExport from "../hooks/useIOSCalendarExport";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const REFRESH_RETRY_HINT = Platform.OS === "web"
@@ -45,8 +47,11 @@ const dateFromKey = (key) => {
 // real month grid. "Today" comes from the server clock (GET /api/time) so it's right
 // regardless of the device's clock. Tap a day to see its shows; tap a show to open it.
 export default function CalendarScreen({ initialDate = null, initialView = CALENDAR_SHOW_VIEW.UPCOMING, onClose, onOpen, onOpenArtist }) {
-  const { session, upcomingEvents, goingFor, myAttendance, refreshMyAttendance, refreshTourDates, serverTime } = useStore();
-  const { width: viewportWidth } = useWindowDimensions();
+  const { session, chatAuthEpoch, upcomingEvents, goingFor, myAttendance, refreshMyAttendance, refreshTourDates, serverTime } = useStore();
+  const iosExport = useIOSCalendarExport(session?.id ?? null, chatAuthEpoch);
+  const { width: viewportWidth, fontScale } = useWindowDimensions();
+  const calendarLayout = calendarAccessibilityLayout(Platform.OS, viewportWidth, fontScale, space(8));
+  const largeIOS = calendarLayout.largeText;
   const [view, setView] = useState(initialView === CALENDAR_SHOW_VIEW.PAST
     ? CALENDAR_SHOW_VIEW.PAST
     : CALENDAR_SHOW_VIEW.UPCOMING);
@@ -102,11 +107,13 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
   const initial = requestedDate || (byDay[todayKey] ? todayKey : firstEventKey || todayKey);
   const [cursor, setCursor] = useState(() => { const [y, m] = initial.split("-").map(Number); return { y, m: m - 1 }; });
   const [selected, setSelected] = useState(initial);
-  const [calendarNotice, setCalendarNotice] = useState(null);
+  const [legacyCalendarNotice, setCalendarNotice] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState(false);
   const refreshControllerRef = useRef(null);
-  const [exportingKey, setExportingKey] = useState("");
+  const [legacyExportingKey, setExportingKey] = useState("");
+  const calendarNotice = Platform.OS === "ios" ? iosExport.calendarNotice : legacyCalendarNotice;
+  const exportingKey = Platform.OS === "ios" ? iosExport.exportingKey : legacyExportingKey;
   const dayRefs = useRef(new Map());
   const pendingFocusKey = useRef(null);
   const pendingPastPosition = useRef(false);
@@ -199,9 +206,11 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
   const monthEventCount = Object.keys(byDay).filter((k) => k.startsWith(`${y}-${pad(m + 1)}`)).reduce((s, k) => s + byDay[k].length, 0);
   const selectedEvents = byDay[selected] || [];
   const goingEvents = useMemo(() => Object.values(byDay).flat().filter((event) => event.going), [byDay]);
-  const calendarWidth = Math.max(308, Math.min(560, viewportWidth - space(8)));
+  const calendarWidth = calendarLayout.width;
+  const dayGeometry = largeIOS ? { minHeight: calendarLayout.dayMinHeight } : null;
 
   const saveCalendar = async (events, key) => {
+    if (Platform.OS === "ios") return iosExport.saveCalendar(events, key);
     if (exportingKey) return;
     setCalendarNotice(null);
     setExportingKey(key);
@@ -323,9 +332,9 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
         {/* month nav */}
         <View style={styles.monthBar}>
           <Pressable style={styles.navBtn} onPress={() => shiftMonth(-1)} accessibilityRole="button" accessibilityLabel={`Previous month, ${MONTHS[(m + 11) % 12]}`}><Icon name="chevron-left" size={18} color={colors.text} /></Pressable>
-          <View style={styles.monthMid}>
-            <Text style={styles.monthTitle} accessibilityRole="header">{MONTHS[m]} {y}</Text>
-            <Text style={styles.monthSub} accessibilityLiveRegion="polite">{monthEventCount > 0 ? `${monthEventCount} show${monthEventCount === 1 ? "" : "s"}` : "No shows this month"}</Text>
+          <View style={[styles.monthMid, Platform.OS === "ios" && styles.monthMidIOS]}>
+            <Text style={[styles.monthTitle, Platform.OS === "ios" && styles.monthTitleIOS]} accessibilityRole="header">{MONTHS[m]} {y}</Text>
+            <Text style={[styles.monthSub, Platform.OS === "ios" && styles.monthSubIOS]} accessibilityLiveRegion="polite">{monthEventCount > 0 ? `${monthEventCount} show${monthEventCount === 1 ? "" : "s"}` : "No shows this month"}</Text>
           </View>
           <Pressable style={styles.navBtn} onPress={() => shiftMonth(1)} accessibilityRole="button" accessibilityLabel={`Next month, ${MONTHS[(m + 1) % 12]}`}><Icon name="chevron-right" size={18} color={colors.text} /></Pressable>
         </View>
@@ -338,7 +347,7 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
 
             <View style={styles.grid} accessibilityLabel={`${MONTHS[m]} ${y} days`}>
               {cells.map((d, i) => {
-                if (d == null) return <View key={`blank-${i}`} style={styles.cell} accessible={false} />;
+                if (d == null) return <View key={`blank-${i}`} style={[styles.cell, dayGeometry]} accessible={false} />;
                 const k = keyOf(y, m, d);
                 const evs = byDay[k];
                 const isToday = k === todayKey;
@@ -356,7 +365,7 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
                   <Pressable
                     key={k}
                     ref={(node) => { if (node) dayRefs.current.set(k, node); else dayRefs.current.delete(k); }}
-                    style={[styles.cell, isSel && styles.cellSel, isToday && !isSel && styles.cellToday]}
+                    style={[styles.cell, dayGeometry, isSel && styles.cellSel, isToday && !isSel && styles.cellToday]}
                     onPress={() => selectDay(k)}
                     {...(Platform.OS === "web" ? { onKeyDown: (event) => onDayKeyDown(event, k), tabIndex: isSel ? 0 : -1 } : {})}
                     accessibilityRole="button"
@@ -372,17 +381,17 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
           </View>
         </ScrollView>
 
-        <View style={styles.legendRow}>
+        <View style={[styles.legendRow, Platform.OS === "ios" && styles.legendRowIOS]}>
           {view === CALENDAR_SHOW_VIEW.UPCOMING ? (
             <>
-              <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.amber }]} /><Text style={styles.legendTxt}>You're going</Text></View>
-              <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.magenta }]} /><Text style={styles.legendTxt}>Interested</Text></View>
-              <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.textFaint }]} /><Text style={styles.legendTxt}>Upcoming show</Text></View>
+              <View style={[styles.legendItem, Platform.OS === "ios" && styles.legendItemIOS]}><View style={[styles.dot, { backgroundColor: colors.amber }]} /><Text style={[styles.legendTxt, Platform.OS === "ios" && styles.legendTxtIOS]}>You're going</Text></View>
+              <View style={[styles.legendItem, Platform.OS === "ios" && styles.legendItemIOS]}><View style={[styles.dot, { backgroundColor: colors.magenta }]} /><Text style={[styles.legendTxt, Platform.OS === "ios" && styles.legendTxtIOS]}>Interested</Text></View>
+              <View style={[styles.legendItem, Platform.OS === "ios" && styles.legendItemIOS]}><View style={[styles.dot, { backgroundColor: colors.textFaint }]} /><Text style={[styles.legendTxt, Platform.OS === "ios" && styles.legendTxtIOS]}>Upcoming show</Text></View>
             </>
           ) : (
-            <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.amber }]} /><Text style={styles.legendTxt}>Your show history</Text></View>
+            <View style={[styles.legendItem, Platform.OS === "ios" && styles.legendItemIOS]}><View style={[styles.dot, { backgroundColor: colors.amber }]} /><Text style={[styles.legendTxt, Platform.OS === "ios" && styles.legendTxtIOS]}>Your show history</Text></View>
           )}
-          {tz ? <Text style={styles.tzTxt}>{tz}</Text> : null}
+          {tz ? <Text style={[styles.tzTxt, Platform.OS === "ios" && styles.tzTxtIOS]}>{tz}</Text> : null}
         </View>
 
         {view === CALENDAR_SHOW_VIEW.PAST && session && (historyInitialLoading || history.error || historyWindow.hasMore) ? (
@@ -439,7 +448,7 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
             accessibilityState={{ disabled: !!exportingKey, busy: exportingKey === "all" }}
           >
             <Icon name="calendar" size={16} color={colors.amber} />
-            <Text style={styles.exportAllTxt}>{exportingKey === "all" ? "Preparing calendar…" : `Save my Going shows (${goingEvents.length})`}</Text>
+            <Text style={[styles.exportAllTxt, Platform.OS === "ios" && styles.exportAllTxtIOS]}>{exportingKey === "all" ? "Preparing calendar…" : `Save my Going shows (${goingEvents.length})`}</Text>
           </Pressable>
         ) : null}
         {calendarNotice ? (
@@ -487,21 +496,21 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
           </View>
         ) : (
           selectedEvents.map((ev, i) => (
-            <View key={i} style={styles.eventRow}>
-              <Pressable style={styles.eventMain} onPress={() => openEvent(ev)} accessibilityRole="button" accessibilityLabel={`${ev.artist} at ${ev.venue || ev.place || "venue"}`}>
-                <View style={styles.eventLeft}>
-                  <Text style={styles.eventArtist} numberOfLines={1}>{ev.artist || "Show"}</Text>
-                  <Text style={styles.eventVenue} numberOfLines={1}>{[ev.venue, ev.place || ev.city].filter(Boolean).join(" · ") || "Venue TBA"}</Text>
+            <View key={i} style={[styles.eventRow, largeIOS && styles.eventRowLarge]}>
+              <Pressable style={[styles.eventMain, largeIOS && styles.eventMainLarge]} onPress={() => openEvent(ev)} accessibilityRole="button" accessibilityLabel={`${ev.artist} at ${ev.venue || ev.place || "venue"}`}>
+                <View style={[styles.eventLeft, largeIOS && styles.eventLeftLarge]}>
+                  <Text style={styles.eventArtist} numberOfLines={largeIOS ? undefined : 1}>{ev.artist || "Show"}</Text>
+                  <Text style={styles.eventVenue} numberOfLines={largeIOS ? undefined : 1}>{[ev.venue, ev.place || ev.city].filter(Boolean).join(" · ") || "Venue TBA"}</Text>
                 </View>
-                {view === CALENDAR_SHOW_VIEW.UPCOMING && ev.going ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>GOING</Text></View> : null}
-                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && ev.interested ? <View style={styles.interestedTag}><Text style={styles.interestedTagTxt}>INTERESTED</Text></View> : null}
-                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && !ev.interested && ev.logged ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>LOGGED</Text></View> : null}
-                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && !ev.interested && !ev.logged && ev.posted ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>POSTED</Text></View> : null}
-                {view === CALENDAR_SHOW_VIEW.PAST && ev.logged ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>LOGGED</Text></View> : null}
-                {view === CALENDAR_SHOW_VIEW.PAST && !ev.logged && ev.attended ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>WENT</Text></View> : null}
-                {ev.soldOut ? <View style={styles.soldTag}><Text style={styles.soldTagTxt}>SOLD OUT</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.UPCOMING && ev.going ? <View style={[styles.goingTag, largeIOS && styles.wrappingControlLarge]}><Text style={styles.goingTagTxt}>GOING</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && ev.interested ? <View style={[styles.interestedTag, largeIOS && styles.wrappingControlLarge]}><Text style={styles.interestedTagTxt}>INTERESTED</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && !ev.interested && ev.logged ? <View style={[styles.goingTag, largeIOS && styles.wrappingControlLarge]}><Text style={styles.goingTagTxt}>LOGGED</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && !ev.interested && !ev.logged && ev.posted ? <View style={[styles.goingTag, largeIOS && styles.wrappingControlLarge]}><Text style={styles.goingTagTxt}>POSTED</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.PAST && ev.logged ? <View style={[styles.goingTag, largeIOS && styles.wrappingControlLarge]}><Text style={styles.goingTagTxt}>LOGGED</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.PAST && !ev.logged && ev.attended ? <View style={[styles.goingTag, largeIOS && styles.wrappingControlLarge]}><Text style={styles.goingTagTxt}>WENT</Text></View> : null}
+                {ev.soldOut ? <View style={[styles.soldTag, largeIOS && styles.wrappingControlLarge]}><Text style={styles.soldTagTxt}>SOLD OUT</Text></View> : null}
               </Pressable>
-              <View style={styles.eventActions}>
+              <View style={[styles.eventActions, largeIOS && styles.eventActionsLarge]}>
                 {onOpenArtist && ev.artist ? (
                   <Pressable style={styles.iconBtn} onPress={() => onOpenArtist(ev.artist)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Open ${ev.artist}`}><Icon name="music" size={15} color={colors.textDim} /></Pressable>
                 ) : null}
@@ -517,7 +526,7 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
                   <Icon name="calendar" size={15} color={colors.textDim} />
                 </Pressable>
                 {ev.ticketUrl ? (
-                  <Pressable style={styles.ticketBtn} onPress={() => { void openTicketLink(ev.ticketUrl, { onFailure: () => setCalendarNotice({ ok: false, text: "Tickets could not be opened on this device." }) }); }} hitSlop={6} accessibilityRole="link" accessibilityLabel={`Tickets for ${ev.artist || "show"}`}>
+                  <Pressable style={[styles.ticketBtn, largeIOS && styles.wrappingControlLarge]} onPress={() => { void openTicketLink(ev.ticketUrl, { onFailure: () => setCalendarNotice({ ok: false, text: "Tickets could not be opened on this device." }) }); }} hitSlop={6} accessibilityRole="link" accessibilityLabel={`Tickets for ${ev.artist || "show"}`}>
                     <Text style={styles.ticketTxt}>Tickets</Text>
                   </Pressable>
                 ) : null}
@@ -533,6 +542,20 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
 }
 
 const styles = StyleSheet.create({
+  // iOS Dynamic Type keeps show identity ahead of badges and secondary actions.
+  eventRowLarge: { flexDirection: "column", alignItems: "stretch" },
+  eventMainLarge: { flex: 0, flexWrap: "wrap", width: "100%" },
+  eventLeftLarge: { flex: 0, flexBasis: "100%", width: "100%" },
+  wrappingControlLarge: { maxWidth: "100%" },
+  eventActionsLarge: { flexWrap: "wrap", justifyContent: "flex-end" },
+  monthMidIOS: { flex: 1, minWidth: 0, paddingHorizontal: 8 },
+  monthTitleIOS: { textAlign: "center" },
+  monthSubIOS: { textAlign: "center" },
+  legendRowIOS: { flexWrap: "wrap", columnGap: 16, rowGap: 8 },
+  legendItemIOS: { maxWidth: "100%", flexShrink: 1 },
+  legendTxtIOS: { flexShrink: 1 },
+  tzTxtIOS: { flexShrink: 1 },
+  exportAllTxtIOS: { flexShrink: 1, paddingVertical: 8 },
   refreshBoundary: { flex: 1 },
   wrap: { flex: 1, backgroundColor: colors.bg },
   scroll: { padding: space(4), paddingTop: 8 },

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { ActivityIndicator, Platform, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { Image } from "expo-image";
 import { clipPosterPhase, durablePosterEventOwnsInstance, durablePosterFailurePlan } from "../domain/clipPoster.mjs";
 import { posterGenerationEnabled } from "../domain/posterVisibility.mjs";
@@ -31,6 +31,7 @@ export default function ClipPoster({
   showPlayBadge = true,
   priority = "normal",
   loading = "eager",
+  cachePolicy = "memory-disk",
   accessibilityLabel = "Video clip preview",
   accessible = true,
 }) {
@@ -192,7 +193,7 @@ export default function ClipPoster({
           source={{ uri: posterUri }}
           style={StyleSheet.absoluteFill}
           contentFit={fit}
-          cachePolicy="memory-disk"
+          cachePolicy={Platform.OS === "ios" ? cachePolicy : "memory-disk"}
           priority={priority}
           loading={loading}
           allowDownscaling
@@ -209,7 +210,7 @@ export default function ClipPoster({
           source={generatedPoster}
           style={StyleSheet.absoluteFill}
           contentFit={fit}
-          cachePolicy="memory"
+          cachePolicy={Platform.OS === "ios" && cachePolicy === "none" ? "none" : "memory"}
           priority={priority}
           loading={loading}
           allowDownscaling

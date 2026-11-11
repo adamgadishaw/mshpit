@@ -6413,6 +6413,9 @@ export const routes = {
     if (profileErrors.length) {
       throw new ApiError(400, profileErrors[0], "VALIDATION_FAILED");
     }
+    // Clearing a bio is an explicit edit. The shared optional-field parser
+    // skips empty strings, so retain this one without changing other routes.
+    if (ctx.body?.bio === "") v.bio = "";
     // `shape` leaves null values alone for ordinary optional fields. These two
     // media slots additionally accept explicit null as removal; an omitted
     // slot still means retain it. The existing transaction owns reference

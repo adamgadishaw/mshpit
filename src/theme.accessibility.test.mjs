@@ -46,3 +46,24 @@ test("primary button fills retain readable dark labels", () => {
   }
   assert.deepEqual(failures, [], `Primary button contrast regressed:\n${failures.join("\n")}`);
 });
+
+
+test("iOS avatar foreground meets AA on tinted primary theme surfaces", () => {
+  const failures = [];
+  const tint = (base, overlay) => "#" + [1, 3, 5].map(index => {
+    const value = Math.round(Number.parseInt(base.slice(index, index + 2), 16) * 0.8 + Number.parseInt(overlay.slice(index, index + 2), 16) * 0.2);
+    return value.toString(16).padStart(2, "0");
+  }).join("");
+  // RGB corner values bound luminance for the existing 0x33 alpha tint.
+  const extremes = ["#000000", "#0000FF", "#00FF00", "#00FFFF", "#FF0000", "#FF00FF", "#FFFF00", "#FFFFFF"];
+  for (const name of PALETTES) {
+    const colors = palette(name);
+    for (const surface of ["bg", "bgElev", "surface", "surfaceAlt"]) {
+      for (const overlay of extremes) {
+        const ratio = contrast(colors.text, tint(colors[surface], overlay));
+        if (ratio < 4.5) failures.push(`${name}.text on ${surface} tinted ${overlay}: ${ratio.toFixed(2)}:1`);
+      }
+    }
+  }
+  assert.deepEqual(failures, [], failures.join("\n"));
+});

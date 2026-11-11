@@ -8,6 +8,7 @@ import * as concertMemoryGallery from "./concertMemoryGallery.mjs";
 import * as dates from "./dates.mjs";
 import * as artistWorkspace from "./artistAccountIdentity.mjs";
 import * as profileTimeline from "./profileTimeline.mjs";
+import useNativeTabContentReady from "../hooks/useNativeTabContentReady.js";
 
 const require = createRequire(import.meta.url);
 const { transformSync } = require("@babel/core");
@@ -43,10 +44,13 @@ function fixture() {
       useEffect() {},
     },
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
+    "../components/NativeTabScroll": { ScrollView: "ScrollView", FlatList: "FlatList" },
+    // This first-render privacy fixture uses web, where readiness is inert.
+    "../hooks/useNativeTabContentReady": { __esModule: true, default: useNativeTabContentReady },
     "react-native": {
       View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable",
       StyleSheet: { create: (value) => value, absoluteFill: {}, absoluteFillObject: {} },
-      Platform: { OS: "web" }, Animated: {}, Easing: {}, Share: { share: unexpectedAction },
+      useWindowDimensions: () => ({ width: 393, fontScale: 1 }), Platform: { OS: "web" }, Animated: {}, Easing: {}, Share: { share: unexpectedAction },
     },
     "../theme": { colors: {}, radius: {}, shadow: {}, mono: "mono", displayFont: "display", space: (value) => value * 4 },
     "../components/Icon": "Icon",

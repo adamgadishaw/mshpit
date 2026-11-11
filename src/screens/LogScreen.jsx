@@ -22,6 +22,7 @@ import Stars from "../components/Stars";
 import TapStars from "../components/TapStars";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
+import useReducedMotion from "../hooks/useReducedMotion";
 import DatePicker from "../components/DatePicker";
 import ShowLineupFields from "../components/ShowLineupFields";
 import { fetchSeenCount } from "../lib/seenCountApi";
@@ -272,6 +273,9 @@ export default function LogScreen({
 }) {
   const { session, searchArtistsApi, attachArtistSuggestionApi, searchVenues, searchPeople, drafts, saveDraft, deleteDraft } = useStore();
   const accountTasks = useAccountTaskScope(session?.id);
+  const reducedMotion = useReducedMotion();
+  const reducedMotionRef = useRef(reducedMotion);
+  reducedMotionRef.current = reducedMotion;
   const initialRecoveryDraftRef = useRef(!editing && initialDraftId
     ? drafts.find((draft) => draft?.id === initialDraftId) || null
     : null);
@@ -332,7 +336,7 @@ export default function LogScreen({
   const storyStep = logSteps.length;
   const goToLogStep = (step) => {
     setLogStep(Math.max(1, Math.min(step, logSteps.length)));
-    requestAnimationFrame(() => composerScrollRef.current?.scrollTo?.({ y: 0, animated: true }));
+    requestAnimationFrame(() => composerScrollRef.current?.scrollTo?.({ y: 0, animated: !reducedMotionRef.current }));
   };
   const isCoHeadline = effectiveFormat === "co_headline";
   const [timesSeen, setTimesSeen] = useState(null);
@@ -1776,7 +1780,7 @@ export default function LogScreen({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? (isMemorialMemory ? "Edit fan memory" : isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : protectedLegacyMemory ? "Share a written memory" : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Review a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy || postCoolingDown || featuredPostingBlocked }} />
+      <SheetHeader title={editing ? (isMemorialMemory ? "Edit fan memory" : isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : protectedLegacyMemory ? "Share a written memory" : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Review a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, loading: submitBusy, disabled: !canPost || submitBusy || postCoolingDown || featuredPostingBlocked }} />
 
       <ScrollView ref={composerScrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {!!postError && <View style={[styles.postErrorBox, postRetryReady && styles.postReadyBox]} accessibilityRole="alert" accessibilityLiveRegion="polite"><Icon name={postCoolingDown ? "clock" : postRetryReady ? "check" : "flag"} size={14} color={postRetryReady ? colors.good : colors.danger} /><Text style={[styles.postErrorTxt, postRetryReady && styles.postReadyTxt]}>{postCoolingDown ? postRetryCooldownMessage(postRetrySeconds) : postError}</Text></View>}
@@ -1902,7 +1906,7 @@ export default function LogScreen({
                 setPostType("show");
                 // The show fields open above the text that was just written, so
                 // bring them into view instead of leaving them off-screen.
-                requestAnimationFrame(() => composerScrollRef.current?.scrollTo?.({ y: 0, animated: true }));
+                requestAnimationFrame(() => composerScrollRef.current?.scrollTo?.({ y: 0, animated: !reducedMotionRef.current }));
               }}
               disabled={submitBusy}
               accessibilityRole="button"
@@ -2059,7 +2063,7 @@ export default function LogScreen({
             <View style={styles.onlineRatingCard}>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.onlineRatingLabel}>YOUR RATING</Text>
-                <TapStars value={onlineRating} onChange={(value) => { setRatingsDirty(true); setOnlineRating(normalizeOnlineRating(value)); }} size={28} gap={5} color={colors.amber} />
+                <TapStars accessibilityLabel={Platform.OS === "ios" ? "Online performance rating" : undefined} value={onlineRating} onChange={(value) => { setRatingsDirty(true); setOnlineRating(normalizeOnlineRating(value)); }} size={28} gap={5} color={colors.amber} />
               </View>
               <Text style={styles.onlineRatingValue}>{onlineRating ? onlineRating.toFixed(1) : "-"}</Text>
             </View>
@@ -2174,7 +2178,7 @@ export default function LogScreen({
         <View style={styles.quickRatingCard}>
           <Text style={styles.onlineRatingLabel}>{isFestival ? "HOW WAS THE FESTIVAL?" : "HOW WAS THE SHOW?"}</Text>
           <View style={styles.quickRatingRow}>
-            <TapStars value={dims.experience} onChange={(value) => setDim("experience", value)} size={32} gap={5} color={colors.amber} />
+            <TapStars accessibilityLabel={Platform.OS === "ios" ? "Overall experience rating" : undefined} value={dims.experience} onChange={(value) => setDim("experience", value)} size={32} gap={5} color={colors.amber} />
             <Text style={styles.onlineRatingValue}>{dims.experience ? dims.experience.toFixed(1) : "—"}</Text>
           </View>
           <Text style={styles.detailHint}>Your overall experience. Leave any detailed scores you don't remember unrated.</Text>
@@ -2193,7 +2197,7 @@ export default function LogScreen({
                   <Text style={styles.factorLabel}>{d.label}</Text>
                   {dims[d.key] > 0 && <Pressable style={styles.clearRating} onPress={() => setDim(d.key, 0)} accessibilityRole="button" accessibilityLabel={`Leave ${d.label.toLowerCase()} unrated`}><Text style={styles.optionalActionText}>Leave unrated</Text></Pressable>}
                 </View>
-                <TapStars value={dims[d.key]} onChange={(v) => setDim(d.key, v)} size={25} gap={4} color={GROUP_COLOR[g]} />
+                <TapStars accessibilityLabel={Platform.OS === "ios" ? `${d.label} rating` : undefined} value={dims[d.key]} onChange={(v) => setDim(d.key, v)} size={25} gap={4} color={GROUP_COLOR[g]} />
               </View>
             ))}
           </View>
@@ -2514,7 +2518,7 @@ export default function LogScreen({
           </View>
         ) : null}
         {!isStatus && !isOnlineReview && <Text style={styles.submitHint} accessibilityLiveRegion="polite">{composerLogRequirement({ artist, venue, city, eventAddress, overall: computed.overall })}</Text>}
-        {!stepped || currentLogStep === storyStep ? <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy || postCoolingDown || featuredPostingBlocked} style={{ marginTop: engagementPrompt ? 14 : 28 }} /> : null}
+        {!stepped || currentLogStep === storyStep ? <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} loading={submitBusy} disabled={!canPost || submitBusy || postCoolingDown || featuredPostingBlocked} style={{ marginTop: engagementPrompt ? 14 : 28 }} /> : null}
         {!editing && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
             <Icon name="edit" size={14} color={colors.textDim} />

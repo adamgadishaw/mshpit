@@ -49,9 +49,10 @@ for (const [name, privateSection] of [["ArtistScreen", "community"], ["VenueScre
   test(`${name} private tab opens sign-in once without changing the public section`, () => {
     const source = read(name);
     const node = all(parse(source)).find((entry) => entry.type === "VariableDeclarator" && entry.id?.name === "setActiveSection").init;
-    for (const session of [null, { id: "member" }]) {
-      const calls = { auth: [], select: [], scroll: [] };
+    for (const IS_IOS of [false, true]) for (const session of [null, { id: "member" }]) {
+      const calls = { auth: [], select: [], scroll: [], cancel: [] };
       const action = evaluate(source, node, {
+        IS_IOS, scrollReturn: { current: { cancel: () => calls.cancel.push(true) } },
         session, a: { profileKey: "artist" }, venue: { name: "Room" },
         publicVenue: { resource: { scope: "public-venue:fixture" } },
         onRequireAuth: (...args) => calls.auth.push(args),
@@ -61,7 +62,8 @@ for (const [name, privateSection] of [["ArtistScreen", "community"], ["VenueScre
       action(privateSection);
       assert.equal(calls.auth.length, session ? 0 : 1);
       assert.equal(calls.select.length, session ? 1 : 0);
-      if (!session) assert.deepEqual(calls.auth, [[]]);
+      if (!session) { assert.deepEqual(calls.auth, [[]]); assert.deepEqual(calls.cancel, [], "guest login cannot discard the public return position"); }
+      else if (name === "ArtistScreen") assert.equal(calls.cancel.length, IS_IOS ? 1 : 0);
       calls.auth.length = 0;
       calls.select.length = 0;
       action("shows");
@@ -102,7 +104,7 @@ test("artist snapshot does not resolve top-review requests for anonymous viewers
   }
 });
 
-test("concert-map deep link waits for the correct member profile layout and scrolls only once", () => {
+for (const IS_IOS of [false, true]) test(`${IS_IOS ? "iOS" : "non-iOS"} concert-map deep link waits for the correct member profile layout and scrolls only once`, () => {
   const source = read("ProfileScreen");
   const effect = all(parse(source)).find((entry) => entry.type === "CallExpression" && entry.callee?.name === "useEffect"
     && source.slice(entry.start, entry.end).includes('initialSection !== "concert-history"')).arguments[0];
@@ -116,6 +118,7 @@ test("concert-map deep link waits for the correct member profile layout and scro
     }
   };
   const context = {
+    IS_IOS, nativeSection: IS_IOS ? "shows" : "posts",
     initialSection: "concert-history", session: { id: "member" }, user: { id: "target" },
     profileScope: "member:target", concertLayout: { scope: "member:other", y: 150 },
     concertFocusRef: { current: null }, profileScrollRef: { current: { scrollTo: (options) => scrolls.push(options) } },
@@ -131,6 +134,16 @@ test("concert-map deep link waits for the correct member profile layout and scro
   flushFrames();
   assert.equal(scrolls.length, 0, "pending history may still insert gallery content above the map");
   context.history.status = "ready";
+  if (IS_IOS) {
+    for (const section of ["posts", "gallery"]) {
+      context.nativeSection = section;
+      evaluate(source, effect, context)();
+      assert.equal(frames.size, 0, "inactive concert history must not schedule a focus scroll");
+      assert.equal(scrolls.length, 0);
+      assert.equal(context.concertFocusRef.current, null, "inactive sections must not consume the pending deep link");
+    }
+    context.nativeSection = "shows";
+  }
   evaluate(source, effect, context)();
   context.concertLayoutRef.current.y = 350;
   flushFrames();

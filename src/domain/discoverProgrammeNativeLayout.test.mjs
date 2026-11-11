@@ -13,6 +13,7 @@ const code = transformSync(readFileSync(file, "utf8"), {
 const nodes = value => !value || typeof value !== "object" ? [] : Array.isArray(value) ? value.flatMap(nodes) : [value, ...nodes(value.props?.children)];
 function render(platform, width, fontScale, compact = true, selectedKey = "shows") {
   const componentRequire = name => {
+    if (name.endsWith("/NativeTabScroll")) return { ScrollView: "ScrollView" };
     if (name === "react") return { useRef: initial => ({ current: initial }) };
     if (name === "react-native") return { Platform: { OS: platform }, useWindowDimensions: () => ({ width, height: 800, fontScale }),
       View: "View", Text: "Text", Pressable: "Pressable", ScrollView: "ScrollView", StyleSheet: { create: value => value } };

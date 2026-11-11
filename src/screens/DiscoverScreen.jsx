@@ -1,11 +1,15 @@
 import { PageTitle } from "../components/PageReturnContext";
+import useNativeTabContentReady from "../hooks/useNativeTabContentReady";
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
+import { ScrollView } from "../components/NativeTabScroll";
 import { Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
 import { countryForCity } from "../geo";
 import Icon from "../components/Icon";
 import DiscoverChart from "../components/discover/DiscoverChart";
+import DiscoverBrowse from "../components/discover/DiscoverSectionBrowser";
 import DiscoverGenres from "../components/discover/DiscoverGenres";
 import DiscoverVenues from "../components/discover/DiscoverVenues";
 import DiscoverPhotoPanel from "../features/discoverPhotos/DiscoverPhotoPanel";
@@ -83,7 +87,7 @@ const EMPTY_OVERVIEW = normalizeDiscoverOverview({});
 const EMPTY_EVENT_RANGE = Object.freeze({ scopeKey: "", days: null, through: null, rows: [], nextCursor: null, status: "idle" });
 // Cards or list: kept while the app is open, so coming back to Discover keeps
 // the member's choice. No browser storage.
-let rememberedEventView = Platform.OS === "web" ? "cards" : "list";
+let rememberedEventView = Platform.OS === "web" || Platform.OS === "ios" ? "cards" : "list";
 
 function useLatestCallback(callback) {
   const callbackRef = useRef(callback);
@@ -92,6 +96,8 @@ function useLatestCallback(callback) {
 }
 
 export default function DiscoverScreen({
+  browseReturn,
+  swipeScope, swipeEnabled, isCurrentSwipeRoute,
   initialProgramme,
   rememberedProgramme,
   onProgrammeChange,
@@ -126,18 +132,28 @@ export default function DiscoverScreen({
     venueDirectoryIndex,
     myAttendance = [],
   } = useStore();
+  const isTabPreview = useNativeTabPreview();
+  const previewRef = useRef(isTabPreview);
+  previewRef.current = isTabPreview;
+  const [initialBrowse] = useState(() => Platform.OS === "ios" && !isTabPreview ? browseReturn?.read() : null);
   const { width } = useWindowDimensions();
   const openCity = useContext(CityNavigationContext);
   const compact = width < 620;
   const veryCompact = width < 380;
   const wide = width >= 900;
   const actionBasis = veryCompact ? "100%" : "48%";
-  const [programme, setProgramme] = useState(() => restoredDiscoverProgramme(initialProgramme, rememberedProgramme));
+  const [programme, setProgramme] = useState(() => restoredDiscoverProgramme(initialBrowse?.programme || initialProgramme, rememberedProgramme));
   const rememberProgramme = useLatestCallback(onProgrammeChange);
-  useEffect(() => { rememberProgramme(programme); }, [programme, rememberProgramme]);
+  useEffect(() => { if (!previewRef.current) rememberProgramme(programme); }, [programme, rememberProgramme, isTabPreview]);
+  const initialProgrammeRef = useRef(initialProgramme);
   useEffect(() => {
-    if (initialProgramme !== undefined) setProgramme(discoverProgrammeKey(initialProgramme));
-  }, [initialProgramme]);
+    // A snapshot belongs to this exact navigation lease. Only a new explicit
+    // directory intent may override the viewer's intervening category choice.
+    if (initialProgramme !== undefined && (!initialBrowse || initialProgrammeRef.current !== initialProgramme)) {
+      setProgramme(discoverProgrammeKey(initialProgramme));
+    }
+    initialProgrammeRef.current = initialProgramme;
+  }, [initialProgramme, initialBrowse]);
   const [areaExpanded, setAreaExpanded] = useState(false);
   const [dateExpanded, setDateExpanded] = useState(false);
   const areaDisclosureRef = useRef(null);
@@ -151,7 +167,7 @@ export default function DiscoverScreen({
   const homeCity = session?.home?.city || discoverySidebar?.location?.city || "";
   const homeCountry = countryForCity(homeCity);
   const areaContext = { accountId, homeCity, homeCountry };
-  const [areaChoice, setAreaChoice] = useState(() => defaultDiscoverAreaChoice(areaContext));
+  const [areaChoice, setAreaChoice] = useState(() => initialBrowse ? { accountId, region: initialBrowse.region, scope: initialBrowse.scope, touched: initialBrowse.touched } : defaultDiscoverAreaChoice(areaContext));
   const resolvedArea = resolveDiscoverAreaChoice(areaChoice, areaContext);
   const region = resolvedArea.region;
   const liveScope = discoverAreaIsLocal(resolvedArea)
@@ -164,20 +180,21 @@ export default function DiscoverScreen({
     ...(liveScope === LIVE_EVENT_SCOPE.LOCAL ? homeCoordinates : []),
   ]);
   const overviewScopeKey = discoverCountryIdentity(region) || "worldwide";
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialBrowse?.query || "");
   const [overviewResults, setOverviewResults] = useState(() => ({}));
   const overview = overviewResults[overviewScopeKey] || EMPTY_OVERVIEW;
   const [overviewRequestState, setOverviewRequestState] = useState({ scopeKey: null, status: "idle" });
-  const [selectedGenre, setSelectedGenre] = useState(null);
+  const [selectedGenre, setSelectedGenre] = useState(initialBrowse?.genre || null);
   const [sceneExpanded, setSceneExpanded] = useState(false);
   const genreScopeKey = JSON.stringify([overviewScopeKey, String(selectedGenre || "").trim().toLowerCase()]);
   const [genreResults, setGenreResults] = useState(() => ({}));
   const genreRows = selectedGenre ? genreResults[genreScopeKey] || [] : [];
   const [genreRequestState, setGenreRequestState] = useState({ scopeKey: null, status: "idle" });
   const [eventRange, setEventRange] = useState(EMPTY_EVENT_RANGE);
-  const [eventView, setEventViewState] = useState(() => rememberedEventView);
-  const setEventView = useCallback((view) => { rememberedEventView = view; setEventViewState(view); }, []);
-  const [eventWeek, setEventWeek] = useState(null);
+  const [eventView, setEventViewState] = useState(() => Platform.OS === "ios" ? initialBrowse?.eventView || "cards" : rememberedEventView);
+  const setEventView = useCallback((view) => { if (Platform.OS !== "ios") rememberedEventView = view; setEventViewState(view); }, []);
+  const [eventWeek, setEventWeek] = useState(initialBrowse?.eventWeek || null);
+  const restoredRangeScope = useRef(rangeScopeKey);
   const requestedCursorRef = useRef(null);
   const [pullRefreshing, setPullRefreshing] = useState(false);
   const [pullRefreshError, setPullRefreshError] = useState(false);
@@ -261,7 +278,7 @@ export default function DiscoverScreen({
   }) : liveEvents, [liveEvents, rangeEvents, rangeMatchesScene]);
   const selectedRangeDays = eventRange.scopeKey === rangeScopeKey && eventRange.days
     ? eventRange.days
-    : DISCOVER_RANGE_DAYS[0];
+    : (restoredRangeScope.current === rangeScopeKey ? initialBrowse?.days : null) || DISCOVER_RANGE_DAYS[0];
   // Cards show the first few; the list shows every show in range a week at a time.
   const rangeHasMore = !rangeMatchesScene || rangeEvents.length > visibleLiveEvents.length;
   const rangeLoadingMore = rangeMatchesScene && eventRange.status === "loading" && !!eventRange.nextCursor && eventRange.rows.length < DISCOVER_RANGE_MAX_EVENTS;
@@ -451,8 +468,10 @@ export default function DiscoverScreen({
   }, [eventRange.days, eventRange.nextCursor, eventRange.rows.length, eventRange.status, eventView, rangeMatchesScene, requestEventRange]);
 
   useEffect(() => {
-    setEventWeek(null);
-    requestEventRange(DISCOVER_RANGE_DAYS[0]);
+    const returning = restoredRangeScope.current === rangeScopeKey && initialBrowse;
+    if (!returning) setEventWeek(null);
+    requestEventRange(returning?.days || DISCOVER_RANGE_DAYS[0]);
+    restoredRangeScope.current = null;
     return () => {
       rangeRequestRef.current.controller?.abort();
       rangeRequestRef.current.sequence += 1;
@@ -563,6 +582,9 @@ export default function DiscoverScreen({
   const overviewState = discoverSectionState({ status: overviewStatus, rows: overview.chart.rows });
   const showOverviewContent = hasDiscoverOverviewContent(overview)
     && (overviewStatus === "ready" || overviewStatus === "refreshing" || overviewStatus === "error");
+  // Current scoped primary content (including honest empty/error states) is
+  // sufficient; recommendations, photos and other optional widgets may follow.
+  useNativeTabContentReady(showOverviewContent || overviewStatus === "ready" || overviewStatus === "error");
   const countries = useMemo(() => discoverNationOptions(overview.eventCoverage.countries, {
     homeCountry,
     selectedRegion: region,
@@ -584,6 +606,41 @@ export default function DiscoverScreen({
     { label: "venues", value: (region === "Worldwide" ? overview.eventCoverage.venueTotal : overview.eventCoverage.countries.find((row) => discoverCountryIdentity(row.country) === discoverCountryIdentity(region))?.venueCount) ?? sceneProjection.venueCount, tint: colors.cool },
     { label: "genres", value: overview.distinctGenres ?? localStats.genres, tint: colors.magenta },
   ];
+
+  useEffect(() => {
+    if (Platform.OS !== "ios" || previewRef.current) return;
+    browseReturn?.save({ query, programme, genre: selectedGenre, region: areaChoice.region, scope: areaChoice.scope,
+      touched: areaChoice.touched, days: selectedRangeDays, eventView, eventWeek });
+  }, [browseReturn, query, programme, selectedGenre, areaChoice, selectedRangeDays, eventView, eventWeek, isTabPreview]);
+
+  // iOS owns presentation only. Requests, filters, refresh and navigation above
+  // remain shared; Metro resolves a no-op entry on Android and web.
+  if (Platform.OS === "ios") return <DiscoverBrowse
+    browseReturn={browseReturn} initialBrowse={initialBrowse}
+    accountId={accountId} swipeScope={swipeScope} swipeEnabled={swipeEnabled} isCurrentSwipeRoute={isCurrentSwipeRoute}
+    programme={programme} onProgramme={(value) => setProgramme(discoverProgrammeKey(value))}
+    region={region} homeCity={homeCity} countries={countries} onRegion={pickRegion}
+    local={liveScope === LIVE_EVENT_SCOPE.LOCAL} onScope={(local) => pickLiveScope(local ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE)}
+    refreshing={pullRefreshing} onRefresh={refreshDiscover} refreshError={pullRefreshError}
+    chart={overview.chart} overviewStatus={overviewStatus} onRetryOverview={() => requestOverview({ force: true })}
+    genres={overview.genres} selectedGenre={selectedGenre} genreRows={genreRows} genreStatus={genreStatus} attendanceRows={sceneAttendance}
+    onGenre={setSelectedGenre} onRetryGenre={retryGenre} query={query} onQuery={setQuery}
+    slides={eventBannerSlides} events={visibleLiveEvents} rangeEvents={rangeEvents} eventRecovery={eventRecovery}
+    eventStatus={eventRange.scopeKey === rangeScopeKey ? eventRange.status : "idle"}
+    rangeLoadingMore={rangeLoadingMore} rangeHasMore={rangeHasMore} selectedRangeDays={selectedRangeDays} onRange={selectEventRange}
+    eventView={eventView} onEventView={setEventView} listView={listView} onEventList={openEventList} eventWeek={eventWeek} onEventWeek={setEventWeek}
+    onOpen={onOpen} onOpenArtist={openArtist} onOpenEvents={onOpenEvents} onOpenTopRated={onOpenTopRated}
+    onOpenCrew={onOpenCrew} onOpenFanClubs={onOpenFanClubs} onOpenLounge={onOpenLounge} loungeRows={loungeRows}
+    recommendations={session ? <ArtistRecommendationsRail resource={artistRecommendations.resource} onOpenArtist={onOpenArtist}
+      onOpenProfile={onOpenProfile} onManageTaste={onManageTaste} onRetry={artistRecommendations.retry} /> : null}
+    loading={<ActivityIndicator color={colors.amber} style={{ marginVertical: 40 }} />}
+    renderPanel={(section, preview) => ({
+      cities: section === "cities" ? <CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} registerRefresh={preview ? undefined : registerCityRefresh} /> : null,
+      venues: section === "venues" ? <DiscoverVenues region={region} homeCity={homeCity} session={session} venueDirectoryIndex={venueDirectoryIndex} tourDates={tourDates} onOpenVenue={onOpenVenue} onOpenEvent={onOpen} onOpenVenues={onOpenVenues} /> : null,
+      festivals: section === "festivals" ? <FestivalsPanel region={region} onOpenFestival={onOpenFestival} registerRefresh={preview ? undefined : registerFestivalRefresh} /> : null,
+      photos: section === "photos" ? <DiscoverPhotoPanel region={region} accountId={session?.id || "guest"} compact={compact} width={width} onOpenPhotos={openPhotos} removedIds={removedIds} blockedIds={blockedIds} /> : null,
+    })[section]}
+  />;
 
   return (
     <VinylRefreshBoundary

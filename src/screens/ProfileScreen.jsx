@@ -1,5 +1,7 @@
+import ProfileGuidance from "../components/ProfileGuidance";
+import { ScrollView } from "../components/NativeTabScroll";
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, Platform, useWindowDimensions } from "react-native";
+import { ActionSheetIOS, ActivityIndicator, View, Text, StyleSheet, Pressable, Platform, useWindowDimensions } from "react-native";
 import { colors, mono, radius, roleColor, space, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { useStore } from "../store";
 import Avatar from "../components/Avatar";
@@ -9,7 +11,7 @@ import NativeDeleteRow from "../components/NativeDeleteRow";
 import { confirmOwnPostDelete } from "../lib/confirmOwnPostDelete";
 import { BadgeRow } from "../components/Badge";
 import { displayedProfileBadges } from "../domain/profileBadges.mjs";
-import { ACHIEVEMENTS } from "../domain/badges.mjs";
+import { ACHIEVEMENT_RULES as ACHIEVEMENTS } from "../domain/achievementRules.mjs";
 import { showDateMs } from "../lib/showTime";
 import Countdown from "../components/Countdown";
 import SmartImage from "../components/SmartImage";
@@ -23,6 +25,8 @@ import { selectConcertReviews, selectProfileTimeline } from "../domain/profileTi
 import { memberCalendarModel } from "../domain/calendarShows.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import useAppActive from "../lib/useAppActive";
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
+import useNativeTabContentReady from "../hooks/useNativeTabContentReady";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { PageTitle } from "../components/PageReturnContext";
 import useScopedRefresh from "../hooks/useScopedRefresh";
@@ -35,17 +39,55 @@ import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import { PostNavigationContext } from "../components/PostNavigationContext";
 import { profileAccentColor } from "../domain/profileAccents.mjs";
+import { ProfileSection, ProfileIdentityRow, ProfileOwnerActions, ProfileSectionTabs, hierarchyStyles } from "../features/profilePresentation/ProfileHierarchy";
+import { ProfileBannerCover, ProfileGallery, ProfileMediaRetryBoundary, useProfileMediaPresentation } from "../features/profileMedia/ProfileMediaPresentation";
 
+const IS_IOS = Platform.OS === "ios";
 const EMPTY_LIST = Object.freeze([]);
 const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "", favoriteShows: EMPTY_LIST });
 
+// Native menus keep account tools secondary without hiding their labels or
+// unread state. An open sheet must never act on a previous account/profile.
+function ProfileActionMenu({ actions, scope, label, unread = 0 }) {
+  const current = useRef({ actions, scope, mounted: true });
+  const showing = useRef(false);
+  current.current = { actions, scope, mounted: true };
+  useEffect(() => {
+    current.current.mounted = true;
+    return () => { current.current.mounted = false; };
+  }, []);
+  const open = () => {
+    if (showing.current) return;
+    const visible = actions.filter((action) => typeof action.onPress === "function");
+    showing.current = true;
+    ActionSheetIOS.showActionSheetWithOptions({
+      title: label,
+      options: [...visible.map((action) => action.label), "Cancel"],
+      cancelButtonIndex: visible.length,
+      destructiveButtonIndex: visible.map((action, index) => action.destructive ? index : -1).filter((index) => index >= 0),
+    }, (index) => {
+      showing.current = false;
+      if (!current.current.mounted || current.current.scope !== scope) return;
+      const selected = visible[index];
+      if (!selected) return;
+      current.current.actions.find((action) => action.key === selected.key)?.onPress?.();
+    });
+  };
+  return (
+    <Pressable testID="profile-action-menu" onPress={open} style={({ pressed }) => [styles.nativeMenu, pressed && { opacity: 0.6 }]} accessibilityRole="button" accessibilityLabel={`${label}${unread > 0 ? `, ${unread} unread updates` : ""}`} accessibilityHint="Opens the available actions">
+      <View style={styles.nativeMenuDots} accessible={false}>{[0, 1, 2].map((dot) => <View key={dot} style={styles.nativeMenuDot} />)}</View>
+      {unread > 0 ? <View style={styles.nativeUnreadDot} accessible={false} /> : null}
+    </Pressable>
+  );
+}
+
 // The member's pinned favorite shows, in their order, near the top.
-function FavoriteShows({ shows, accent, isSelf, onOpen, onManage }) {
+function FavoriteShows({ shows, accent, isSelf, onOpen, onManage, largeText = false }) {
   if (!shows.length) {
     return isSelf && onManage ? (
       <Pressable style={styles.favoriteEmpty} onPress={onManage} accessibilityRole="button" accessibilityLabel="Pin your favorite shows">
         <Icon name="star" size={16} color={colors.amber} />
-        <Text style={styles.favoriteEmptyText}>Pin up to four favorite shows to the top of your profile.</Text>
+        <Text style={styles.favoriteEmptyText}>{IS_IOS ? "Pin up to four favorite shows here." : "Pin up to four favorite shows to the top of your profile."}</Text>
         <Icon name="chevron-right" size={16} color={colors.textDim} />
       </Pressable>
     ) : null;
@@ -58,14 +100,14 @@ function FavoriteShows({ shows, accent, isSelf, onOpen, onManage }) {
           const title = show.artist || show.onlineTitle || "A show";
           const meta = [show.venue || (show.online ? "Watched online" : show.city), show.date ? formatDate(show.date, show.date) : ""].filter(Boolean).join(" · ");
           return (
-            <Pressable key={show.id} style={[styles.favoriteCard, accent && { borderColor: accent }]} onPress={() => onOpen?.(show.id)} disabled={!onOpen}
+            <Pressable key={show.id} style={[styles.favoriteCard, largeText && styles.nativeFavoriteLarge, accent && { borderColor: accent }]} onPress={() => onOpen?.(show.id)} disabled={!onOpen}
               accessibilityRole="button" accessibilityLabel={`${title}${meta ? `, ${meta}` : ""}. Open the review.`}>
-              {show.photo ? <SmartImage uri={show.photo} style={styles.favoritePhoto} contain={false} accessible={false} />
-                : <View style={[styles.favoritePhoto, styles.favoritePhotoEmpty, accent && { backgroundColor: accent }]}><Icon name="ticket" size={20} color="#FFFFFF" /></View>}
-              <View style={styles.favoriteCopy}>
-                <Text style={styles.favoriteArtist} numberOfLines={1}>{title}</Text>
-                {meta ? <Text style={styles.favoriteMeta} numberOfLines={1}>{meta}</Text> : null}
-                {show.overall ? <Text style={[styles.favoriteScore, accent && { color: accent }]}>{show.overall.toFixed(1)}</Text> : null}
+              {show.photo ? <SmartImage uri={show.photo} style={[styles.favoritePhoto, largeText && styles.nativeFavoritePhotoLarge]} contain={false} accessible={false} />
+                : <View style={[styles.favoritePhoto, largeText && styles.nativeFavoritePhotoLarge, styles.favoritePhotoEmpty, accent && { backgroundColor: accent }]}><Icon name="ticket" size={20} color="#FFFFFF" /></View>}
+              <View style={[styles.favoriteCopy, largeText && styles.nativeFavoriteCopyLarge]}>
+                <Text style={styles.favoriteArtist} numberOfLines={IS_IOS ? undefined : 1}>{title}</Text>
+                {meta ? <Text style={styles.favoriteMeta} numberOfLines={IS_IOS ? undefined : 1}>{meta}</Text> : null}
+                {show.overall ? <Text style={[styles.favoriteScore, !IS_IOS && accent && { color: accent }]}>{show.overall.toFixed(1)}</Text> : null}
               </View>
             </Pressable>
           );
@@ -76,9 +118,9 @@ function FavoriteShows({ shows, accent, isSelf, onOpen, onManage }) {
 }
 const EMPTY_CALENDAR = Object.freeze({ upcoming: EMPTY_LIST, past: EMPTY_LIST });
 
-function Stat({ value, label, onPress }) {
+function Stat({ value, label, onPress, largeText = false }) {
   return (
-    <Pressable style={styles.stat} onPress={onPress} disabled={!onPress} accessibilityRole={onPress ? "button" : undefined} accessibilityLabel={`${value} ${label}`}>
+    <Pressable style={[styles.stat, largeText && styles.nativeStatLarge]} onPress={onPress} disabled={!onPress} accessibilityRole={onPress ? "button" : undefined} accessibilityLabel={`${value} ${label}`}>
       <Text style={styles.statVal}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </Pressable>
@@ -164,7 +206,7 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
       onOpenPhotos={capabilities.openPhotos ? openPhotos : undefined}
       compactContent
     />
-    {Platform.OS !== "web" && accountId && accountId === log.userId && !!log.id && !log.attendanceTicket ? <>
+    {Platform.OS !== "web" && Platform.OS !== "ios" && accountId && accountId === log.userId && !!log.id && !log.attendanceTicket ? <>
       <NativeDeleteRow testID={`own-post-delete-${log.id}`} enabled onDelete={requestSlideDelete}>
         <View style={{ minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, backgroundColor: colors.bgElev }}>
           <Text style={{ color: colors.textDim, fontSize: 14 }}>Manage post</Text><Icon name="chevron-left" size={18} color={colors.textDim} />
@@ -177,18 +219,37 @@ const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capab
 });
 
 // Public member profile: musical identity, live history, media, plans, and posts.
-export default function ProfileScreen({ userId, initialSection = null, asTab = false, ownerTools = null, children = null, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
-  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+export default function ProfileScreen({ userId, initialSection = null, asTab = false, ownerTools = null, children = null, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onEditProfileDetails, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
+  const { height: windowHeight, width: windowWidth, fontScale } = useWindowDimensions();
+  const largeText = IS_IOS && fontScale > 1.25;
   const webBannerMinHeight = windowWidth >= 900 ? Math.min(420, Math.max(352, windowHeight * 0.38)) : 320;
   const appActive = useAppActive();
+  const nativePreview = useNativeTabPreview();
   const { session, authReady, chatAuthEpoch, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
   const profileScopeRef = useRef(profileScope);
   profileScopeRef.current = profileScope;
   const profileScrollRef = useRef(null);
+  const sectionScope = `${profileScope}:${chatAuthEpoch}:${initialSection || ""}`;
+  const sectionScopeRef = useRef(sectionScope);
+  sectionScopeRef.current = sectionScope;
+  const initialNativeSection = initialSection === "concert-history" ? "shows" : "posts";
+  const [sectionSelection, setSectionSelection] = useState(null);
+  const nativeSection = sectionSelection?.scope === sectionScope ? sectionSelection.key : initialNativeSection;
+  const nativeSectionRef = useRef(nativeSection);
+  nativeSectionRef.current = nativeSection;
   const concertFocusRef = useRef(null);
   const concertLayoutRef = useRef(null);
+  const nativeShowsLayoutRef = useRef(null);
+  const nativeConcertLayoutRef = useRef(null);
   const [concertLayout, setConcertLayout] = useState(null);
+  const publishNativeConcertLayout = useCallback(() => {
+    const section = nativeShowsLayoutRef.current, concert = nativeConcertLayoutRef.current;
+    if (section?.scope !== sectionScope || concert?.scope !== sectionScope || sectionScopeRef.current !== sectionScope || nativeSectionRef.current !== "shows") return;
+    const layout = { scope: profileScope, y: section.y + concert.y };
+    concertLayoutRef.current = layout;
+    setConcertLayout((current) => current?.scope === layout.scope && current.y === layout.y ? current : layout);
+  }, [profileScope, sectionScope]);
   const postActionsRef = useRef({});
   const [profileRevision, setProfileRevision] = useState(0);
   const [profileState, setProfileState] = useState(() => ({ scope: profileScope, value: EMPTY_PROFILE_STATE }));
@@ -223,11 +284,17 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
     accountId: session?.id || null, authEpoch: chatAuthEpoch, targetId: userId,
     enabled: authReady && !!session && !!user, mapVisible: user?.concertMapVisible !== false,
   });
-  const historyOwnsLogs = history.posts.length > 0 || history.status === "ready";
+  // A successful empty receipt stays authoritative during refresh/failure.
+  // Falling back to feed rows here could resurrect removed/private media.
+  const historyOwnsLogs = history.posts.length > 0 || history.status === "ready" || (IS_IOS && history.updatedAt != null);
   const cachedLogs = user && !historyOwnsLogs ? logsByUser(user.id) : EMPTY_LIST;
   const logs = session && user ? (historyOwnsLogs ? history.posts : cachedLogs) : EMPTY_LIST;
   const reviews = useMemo(() => selectConcertReviews(logs), [logs]);
   const timeline = useMemo(() => selectProfileTimeline(logs), [logs]);
+  // Prepared pages wait for primary identity/posts, never optional rewards or
+  // map widgets. Terminal primary errors/missing states are honest ready UI.
+  useNativeTabContentReady(!asTab || ["error", "missing"].includes(profileView.status)
+    || !!user && (logs.length > 0 || ["ready", "error"].includes(history.status)));
   const going = user && isSelf ? goingFor(user.id) : EMPTY_LIST;
   const calendarDay = localCalendarIso(Date.now());
   const profileCalendar = useMemo(() => user ? memberCalendarModel({
@@ -262,6 +329,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
     () => gallery.map((item) => ({ ...item, by: user?.name, ownerId: user?.id })),
     [gallery, user?.id, user?.name],
   );
+  const profileMedia = useProfileMediaPresentation({ scope: `${profileScope}:${chatAuthEpoch}`, user, gallery: galleryViewerItems, onOpenPhotos });
   const canEditPosts = typeof onEditPost === "function";
   const canOpenArtist = typeof onOpenArtist === "function";
   const canOpenArtistArchive = typeof onOpenArtistArchive === "function";
@@ -305,6 +373,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   };
   useEffect(() => {
     if (initialSection !== "concert-history") { concertFocusRef.current = null; return; }
+    if (IS_IOS && nativeSection !== "shows") return;
     if (!session || !user || concertLayout?.scope !== profileScope) return;
     if (history.status === "idle" || history.status === "loading" || history.status === "refreshing") return;
     const focusKey = `${profileScope}:concert-history`;
@@ -325,13 +394,13 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
       cancelAnimationFrame(firstFrame);
       if (secondFrame !== null) cancelAnimationFrame(secondFrame);
     };
-  }, [initialSection, profileScope, session?.id, user?.id, concertLayout, history.status]);
+  }, [initialSection, nativeSection, profileScope, session?.id, user?.id, concertLayout, history.status]);
   useEffect(() => {
-    if (!session || !userId) return undefined;
+    if (!session || !userId || nativePreview) return undefined;
     const controller = new AbortController();
     void loadRewards(userId, { signal: controller.signal });
     return () => controller.abort();
-  }, [userId, session?.id]);
+  }, [userId, session?.id, nativePreview]);
   // Always refresh from the server: fills real follower counts, and makes profiles
   // we've never cached (a follower from a notification) open instead of blanking.
   useEffect(() => {
@@ -368,13 +437,14 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   const profileRefreshScope = refreshScope(session?.id, "profile", userId);
   const { refresh: refreshProfile, refreshing: profileRefreshing } = useScopedRefresh({
     scope: profileRefreshScope,
-    enabled: !!userId,
+    enabled: !!userId && !nativePreview,
     task: async ({ signal }) => {
       const requestScope = profileScope;
+      if (IS_IOS) profileMedia.retryImages(signal);
       const [outcome, historyOutcome, rewards, concertsOutcome] = await Promise.all([
         loadUser(userId, { signal }),
         session ? history.retry() : null,
-        session ? loadRewards(userId, { signal }) : null,
+        session && !nativePreview ? loadRewards(userId, { signal }) : null,
         session ? concertHistory.refresh() : null,
       ]);
       if (signal.aborted || profileScopeRef.current !== requestScope) return { stale: true };
@@ -438,7 +508,14 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   }
 
   const historyLoading = history.status === "idle" || history.status === "loading" || history.status === "refreshing";
-  const historyCount = (value) => `${value}${history.complete ? "" : "+"}`;
+  // Only a current, complete receipt can establish absence. Keep real cached
+  // rows (including independent Going/attendance) visible during recovery.
+  const historyConfirmed = history.status === "ready" && history.complete;
+  const historyCount = (value) => IS_IOS && value === 0 && !historyConfirmed
+    ? "Not confirmed"
+    : `${value}${(IS_IOS ? historyConfirmed : history.complete) ? "" : "+"}`;
+  const historyHeadingCount = (value) => IS_IOS && value === 0 && !historyConfirmed
+    ? "" : ` · ${historyCount(value)}`;
   // Shared attendance: shows both accounts intentionally logged, never a claim
   // that the people met or were physically near each other at the venue.
   const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
@@ -448,12 +525,25 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
   // On someone else's profile we only show ones they marked public; you always
   // see all of your own. Stable descriptors keep posters, edits, and alt text.
   const following = isFollowing(user.id);
+  const reportProfile = () => onReport?.({
+    targetType: "user", targetId: user.id, ownerId: user.id, targetName: "profile",
+    title: `${user.name} (@${user.handle})`,
+    summary: "Report this account and its public profile to the moderation team.",
+  });
+  const profileMenuActions = isSelf ? (ownerTools || []).map((tool) => ({
+    ...tool, label: tool.label + (tool.badge > 0 ? ` (${tool.badge} new)` : ""),
+  })) : [
+    { key: isMuted(user.id) ? "unmute" : "mute", label: isMuted(user.id) ? "Unmute" : "Mute", onPress: isMuted(user.id) ? () => unmuteUser(user.id) : () => muteUser(user.id) },
+    { key: isBlocked(user.id) ? "unblock" : "block", label: isBlocked(user.id) ? "Unblock" : "Block", destructive: !isBlocked(user.id), onPress: isBlocked(user.id) ? () => unblockUser(user.id) : () => blockUser(user.id) },
+    ...(onReport ? [{ key: "report", label: "Report profile", destructive: true, onPress: reportProfile }] : []),
+  ];
+  const ownerUnread = isSelf ? (ownerTools || []).reduce((total, tool) => total + (tool.badge || 0), 0) : 0;
   const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? user.verified ? "VERIFIED ARTIST" : "ARTIST" : "FAN";
   return (
     <View style={styles.wrap}>
       <View testID="profile-header" style={styles.topbar}>
         {asTab ? (
-          <PageTitle label="Your profile" style={{ flex: 1 }}><Text style={[styles.topTitle, styles.topTitleTab]} numberOfLines={1} accessibilityRole="header">@{user.handle}</Text></PageTitle>
+          <PageTitle label="Your profile" style={{ flex: 1 }}><Text style={[styles.topTitle, styles.topTitleTab]} numberOfLines={1} accessibilityRole="header">{IS_IOS ? "You" : `@${user.handle}`}</Text></PageTitle>
         ) : (
           <>
             <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
@@ -462,7 +552,10 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             <PageTitle label="Profile" style={{ flex: 1 }}><Text style={styles.topTitle}>@{user.handle}</Text></PageTitle>
           </>
         )}
-        {asTab && isSelf && ownerTools?.length ? null : session && !isSelf && onReport ? (
+        {IS_IOS && !largeText && isSelf && asTab && ownerTools?.length ? <ProfileOwnerActions actions={ownerTools} scope={`${profileScope}:${chatAuthEpoch}`} /> : null}
+        {IS_IOS && session && (isSelf ? asTab && ownerTools?.length : true) ? (
+          <ProfileActionMenu actions={profileMenuActions} scope={profileScope} label={isSelf ? "Your account" : "Profile actions"} unread={ownerUnread} />
+        ) : asTab && isSelf && ownerTools?.length ? null : session && !isSelf && onReport ? (
           <Pressable
             style={styles.profileReportBtn}
             onPress={() => onReport({
@@ -481,7 +574,8 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           </Pressable>
         ) : <View style={{ width: 40 }} />}
       </View>
-      {asTab && isSelf && ownerTools?.length ? (
+      {IS_IOS && largeText && isSelf && asTab && ownerTools?.length ? <ProfileOwnerActions actions={ownerTools} scope={`${profileScope}:${chatAuthEpoch}`} largeText /> : null}
+      {!IS_IOS && asTab && isSelf && ownerTools?.length ? (
         // Your own tools, each with its name under the icon, in one row that
         // fits a 320px phone.
         <View style={styles.ownerTools}>
@@ -507,13 +601,14 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         </View>
       ) : null}
 
+      <ProfileMediaRetryBoundary value={profileMedia.retryValue}>
       <VinylRefreshBoundary
         refreshing={profileRefreshing}
         onRefresh={refreshProfile}
         accessibilityLabel={`Refresh ${user.name || "member"} profile`}
         testID="profile-refresh"
       >
-      <ScrollView ref={profileScrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView ref={profileScrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} contentInsetAdjustmentBehavior={IS_IOS ? "automatic" : undefined}>
         {profileView.status === "stale" && (
           <View style={styles.staleProfile} accessibilityRole="alert" accessibilityLiveRegion="polite">
             <Text style={styles.staleProfileText}>{profileView.error}</Text>
@@ -524,12 +619,17 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         )}
         {/* banner + avatar */}
         <View testID="profile-banner" style={[styles.banner, Platform.OS === "web" && { minHeight: user.banner ? webBannerMinHeight : 0 }]}>
-          {user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }]} />}
-          <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, ${colors.bg}00 0px, ${colors.bg}30 32px, ${colors.bg}CC 104px, ${colors.bg}F2 220px, ${colors.bg} 340px)` }]} />
-          {accentColor && Platform.OS !== "web" ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
-        <View style={[styles.identityWrap, !user.banner && styles.identityWrapCompact]}>
-        <View testID="profile-identity-tile" style={[styles.head, Platform.OS === "web" && styles.integratedHead]}>
-          <View testID="profile-identity-avatar" style={[styles.avatarWrap, Platform.OS === "web" && styles.integratedAvatar]}><Avatar user={user} size={Platform.OS === "web" ? 88 : 72} /></View>
+          {IS_IOS && user.banner ? <ProfileBannerCover uri={user.banner} name={user.name} onOpen={canOpenPhotos ? profileMedia.openBanner : undefined} largeText={largeText} /> : user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }, IS_IOS && styles.nativeBannerArtwork, IS_IOS && styles.nativeBannerCompact]} />}
+          {!IS_IOS || !user.banner ? <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, IS_IOS && !user.banner && styles.nativeBannerCompact, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, ${colors.bg}00 0px, ${colors.bg}30 32px, ${colors.bg}CC 104px, ${colors.bg}F2 220px, ${colors.bg} 340px)` }]} /> : null}
+          {accentColor && Platform.OS !== "web" && !IS_IOS ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
+        <View pointerEvents={IS_IOS ? "box-none" : undefined} style={[styles.identityWrap, !user.banner && styles.identityWrapCompact, IS_IOS && styles.nativeIdentityWrap, IS_IOS && !!user.banner && hierarchyStyles.nativeIdentityWithBanner, IS_IOS && !user.banner && styles.nativeIdentityCompact]}>
+        <View testID="profile-identity-tile" pointerEvents={IS_IOS ? "box-none" : undefined} style={[styles.head, Platform.OS === "web" && styles.integratedHead]}>
+          <ProfileIdentityRow>
+          <View testID="profile-identity-avatar" style={[styles.avatarWrap, Platform.OS === "web" && styles.integratedAvatar, IS_IOS && accentColor && { borderColor: accentColor }]}><Avatar user={user} size={Platform.OS === "web" || IS_IOS ? 88 : 72} fallbackTextColor={IS_IOS ? colors.text : undefined} /></View>
+          {IS_IOS && isSelf ? <Pressable style={hierarchyStyles.nativeManageButton} onPress={onManageProfile} accessibilityRole="button" accessibilityLabel="Manage profile">
+            <Icon name="edit" size={15} color={colors.amber} /><Text style={styles.editTxt}>Manage profile</Text>
+          </Pressable> : null}
+          </ProfileIdentityRow>
           <View style={[styles.nameRow, Platform.OS === "web" && styles.integratedNameRow]}>
             <Text testID="profile-identity-name" style={[styles.name, Platform.OS === "web" && styles.integratedName]}>{user.name}</Text>
             <BadgeRow badges={displayedProfileBadges(userBadges(user), user.profileBadges)} size={20} />
@@ -547,7 +647,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             />
           )}
 
-          {isSelf ? (
+          {isSelf ? (!IS_IOS ? (
             <Pressable
               style={styles.editBtn}
               onPress={onManageProfile}
@@ -557,30 +657,32 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
               <Icon name="edit" size={15} color={colors.amber} />
               <Text style={styles.editTxt}>Manage profile</Text>
             </Pressable>
-          ) : session && isBlocked(user.id) ? (
+          ) : null) : session && isBlocked(user.id) ? (
             <View style={styles.blockedBox}>
               <Text style={styles.blockedTxt}>You've blocked this account. They can't message you, follow you, or see your posts.</Text>
-              <Pressable style={styles.unblockBtn} onPress={() => unblockUser(user.id)}>
+              <Pressable style={styles.unblockBtn} onPress={() => unblockUser(user.id)} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `Unblock ${user.name}` } : {})}>
                 <Text style={styles.unblockTxt}>Unblock</Text>
               </Pressable>
             </View>
           ) : (
             session && (
-              <View style={styles.actionRow}>
-                <Pressable style={[styles.followBtn, following && styles.followingBtn]} onPress={() => (following ? unfollow(user.id) : follow(user.id))}>
+              <View style={[styles.actionRow, largeText && styles.nativeActionsLarge]}>
+                <Pressable style={[styles.followBtn, following && styles.followingBtn]} onPress={() => (following ? unfollow(user.id) : follow(user.id))} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `${following ? "Unfollow" : "Follow"} ${user.name}` } : {})}>
                   {!following && <Icon name="user-plus" size={15} color="#1A1206" />}
                   <Text style={[styles.followTxt, following && styles.followingTxt]}>{following ? "Following" : "Follow"}</Text>
                 </Pressable>
-                <Pressable style={styles.msgBtn} onPress={() => onMessage?.(user.id)}>
+                <Pressable style={styles.msgBtn} onPress={() => onMessage?.(user.id)} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `Message ${user.name}` } : {})}>
                   <Icon name="comment" size={15} color={colors.amber} />
                   <Text style={styles.msgTxt}>Message</Text>
                 </Pressable>
+                {!IS_IOS ? <>
                 <Pressable style={styles.muteBtn} onPress={() => (isMuted(user.id) ? unmuteUser(user.id) : muteUser(user.id))} accessibilityRole="button" accessibilityLabel={`${isMuted(user.id) ? "Unmute" : "Mute"} ${user.name}`}>
                   <Text style={styles.muteTxt}>{isMuted(user.id) ? "Unmute" : "Mute"}</Text>
                 </Pressable>
                 <Pressable style={styles.blockBtn} onPress={() => blockUser(user.id)} hitSlop={6} accessibilityLabel="Block user">
                   <Icon name="lock" size={15} color={colors.danger} />
                 </Pressable>
+                </> : null}
               </View>
             )
           )}
@@ -589,15 +691,17 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         </View>
         </View>
 
-        {/* The owner's private block (the You tab passes concert memories here). */}
-        {isSelf ? children : null}
+        {isSelf && <ProfileGuidance key={session.id} user={session} onEdit={onEditProfileDetails} />}
 
-        <View style={styles.statsRow}>
-          <Stat value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
-          <Stat value={followingCount(user.id)} label="People following" onPress={() => onOpenFollowList?.(user.id, "following")} />
-          <Stat value={isSelf ? new Set((session?.favoriteArtists || []).map((name) => String(name).trim().toLowerCase())).size : user.artistFollowingCount ?? (user.favoriteArtists || []).length} label="Artists followed" onPress={() => onOpenFollowList?.(user.id, "artists")} />
+        {/* The owner's private block (the You tab passes concert memories here). */}
+        {!IS_IOS && isSelf ? children : null}
+
+        <View style={[styles.statsRow, largeText && styles.nativeStatsLarge]}>
+          <Stat largeText={largeText} value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
+          <Stat largeText={largeText} value={followingCount(user.id)} label={IS_IOS ? "Following" : "People following"} onPress={() => onOpenFollowList?.(user.id, "following")} />
+          <Stat largeText={largeText} value={isSelf ? new Set((session?.favoriteArtists || []).map((name) => String(name).trim().toLowerCase())).size : user.artistFollowingCount ?? (user.favoriteArtists || []).length} label={IS_IOS ? "Artists" : "Artists followed"} onPress={() => onOpenFollowList?.(user.id, "artists")} />
         </View>
-        <FavoriteShows shows={profileView.favoriteShows || EMPTY_LIST} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} />
+        {!IS_IOS ? <FavoriteShows shows={profileView.favoriteShows || EMPTY_LIST} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} largeText={largeText} /> : null}
         {!session ? (
           <AccountSnapshotPrompt
             title={`Meet ${user.name} on Mshpit`}
@@ -606,20 +710,20 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
             style={{ marginHorizontal: 16, marginTop: 16 }}
           />
         ) : <>
-        <View style={styles.statsRow}>
-          <Stat value={historyCount(reviews.length)} label="Reviews" />
-          <Stat value={planned.length} label="Upcoming" />
+        <View style={[styles.statsRow, largeText && styles.nativeStatsLarge]}>
+          <Stat largeText={largeText} value={historyCount(reviews.length)} label="Reviews" />
+          <Stat largeText={largeText} value={IS_IOS ? historyCount(planned.length) : planned.length} label="Upcoming" />
         </View>
 
         {/* Rewards: points + badges earned, tap for the full legend. */}
-        <Pressable style={styles.rewards} onPress={() => onOpenBadges?.(user.id)}>
+        {!IS_IOS ? <Pressable style={styles.rewards} onPress={() => onOpenBadges?.(user.id)}>
           <View style={styles.rewardsIcon}><Icon name="star" size={16} color={colors.amber} filled /></View>
           <View style={{ flex: 1 }}>
             <Text style={styles.rewardsTitle}>{userPoints(user).toLocaleString()} points · {userAchievements(user).length}/{ACHIEVEMENTS.length} badges</Text>
             <Text style={styles.rewardsSub}>{isSelf ? "See what you can earn next" : "See their badges"}</Text>
           </View>
           <Icon name="chevron-right" size={16} color={colors.textDim} />
-        </Pressable>
+        </Pressable> : null}
 
         {/* Shared attendance, the concert-overlap tracker. */}
         {!isSelf && session && (crossed.shows.length > 0 || crossed.artists.length > 0) && (
@@ -633,7 +737,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
                 <Text style={styles.crossedTitle}>
                   You both logged <Text style={styles.crossedNum}>{crossed.shows.length}</Text> {crossed.shows.length === 1 ? "show" : "shows"}
                 </Text>
-                <Text style={styles.crossedSub} numberOfLines={1}>
+                <Text style={styles.crossedSub} numberOfLines={largeText ? undefined : 1}>
                   {crossed.shows.slice(0, 3).map((s) => s.artist).join(" · ")}{crossed.shows.length > 3 ? " …" : ""}
                 </Text>
               </View>
@@ -642,7 +746,7 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
                 <Text style={styles.crossedTitle}>
                   You've both seen <Text style={styles.crossedNum}>{crossed.artists.length}</Text> {crossed.artists.length === 1 ? "artist" : "artists"} live
                 </Text>
-                <Text style={styles.crossedSub} numberOfLines={1}>{crossed.artists.slice(0, 3).join(" · ")}</Text>
+                <Text style={styles.crossedSub} numberOfLines={largeText ? undefined : 1}>{crossed.artists.slice(0, 3).join(" · ")}</Text>
               </View>
             )}
             {crossed.shows.length > 0 && <Icon name="chevron-right" size={16} color={colors.textDim} />}
@@ -676,10 +780,14 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         )}
 
 
+        <ProfileSectionTabs active={nativeSection} largeText={largeText}
+          onSelect={(key) => { if (sectionScopeRef.current === sectionScope) setSectionSelection({ scope: sectionScope, key }); }} />
+        <ProfileSection section="gallery" active={nativeSection}>
         {/* Media gallery, using the same resilient descriptor pipeline as You. */}
-        {gallery.length > 0 && (
+        {IS_IOS ? <ProfileGallery items={galleryViewerItems} history={history} isSelf={isSelf} name={user.name}
+          onOpen={canOpenPhotos ? profileMedia.openGallery : undefined} onRefresh={refreshProfile} refreshing={profileRefreshing} request={profileMedia.request} /> : gallery.length > 0 && (
           <>
-            <Text style={styles.sectionLabel}>Media · {historyCount(gallery.length)}</Text>
+            <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>{IS_IOS ? "Gallery" : "Media"} · {historyCount(gallery.length)}</Text>
             <View style={styles.gallery}>
               {galleryPreview.map((g, i) => (
                 <ProfileMediaTile key={g.id || `${g.postId || "post"}:${g.uri}:${i}`} item={g} index={i} viewerItems={galleryViewerItems} onOpenPhotos={onOpenPhotos} />
@@ -701,16 +809,24 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
 
 
 
+        </ProfileSection>
+        <ProfileSection section="shows" active={nativeSection} onLayout={(event) => {
+          if (nativeSectionRef.current !== "shows" || sectionScopeRef.current !== sectionScope) return;
+          nativeShowsLayoutRef.current = { scope: sectionScope, y: event.nativeEvent.layout.y };
+          publishNativeConcertLayout();
+        }}>
+        {IS_IOS ? <FavoriteShows shows={profileView.favoriteShows || EMPTY_LIST} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} largeText={largeText} /> : null}
         {/* One calendar projection powers both this summary and Calendar. A
             dated post appears here immediately; plain statuses remain posts. */}
-        <Text style={styles.sectionLabel}>Upcoming shows · {planned.length}</Text>
-        {planned.length === 0 && <Text style={styles.empty}>No upcoming shows yet.</Text>}
+        <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>Upcoming shows{IS_IOS ? historyHeadingCount(planned.length) : ` · ${planned.length}`}</Text>
+        {planned.length === 0 && (!IS_IOS || historyConfirmed) && <Text style={styles.empty}>No upcoming shows yet.</Text>}
         {planned.map((p) => {
-          const target = showDateMs(p.date);
+          // Calendar rows carry a normalized day, not a verified doors time.
+          const target = IS_IOS ? null : showDateMs(p.date);
           return (
-            <Pressable key={p.calendarKey || p.key || p.postId} style={styles.showRow} onPress={() => onOpenShow?.(p)}>
+            <Pressable key={p.calendarKey || p.key || p.postId} style={[styles.showRow, largeText && styles.nativeShowLarge]} onPress={() => onOpenShow?.(p)} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `${p.artist}, ${p.venue}, ${formatDate(p.date, p.date)}` } : {})}>
               <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>
-              <View style={{ flex: 1 }}>
+              <View style={largeText ? { alignSelf: "stretch" } : { flex: 1 }}>
                 <Text style={styles.showArtist}>{p.artist}</Text>
                 <Text style={styles.showVenue}>{p.venue} · {formatDate(p.date, p.date)}</Text>
               </View>
@@ -727,10 +843,16 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           );
         })}
 
-        <View onLayout={(event) => {
-          const y = event.nativeEvent.layout.y;
-          concertLayoutRef.current = { scope: profileScope, y };
-          setConcertLayout((current) => current?.scope === profileScope && current.y === y ? current : { scope: profileScope, y });
+        <View testID="profile-concert-anchor" onLayout={(event) => {
+          if (IS_IOS) {
+            if (nativeSectionRef.current !== "shows" || sectionScopeRef.current !== sectionScope) return;
+            nativeConcertLayoutRef.current = { scope: sectionScope, y: event.nativeEvent.layout.y };
+            publishNativeConcertLayout();
+          } else {
+            const y = event.nativeEvent.layout.y;
+            concertLayoutRef.current = { scope: profileScope, y };
+            setConcertLayout((current) => current?.scope === profileScope && current.y === y ? current : { scope: profileScope, y });
+          }
         }}>
         <ConcertHistory
             key={concertScope}
@@ -748,11 +870,24 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
         />
         </View>
 
+        {/* Rewards: points + badges earned, tap for the full legend. */}
+        {IS_IOS ? <Pressable style={styles.rewards} onPress={() => onOpenBadges?.(user.id)}>
+          <View style={styles.rewardsIcon}><Icon name="star" size={16} color={colors.amber} filled /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rewardsTitle}>{userPoints(user).toLocaleString()} points · {userAchievements(user).length}/{ACHIEVEMENTS.length} badges</Text>
+            <Text style={styles.rewardsSub}>{isSelf ? "See what you can earn next" : "See their badges"}</Text>
+          </View>
+          <Icon name="chevron-right" size={16} color={colors.textDim} />
+        </Pressable> : null}
+
+        {IS_IOS && isSelf ? children : null}
+        </ProfileSection>
+        <ProfileSection section="posts" active={nativeSection}>
         <View style={styles.postsSection}>
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
-        <Text style={styles.sectionLabel}>{isSelf ? "Your posts" : "Posts"} · {historyCount(logs.length)}</Text>
-        {logs.length === 0 && !historyLoading && (
+        <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>{isSelf ? "Your posts" : "Posts"}{historyHeadingCount(logs.length)}</Text>
+        {logs.length === 0 && (IS_IOS ? historyConfirmed : !historyLoading) && (
           <Text style={styles.empty}>{isSelf ? "You haven't posted yet. Tap “Make a post” to log a show or share an update." : "No posts yet."}</Text>
         )}
         {!logs.length && historyLoading && (
@@ -787,15 +922,17 @@ export default function ProfileScreen({ userId, initialSection = null, asTab = f
           </Pressable>
         )}
         </View>
+        </ProfileSection>
         </>}
 
       </ScrollView>
       </VinylRefreshBoundary>
+      </ProfileMediaRetryBoundary>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   missingBox: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 40 },
   missingTitle: { color: colors.text, fontSize: 17, fontWeight: "800", marginTop: 6 },
@@ -939,3 +1076,88 @@ const styles = StyleSheet.create({
   scorePill: { flexDirection: "row", alignItems: "center", gap: 4 },
   scoreTxt: { color: colors.gold, fontFamily: mono, fontSize: 14, fontWeight: "700" },
 });
+
+
+// iOS has a quieter, editorial profile. The original Android/web styles above
+// remain unchanged, including the web-specific integrated banner treatment.
+const iosStyles = IS_IOS ? StyleSheet.create({
+  topbar: { ...baseStyles.topbar, paddingHorizontal: 20, paddingBottom: 12, paddingTop: 4, minHeight: 56 },
+  topTitle: { ...baseStyles.topTitle, fontSize: 17, fontWeight: "600", flexShrink: 1, textAlign: "center" },
+  topTitleTab: { flex: 1, minWidth: 0, fontSize: 30, fontWeight: "700", letterSpacing: -0.8, textAlign: "left" },
+  backBtn: { width: 44, minHeight: 44, justifyContent: "center" },
+  backCircle: { ...baseStyles.backCircle, width: 44, height: 44, borderRadius: 22, borderWidth: 0 },
+  nativeMenu: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceAlt },
+  nativeMenuDots: { flexDirection: "row", alignItems: "center", gap: 3 },
+  nativeMenuDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: colors.amber },
+  nativeUnreadDot: { position: "absolute", right: 3, top: 2, width: 10, height: 10, borderRadius: 5, backgroundColor: colors.magenta, borderWidth: 2, borderColor: colors.bg },
+  content: { paddingBottom: 48 },
+  banner: { backgroundColor: colors.bg },
+  nativeBannerArtwork: { position: "absolute", left: 20, right: 20, top: 0, height: 128, borderRadius: 18, overflow: "hidden" },
+  bannerShade: { position: "absolute", left: 20, right: 20, top: 0, height: 128, borderRadius: 18, backgroundColor: "rgba(0,0,0,0.12)" },
+  nativeIdentityWrap: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 4, alignItems: "flex-start" },
+  nativeBannerCompact: { height: 48, borderRadius: 14 },
+  nativeIdentityCompact: { paddingTop: 12 },
+  head: { width: "100%", alignItems: "flex-start", padding: 0, borderWidth: 0, backgroundColor: "transparent", shadowOpacity: 0, elevation: 0 },
+  avatarWrap: { borderWidth: 4, borderColor: colors.bg, borderRadius: 50 },
+  nameRow: { ...baseStyles.nameRow, justifyContent: "flex-start", gap: 7, marginTop: 12 },
+  name: { ...baseStyles.name, fontSize: 30, fontWeight: "700", letterSpacing: -0.7, textAlign: "left" },
+  handle: { ...baseStyles.handle, fontSize: 15, lineHeight: 21, textAlign: "left", marginTop: 3 },
+  roleBadge: { marginTop: 9 },
+  roleTxt: { color: colors.amber, fontSize: 11, fontWeight: "700", letterSpacing: 0.7 },
+  bio: { color: colors.text, fontSize: 15, lineHeight: 22, marginTop: 12 },
+  bioPreview: { width: "100%", alignItems: "flex-start" },
+  bioToggle: { alignSelf: "flex-start" },
+  editBtn: { ...baseStyles.editBtn, maxWidth: "100%", borderWidth: 0, borderRadius: 12, backgroundColor: colors.surfaceAlt, paddingHorizontal: 16, marginTop: 16 },
+  editTxt: { flexShrink: 1, color: colors.amber, fontSize: 15, fontWeight: "600" },
+  nativeActionsLarge: { flexDirection: "column", alignItems: "stretch" },
+  nativeStatsLarge: { flexDirection: "column", gap: 16 },
+  nativeStatLarge: { flex: 0, alignSelf: "stretch" },
+  nativeShowLarge: { flexDirection: "column", alignItems: "flex-start" },
+  followTxt: { ...baseStyles.followTxt, flexShrink: 1 },
+  msgTxt: { ...baseStyles.msgTxt, flexShrink: 1 },
+  actionRow: { ...baseStyles.actionRow, width: "100%", justifyContent: "flex-start", gap: 10 },
+  followBtn: { ...baseStyles.followBtn, flexGrow: 1, minHeight: 44, borderRadius: 12, justifyContent: "center" },
+  msgBtn: { ...baseStyles.msgBtn, flexGrow: 1, minHeight: 44, borderWidth: 0, borderRadius: 12, justifyContent: "center", backgroundColor: colors.surfaceAlt },
+  unblockBtn: { ...baseStyles.unblockBtn, minHeight: 44, justifyContent: "center" },
+  statsRow: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: 24, marginTop: 20, paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  stat: { flex: 1, minWidth: 80, minHeight: 44, alignItems: "flex-start", justifyContent: "center", paddingRight: 6 },
+  statVal: { color: colors.text, fontSize: 21, fontWeight: "600", fontVariant: ["tabular-nums"] },
+  statLabel: { color: colors.textDim, fontSize: 12, marginTop: 3 },
+  favorites: { marginHorizontal: 24, marginTop: 26, gap: 14 },
+  favoritesTitle: { color: colors.text, fontSize: 22, fontWeight: "700", letterSpacing: -0.35 },
+  favoriteGrid: { flexDirection: "row", flexWrap: "wrap", gap: 16 },
+  favoriteCard: { flexGrow: 1, flexBasis: "44%", minWidth: 130, maxWidth: 360, gap: 9 },
+  favoritePhoto: { width: "100%", aspectRatio: 1, borderRadius: 12, overflow: "hidden", backgroundColor: colors.surfaceAlt },
+  favoriteCopy: { minWidth: 0, gap: 3 },
+  nativeFavoriteLarge: { flexBasis: "100%", maxWidth: "100%", flexDirection: "row", alignItems: "flex-start", gap: 14 },
+  nativeFavoritePhotoLarge: { width: 80, height: 80 },
+  nativeFavoriteCopyLarge: { flex: 1 },
+  favoriteArtist: { color: colors.text, fontSize: 16, fontWeight: "600" },
+  favoriteMeta: { color: colors.textDim, fontSize: 13, lineHeight: 18 },
+  favoriteScore: { color: colors.amber, fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"], marginTop: 2 },
+  favoriteEmpty: { ...baseStyles.favoriteEmpty, marginHorizontal: 24, marginTop: 24, padding: 16, minHeight: 64, borderWidth: 0, borderRadius: 14, backgroundColor: colors.surface },
+  favoriteEmptyText: { ...baseStyles.favoriteEmptyText, fontSize: 14, lineHeight: 20 },
+  sectionLabel: { color: colors.text, fontSize: 22, fontWeight: "700", letterSpacing: -0.35, marginTop: 30, marginBottom: 14, marginHorizontal: 24 },
+  empty: { color: colors.textDim, fontSize: 15, lineHeight: 22, marginHorizontal: 24 },
+  gallery: { ...baseStyles.gallery, marginHorizontal: 24, gap: 5 },
+  galleryCell: { ...baseStyles.galleryCell, borderWidth: 0, borderRadius: 10 },
+  gallerySeeAll: { ...baseStyles.gallerySeeAll, borderWidth: 0, backgroundColor: "transparent", justifyContent: "flex-start", marginHorizontal: 24 },
+  gallerySeeAllText: { color: colors.amber, fontSize: 15, fontWeight: "600" },
+  showRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12, minHeight: 72, marginHorizontal: 24, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  goingDot: { ...baseStyles.goingDot, borderWidth: 0, borderRadius: 10, backgroundColor: colors.surfaceAlt },
+  showVenue: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 3 },
+  showSource: { ...baseStyles.showSource, borderWidth: 0, paddingHorizontal: 0 },
+  rewards: { ...baseStyles.rewards, marginHorizontal: 24, marginTop: 24, paddingVertical: 16, paddingHorizontal: 0, borderWidth: 0, borderRadius: 0, backgroundColor: "transparent", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  rewardsIcon: { ...baseStyles.rewardsIcon, borderWidth: 0, backgroundColor: colors.surfaceAlt },
+  rewardsTitle: { color: colors.text, fontSize: 15, fontWeight: "600" },
+  rewardsSub: { color: colors.textDim, fontSize: 13, marginTop: 4 },
+  crossed: { ...baseStyles.crossed, marginHorizontal: 24, borderWidth: 0, backgroundColor: colors.surface, borderRadius: 14 },
+  tasteMatch: { ...baseStyles.tasteMatch, marginHorizontal: 24, borderWidth: 0, backgroundColor: colors.surface, borderRadius: 14 },
+  tasteMatchArtistChip: { ...baseStyles.tasteMatchArtistChip, maxWidth: "100%", paddingVertical: 8 },
+  tasteMatchArtistText: { ...baseStyles.tasteMatchArtistText, flexShrink: 1 },
+  tasteMatchGenreChip: { ...baseStyles.tasteMatchGenreChip, maxWidth: "100%", paddingVertical: 6 },
+  tasteMatchGenreText: { ...baseStyles.tasteMatchGenreText, flexShrink: 1 },
+  tasteMatchBasis: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
+  postsWrap: { paddingHorizontal: 20 },
+}) : {};
+const styles = { ...baseStyles, ...iosStyles };

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { parse } from "@babel/parser";
+import { createBrowseReturnStore } from "./iosBrowseReturn.mjs";
+import { createIOSFeedReturnStore } from "./iosFeedReturn.mjs";
 import { DISCOVER_PROGRAMME_SECTIONS, discoverProgrammeKey, discoverProgrammeKeyboardTarget, restoredDiscoverProgramme } from "./discoverProgramme.mjs";
 
 test("Discover keeps all six destinations without inventing routes or changing area", () => {
@@ -30,7 +33,69 @@ test("Discover restores its in-app destination while explicit directory links ke
   assert.match(app, /rememberedProgramme=\{rememberedDiscoverProgramme\}/);
   assert.match(app, /onProgrammeChange=\{\(programme\) => setDiscoverDestination/);
   assert.match(app, /discoverDestination\.accountId === \(session\?\.id \|\| null\)/);
-  assert.ok(app.includes('<DiscoverScreen key={`${session?.id || "guest"}:${discoverDestination.requestId || 0}`}'));
+  const opening = [];
+  const visit = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "JSXOpeningElement" && node.name.name === "DiscoverScreen") opening.push(node);
+    for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(visit); else if (value?.type) visit(value);
+  };
+  visit(parse(app, { sourceType: "module", plugins: ["jsx"] }));
+  assert.equal(opening.length, 1);
+  const key = opening[0].attributes.find((a) => a.name?.name === "key").value.expression;
+  const keyFor = new Function("discoverReturn", "session", "pager = false", "discoverDestination = {}", `return (${app.slice(key.start, key.end)});`);
+  assert.equal(keyFor(null, { id: "A" }), "A:0"); assert.equal(keyFor(null, null), "guest:0");
+  const store = createBrowseReturnStore(); store.account("A");
+  const a = store.lease("discover"); const before = keyFor(a, { id: "A" });
+  assert.equal(keyFor(store.lease("discover"), { id: "A" }), before, "detail return retains the same key");
+  store.account("B"); assert.notEqual(keyFor(store.lease("discover"), { id: "B" }), before);
+  store.account("A"); const returned = keyFor(store.lease("discover"), { id: "A" }); assert.notEqual(returned, before);
+  store.reset("discover"); assert.notEqual(keyFor(store.lease("discover"), { id: "A" }), returned, "new directory intent remounts");
+  for (const lease of [null, a, store.lease("discover")]) assert.equal(keyFor(lease, { id: "A" }, true), undefined,
+    "pager owns the stable surface key across destination promotion and lease reset");
+  const mainPagers = [], shells = [];
+  const collect = node => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "JSXOpeningElement") {
+      if (node.name.name === "NativeTabRail" && node.attributes.some(a => a.name?.name === "page")) mainPagers.push(node);
+      if (node.name.name === "NativeFeedMediaLayer") shells.push(node);
+    }
+    for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(collect); else if (value?.type) collect(value);
+  };
+  collect(parse(app, { sourceType: "module", plugins: ["jsx"] }));
+  assert.equal(mainPagers.length, 0, "Root main navigation is tap-only; Discover is not a horizontal Feed destination");
+  assert.match(app, /const nativeTabPage = tabScreens;/);
+  assert.equal(shells.length, 1);
+  const shellKey = shells[0].attributes.find(a => a.name?.name === "key").value.expression;
+  const ownerKey = new Function("session", "chatAuthEpoch", "Platform", `return (${app.slice(shellKey.start, shellKey.end)});`);
+  const iosKey = (session, epoch) => ownerKey(session, epoch, { OS: "ios" });
+  assert.notEqual(iosKey({ id: "A" }, 1), iosKey({ id: "B" }, 1), "shared shell retires local Feed pages across accounts");
+  assert.notEqual(iosKey({ id: "A" }, 1), iosKey({ id: "A" }, 2), "same-account reauthentication retires local Feed pages");
+  assert.notEqual(iosKey(null, 1), iosKey({ id: "A" }, 1));
+
+  // Exercise the actual local selector key with the production Feed return
+  // lease, rather than retaining the superseded Root main-pager key contract.
+  const local = read("../screens/FeedScreen.ios.jsx");
+  const localOpening = [];
+  const walkLocal = node => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "JSXOpeningElement") localOpening.push(node);
+    for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(walkLocal); else if (value?.type) walkLocal(value);
+  };
+  walkLocal(parse(local, { sourceType: "module", plugins: ["jsx"] }));
+  const localKey = localOpening.find(node => node.name.name === "Owner").attributes.find(a => a.name?.name === "key").value.expression;
+  const keyForFeed = new Function("props", `return (${local.slice(localKey.start, localKey.end)});`);
+  const feedStore = createIOSFeedReturnStore(), base = {};
+  const feedKey = (accountId, epoch) => keyForFeed({ accountId, feedReturn: feedStore.reconcile(accountId, epoch, base) });
+  const feedA = feedKey("A", 1);
+  assert.equal(feedKey("A", 1), feedA, "same Feed lifetime keeps its selected filter and current pane");
+  assert.notEqual(feedKey("B", 1), feedA);
+  const feedAAgain = feedKey("A", 1); assert.notEqual(feedAAgain, feedA);
+  assert.notEqual(feedKey("A", 2), feedAAgain, "actual Feed return epoch changes the local owner key");
+  const localPager = localOpening.filter(node => node.name.name === "NativeFeedFilterPager");
+  assert.equal(localPager.length, 1, "Feed retains its local filter pager without making Discover a horizontal root destination");
+  assert.equal(localOpening.filter(node => node.name.name === "FeedPane").length, 1,
+    "visited filters share the retained pane renderer, including the active filter");
+
 });
 
 test("a departed render cannot overwrite the URL just restored by browser Back", () => {
@@ -46,10 +111,27 @@ test("a departed render cannot overwrite the URL just restored by browser Back",
 const read = (name) => readFileSync(new URL(name, import.meta.url), "utf8");
 test("Discover renders only the selected destination and keeps filter state independent", () => {
   const source = read("../screens/DiscoverScreen.jsx");
-  assert.match(source, /const \[programme, setProgramme\] = useState\(\(\) => restoredDiscoverProgramme\(initialProgramme, rememberedProgramme\)\)/);
+  const body = parse(source, { sourceType: "module", plugins: ["jsx"] }).program.body
+    .find((n) => n.type === "ExportDefaultDeclaration").declaration.body.body;
+  const state = body.flatMap((n) => n.declarations || []).find((n) => n.id.elements?.[0]?.name === "programme");
+  assert.equal(state.init.callee.name, "useState");
+  const initializer = state.init.arguments[0];
+  const initialize = new Function("initialBrowse", "initialProgramme", "rememberedProgramme", "restoredDiscoverProgramme",
+    `return (${source.slice(initializer.start, initializer.end)})();`);
+  assert.equal(initialize(null, "shows", "venues", restoredDiscoverProgramme), "shows");
+  assert.equal(initialize(null, undefined, "venues", restoredDiscoverProgramme), "venues");
+  assert.equal(initialize({ programme: "artists" }, "shows", "venues", restoredDiscoverProgramme), "artists", "return restores the intervening choice in this navigation lease");
   assert.match(source, /const rememberProgramme = useLatestCallback\(onProgrammeChange\)/);
   assert.match(source, /rememberProgramme\(programme\)/);
-  assert.match(source, /if \(initialProgramme !== undefined\) setProgramme\(discoverProgrammeKey\(initialProgramme\)\)/);
+  const effect = body.find((n) => n.expression?.callee?.name === "useEffect"
+    && source.slice(n.start, n.end).includes("initialProgrammeRef.current =" )).expression.arguments[0];
+  const run = new Function("initialBrowse", "initialProgramme", "initialProgrammeRef", "setProgramme", "discoverProgrammeKey",
+    `return (${source.slice(effect.start, effect.end)})();`);
+  const changes = [], ref = { current: "shows" };
+  run({ programme: "artists" }, "shows", ref, (v) => changes.push(v), discoverProgrammeKey);
+  assert.deepEqual(changes, [], "same directory return must not overwrite the saved choice");
+  run({ programme: "artists" }, "venues", ref, (v) => changes.push(v), discoverProgrammeKey);
+  assert.deepEqual(changes, ["venues"], "a newer explicit intent wins");
   assert.match(source, /const \[areaExpanded, setAreaExpanded\] = useState\(false\)/);
   assert.match(source, /const \[dateExpanded, setDateExpanded\] = useState\(false\)/);
   for (const { key } of DISCOVER_PROGRAMME_SECTIONS) {

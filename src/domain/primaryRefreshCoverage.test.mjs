@@ -45,7 +45,9 @@ test("every meaningful primary data surface owns one accessible vinyl refresh bo
 
 test("each pull awaits its bounded current-surface loaders and keeps existing content on failure", () => {
   const feed = functionSlice(sources.Feed, "refresh");
-  assert.match(feed, /await onRefresh\(\{ signal: controller\.signal \}\)/);
+  assert.match(feed, /onRefresh\(\{ signal: controller\.signal \}\)/);
+  assert.match(feed, /await Promise\.allSettled\(requests\)/);
+  assert.match(feed, /onRefreshCounts\(\{ signal: controller\.signal \}\)/);
   assert.match(feed, /setRefreshError/);
 
   const home = functionSlice(sources.App, "refreshHomeFeedData", "\n  // iOS Safari");

@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Platform, ActivityIndicator } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
@@ -12,6 +12,7 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { messageRelationshipChips } from "../domain/messageRelationshipContext.mjs";
+import { createIOSInboxLoad } from "../domain/iosInboxLoad.mjs";
 
 const EMPTY_PEOPLE_SEARCH = Object.freeze({ status: "idle", rows: [], error: "" });
 
@@ -31,16 +32,29 @@ export default function InboxScreen({ onClose, onOpenThread }) {
   const main = session ? mainThreads() : [];
   const requests = session ? requestThreads() : [];
   const threads = tab === "requests" ? requests : main;
+  const isIOS = Platform.OS === "ios";
+  const inboxRefreshScope = refreshScope(session?.id, "inbox", chatAuthEpoch);
+  const inboxScopeRef = useRef(inboxRefreshScope);
+  inboxScopeRef.current = inboxRefreshScope;
+  const [inboxLoad, setInboxLoad] = useState(null);
+  const inboxStatus = inboxLoad?.scope === inboxRefreshScope ? inboxLoad.status : "loading";
+  const inboxLoader = useMemo(() => createIOSInboxLoad((status) => {
+    if (inboxScopeRef.current === inboxRefreshScope) setInboxLoad({ scope: inboxRefreshScope, status });
+  }), [inboxRefreshScope]);
+  useEffect(() => () => inboxLoader.cancel(), [inboxLoader]);
 
   useLiveChat(
-    ({ signal }) => loadInboxThreads({ signal }),
+    ({ signal }) => isIOS
+      ? inboxLoader.run({ signal, load: loadInboxThreads })
+      : loadInboxThreads({ signal }),
     { channelKey: `inbox:${chatAuthEpoch}:${session?.id || "guest"}`, enabled: !!session, intervalMs: 8000 },
   );
-  const inboxRefreshScope = refreshScope(session?.id, "inbox", chatAuthEpoch);
   const { refresh: refreshInbox, refreshing: inboxRefreshing } = useScopedRefresh({
     scope: inboxRefreshScope,
     enabled: !!session,
-    task: ({ signal }) => loadInboxThreads({ signal, strict: true }),
+    task: ({ signal }) => isIOS
+      ? inboxLoader.run({ signal, load: loadInboxThreads, interactive: true })
+      : loadInboxThreads({ signal, strict: true }),
   });
 
   useEffect(() => {
@@ -181,7 +195,23 @@ export default function InboxScreen({ onClose, onOpenThread }) {
           <Text style={styles.hint}>Messages from people you don't follow. Reply to accept, the chat then moves to Messages.</Text>
         )}
 
-        {session && threads.length === 0 && (
+        {session && isIOS && inboxStatus === "error" && (
+          <View style={styles.inboxRecovery}>
+            <Text style={styles.searchErrorText}>Inbox couldn’t update. Check your connection and try again.</Text>
+            <Pressable style={styles.retrySearch} onPress={refreshInbox} disabled={inboxRefreshing} accessibilityRole="button" accessibilityLabel="Retry loading inbox" accessibilityState={{ disabled: inboxRefreshing, busy: inboxRefreshing }}>
+              <Text style={styles.retrySearchText}>Try again</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {session && isIOS && threads.length === 0 && inboxStatus === "loading" && (
+          <View style={styles.inboxLoading} accessibilityLabel="Loading inbox" accessibilityState={{ busy: true }}>
+            <ActivityIndicator color={colors.amber} />
+            <Text style={styles.hint}>Loading inbox…</Text>
+          </View>
+        )}
+
+        {session && threads.length === 0 && (!isIOS || inboxStatus === "ready") && (
           <Text style={styles.empty}>
             {tab === "requests"
               ? "No message requests."
@@ -221,6 +251,8 @@ const styles = StyleSheet.create({
   tabCount: { minWidth: 18, height: 18, borderRadius: 9, backgroundColor: colors.magenta, alignItems: "center", justifyContent: "center", paddingHorizontal: 5 },
   tabCountTxt: { color: "#fff", fontSize: 10.5, fontWeight: "800", fontFamily: mono },
   content: { padding: 16, paddingBottom: 40 },
+  inboxRecovery: { gap: 8, marginBottom: 16 },
+  inboxLoading: { alignItems: "center", gap: 12, paddingVertical: 24 },
   hint: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginBottom: 12 },
   empty: { color: colors.textDim, fontSize: 14, lineHeight: 21, fontStyle: "italic", marginTop: 8 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 10 },

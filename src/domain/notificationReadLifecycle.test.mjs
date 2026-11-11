@@ -1,131 +1,94 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
-import { parse } from "@babel/parser";
-import { captureAccountMutation, accountMutationIsCurrent } from "./accountMutation.mjs";
-import * as notificationHelpers from "./notificationReadMutation.mjs";
+import { createNotificationActivity } from "../features/notifications/notificationActivityState.mjs";
+const tick = () => new Promise(setImmediate);
+const row = (id, extra = {}) => ({ id, ts: 100, actorId: "peer", userId: "A", read: false, type: "follow", ...extra });
+const page = (rows, nextCursor = null, unread = rows.filter(r=>!r.read).length) => ({ notifications: rows, nextCursor, unread, readContract: "notification-ids-v1" });
+const confirmed = (ids, unread = 0) => ({ readContract: "notification-ids-v1", notificationIds: ids, unread });
+function fixture() {
+  let identity = { accountId: "A", epoch: 1, ready: true }, hidden = [];
+  const reads = [], writes = [];
+  const capture = into => args => new Promise((resolve,reject)=>into.push({args,resolve,reject}));
+  const controller = createNotificationActivity({getIdentity:()=>identity,getHiddenActorIds:()=>hidden,
+    fetchPage:capture(reads),writeReads:capture(writes),makeError:message=>Object.assign(new Error(message),{name:"AppError",code:"PIT-NET-001",retryable:true}),normalizeError:error=>Object.assign(error,{name:"AppError",code:"PIT-NET-001",retryable:true})});
+  return {controller,reads,writes,rows:()=>controller.getSnapshot().data.rows,
+    hide:ids=>{hidden=ids;}, switch:()=>{identity={...identity,epoch:identity.epoch+1}; controller.scope();}};
+}
 
-const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
-const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
-function initializer(node, name) {
-  if (node?.type === "VariableDeclarator" && node.id?.name === name) return node.init;
-  if (!node || typeof node !== "object") return null;
-  for (const value of Object.values(node)) {
-    for (const item of Array.isArray(value) ? value : [value]) {
-      const found = initializer(item, name); if (found) return found;
-    }
+test("opening loads and acknowledges every historical page beyond 1000 without hiding rows",async()=>{
+  const f=fixture(), loading=f.controller.load({allHistory:true});
+  for(let n=0;n<12;n++) {
+    await tick(); assert.equal(f.reads.length,n+1);
+    f.reads[n].resolve(page(Array.from({length:100},(_,i)=>row(`n${n*100+i}`,{ts:2000-n*100-i})),n<11?`cursor${n}`:null,1200));
   }
-  return null;
-}
-const row = (id, actorId = "peer") => ({ id, actorId, userId: "a", read: false, type: "follow" });
-function fixture(initial = [row("existing")]) {
-  let rows = initial;
-  const pending = [], acknowledgements = [];
-  const sessionRef = { current: { id: "a" } }, accountMutationEpochRef = { current: 1 };
-  const blockedIdsRef = { current: [], mutedIds: [] };
-  const dependencies = {
-    ...notificationHelpers, captureAccountMutation, accountMutationIsCurrent,
-    notifications: initial, session: sessionRef.current, sessionRef, accountMutationEpochRef, blockedIdsRef,
-    loadNotificationHistory: (options) => notificationHelpers.fetchNotificationHistory(
-      () => new Promise((resolve, reject) => pending.push({ resolve: (notifications) => resolve({ notifications }), reject })), options),
-    acknowledgeNotificationBatch: (ids, options) => new Promise((resolve, reject) => acknowledgements.push({ ids, options, resolve, reject })),
-    commandSuccess: (value) => ({ ok: true, ...value }),
-    commandError: (error) => ({ ok: false, error }),
-    localCommandError: (code) => ({ ok: false, error: { code } }),
-    isLoadCancellation: (error, signal) => signal?.aborted || error?.name === "AbortError",
-    setNotifications: (update) => { rows = update(rows); },
-  };
-  const bind = (name) => {
-    const node = initializer(ast, name); assert.ok(node);
-    return new Function(...Object.keys(dependencies), `return (${source.slice(node.start, node.end)});`)(...Object.values(dependencies));
-  };
-  return { refresh: bind("refreshNotifications"), markRead: bind("markNotificationsRead"), visible: bind("myNotifications"), pending, acknowledgements,
-    sessionRef, accountMutationEpochRef, blockedIdsRef, rows: () => rows, replace: (next) => { rows = next; } };
-}
-
-for (const boundary of ["block", "mute"]) {
-  test(`a delayed activity GET cannot restore an actor hidden by ${boundary}`, async () => {
-    const f = fixture(), request = f.refresh();
-    if (boundary === "block") f.blockedIdsRef.current = ["peer"];
-    else f.blockedIdsRef.mutedIds = ["peer"];
-    f.replace([]);
-    f.pending[0].resolve([row("existing"), row("uncached"), row("allowed", "other")]);
-    const result = await request;
-    assert.deepEqual(f.rows().map(r => r.id), ["allowed"]);
-    assert.deepEqual(result.map(r => r.id), ["allowed"], "acknowledgement input uses the same current boundary");
-    assert.deepEqual(f.visible(), [], "existing rows hide immediately while the mutation is pending");
-  });
-}
-
-test("an older history response cannot revive rows removed by a newer successful refresh", async () => {
-  const f = fixture(), old = f.refresh(), fresh = f.refresh();
-  f.pending[1].resolve([]); await fresh;
-  f.pending[0].resolve([row("existing")]);
-  assert.equal(await old, null);
-  assert.deepEqual(f.rows(), []);
+  const rows=await loading;assert.equal(rows.length,1200);assert.equal(f.rows().length,1200);
+  const ack=f.controller.markRead({rows});
+  for(let n=0;n<12;n++) {await tick();assert.equal(f.writes[n].args.notificationIds.length,100);f.writes[n].resolve(confirmed(f.writes[n].args.notificationIds,1100-n*100));}
+  assert.equal((await ack).ok,true);assert.equal(f.rows().filter(r=>r.read).length,1200);
+  assert.equal(f.controller.getSnapshot().data.unread,0);
+  f.controller.setRows(rows=>[row("newest",{ts:3000}),...rows]);
+  assert.equal(f.rows().length,1201,"a new arrival must not evict expanded historical rows");
+  const poll=f.controller.load({updates:true});await tick();
+  f.reads.at(-1).resolve(page([row("unconnected",{ts:4000})],"gap",2));await poll;
+  assert.equal(f.rows().length,1202,"background heads retain previously opened history even across a gap");
+  f.controller.unmount();
 });
 
-test("refresh privacy filtering leaves another account's retained history untouched", async () => {
-  const foreign = { ...row("foreign"), userId: "b" };
-  const f = fixture([row("existing"), foreign]);
-  f.blockedIdsRef.current = ["peer"];
-  const request = f.refresh();
-  f.pending[0].resolve([row("existing")]);
-  assert.deepEqual(await request, []);
-  assert.deepEqual(f.rows(), [foreign]);
+test("opening preserves concurrent arrivals in history but excludes them from captured acknowledgement",async()=>{
+  const f=fixture(); f.controller.setRows([row("old")]);
+  const loading=f.controller.load({allHistory:true}); await tick();
+  f.reads[0].resolve(page([row("head")],"older",2));await tick();
+  f.controller.setRows(rows=>[row("arrived",{ts:300}),...rows]);
+  f.reads[1].resolve(page([row("old")],null,3));
+  const captured=await loading;
+  assert.deepEqual(captured.map(r=>r.id).sort(),["head","old"]);
+  assert.deepEqual(f.rows().map(r=>r.id).sort(),["arrived","head","old"]);
+  const ack=f.controller.markRead({rows:captured});await tick();
+  assert.deepEqual(f.writes[0].args.notificationIds.sort(),["head","old"]);
+  f.writes[0].resolve(confirmed(["head","old"],1));await ack;
+  assert.equal(f.rows().find(r=>r.id==="arrived").read,false);
 });
 
-const confirm = (ids) => ({ ok: true, readContract: "notification-ids-v1", notificationIds: ids });
-test("partial acknowledgement failure keeps remaining and concurrently arriving rows new, then retries safely", async () => {
-  const original = Array.from({ length: 105 }, (_, i) => row(`n${i}`));
-  const f = fixture(original), first = f.markRead();
-  assert.equal(f.acknowledgements[0].ids.length, 100);
-  f.replace([...original, row("concurrent")]);
-  f.acknowledgements[0].resolve(confirm(f.acknowledgements[0].ids));
-  await Promise.resolve();
-  assert.equal(f.acknowledgements[1].ids.length, 5);
-  f.acknowledgements[1].reject(new Error("connection lost after first batch"));
-  assert.equal((await first).ok, false);
-  assert.equal(f.rows().filter(r => r.read).length, 100);
-  assert.equal(f.rows().find(r => r.id === "concurrent").read, false);
-  const retry = f.markRead({ rows: f.rows().filter(r => r.id !== "concurrent") });
-  assert.equal(f.acknowledgements[2].ids.length, 5);
-  f.acknowledgements[2].resolve(confirm(f.acknowledgements[2].ids));
-  assert.equal((await retry).ok, true);
-  assert.equal(f.rows().filter(r => r.read).length, 105);
-  assert.equal(f.rows().find(r => r.id === "concurrent").read, false);
+test("partial acknowledgement retains confirmations and retries only original still-unread rows",async()=>{
+  const f=fixture(), original=Array.from({length:105},(_,i)=>row(`n${i}`));
+  const loading=f.controller.load({allHistory:true});await tick();f.reads[0].resolve(page(original));const captured=await loading;
+  const ack=f.controller.markRead({rows:captured});await tick();
+  f.controller.setRows(rows=>[row("concurrent"),...rows]);
+  f.writes[0].resolve(confirmed(f.writes[0].args.notificationIds,5));await tick();
+  f.writes[1].reject(new Error("offline"));assert.equal((await ack).ok,false);
+  assert.equal(f.rows().filter(r=>r.read).length,100);
+  const retry=f.controller.markRead({rows:captured});await tick();assert.equal(f.writes[2].args.notificationIds.length,5);
+  f.writes[2].resolve(confirmed(f.writes[2].args.notificationIds,1));assert.equal((await retry).ok,true);
+  assert.equal(f.rows().filter(r=>r.read).length,105);assert.equal(f.rows().find(r=>r.id==="concurrent").read,false);
 });
 
-test("a delayed acknowledgement cannot clear a new account or the reconnected original account", async () => {
-  for (const roundTrip of [false, true]) {
-    const f = fixture(), request = f.markRead();
-    f.sessionRef.current = { id: "b" }; f.accountMutationEpochRef.current++;
-    if (roundTrip) { f.sessionRef.current = { id: "a" }; f.accountMutationEpochRef.current++; }
-    const current = [{ ...row("existing"), userId: f.sessionRef.current.id }];
-    f.replace(current);
-    f.acknowledgements[0].resolve(confirm(["existing"]));
-    assert.equal((await request).ok, false);
-    assert.deepEqual(f.rows(), current);
-    assert.equal(f.rows()[0].read, false);
+for(const boundary of ["block","mute"]) test(`opening rechecks ${boundary} after a delayed history page`,async()=>{
+  const f=fixture();const loading=f.controller.load({allHistory:true});await tick();
+  f.reads[0].resolve(page([row("head")],"older"));await tick();f.hide(["peer"]);
+  f.reads[1].resolve(page([row("old"),row("allowed",{actorId:"other"})]));
+  const rows=await loading;assert.deepEqual(rows.map(r=>r.id),["allowed"]);assert.deepEqual(f.rows().map(r=>r.id),["allowed"]);
+});
+
+test("account epoch retirement aborts an entire history traversal and discards old completion",async()=>{
+  const f=fixture();const loading=f.controller.load({allHistory:true});await tick();f.reads[0].resolve(page([row("head")],"older"));await tick();
+  f.switch();assert.equal(f.reads[1].args.signal.aborted,true);f.reads[1].resolve(page([row("old")]));
+  await assert.rejects(loading,{name:"AbortError"});assert.deepEqual(f.rows(),[]);assert.equal(f.writes.length,0);
+});
+
+test("failed or looping history pages retain the previous unread history and do not acknowledge",async()=>{
+  for(const failure of [true,false]) {
+    const f=fixture();f.controller.setRows([row("retained")]);
+    const loading=f.controller.load({allHistory:true});await tick();f.reads[0].resolve(page([row("head")],"older"));await tick();
+    if(failure)f.reads[1].reject(new Error("offline"));else f.reads[1].resolve(page([row("older")],"older"));
+    await assert.rejects(loading);assert.deepEqual(f.rows().map(r=>r.id),["retained"]);assert.equal(f.rows()[0].read,false);assert.equal(f.writes.length,0);
   }
 });
 
-test("account switch and same-account reconnect discard the delayed history", async () => {
-  for (const roundTrip of [false, true]) {
-    const f = fixture(), request = f.refresh();
-    f.sessionRef.current = { id: "b" }; f.accountMutationEpochRef.current++;
-    if (roundTrip) { f.sessionRef.current = { id: "a" }; f.accountMutationEpochRef.current++; }
-    f.replace([]);
-    f.pending[0].resolve([row("existing")]);
-    assert.equal(await request, null); assert.deepEqual(f.rows(), []);
+test("cancelled acknowledgement completion cannot mark its pending rows or affect a new account",async()=>{
+  for(const changeAccount of [true,false]) {
+    const f=fixture(), loading=f.controller.load();await tick();f.reads[0].resolve(page([row("one")]));await loading;
+    const controller=new AbortController();const ack=f.controller.markRead({signal:controller.signal});await tick();
+    if(changeAccount) f.switch(); else controller.abort();
+    f.writes[0].resolve(confirmed(["one"]));await assert.rejects(ack,{name:"AbortError"});assert.ok(f.rows().every(row=>!row.read));
   }
-});
-
-test("failed history preserves unread rows and a subsequent reconnect can recover", async () => {
-  const f = fixture(), failed = f.refresh();
-  f.pending[0].reject(new Error("offline"));
-  assert.equal(await failed, false); assert.equal(f.rows()[0].read, false);
-  const retry = f.refresh(); f.pending[1].resolve([row("existing"), row("arrived")]);
-  await retry;
-  assert.deepEqual(f.rows().map(r => [r.id, r.read]), [["existing", false], ["arrived", false]]);
 });
