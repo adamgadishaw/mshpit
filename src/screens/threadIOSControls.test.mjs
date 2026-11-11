@@ -55,14 +55,18 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
 // Root route expression and Root navigation functions. All Store/native/API
 // boundaries are synthetic: no live DM route, read receipt or network access.
 const rootSource = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
+const rootAST = require("@babel/parser").parse(rootSource, { sourceType: "module", plugins: ["jsx"] }).program.body.find(n => n.type === "FunctionDeclaration" && n.id?.name === "Root");
+const messageGuardNode = rootAST.body.body.flatMap(node => node.type === "VariableDeclaration" ? node.declarations : []).find(node => node.id?.name === "isCurrentMessageThread").init;
+const messageGuardCode = rootSource.slice(messageGuardNode.start, messageGuardNode.end);
 const route = rootSource.split("\n").find(line => line.includes("overlay = <ThreadScreen"));
 const routeCode = transformSync(`export default function route({ Platform, nav, navigationRef, linkedNavigationRef, linkedNavigationScope, messageDraftsRef, back, onOpenProfile, onOpenProfileByHandle, onReport, ThreadScreen }) {
   const openProfile = onOpenProfile, openProfileByHandle = onOpenProfileByHandle, openReport = onReport;
+  const threadReadVisibleRef = { current: true };
+  const isCurrentMessageThread = ${messageGuardCode};
   ${route.replace("else if", "if").replace("overlay =", "var overlay =")} return overlay;
 }`, { babelrc: false, configFile: false, plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")] }).code;
 const routeModule = { exports: {} };
 new Function("require", "module", "exports", routeCode)(require, routeModule, routeModule.exports);
-const rootAST = require("@babel/parser").parse(rootSource, { sourceType: "module", plugins: ["jsx"] }).program.body.find(n => n.type === "FunctionDeclaration" && n.id?.name === "Root");
 const commandNames = ["cancelPublicRoute", "applyNavigation", "writeNavigation", "commitGo", "popStack"];
 const commands = rootAST.body.body.flatMap(statement => statement.type === "VariableDeclaration" ? statement.declarations : [])
   .filter(node => commandNames.includes(node.id?.name)).map(node => `const ${node.id.name} = ${rootSource.slice(node.init.start, node.init.end)};`).join("\n");
@@ -92,6 +96,7 @@ function fixture({ platform = "ios", strict = false, capacity = 32, messageReque
     if (name === "react") return React;
     if (name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
+    if (name === "../hooks/useVisibleDirectMessageRead") return () => ({ rowRef: () => undefined, rowLayout: noop, onLayout: noop, onScroll: noop, onContentSizeChange: noop, recover: noop });
     if (name === "../hooks/useIOSThreadControls") return controls;
     if (name === "../hooks/useIOSThreadRefreshAnnouncement") return () => ({ begin: () => null, finish: noop });
     if (name === "../hooks/useScopedRefresh") return () => ({ refreshing: false, refresh: noop });

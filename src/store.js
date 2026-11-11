@@ -2713,7 +2713,7 @@ export function StoreProvider({ children }) {
           const next = { ...current };
           threads.forEach((thread) => {
             const key = dmKey(su.id, thread.otherId);
-            const summary = mergeDirectMessageReadSummary(next[key], thread);
+            const summary = mergeDirectMessageReadSummary(next[key], thread, { revision: dmHydrationRead.ordinal });
             if (summary != null) next[key] = summary;
           });
           return next;
@@ -6450,7 +6450,7 @@ export function StoreProvider({ children }) {
           const next = { ...current };
           for (const thread of threads) {
             const key = dmKey(accountId, thread.otherId);
-            const summary = mergeDirectMessageReadSummary(next[key], thread);
+            const summary = mergeDirectMessageReadSummary(next[key], thread, { revision: read.ordinal });
             if (summary != null) next[key] = summary;
           }
           return next;
@@ -6493,7 +6493,7 @@ export function StoreProvider({ children }) {
       silent: true,
       context: "Refreshing direct messages",
     })
-      .then(({ messages, removedIds = [], nextCursor, syncCursor, hasMore, relationshipContext, requestState }) => {
+      .then(({ messages, removedIds = [], nextCursor, syncCursor, hasMore, relationshipContext, requestState, ...readSummary }) => {
         if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) {
           return { syncCursor: after || null, hasMore: false, stale: true };
         }
@@ -6521,6 +6521,11 @@ export function StoreProvider({ children }) {
           if (live.length) next[key] = live;
           else delete next[key];
           return next;
+        });
+        if (!before && Number.isSafeInteger(readSummary.unread)) setDmRead((current) => {
+          if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return current;
+          const summary = mergeDirectMessageReadSummary(current[key], readSummary, { revision: read.ordinal });
+          return summary == null ? current : { ...current, [key]: summary };
         });
         return {
           messages: incoming,
@@ -6612,35 +6617,45 @@ export function StoreProvider({ children }) {
       failed: false,
     });
   };
-  const markThreadRead = async (otherId) => {
+  const markThreadRead = async (otherId, { messageId, signal, isCurrent } = {}) => {
     const actor = currentMutationActor();
     const context = "Marking this conversation as read";
     if (!actor || !otherId) return localCommandError("PIT-AUTH-001", context);
+    if (typeof messageId !== "string" || !messageId.trim() || signal?.aborted
+      || (isCurrent && !isCurrent()) || blockedIdsRef.current.includes(otherId)) return localCommandError("PIT-API-001", context);
     const key = dmKey(actor.id, otherId);
     if (ENABLE_DEMO_DATA) {
-      setDmRead((current) => ({ ...current, [key]: dms[key]?.length || 0 }));
+      const index = dms[key]?.findIndex(message => message.id === messageId && message.from !== actor.id) ?? -1;
+      if (index < 0) return localCommandError("PIT-API-001", context);
+      setDmRead((current) => ({ ...current, [key]: Math.max(Number(current[key]) || 0, index + 1) }));
       return commandSuccess({ accountId: actor.id, otherId });
     }
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const read = chatReadsRef.current.claim(`dm-read:${otherId}`, actor);
+    const currentReceipt = () => !signal?.aborted && (!isCurrent || isCurrent())
+      && accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
+      && chatReadsRef.current.isCurrent(read, sessionRef.current)
+      && !blockedIdsRef.current.includes(otherId);
     try {
-      const response = await writeDirectMessageRead(otherId, { expectedAccountId: actor.id });
+      // Only the server may resolve the target's timestamp and conversation.
+      // The dedicated route fails safely on an older backend; never fall back
+      // to a blanket "latest stored message" acknowledgement.
+      const response = await writeDirectMessageRead(otherId, { messageId, signal, expectedAccountId: actor.id });
       const cursor = normalizeDirectMessageReadCursor(response?.readCursor);
-      if (response?.ok !== true) return localCommandError("PIT-API-001", context);
-      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
-        return localCommandError("PIT-AUTH-004", context);
-      }
-      if (!cursor) return commandSuccess({ accountId: actor.id, otherId, readCursor: null });
-      setDmRead((current) => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current) ? ({
+      if (response?.ok !== true || !cursor) return localCommandError("PIT-API-001", context);
+      if (!currentReceipt()) return localCommandError("PIT-AUTH-004", context);
+      setDmRead((current) => currentReceipt() ? ({
         ...current,
-        [key]: mergeDirectMessageReadSummary(current[key], { readCursor: cursor }),
+        [key]: mergeDirectMessageReadSummary(current[key], response, { revision: read.ordinal }),
       }) : current);
-      setNotifications((current) => reconcileConfirmedNotificationReads(current, {
+      setNotifications((current) => currentReceipt() ? reconcileConfirmedNotificationReads(current, {
         accountId: actor.id,
         notificationIds: response.notificationIds,
-      }), { refreshSummary: true });
+      }) : current, { refreshSummary: true });
       return commandSuccess({ accountId: actor.id, otherId, readCursor: cursor });
     } catch (error) {
-      // Keep the badge visible when the server cannot durably save the read.
+      // Keep the badge visible and let the active viewport owner retry its
+      // retained observed target after recovery; no optimistic read state.
       return commandError(error, context);
     }
   };

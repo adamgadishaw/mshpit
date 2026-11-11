@@ -11,7 +11,7 @@ import MentionText from "../components/MentionText";
 import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
-import { latestIncomingDirectMessageId } from "../domain/directMessageRead.mjs";
+import useVisibleDirectMessageRead from "../hooks/useVisibleDirectMessageRead";
 import { chatDeliveryPresentation } from "../domain/chatDeliveryPresentation.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
@@ -118,6 +118,11 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
     isCurrent: () => activeHistory.current === history,
     scrollTo: (options) => scrollRef.current?.scrollTo(options),
   }), [history, scrollRef]);
+  const visibleRead = useVisibleDirectMessageRead({
+    accountId: session?.id, authEpoch: chatAuthEpoch, otherId,
+    blocked: historyBlocked || historyState.unavailable, messages, scrollRef, markThreadRead,
+    isCurrentRoute: isCurrentIOSRoute,
+  });
   const loadThreadPage = async (options = {}) => {
     if (historyBlocked || activeHistory.current !== history) return { stale: true };
     const request = history.read().unavailable ? { ...options, after: undefined } : options;
@@ -140,7 +145,6 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
       },
     });
   };
-  const incomingReadTarget = latestIncomingDirectMessageId(messages, session?.id);
   const messageRelationshipContext = [...messages].reverse()
     .find((message) => message?.relationshipContext)?.relationshipContext || null;
   const relationshipContext = normalizeMessageRelationshipContext(
@@ -222,6 +226,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
           throw userResult.error instanceof Error ? userResult.error : new Error(userResult.error || "This member could not be refreshed.");
         }
         if (isIOS) threadAnnouncement.finish(announcementClaim, false);
+        if (!signal?.aborted && !threadResult?.stale) visibleRead.recover();
         return { threadResult, userResult };
       } catch (error) {
         if (!isIOS) throw error;
@@ -253,14 +258,6 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
   // A DM notification can open a chat with someone this device never cached;
   // fetch them so the name + avatar resolve instead of a nameless "Chat".
   useEffect(() => { if (otherId && !userById(otherId)) loadUser(otherId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [otherId]);
-  // Opening a thread and receiving a new inbound message advance the durable
-  // marker. The viewer's own optimistic send must not manufacture a read write.
-  useEffect(() => {
-    if (otherId && incomingReadTarget) void markThreadRead(otherId);
-    // The Store command is intentionally omitted: Context recreates the facade,
-    // while account + thread + latest inbound identity own this mutation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [incomingReadTarget, otherId, session?.id]);
 
   const send = async () => {
     if (!admitComposerAction()) return;
@@ -354,10 +351,11 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
         accessibilityLabel={`Refresh messages with ${other?.name || "this member"}`}
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
-        onScroll={(event) => { historyAnchor.onScroll(event); onScroll(event); }}
-        onContentSizeChange={(...size) => { if (!historyAnchor.contentChanged()) onContentSizeChange(...size); }} scrollEventThrottle={100}
+        onScroll={(event) => { historyAnchor.onScroll(event); onScroll(event); visibleRead.onScroll(event); }}
+        onContentSizeChange={(...size) => { visibleRead.onContentSizeChange(); if (!historyAnchor.contentChanged()) onContentSizeChange(...size); }}
+        onLayout={(event) => { onLayout?.(event); visibleRead.onLayout(event); }} scrollEventThrottle={100}
         {...(Platform.OS !== "web" && historyState.initialized ? { maintainVisibleContentPosition: { minIndexForVisible: 1 } } : {})}
-        {...(isIOS ? { style: styles.history, onLayout, onScrollBeginDrag, keyboardDismissMode: "interactive", keyboardShouldPersistTaps: "handled", automaticallyAdjustKeyboardInsets: false, contentInsetAdjustmentBehavior: "never" } : {})}>
+        {...(isIOS ? { style: styles.history, onScrollBeginDrag: (event) => { onScrollBeginDrag?.(event); visibleRead.onScroll(event); }, keyboardDismissMode: "interactive", keyboardShouldPersistTaps: "handled", automaticallyAdjustKeyboardInsets: false, contentInsetAdjustmentBehavior: "never" } : {})}>
         <View collapsable={false} style={styles.historyHeader}>
         {session && <MessagePrivacyControls otherId={otherId} admitAction={admitComposerAction}
           controls={{ session, chatAuthEpoch, isBlocked, blockUser, unblockUser, isBlockMutationPending, isMuted, muteUser, unmuteUser }} />}
@@ -456,7 +454,8 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
             </View>
           );
           return (
-            <View key={m.id} onLayout={Platform.OS === "web" ? (event) => historyAnchor.rowLayout(m.id, event) : undefined} style={[styles.row, mine && styles.rowMine, isIOS && styles.rowIOS, isIOS && mine && styles.rowMineIOS]}>
+            <View key={m.id} ref={visibleRead.rowRef(m.id)} collapsable={false}
+              onLayout={(event) => { if (Platform.OS === "web") historyAnchor.rowLayout(m.id, event); visibleRead.rowLayout(m.id, event); }} style={[styles.row, mine && styles.rowMine, isIOS && styles.rowIOS, isIOS && mine && styles.rowMineIOS]}>
               {isIOS && !mine && <View style={styles.messageAvatar}><Avatar user={other} size={28} /></View>}
               {isIOS ? <View style={[styles.messageColumn, mine && styles.messageColumnMine]}>{bubble}{footer}</View> : bubble}
               {isIOS && reportAction}

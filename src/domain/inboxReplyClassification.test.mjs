@@ -8,13 +8,13 @@ import { chatDeliveryFailure, chatOutboxFor, confirmedChatMessage, updateChatOut
 import { mergeChatMessages, reconcileRemovedDirectMessages } from "./chatMessages.mjs";
 import { directMessageUnreadCount, mergeDirectMessageReadSummary, normalizeDirectMessageReadCursor } from "./directMessageRead.mjs";
 import { normalizeMessageRelationshipContext } from "./messageRelationshipContext.mjs";
-import { applyDMRequestState, dmInboxBucket } from "../features/chat/directMessageConsent.mjs";
+import { applyDMRequestState, dmInboxBucket, normalizeDMRequestState } from "../features/chat/directMessageConsent.mjs";
 
 const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
 const provider = ast.program.body.find(n => n.declaration?.id?.name === "StoreProvider").declaration;
 const declarations = provider.body.body.flatMap(n => n.type === "VariableDeclaration" ? n.declarations : []);
-const names = ["dmKey", "loadInboxThreads", "inboxThreads", "commitConfirmedChatMessage", "deliverChatMessage", "markThreadRead"];
+const names = ["dmKey", "loadInboxThreads", "loadThread", "inboxThreads", "commitConfirmedChatMessage", "deliverChatMessage", "markThreadRead"];
 const callbacks = names.map(name => {
   const node = declarations.find(n => n.id?.name === name);
   assert.ok(node, name);
@@ -51,9 +51,10 @@ function fixture({ demo = false, queued = false } = {}) {
   function dependencies() {
     return {
       session: sessionRef.current, sessionRef, chatReadsRef, chatOutboxRef, chatAuthEpochRef, accountMutationEpochRef,
+      blockedIdsRef: { get current() { return state.blocked; } },
       dms: state.dms, dmRead: state.dmRead, chatOutbox: state.outbox, blockedIds: state.blocked,
       ENABLE_DEMO_DATA: demo, mergeChatMessages, reconcileRemovedDirectMessages, chatOutboxFor, confirmedChatMessage,
-      updateChatOutboxItem, withoutChatOutboxItem, normalizeMessageRelationshipContext, chatDeliveryFailure, applyDMRequestState, dmInboxBucket,
+      updateChatOutboxItem, withoutChatOutboxItem, normalizeMessageRelationshipContext, chatDeliveryFailure, applyDMRequestState, dmInboxBucket, normalizeDMRequestState,
       directMessageUnreadCount, mergeDirectMessageReadSummary, normalizeDirectMessageReadCursor,
       captureAccountMutation, accountMutationIsCurrent,
       setDms: setter("dms"), setDmRead: setter("dmRead"), setUsers: setter("users"),
@@ -168,7 +169,7 @@ test("latest inbox refresh wins and marking a conversation read retains its repl
   const older = f.actions().loadInboxThreads(), newer = f.actions().loadInboxThreads();
   f.calls[1].resolve(summary(false)); await newer; f.calls[0].resolve(summary(true)); await older;
   assert.equal(f.state.dmRead[key].hasReplied, false);
-  const marked = f.actions().markThreadRead(peer);
+  const marked = f.actions().markThreadRead(peer, { messageId: "incoming" });
   f.calls[2].resolve({ ok: true, readCursor: { createdAt: 50, id: "incoming" }, notificationIds: [] });
   assert.equal((await marked).ok, true);
   assert.deepEqual(f.state.dmRead[key], { createdAt: 50, id: "incoming", hasReplied: false });
@@ -204,7 +205,7 @@ test("authoritative consent state overrides a legacy reply-only summary", () => 
 test("confirmed thread read queued before identity rotation cannot restore the previous read record", async () => {
   for (const transition of [null, "B", "A-B-A"]) {
     const f = fixture({ queued: true });
-    const pending = f.actions().markThreadRead(peer);
+    const pending = f.actions().markThreadRead(peer, { messageId: "incoming" });
     f.calls[0].resolve({ ok: true, readCursor: { createdAt: 50, id: "incoming" }, notificationIds: [] });
     assert.equal((await pending).ok, true);
     f.adopt(transition === "A-B-A" ? "B" : transition);
@@ -212,4 +213,98 @@ test("confirmed thread read queued before identity rotation cannot restore the p
     f.flush();
     assert.deepEqual(f.state.dmRead, {});
   }
+});
+
+const countedSummary = (unread, latest = 1200, readCursor = null) => ({
+  threads: [{ ...summary(true).threads[0], unread, latestIncomingCursor: { createdAt: latest, id: `m${latest}` }, readCursor,
+    messages: [{ id: `m${latest}`, from: peer, text: "preview", createdAt: latest }] }], removedIds: [],
+});
+
+test("Store preserves full unread counts through hydration, head load, outgoing preview and cold hydration", async () => {
+  const f = fixture(); f.hydrate()(countedSummary(1200));
+  assert.equal(f.actions().inboxThreads()[0].unread, 1200);
+  const head = f.actions().loadThread(peer);
+  f.calls[0].resolve({ ...countedSummary(1200).threads[0], messages: Array.from({ length: 500 }, (_, i) => ({ id: `m${701 + i}`, from: peer, createdAt: 701 + i })) });
+  await head;
+  assert.equal(f.actions().inboxThreads()[0].count, 500);
+  assert.equal(f.actions().inboxThreads()[0].unread, 1200);
+  const cold = fixture(), payload = countedSummary(1200);
+  payload.threads[0].messages = [{ id: "reply", from: "A", text: "outgoing", createdAt: 1201 }];
+  cold.hydrate()(payload);
+  assert.equal(cold.actions().inboxThreads()[0].count, 1);
+  assert.equal(cold.actions().inboxThreads()[0].unread, 1200);
+});
+
+test("overlapping Inbox and head reads preserve the newer authoritative total", async () => {
+  const f = fixture(); f.hydrate()(countedSummary(1200));
+  const inbox = f.actions().loadInboxThreads(), head = f.actions().loadThread(peer);
+  f.calls[1].resolve({ ...countedSummary(1203, 1203).threads[0], messages: [{ id: "m1203", from: peer, createdAt: 1203 }] });
+  await head;
+  f.calls[0].resolve(countedSummary(1200)); await inbox;
+  assert.equal(f.actions().inboxThreads()[0].unread, 1203);
+});
+
+test("read receipt targets an explicit observed message and stale summaries cannot resurrect its total", async () => {
+  const f = fixture(); f.hydrate()(countedSummary(1200));
+  const inbox = f.actions().loadInboxThreads();
+  const controller = new AbortController();
+  const read = f.actions().markThreadRead(peer, { messageId: "m1000", signal: controller.signal });
+  assert.deepEqual(f.calls[1].args, [peer, { messageId: "m1000", signal: controller.signal, expectedAccountId: "A" }]);
+  f.calls[1].resolve({ ok: true, ...countedSummary(200, 1200, { createdAt: 1000, id: "m1000" }).threads[0], notificationIds: [] });
+  assert.equal((await read).ok, true);
+  f.calls[0].resolve(countedSummary(1200)); await inbox;
+  assert.equal(f.actions().inboxThreads()[0].unread, 200);
+});
+
+test("read receipts require a target, reject blocked/aborted entry and ignore completion after abort", async () => {
+  const f = fixture(); f.hydrate()(countedSummary(1200));
+  assert.equal((await f.actions().markThreadRead(peer)).ok, false);
+  f.state.blocked = [peer];
+  assert.equal((await f.actions().markThreadRead(peer, { messageId: "m1200" })).ok, false);
+  f.state.blocked = [];
+  const controller = new AbortController(); controller.abort();
+  assert.equal((await f.actions().markThreadRead(peer, { messageId: "m1200", signal: controller.signal })).ok, false);
+  assert.equal(f.calls.length, 0);
+  const live = new AbortController();
+  const pending = f.actions().markThreadRead(peer, { messageId: "m1200", signal: live.signal });
+  live.abort();
+  f.calls[0].resolve({ ok: true, readCursor: { createdAt: 1200, id: "m1200" }, unread: 0, latestIncomingCursor: { createdAt: 1200, id: "m1200" } });
+  assert.equal((await pending).ok, false);
+  assert.equal(f.actions().inboxThreads()[0].unread, 1200);
+});
+
+test("a blocked peer or retired account cannot publish a confirmed unread snapshot in queued state", async () => {
+  for (const transition of ["block", null, "B", "A-B-A"]) {
+    const f = fixture({ queued: true }); f.hydrate()(countedSummary(1200)); f.flush();
+    const pending = f.actions().markThreadRead(peer, { messageId: "m1200" });
+    f.calls[0].resolve({ ok: true, readCursor: { createdAt: 1200, id: "m1200" }, unread: 0, latestIncomingCursor: { createdAt: 1200, id: "m1200" } });
+    assert.equal((await pending).ok, true);
+    if (transition === "block") f.state.blocked = [peer];
+    else { f.adopt(transition === "A-B-A" ? "B" : transition); if (transition === "A-B-A") f.adopt("A"); }
+    f.flush();
+    if (transition === "block") assert.equal(f.state.dmRead[key].unread, 1200);
+    else assert.deepEqual(f.state.dmRead, {});
+  }
+});
+
+test("route eligibility fences receipt entry, completion and queued state publication", async () => {
+  for (const timing of ["entry", "response", "queued"]) {
+    const f = fixture({ queued: timing === "queued" }); f.hydrate()(countedSummary(1200)); f.flush();
+    let current = timing !== "entry";
+    const pending = f.actions().markThreadRead(peer, { messageId: "m1200", isCurrent: () => current });
+    if (timing === "entry") { assert.equal((await pending).ok, false); assert.equal(f.calls.length, 0); continue; }
+    if (timing === "response") current = false;
+    f.calls[0].resolve({ ok: true, readCursor: { createdAt: 1200, id: "m1200" }, unread: 0, latestIncomingCursor: { createdAt: 1200, id: "m1200" } });
+    assert.equal((await pending).ok, timing === "queued");
+    current = false; f.flush();
+    assert.equal(f.state.dmRead[key].unread, 1200);
+  }
+});
+
+test("Inbox counts do not resurrect a removed cached newest row when its tombstone is missing", async () => {
+  const f = fixture(); f.hydrate()(countedSummary(1200));
+  const refresh = f.actions().loadInboxThreads();
+  f.calls[0].resolve(countedSummary(1199, 1199)); await refresh;
+  assert.equal(f.actions().inboxThreads()[0].count, 2, "fixture deliberately retains old preview without a tombstone");
+  assert.equal(f.actions().inboxThreads()[0].unread, 1199);
 });

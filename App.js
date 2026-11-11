@@ -1633,6 +1633,19 @@ function Root() {
   const openVenueReview = (name) => requireVerifiedMutation("review", () => go({ venueReview: name }));
   const removePostTag = (postId) => requireVerifiedMutation("interact", () => removeMyPostTag(postId));
 
+  // A read receipt belongs to the exposed conversation, including overlays
+  // that cover it without replacing the navigation frame. The ref also fences
+  // already queued native measurement and network completion callbacks.
+  const threadReadVisibleRef = useRef(false);
+  threadReadVisibleRef.current = appActive && authReady && !!session
+    && accountStatus(session) === "ok" && !iosMenuOpen && !acctOpen && !welcome
+    && !nativeAccountLinkActive && !nativeAccountLinkActiveRef.current && !authLinkError
+    && !resetToken && !unsubToken && !verifyToken && !ownerApprovalToken
+    && !verificationPrompt && !publicNavigationNotice && !newsStoryNotice;
+  const isCurrentMessageThread = () => threadReadVisibleRef.current
+    && navigationRef.current.stack.at(-1) === nav
+    && (Platform.OS !== "ios" || linkedNavigationRef.current.ownsScope(linkedNavigationScope));
+
   let overlay = nav.routeLoading ? <ScreenLoading /> : nav.routeError ? (
     <View style={[styles.screenLoading, { padding: 24 }]} testID="public-route-error">
       <Text accessibilityRole="header" style={{ color: colors.text, fontSize: 22, fontWeight: "700" }}>This page couldn’t load.</Text>
@@ -1657,7 +1670,7 @@ function Root() {
   else if (nav.reporting) overlay = <ReportScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.reporting.targetType || "post", nav.reporting.targetId || nav.reporting.id, nav.reporting.mediaUri || null, nav.reporting.ownerId || null]) : undefined} target={nav.reporting} onClose={back} closeGuardRef={Platform.OS === "ios" ? composerCloseGuardRef : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} />;
   else if (nav.editProfile) overlay = <EditProfileScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch]) : undefined} onClose={back} closeGuardRef={Platform.OS === "ios" ? composerCloseGuardRef : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} />;
   else if (nav.venueReview) overlay = <VenueReviewScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.venueReview]) : undefined} venueName={nav.venueReview} onClose={back} closeGuardRef={Platform.OS === "ios" ? composerCloseGuardRef : null} />;
-  else if (nav.thread) overlay = <ThreadScreen isCurrentIOSRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} otherId={nav.thread} draftLease={Platform.OS === "ios" ? messageDraftsRef.current.lease(nav.thread) : null} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
+  else if (nav.thread) overlay = <ThreadScreen isCurrentIOSRoute={isCurrentMessageThread} otherId={nav.thread} draftLease={Platform.OS === "ios" ? messageDraftsRef.current.lease(nav.thread) : null} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (MUSIC_PLAYER_ENABLED && nav.listeningHistory) overlay = <ListeningHistoryScreen onClose={back} onPlay={musicPlayerAction} />;
   else if (nav.notifications) overlay = <NotificationsScreen isCurrentIOSRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} onOpenPlans={ENABLE_CREW ? () => go({ crew: { tab: "plans" } }) : undefined} onOpenArtist={openArtist} />;

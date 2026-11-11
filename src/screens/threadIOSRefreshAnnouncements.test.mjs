@@ -80,6 +80,7 @@ function fixture({ platform = "ios", strict = false, reader = true, state = "act
     if (name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
     if (name === "./useScreenReaderEnabled") return preference;
+    if (name === "../hooks/useVisibleDirectMessageRead") return () => ({ rowRef: () => undefined, rowLayout: noop, onLayout: noop, onScroll: noop, onContentSizeChange: noop, recover: noop });
     if (name === "../hooks/useIOSThreadRefreshAnnouncement") return announcement;
     if (name === "../hooks/useScopedRefresh") return refresh;
     if (name === "../lib/useLiveChat") return callback => { poll = callback; };

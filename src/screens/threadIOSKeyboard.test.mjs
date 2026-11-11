@@ -111,6 +111,7 @@ function fixture({ platform = "ios", metrics = null, strict = false, failure = f
       retryChatMessage: async (...args) => { retries.push(args); return { ok: true }; },
       cancelChatMessage: noop, loadThread: async () => ({}), markThreadRead: noop, loadUser: noop,
     }) };
+    if (name === "../hooks/useVisibleDirectMessageRead") return () => ({ rowRef: () => undefined, rowLayout: noop, onLayout: noop, onScroll: noop, onContentSizeChange: noop, recover: noop });
     if (name === "../hooks/useScopedRefresh") return () => ({ refreshing: false, refresh: noop });
     if (name === "../hooks/useIOSThreadRefreshAnnouncement") return () => ({ begin: noop, finish: noop });
     if (name === "../hooks/useIOSThreadControls") return () => () => true;

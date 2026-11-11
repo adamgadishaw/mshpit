@@ -150,7 +150,8 @@ test("Thread integration keeps polling, drafts, read markers, scroll and legacy 
   const announcement = readFileSync(new URL("../hooks/useIOSThreadRefreshAnnouncement.ios.js", import.meta.url), "utf8");
   assert.match(announcement, /announceForAccessibilityWithOptions\(message, \{ queue: true \}\)/);
   assert.match(source, /const claim = iosDraft.claim\(\)/);
-  assert.match(source, /if \(otherId && incomingReadTarget\) void markThreadRead\(otherId\)/);
+  assert.match(source, /useVisibleDirectMessageRead\(\{/);
+  assert.doesNotMatch(source, /void markThreadRead\(otherId\)/);
   assert.match(source, /useChatScroll\(\{ messageCount: messages.length, scopeKey: `\$\{chatAuthEpoch\}:\$\{composerScope\}` \}\)/);
 });
 
