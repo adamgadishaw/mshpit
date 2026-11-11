@@ -20,6 +20,12 @@ export const calendarMonthLabel = (year, month, locale, includeYear = true) => n
   .toLocaleDateString(locale, { month: "long", ...(includeYear ? { year: "numeric" } : {}), calendar: "gregory" });
 export const calendarShowName = event => [event.eventName || event.artist || "Show",
   event.eventName && event.artist && event.eventName !== event.artist ? event.artist : ""].filter(Boolean).join(", ");
+export const calendarMoreLabel = event => `More actions for ${calendarShowName(event)}, ${calendarTimeLabel(event)}, ${event.venue || "Venue TBA"}, ${calendarDateLabel(event.dayKey || event.date, { year: "numeric" })}`;
+export function calendarDayAvailability(count, { publicShows, presence, complete } = {}) {
+  if (count) return `${count} ${complete ? "" : "loaded "}${count === 1 ? "show" : "shows"}`;
+  if (presence === true) return "Shows listed, count not loaded";
+  return publicShows && presence !== false && !complete ? "Availability not loaded" : "0 shows listed";
+}
 export function calendarWeekStart(locale) {
   try {
     const resolved = locale || new Intl.DateTimeFormat().resolvedOptions().locale;
@@ -35,9 +41,9 @@ export function calendarMonthGeometry({ y, m, width = 390, fontScale = 1, locale
   const scale = Number.isFinite(fontScale) ? Math.max(1, fontScale) : 1;
   const cell = Math.ceil(44 * scale);
   return {
-    // Six rows keep the agenda anchored across month changes. At large text
-    // the grid can pan horizontally; no month swipe competes for that gesture.
-    cells: Array.from({ length: 42 }, (_, i) => i >= leading && i < leading + days ? i - leading + 1 : null),
+    // Only render weeks containing this month. A phantom sixth week pushes
+    // the selected day's shows offscreen on otherwise compact months.
+    cells: Array.from({ length: Math.ceil((leading + days) / 7) * 7 }, (_, i) => i >= leading && i < leading + days ? i - leading + 1 : null),
     weekdays: Array.from({ length: 7 }, (_, i) => new Date(2026, 10, 1 + (start + i) % 7).toLocaleDateString(locale, { weekday: "short", calendar: "gregory" })),
     width: Math.max(cell * 7, Math.min(560, Math.max(0, width - 8))),
     cellHeight: cell,
@@ -57,6 +63,26 @@ export function calendarJumpSelection(yearText, month, selected) {
   return calendarMonthSelection({ y, m: month }, 0, selected);
 }
 export const isPersonalCalendarShow = event => !!(event?.going || event?.interested || event?.attended || event?.logged || event?.posted);
+// Display-only abbreviations. Keep city/region context and the untouched full
+// location in the row's spoken label and show detail/action payload.
+export function calendarPlaceLabel(event) {
+  const compact = value => ({
+    "united states of america": "US", "united states": "US", "usa": "US",
+    "united kingdom": "UK", "great britain": "UK",
+  })[value.toLowerCase()] || value;
+  const parts = String(event.city || event.place || "").split(",").map(part => part.trim()).filter(Boolean);
+  const country = String(event.country || "").trim();
+  if (country && !parts.some(part => compact(part).toLowerCase() === compact(country).toLowerCase())) parts.push(country);
+  return [...new Set(parts.map(compact))].join(", ");
+}
+export function calendarArtistSubtitle(event) {
+  const comparable = value => value.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+  const title = comparable(String(event.eventName || ""));
+  const artist = String(event.artist || "").trim();
+  // Event names commonly already contain the headliner. Do not repeat that
+  // line, but retain a distinct artist and the complete accessibility label.
+  return title && artist && !title.includes(comparable(artist)) ? artist : "";
+}
 export function calendarDaysForScope(byDay = {}, scope = "all") {
   if (scope !== "plans") return byDay;
   return Object.fromEntries(Object.entries(byDay).map(([key, rows]) => [key, rows.filter(isPersonalCalendarShow)]).filter(([, rows]) => rows.length));

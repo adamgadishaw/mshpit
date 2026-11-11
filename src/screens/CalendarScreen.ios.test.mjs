@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { calendarDateLabel, calendarShowName, calendarTimeLabel } from "./calendarPresentation.mjs";
+import { calendarDateLabel, calendarShowName, calendarTimeLabel, calendarMoreLabel } from "./calendarPresentation.mjs";
 import { localCalendarIso } from "../domain/dates.mjs";
 
 const require = createRequire(import.meta.url);
@@ -61,9 +61,12 @@ function projection(upcoming = [early, late, unknown, later], old = [past]) {
 // synthetic boundaries; no API, calendar file, seller URL or device is touched.
 function fixture({ accountId = "account-a", initialDate = "2028-01-31", initialView = "upcoming", width = 390, fontScale = 1,
   projected = projection(), history: initialHistory = {}, strict = false, delayClock = false, themeIsDark = true,
-  initialAgendaLimit = 40, initialPresentation = "month" } = {}) {
+  initialAgendaLimit = 40, initialPresentation = "month", home = null, catalogue: initialCatalogue = {} } = {}) {
   const renderer = createRenderer(), modules = new Map(), menus = [], exports = [], tickets = [], opens = [], artists = [], announcements = [];
   const refreshes = [], attendanceRefreshes = [], historyRetries = [], historyLoads = [], clocks = [], appListeners = new Set();
+  const catalogueQueries = [], catalogueLoads = [];
+  const catalogue = { events: [], status: "ready", coverage: { complete: true }, hasMore: false, error: null, summaryComplete: true, dayPresence: {},
+    refresh: options => request(refreshes, { options }), loadMore: () => request(catalogueLoads, {}), ...initialCatalogue };
   let epoch = 1, routeCurrent = true, attendance = [], browse, backBlocked = false, keyboardDismissals = 0;
   const request = (list, data) => { const value = { ...deferred(), ...data }; list.push(value); return value.promise; };
   const history = { posts: [], nextCursor: null, updatedAt: 1, status: "ready", error: null, loadingMore: false,
@@ -84,7 +87,8 @@ function fixture({ accountId = "account-a", initialDate = "2028-01-31", initialV
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
     if (name === "../theme") return { colors: {}, radius: {}, font: "fixture", themeIsDark };
-    if (name === "../store") return { useStore: () => ({ ...store, session: accountId ? { id: accountId } : null, chatAuthEpoch: epoch, myAttendance: attendance }) };
+    if (name === "../store") return { useStore: () => ({ ...store, session: accountId ? { id: accountId, home } : null, chatAuthEpoch: epoch, myAttendance: attendance }) };
+    if (name === "../features/calendarShows/useCalendarShows") return options => { catalogueQueries.push(options); return catalogue; };
     if (name === "../components/ScreenHeader") return props => React.createElement("ScreenHeader", props, props.right);
     if (name.startsWith("../components/")) return name.split("/").at(-1);
     if (name === "../features/profileHistory/useProfileHistory") return { useProfileHistory: () => history };
@@ -111,14 +115,14 @@ function fixture({ accountId = "account-a", initialDate = "2028-01-31", initialV
   }
   const Screen = load("./CalendarScreen.ios.jsx").default;
   const f = {
-    menus, exports, tickets, opens, artists, announcements, refreshes, attendanceRefreshes, historyRetries, historyLoads, history, clocks,
+    menus, exports, tickets, opens, artists, announcements, refreshes, attendanceRefreshes, historyRetries, historyLoads, history, clocks, catalogue, catalogueQueries, catalogueLoads,
     all: () => nodes(renderer.container), text: () => text(renderer.container), state: () => browse.state,
     find(predicate) { const node = f.all().find(predicate); assert.ok(node, "Expected rendered control"); return node; },
     button(label) { return f.find(node => node.type === "Pressable" && node.props.accessibilityLabel === label); },
     byText(value) { return f.find(node => node.type === "Pressable" && text(node) === value); },
     press(label) { f.act(() => f.button(label).props.onPress()); },
     pressText(value) { f.act(() => f.byText(value).props.onPress()); },
-    more(event) { return f.button(`More actions for ${calendarShowName(event)}, ${calendarTimeLabel(event)}`); },
+    more(event) { return f.button(calendarMoreLabel(event)); },
     showActions(event) { f.act(() => f.more(event).props.onPress()); },
     chooseMenu(title, menu = menus.at(-1)) { const index = menu.options.options.indexOf(title); assert.notEqual(index, -1, title); f.act(() => menu.callback(index)); },
     editYear(value) { f.act(() => f.find(node => node.type === "TextInput").props.onChangeText(value)); },
@@ -319,7 +323,8 @@ test("event-only name, distinct artist and sold-out status match visible and spo
 
 test("cross-year agenda headings and range identify the year", t => {
   const nextYear = { ...later, calendarKey: "next-year", date: "2029-01-31", dayKey: "2029-01-31" };
-  const f = fixture({ projected: projection([early, nextYear]) }); t.after(f.close); f.press("Agenda");
+  const f = fixture({ projected: projection([early, { ...nextYear, going: true }]) }); t.after(f.close);
+  f.press("Calendar scope: All shows. Change scope"); f.chooseMenu("My plans"); f.press("Agenda");
   const headings = f.all().filter(node => node.type === "Text" && node.props.accessibilityRole === "header").map(text);
   assert.ok(headings.includes(calendarDateLabel(early.date, { year: "numeric" })));
   assert.ok(headings.includes(calendarDateLabel(nextYear.date, { year: "numeric" })));
@@ -379,5 +384,84 @@ test("narrow and large-text JSX keeps explicit Month choice, minimum grid target
     const row = f.find(node => node.type === "Pressable" && node.props.accessibilityLabel?.startsWith(`Same Artist, ${calendarTimeLabel(early)},`));
     if (scale > 1.2) assert.equal(styles(row.props.style({ pressed: false })).flexDirection, "column");
     for (const node of nodes(row).filter(node => node.type === "Text")) assert.equal(node.props.numberOfLines, undefined);
+  }
+});
+
+test("month presence reaches a later populated date without loading earlier pages or inventing counts", t => {
+  const f = fixture({ initialDate: "2028-01-01", projected: projection([], []), catalogue: {
+    coverage: { complete: false }, summaryComplete: true, hasMore: true, dayPresence: { "2028-01-31": true, "2028-01-02": false },
+  } }); t.after(f.close);
+  assert.match(f.selectedDay("2028-01-31").props.accessibilityLabel, /Shows listed, count not loaded/);
+  assert.match(f.selectedDay("2028-01-02").props.accessibilityLabel, /0 shows listed/);
+  assert.match(f.selectedDay("2028-01-03").props.accessibilityLabel, /Availability not loaded/);
+  assert.equal(f.text().includes("shows this month"), false);
+  assert.equal(f.text().includes("No shows listed on this date."), false);
+  f.act(() => f.selectedDay("2028-01-31").props.onPress());
+  assert.equal(f.catalogueQueries.at(-1).selected, "2028-01-31");
+  f.pressText("Load more shows"); assert.equal(f.catalogueLoads.length, 1);
+  f.catalogue.coverage = { complete: true }; f.catalogue.hasMore = false;
+  f.replaceModel(projection([early]));
+  assert.ok(f.more(early)); assert.match(f.selectedDay("2028-01-31").props.accessibilityLabel, /1 show,/);
+});
+
+test("partial and failed reads remain distinguishable from a verified empty selected day", t => {
+  const f = fixture({ projected: projection([], []), catalogue: { status: "loading", summaryComplete: false, coverage: { complete: false } } }); t.after(f.close);
+  assert.ok(f.text().includes("Loading shows…")); assert.equal(f.text().includes("No shows listed on this date."), false);
+  f.catalogue.status = "error"; f.catalogue.error = new Error("offline"); f.render();
+  assert.ok(f.text().includes("Availability may be incomplete.")); assert.equal(f.text().includes("No shows listed on this date."), false);
+  f.pressText("Retry shows"); assert.equal(f.refreshes.length, 1);
+  f.catalogue.status = "ready"; f.catalogue.error = null; f.catalogue.summaryComplete = true; f.catalogue.coverage = { complete: true }; f.render();
+  assert.ok(f.text().includes("No shows listed on this date."));
+});
+
+test("visible home-city scope filters personal rows without changing saved All shows default", t => {
+  const local = { ...early, city: "Toronto, Ontario, Canada", country: "Canada" };
+  const remote = { ...late, city: "London, England, United Kingdom", country: "United Kingdom" };
+  const f = fixture({ home: { city: "Toronto", country: "Canada" }, projected: projection([local, remote]) }); t.after(f.close);
+  assert.equal(f.state().scope, "all"); assert.ok(f.text().includes("Worldwide"));
+  f.press("Calendar scope: All shows. Change scope"); f.chooseMenu("Toronto");
+  assert.equal(f.state().scope, "local"); assert.ok(f.button("Calendar scope: Toronto. Change scope"));
+  assert.equal(f.catalogueQueries.at(-1).homeCity, "Toronto"); assert.equal(f.catalogueQueries.at(-1).scope, "local");
+  assert.ok(f.more(local)); assert.equal(f.all().some(node => node.props?.accessibilityLabel === calendarMoreLabel(remote)), false);
+  const row = f.find(node => node.type === "Pressable" && node.props.accessibilityLabel?.startsWith(`${calendarShowName(local)}, ${calendarTimeLabel(local)},`));
+  f.act(() => row.props.onPress()); f.render(); assert.equal(f.state().scope, "local"); assert.equal(f.opens[0].city, local.city);
+  f.press("Calendar scope: Toronto. Change scope"); f.chooseMenu("My plans");
+  assert.equal(f.catalogueQueries.at(-1).enabled, false);
+});
+
+test("missing home city never silently chooses worldwide for Local", t => {
+  const f = fixture(); t.after(f.close); f.press("Calendar scope: All shows. Change scope");
+  assert.ok(f.menus.at(-1).options.disabledButtonIndices.includes(f.menus.at(-1).options.options.indexOf("Home city not set")));
+  f.chooseMenu("Home city not set"); assert.equal(f.state().scope, "all");
+});
+
+test("scope stays outside the scrolling content and screenshot rows preserve their full spoken details", t => {
+  const event = { ...unknown, eventName: "UIL State Marching Band Contest Combo: 6A Prelims/2A Prelims/6A Finals", artist: "U.I.L. State Marching Band Contest", venue: "Alamodome", city: "San Antonio, Texas, United States Of America", date: "2028-01-30", endDate: "2028-02-01" };
+  const f = fixture({ width: 320, projected: projection([event]) }); t.after(f.close);
+  const scroller = f.find(node => node.type === "ScrollView" && !node.props.horizontal);
+  assert.equal(nodes(scroller).some(node => node.props?.accessibilityLabel?.startsWith("Calendar scope:")), false);
+  assert.ok(f.text().includes("San Antonio, Texas, US")); assert.equal(f.text().includes("United States Of America"), false);
+  const row = f.find(node => node.type === "Pressable" && node.props.accessibilityLabel?.startsWith(`${calendarShowName(event)}, Continues,`));
+  assert.ok(row.props.accessibilityLabel.includes(event.city)); assert.equal(styles(row.props.style({ pressed: false })).flexDirection, "column");
+  f.act(() => row.props.onPress()); assert.equal(f.opens[0].city, event.city);
+  assert.ok(f.more(event).props.accessibilityLabel.includes("Alamodome"));
+});
+
+test("changing date cancels refresh ownership so its late failure cannot label the new date", async t => {
+  const f = fixture(); t.after(f.close); await f.settle(); let result;
+  f.act(() => { result = f.find(node => node.type === "VinylRefreshBoundary").props.onRefresh(); }); await f.settle();
+  f.press("Next month"); assert.equal(f.refreshes[0].options.signal.aborted, true);
+  f.refreshes[0].resolve(false); f.attendanceRefreshes[0].resolve(true); f.historyRetries[0].resolve({ status: "ready" });
+  await result; await f.settle(); assert.equal(f.text().includes("Some details could not refresh."), false);
+});
+
+test("calendar refresh reads canonical failed and successful command results", async t => {
+  const f = fixture(); t.after(f.close); await f.settle();
+  for (const ok of [false, true]) {
+    let completion; f.act(() => { completion = f.find(node => node.type === "VinylRefreshBoundary").props.onRefresh(); }); await f.settle();
+    f.refreshes.at(-1).resolve(ok ? { ok: true, value: true } : { ok: false, error: { message: "offline" } });
+    f.attendanceRefreshes.at(-1).resolve(true); f.historyRetries.at(-1).resolve({ status: "ready" });
+    assert.equal(await completion, ok); await f.settle();
+    assert.equal(f.text().includes("Some details could not refresh."), !ok);
   }
 });

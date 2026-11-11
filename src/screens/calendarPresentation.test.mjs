@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calendarAgendaGroups, calendarDateLabel, calendarDaysForScope, calendarJumpSelection, calendarMonthCount, calendarMonthGeometry, calendarMonthLabel, calendarMonthSelection, calendarShowName, calendarShowStatus, calendarTimeLabel } from "./calendarPresentation.mjs";
+import { calendarAgendaGroups, calendarDateLabel, calendarDaysForScope, calendarJumpSelection, calendarMonthCount, calendarMonthGeometry, calendarMonthLabel, calendarMonthSelection, calendarShowName, calendarShowStatus, calendarTimeLabel, calendarPlaceLabel, calendarArtistSubtitle, calendarDayAvailability } from "./calendarPresentation.mjs";
 
 test("month navigation preserves chosen day with explicit end-of-month clamp", () => {
   assert.deepEqual(calendarMonthSelection({ y: 2028, m: 0 }, 1, "2028-01-31"), { cursor: { y: 2028, m: 1 }, selected: "2028-02-29" });
@@ -21,7 +21,8 @@ test("month geometry keeps every date once and seven adequate targets with eithe
   for (const width of [320, 390, 768]) for (const fontScale of [1, 1.2, 2, 3.1]) for (const weekStart of [0, 1]) {
     for (let m = 0; m < 12; m++) {
       const grid = calendarMonthGeometry({ y: 2028, m, width, fontScale, weekStart, locale: "en-GB" });
-      assert.equal(grid.cells.length, 42);
+      assert.ok([28, 35, 42].includes(grid.cells.length));
+      assert.ok(grid.cells.slice(-7).some(Boolean), "no entirely blank final week");
       assert.deepEqual(grid.cells.filter(Boolean), Array.from({ length: new Date(2028, m + 1, 0).getDate() }, (_, i) => i + 1));
       assert.ok(grid.width / 7 >= 44 * fontScale);
       assert.ok(grid.cellHeight >= 44 * fontScale);
@@ -80,4 +81,22 @@ test("spoken show identity includes the visible event and distinct artist withou
   assert.equal(calendarShowName({ eventName: "Festival", artist: "Headliner" }), "Festival, Headliner");
   assert.equal(calendarShowName({ eventName: "Festival" }), "Festival");
   assert.equal(calendarShowName({ eventName: "Headliner", artist: "Headliner" }), "Headliner");
+});
+
+test("display locations abbreviate long country names without losing city or region", () => {
+  const event = { city: "San Antonio, Texas, United States Of America", country: "United States" };
+  assert.equal(calendarPlaceLabel(event), "San Antonio, Texas, US");
+  assert.equal(event.city, "San Antonio, Texas, United States Of America");
+  assert.equal(calendarPlaceLabel({ city: "Springfield, Illinois", country: "United States" }), "Springfield, Illinois, US");
+  assert.equal(calendarPlaceLabel({ city: "Paris", country: "France" }), "Paris, France");
+  assert.equal(calendarArtistSubtitle({ eventName: "Periphery - A Pale White Dot US Tour", artist: "Periphery" }), "");
+  assert.equal(calendarArtistSubtitle({ eventName: "Winter Festival", artist: "Headliner" }), "Headliner");
+});
+
+test("spoken counts distinguish loaded, complete, present-but-unloaded and unknown dates", () => {
+  assert.equal(calendarDayAvailability(313, { publicShows: true }), "313 loaded shows");
+  assert.equal(calendarDayAvailability(1, { publicShows: true, complete: true }), "1 show");
+  assert.equal(calendarDayAvailability(0, { publicShows: true, presence: true }), "Shows listed, count not loaded");
+  assert.equal(calendarDayAvailability(0, { publicShows: true }), "Availability not loaded");
+  assert.equal(calendarDayAvailability(0, { publicShows: true, presence: false }), "0 shows listed");
 });

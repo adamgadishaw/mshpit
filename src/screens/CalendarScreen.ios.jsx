@@ -12,12 +12,16 @@ import { CALENDAR_HISTORY_PAGE_SIZE, calendarHistoryWindow, nextCalendarHistoryL
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 import useIOSCalendarExport from "../hooks/useIOSCalendarExport";
 import useCalendarBrowseState from "../hooks/useCalendarBrowseState";
+import useCalendarShows from "../features/calendarShows/useCalendarShows";
+import { calendarLocalEvent } from "../features/calendarShows/calendarShowsRequest.mjs";
 import useIOSDetailBackBlock from "../hooks/useIOSDetailBackBlock";
 import { createCalendarClock } from "./calendarClock.mjs";
+import { countryForCity } from "../domain/geo.mjs";
 import {
   CALENDAR_AGENDA_PAGE, CALENDAR_MAX_YEAR, CALENDAR_MIN_YEAR,
   calendarAgendaGroups, calendarDateKey, calendarDateLabel, calendarDaysForScope,
-  calendarJumpSelection, calendarLocalDate, calendarMonthCount, calendarMonthGeometry,
+  calendarArtistSubtitle, calendarPlaceLabel, calendarMoreLabel, calendarDayAvailability,
+  calendarJumpSelection, calendarLocalDate, calendarMonthGeometry,
   calendarMonthSelection, calendarMonthLabel, calendarShowName, calendarShowStatus, calendarTimeLabel,
 } from "./calendarPresentation.mjs";
 
@@ -26,15 +30,19 @@ const monthName = calendarMonthLabel;
 
 function Segment({ value, options, label, onChange }) {
   return <View style={styles.segment} accessibilityRole="tablist" accessibilityLabel={label}>
-    {options.map(([key, title]) => <Pressable key={key} onPress={() => onChange(key)}
+    {options.map(([key, title, spoken = title]) => <Pressable key={key} onPress={() => onChange(key)}
       style={({ pressed: down }) => [styles.segmentButton, key === value && styles.segmentSelected, down && styles.pressed]}
-      accessibilityRole="tab" accessibilityState={{ selected: value === key }} accessibilityLabel={title}>
+      accessibilityRole="tab" accessibilityState={{ selected: value === key }} accessibilityLabel={spoken}>
       <Text style={[styles.segmentText, value === key && styles.segmentTextSelected]}>{title}</Text>
     </Pressable>)}
   </View>;
 }
 
-function ShowRow({ event, view, largeText, onOpen, onMore, exporting }) {
+function MoreDots() {
+  return <View style={styles.moreDots} accessible={false} pointerEvents="none">{[0, 1, 2].map(index => <View key={index} style={styles.moreDot} />)}</View>;
+}
+
+function ShowRow({ event, view, onOpen, onMore, exporting }) {
   const status = calendarShowStatus(event, view);
   const name = calendarShowName(event);
   const statuses = [status, event.soldOut && status !== "Cancelled" ? "Sold out" : ""].filter(Boolean);
@@ -42,60 +50,86 @@ function ShowRow({ event, view, largeText, onOpen, onMore, exporting }) {
   const span = endDate && endDate > event.date;
   const time = calendarTimeLabel(event);
   const venue = [event.venue || "Venue TBA", event.city || event.place].filter(Boolean).join(" · ");
+  const artist = calendarArtistSubtitle(event);
   return <View style={styles.eventRow}>
-    <Pressable style={({ pressed: down }) => [styles.eventMain, largeText && styles.eventMainLarge, down && styles.pressed]}
+    <Pressable style={({ pressed: down }) => [styles.eventMain, down && styles.pressed]}
       onPress={() => onOpen(event)} accessibilityRole="button"
       accessibilityLabel={[name, time, venue, ...statuses, span ? `${calendarDateLabel(event.date, { year: "numeric" })} to ${calendarDateLabel(endDate, { year: "numeric" })}` : ""].filter(Boolean).join(", ")}>
-      <Text style={[styles.eventTime, largeText && styles.eventTimeLarge]}>{time}</Text>
+      <Text style={styles.eventTime}>{time}</Text>
       <View style={styles.eventIdentity}>
         <Text style={styles.eventArtist}>{event.eventName || event.artist || "Show"}</Text>
-        {event.eventName && event.artist && event.eventName !== event.artist ? <Text style={styles.eventVenue}>{event.artist}</Text> : null}
-        <Text style={styles.eventVenue}>{venue}</Text>
-        {span ? <Text style={styles.eventVenue}>{calendarDateLabel(event.date, { weekday: undefined, year: "numeric" })} – {calendarDateLabel(endDate, { weekday: undefined, year: "numeric" })}</Text> : null}
+        {artist ? <Text style={styles.eventVenue}>{artist}</Text> : null}
+        <Text style={styles.eventVenue}>{event.venue || "Venue TBA"}</Text>
+        {calendarPlaceLabel(event) ? <Text style={styles.eventLocation}>{calendarPlaceLabel(event)}</Text> : null}
+        {span ? <Text style={styles.eventVenue}>{calendarDateLabel(event.date, { weekday: undefined, month: "short" })} – {calendarDateLabel(endDate, { weekday: undefined, month: "short", ...(event.date.slice(0, 4) !== endDate.slice(0, 4) ? { year: "numeric" } : {}) })}</Text> : null}
         {statuses.length ? <Text style={[styles.eventStatus, ["Cancelled", "Postponed"].includes(status) && styles.error]}>{statuses.join(" · ")}</Text> : null}
       </View>
     </Pressable>
-    <Pressable onPress={() => onMore(event)} style={pressed} accessibilityRole="button" accessibilityLabel={`More actions for ${name}, ${time}`} accessibilityState={{ busy: exporting }}>
-      {exporting ? <ActivityIndicator color={colors.amber} /> : <Icon name="menu" size={19} color={colors.textDim} />}
+    <Pressable onPress={() => onMore(event)} style={pressed} accessibilityRole="button" accessibilityLabel={calendarMoreLabel(event)} accessibilityState={{ busy: exporting }}>
+      {exporting ? <ActivityIndicator color={colors.amber} /> : <MoreDots />}
     </Pressable>
   </View>;
 }
 
 export default function CalendarScreen({ initialDate = null, initialView = "upcoming", onClose, onOpen, onOpenArtist,
   browseMemory, browseOccurrence, isCurrentRoute }) {
-  const { session, chatAuthEpoch, upcomingEvents, goingFor, myAttendance, refreshMyAttendance, refreshTourDates, serverTime } = useStore();
+  const { session, chatAuthEpoch, goingFor, myAttendance, refreshMyAttendance, serverTime } = useStore();
   const accountId = session?.id ?? null;
+  const homeCity = String(session?.home?.city || "").trim();
+  const homeCountry = session?.home?.country || countryForCity(homeCity) || "";
   const { width, fontScale } = useWindowDimensions();
   const largeText = fontScale > 1.2;
   const history = useProfileHistory({ accountId, targetId: accountId, enabled: !!accountId });
   const historyInitialLoading = !!accountId && !history.updatedAt && !history.error
     && ["idle", "loading", "refreshing"].includes(history.status);
   const [clock, setClock] = useState(() => new Date());
+  const [catalogueRestoreReady, setCatalogueRestoreReady] = useState(false);
   const todayKey = localCalendarIso(clock);
   const initial = toIsoDate(initialDate) || todayKey;
   const initialDay = calendarLocalDate(initial);
   const browse = useCalendarBrowseState({ memory: browseMemory, occurrence: browseOccurrence, accountId, authEpoch: chatAuthEpoch,
     initialState: { selected: initial, cursor: { y: initialDay.getFullYear(), m: initialDay.getMonth() },
       view: initialView === "past" ? "past" : "upcoming", scope: "all", presentation: "month", historyVisibleLimit: CALENDAR_HISTORY_PAGE_SIZE },
-    isCurrentRoute, restoreReady: !historyInitialLoading,
+    isCurrentRoute, restoreReady: !historyInitialLoading && catalogueRestoreReady,
   });
   const { state, update, isCurrent } = browse;
   const { cursor, selected, view, scope, presentation } = state;
+  const catalogue = useCalendarShows({ cursor, selected, presentation, scope, homeCity, homeCountry,
+    accountId, authEpoch: chatAuthEpoch, enabled: view === "upcoming" && scope !== "plans", isCurrent, capture: browse.capture });
+  const publicShows = view === "upcoming" && scope !== "plans";
+  useEffect(() => {
+    if (isCurrent() && (!publicShows || catalogue.status === "ready" || catalogue.status === "error" || catalogue.needsLocation)) {
+      setCatalogueRestoreReady(true);
+    }
+  }, [isCurrent, publicShows, catalogue.status, catalogue.needsLocation]);
   const historyWindow = useMemo(() => calendarHistoryWindow(history.posts, state.historyVisibleLimit, history.nextCursor),
     [history.posts, state.historyVisibleLimit, history.nextCursor]);
-  const model = useMemo(() => memberCalendarModel({ today: todayKey, upcoming: upcomingEvents(500) || [],
+  const personalModel = useMemo(() => memberCalendarModel({ today: todayKey,
     going: accountId ? goingFor(accountId) || [] : [], attendance: accountId ? myAttendance || [] : [],
     posts: accountId ? historyWindow.posts : [],
-  }), [todayKey, upcomingEvents, goingFor, accountId, myAttendance, historyWindow.posts]);
-  const byDay = useMemo(() => calendarDaysForScope(model.byDay[view], view === "past" ? "plans" : scope), [model, view, scope]);
+  }), [todayKey, goingFor, accountId, myAttendance, historyWindow.posts]);
+  // Public browsing covers the chosen calendar month, including its earlier
+  // dates. Personal plans/history still use the actual current-day boundary.
+  const modelDay = publicShows ? calendarDateKey(cursor.y, cursor.m, 1) : todayKey;
+  const model = useMemo(() => publicShows ? memberCalendarModel({ today: modelDay, upcoming: catalogue.events,
+    going: accountId ? goingFor(accountId) || [] : [], attendance: accountId ? myAttendance || [] : [],
+    posts: accountId ? historyWindow.posts : [],
+  }) : personalModel, [publicShows, personalModel, modelDay, catalogue.events, goingFor, accountId, myAttendance, historyWindow.posts]);
+  const byDay = useMemo(() => {
+    const scoped = calendarDaysForScope(model.byDay[view], view === "past" ? "plans" : scope);
+    const monthPrefix = calendarDateKey(cursor.y, cursor.m, 1).slice(0, 7);
+    const days = publicShows ? Object.fromEntries(Object.entries(scoped).filter(([date]) => date.startsWith(monthPrefix))) : scoped;
+    return view === "upcoming" && scope === "local" ? Object.fromEntries(Object.entries(days)
+      .map(([date, events]) => [date, events.filter(event => calendarLocalEvent(event, { homeCity, homeCountry, countryForCity }))])
+      .filter(([, events]) => events.length)) : days;
+  }, [model, view, scope, homeCity, homeCountry, publicShows, cursor.y, cursor.m]);
   const geometry = useMemo(() => calendarMonthGeometry({ ...cursor, width, fontScale }), [cursor, width, fontScale]);
   const agenda = useMemo(() => calendarAgendaGroups(byDay, { selected, view, limit: state.agendaLimit }), [byDay, selected, view, state.agendaLimit]);
   const selectedEvents = byDay[selected] || [];
   const selectedVisible = selectedEvents.slice(0, state.agendaLimit);
   const groups = presentation === "agenda" ? agenda.groups : [{ date: selected, events: selectedVisible }];
   const remaining = presentation === "agenda" ? agenda.remaining : Math.max(0, selectedEvents.length - selectedVisible.length);
-  const monthCount = calendarMonthCount(byDay, cursor);
-  const goingEvents = model.upcoming.filter(event => event.going);
+  const goingEvents = personalModel.upcoming.filter(event => event.going);
   const exportState = useIOSCalendarExport(accountId, chatAuthEpoch);
   const [feedback, setFeedback] = useState(null);
   const [refreshState, setRefreshState] = useState(null);
@@ -139,7 +173,8 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
 
   const choose = patch => {
     if (!isCurrent()) return;
-    setJump(null); setFeedback(null);
+    refreshRef.current?.abort(); refreshRef.current = null;
+    setRefreshState(null); setJump(null); setFeedback(null);
     update({ ...patch, agendaLimit: CALENDAR_AGENDA_PAGE });
   };
   const moveMonth = delta => {
@@ -149,7 +184,7 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
   const choosePeriod = next => {
     if (!isCurrent()) return;
     if (next === view) return;
-    const keys = Object.keys(calendarDaysForScope(model.byDay[next], next === "past" ? "plans" : scope)).sort();
+    const keys = Object.keys(calendarDaysForScope((next === "past" ? personalModel : model).byDay[next], next === "past" ? "plans" : scope)).sort();
     const target = next === "past" ? keys.at(-1) || todayKey : keys.find(key => key >= todayKey) || todayKey;
     const date = calendarLocalDate(target);
     choose({ view: next, selected: target, cursor: { y: date.getFullYear(), m: date.getMonth() }, scrollY: 0 });
@@ -202,6 +237,7 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
   };
   const changeScope = () => showMenu("Calendar shows", [
     { title: scope === "all" ? "All shows (selected)" : "All shows", run: () => choose({ scope: "all" }) },
+    { title: homeCity ? `${homeCity}${scope === "local" ? " (selected)" : ""}` : "Home city not set", disabled: !homeCity, run: () => choose({ scope: "local" }) },
     { title: scope === "plans" ? "My plans (selected)" : "My plans", disabled: !accountId, run: () => choose({ scope: "plans" }) },
   ]);
   const calendarActions = () => showMenu("Calendar options", [
@@ -215,13 +251,15 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
     const controller = new AbortController(); refreshRef.current = controller;
     setRefreshState({ owner: isCurrent, busy: true, error: false });
     const results = await Promise.allSettled([
-      Promise.resolve().then(() => accepts() ? refreshTourDates?.({ signal: controller.signal }) : false),
+      Promise.resolve().then(() => accepts() ? publicShows ? catalogue.refresh({ signal: controller.signal }) : true : false),
       Promise.resolve().then(() => accepts() ? accountId ? refreshMyAttendance?.({ signal: controller.signal }) : true : false),
       Promise.resolve().then(() => accepts() ? accountId ? history.retry() : true : false),
       Promise.resolve().then(() => accepts() ? clockRef.current?.refresh() : false),
     ]);
     if (!accepts() || controller.signal.aborted || refreshRef.current !== controller) return false;
-    const failed = results.some((result, index) => result.status === "rejected" || result.value === false || result.value == null || (index === 2 && result.value?.status === "error"));
+    const failed = results.some((result, index) => result.status === "rejected" || result.value === false || result.value == null
+      || result.value?.ok === false || (index === 0 && result.value?.ok === true && result.value.value !== true)
+      || (index === 2 && result.value?.status === "error"));
     refreshRef.current = null; setRefreshState({ owner: isCurrent, busy: false, error: failed });
     if (failed) AccessibilityInfo.announceForAccessibility("Some calendar details could not refresh. Your loaded shows are still available.");
     return !failed;
@@ -262,7 +300,7 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
   };
   const closeJump = () => { if (isCurrent()) { setJump(null); Keyboard.dismiss(); } };
   const changeJump = patch => { if (isCurrent() && jumpOpen) setJump({ ...jump, ...patch }); };
-  const orderedDates = Object.keys(byDay).sort();
+  const orderedDates = [...new Set([...Object.keys(byDay), ...(publicShows ? Object.keys(catalogue.dayPresence || {}).filter(key => catalogue.dayPresence[key]) : [])])].sort();
   if (view === "past") orderedDates.reverse();
   const nextRelevant = orderedDates.find(key => view === "past" ? key < selected : key > selected);
   const nextDate = () => {
@@ -272,17 +310,22 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
 
   return <View style={styles.wrap}>
     <ScreenHeader title="Calendar" onBack={() => { if (isCurrent()) onClose?.(); }} right={<Pressable onPress={goToday} style={pressed} accessibilityRole="button" accessibilityLabel="Go to today"><Text style={styles.actionText}>Today</Text></Pressable>} />
+    <View style={styles.contextBar}>
+      {view === "upcoming" ? <Pressable onPress={changeScope} style={({ pressed: down }) => [styles.scopeButton, down && styles.pressed]} accessibilityRole="button"
+        accessibilityLabel={`Calendar scope: ${scope === "plans" ? "My plans" : scope === "local" ? homeCity || "Home city not set" : "All shows"}. Change scope`}>
+        <View style={styles.scopeIdentity}><Text style={styles.scopeText}>{scope === "plans" ? "My plans" : scope === "local" ? homeCity || "Home city not set" : "All shows"}</Text>
+          <Text style={styles.scopeDetail}>{scope === "plans" ? "Your saved shows" : scope === "local" ? "Home city" : "Worldwide"}</Text></View>
+        <Icon name="chevron-down" size={16} />
+      </Pressable> : <View style={styles.scopeIdentity}><Text style={styles.scopeText}>Past shows</Text><Text style={styles.scopeDetail}>Your show history</Text></View>}
+      <Pressable onPress={calendarActions} style={pressed} accessibilityRole="button" accessibilityLabel="Calendar options" accessibilityState={{ busy: !!exportState.exportingKey }}><MoreDots /></Pressable>
+    </View>
     <VinylRefreshBoundary refreshing={!!refreshing} onRefresh={refreshCalendar} accessibilityLabel="Refresh your calendar" style={styles.fill} testID="calendar-refresh">
       <ScrollView ref={browse.scrollRef} style={styles.fill} contentContainerStyle={styles.content}
         keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets
         onScroll={browse.onScroll} scrollEventThrottle={32} onScrollBeginDrag={browse.onScrollBeginDrag}
         onLayout={browse.onLayout} onContentSizeChange={browse.onContentSizeChange}>
-        <View style={styles.section}>
-          <Segment value={view} options={[["upcoming", "Upcoming"], ["past", "Past shows"]]} label="Calendar show period" onChange={choosePeriod} />
-          <View style={styles.toolbar}>
-            {view === "upcoming" ? <Pressable onPress={changeScope} style={pressed} accessibilityRole="button" accessibilityLabel={`Calendar scope: ${scope === "plans" ? "My plans" : "All shows"}. Change scope`}><Text style={styles.scopeText}>{scope === "plans" ? "My plans" : "All shows"}</Text><Icon name="chevron-down" size={15} /></Pressable> : <Text style={styles.scopeText}>Your show history</Text>}
-            <Pressable onPress={calendarActions} style={pressed} accessibilityRole="button" accessibilityLabel="Calendar options" accessibilityState={{ busy: !!exportState.exportingKey }}><Icon name="menu" size={20} /></Pressable>
-          </View>
+        <View style={[styles.displayControls, (largeText || width < 380) && styles.displayControlsLarge]}>
+          <Segment value={view} options={[["upcoming", "Shows"], ["past", "History", "Past shows"]]} label="Calendar show period" onChange={choosePeriod} />
           <Segment value={presentation} options={[["month", "Month"], ["agenda", "Agenda"]]} label="Calendar presentation" onChange={next => choose({ presentation: next })} />
         </View>
         <View style={styles.monthBar}>
@@ -314,29 +357,42 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
                 const date = calendarDateKey(cursor.y, cursor.m, day), events = byDay[date] || [];
                 const personal = events.filter(event => event.going || event.interested || event.attended || event.logged || event.posted).length;
                 const isToday = date === todayKey, active = date === selected;
+                const presence = publicShows ? catalogue.dayPresence?.[date] : undefined;
+                const hasShows = !!events.length || presence === true;
+                const availability = calendarDayAvailability(events.length, { publicShows, presence,
+                  complete: publicShows ? date === selected && presentation === "month" && catalogue.coverage?.complete : !historyWindow.hasMore && !historyInitialLoading && !history.error });
                 return <Pressable key={date} onPress={() => choose({ selected: date })} accessibilityRole="button" accessibilityState={{ selected: active }}
-                  accessibilityLabel={`${calendarDateLabel(date)}${isToday ? ", today" : ""}, ${events.length} shows${personal ? `, ${personal} in your plans or history` : ""}`}
+                  accessibilityLabel={`${calendarDateLabel(date)}${isToday ? ", today" : ""}, ${availability}${personal ? `, ${personal} in your plans or history` : ""}`}
                   style={({ pressed: down }) => [styles.day, { minHeight: geometry.cellHeight }, down && styles.pressed]}>
                   <View style={[styles.dayNumber, isToday && styles.todayNumber, active && styles.selectedNumber]}><Text style={[styles.dayText, active && styles.selectedDayText]}>{day}</Text></View>
-                  <Text style={styles.dayCount} accessible={false}>{events.length > 1 ? String(events.length) : events.length ? "•" : " "}</Text>
+                  <View style={styles.dayMarker} accessible={false}>{hasShows ? <View style={[styles.showDot, personal > 0 && styles.personalDot]} /> : null}</View>
                 </Pressable>;
               })}</View>
             </View>
           </ScrollView>
-          <Text style={styles.monthSummary}>{monthCount} {monthCount === 1 ? "show" : "shows"} this month · Venue times unless labelled otherwise</Text>
-        </> : <Text style={styles.monthSummary}>{view === "past" ? "Through" : "From"} {calendarDateLabel(selected, { weekday: undefined, year: "numeric" })} · Venue times unless labelled otherwise</Text>}
+        </> : <Text style={styles.monthSummary}>{publicShows ? "Through" : view === "past" ? "Through" : "From"} {calendarDateLabel(publicShows ? calendarDateKey(cursor.y, cursor.m, new Date(cursor.y, cursor.m + 1, 0).getDate()) : selected, { weekday: undefined, year: "numeric" })}</Text>}
         <View style={styles.section}>
+          {publicShows && (catalogue.status === "loading" || catalogue.status === "refreshing" || catalogue.error || catalogue.needsLocation || !catalogue.summaryComplete) ? <View style={styles.statusBox}>
+            <Text style={styles.statusText} accessibilityRole={catalogue.error ? "alert" : "text"}>{catalogue.needsLocation ? "Set your home city in your profile to see local shows."
+              : catalogue.error ? "Shows for this date could not load. Availability may be incomplete."
+                : catalogue.status === "loading" || catalogue.status === "refreshing" ? "Loading shows…" : "Some dates are still unconfirmed. Select a date to check its shows."}</Text>
+            {catalogue.error ? <Pressable onPress={() => { void catalogue.refresh(); }} style={pressed} accessibilityRole="button"><Text style={styles.actionText}>Retry shows</Text></Pressable> : null}
+          </View> : null}
           {refreshing || refreshError ? <View style={styles.statusBox}><Text style={[styles.statusText, refreshError && styles.error]} accessibilityRole={refreshError ? "alert" : "text"}>{refreshing ? "Refreshing your calendar…" : "Some details could not refresh. Your loaded shows are still available."}</Text>{refreshError ? <Pressable onPress={() => { void refreshCalendar(); }} style={pressed} accessibilityRole="button"><Text style={styles.actionText}>Try again</Text></Pressable> : null}</View> : null}
           {notice ? <Text style={[styles.notice, noticeError && styles.error]} accessibilityRole={noticeError ? "alert" : "text"}>{notice}</Text> : null}
           {groups.map(group => <View key={group.date} style={styles.dayGroup}>
             <Text style={styles.heading} accessibilityRole="header">{calendarDateLabel(group.date, { year: "numeric" })}</Text>
+            {group.events.length ? <Text style={styles.timeHint}>Times at the venue unless labelled</Text> : null}
             {group.events.map(event => <ShowRow key={event.calendarKey} event={event} view={view} largeText={largeText} onOpen={openEvent} onMore={eventActions} exporting={exportState.exportingKey === `event-${event.calendarKey}`} />)}
           </View>)}
           {(presentation === "month" ? !selectedEvents.length : !agenda.count) ? <View style={styles.empty}>
-            <Text style={styles.emptyTitle}>{historyInitialLoading && view === "past" ? "Loading your past shows…" : view === "past" ? "No shows in this part of your loaded history." : scope === "plans" ? "No plans on this date." : "No shows listed on this date."}</Text>
-            {nextRelevant ? <Pressable onPress={nextDate} style={pressed} accessibilityRole="button"><Text style={styles.actionText}>{view === "past" ? "Previous show" : "Next show"} · {calendarDateLabel(nextRelevant, { weekday: undefined, year: "numeric" })}</Text></Pressable> : view === "upcoming" && scope === "plans" ? <Pressable onPress={() => choose({ scope: "all" })} style={pressed} accessibilityRole="button"><Text style={styles.actionText}>Browse all shows</Text></Pressable> : null}
+            <Text style={styles.emptyTitle}>{historyInitialLoading && view === "past" ? "Loading your past shows…" : view === "past" ? "No shows in this part of your loaded history." : scope === "plans" ? "No plans on this date."
+              : catalogue.needsLocation || catalogue.error || !catalogue.coverage?.complete ? "" : presentation === "agenda" ? "No more shows listed in this month." : scope === "local" ? `No shows listed in ${homeCity} on this date.` : "No shows listed on this date."}</Text>
+            {nextRelevant ? <Pressable onPress={nextDate} style={pressed} accessibilityRole="button"><Text style={styles.actionText}>{view === "past" ? "Previous loaded show" : "Next listed date"} · {calendarDateLabel(nextRelevant, { weekday: undefined, year: "numeric" })}</Text></Pressable> : view === "upcoming" && scope === "plans" ? <Pressable onPress={() => choose({ scope: "all" })} style={pressed} accessibilityRole="button"><Text style={styles.actionText}>Browse all shows</Text></Pressable> : null}
           </View> : null}
           {remaining ? <Pressable onPress={() => update({ agendaLimit: state.agendaLimit + CALENDAR_AGENDA_PAGE })} style={styles.loadButton} accessibilityRole="button"><Text style={styles.actionText}>Show more ({remaining})</Text></Pressable> : null}
+          {publicShows && !remaining && catalogue.hasMore ? <Pressable onPress={() => { void catalogue.loadMore(); }} style={styles.loadButton} disabled={catalogue.loadingMore} accessibilityRole="button" accessibilityState={{ busy: catalogue.loadingMore, disabled: catalogue.loadingMore }}><Text style={styles.actionText}>{catalogue.loadingMore ? "Loading…" : "Load more shows"}</Text></Pressable> : null}
+          {publicShows && presentation === "agenda" && !remaining && !catalogue.hasMore && catalogue.coverage?.complete ? <Pressable onPress={() => moveMonth(1)} style={styles.loadButton} accessibilityRole="button"><Text style={styles.actionText}>Next month</Text></Pressable> : null}
           {accountId && (historyInitialLoading || history.error || olderFailure === isCurrent || historyWindow.hasMore) ? <View style={styles.historyBox}>
             {historyInitialLoading ? <ActivityIndicator color={colors.amber} /> : null}
             <Text style={styles.statusText}>{historyInitialLoading ? "Loading your logged shows. Confirmed attendance can appear first."
@@ -356,23 +412,28 @@ const styles = StyleSheet.create({
   section: { paddingHorizontal: 16 }, pressed: { opacity: 0.62 },
   control: { minWidth: 44, minHeight: 44, paddingHorizontal: 10, paddingVertical: 8, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, flexShrink: 1 },
   actionText: { color: colors.amber, fontSize: 15, fontWeight: "600", flexShrink: 1 },
-  segment: { flexDirection: "row", backgroundColor: colors.surfaceAlt, borderRadius: 12, padding: 3 },
-  segmentButton: { flex: 1, minWidth: 0, minHeight: 44, paddingVertical: 8, paddingHorizontal: 8, alignItems: "center", justifyContent: "center", borderRadius: 9 },
+  segment: { flex: 1, flexDirection: "row", backgroundColor: colors.surfaceAlt, borderRadius: 10, padding: 2 },
+  segmentButton: { flex: 1, minWidth: 0, minHeight: 44, paddingVertical: 8, paddingHorizontal: 5, alignItems: "center", justifyContent: "center", borderRadius: 8 },
   segmentSelected: { backgroundColor: colors.bgElev }, segmentText: { color: colors.textDim, fontSize: 15, fontWeight: "600", textAlign: "center" }, segmentTextSelected: { color: colors.amber },
-  toolbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingVertical: 2 }, scopeText: { color: colors.textDim, fontSize: 14, flexShrink: 1 },
+  contextBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingHorizontal: 16, paddingVertical: 4, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  scopeButton: { flex: 1, minWidth: 0, minHeight: 48, flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 },
+  scopeIdentity: { flexShrink: 1, minWidth: 0 }, scopeText: { color: colors.text, fontSize: 16, fontWeight: "600", flexShrink: 1 }, scopeDetail: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  displayControls: { flexDirection: "row", gap: 8, paddingHorizontal: 16 }, displayControlsLarge: { flexDirection: "column", alignItems: "stretch" },
   monthBar: { flexDirection: "row", alignItems: "center", paddingHorizontal: 6, marginTop: 8, marginBottom: 4 },
   monthTitleButton: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 8 },
   monthTitle: { color: colors.text, fontSize: 20, fontWeight: "700", textAlign: "center", flexShrink: 1 },
   gridScroller: { flexGrow: 1, justifyContent: "center", paddingHorizontal: 4 }, weekdays: { flexDirection: "row", paddingVertical: 8 }, weekday: { flex: 1, textAlign: "center", color: colors.textDim, fontSize: 12 }, grid: { flexDirection: "row", flexWrap: "wrap" },
   day: { width: `${100 / 7}%`, minHeight: 44, alignItems: "center", justifyContent: "center", paddingVertical: 3 },
-  dayNumber: { minWidth: 30, minHeight: 30, borderRadius: 20, paddingHorizontal: 3, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "transparent" }, todayNumber: { borderColor: colors.textDim }, selectedNumber: { backgroundColor: colors.surfaceAlt, borderColor: colors.amber },
-  dayText: { fontSize: 15, color: colors.text, fontWeight: "500" }, selectedDayText: { color: colors.amber, fontWeight: "700" }, dayCount: { color: colors.textDim, fontSize: 11, minHeight: 14 },
+  dayNumber: { minWidth: 30, minHeight: 30, borderRadius: 20, paddingHorizontal: 3, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "transparent" }, todayNumber: { borderColor: colors.amber }, selectedNumber: { backgroundColor: colors.amber, borderColor: colors.amber },
+  dayText: { fontSize: 15, color: colors.text, fontWeight: "500" }, selectedDayText: { color: colors.bg, fontWeight: "700" },
+  dayMarker: { height: 10, justifyContent: "center" }, showDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: colors.textDim }, personalDot: { backgroundColor: colors.amber },
   monthSummary: { color: colors.textDim, fontSize: 12, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 14 },
-  dayGroup: { marginBottom: 16 }, heading: { color: colors.text, fontSize: 17, fontWeight: "600", marginBottom: 10 },
+  dayGroup: { marginTop: 16, marginBottom: 16 }, heading: { color: colors.text, fontSize: 17, fontWeight: "600", marginBottom: 5 }, timeHint: { color: colors.textDim, fontSize: 12, marginBottom: 12 },
   eventRow: { flexDirection: "row", alignItems: "center", borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line, gap: 4 },
-  eventMain: { flex: 1, minWidth: 0, minHeight: 56, flexDirection: "row", alignItems: "flex-start", gap: 12, paddingVertical: 14 }, eventMainLarge: { flexDirection: "column", gap: 5 },
-  eventTime: { width: 66, flexShrink: 0, color: colors.textDim, fontSize: 14, fontWeight: "500" }, eventTimeLarge: { width: "auto", maxWidth: "100%" }, eventIdentity: { flex: 1, minWidth: 0 },
-  eventArtist: { color: colors.text, fontSize: 17, fontWeight: "600" }, eventVenue: { color: colors.textDim, fontSize: 14, marginTop: 4 }, eventStatus: { color: colors.amber, fontSize: 13, fontWeight: "500", marginTop: 5 },
+  eventMain: { flex: 1, minWidth: 0, minHeight: 56, flexDirection: "column", alignItems: "stretch", gap: 5, paddingVertical: 14 },
+  eventTime: { color: colors.textDim, fontSize: 13, fontWeight: "500", flexShrink: 1 }, eventIdentity: { minWidth: 0 },
+  eventArtist: { color: colors.text, fontSize: 17, fontWeight: "600" }, eventVenue: { color: colors.textDim, fontSize: 14, marginTop: 4 }, eventLocation: { color: colors.textDim, fontSize: 13, marginTop: 3 }, eventStatus: { color: colors.amber, fontSize: 13, fontWeight: "500", marginTop: 5 },
+  moreDots: { flexDirection: "row", gap: 4, alignItems: "center", justifyContent: "center" }, moreDot: { width: 3, height: 3, borderRadius: 2, backgroundColor: colors.textDim },
   empty: { paddingVertical: 18, alignItems: "flex-start", gap: 6 }, emptyTitle: { color: colors.textDim, fontSize: 15 },
   statusBox: { marginBottom: 14, gap: 4 }, statusText: { color: colors.textDim, fontSize: 14, lineHeight: 20 }, notice: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginBottom: 14 }, error: { color: colors.danger, fontSize: 14 },
   historyBox: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.line, paddingTop: 14, gap: 8, alignItems: "flex-start" }, loadButton: { minHeight: 44, padding: 12, alignItems: "center", marginBottom: 12 },

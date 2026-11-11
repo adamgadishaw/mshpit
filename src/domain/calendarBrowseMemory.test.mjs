@@ -119,3 +119,13 @@ test("a retired route cannot restore, overwrite scroll, or cancel the new route'
   controller.onScrollBeginDrag(scroll(200)); controller.onScroll(scroll(300));
   assert.deepEqual(calls, []); assert.deepEqual(saved, []);
 });
+
+test("explicit Local choice survives Show and Back without changing a fresh calendar default", () => {
+  const memory = createCalendarBrowseMemory(); memory.account("a", 1);
+  const occurrence = {}, current = memory.claim(occurrence, identity, initial);
+  current.save({ scope: "local", selected: "2026-11-30", presentation: "agenda" });
+  const returned = memory.claim(occurrence, identity, initial).read();
+  assert.equal(returned.scope, "local"); assert.equal(returned.selected, "2026-11-30"); assert.equal(returned.presentation, "agenda");
+  assert.equal(memory.claim({}, identity, initial).read().scope, "all");
+  assert.equal(Object.hasOwn(returned, "homeCity"), false, "navigation memory does not copy profile geography");
+});

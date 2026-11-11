@@ -19,7 +19,7 @@ export function calendarBrowseSnapshot(value = {}, previous = null) {
   return Object.freeze({
     cursor: Object.freeze({ y: cursor.y, m: cursor.m }), selected,
     view: choose("view", ["upcoming", "past"], "upcoming"),
-    scope: choose("scope", ["all", "plans"], "all"),
+    scope: choose("scope", ["all", "local", "plans"], "all"),
     presentation: choose("presentation", ["month", "agenda"], "month"),
     historyVisibleLimit: limit,
     agendaLimit: Number.isSafeInteger(value.agendaLimit) && value.agendaLimit >= 40 && value.agendaLimit % 40 === 0
