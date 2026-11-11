@@ -1,5 +1,24 @@
 # Pit current status
 
+## 2026-11-11 Database recovery remediation DB04-DB08 (local candidate)
+
+- Isolated `fix/db04-db08-recovery` starts at released `c2bbe88246f249a5fa7cd60f3184f55b6b8794bf`.
+  Production remains that release. No deployment, push, IAM change or real
+  production restore was performed.
+- Backup receipts now bind to storage identity, and privacy replay requires a
+  complete destination-bound signed chain/checkpoint. Unknown legacy coverage
+  requires the existing recorded recovery decision. Conditional checkpoint
+  writes preserve newer progress across interrupted/concurrent work.
+- Backup timing follows the persisted due time across restarts. Aged, proven
+  abandoned owned partials are reconciled before capacity admission. The daily
+  health digest includes aggregate journal readiness, backlog and failures.
+- The runbook specifies both object prefixes, exact checkpoint access, scoped
+  listing and disposable permission/restore verification. No real IAM policy
+  was inspected or modified.
+- Implementation, synthetic matrix, checks and operational limits are recorded
+  in `docs/DATABASE_RECOVERY_REMEDIATION_2026-11-11.md`. Original audit/evidence,
+  its checkout, other worktrees and the prior transfer artifacts remain intact.
+
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 
 - Local branch `fix/catalog-event-festival-20261027` uses a source snapshot of

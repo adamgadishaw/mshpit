@@ -12,6 +12,11 @@ import { presignS3Request } from "./media.js";
 import { privateBackupStorageConfig, verifyPrivateBackupBucket } from "./backupStorageSecurity.js";
 import { RESTORE_GATE_KEY } from "./databaseRecovery.js";
 import { startPeriodicJob } from "./periodicJobScheduler.js";
+import { backupStorageIdentity } from "./backupStorageIdentity.js";
+import { privateErrorLabel } from "./errors.js";
+import { CONTINUITY_KEY, COVERAGE_OBJECT, EMPTY_HEAD, canonicalPrivacyEntry,
+  privacyEntryHead, validChainFields, readContinuity, writeContinuity,
+  signCoverage, verifyCoverage, verifyContinuityChain } from "./privacyJournalContinuity.js";
 
 export const PRIVACY_JOURNAL_KINDS = Object.freeze(["account_erased", "marketing_opt_out"]);
 export const PRIVACY_JOURNAL_PREFIX = "privacy-journal/v1/";
@@ -26,12 +31,14 @@ const SHIPPED_RETENTION_MS = 30 * DAY;
 const MAX_OBJECTS = 20_000;
 const MAX_OBJECT_BYTES = 4096;
 const MAX_LIST_PAGES = 1000;
+const shipping = new WeakMap();
 
 function journalError(code = "PRIVACY_JOURNAL_INVALID") {
   return Object.assign(new Error("Privacy journal verification did not complete."), { code });
 }
 
 export function ensurePrivacyJournalSchema(database) {
+  const existed = !!database.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='privacy_journal_outbox'").get();
   database.exec(`CREATE TABLE IF NOT EXISTS privacy_journal_outbox (
     id TEXT PRIMARY KEY,
     kind TEXT NOT NULL,
@@ -42,6 +49,14 @@ export function ensurePrivacyJournalSchema(database) {
     last_error TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_privacy_journal_outbox_pending ON privacy_journal_outbox(shipped_at,at);`);
+  const columns = new Set(database.prepare("PRAGMA table_info(privacy_journal_outbox)").all().map((row) => row.name));
+  if (!columns.has("entry_json")) database.exec("ALTER TABLE privacy_journal_outbox ADD COLUMN entry_json TEXT");
+  if (!columns.has("shipped_storage_identity")) database.exec("ALTER TABLE privacy_journal_outbox ADD COLUMN shipped_storage_identity TEXT");
+  if (!database.prepare("SELECT 1 FROM app_meta WHERE key=?").get(CONTINUITY_KEY)) {
+    const restored = !!database.prepare("SELECT 1 FROM app_meta WHERE key=?").get(RESTORE_GATE_KEY);
+    writeContinuity(database, { version: 1, streamId: randomUUID(), sequence: 0, head: EMPTY_HEAD,
+      shippedSequence: 0, shippedHead: EMPTY_HEAD, storageIdentity: null, legacyUnknown: existed || restored });
+  }
 }
 
 // Call inside the transaction that makes the change, so the two commit together.
@@ -49,8 +64,20 @@ export function recordPrivacyEvent(database, { kind, subjectId, at = Date.now(),
   if (!KINDS.has(kind) || !SUBJECT.test(String(subjectId || "")) || !ENTRY_ID.test(id) || !Number.isSafeInteger(at) || at < 1) {
     throw new TypeError("Invalid privacy journal entry.");
   }
-  database.prepare("INSERT INTO privacy_journal_outbox (id,kind,subject_id,at) VALUES (?,?,?,?)").run(id, kind, subjectId, at);
-  return id;
+  database.exec("SAVEPOINT privacy_journal_append");
+  try {
+    const state = readContinuity(database);
+    if (!state || state.sequence >= Number.MAX_SAFE_INTEGER) throw journalError("PRIVACY_JOURNAL_CONTINUITY_UNKNOWN");
+    const entry = { v: 2, id, kind, subjectId, at, streamId: state.streamId, sequence: state.sequence + 1, previous: state.head };
+    database.prepare("INSERT INTO privacy_journal_outbox (id,kind,subject_id,at,entry_json) VALUES (?,?,?,?,?)")
+      .run(id, kind, subjectId, at, JSON.stringify(entry));
+    writeContinuity(database, { ...state, sequence: entry.sequence, head: privacyEntryHead(entry) });
+    database.exec("RELEASE privacy_journal_append");
+    return id;
+  } catch (error) {
+    database.exec("ROLLBACK TO privacy_journal_append; RELEASE privacy_journal_append");
+    throw error;
+  }
 }
 
 // PRIVACY_JOURNAL_KEY signs entries. Keep it only in the server environment,
@@ -62,16 +89,17 @@ export function privacyJournalKey(env = process.env) {
   return value.length >= 32 ? Buffer.from(value, "utf8") : null;
 }
 
-const canonical = (entry) => JSON.stringify([1, entry.id, entry.kind, entry.subjectId, entry.at]);
+const canonical = canonicalPrivacyEntry;
 const mac = (entry, key) => createHmac("sha256", key).update(canonical(entry)).digest("hex");
 
 export function signPrivacyEntry(entry, key) {
-  const plain = { v: 1, id: entry.id, kind: entry.kind, subjectId: entry.subjectId, at: entry.at };
+  const plain = { v: entry.v === 2 ? 2 : 1, id: entry.id, kind: entry.kind, subjectId: entry.subjectId, at: entry.at,
+    ...(entry.v === 2 ? { streamId: entry.streamId, sequence: entry.sequence, previous: entry.previous } : {}) };
   return { ...plain, mac: mac(plain, key) };
 }
 
 export function verifyPrivacyEntry(entry, key) {
-  if (!key || entry?.v !== 1 || !KINDS.has(entry?.kind)
+  if (!key || ![1, 2].includes(entry?.v) || (entry.v === 2 && !validChainFields(entry)) || !KINDS.has(entry?.kind)
     || typeof entry?.subjectId !== "string" || !SUBJECT.test(entry.subjectId)
     || typeof entry?.id !== "string" || !ENTRY_ID.test(entry.id)
     || !Number.isSafeInteger(entry?.at) || entry.at < 1 || entry.at > 8_640_000_000_000_000
@@ -133,57 +161,206 @@ async function limitedText(response, maxBytes) {
 // Ships pending entries, oldest first, stopping at the first failure so the
 // order is kept. Without a key or private storage nothing leaves the server,
 // and the entries wait in the outbox.
-export async function shipPrivacyJournal(database, { env = process.env, fetchImpl = fetch, now = Date.now, limit = 50, signal } = {}) {
+export function shipPrivacyJournal(database, options = {}) {
+  if (shipping.has(database)) return shipping.get(database);
+  const captured = { ...options, env: { ...(options.env ?? process.env) } };
+  const active = Promise.resolve().then(() => shipPrivacyJournalBatch(database, captured)).finally(() => shipping.delete(database));
+  shipping.set(database, active);
+  return active;
+}
+
+async function shipPrivacyJournalBatch(database, { env = process.env, fetchImpl = fetch, now = Date.now, limit = 50, signal } = {}) {
+  // Capture storage identity and credentials together across asynchronous work.
+  env = { ...env };
   signal?.throwIfAborted();
+  const deadline = AbortSignal.any([AbortSignal.timeout(120_000), signal].filter(Boolean));
   const request = (url, options) => fetchImpl(url, {
-    ...options,
-    signal: signal ? AbortSignal.any([signal, options.signal].filter(Boolean)) : options.signal,
+    ...options, signal: AbortSignal.any([deadline, options.signal].filter(Boolean)),
   });
-  const pending = Number(database.prepare("SELECT COUNT(*) AS n FROM privacy_journal_outbox WHERE shipped_at IS NULL").get().n) || 0;
+  const identity = backupStorageIdentity(env);
+  const pendingSql = "(shipped_at IS NULL OR shipped_storage_identity IS NULL OR shipped_storage_identity<>?)";
+  const pending = Number(database.prepare("SELECT COUNT(*) AS n FROM privacy_journal_outbox WHERE " + pendingSql).get(identity || "").n) || 0;
   const key = privacyJournalKey(env);
   const config = privateBackupStorageConfig(env);
-  if (!pending) return { shipped: 0, pending: 0, waiting: null };
   if (!key) return { shipped: 0, pending, waiting: "key" };
   if (!config) return { shipped: 0, pending, waiting: "storage" };
-  const rows = database.prepare(`SELECT id,kind,subject_id,at FROM privacy_journal_outbox WHERE shipped_at IS NULL
-    ORDER BY at,id LIMIT ?`).all(Math.max(1, Math.min(200, limit)));
+  const state = readContinuity(database);
+  if (!state) return { shipped: 0, pending, waiting: "continuity", error: "continuity_unknown" };
+  const rememberFailure = (code) => {
+    const current = readContinuity(database);
+    if (current?.streamId === state.streamId) writeContinuity(database, { ...current, lastError: code });
+  };
+  const moved = state.storageIdentity && state.storageIdentity !== identity;
+  let priorCoverage;
+  if (moved) {
+    try {
+      const coverage = await readCoverage({ env, fetchImpl: request, key });
+      const listed = await listPrivacyJournal({ env, fetchImpl: request });
+      const covered = listed.entries.filter((entry) => entry.sequence <= coverage.sequence);
+      const suffix = listed.entries.filter((entry) => entry.sequence > coverage.sequence).sort((a, b) => a.sequence - b.sequence);
+      if (![state.storageIdentity, identity].includes(coverage.storageIdentity)
+        || coverage.sequence < state.shippedSequence || coverage.sequence > state.sequence || listed.unreadable
+        || !listed.entries.every((entry) => verifyPrivacyEntry(entry, key))
+        || covered.length + suffix.length !== listed.entries.length
+        || !verifyContinuityChain(covered, coverage, { ...state, sequence: state.shippedSequence, head: state.shippedHead })) {
+        throw journalError("PRIVACY_JOURNAL_CONTINUITY_UNKNOWN");
+      }
+      // A killed migration may leave uploaded events beyond its last confirmed
+      // checkpoint. Accept that suffix only when every link is still present in
+      // this live database's immutable outbox. Restore itself never accepts it.
+      let suffixHead = coverage.head;
+      let suffixSequence = coverage.sequence;
+      const localEntry = database.prepare("SELECT entry_json FROM privacy_journal_outbox WHERE id=?");
+      for (const entry of suffix) {
+        const local = localEntry.get(entry.id)?.entry_json;
+        if (!local || entry.v !== 2 || entry.streamId !== state.streamId || entry.sequence !== ++suffixSequence
+          || entry.sequence > state.sequence || entry.previous !== suffixHead || canonical(JSON.parse(local)) !== canonical(entry)) throw journalError();
+        suffixHead = privacyEntryHead(entry);
+      }
+      priorCoverage = coverage;
+    } catch {
+      signal?.throwIfAborted();
+      rememberFailure("continuity_unknown");
+      return { shipped: 0, pending, waiting: "continuity", error: "continuity_unknown" };
+    }
+  }
+  const rows = database.prepare("SELECT id,kind,subject_id,at,entry_json FROM privacy_journal_outbox WHERE " + pendingSql
+    + " ORDER BY CASE WHEN entry_json IS NULL THEN 0 ELSE 1 END, json_extract(entry_json,'$.sequence'),at,id LIMIT ?")
+    .all(identity, Math.max(1, Math.min(200, Number(limit) || 50)));
   const sign = signer(env);
-  const markShipped = database.prepare("UPDATE privacy_journal_outbox SET shipped_at=?,last_error=NULL WHERE id=?");
-  const markFailed = database.prepare("UPDATE privacy_journal_outbox SET attempts=attempts+1,last_error=? WHERE id=?");
-  let shipped = 0;
+  const failed = database.prepare("UPDATE privacy_journal_outbox SET attempts=attempts+1,last_error=? WHERE id=?");
+  const sent = [];
+  let error = null;
+  let sequence = state.shippedSequence;
+  let head = state.shippedHead;
   try {
-    // The same anonymous-access proof the database backups use.
-    await verifyPrivateBackupBucket({ env, fetchImpl: request, objectKey: `${PRIVACY_JOURNAL_PREFIX}privacy-probe-${randomUUID()}` });
+    await verifyPrivateBackupBucket({ env, fetchImpl: request, objectKey: PRIVACY_JOURNAL_PREFIX + "privacy-probe-" + randomUUID() });
   } catch {
     signal?.throwIfAborted();
-    markFailed.run("storage_not_private", rows[0].id);
+    rememberFailure("storage_not_private");
+    if (rows[0]) failed.run("storage_not_private", rows[0].id);
     return { shipped: 0, pending, waiting: null, error: "storage_not_private" };
+  }
+  try {
+    if (!state.storageIdentity) {
+      // Claim a fresh namespace before sending entries. Never overwrite another
+      // database's checkpoint when a bucket is accidentally reused. A lost
+      // response is retryable only when authenticated readback names our stream.
+      const initial = signCoverage({ storageIdentity: identity, streamId: state.streamId,
+        sequence: 0, head: EMPTY_HEAD, legacyUnknown: state.legacyUnknown, at: now() }, key);
+      try {
+        await putJournalObject({ sign, config, request, name: COVERAGE_OBJECT, value: initial,
+          conditions: { "If-None-Match": "*" } });
+      } catch (failure) { if (failure?.message !== "HTTP_412") throw failure; }
+    }
+    if (!priorCoverage) priorCoverage = await readCoverage({ env, fetchImpl: request, key });
+    if (priorCoverage.streamId !== state.streamId || priorCoverage.legacyUnknown !== state.legacyUnknown
+      || !(moved ? [state.storageIdentity, identity] : [identity]).includes(priorCoverage.storageIdentity)
+      || priorCoverage.sequence < state.shippedSequence || priorCoverage.sequence > state.sequence
+      || (priorCoverage.sequence === state.shippedSequence && priorCoverage.head !== state.shippedHead)) throw journalError();
+    if (priorCoverage.sequence > state.shippedSequence) {
+      const anchor = database.prepare("SELECT entry_json FROM privacy_journal_outbox WHERE json_extract(entry_json,'$.sequence')=?").get(priorCoverage.sequence);
+      if (!anchor?.entry_json || privacyEntryHead(JSON.parse(anchor.entry_json)) !== priorCoverage.head) throw journalError();
+    }
+  } catch {
+    signal?.throwIfAborted();
+    rememberFailure("coverage_unconfirmed");
+    return { shipped: 0, pending, waiting: null, error: "coverage_unconfirmed" };
+  }
+  // Publication can succeed just before shutdown prevents the local commit.
+  // The authenticated checkpoint and matching local anchor let a smaller retry
+  // batch acknowledge progress without ever publishing an older head.
+  sequence = priorCoverage.sequence;
+  head = priorCoverage.head;
+  if (!pending && state.storageIdentity === identity) {
+    if (state.lastError) {
+      const current = readContinuity(database);
+      if (current?.streamId === state.streamId) writeContinuity(database, { ...current, lastError: null });
+    }
+    return { shipped: 0, pending: 0, waiting: null };
   }
   for (const row of rows) {
     signal?.throwIfAborted();
-    const entry = signPrivacyEntry({ id: row.id, kind: row.kind, subjectId: row.subject_id, at: row.at }, key);
-    const body = JSON.stringify(entry);
-    const headers = { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)) };
-    let response;
-    try {
-      response = await request(sign("PUT", bucketUrl(config, privacyObjectKey(entry)), headers), {
-        method: "PUT", headers, body, redirect: "manual", signal: AbortSignal.timeout(15_000),
-      });
-      if (!response.ok) throw new Error(`HTTP_${Number(response.status) || 0}`);
-    } catch (error) {
-      signal?.throwIfAborted();
-      const code = /^HTTP_\d+$/u.test(error?.message) ? error.message : "network_error";
-      markFailed.run(code, row.id);
-      return { shipped, pending: pending - shipped, waiting: null, error: code };
-    } finally {
-      await discard(response);
+    const plain = row.entry_json ? JSON.parse(row.entry_json) : { id: row.id, kind: row.kind, subjectId: row.subject_id, at: row.at };
+    const entry = signPrivacyEntry(plain, key);
+    // Already shipped rows copied during migration need no head advancement.
+    if (entry.v === 2 && entry.sequence > sequence && (entry.sequence !== sequence + 1 || entry.previous !== head)) {
+      error = "continuity_unknown";
+      failed.run(error, row.id);
+      break;
     }
-    signal?.throwIfAborted();
-    markShipped.run(now(), row.id);
-    shipped += 1;
+    try {
+      await putJournalObject({ sign, config, request, name: privacyObjectKey(entry), value: entry });
+      sent.push(row.id);
+      if (entry.v === 2 && entry.sequence > sequence) { sequence = entry.sequence; head = privacyEntryHead(entry); }
+    } catch (failure) {
+      signal?.throwIfAborted();
+      error = /^HTTP_\d+$/u.test(failure?.message) ? failure.message : "network_error";
+      rememberFailure(error);
+      failed.run(error, row.id);
+      break;
+    }
   }
-  database.prepare("DELETE FROM privacy_journal_outbox WHERE shipped_at IS NOT NULL AND shipped_at<?").run(now() - SHIPPED_RETENTION_MS);
-  return { shipped, pending: pending - shipped, waiting: null };
+  if (sent.length || !pending || moved) {
+    try {
+      if (sequence < priorCoverage.sequence) throw journalError();
+      const coverage = signCoverage({ storageIdentity: identity, streamId: state.streamId,
+        sequence, head, legacyUnknown: state.legacyUnknown, at: now() }, key);
+      await putJournalObject({ sign, config, request, name: COVERAGE_OBJECT, value: coverage,
+        conditions: { "If-Match": priorCoverage.etag } });
+      // Authenticate the stored checkpoint, not just its PUT response.
+      const confirmed = await readCoverage({ env, fetchImpl: request, key });
+      if (confirmed.mac !== coverage.mac) throw journalError();
+      signal?.throwIfAborted();
+      database.exec("SAVEPOINT privacy_journal_ship");
+      try {
+        const current = readContinuity(database);
+        if (!current || current.streamId !== state.streamId || current.shippedSequence !== state.shippedSequence
+          || current.storageIdentity !== state.storageIdentity) throw journalError();
+        const mark = database.prepare("UPDATE privacy_journal_outbox SET shipped_at=?,shipped_storage_identity=?,last_error=NULL WHERE id=?");
+        for (const id of sent) mark.run(now(), identity, id);
+        writeContinuity(database, { ...current, storageIdentity: identity, shippedSequence: sequence, shippedHead: head, lastError: error });
+        // Legacy unbound history stays available for manual recovery decisions.
+        // Chained entries remain remotely verifiable after bounded local pruning.
+        database.prepare("DELETE FROM privacy_journal_outbox WHERE entry_json IS NOT NULL AND shipped_storage_identity=? AND shipped_at<?")
+          .run(identity, now() - SHIPPED_RETENTION_MS);
+        database.exec("RELEASE privacy_journal_ship");
+      } catch (failure) {
+        database.exec("ROLLBACK TO privacy_journal_ship; RELEASE privacy_journal_ship");
+        throw failure;
+      }
+    } catch {
+      signal?.throwIfAborted();
+      rememberFailure("coverage_unconfirmed");
+      if (rows[0]) failed.run("coverage_unconfirmed", rows[0].id);
+      return { shipped: 0, pending, waiting: null, error: "coverage_unconfirmed" };
+    }
+  }
+  return { shipped: sent.length, pending: pending - sent.length, waiting: null, ...(error ? { error } : {}) };
+}
+
+async function putJournalObject({ sign, config, request, name, value, conditions = {} }) {
+  const body = JSON.stringify(value);
+  const headers = { "Content-Type": "application/json", "Content-Length": String(Buffer.byteLength(body)), ...conditions };
+  let response;
+  try {
+    response = await request(sign("PUT", bucketUrl(config, name), headers), {
+      method: "PUT", headers, body, redirect: "manual", signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error("HTTP_" + (Number(response.status) || 0));
+  } finally { await discard(response); }
+}
+
+async function readCoverage({ env, fetchImpl, key }) {
+  const config = privateBackupStorageConfig(env);
+  const response = await fetchImpl(signer(env)("GET", bucketUrl(config, COVERAGE_OBJECT)),
+    { method: "GET", redirect: "manual", signal: AbortSignal.timeout(15_000) });
+  if (!response.ok) { await discard(response); throw journalError("PRIVACY_JOURNAL_CONTINUITY_UNKNOWN"); }
+  const etag = response.headers.get("etag");
+  const value = JSON.parse(await limitedText(response, MAX_OBJECT_BYTES));
+  if (!verifyCoverage(value, key) || !/^"[\x21\x23-\x7e]{1,128}"$/u.test(etag || "")) throw journalError("PRIVACY_JOURNAL_CONTINUITY_UNKNOWN");
+  Object.defineProperty(value, "etag", { value: etag, enumerable: false });
+  return value;
 }
 
 const xmlText = (value) => value.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", "\"")
@@ -286,7 +463,7 @@ function readJson(database, key) {
 
 // A database prepared from a backup (scripts/prepare-db-restore.mjs) that has
 // not yet replayed the journal. Live databases never carry a restore gate.
-export function restoredDatabaseNeedsReplay(database) {
+export function restoredDatabaseNeedsReplay(database, env = process.env) {
   const gate = readJson(database, RESTORE_GATE_KEY);
   if (gate?.state !== "reviewed" || !Number.isSafeInteger(gate.preparedAt)) return null;
   const evidence = readJson(database, PRIVACY_REPLAY_EVIDENCE_KEY);
@@ -296,7 +473,8 @@ export function restoredDatabaseNeedsReplay(database) {
   // Older releases recorded success even when some entries could not be read
   // or verified. Such receipts must not bypass the repaired startup gate.
   const counts = ["entries", "verified", "erased", "optedOut", "absent"];
-  if (evidence.verificationVersion !== 2 || evidence.rejected !== 0 || evidence.unreadable !== 0
+  if (evidence.verificationVersion !== 3 || evidence.storageIdentity !== backupStorageIdentity(env)
+    || !evidence.storageIdentity || evidence.continuityVerified !== true || evidence.rejected !== 0 || evidence.unreadable !== 0
     || !counts.every((field) => Number.isSafeInteger(evidence[field]) && evidence[field] >= 0)
     || evidence.entries < evidence.verified
     || evidence.verified !== evidence.erased + evidence.optedOut + evidence.absent
@@ -314,16 +492,27 @@ function saveEvidence(database, evidence) {
 // owner sets PRIVACY_JOURNAL_REPLAY_WAIVER to an incident reference after
 // deciding that recovery without it is acceptable; the waiver is recorded.
 export async function replayPrivacyJournalIfRestored(database, { env = process.env, fetchImpl = fetch, erase, optOut, now = Date.now } = {}) {
-  const gate = restoredDatabaseNeedsReplay(database);
+  env = { ...env };
+  const deadline = AbortSignal.timeout(5 * MINUTE);
+  const transport = fetchImpl;
+  fetchImpl = (url, options) => transport(url, { ...options, signal: AbortSignal.any([deadline, options.signal].filter(Boolean)) });
+  const gate = restoredDatabaseNeedsReplay(database, env);
   if (!gate) return { needed: false };
-  const base = { version: 1, verificationVersion: 2, preparedAt: gate.preparedAt, replayedAt: now() };
+  const base = { version: 1, verificationVersion: 3, preparedAt: gate.preparedAt, replayedAt: now() };
   try {
     const key = privacyJournalKey(env);
     if (!key) throw Object.assign(new Error("PRIVACY_JOURNAL_KEY is not set."), { code: "PRIVACY_JOURNAL_UNAVAILABLE" });
     const { entries, unreadable } = await listPrivacyJournal({ env, fetchImpl });
     if (unreadable !== 0) throw journalError();
+    if (!entries.every((entry) => verifyPrivacyEntry(entry, key))) throw journalError();
+    const coverage = await readCoverage({ env, fetchImpl, key });
+    const identity = backupStorageIdentity(env);
+    if (coverage.storageIdentity !== identity || !verifyContinuityChain(entries, coverage, readContinuity(database))) {
+      throw journalError("PRIVACY_JOURNAL_CONTINUITY_UNKNOWN");
+    }
     const counts = replayPrivacyEntries({ entries, key, erase, optOut });
-    const evidence = { ...base, ...counts, unreadable };
+    const evidence = { ...base, ...counts, unreadable, storageIdentity: identity, continuityVerified: true,
+      streamId: coverage.streamId, coverageSequence: coverage.sequence };
     saveEvidence(database, evidence);
     return { needed: true, ...evidence };
   } catch (error) {
@@ -339,17 +528,19 @@ export async function replayPrivacyJournalIfRestored(database, { env = process.e
 }
 
 export function privacyJournalStatus(database, env = process.env) {
-  const row = database.prepare(`SELECT COUNT(*) AS pending, MIN(at) AS oldest FROM privacy_journal_outbox WHERE shipped_at IS NULL`).get();
-  const last = database.prepare("SELECT MAX(shipped_at) AS at FROM privacy_journal_outbox").get();
-  const failure = database.prepare(`SELECT last_error FROM privacy_journal_outbox WHERE shipped_at IS NULL AND last_error IS NOT NULL
-    ORDER BY at LIMIT 1`).get();
+  const identity = backupStorageIdentity(env);
+  const predicate = "(shipped_at IS NULL OR shipped_storage_identity IS NULL OR shipped_storage_identity<>?)";
+  const row = database.prepare("SELECT COUNT(*) AS pending, MIN(at) AS oldest FROM privacy_journal_outbox WHERE " + predicate).get(identity || "");
+  const last = database.prepare("SELECT MAX(shipped_at) AS at FROM privacy_journal_outbox WHERE shipped_storage_identity=?").get(identity || "");
+  const failure = database.prepare("SELECT last_error FROM privacy_journal_outbox WHERE " + predicate + " AND last_error IS NOT NULL ORDER BY at LIMIT 1").get(identity || "");
+  const state = readContinuity(database);
+  const continuityStatus = !state ? "uninitialized" : state.legacyUnknown ? "legacy_unknown"
+    : !state.storageIdentity ? "uninitialized" : state.storageIdentity !== identity ? "destination_changed" : "ready";
   return {
-    signingKey: !!privacyJournalKey(env),
-    storage: !!privateBackupStorageConfig(env),
-    pending: Number(row?.pending) || 0,
-    oldestPendingAt: row?.oldest ?? null,
-    lastShippedAt: last?.at ?? null,
-    lastError: failure?.last_error || null,
+    signingKey: !!privacyJournalKey(env), storage: !!identity,
+    continuityReady: continuityStatus === "ready", continuityStatus,
+    pending: Number(row?.pending) || 0, oldestPendingAt: row?.oldest ?? null,
+    lastShippedAt: last?.at ?? null, lastError: failure?.last_error || state?.lastError || null,
     lastReplay: readJson(database, PRIVACY_REPLAY_EVIDENCE_KEY),
   };
 }
@@ -366,6 +557,6 @@ export function startPrivacyJournalShipper({ database, env = process.env, fetchI
       if (result.error) logger.error?.(`[privacy-journal] shipping paused: ${result.error}; ${result.pending} entries waiting`);
       return true;
     },
-    report: (error) => logger.error?.(`[privacy-journal] shipping failed safely: ${String(error?.message || error).slice(0, 120)}`),
+    report: (error) => logger.error?.(`[privacy-journal] shipping failed safely: ${privateErrorLabel(error)}`),
   });
 }

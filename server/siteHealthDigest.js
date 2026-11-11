@@ -33,6 +33,7 @@ import {
   recordAndEmailDeploymentStamp,
 } from "./ownerApprovals.js";
 import { ownerAccount } from "./ownerIdentity.js";
+import { privacyJournalStatus } from "./privacyJournal.js";
 import { videoVerifierRuntimeStatus } from "./videoVerifier.js";
 
 export const SITE_HEALTH_TIME_ZONE = "America/Toronto";
@@ -52,6 +53,13 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
 const OWNER_SCOPE_RE = /^v[12]-[a-f0-9]{64}$/u;
 const SAFE_CODE_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u;
 const COMMIT_RE = /^[a-f0-9]{7,64}$/iu;
+const JOURNAL_CONTINUITY_STATUSES = new Set(["ready", "uninitialized", "destination_changed", "legacy_unknown"]);
+const JOURNAL_BLOCKING_FAILURE_CODES = new Set(["storage_not_private", "continuity_unknown", "coverage_unconfirmed"]);
+const JOURNAL_FAILURE_CODES = new Set(["network_error", ...JOURNAL_BLOCKING_FAILURE_CODES]);
+// The shipper runs every five minutes. Allow multiple attempts before warning,
+// then escalate an hour of unprotected privacy changes to attention.
+const JOURNAL_WATCH_MINUTES = 15;
+const JOURNAL_ATTENTION_MINUTES = 60;
 
 function liveProduction(env) {
   return String(env?.NODE_ENV || "").trim().toLowerCase() === "production" && isProduction(env);
@@ -280,12 +288,57 @@ function publishingEnabled(env) {
   return TRUE_VALUES.has(String(env?.PIT_VIDEO_PUBLISHING_ENABLED || "").trim().toLowerCase());
 }
 
+function journalAge(at, timestamp, unitMs) {
+  return Number.isSafeInteger(timestamp) && timestamp > 0 && timestamp <= at
+    ? Math.floor((at - timestamp) / unitMs) : null;
+}
+
+function collectJournalHealth(database, env, at, readStatus) {
+  let raw = null;
+  try { raw = readStatus(database, env); }
+  catch { raw = null; }
+  const signingKey = typeof raw?.signingKey === "boolean" ? raw.signingKey : null;
+  const storage = typeof raw?.storage === "boolean" ? raw.storage : null;
+  const continuityReady = typeof raw?.continuityReady === "boolean" ? raw.continuityReady : null;
+  const continuityStatus = JOURNAL_CONTINUITY_STATUSES.has(raw?.continuityStatus) ? raw.continuityStatus : null;
+  const pending = Number.isSafeInteger(raw?.pending) && raw.pending >= 0 ? raw.pending : null;
+  const oldestPendingAgeMinutes = pending > 0 ? journalAge(at, raw?.oldestPendingAt, 60_000) : null;
+  const lastShippedAgeHours = journalAge(at, raw?.lastShippedAt, HOUR_MS);
+  const available = signingKey !== null && storage !== null && continuityReady !== null
+    && continuityStatus !== null && continuityReady === (continuityStatus === "ready")
+    && pending !== null && (pending === 0 || oldestPendingAgeMinutes !== null)
+    && (raw?.lastShippedAt == null || lastShippedAgeHours !== null);
+  // This is the oldest pending entry's failure, not a historical last-failure
+  // timestamp. Never export raw errors or the helper's private replay evidence.
+  const failure = pending > 0 ? raw?.lastError : null;
+  const pendingFailureCode = failure == null || failure === "" ? null
+    : typeof failure === "string" && (JOURNAL_FAILURE_CODES.has(failure) || /^HTTP_[1-5]\d{2}$/u.test(failure))
+      ? failure : "shipping_failed";
+  return Object.freeze({
+    available,
+    ready: available && signingKey && storage && continuityReady && !JOURNAL_BLOCKING_FAILURE_CODES.has(pendingFailureCode),
+    signingKey,
+    storage,
+    continuityReady,
+    continuityStatus,
+    pending,
+    oldestPendingAgeMinutes,
+    lastShippedAgeHours,
+    pendingFailureCode,
+  });
+}
+
+function journalYesNo(value) {
+  return typeof value === "boolean" ? yesNo(value) : "unavailable";
+}
+
 /** Build bounded aggregates and allowlisted diagnostic metadata for founder email. */
 export function collectSiteHealthDigest(database, {
   env = process.env,
   at = Date.now(),
   uptimeSeconds = process.uptime(),
   storageHealthImpl = collectStorageHealth,
+  privacyJournalStatusImpl = privacyJournalStatus,
 } = {}) {
   let databaseReady = false;
   try { databaseReady = database.prepare("SELECT 1 ok").get()?.ok === 1; }
@@ -302,6 +355,7 @@ export function collectSiteHealthDigest(database, {
   const backupOperations = backupOperationalStatus(env, { now: at });
   const offhostConfigured = backupOperations.offhostConfigured;
   const offhostBackupAgeHours = backupOperations.offhostAgeHours;
+  const privacyJournal = collectJournalHealth(database, env, at, privacyJournalStatusImpl);
 
   const mailFrom = parseMailFrom(env?.MAIL_FROM);
   const mailConfigured = !!String(env?.RESEND_API_KEY || "").trim() && mailFrom.ok;
@@ -344,6 +398,16 @@ export function collectSiteHealthDigest(database, {
   } else if (backupEnabled && backupOperations.offhostStatus === "aging") {
     warnings.push("offhost_backup_aging");
   }
+  if (!privacyJournal.available) issues.push("privacy_journal_status_unavailable");
+  else {
+    if (!privacyJournal.signingKey) issues.push("privacy_journal_signing_key_missing");
+    if (!privacyJournal.storage) issues.push("privacy_journal_storage_unconfigured");
+    if (!privacyJournal.continuityReady) issues.push("privacy_journal_continuity_unverified");
+    if (privacyJournal.oldestPendingAgeMinutes >= JOURNAL_ATTENTION_MINUTES) issues.push("privacy_journal_backlog_stale");
+    else if (privacyJournal.oldestPendingAgeMinutes >= JOURNAL_WATCH_MINUTES) warnings.push("privacy_journal_backlog_aging");
+    if (privacyJournal.pendingFailureCode === "storage_not_private") issues.push("privacy_journal_storage_unverified");
+    else if (privacyJournal.pendingFailureCode) warnings.push("privacy_journal_shipping_failed");
+  }
   if (!publicMediaConfigured || !privateVideoConfigured) issues.push("media_storage_unconfigured");
   else if (!privateIsolation.ready) issues.push("private_media_unverified");
   else if (privateIsolation.errorCode) warnings.push("private_media_probe_degraded");
@@ -374,6 +438,7 @@ export function collectSiteHealthDigest(database, {
     formatArtistKnowledgeStatus(artistKnowledge),
     `Mail: configured ${yesNo(mailConfigured)}; reply routing valid ${yesNo(replyToValid)}; last 24h sent ${numberOrUnavailable(mail24h?.sent)}, failed ${numberOrUnavailable(mail24h?.failed)}, skipped ${numberOrUnavailable(mail24h?.skipped)}`,
     `Backups: scheduled ${yesNo(backupEnabled)}; latest verified local snapshot age ${backupAgeHours === null ? "unavailable" : `${backupAgeHours}h`}; private off-host destination configured ${yesNo(offhostConfigured)}; latest confirmed off-host upload age ${offhostBackupAgeHours === null ? "unavailable" : `${offhostBackupAgeHours}h`}; off-host evidence ${backupOperations.offhostStatus}`,
+    `Privacy journal: locally ready ${yesNo(privacyJournal.ready)}; signing key configured ${journalYesNo(privacyJournal.signingKey)}; storage configured ${journalYesNo(privacyJournal.storage)}; continuity ${privacyJournal.continuityStatus || "unavailable"}; pending ${numberOrUnavailable(privacyJournal.pending)}; oldest pending age ${privacyJournal.pending === 0 ? "none" : privacyJournal.oldestPendingAgeMinutes === null ? "unavailable" : `${privacyJournal.oldestPendingAgeMinutes}m`}; last retained shipment age ${privacyJournal.lastShippedAgeHours === null ? "unavailable" : `${privacyJournal.lastShippedAgeHours}h`}; pending failure ${privacyJournal.pendingFailureCode || (privacyJournal.available ? "none" : "unavailable")}`,
     `Media: public and private storage configured ${yesNo(publicMediaConfigured && privateVideoConfigured)}; private-source privacy proof ready ${yesNo(privateIsolation.ready)}; video verifier ready ${yesNo(verifier.ready)}`,
     `Cleanup: retrying ${numberOrUnavailable(mediaRetry)}; dead-letter ${numberOrUnavailable(mediaDead)}`,
     `App and server faults: ${numberOrUnavailable(serverFaults24h?.occurrences)} occurrence(s) across ${numberOrUnavailable(serverFaults24h?.kinds)} serious pattern(s) in the hourly-bucketed last 24h`,
@@ -382,6 +447,7 @@ export function collectSiteHealthDigest(database, {
     `Attention codes: ${issues.length ? issues.join(", ") : "none"}${warnings.length ? `; watch codes: ${warnings.join(", ")}` : ""}`,
     "Coverage limit: this in-process check cannot prove public DNS, Render control-plane/build status, Google Workspace delivery, or reachability while the app is down. Keep external Render and uptime notifications enabled.",
     "Off-host note: a local receipt is written only after the backup child confirms a private remote upload; it proves that upload completed then, not that the remote object still exists now.",
+    "Privacy journal note: readiness reflects local configuration and continuity evidence, not a remote retention or restore check; shipment history may be pruned after 30 days. Pending entries warn at 15 minutes and need attention at 60 minutes.",
   ].join("\n");
 
   return Object.freeze({
@@ -405,6 +471,7 @@ export function collectSiteHealthDigest(database, {
       offhostConfigured,
       offhostBackupAgeHours,
       offhostBackupStatus: backupOperations.offhostStatus,
+      privacyJournal,
       publicMediaConfigured,
       privateVideoConfigured,
       privateMediaReady: !!privateIsolation.ready,

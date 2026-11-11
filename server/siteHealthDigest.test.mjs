@@ -27,6 +27,8 @@ const { backupDirectory, recordOffhostBackupReceipt } = await import("./backupSc
 const { db, q } = await import("./db.js");
 const { collectStorageHealth } = await import("./storageHealth.js");
 const { ensureArtistKnowledgeSchema } = await import("./artistKnowledgeRefresh.js");
+const { ensurePrivacyJournalSchema } = await import("./privacyJournal.js");
+const { backupStorageIdentity } = await import("./backupStorageIdentity.js");
 
 const markerPattern = "operations.site_health_digest.v1:*";
 const founderIdentity = Object.freeze({
@@ -42,6 +44,28 @@ const productionEnv = Object.freeze({
   OWNER_EMAIL: "founder@mshpit.com",
   PIT_DATA_DIR: process.env.PIT_DATA_DIR,
 });
+const readyJournalStatus = Object.freeze({
+  signingKey: true,
+  storage: true,
+  continuityReady: true,
+  continuityStatus: "ready",
+  pending: 0,
+  oldestPendingAt: null,
+  lastShippedAt: null,
+  lastError: null,
+});
+
+function journalDigest(at, status = readyJournalStatus) {
+  return collectSiteHealthDigest(db, {
+    env: productionEnv,
+    at,
+    privacyJournalStatusImpl: () => status,
+  });
+}
+
+function journalCodes(digest, field) {
+  return digest.aggregate[field].filter((code) => code.startsWith("privacy_journal_"));
+}
 
 q.insertUser.run(
   founderIdentity.userId,
@@ -302,6 +326,167 @@ test("critical disk capacity appears in founder attention codes without paths or
   assert.match(digest.detail, /disk free 100 MiB \(1%\)/);
   assert.match(digest.detail, /disk_space_critical/);
   assert.doesNotMatch(JSON.stringify(digest), /private-member-database|pit\.db|statfs|SQLITE_/);
+});
+
+test("privacy journal readiness and failed reads produce distinct bounded attention codes", () => {
+  const at = Date.parse("2026-11-11T14:00:00Z");
+  for (const [changed, expected] of [
+    [{ signingKey: false }, "privacy_journal_signing_key_missing"],
+    [{ storage: false }, "privacy_journal_storage_unconfigured"],
+    ...["uninitialized", "destination_changed", "legacy_unknown"].map((continuityStatus) => [
+      { continuityReady: false, continuityStatus }, "privacy_journal_continuity_unverified",
+    ]),
+  ]) {
+    const digest = journalDigest(at, { ...readyJournalStatus, ...changed });
+    assert.equal(digest.aggregate.privacyJournal.available, true);
+    assert.equal(digest.aggregate.privacyJournal.ready, false);
+    assert.deepEqual(journalCodes(digest, "issues"), [expected]);
+    assert.equal(digest.status, "needs_attention");
+  }
+  const unavailable = collectSiteHealthDigest(db, {
+    env: productionEnv,
+    at,
+    privacyJournalStatusImpl() { throw new Error("private-query-secret@example.test"); },
+  });
+  assert.deepEqual(journalCodes(unavailable, "issues"), ["privacy_journal_status_unavailable"]);
+  assert.equal(unavailable.aggregate.privacyJournal.pending, null);
+  assert.match(unavailable.detail, /signing key configured unavailable; storage configured unavailable/u);
+  assert.doesNotMatch(JSON.stringify(unavailable), /private-query-secret/u);
+});
+
+test("privacy journal backlog escalates at 15 and 60 minutes and clears after shipment", () => {
+  const at = Date.parse("2026-11-11T14:00:00Z");
+  for (const [ageMs, issue, warning] of [
+    [15 * 60_000 - 1, null, null],
+    [15 * 60_000, null, "privacy_journal_backlog_aging"],
+    [60 * 60_000 - 1, null, "privacy_journal_backlog_aging"],
+    [60 * 60_000, "privacy_journal_backlog_stale", null],
+    [7 * 24 * 60 * 60_000, "privacy_journal_backlog_stale", null],
+  ]) {
+    const digest = journalDigest(at, {
+      ...readyJournalStatus, pending: 2, oldestPendingAt: at - ageMs,
+    });
+    assert.equal(digest.aggregate.privacyJournal.pending, 2);
+    assert.equal(digest.aggregate.privacyJournal.oldestPendingAgeMinutes, Math.floor(ageMs / 60_000));
+    assert.deepEqual(journalCodes(digest, "issues"), issue ? [issue] : []);
+    assert.deepEqual(journalCodes(digest, "warnings"), warning ? [warning] : []);
+  }
+  for (const lastShippedAt of [null, at, at - 40 * 24 * 60 * 60_000]) {
+    const digest = journalDigest(at, { ...readyJournalStatus, lastShippedAt });
+    assert.equal(digest.aggregate.privacyJournal.ready, true);
+    assert.equal(digest.aggregate.privacyJournal.oldestPendingAgeMinutes, null);
+    assert.deepEqual(journalCodes(digest, "issues"), []);
+    assert.deepEqual(journalCodes(digest, "warnings"), []);
+    assert.match(digest.detail, /pending 0; oldest pending age none/u);
+  }
+});
+
+test("privacy journal failures warn promptly and expose only recognized failure codes", () => {
+  const at = Date.parse("2026-11-11T14:00:00Z");
+  for (const [lastError, expected] of [
+    ["HTTP_403", "HTTP_403"],
+    ["HTTP_503", "HTTP_503"],
+    ["network_error", "network_error"],
+    ["continuity_unknown", "continuity_unknown"],
+    ["coverage_unconfirmed", "coverage_unconfirmed"],
+    ["storage_not_private", "storage_not_private"],
+    ["secret-opaque-user-id", "shipping_failed"],
+    ["https://private.example/signed?token=private-token", "shipping_failed"],
+    ["HTTP_999", "shipping_failed"],
+  ]) {
+    const digest = journalDigest(at, {
+      ...readyJournalStatus, pending: 1, oldestPendingAt: at - 60_000, lastError,
+    });
+    assert.equal(digest.aggregate.privacyJournal.pendingFailureCode, expected);
+    assert.equal(digest.aggregate.privacyJournal.ready,
+      !["storage_not_private", "continuity_unknown", "coverage_unconfirmed"].includes(lastError));
+    if (lastError === "storage_not_private") {
+      assert.deepEqual(journalCodes(digest, "issues"), ["privacy_journal_storage_unverified"]);
+    } else {
+      assert.deepEqual(journalCodes(digest, "warnings"), ["privacy_journal_shipping_failed"]);
+    }
+    assert.doesNotMatch(JSON.stringify(digest), /secret-opaque|private\.example|private-token|HTTP_999/u);
+  }
+});
+
+test("privacy journal aggregate excludes entries, destination, keys and replay evidence", () => {
+  const at = Date.parse("2026-11-11T14:00:00Z");
+  const digest = journalDigest(at, {
+    ...readyJournalStatus,
+    pending: 3,
+    oldestPendingAt: at - 20 * 60_000,
+    lastShippedAt: at - 2 * 60 * 60_000,
+    entries: [{ subjectId: "private-account-id", id: "private-entry-id", kind: "account_erased" }],
+    lastReplay: { waived: "private-incident-reference", reason: "private-replay-error" },
+    destination: "https://private-journal.example/private-bucket",
+    signingKeyValue: "private-signing-key-value",
+    scope: "private-continuity-scope",
+  });
+  assert.deepEqual(digest.aggregate.privacyJournal, {
+    available: true, ready: true, signingKey: true, storage: true,
+    continuityReady: true, continuityStatus: "ready", pending: 3,
+    oldestPendingAgeMinutes: 20, lastShippedAgeHours: 2, pendingFailureCode: null,
+  });
+  assert.doesNotMatch(JSON.stringify(digest), /private-account|private-entry|account_erased|private-incident|private-replay|private-journal|private-bucket|private-signing|private-continuity/u);
+  assert.match(digest.detail, /pending 3; oldest pending age 20m; last retained shipment age 2h/u);
+  assert.match(digest.detail, /not a remote retention or restore check/u);
+});
+
+test("malformed privacy journal telemetry cannot appear as a healthy recent backlog", () => {
+  const at = Date.parse("2026-11-11T14:00:00Z");
+  for (const changed of [
+    { pending: 1, oldestPendingAt: null },
+    { pending: 1, oldestPendingAt: at + 1 },
+    { pending: 1, oldestPendingAt: "private-timestamp" },
+    { pending: -1 },
+    { lastShippedAt: at + 1 },
+    { continuityStatus: "private-continuity-value" },
+    { continuityReady: false },
+    { signingKey: "private-key" },
+  ]) {
+    const digest = journalDigest(at, { ...readyJournalStatus, ...changed });
+    assert.equal(digest.aggregate.privacyJournal.available, false);
+    assert.equal(digest.aggregate.privacyJournal.ready, false);
+    assert.deepEqual(journalCodes(digest, "issues"), ["privacy_journal_status_unavailable"]);
+    assert.doesNotMatch(JSON.stringify(digest), /private-timestamp|private-continuity-value|private-key/u);
+  }
+});
+
+test("privacy journal digest reads aggregate SQLite outbox evidence without shipping it", () => {
+  ensurePrivacyJournalSchema(db);
+  const at = Date.parse("2026-11-11T14:00:00Z");
+  const env = {
+    ...productionEnv,
+    BACKUP_S3_ENDPOINT: "https://digest-private.example",
+    BACKUP_S3_BUCKET: "digest-private-bucket",
+    BACKUP_S3_ACCESS_KEY_ID: "digest-private-access",
+    BACKUP_S3_SECRET_ACCESS_KEY: "digest-private-secret",
+  };
+  const ids = ["digest-private-pending-id", "digest-private-shipped-id"];
+  const insert = db.prepare(`INSERT INTO privacy_journal_outbox
+    (id,kind,subject_id,at,shipped_at,last_error,shipped_storage_identity) VALUES (?,?,?,?,?,?,?)`);
+  insert.run(ids[0], "account_erased", "digest-private-subject-id", at - 7 * 24 * 60 * 60_000, null, "HTTP_403", null);
+  insert.run(ids[1], "marketing_opt_out", "digest-private-other-id", at - 3 * 60 * 60_000, at - 2 * 60 * 60_000, null, backupStorageIdentity(env));
+  try {
+    const digest = collectSiteHealthDigest(db, { env, at });
+    assert.equal(digest.aggregate.privacyJournal.pending, 1);
+    assert.equal(digest.aggregate.privacyJournal.oldestPendingAgeMinutes, 7 * 24 * 60);
+    assert.equal(digest.aggregate.privacyJournal.lastShippedAgeHours, 2);
+    assert.equal(digest.aggregate.privacyJournal.pendingFailureCode, "HTTP_403");
+    assert.equal(digest.aggregate.privacyJournal.signingKey, false);
+    assert.equal(digest.aggregate.privacyJournal.storage, true);
+    assert.equal(digest.aggregate.privacyJournal.available, true);
+    assert.ok(journalCodes(digest, "issues").includes("privacy_journal_signing_key_missing"));
+    assert.ok(journalCodes(digest, "issues").includes("privacy_journal_backlog_stale"));
+    const unconfigured = collectSiteHealthDigest(db, { env: productionEnv, at });
+    assert.equal(unconfigured.aggregate.privacyJournal.pending, 2);
+    assert.equal(unconfigured.aggregate.privacyJournal.lastShippedAgeHours, null);
+    assert.ok(journalCodes(unconfigured, "issues").includes("privacy_journal_storage_unconfigured"));
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM privacy_journal_outbox WHERE id IN (?,?)").get(...ids).count, 2);
+    assert.doesNotMatch(JSON.stringify(digest), /digest-private|account_erased|marketing_opt_out/u);
+  } finally {
+    db.prepare("DELETE FROM privacy_journal_outbox WHERE id IN (?,?)").run(...ids);
+  }
 });
 
 test("founder digest includes source-backed enrichment progress and paused evidence without identities", () => {
