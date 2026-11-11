@@ -1,3 +1,4 @@
+import { moveComposerMedia } from "../domain/composerMediaOrder.mjs";
 import MediaUploadProgress from "../components/MediaUploadProgress";
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Alert, AppState } from "react-native";
@@ -947,6 +948,7 @@ export default function LogScreen({
           // and stops immediately so we do not repeat doomed work.
           if (!operationIsActive() || !shouldContinueMediaBatch(error)) throw error;
           rejectedAssets.push({ asset, error });
+          setMediaProject((current) => removeMediaProjectAsset(current, asset.id));
           setPendingMediaAssets((current) => current.filter((item) => item.id !== asset.id));
           void retireRemoteDrafts([asset.id]);
           await releaseMediaDraftAsset(asset);
@@ -1145,6 +1147,15 @@ export default function LogScreen({
     // Remove still retires that source, and abandoned drafts age out normally.
   };
 
+  const moveAttachedMedia = (id, direction) => {
+    const result = moveComposerMedia(mediaProjectRef.current, id, direction,
+      submitBusy || pendingMediaAssetsRef.current.length > 0 || !!uploadOperationRef.current || !!submitOperationRef.current
+      || !!pickerOperationRef.current || !!mediaRetryOperationRef.current);
+    if (!result) return;
+    setMediaProject(result.project);
+    setPhotos(result.photos);
+  };
+
   const removeAttachedMedia = (index) => {
     const removedUrl = photos[index];
     const matching = mediaProject.assets.find((asset) => asset.sourceUrl === removedUrl);
@@ -1219,6 +1230,7 @@ export default function LogScreen({
     const target = pendingMediaAssetsRef.current.find((asset) => asset.id === id);
     if (!target) return;
     setPendingMediaAssets((current) => current.filter((asset) => asset.id !== id));
+    setMediaProject((current) => removeMediaProjectAsset(current, id));
     setMediaError("");
     void retireRemoteDrafts([id]);
     void releaseMediaDraftAsset(target);
@@ -1288,10 +1300,12 @@ export default function LogScreen({
 
   const draftMediaProject = useMemo(() => normalizeMediaProject({
     assets: [
-      ...mediaProject.assets.filter((saved) => !pendingMediaAssets.some((staged) => staged.id === saved.id
+      ...mediaProject.assets.map((saved) => pendingMediaAssets.find((staged) => staged.id === saved.id
+        || (staged.assetId && staged.assetId === saved.assetId)
+        || (staged.sourceUrl && staged.sourceUrl === saved.sourceUrl)) || saved),
+      ...pendingMediaAssets.filter((staged) => !mediaProject.assets.some((saved) => saved.id === staged.id
         || (staged.assetId && staged.assetId === saved.assetId)
         || (staged.sourceUrl && staged.sourceUrl === saved.sourceUrl))),
-      ...pendingMediaAssets,
     ],
   }), [mediaProject, pendingMediaAssets]);
   useEffect(() => {
@@ -1504,11 +1518,16 @@ export default function LogScreen({
     setArtist(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey); setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
     setEventAddress(restored.eventAddress || "");
     const restoredPhotos = restored.photos.filter(isDurableMediaUrl);
-    const restoredProject = normalizeMediaProject(restored.mediaProject);
+    const restoredProject = restored.mediaProject?.assets?.length
+      ? normalizeMediaProject(restored.mediaProject)
+      : mediaProjectFromPost({ photos: restoredPhotos });
     const restoredPending = restoredProject.assets
       .filter((asset) => asset.status !== "ready" && (asset.durableLocalUri || asset.assetId))
-      .map((asset, index) => originalMediaProjectAsset(asset, index));
-    const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
+      .map((asset, index) => originalMediaProjectAsset(asset.status === "processing" ? { ...asset, status: "selected" } : asset, index));
+    // Keep recovered clips in their saved slots, but never publish cached processing identities.
+    const restoredReady = restoredProject.assets.filter((asset) => !!asset.assetId
+      || (!!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id)))
+      .map((asset) => restoredPending.find((pending) => pending.id === asset.id) || asset);
     setTour(restored.tour); setShowFormat(restored.showFormat); setEndDate(restored.endDate);
     setLineup(lineupFromPost({ artist: restored.artist, showFormat: restored.showFormat, lineup: restored.lineup })); setTimesSeen(restored.timesSeen); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : restoredComposerDate(restored.date)); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
     void recoverRestoredMedia(restoredPending, restored.id);
@@ -2378,15 +2397,19 @@ export default function LogScreen({
           </View>
         ) : null}
         <View style={styles.photoRow}>
-          {photos.map((uri, i) => {
-            const descriptor = mediaProject.assets.find((asset) => asset.sourceUrl === uri);
+          {mediaProject.assets.filter((asset) => asset.status === "ready" || asset.status === "processing" || pendingMediaAssets.some((pending) => pending.id === asset.id)).map((descriptor, i, orderedAssets) => {
+            const uri = descriptor.sourceUrl;
+            const converting = descriptor.status === "processing";
+            const waiting = pendingMediaAssets.some((pending) => pending.id === descriptor.id);
             const backgroundAssetId = descriptor?.assetId || null;
             const canBeCampaignBackground = isCampaign && !!backgroundAssetId && mediaDisplayKind(descriptor || uri) === "image";
             const isCampaignBackground = canBeCampaignBackground && campaign?.backgroundAssetId === backgroundAssetId;
             return (
-            <View key={`${uri}:${i}`} style={[styles.thumb, isCampaignBackground && styles.campaignThumbSelected]}>
+            <View key={descriptor.id} style={[styles.thumb, isCampaignBackground && styles.campaignThumbSelected]}>
+              {converting || waiting ? <PendingMediaPreview asset={descriptor} accessibilityLabel={`Clip ${i + 1}, ${waiting ? "waiting for recovery" : "uploaded and converting"}`} /> : null}
+              {converting || waiting ? <View style={[styles.pendingThumbBadge, { bottom: 48 }]}><Text style={styles.pendingThumbBadgeText}>{waiting ? "WAITING" : "Converting"}</Text></View> : null}
               {/* SmartImage renders clips as a play tile and HEIC via transcode. */}
-              <SmartImage uri={uri} posterUri={mediaPosterUri(descriptor)} mediaKind={mediaDisplayKind(descriptor || uri)} style={StyleSheet.absoluteFill} contain={false} cachePolicy="memory" accessibilityLabel={descriptor?.altText || `Media ${i + 1}`} />
+              {!converting && !waiting && <SmartImage uri={uri} posterUri={mediaPosterUri(descriptor)} mediaKind={mediaDisplayKind(descriptor || uri)} style={StyleSheet.absoluteFill} contain={false} cachePolicy="memory" accessibilityLabel={descriptor?.altText || `Media ${i + 1}`} />}
               {canBeCampaignBackground && (
                 <Pressable
                   style={[styles.useBackground, isCampaignBackground && styles.useBackgroundSelected]}
@@ -2399,24 +2422,26 @@ export default function LogScreen({
                   <Text style={styles.useBackgroundText}>{isCampaignBackground ? "BACKGROUND" : "USE AS BACKGROUND"}</Text>
                 </Pressable>
               )}
-              <Pressable style={styles.removeThumb} onPress={() => removeAttachedMedia(i)} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove media ${i + 1}`}>
+              <Pressable style={styles.removeThumb} onPress={() => waiting ? removePendingMedia(descriptor.id) : converting ? removeConvertingClip(descriptor.id) : removeAttachedMedia(photosRef.current.indexOf(uri))} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove ${converting ? "clip" : "media"} ${i + 1}`}>
                 <Icon name="x" size={12} color="#fff" />
               </Pressable>
+              <View style={styles.mediaOrderActions}>
+                <Text style={styles.mediaOrderNumber}>{i + 1}</Text>
+                {[-1, 1].map((direction) => {
+                  const disabled = submitBusy || pendingMediaAssets.length > 0 || (direction === -1 ? i === 0 : i === orderedAssets.length - 1);
+                  return <Pressable key={direction} disabled={disabled}
+                    onPress={() => moveAttachedMedia(descriptor.id, direction)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Move media ${i + 1} ${direction === -1 ? "earlier" : "later"}`}
+                    accessibilityState={{ disabled }}
+                    style={[styles.mediaOrderButton, disabled && { opacity: 0.35 }]}>
+                    <Icon name={direction === -1 ? "chevron-left" : "chevron-right"} size={16} color={colors.text} />
+                  </Pressable>;
+                })}
+              </View>
             </View>
           );})}
-          {convertingClips.map((asset, index) => (
-            <View key={asset.id} style={[styles.thumb, styles.pendingThumb]}>
-              <PendingMediaPreview
-                asset={asset}
-                accessibilityLabel={`${asset.altText || `Clip ${photos.length + index + 1}`}, uploaded and converting`}
-              />
-              <View style={styles.pendingThumbBadge}><Text style={styles.pendingThumbBadgeText}>Converting</Text></View>
-              <Pressable style={styles.removeThumb} onPress={() => removeConvertingClip(asset.id)} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove clip ${photos.length + index + 1}`}>
-                <Icon name="x" size={12} color="#fff" />
-              </Pressable>
-            </View>
-          ))}
-          {pendingMediaAssets.map((asset, index) => (
+          {pendingMediaAssets.filter((asset) => !mediaProject.assets.some((saved) => saved.id === asset.id)).map((asset, index) => (
             <View key={asset.id} style={[styles.thumb, styles.pendingThumb]}>
               <PendingMediaPreview
                 asset={asset}
@@ -2691,15 +2716,18 @@ const styles = StyleSheet.create({
   pendingMediaCopy: { color: colors.textDim, fontSize: 11.5, lineHeight: 16, marginTop: 2 },
   pendingMediaRetry: { minHeight: 44, minWidth: 58, alignItems: "center", justifyContent: "center", paddingHorizontal: 10, borderRadius: radius.sm, backgroundColor: colors.amberStrong },
   pendingMediaRetryText: { color: "#1A1206", fontSize: 12, fontWeight: "900" },
-  thumb: { width: 76, height: 76, borderRadius: 10, overflow: "hidden", borderWidth: 1, borderColor: colors.line },
+  thumb: { width: 100, height: 120, borderRadius: 10, overflow: "hidden", borderWidth: 1, borderColor: colors.line },
   pendingThumb: { opacity: 0.8, borderColor: colors.amber },
+  mediaOrderActions: { position: "absolute", bottom: 0, left: 0, right: 0, flexDirection: "row", alignItems: "center", backgroundColor: colors.surfaceAlt },
+  mediaOrderNumber: { color: colors.amber, fontFamily: displayFont, fontSize: 10, paddingHorizontal: 4 },
+  mediaOrderButton: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center" },
   pendingVideoPreview: { alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: colors.surfaceAlt },
   pendingVideoPreviewText: { color: colors.textDim, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 1 },
   pendingThumbBadge: { position: "absolute", left: 3, bottom: 3, paddingHorizontal: 5, paddingVertical: 3, borderRadius: 5, backgroundColor: "rgba(7,9,15,0.84)" },
   pendingThumbBadgeText: { color: "#fff", fontFamily: mono, fontSize: 7.5, fontWeight: "900", letterSpacing: 0.6 },
   campaignThumbSelected: { borderWidth: 2, borderColor: colors.amber },
   removeThumb: { position: "absolute", top: 3, right: 3, width: 20, height: 20, borderRadius: 10, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
-  useBackground: { position: "absolute", left: 3, right: 3, bottom: 3, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 5, borderRadius: 7, backgroundColor: "rgba(7,9,15,0.84)", borderWidth: 1, borderColor: "rgba(255,255,255,0.22)" },
+  useBackground: { position: "absolute", left: 3, right: 3, bottom: 47, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 5, borderRadius: 7, backgroundColor: "rgba(7,9,15,0.84)", borderWidth: 1, borderColor: "rgba(255,255,255,0.22)" },
   useBackgroundSelected: { backgroundColor: "rgba(155,96,24,0.94)", borderColor: colors.amber },
   useBackgroundText: { color: "#fff", fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.45 },
   addThumb: { width: 76, height: 76, borderRadius: 10, borderWidth: 1, borderColor: colors.line, borderStyle: "dashed", alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: colors.surface },
