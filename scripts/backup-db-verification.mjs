@@ -24,6 +24,7 @@ export const CRITICAL_BACKUP_TABLES = Object.freeze([
 // schema-presence protection without being treated as durable member content.
 const MEMBER_ROW_FLOOR_TABLES = new Set([
   ...CRITICAL_BACKUP_TABLES,
+  "creator_entities", "creator_follows", "event_account_claims",
   "likes", "comments", "follows", "fan_club_members", "fan_club_messages",
   "dms", "dm_reads", "ratings", "going", "artist_requests", "artist_posts",
   "post_user_tags", "post_tag_rejections", "recommendation_preferences",

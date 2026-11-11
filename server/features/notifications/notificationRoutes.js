@@ -1,3 +1,4 @@
+import { CREATOR_NOTICE_VISIBLE_SQL } from "../creatorPosts/creatorPostService.js";
 import { directMessageInboxUnread } from "../../dmReadRoutes.js";
 import { withImmediateWrite } from "../../databaseTransaction.js";
 import { SOCIAL_NOTIFICATION_VISIBLE_SQL } from "../socialReactions/socialReactions.js";
@@ -6,7 +7,7 @@ const READ_CONTRACT = "notification-ids-v1";
 const MAX_ACKNOWLEDGEMENTS = 100;
 // The same visibility rule governs rows, totals and acknowledgements. Apply it
 // before LIMIT so hidden actors cannot consume a page or its continuation slot.
-const VISIBLE_SQL = `${SOCIAL_NOTIFICATION_VISIBLE_SQL}
+const VISIBLE_SQL = `${SOCIAL_NOTIFICATION_VISIBLE_SQL} AND ${CREATOR_NOTICE_VISIBLE_SQL}
   AND (n.actor_id IS NULL OR NOT EXISTS (
     SELECT 1 FROM blocks b WHERE (b.blocker_id=n.user_id AND b.blocked_id=n.actor_id)
       OR (b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)
@@ -60,8 +61,8 @@ export function notificationRoutes({ database, requireUser, ApiError, pageReques
       const args = { $viewer: account.id, $limit: limit + 1,
         ...(cursor ? { $before: cursor.createdAt, $id: cursor.id } : {}) };
       const found = database.prepare(`SELECT n.*, a.name AS actor_name, a.initials AS actor_initials,
-          a.avatar_uri AS actor_uri, a.avatar_color AS actor_color
-        FROM notifications n LEFT JOIN users a ON a.id=n.actor_id
+          a.avatar_uri AS actor_uri, a.avatar_color AS actor_color, p.kind AS post_kind, p.creator_update IS NOT NULL AS creator_update
+        FROM notifications n LEFT JOIN users a ON a.id=n.actor_id LEFT JOIN posts p ON p.id=n.post_id
         WHERE n.user_id=$viewer AND ${VISIBLE_SQL} ${cursorSql}
         ORDER BY n.created_at DESC, n.id DESC LIMIT $limit`).all(args);
       const { rows, nextCursor } = finishPage(found, limit);
@@ -71,7 +72,7 @@ export function notificationRoutes({ database, requireUser, ApiError, pageReques
           id: n.id, type: n.type, actorId: n.actor_id,
           actorName: n.actor_name || "Someone", actorInitials: n.actor_initials || "?",
           actorUri: safePublicProfileImage(n.actor_id, n.actor_uri), actorColor: n.actor_color,
-          postId: n.post_id, commentId: n.comment_id || null, artist: n.artist, text: n.text,
+          postId: n.post_id, postKind: n.post_kind || null, creatorUpdate: !!n.creator_update, commentId: n.comment_id || null, artist: n.artist, text: n.text,
           ts: n.created_at, read: !!n.read,
         })),
         unread: unread(account.id), inboxUnread: directMessageInboxUnread(database, account.id), nextCursor,

@@ -38,6 +38,7 @@ import CatalogMaintenancePanel from "../features/catalogMaintenance/CatalogMaint
 import { lazyWithRetry } from "../lib/lazyWithRetry";
 
 // The newsroom loads with its own chunk (shared with the Newsroom screen).
+const EventClaimReviewPanel = lazyWithRetry(() => import("../features/eventAccounts/EventClaimReviewPanel"), "EventClaimReviewPanel");
 const NewsDeskEditor = lazyWithRetry(() => import("../features/newsroom/newsroomEntry").then((module) => ({ default: module.NewsDeskEditor })), "NewsDeskEditor");
 import SearchGrowthPanel from "../features/searchGrowth/SearchGrowthPanel";
 
@@ -1172,6 +1173,7 @@ export default function AdminScreen({ onClose }) {
         {/* ---- REQUESTS ---- */}
         {activeTab === "requests" && (
           <>
+            {iAmAdmin && <Suspense fallback={<ActivityIndicator color={colors.amber} />}><EventClaimReviewPanel key={`${session?.id}:event-access`} accountId={session?.id} /></Suspense>}
             <ArtistIdentitySafetyPanel key={`artist-identity-safety:${artistRequestScope}`} searchArtists={searchArtistIdentities} reviewIdentity={reviewArtistIdentity} returnToCatalogue={returnArtistPageToCatalogue} />
             <Text style={styles.policy}>Verify the established official identity and this member's authority before granting a check. A name, follower count, screenshot or supplied URL alone is not proof. Identity holds are separate from ordinary unverified pages. Ownership claims also grant management access.</Text>
             {scopedArtistRequestAction.status === "error" && (

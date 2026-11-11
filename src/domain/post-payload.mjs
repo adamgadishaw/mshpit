@@ -42,6 +42,7 @@ export function buildStatusCreateBody(post) {
   return { clientMutationId: post.id, kind: "status", review: post.review,
     taggedUserIds: taggedUserIdsFromPeople(post.taggedPeople), song: post.song || null,
     ...postCreateMediaFields(post), photosPublic: post.photosPublic === false ? 0 : 1,
+    ...(post.creatorUpdate ? { creatorUpdate: post.creatorUpdate } : {}),
     ...(post.playlistId ? { playlistId: post.playlistId } : {}), campaign: post.campaign };
 }
 

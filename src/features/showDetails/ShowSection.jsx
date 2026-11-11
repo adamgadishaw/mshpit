@@ -5,8 +5,9 @@ import { colors, focusRing, radius } from "../../theme";
 
 // Keep the trigger mounted so keyboard focus survives repeated toggles.
 // The parent keys each section by show/account to avoid leaking disclosure state.
-export default function ShowSection({ title, summary, initiallyOpen = false, children }) {
+export default function ShowSection({ title, summary, initiallyOpen = false, keepMounted = false, children }) {
   const [open, setOpen] = useState(initiallyOpen);
+  const [hasOpened, setHasOpened] = useState(initiallyOpen);
   return <View style={styles.section}>
     <Pressable
       accessibilityRole="button"
@@ -14,7 +15,7 @@ export default function ShowSection({ title, summary, initiallyOpen = false, chi
       accessibilityState={{ expanded: open }}
       aria-expanded={open}
       accessibilityHint={open ? "Collapse section" : "Expand section"}
-      onPress={() => setOpen(value => !value)}
+      onPress={() => { setHasOpened(true); setOpen(value => !value); }}
       style={({ pressed, focused }) => [styles.trigger, pressed && styles.pressed, focused && focusRing]}
     >
       <View style={styles.copy}>
@@ -23,7 +24,11 @@ export default function ShowSection({ title, summary, initiallyOpen = false, chi
       </View>
       <View style={open && styles.expandedIcon}><Icon name="chevron-down" size={18} color={colors.textDim} /></View>
     </Pressable>
-    {open && <View style={styles.body}>{children}</View>}
+    {(open || (keepMounted && hasOpened)) && <View
+      style={[styles.body, !open && styles.hiddenBody]}
+      accessibilityElementsHidden={!open}
+      importantForAccessibility={open ? "auto" : "no-hide-descendants"}
+    >{children}</View>}
   </View>;
 }
 
@@ -34,6 +39,7 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontSize: 16, fontWeight: "700" },
   summary: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginTop: 3 },
   body: { paddingHorizontal: 16, paddingBottom: 16 },
+  hiddenBody: { display: "none" },
   pressed: { backgroundColor: colors.surfaceAlt },
   expandedIcon: { transform: [{ rotate: "180deg" }] },
 });

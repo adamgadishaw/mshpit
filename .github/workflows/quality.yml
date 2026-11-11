@@ -78,6 +78,7 @@ jobs:
       - name: Browser draft recovery (no server asset archive)
         run: node scripts/verify-web-draft-recovery-browser.mjs
       - run: npm run verify:artist-account-browser
+      - run: npm run verify:event-page-accounts-browser
       - run: npm run verify:artist-identity-moderation-browser
       - run: npm run verify:navigation-browser
       - name: Retain synthetic Home navigation diagnostics

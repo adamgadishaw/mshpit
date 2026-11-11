@@ -31,7 +31,7 @@ function callback(name, bindings) {
 
 test("real draft restoration preserves unknown date, city-only location, sparse ratings, friends and media", () => {
   const values = {};
-  const setters = ["DraftId", "SavedDraftFingerprint", "PostType", "Campaign", "ExperienceType", "Artist", "ArtistPicked", "ArtistKey", "Venue", "VenuePicked", "City", "EventAddress", "Tour", "ShowFormat", "EndDate", "Lineup", "TimesSeen", "Date", "OnlineTitle", "YoutubeUrl", "OnlineRating", "OverallRating", "Dims", "Review", "TaggedPeople", "Song", "SongUrl", "PreservedPlaylist", "Photos", "MediaProject", "PendingMediaAssets", "PhotosPublic", "LandingShowcase", "ShowDetailedRatings", "ShowTour", "ShowSong", "ShowPhotos", "ShowPeople"];
+  const setters = ["DraftId", "SavedDraftFingerprint", "PostType", "Campaign", "CreatorUpdate", "ExperienceType", "Artist", "ArtistPicked", "ArtistKey", "Venue", "VenuePicked", "City", "EventAddress", "Tour", "ShowFormat", "EndDate", "Lineup", "TimesSeen", "Date", "OnlineTitle", "YoutubeUrl", "OnlineRating", "OverallRating", "Dims", "Review", "TaggedPeople", "Song", "SongUrl", "PreservedPlaylist", "Photos", "MediaProject", "PendingMediaAssets", "PhotosPublic", "LandingShowcase", "ShowDetailedRatings", "ShowTour", "ShowSong", "ShowPhotos", "ShowPeople"];
   const bindings = {
     normalizeComposerDraft, composerDraftFingerprint, restoredComposerDate, hasDetailedComposerRatings, clampRating, computeReview,
     normalizeMediaProject, originalMediaProjectAsset, ONLINE_REVIEW_EXPERIENCE, lineupFromPost,

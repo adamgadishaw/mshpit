@@ -1,3 +1,4 @@
+import CreatorPostsSection from "./CreatorPostsPanel";
 import CatalogText from "../features/catalogEditor/CatalogText";
 import { Suspense, useState, useEffect, useRef } from "react";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
@@ -1496,6 +1497,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </Pressable>
         </View> : null}
 
+        {profileServicesAvailable && profileOwnerId && (sectionModel.showCommunity || publicArtistPreview) && <CreatorPostsSection following={followed || fanClubMember} entityType="artist" entityKey={String(a.profileKey || a.name).trim().toLowerCase()} accountId={session?.id || null} onOpenPost={onOpenPost} />}
         {/* Artist posts are read-only here. Creation and removal live in Artist HQ.
             Legacy pages expose only staff-curated history notes. They must never
             borrow the artist's avatar/name or imply that the artist published

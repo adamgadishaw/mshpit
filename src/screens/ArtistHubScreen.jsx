@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import CreatorPostsSection from "./CreatorPostsPanel";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
   useWindowDimensions,
 } from "react-native";
@@ -32,7 +32,6 @@ import SmartImage from "../components/SmartImage";
 import ArtistIdentityStatus from "../components/ArtistIdentityStatus";
 import { artistInitials } from "../domain/artistInitials.mjs";
 
-const UPDATE_LIMIT = 1000;
 
 function SectionTitle({ title, detail, right }) {
   return (
@@ -166,7 +165,7 @@ function ArtistPageReadNotice({ resource, onRetry }) {
   );
 }
 
-export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEditAccount, onTourDates, onCampaignPost, onMediaPost, onRequestVerification }) {
+export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEditAccount, onTourDates, onCampaignPost, onMediaPost, onRequestVerification, onOpenPost }) {
   const { width } = useWindowDimensions();
   const wide = width >= 820;
   const {
@@ -176,7 +175,6 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
     artistPostsFor,
     loadArtistPage,
     loadArtistAccount,
-    addArtistPost,
     removeArtistPost,
     remoteArtistMeta,
     resolveArtist,
@@ -185,15 +183,16 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
   const summary = artistSummary(artistName);
   const profile = artistProfile(artistName);
   const posts = artistPostsFor(artistName);
+  const creatorScope = accountTargetScope(session?.id || null, artistName.toLowerCase());
+  const [creatorSnapshot, setCreatorSnapshot] = useState({ scope: creatorScope, posts: [] });
+  const creatorPosts = creatorSnapshot.scope === creatorScope ? creatorSnapshot.posts : [];
+  const onCreatorPostsLoaded = useCallback(rows => setCreatorSnapshot({ scope: creatorScope, posts: rows }), [creatorScope]);
   const bundledCatalog = artistMeta(artistName);
   const catalog = bundledCatalog || remoteArtistMeta(artistName) || {};
   const model = useMemo(
-    () => artistWorkspaceModel({ session, summary, profile, posts, catalog }),
-    [session, summary, profile, posts, catalog],
+    () => artistWorkspaceModel({ session, summary, profile, posts: [...posts, ...creatorPosts], catalog }),
+    [session, summary, profile, posts, creatorPosts, catalog],
   );
-  const [draft, setDraft] = useState("");
-  const [publishState, setPublishState] = useState({ status: "idle", message: "" });
-  const inputRef = useRef(null);
   const artistPageScope = accountTargetScope(session?.id || null, `artist-page:${artistName.toLowerCase()}`);
   const [artistPageRequestVersion, setArtistPageRequestVersion] = useState(0);
   const [artistPageResource, setArtistPageResource] = useState(() => createLoadState({
@@ -204,7 +203,6 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
   const scopedArtistPageResource = projectLoadState(artistPageResource, artistPageScope, null);
   const hasConfirmedArtistPage = artistPageEditReady(scopedArtistPageResource);
   const artistPostScope = accountTargetScope(session?.id || null, `artist-posts:${artistName.toLowerCase()}`);
-  const publishRef = useRef({ sequence: 0, scope: artistPostScope, controller: null });
   const artistPostMutationRef = useRef({ sequence: 0, scope: artistPostScope, postId: null, controller: null });
   const [artistPostMutation, setArtistPostMutation] = useState({ scope: artistPostScope, postId: null, status: "idle", error: null });
   const [confirmPostId, setConfirmPostId] = useState(null);
@@ -253,18 +251,12 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
   }, [artistName, artistPageScope, artistPageRequestVersion]);
 
   useEffect(() => {
-    const activePublish = publishRef.current;
-    activePublish.controller?.abort();
-    publishRef.current = { sequence: activePublish.sequence + 1, scope: artistPostScope, controller: null };
     const active = artistPostMutationRef.current;
     active.controller?.abort();
     artistPostMutationRef.current = { sequence: active.sequence + 1, scope: artistPostScope, postId: null, controller: null };
     setArtistPostMutation({ scope: artistPostScope, postId: null, status: "idle", error: null });
     setConfirmPostId(null);
-    setDraft("");
-    setPublishState({ status: "idle", message: "" });
     return () => {
-      publishRef.current.controller?.abort();
       artistPostMutationRef.current.controller?.abort();
     };
   }, [artistPostScope]);
@@ -291,46 +283,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
     if (action === "edit") openPageEditor();
     else if (action === "tour") onTourDates?.();
     else if (action === "preview") onPreview?.(artistName);
-    else if (action === "post") inputRef.current?.focus?.();
-  };
-
-  const publish = async () => {
-    const submittedDraft = draft;
-    const text = submittedDraft.trim();
-    if (!text || publishRef.current.controller) return;
-    const controller = new AbortController();
-    const operation = {
-      sequence: publishRef.current.sequence + 1,
-      scope: artistPostScope,
-      controller,
-    };
-    publishRef.current = operation;
-    setPublishState({ status: "pending", message: "" });
-    try {
-      const result = await addArtistPost(artistName, text, { signal: controller.signal });
-      if (publishRef.current !== operation || operation.scope !== artistPostScope) return;
-      if (result?.ok) {
-        // A slow publish must not erase the next update the artist started
-        // typing while the submitted text was in flight.
-        setDraft((current) => current === submittedDraft ? "" : current);
-        setPublishState({ status: "success", message: "Artist post published to your page." });
-        return;
-      }
-      setPublishState({
-        status: "error",
-        message: result?.error?.userMessage || result?.error?.message || "That artist post was not published. Your draft is still here.",
-      });
-    } catch (error) {
-      if (!controller.signal.aborted && publishRef.current === operation
-        && operation.scope === artistPostScope) {
-        setPublishState({
-          status: "error",
-          message: error?.userMessage || error?.message || "That artist post was not published. Your draft is still here.",
-        });
-      }
-    } finally {
-      if (publishRef.current === operation) publishRef.current = { ...operation, controller: null };
-    }
+    else if (action === "post") onMediaPost?.();
   };
 
   const deletePageUpdate = async (postId) => {
@@ -390,7 +343,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                 <View style={styles.heroCopy}>
                   <Text style={styles.heroKicker}>MANAGE YOUR ARTIST PAGE</Text>
                   <Text style={styles.heroName} numberOfLines={2}>{artistName}</Text>
-                  <Text style={styles.heroSub}>Your photos, live videos, news, and upcoming concerts. One account. All free.</Text>
+                  <Text style={styles.heroSub}>Manage your artist page, posts, and upcoming shows.</Text>
                 </View>
               </View>
             </View>
@@ -404,7 +357,6 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
           {hasConfirmedArtistPage ? (
             <View style={styles.statsRow}>
               <MiniStat icon="calendar" value={stats.upcomingShows} label="upcoming" accent={colors.cool} />
-              <MiniStat icon="comment" value={stats.updates} label="artist posts" accent={colors.magenta} />
               <MiniStat icon="feed" value={stats.nights} label="logged shows" accent={colors.amber} />
               <MiniStat icon="star" value={stats.liveScore ? stats.liveScore.toFixed(1) : "—"} label="live rating" accent={colors.gold} />
               <MiniStat icon="you" value={stats.ratings} label="ratings" accent={colors.good} />
@@ -420,7 +372,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
               disabled={!hasConfirmedArtistPage}
               accent={colors.magenta}
             />
-            <ActionTile icon="photo" title="Live photos & videos" detail="Share concert clips, photos, and updates. Normal post and upload safety limits apply." onPress={onMediaPost} accent={colors.amber} />
+            <ActionTile icon="photo" title="Post to followers" detail="Updates, show dates, releases, photos and videos." onPress={onMediaPost} accent={colors.amber} />
             <ActionTile icon="star" title="Promote a concert or release" detail="Create a featured post or tour poster. Up to two featured promotions per day; ordinary media posts stay separate." onPress={onCampaignPost} accent={colors.magenta} />
             <ActionTile icon="calendar" title="Upcoming shows" detail="Add shows, official ticket links, and dates." onPress={onTourDates} accent={colors.cool} />
             <ActionTile icon="you" title="Personal account" detail="Edit your username, city, favorite genres, and artists." onPress={onEditAccount} accent={colors.good} />
@@ -460,45 +412,21 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
             </View> : null}
 
             <View style={[styles.panel, styles.publishPanel]}>
-              <SectionTitle title="Artist post" detail="Share a short update directly on the artist page." />
-              {hasConfirmedArtistPage && !model.feedEnabled ? (
+              <Text style={styles.sectionDetail}>New updates appear in the main feed and on your artist page, using your account visibility settings.</Text>
+              {hasConfirmedArtistPage && posts.length > 0 && !model.feedEnabled ? (
                 <View style={styles.feedWarning}>
                   <Icon name="lock" size={16} color={colors.gold} />
                   <View style={styles.feedWarningCopy}>
-                    <Text style={styles.feedWarningTitle}>Artist posts are hidden</Text>
-                    <Text style={styles.feedWarningText}>Use Edit artist page to show these posts publicly. Featured feed posts still appear in the main feed.</Text>
+                    <Text style={styles.feedWarningTitle}>Earlier artist posts are hidden</Text>
+                    <Text style={styles.feedWarningText}>Use Edit artist page to show these earlier posts on your artist page.</Text>
                   </View>
                 </View>
               ) : null}
-              <TextInput
-                ref={inputRef}
-                style={styles.composer}
-                value={draft}
-                onChangeText={(value) => {
-                  setDraft(value);
-                  if (publishState.status !== "pending") setPublishState({ status: "idle", message: "" });
-                }}
-                placeholder="Share news with fans…"
-                placeholderTextColor={colors.textFaint}
-                multiline
-                maxLength={UPDATE_LIMIT}
-                textAlignVertical="top"
-                accessibilityLabel="Artist post"
-              />
-              <View style={styles.composerFoot}>
-                <Text style={styles.counter}>{draft.length}/{UPDATE_LIMIT}</Text>
-                <Button title="Publish artist post" icon="share" onPress={() => void publish()} loading={publishState.status === "pending"} disabled={!draft.trim()} small />
-              </View>
-              {!!publishState.message && (
-                <View style={[styles.publishStatus, publishState.status === "error" ? styles.publishError : styles.publishSuccess]} accessibilityRole={publishState.status === "error" ? "alert" : "text"} accessibilityLiveRegion="polite">
-                  <Icon name={publishState.status === "error" ? "x" : "check"} size={15} color={publishState.status === "error" ? colors.danger : colors.good} strokeWidth={2.5} />
-                  <Text selectable style={[styles.publishStatusText, { color: publishState.status === "error" ? colors.danger : colors.good }]}>{publishState.message}</Text>
-                </View>
-              )}
-              <View style={styles.recentHead}>
-                <Text style={styles.recentLabel}>ARTIST POSTS</Text>
+              <CreatorPostsSection entityType="artist" entityKey={artistName.toLowerCase()} accountId={session?.id} onOpenPost={onOpenPost} onCompose={onMediaPost} onPostsLoaded={onCreatorPostsLoaded} />
+              {posts.length > 0 && <View style={styles.recentHead}>
+                <Text style={styles.recentLabel}>EARLIER ARTIST POSTS</Text>
                 {hasConfirmedArtistPage ? <Text style={styles.recentCount}>{posts.length} total</Text> : null}
-              </View>
+              </View>}
               {!hasConfirmedArtistPage ? (
                 <View style={styles.emptyState} accessibilityLiveRegion="polite">
                   {scopedArtistPageResource.status === "loading"
@@ -587,18 +515,13 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                     <Icon name="x" size={15} color={colors.textFaint} />
                   </Pressable>
                 </View>
-              )) : (
-                <View style={styles.emptyState}>
-                  <Icon name="comment" size={20} color={colors.textFaint} />
-                  <Text style={styles.emptyText}>Your first artist post will appear here.</Text>
-                </View>
-              )}
+              )) : null}
             </View>
           </View>
 
           <View style={[styles.columns, !wide && styles.columnsStack]}>
             <View style={[styles.panel, styles.livePanel]}>
-              <SectionTitle title={nextShow ? "The next room" : "Put the next room on the map"} detail="Keep the public path from discovery to the door clean." right={<View style={styles.liveIcon}><Icon name="ticket" size={19} color={colors.cool} /></View>} />
+              <SectionTitle title="Upcoming shows" detail="Keep your show dates and ticket links up to date." right={<View style={styles.liveIcon}><Icon name="ticket" size={19} color={colors.cool} /></View>} />
               {nextShow ? (
                 <View style={styles.showCard}>
                   <View style={styles.dateBlock}>

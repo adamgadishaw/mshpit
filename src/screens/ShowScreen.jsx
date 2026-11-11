@@ -63,7 +63,7 @@ const CROWD_FILTER_LABELS = Object.freeze({
 function PublicEventSnapshotPanel({
   event, status, onRetry, onOpenVenue, artistIdentityPending = false,
   artistStatus = null, artistError = null, artistMissing = false,
-  onRetryArtist, artistRetryDisabled = false,
+  onRetryArtist, artistRetryDisabled = false, eventAccountSection = null,
 }) {
   const loading = status === "loading" || status === "refreshing";
   const artistChecking = !artistIdentityPending && artistStatus === "checking";
@@ -120,6 +120,7 @@ function PublicEventSnapshotPanel({
       {!cancelled && event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${event.name} at ${event.venue}`}>
         <Text style={styles.ticketsTxt}>Get tickets</Text>
       </Pressable> : null}
+      {eventAccountSection}
       {!cancelled && <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
         <View style={styles.reviewUnavailableCopy}>
           <Text style={styles.reviewUnavailableTitle}>{artistIdentityPending || artistMissing
@@ -192,7 +193,7 @@ function ReviewMediaTile({ media, author, postId, onOpenPhotos }) {
 // community score and the setlist. It must render for ANY event shape - a
 // logged review, a bare tour date from the calendar, a lounge link - so every
 // field is guarded; a tour date has no score and that's a mode, not a crash.
-export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth }) {
+export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth, renderEventAccount }) {
   const { width } = useWindowDimensions();
   const tabletLayout = width >= 720;
   const archiveReviewTileStyle = styles.archiveReviewCardFull;
@@ -279,6 +280,12 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const deceased = memorialAvailability === "deceased";
   const legacyMode = isLegacyArtistMemorial(memorialResource.data);
   const publicEventSnapshot = readablePublicEventSnapshot(publicEventResource, { eventId: publicEventId, accountId, legacyMode });
+  // Only a scoped, resolver-validated tour-date identity is a page-access target.
+  // This element mounts in one active branch; archive/review hints never qualify.
+  const eventAccountSection = publicEventSnapshot && renderEventAccount ? <ShowSection
+    key={`event-account:${accountId || "guest"}:${publicEventSnapshot.id}`}
+    title="Event updates & page access" keepMounted
+  >{renderEventAccount({ targetKind: "event", targetId: publicEventSnapshot.id, accountId, onOpenPost, onRequireAuth })}</ShowSection> : null;
   const liveActionsAvailable = memorialAvailability === "living";
   const memorialChecking = memorialAvailability === "checking";
   const showPageAllowed = !artistIdentityPending && artistIdentityStatus === "ready"
@@ -616,6 +623,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
       {!showPageAllowed ? (
         publicEventId && !legacyMode ? <PublicEventSnapshotPanel
           event={publicEventSnapshot}
+          eventAccountSection={eventAccountSection}
           status={publicEventResource.status}
           artistIdentityPending={artistIdentityPending}
           artistStatus={profileGateState}
@@ -901,6 +909,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
 
           {!archiveShowKey && !log.review && <View><Text style={styles.archiveReviewStateText}>{presentation.showPostEvent ? "Look for this date in the artist's concert archive to read fan reviews." : lifecycleView.lifecycle === "cancelled" ? "This show was cancelled." : "Reviews will be available after the show."}</Text>{presentation.showPostEvent && onOpenArchive ? <Pressable style={styles.archiveReviewOpen} onPress={() => onOpenArchive(artist, norm.artistKey || null)} accessibilityRole="button" accessibilityLabel={`Browse ${artist}'s concert reviews`}><Text style={styles.archiveReviewOpenText}>Browse concert reviews</Text><Icon name="chevron-right" size={16} color={colors.amber} /></Pressable> : null}</View>}
         </ShowSection>
+        {eventAccountSection}
         <ShowSection key={`details:${socialIdentity}`} title="Event details" summary="Lineup, venue and show information"><CatalogText type="event" entityKey={publicEventId || tourDateId} />
           {/* A review's lineup with each set's rating and note, and how many
               times its author has now seen the headliner. */}

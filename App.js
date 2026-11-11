@@ -90,6 +90,7 @@ const BadgeLegendScreen = lazyWithRetry(() => import("./src/screens/BadgeLegendS
 const CrewScreen = lazyWithRetry(() => import("./src/screens/CrewScreen"), "CrewScreen");
 const NewsScreen = lazyWithRetry(() => import("./src/components/news/NewsViews").then((module) => ({ default: module.NewsScreen })), "NewsScreen");
 const NewsroomScreen = lazyWithRetry(() => import("./src/features/newsroom/newsroomEntry").then((module) => ({ default: module.NewsroomScreen })), "NewsroomScreen");
+const EventAccountPanel = lazyWithRetry(() => import("./src/screens/EventAccountPanel"), "EventAccountPanel");
 const FestivalScreen = lazyWithRetry(() => import("./src/features/festivals/festivalsEntry").then((module) => ({ default: module.FestivalScreen })), "FestivalScreen");
 const FestivalsHubScreen = lazyWithRetry(() => import("./src/features/festivals/festivalsEntry").then((module) => ({ default: module.FestivalsHubScreen })), "FestivalsHubScreen");
 const WelcomeScreen = lazyWithRetry(() => import("./src/screens/WelcomeScreen"), "WelcomeScreen");
@@ -1465,6 +1466,8 @@ function Root() {
   const isCurrentMessageThread = () => threadReadVisibleRef.current
     && navigationRef.current.stack.at(-1) === nav;
 
+  const renderEventAccount = props => <Suspense fallback={null}><EventAccountPanel {...props}
+    onCompose={entity => requireVerifiedMutation("post", () => go({ logging: true, postMode: "creator", prefill: { creatorEntity: entity } }))} /></Suspense>;
   let overlay = nav.routeLoading ? <ScreenLoading /> : nav.routeError ? (
     <View style={[styles.screenLoading, { padding: 24 }]} testID="public-route-error">
       <Text accessibilityRole="header" style={{ color: colors.text, fontSize: 22, fontWeight: "700" }}>This page couldn’t load.</Text>
@@ -1497,7 +1500,7 @@ function Root() {
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} initialSection={nav.profileSection} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} onRequireAuth={openSignIn} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} onRequireAuth={openSignIn} />;
-  else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onMediaPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "status" }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onRequestVerification={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} onPlay={musicPlayerAction} />;
+  else if (nav.artistHub) overlay = <ArtistHubScreen onOpenPost={openPost} onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onMediaPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "creator" }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onRequestVerification={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} onPlay={musicPlayerAction} />;
   else if (nav.artistGallery) overlay = <ArtistGalleryScreen artistName={nav.artistGallery.name} artistKey={nav.artistGallery.artistKey} legacyMode={nav.artistGallery.legacyMode === true} onClose={back} onOpenPhotos={openPhotos} />;
   else if (nav.artistPreview) overlay = <ArtistScreen artistName={nav.artistPreview} previewAsFan onClose={back} onOpenPost={openPost} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onRequireAuth={openSignIn} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
@@ -1517,11 +1520,12 @@ function Root() {
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onOpenFanClub={openFanClub} onReport={openReport} onRequireAuth={openSignIn} />;
-  else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} />;
+  else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} renderEventAccount={renderEventAccount} />;
   else if (nav.post) overlay = <PostScreen key={`${session?.id || "guest"}:${nav.post.id}`} log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
   else if (nav.festival?.slug) overlay = <FestivalScreen key={`${session?.id || "guest"}:${nav.festival.slug}`} slug={nav.festival.slug} editionId={nav.festival.editionId || null}
     signedIn={!!session} accountId={session?.id || null} author={session ? { name: session.name } : null} onClose={back} onOpenArtist={openArtist} onRequireAuth={openSignIn}
+    renderEventAccount={renderEventAccount}
     onReviewFestival={(prefill) => requireVerifiedMutation("review", () => go({ logging: true, prefill }))} />;
   else if (nav.newsroom) overlay = <NewsroomScreen closeGuardRef={composerCloseGuardRef} key={`${session?.id || "guest"}:newsroom`} accountId={session?.id || null} role={session?.role || null} active={appActive} onClose={back} />;
   else if (nav.festivals) overlay = <FestivalsHubScreen onClose={back} onOpenFestival={openFestival} />;

@@ -227,6 +227,7 @@ for (const outcome of ["failed", "missing", "processing", "ready", "failed-final
     "setDraftId", "setSavedDraftFingerprint", "setPostType", "setCampaign", "setExperienceType", "setArtist", "setArtistPicked", "setArtistKey", "setVenue", "setVenuePicked", "setCity", "setEventAddress", "setTour", "setShowFormat", "setEndDate", "setLineup", "setTimesSeen", "setDate", "setOnlineTitle", "setYoutubeUrl", "setOnlineRating", "setDims", "setReview", "setTaggedPeople", "setSong", "setSongUrl", "setPreservedPlaylist", "setPhotosPublic", "setLandingShowcase", "setShowSong", "setShowPhotos", "setShowPeople",
   ].map(name => [name, () => {}]));
   const resume = compileResumeComposer({
+    setCreatorUpdate: value => { state.creatorUpdate = value; },
     setOverallRating: value => { state.overall = value; }, clampRating, computeReview,
     ...resumeSetters, normalizeComposerDraft, composerDraftFingerprint, normalizeMediaProject, mediaProjectFromPost, originalMediaProjectAsset,
     draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: null },
@@ -335,7 +336,7 @@ test("manual upload cancellation still clears the current composer's busy state"
 
 const compileSubmit = callback("LogScreen.jsx", "LogScreen", "submit");
 const compileShowPostFailure = callback("LogScreen.jsx", "LogScreen", "showPostFailure");
-function submitFixture({ photosPublic = false } = {}) {
+function submitFixture({ photosPublic = false, creatorUpdate = null } = {}) {
   const accountTasks = scope(), response = deferred(), events = [], posts = [];
   const setPostError = () => events.push("setPostError");
   const showPostFailure = compileShowPostFailure({
@@ -356,7 +357,7 @@ function submitFixture({ photosPublic = false } = {}) {
     isDurableMediaUrl: () => true, mediaProjectSubmissionAssetIds: () => [], mediaProject: { assets: [] },
     mediaProjectPublishedMedia, isStatus: true, isMemorialMemory: false, protectedLegacyMemory: false,
     editing: null, review: "A private draft", memoryTextOnly: false, song: null, isCampaign: false,
-    artistMediaConsent: { photosPublic },
+    artistMediaConsent: { photosPublic }, isCreator: !!creatorUpdate, creatorUpdate,
     onPost: (post) => { events.push("post"); posts.push(post); return response.promise; },
     showPostFailure, setPostError, draftIdRef: { current: "draft-a" }, composerId: "composer-a",
     ...Object.fromEntries(["setPosting", "deleteDraft", "setDraftId", "setSavedDraftFingerprint", "onDraftIdentity"]
@@ -741,6 +742,7 @@ for (const outcome of ["ready", "missing", "retryable"]) test(`restored featured
     "setDraftId", "setSavedDraftFingerprint", "setPostType", "setExperienceType", "setArtist", "setArtistPicked", "setArtistKey", "setVenue", "setVenuePicked", "setCity", "setEventAddress", "setTour", "setShowFormat", "setEndDate", "setLineup", "setTimesSeen", "setDate", "setOnlineTitle", "setYoutubeUrl", "setOnlineRating", "setDims", "setReview", "setTaggedPeople", "setSong", "setSongUrl", "setPreservedPlaylist", "setPhotosPublic", "setLandingShowcase", "setShowSong", "setShowPhotos", "setShowPeople",
   ].map(name => [name, () => {}]));
   const resume = compileResumeComposer({
+    setCreatorUpdate: value => { state.creatorUpdate = value; },
     setOverallRating: value => { state.overall = value; }, clampRating, computeReview,
     ...resumeSetters, normalizeComposerDraft, composerDraftFingerprint, normalizeMediaProject, mediaProjectFromPost, originalMediaProjectAsset,
     draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: null },
@@ -895,4 +897,19 @@ test("background cleanup retains unrelated selections and clears removed or recl
   f.setCampaign(withoutBackground);
   f.setMediaProject(normalizeMediaProject());
   assert.equal(f.flush(), withoutBackground);
+});
+
+test("creator publication uses the same checkpoint, account boundary and retry identity as ordinary uploads", async () => {
+  const creatorUpdate = { version: 1, entityType: "venue", entityKey: "test-room", kind: "release", title: "New season", date: "", location: "", url: "" };
+  const f = submitFixture({ creatorUpdate }), first = f.run();
+  assert.equal(f.posts[0].creatorUpdate, creatorUpdate);
+  assert.equal(f.posts[0].id, "post-a");
+  f.response.resolve({ ok: false, error: new Error("connection interrupted") }); await first;
+  assert.equal(f.events.includes("deleteDraft"), false);
+  assert.equal(f.events.includes("checkpoint"), true);
+  for (const boundary of ["logout", "switch", "round-trip", "unmount"]) {
+    const f = submitFixture({ creatorUpdate }), run = f.run(); crossBoundary(f.accountTasks, boundary);
+    const before = f.events.length; f.response.resolve({ ok: true }); await run;
+    assert.equal(f.events.length, before, boundary);
+  }
 });

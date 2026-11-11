@@ -1,3 +1,4 @@
+import { creatorUpdateDraft } from "./creatorUpdateDraft.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
 import { parseTimesSeen } from "./supportingActs.mjs";
 import { cleanShowFormat, lineupActs } from "./lineup.mjs";
@@ -52,6 +53,7 @@ export function normalizeComposerDraft(value = {}) {
     id: value.id || null,
     submissionId: text(value.submissionId) || null,
     postType,
+    creatorUpdate: postType === "status" ? creatorUpdateDraft(value.creatorUpdate) : null,
     campaign: postType === "status" ? normalizeArtistCampaign(value.campaign) : null,
     experienceType,
     artist: text(value.artist),
@@ -109,7 +111,8 @@ export function composerDraftFingerprint(value) {
 export function composerDraftHasContent(value) {
   const draft = normalizeComposerDraft(value);
   return !!(
-    draft.artist.trim()
+    draft.creatorUpdate?.title || draft.creatorUpdate?.date || draft.creatorUpdate?.location || draft.creatorUpdate?.url
+    || draft.artist.trim()
     || draft.venue.trim()
     || draft.city.trim()
     || draft.eventAddress.trim()
@@ -131,6 +134,7 @@ export function composerDraftHasContent(value) {
 
 export function composerDraftTitle(value) {
   const draft = normalizeComposerDraft(value);
+  if (draft.creatorUpdate?.title) return draft.creatorUpdate.title;
   if (draft.postType === "memory") return draft.review.trim() || `${draft.artist.trim() || "Artist"} fan memory`;
   if (draft.postType === "status") return draft.review.trim() || (draft.campaign ? "Featured post draft" : "Post draft");
   if (draft.experienceType === ONLINE_REVIEW_EXPERIENCE) {

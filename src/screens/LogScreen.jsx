@@ -1,4 +1,6 @@
 import { moveComposerMedia } from "../domain/composerMediaOrder.mjs";
+import CreatorUpdateFields from "../features/creatorPosts/CreatorUpdateFields";
+import { creatorEntityForComposer, creatorUpdateDraft, creatorUpdateError } from "../domain/creatorUpdate.mjs";
 import MediaUploadProgress from "../components/MediaUploadProgress";
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Alert, AppState } from "react-native";
@@ -282,7 +284,7 @@ export default function LogScreen({
   const [postType, setPostType] = useState(
     editing ? (editing.kind === "memory" ? "memory" : editing.kind === "status" ? "status" : "show")
       : defaultMode === "memory" && prefill?.artist ? "memory"
-        : prefill?.artist ? "show" : defaultMode === "campaign" ? "status" : defaultMode
+        : defaultMode === "creator" ? "status" : prefill?.artist ? "show" : defaultMode === "campaign" ? "status" : defaultMode
   );
   const isMemorialMemory = postType === "memory";
   const memoryEditLocked = !!editing && isMemorialMemory;
@@ -304,6 +306,9 @@ export default function LogScreen({
     return null;
   });
   const isCampaign = isStatus && !!campaign;
+  const [creatorUpdate, setCreatorUpdate] = useState(() => editing?.creatorUpdate || (defaultMode === "creator" ? creatorUpdateDraft(creatorEntityForComposer(user, prefill?.creatorEntity)) : null));
+  const [creatorAuthorizedAccount, setCreatorAuthorizedAccount] = useState(null);
+  const isCreator = isStatus && !!creatorUpdate;
   const [draftId, setDraftId] = useState(null);
   const [savedDraftFingerprint, setSavedDraftFingerprint] = useState(null);
   const [artist, setArtist] = useState(editing?.artist || prefill?.artist || "");
@@ -1272,7 +1277,7 @@ export default function LogScreen({
   const convertingClips = mediaProjectConvertingAssets(mediaProject);
   const canPostStatus = protectedLegacyMemory
     ? !!review.trim()
-    : !!(review.trim() || photos.filter(isDurableMediaUrl).length || convertingClips.length || song?.videoId);
+    : !!(isCreator || review.trim() || photos.filter(isDurableMediaUrl).length || convertingClips.length || song?.videoId);
   const canPostBase = isStatus
     ? canPostStatus
     : isOnlineReview
@@ -1284,9 +1289,10 @@ export default function LogScreen({
     : isFestival && endDate && (!date || festivalSpanDays < 0 || festivalSpanDays >= 14) ? "Pick the festival's first day, then a last day up to two weeks later."
       : isCoHeadline && !lineup.some((act) => act.role === "co_headliner") ? "Add the other headliner, or switch to Concert."
         : "";
-  const canPost = !!canPostBase && !lineupProblem && !reviewTooLong && pendingMediaAssets.length === 0;
+  const creatorProblem = isCreator ? creatorUpdateError(creatorUpdate) : defaultMode === "creator" ? "Choose a page account." : null;
+  const canPost = !!canPostBase && !lineupProblem && !reviewTooLong && !creatorProblem && (!isCreator || creatorAuthorizedAccount === user?.id) && pendingMediaAssets.length === 0;
   const submitBusy = pickingMedia || uploadingPhotos || resolvingSong || posting || artistAttaching;
-  const engagementPrompt = useMemo(() => protectedLegacyMemory || (!isStatus && !isOnlineReview) ? null : composerEngagementPrompt({
+  const engagementPrompt = useMemo(() => protectedLegacyMemory || isCreator || (!isStatus && !isOnlineReview) ? null : composerEngagementPrompt({
     kind: isStatus ? "status" : "review",
     experienceType,
     canPost: !!canPostBase,
@@ -1298,7 +1304,7 @@ export default function LogScreen({
     media: photos,
     song,
     taggedPeople: isStatus || isOnlineReview ? [] : taggedPeople,
-  }), [protectedLegacyMemory, isStatus, isOnlineReview, experienceType, canPostBase, artistPicked, city, tour, onlineTitle, review, photos, song, taggedPeople]);
+  }), [protectedLegacyMemory, isCreator, isStatus, isOnlineReview, experienceType, canPostBase, artistPicked, city, tour, onlineTitle, review, photos, song, taggedPeople]);
 
   const draftMediaProject = useMemo(() => normalizeMediaProject({
     assets: [
@@ -1341,6 +1347,7 @@ export default function LogScreen({
     id: draftId,
     submissionId: submissionIdRef.current,
     postType,
+    creatorUpdate: isCreator ? creatorUpdate : null,
     campaign: isStatus ? campaign : null,
     experienceType,
     artist,
@@ -1371,7 +1378,7 @@ export default function LogScreen({
     photosPublic,
     landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatiblePhoto,
     panels: { song: showSong, photos: showPhotos, people: !isStatus && !isOnlineReview && showPeople },
-  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, showFormat, endDate, lineup, timesSeen, date, onlineTitle, youtubeUrl, onlineRating, overallRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
+  }), [draftId, postType, isStatus, isOnlineReview, isCreator, creatorUpdate, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, showFormat, endDate, lineup, timesSeen, date, onlineTitle, youtubeUrl, onlineRating, overallRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasPendingMedia = pendingMediaAssets.length > 0;
@@ -1517,6 +1524,7 @@ export default function LogScreen({
     submissionIdRef.current = restored.submissionId || submissionIdRef.current;
     setPostType(restored.postType);
     setCampaign(restored.campaign);
+    setCreatorUpdate(restored.creatorUpdate);
     setExperienceType(restored.experienceType);
     setArtist(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey); setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
     setEventAddress(restored.eventAddress || "");
@@ -1702,6 +1710,7 @@ export default function LogScreen({
         const result = await onPost?.({
           id: submissionIdRef.current,
           kind: isMemorialMemory ? "memory" : "status",
+          ...(!editing && isCreator ? { creatorUpdate } : {}),
           ...(isMemorialMemory && !memoryEditLocked ? { artist: artist.trim(), artistKey } : {}),
           ...(protectedLegacyMemory ? { legacyArtistProfile: true } : {}),
           user: editing?.user || (user
@@ -1797,13 +1806,13 @@ export default function LogScreen({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? (isMemorialMemory ? "Edit fan memory" : isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : protectedLegacyMemory ? "Share a written memory" : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Review a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy || postCoolingDown || featuredPostingBlocked }} />
+      <SheetHeader title={editing ? (isMemorialMemory ? "Edit fan memory" : isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : protectedLegacyMemory ? "Share a written memory" : isMemorialMemory ? "Share a fan memory" : isCreator ? "Post to followers" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Review a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy || postCoolingDown || featuredPostingBlocked }} />
 
       <ScrollView ref={composerScrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        {!!postError && <View style={[styles.postErrorBox, postRetryReady && styles.postReadyBox]} accessibilityRole="alert" accessibilityLiveRegion="polite"><Icon name={postCoolingDown ? "clock" : postRetryReady ? "check" : "flag"} size={14} color={postRetryReady ? colors.good : colors.danger} /><Text style={[styles.postErrorTxt, postRetryReady && styles.postReadyTxt]}>{postCoolingDown ? postRetryCooldownMessage(postRetrySeconds) : postError}</Text></View>}
+        {!!postError && <View style={[styles.postErrorBox, postRetryReady && styles.postReadyBox]} accessibilityRole="alert" accessibilityLiveRegion="polite"><Icon name={postCoolingDown ? "clock" : postRetryReady ? "check" : "flag"} size={14} color={postRetryReady ? colors.good : colors.danger} /><Text style={[styles.postErrorTxt, postRetryReady && styles.postReadyTxt]}>{postCoolingDown ? postRetryCooldownMessage(postRetrySeconds) : isCreator ? postError.replace("Your review", "Your update") : postError}</Text></View>}
         {/* One way to post: the only choice before writing is an artist's
             optional featured treatment. A show is attached below the text. */}
-        {!editing && !isMemorialMemory && isStatus && artistCampaignAllowed && (
+        {!editing && !isMemorialMemory && !isCreator && isStatus && artistCampaignAllowed && (
           <View style={styles.modeRow}>
             <Pressable
               style={[styles.modeBtn, isCampaign && styles.modeBtnOn]}
@@ -1852,6 +1861,7 @@ export default function LogScreen({
               </View>
             </View>
           ) : null}
+          {isCreator && <CreatorUpdateFields value={creatorUpdate} accountId={user?.id} onChange={setCreatorUpdate} onAuthorization={setCreatorAuthorizedAccount} disabled={submitBusy} readOnly={!!editing} />}
           <View style={[styles.composerCard, isCampaign && styles.campaignComposerCard]}>
             <View style={styles.authorRow}>
               <Avatar user={user || { name: "You", initials: "YOU" }} size={44} />
@@ -1865,7 +1875,7 @@ export default function LogScreen({
             </View>
             <TextInput
               style={styles.statusBox}
-              placeholder={isMemorialMemory ? `What do you remember about ${artist}?` : "Write about music, a show, or what you plan to see next..."}
+              placeholder={isCreator ? "Add details for your followers (optional)..." : isMemorialMemory ? `What do you remember about ${artist}?` : "Write about music, a show, or what you plan to see next..."}
               placeholderTextColor={colors.textFaint}
               value={review}
               onChangeText={setReview}
@@ -1916,7 +1926,7 @@ export default function LogScreen({
               </View>
             </View>
           )}
-          {!editing && !isMemorialMemory && !isCampaign && (
+          {!editing && !isMemorialMemory && !isCampaign && !isCreator && (
             <Pressable
               style={({ pressed }) => [styles.addShow, pressed && styles.addShowPressed]}
               onPress={() => {
