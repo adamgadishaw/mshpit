@@ -2,7 +2,7 @@ import { Fragment, useState, useEffect, useMemo, useRef, useSyncExternalStore } 
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, ActivityIndicator, useWindowDimensions } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
-import ScreenHeader from "../components/ScreenHeader";
+import ScreenHeader from "../components/MessageScreenHeader";
 import IOSPostKeyboardView from "../components/IOSPostKeyboardView";
 import Avatar from "../components/Avatar";
 import MessagePrivacyControls from "../components/MessagePrivacyControls";
@@ -21,7 +21,6 @@ import { createDirectMessageHistory, createDirectMessageHistoryAnchor, isMessage
 import useIOSThreadControls from "../hooks/useIOSThreadControls";
 import useIOSThreadRefreshAnnouncement from "../hooks/useIOSThreadRefreshAnnouncement";
 import {
-  messageRelationshipChips,
   messageRelationshipSummary,
   normalizeMessageRelationshipContext,
 } from "../domain/messageRelationshipContext.mjs";
@@ -149,7 +148,6 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
       ? (relationshipState.owner === relationshipOwner ? relationshipState.value : null)
       : scopedScreenValue(relationshipState, relationshipScope, null)) || messageRelationshipContext,
   );
-  const relationshipChips = messageRelationshipChips(relationshipContext);
   const relationshipSummary = messageRelationshipSummary(relationshipContext);
 
   const loadRelationshipThread = async ({ after, signal, strict = false, forceContext = false } = {}) => {
@@ -343,7 +341,7 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
 
   return (
     <ThreadContainer style={styles.wrap} testID="message-thread-shell">
-      <ScreenHeader kicker="Direct message" title={other?.name || "Chat"} onBack={onClose}
+      <ScreenHeader kicker={other?.handle ? `@${other.handle}` : "Direct message"} title={other?.name || "Chat"} onBack={onClose}
         right={<Pressable style={styles.profileButton} onPress={() => onOpenProfile?.(otherId)} accessibilityRole="button" accessibilityLabel={`View ${other?.name || "member"} profile`}><Avatar user={other} size={32} /></Pressable>} />
 
       <ThreadBody {...(isIOS ? { style: styles.body, onLayout: (event) => {
@@ -377,23 +375,8 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
         {requestFeedback?.owner === relationshipOwner && !!requestFeedback.message && (
           <Text style={styles.readText} accessibilityLiveRegion="polite">{requestFeedback.message}</Text>
         )}
-        {(relationshipChips.length > 0 || relationshipSummary) && (
-          <View
-            style={styles.relationshipCard}
-            accessible
-            accessibilityLabel={[`About ${other?.name || "this member"}`, ...relationshipChips.map((chip) => chip.label), relationshipSummary].filter(Boolean).join(". ")}
-          >
-            {relationshipChips.length > 0 && (
-              <View style={styles.relationshipChips}>
-                {relationshipChips.map((chip) => (
-                  <View key={chip.key} style={styles.relationshipChip}>
-                    <Text style={styles.relationshipChipText}>{chip.label}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-            {!!relationshipSummary && <Text style={styles.relationshipSummary}>{relationshipSummary}</Text>}
-          </View>
+        {!!relationshipSummary && (requestState === "pending" || relationshipContext.sharedShow || relationshipContext.concertBuddy) && (
+          <Text style={styles.relationshipSummary} accessibilityLabel={`About ${other?.name || "this member"}. ${relationshipSummary}`}>{relationshipSummary}</Text>
         )}
         {isIOS && session && threadStatus === "loading" && messages.length === 0 && (
           <View style={styles.readFeedback} accessible accessibilityLabel="Loading messages" accessibilityState={{ busy: true }}>
@@ -529,11 +512,7 @@ const styles = StyleSheet.create({
   historyHeader: { gap: 10 },
   historyRecovery: { alignItems: "center", gap: 4 },
   chat: { padding: 16, paddingBottom: 24, gap: 10 },
-  relationshipCard: { alignSelf: "stretch", gap: 7, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev, paddingHorizontal: 12, paddingVertical: 10 },
-  relationshipChips: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
-  relationshipChip: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingHorizontal: 8, paddingVertical: 3 },
-  relationshipChipText: { color: colors.amber, fontSize: 10, fontWeight: "800" },
-  relationshipSummary: { color: colors.textDim, fontSize: 12, lineHeight: 17 },
+  relationshipSummary: { color: colors.textDim, fontSize: 12, lineHeight: 18, textAlign: "center", paddingHorizontal: 12 },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", textAlign: "center", marginTop: 20 },
   readFeedback: { alignItems: "center", gap: 8, paddingVertical: 16, paddingHorizontal: 12 },
   readText: { color: colors.textDim, fontSize: 14, textAlign: "center", lineHeight: 20 },

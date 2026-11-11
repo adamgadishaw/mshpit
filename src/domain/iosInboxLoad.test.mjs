@@ -141,9 +141,9 @@ test("Inbox gates recovery to iOS and keeps its sole live-chat poll", () => {
   assert.equal((source.match(/useLiveChat\(/g) || []).length, 1);
   assert.match(source, /: loadInboxThreads\(\{ signal \}\)/);
   assert.match(source, /: loadInboxThreads\(\{ signal, strict: true \}\)/);
-  assert.match(source, /!isIOS \|\| inboxStatus === "ready"/);
+  assert.match(source, /inboxStatus=\{isIOS \? inboxStatus : "ready"\}/);
   assert.match(source, /inboxScopeRef\.current === inboxRefreshScope/);
-  assert.match(source, /\{threads\.map\(Row\)\}/);
+  assert.match(source, /threads=\{threads\}/);
 });
 
 test("aborted loader that resolves cannot prove empty or leave retry loading", async () => {

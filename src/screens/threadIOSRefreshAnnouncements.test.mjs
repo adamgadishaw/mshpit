@@ -126,7 +126,7 @@ function fixture({ platform = "ios", strict = false, reader = true, state = "act
     state(value) { native.AppState.currentState = value; f.act(() => { for (const callback of [...listeners.get("change") || []]) callback(value); }); },
     tick(timer = timers.at(-1)) { assert.ok(timer); f.act(() => timer.callback()); },
     async settle() { for (let i = 0; i < 8; i++) await Promise.resolve(); await new Promise(setImmediate); f.act(() => {}); },
-    async complete({ failed = true, index = reads.length - 1, userIndex = users.length - 1, result = { syncCursor: "fresh", relationshipContext: { following: true } } } = {}) {
+    async complete({ failed = true, index = reads.length - 1, userIndex = users.length - 1, result = { syncCursor: "fresh", relationshipContext: { concertBuddy: true } } } = {}) {
       if (failed) reads[index].reject(new Error("Private transport text")); else reads[index].resolve(result);
       if (userIndex >= 0) users[userIndex].resolve({ status: "ready" });
       await f.settle();
@@ -175,9 +175,9 @@ for (const condition of ["unknown", "off", "inactive", "background", "unknown-ap
 test("successful refresh remains silent and still publishes current relationship data and full results", async t => {
   const f = fixture(); t.after(f.close); await f.settle(); const promise = f.refresh(); await f.settle();
   f.reader(false); f.reader(true); await f.complete({ failed: false });
-  assert.deepEqual(await promise, { ok: true, value: { threadResult: { syncCursor: "fresh", relationshipContext: { following: true } }, userResult: { status: "ready" } } });
+  assert.deepEqual(await promise, { ok: true, value: { threadResult: { syncCursor: "fresh", relationshipContext: { concertBuddy: true } }, userResult: { status: "ready" } } });
   assert.equal(f.boundary.props.refreshing, false); assert.equal(f.timers.length, 0); assert.deepEqual(f.markers, []);
-  assert.ok(f.all().some(n => n.props?.accessibilityLabel?.includes("You follow this member.")));
+  assert.ok(f.all().some(n => n.props?.accessibilityLabel?.includes("You're tagged together in a concert post.")));
 });
 
 test("manual failure still waits for both reads, including member-result errors", async t => {
@@ -206,7 +206,7 @@ for (const timing of ["request", "timer"]) for (const change of ["account", "epo
   if (timing === "request") await f.complete({ failed: false });
   const outcome = await result; if (timing === "request") assert.equal(outcome.aborted, true);
   for (const timer of f.timers) f.tick(timer); assert.deepEqual(f.speech, []);
-  assert.ok(!f.all().some(n => n.props?.accessibilityLabel?.includes("You follow this member.")));
+  assert.ok(!f.all().some(n => n.props?.accessibilityLabel?.includes("You're tagged together in a concert post.")));
   const next = f.refresh(); await f.settle(); await f.complete(); await next; f.tick(); assert.equal(f.speech.length, 1);
 });
 
@@ -280,7 +280,7 @@ test("older account failure cannot clear newer refresh progress, speech or relat
   await f.complete({ index: 0, userIndex: 0 }); assert.equal((await old).aborted, true);
   assert.equal(f.boundary.props.refreshing, true); assert.equal(f.timers.length, 0);
   await f.complete({ index: 1, userIndex: 1, failed: false }); assert.equal((await latest).ok, true);
-  assert.equal(f.boundary.props.refreshing, false); assert.ok(f.all().some(n => n.props?.accessibilityLabel?.includes("You follow this member.")));
+  assert.equal(f.boundary.props.refreshing, false); assert.ok(f.all().some(n => n.props?.accessibilityLabel?.includes("You're tagged together in a concert post.")));
   assert.equal(f.timers.length, 0);
 });
 

@@ -124,7 +124,7 @@ function fixture({ platform = "ios", strict = false, capacity = 32, messageReque
     all: () => nodes(renderer.container),
     find: predicate => { const node = f.all().find(predicate); assert.ok(node, "Expected rendered control"); return node; },
     get input() { return f.find(n => n.type === "TextInput"); },
-    get header() { return f.find(n => n.type === "ScreenHeader"); },
+    get header() { return f.find(n => n.type === "MessageScreenHeader"); },
     button: label => f.find(n => n.type === "Pressable" && n.props.accessibilityLabel === label),
     capture() { return {
       edit: f.input.props.onChangeText, submit: f.input.props.onSubmitEditing,
