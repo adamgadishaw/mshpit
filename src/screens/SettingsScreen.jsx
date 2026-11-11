@@ -112,10 +112,10 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
     setExportResult(null);
     try {
       const result = await exportMyData(exportPassword);
-      setExportResult(result || { ok: false, error: "Pit could not prepare your data file." });
+      setExportResult(result || { ok: false, error: "Mshpit could not prepare your data file." });
       if (result?.ok) setExportPassword("");
     } catch {
-      setExportResult({ ok: false, error: "Pit could not prepare your data file." });
+      setExportResult({ ok: false, error: "Mshpit could not prepare your data file." });
     } finally {
       setExporting(false);
     }
@@ -140,7 +140,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
     setSearchIndexingResult(result?.ok
       ? (nextEnabled
         ? "Your personal profile can appear in search engines."
-        : "Pit now asks search engines not to index your personal profile. Earlier results may take time to disappear.")
+        : "Mshpit now asks search engines not to index your personal profile. Earlier results may take time to disappear.")
       : "That search visibility preference did not save. Please try again.");
     setSavingSearchIndexing(false);
   };
@@ -234,7 +234,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
         {session && (
           <>
             <Text style={styles.section}>ACCOUNT</Text>
-            {onFinishSetup && <Row icon="you" label="Finish profile setup" sub="Optional photos, banner and a welcome to your city" onPress={onFinishSetup} />}
+            {onFinishSetup && <Row icon="you" label="Finish profile setup" sub="Optional profile photo, banner and city guide" onPress={onFinishSetup} />}
             <Row icon="shield" label="Change password" sub="Only changes the password for this account" onPress={() => setAccountAction("password")} />
             <Row icon="you" label="Switch account" sub="Your connected profiles, without signing in again" onPress={() => setAccountAction("switch")} />
             <Row icon="plus" label="Add another account" sub={session.emailVerified ? "Up to two accounts with this email" : "Confirm your email first"} disabled={!session.emailVerified} onPress={() => setAccountAction("add")} />
@@ -321,7 +321,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
               label="Show my profile in search engines"
               sub={profileSearchIndexingEnabled
                 ? "On. Google and other search engines may show your personal member profile."
-                : "Off. Pit marks your personal member profile noindex and removes it from sitemaps. Public posts and artist pages can still appear."}
+                : "Off. Mshpit asks search engines to leave out your personal profile. Public posts and artist pages can still appear in search results."}
               onPress={toggleProfileSearchIndexing}
               disabled={savingSearchIndexing}
               accessibilityRole="switch"
@@ -354,7 +354,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
               icon="mail"
               label="Email announcements"
               sub={announcementsEnabled
-                ? "On. Receive occasional Pit news and community updates."
+                ? "On. Receive occasional Mshpit news and community updates."
                 : "Off. Account and security email will still be delivered."}
               onPress={toggleAnnouncements}
               disabled={savingAnnouncements}

@@ -68,7 +68,7 @@ for (const [screen, name, service] of [["SettingsScreen", "doExport", "exportMyD
   test(`${screen} reports thrown export errors and always releases busy state`, async () => {
     const f = fixture(() => { throw new Error("offline"); }); await f.run();
     assert.deepEqual(f.busy, [true, false]); assert.equal(f.results.at(-1).ok, false);
-    assert.equal(f.results.at(-1).error, "Pit could not prepare your data file.");
+    assert.equal(f.results.at(-1).error, "Mshpit could not prepare your data file.");
     assert.deepEqual(f.passwords, []);
   });
   test(`${screen} successful export clears the password without changing the request`, async () => {

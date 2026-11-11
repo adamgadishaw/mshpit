@@ -56,7 +56,7 @@ export default function NearbyAfterparty({ log, coord }) {
           <Icon name="pin" size={17} color={colors.textDim} />
           <View style={styles.spotCopy}>
             <Text style={styles.unavailableTitle}>Nearby search unavailable</Text>
-            <Text style={styles.unavailableText}>Pit does not have a verified location for this venue, so it will not guess at nearby businesses or hours.</Text>
+            <Text style={styles.unavailableText}>Nearby places are unavailable because this venue’s location has not been confirmed.</Text>
           </View>
         </View>
       )}

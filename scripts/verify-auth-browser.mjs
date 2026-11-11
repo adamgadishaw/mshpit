@@ -274,7 +274,7 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     await landing();
     await openLogin();
     await page.getByRole("button", { name: "No account? Sign up", exact: true }).click();
-    await page.getByRole("heading", { name: "Make it your night.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Create your account.", exact: true }).waitFor();
     const before = await credentialFields(page, [["Name", "name"], ["Username", "off"], ["Email", "username"], ["Password", "new-password"]]);
     await screenshot();
     // Four short steps with a progress bar; nothing is created until the last.
@@ -282,13 +282,13 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     await page.getByLabel("Name", { exact: true }).fill(alice.name);
     await page.getByLabel("Username", { exact: true }).fill(alice.handle);
     await page.getByLabel("Username", { exact: true }).press("Enter");
-    await page.getByRole("heading", { name: "Your sign-in.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Your login details.", exact: true }).waitFor();
     assert.equal(count("/api/signup"), 0, "Step one created an account instead of advancing.");
     assert.equal(await before.submissions(), 1, "Step-one Enter must submit the existing form exactly once.");
     await page.getByLabel("Email", { exact: true }).fill(alice.email);
     await page.getByLabel("Password", { exact: true }).fill(fixturePassword);
     await page.getByLabel("Password", { exact: true }).press("Enter");
-    await page.getByRole("heading", { name: "Find your kind of show.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Your music and city.", exact: true }).waitFor();
     assert.equal(count("/api/signup"), 0, "Step two created an account instead of advancing.");
     assert.equal(await before.submissions(), 2);
     const after = await credentialFields(page, [["Name", "name"], ["Username", "off"], ["Email", "username"], ["Password", "new-password"]]);
@@ -296,14 +296,14 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     assert.deepEqual(after.fields.map(field => [field.id, field.form]), before.fields.map(field => [field.id, field.form]), "Signup lost its credential inputs/form between steps.");
     assert.equal(await page.getByLabel("Password", { exact: true }).inputValue(), fixturePassword);
     await page.getByRole("button", { name: "Back to sign-in", exact: true }).click();
-    await page.getByRole("heading", { name: "Your sign-in.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Your login details.", exact: true }).waitFor();
     assert.equal(count("/api/signup"), 0, "Signup Back submitted the account.");
     assert.equal(await before.submissions(), 2, "Signup Back emitted a submit event.");
     await page.getByLabel("Password", { exact: true }).press("Enter");
-    await page.getByRole("heading", { name: "Find your kind of show.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Your music and city.", exact: true }).waitFor();
     await page.getByRole("checkbox", { name: "Rock", exact: true }).click();
     await page.getByRole("button", { name: "Continue to the last step", exact: true }).click();
-    await page.getByRole("heading", { name: "One last thing.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Finish creating your account.", exact: true }).waitFor();
     await screenshot("-finish");
     await page.getByRole("radio", { name: "18+", exact: true }).click();
     await page.getByRole("checkbox", { name: "I agree to the Terms and Privacy policy", exact: true }).click();
@@ -636,7 +636,7 @@ async function runCase(browser, origin, item) {
     }
   });
   const landing = () => page.getByRole("link", { name: "Browse concerts", exact: true }).waitFor();
-  const feed = () => page.getByText("Your life's musical journey", { exact: true }).waitFor();
+  const feed = () => page.getByText("Your shows. Your music.", { exact: true }).waitFor();
   const you = async user => {
     await page.getByRole("tab", { name: "You", exact: true }).click();
     await page.getByText(user.name, { exact: true }).first().waitFor();
@@ -847,7 +847,7 @@ async function runCase(browser, origin, item) {
       for (const tab of ["Feed", "You"]) {
         await page.getByRole("tab", { name: tab, exact: true }).click();
         await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor();
-        assert.equal(await page.getByText("Your life's musical journey", { exact: true }).count(), 0);
+        assert.equal(await page.getByText("Your shows. Your music.", { exact: true }).count(), 0);
         await page.goBack();
       }
       await page.getByRole("tab", { name: "Search", exact: true }).click();

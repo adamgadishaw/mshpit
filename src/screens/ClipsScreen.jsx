@@ -197,7 +197,7 @@ function ClipPage({ post, uri, posterUri, altText, height, active: selected, pos
   };
 
   const author = post.user || {};
-  const clipDescription = altText || `Concert clip from ${post.artist || "a PIT artist"}`;
+  const clipDescription = altText || `Concert clip from ${post.artist || "an artist"}`;
   return (
     <View style={[styles.page, { height }]}>
       <View style={[styles.pageFrame, web && styles.pageFrameWeb]}>
@@ -382,7 +382,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
       const result = await loadClips({ signal: controller.signal });
       if (controller.signal.aborted) return;
       if (!result?.ok) {
-        setLoadError("PIT could not load clips. Check your connection and try again.");
+        setLoadError("Mshpit could not load clips. Check your connection and try again.");
         setLoading(false);
         return;
       }
@@ -489,7 +489,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
         <View style={styles.center}>
           <Icon name="play" size={30} color={colors.textFaint} />
           <Text style={styles.emptyTitle}>No clips yet</Text>
-          <Text style={styles.emptyTxt}>Post a video on a review and it shows up here. Swipe through concert clips from everyone.</Text>
+          <Text style={styles.emptyTxt}>Public concert clips shared in reviews appear here.</Text>
         </View>
         )}
         </ScrollView>

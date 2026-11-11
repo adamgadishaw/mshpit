@@ -20,10 +20,10 @@ import { SIGNUP_STEPS, signupAccountError, signupAriaProps, signupFormPayload, s
 
 // Signup, one short step at a time. The words for each step's heading.
 const SIGNUP_STEP_COPY = [
-  ["Make it your night.", "Start with who you are."],
-  ["Your sign-in.", "The email and password you’ll log in with."],
-  ["Find your kind of show.", "Pick your music and your city. We’ll take it from there."],
-  ["One last thing.", "Confirm your age group and our terms, then you’re in."],
+  ["Create your account.", "Choose your name and username."],
+  ["Your login details.", "The email and password you’ll log in with."],
+  ["Your music and city.", "Choose genres and a city for recommendations and nearby shows."],
+  ["Finish creating your account.", "Choose your age group and review the terms."],
 ];
 const SIGNUP_NEXT = ["Continue to sign-in", "Continue to music", "Continue to the last step", "Create account"];
 const SIGNUP_BACK = ["Back to your details", "Back to sign-in", "Back to music"];
@@ -259,7 +259,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   const headingText = signupChoice || accounts ? "Choose your account." : mode === "forgot" ? sentTo ? "Check your email." : "Back to your account."
     : signupMode ? SIGNUP_STEP_COPY[step - 1][0] : "Good to see you.";
   const subheading = signupChoice || accounts ? "Choose which profile to open." : mode === "forgot" ? "A reset link gets you back in."
-    : signupMode ? SIGNUP_STEP_COPY[step - 1][1] : "Your shows, photos and people are waiting.";
+    : signupMode ? SIGNUP_STEP_COPY[step - 1][1] : "Log in to your Mshpit account.";
   const progress = { min: 1, max: SIGNUP_STEPS.length, now: step, text: `Step ${step} of ${SIGNUP_STEPS.length}: ${SIGNUP_STEPS[step - 1]}` };
 
   return <KeyboardAvoidingView style={[styles.wrap, { paddingTop: insets.top }]} behavior={Platform.OS === "ios" ? "padding" : Platform.OS === "android" ? "height" : undefined}>
@@ -287,8 +287,8 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
                 <View style={styles.fieldPair} accessibilityRole="radiogroup" accessibilityLabel="Account purpose">
                   {[[false, "Music fan"], [true, "Artist or band"]].map(([value, title]) => <AuthPressable key={title} disabled={busy} accessibilityRole="radio" accessibilityState={{ checked: artistSignup === value }} onPress={() => { setArtistSignup(value); clearError(); }} style={controlStyle([styles.genreChip, artistSignup === value && styles.selectedChip], busy)}><Text style={[styles.genreText, artistSignup === value && styles.selectedText]}>{title}</Text></AuthPressable>)}
                 </View>
-                <Text style={styles.hint}>One free account. Artists can publish a page, live photos and videos, promotions, and upcoming concerts. No separate login.</Text>
-                {artistSignup && field("artistName", "Artist or band name", artistName, setArtistName, { maxLength: 60, hint: "After confirming your email, create a new page or claim an existing one. The artist check requires Mshpit approval." })}
+                <Text style={styles.hint}>Artist accounts can manage a page, share photos, videos and updates, and list upcoming concerts.</Text>
+                {artistSignup && field("artistName", "Artist or band name", artistName, setArtistName, { maxLength: 60, hint: "After confirming your email, create a new page or claim an existing one. The artist verification badge requires Mshpit approval." })}
               </View>}
               {signupMode ? <View style={styles.fieldPair}>
                 {field("name", "Name", name, setName, { paired: true, maxLength: 40, autoComplete: "name", textContentType: "name", onSubmit: () => inputs.current.handle?.focus?.() })}
@@ -338,7 +338,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
                 })}</View>
               </View>
               <View style={styles.section}><View style={styles.sectionHeading}><Text style={styles.fieldLabel}>Your city</Text><Text style={styles.optional}>Optional</Text></View>
-                <Text style={styles.hint}>Your city sets the shows near you and the news for your part of the world.</Text>
+                <Text style={styles.hint}>Your city helps us show nearby concerts and regional news.</Text>
                 <AuthPressable style={controlStyle(styles.cityPick, busy)} onPress={() => setPickingCity(true)} disabled={busy} accessibilityRole="button" accessibilityLabel={city ? `City, ${city.label}` : "Choose your city"} accessibilityHint="Sets nearby shows and news for your region" accessibilityState={{ disabled: busy }}>
                   <Icon name="pin" size={18} color={colors.amber} /><Text style={styles.cityText}>{city?.label || "Find shows near you"}</Text><Icon name="chevron-right" size={16} color={colors.textDim} />
                 </AuthPressable>

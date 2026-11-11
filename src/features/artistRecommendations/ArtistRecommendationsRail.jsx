@@ -153,7 +153,7 @@ export default function ArtistRecommendationsRail({
       ) : (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>Give us a little more of your taste.</Text>
-          <Text style={styles.emptyText}>Choose favourite artists or genres, or log a show. We won’t make up recommendations without real signals from you.</Text>
+          <Text style={styles.emptyText}>Choose favorite artists or genres, or log a show to get recommendations.</Text>
           <Pressable style={({ focused }) => [styles.smallAction, focused && focusRing]} onPress={onManageTaste} accessibilityRole="button">
             <Text style={styles.smallActionText}>Tune your music picks</Text>
           </Pressable>

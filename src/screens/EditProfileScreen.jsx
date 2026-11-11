@@ -260,7 +260,7 @@ export default function EditProfileScreen({ onClose }) {
           )}
         </View>
         <Text style={styles.handleHint}>
-          {handleInvalid ? "Use 3–20 letters, numbers, or underscores." : "This is your public @username across Mshpit. The server confirms it when you save."}
+          {handleInvalid ? "Use 3–20 letters, numbers, or underscores." : "This is your public @username across Mshpit. Availability is checked when you save."}
         </Text>
 
         <Text style={styles.label}>HOME CITY</Text>
@@ -286,7 +286,7 @@ export default function EditProfileScreen({ onClose }) {
           <Text style={styles.label}>MUSIC GENRES</Text>
           <Text style={styles.genreCount}>{genres.length}/3 selected</Text>
         </View>
-        <Text style={styles.genreHint}>Choose 1 to 3. These choices tune your artist, show, and feed recommendations.</Text>
+        <Text style={styles.genreHint}>Choose 1 to 3. These choices help shape your artist, show, and feed recommendations.</Text>
         <View style={styles.chips} accessibilityLabel="Music genres">
           {genreOptions.map((g) => {
             const on = genres.includes(g);

@@ -658,7 +658,7 @@ export default function MediaEditorWorkspace({
     } catch (error) {
       cancellingRef.current = false;
       setCancelling(false);
-      setMessage(error?.message || "PIT could not cancel this operation yet. Processing is still active.");
+      setMessage(error?.message || "Mshpit could not cancel yet. Processing is still in progress.");
     }
   }
 
@@ -711,7 +711,7 @@ export default function MediaEditorWorkspace({
           {unsupportedVideo ? (
             <View style={styles.error} accessibilityRole="alert">
               <Icon name="lock" size={17} color={colors.amber} />
-              <Text style={styles.errorText}>This draft contains a destructive video recipe. Reset that video to cover-only editing before applying.</Text>
+              <Text style={styles.errorText}>This draft contains unsupported video edits. Reset the video edits, then choose a cover before applying.</Text>
             </View>
           ) : null}
           {uploadProgress ? (

@@ -80,7 +80,7 @@ function Tabs({ asset, activeTab, onTabChange }) {
 function CropPanel({ edit, onEditChange, onSeal }) {
   return (
     <>
-      <InspectorSection title="Frame" detail="Pick a publishing shape. PIT keeps the original pixels outside the frame until export.">
+      <InspectorSection title="Frame" detail="Choose a crop shape. You can adjust the frame before applying your edits.">
         <View style={styles.wrapRow}>
           {Object.keys(MEDIA_ASPECTS).map((aspect) => (
             <ControlChip key={aspect} label={ASPECT_LABELS[aspect]} selected={edit.aspect === aspect} onPress={() => onEditChange({ aspect })} />
@@ -102,7 +102,7 @@ function CropPanel({ edit, onEditChange, onSeal }) {
 
 function AdjustPanel({ edit, onAdjustmentChange, onSeal }) {
   return (
-    <InspectorSection title="Light and color" detail="Manual changes layer on top of the selected filter and remain reversible in the recipe.">
+    <InspectorSection title="Light and color" detail="Adjustments apply on top of your filter. You can undo them before applying your edits.">
       {ADJUSTMENTS.map(([key, label, minimumValue, maximumValue]) => (
         <LabeledSlider
           key={key}
@@ -123,7 +123,7 @@ function AdjustPanel({ edit, onAdjustmentChange, onSeal }) {
 function FiltersPanel({ edit, onEditChange, onSeal }) {
   return (
     <>
-      <InspectorSection title="PIT looks" detail="Presets are deterministic starting points. Fine-tune them in Adjust.">
+      <InspectorSection title="Photo filters" detail="Choose a filter, then fine-tune it in Adjust.">
         <View style={styles.filterGrid}>
           {Object.entries(MEDIA_FILTERS).map(([key, filter]) => {
             const selected = edit.filter === key;
@@ -228,7 +228,7 @@ function CoverPanel({ asset, edit, onEditChange, onSeal, coverAvailable, resolve
   const maximum = Math.max(minimum + 1, edit.trimEndMs || asset.durationMs || 1);
   return (
     <>
-      <InspectorSection title="Choose a cover" detail="Auto samples the opening for a useful non-black frame. Move the slider to choose a specific decoded frame instead.">
+      <InspectorSection title="Choose a cover" detail="Auto cover looks for a clear frame near the start. Move the slider to choose another frame.">
         <View style={styles.wrapRow}>
           <ControlChip label="Auto cover" selected={edit.coverMode !== "manual"} onPress={() => onEditChange({ coverMode: "auto" })} accessibilityLabel="Automatically choose a clear clip cover" />
           {edit.coverMode === "manual" ? (
@@ -248,12 +248,12 @@ function CoverPanel({ asset, edit, onEditChange, onSeal, coverAvailable, resolve
           onSlidingComplete={onSeal}
           disabled={!coverAvailable}
         />
-        {!coverAvailable ? <CapabilityNotice title="Cover export unavailable" body="This device does not expose a verified frame-extraction engine. Your original video stays untouched." /> : null}
+        {!coverAvailable ? <CapabilityNotice title="Cover export unavailable" body="This device cannot save a video cover. Your original video is unchanged." /> : null}
       </InspectorSection>
       <InspectorSection title="Video editing" detail="These controls are not available yet because Mshpit cannot safely save those video changes on every device.">
-        <LockedFeature name="Trim" detail="No destructive cut is claimed or uploaded." />
+        <LockedFeature name="Trim" detail="Trimming is unavailable. The full video is kept." />
         <LockedFeature name="Mute" detail="The source audio track remains unchanged." />
-        <LockedFeature name="Video filters" detail="Photo looks are not silently applied to video." />
+        <LockedFeature name="Video filters" detail="Filters are available for photos only." />
       </InspectorSection>
     </>
   );

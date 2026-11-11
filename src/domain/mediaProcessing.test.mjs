@@ -36,7 +36,7 @@ test("destructive video edits are blocked without the authoritative renderer", (
   const plan = mediaAssetProcessingPlan({ kind: "video", edit }, { posterGenerate: true });
   assert.equal(plan.supported, false);
   assert.equal(plan.errorCode, MEDIA_PROCESSING_ERROR.VIDEO_RENDERER_UNAVAILABLE);
-  assert.match(mediaProcessingMessage(plan.errorCode), /video renderer/i);
+  assert.match(mediaProcessingMessage(plan.errorCode), /Trimming, color changes and audio edits are not supported on this device/);
 });
 
 test("publish readiness requires finalized identity and a durable video poster", () => {

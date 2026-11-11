@@ -82,7 +82,7 @@ try {
       if (action) { const b = await page.getByRole("button", { name: action, exact: true }).boundingBox(); assert.ok(b.width < shell.width * .7 && b.height >= 43, `${action} should fit its label and retain a touch target`); }
       measurements.push({ width, shell: id, x: shell.x, contentWidth: shell.width });
     };
-    await page.goto(origin + "/feed"); await page.getByText("Your life's musical journey", { exact: true }).waitFor();
+    await page.goto(origin + "/feed"); await page.getByText("Your shows. Your music.", { exact: true }).waitFor();
     const ads = page.getByRole("link", { name: "Your ad here. Contact mshpit about advertising.", exact: true });
     if (width === 1676) await ads.nth(1).waitFor();
     assert.equal(await ads.count(), width === 1676 ? 2 : 0);

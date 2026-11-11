@@ -22,10 +22,10 @@ export default function AccountGate({ status, until, onLogout, onExport, onDelet
     setExportResult(null);
     try {
       const result = await onExport?.(exportPassword);
-      setExportResult(result || { ok: false, error: "Pit could not prepare your data file." });
+      setExportResult(result || { ok: false, error: "Mshpit could not prepare your data file." });
       if (result?.ok) setExportPassword("");
     } catch {
-      setExportResult({ ok: false, error: "Pit could not prepare your data file." });
+      setExportResult({ ok: false, error: "Mshpit could not prepare your data file." });
     } finally {
       setExporting(false);
     }
@@ -38,8 +38,8 @@ export default function AccountGate({ status, until, onLogout, onExport, onDelet
       <Text style={[styles.title, { color: accent }]}>{banned ? "Account banned" : "Account suspended"}</Text>
       <Text style={styles.body}>
         {banned
-          ? "Your account broke the rules and has been permanently banned. You can't post, message, or browse."
-          : `Your account is on a time-out for ${left} more day${left === 1 ? "" : "s"}. You can't post or message until it lifts.`}
+          ? "Your account has been permanently banned for breaking the community rules. You can't post, message, or browse."
+          : `Your account is suspended for ${left} more day${left === 1 ? "" : "s"}. You can't post or message until the suspension ends.`}
       </Text>
       <Text style={styles.appeal}>Think this is a mistake? Email {APPEALS_EMAIL}.</Text>
       <Text style={styles.rights}>You can still download your data or permanently delete this account.</Text>
@@ -68,7 +68,7 @@ export default function AccountGate({ status, until, onLogout, onExport, onDelet
           <Text style={[styles.btnTxt, { color: "#fff" }]}>Delete account</Text>
         </Pressable>
       </View>
-      {exportResult && <Text style={[styles.result, !exportResult.ok && styles.resultError]} accessibilityRole="alert">{exportResult.ok ? "Your Pit data file is ready." : exportResult.error}</Text>}
+      {exportResult && <Text style={[styles.result, !exportResult.ok && styles.resultError]} accessibilityRole="alert">{exportResult.ok ? "Your Mshpit data file is ready." : exportResult.error}</Text>}
       </CredentialForm>
       <Pressable style={[styles.btn, { borderColor: accent }]} onPress={onLogout}>
         <Text style={[styles.btnTxt, { color: accent }]}>Log out</Text>

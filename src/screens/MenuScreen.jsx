@@ -113,10 +113,10 @@ function JourneyHero({ session, onProfile, onLogin, wide }) {
       )}
 
       <View style={styles.heroCopy}>
-        <Text style={styles.heroEyebrow}>MSHPIT · YOUR STORY IN SOUND</Text>
+        <Text style={styles.heroEyebrow}>MSHPIT · LIVE MUSIC, REMEMBERED</Text>
         <Text style={styles.heroTitle} accessibilityRole="header" selectable>{JOURNEY_TAGLINE}</Text>
         <Text style={styles.heroBody} selectable>
-          Revisit the nights that shaped you, stay close to your music community, and find the room worth showing up for next.
+          Keep track of your concerts, read fan reviews, and find your next show.
         </Text>
       </View>
 

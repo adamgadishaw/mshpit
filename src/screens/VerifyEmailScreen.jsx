@@ -68,7 +68,7 @@ export default function VerifyEmailScreen({ navigationAbortRef, token, onConsume
             <Text style={styles.h}>Your email is confirmed.</Text>
             <Text style={styles.p}>Your account is now email-confirmed. This private account check does not add the public verified badge.</Text>
             <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone} accessibilityRole="button">
-              <Text style={styles.btnTxtPrimary}>Back to Pit</Text>
+              <Text style={styles.btnTxtPrimary}>Back to Mshpit</Text>
             </Pressable>
           </>
         )}
@@ -105,7 +105,7 @@ export default function VerifyEmailScreen({ navigationAbortRef, token, onConsume
               <Text style={styles.btnTxtPrimary}>Try again</Text>
             </Pressable>
             <Pressable style={styles.btn} onPress={onDone} accessibilityRole="button">
-              <Text style={styles.btnTxt}>Back to Pit</Text>
+              <Text style={styles.btnTxt}>Back to Mshpit</Text>
             </Pressable>
           </>
         )}

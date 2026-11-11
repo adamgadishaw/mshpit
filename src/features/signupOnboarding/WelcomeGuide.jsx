@@ -3,8 +3,8 @@ import Icon from "../../components/Icon";
 import { colors, displayFont, focusRing, mono, radius, space } from "../../theme";
 
 const MOVES = [
-  { destination: "shows", icon: "ticket", title: "Find a show", detail: "See what’s coming up. Keep a date with Going or Interested." },
-  { destination: "artists", icon: "music", title: "Pick your artists", detail: "Follow the music you love and make your feed feel like yours." },
+  { destination: "shows", icon: "ticket", title: "Find a show", detail: "Find upcoming concerts and mark them Going or Interested." },
+  { destination: "artists", icon: "music", title: "Pick your artists", detail: "Choose artists to help shape your feed and recommendations." },
   { destination: "review", icon: "camera", title: "Remember the night", detail: "Rate a concert, share your photos, and tag who came with you." },
 ];
 
@@ -12,7 +12,7 @@ export default function WelcomeGuide({ selected, onChoose, busy = false, include
   const baseMoves = includeExplore
     ? [{ destination: "feed", icon: "discover", title: "Just explore", detail: "Back to browsing. No need to pick a show, follow anyone or post." }, ...MOVES]
     : MOVES;
-  const moves = includeArtistSetup ? [{ destination: "artistPage", icon: "music", title: "Set up my artist page", detail: "Free live photos, videos, promotions and concerts. Use this account; request your artist check separately." }, ...baseMoves] : baseMoves;
+  const moves = includeArtistSetup ? [{ destination: "artistPage", icon: "music", title: "Set up my artist page", detail: "Create or claim an artist page. Artist verification is reviewed separately." }, ...baseMoves] : baseMoves;
   return <View style={styles.moves} accessibilityRole={selected === undefined ? undefined : "radiogroup"} accessibilityLabel={selected === undefined ? undefined : "Choose where to start"}>
     {moves.map(({ destination, icon, title, detail }, index) => <Pressable
       key={destination} onPress={() => onChoose(destination)} disabled={busy}
@@ -25,7 +25,7 @@ export default function WelcomeGuide({ selected, onChoose, busy = false, include
       <View style={styles.copy}><Text style={styles.title}>{title}</Text><Text style={styles.detail}>{detail}</Text></View>
       <Icon name={selected === destination ? "check" : "chevron-right"} size={19} color={selected === destination ? colors.amber : colors.textFaint} />
     </Pressable>)}
-    <Text style={styles.note}>Your pace. Your people. You can change your profile and privacy settings anytime.</Text>
+    <Text style={styles.note}>You can change your profile and privacy settings anytime.</Text>
   </View>;
 }
 

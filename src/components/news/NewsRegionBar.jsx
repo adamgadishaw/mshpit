@@ -71,7 +71,7 @@ export default function NewsRegionBar({ accountId, onChanged }) {
           </Pressable>;
         })}
       </View>
-      <Text style={styles.why}>Stories that only matter somewhere else are left out. Worldwide news always shows, and an artist's page shows all of their news.</Text>
+      <Text style={styles.why}>See regional stories alongside worldwide news. Each artist's page includes all news about that artist.</Text>
     </View> : null}
     {error ? <Text style={styles.error} accessibilityRole="alert">{error}</Text> : null}
   </View>;

@@ -62,14 +62,14 @@ export function mediaProcessingMessage(errorCode) {
     case MEDIA_PROCESSING_ERROR.PHOTO_RENDERER_UNAVAILABLE:
       return "This device cannot export that photo edit yet. Reset the edit or try another device.";
     case MEDIA_PROCESSING_ERROR.VIDEO_RENDERER_UNAVAILABLE:
-      return "PIT can save a video cover now, but trim, color and audio edits need the video renderer before publishing.";
+      return "You can save a video cover. Trimming, color changes and audio edits are not supported on this device.";
     case MEDIA_PROCESSING_ERROR.POSTER_GENERATOR_UNAVAILABLE:
     case MEDIA_PROCESSING_ERROR.VIDEO_POSTER_REQUIRED:
       return "Choose a video cover before publishing.";
     case MEDIA_PROCESSING_ERROR.SOURCE_UPLOAD_REQUIRED:
       return "Finish uploading the original media before publishing.";
     case MEDIA_PROCESSING_ERROR.FINALIZE_REQUIRED:
-      return "PIT is still verifying this media. Your draft is safe.";
+      return "Mshpit is still checking this upload. Your draft is still here.";
     default:
       return "This media is not ready yet. Try the failed step again.";
   }

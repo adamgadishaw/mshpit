@@ -95,8 +95,7 @@ export default class ErrorBoundary extends Component {
           <Text style={styles.brand}>MSHPIT</Text>
           <Text style={styles.title} accessibilityRole="header">Something went wrong</Text>
           <Text style={styles.sub}>
-            Something crashed on our end. Your data is safe, try again, and if it keeps
-            happening, reset the app to get moving.
+            This screen stopped working. Try again. If it keeps happening, reset the app. Saved account data is still on the server.
           </Text>
           <Text style={styles.reference} selectable>
             {this.state.appError?.code || "PIT-APP-001"}{this.state.appError?.requestId ? ` / ${this.state.appError.requestId}` : ""}

@@ -55,12 +55,12 @@ export default function DeleteAccountScreen({ onClose, onDeleted }) {
           <Icon name="trash" size={26} color={colors.danger} strokeWidth={2.3} />
         </View>
         <Text selectable style={styles.title}>
-          {step === "warning" ? "Leave the venue for good?" : "One last soundcheck"}
+          {step === "warning" ? "Delete your account?" : "Confirm account deletion"}
         </Text>
         <Text selectable style={styles.lead}>
           {step === "warning"
             ? `Deleting @${session?.handle || "your account"} is permanent and can't be undone.`
-            : "Enter your current password. We verify it on the server before anything is removed."}
+            : "Enter your current password to confirm account deletion."}
         </Text>
 
         {step === "warning" ? (

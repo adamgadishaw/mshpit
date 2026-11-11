@@ -460,7 +460,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
                 </View>
                 <Pressable onPress={dismissGuide} hitSlop={10} accessibilityRole="button" accessibilityLabel="Dismiss getting started guide"><Icon name="x" size={16} color={colors.textDim} /></Pressable>
               </View>
-              <Text style={styles.gsSub}>{onFinishSetup ? "Have a look around. Your profile photo, banner and city welcome can wait. Find them in Settings anytime." : "Find a show, save the night, then come back to rate it, share the memory, and meet other fans."}</Text>
+              <Text style={styles.gsSub}>{onFinishSetup ? "You can add a profile photo and banner or read your city guide later in Settings." : "Find a show, add it to your plans, then share a review and photos after you go."}</Text>
               <View style={styles.gsActions}>
                 <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />
                 {onFinishSetup ? <HomeAction icon="you" label="Finish profile setup" onPress={onFinishSetup} /> : <HomeAction icon="plus" label="Log a show" onPress={onLogShow} primary />}
@@ -536,7 +536,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
           <Text style={styles.emptyTitle}>{news.status === "error" ? "The news could not load" : news.status === "ready" ? "No stories yet" : "Loading music news..."}</Text>
           <Text style={styles.emptySub}>{news.status === "error"
             ? REFRESH_RETRY_HINT
-            : "Stories are scheduled after three independent publisher groups corroborate them, with a limited two-source fallback on quiet days."}</Text>
+            : "No music news is available here yet. Check back later."}</Text>
         </View>
       ) : (
         <View style={styles.emptyBox}>
@@ -554,8 +554,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             {filter === "following"
               ? (following.status === "error" ? "Refresh to try again. Your existing posts are kept." : "Posts and reposts from people you follow appear here, always credited to their original authors.")
               : filter === "local"
-              ? (hasMore ? "Load one older page at a time to look for nearby concert posts." : "Be the first to log a show in your city, tap the + to post one.")
-              : "Log the first show, tap the + to rate the band and the room."}
+              ? (hasMore ? "Load one older page at a time to look for nearby concert posts." : "No concert posts from your city yet. Tap + to log a show.")
+              : "Tap + to log a show and rate the artist and venue."}
           </Text>
           <View style={styles.emptyActions}>
             <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />
@@ -588,7 +588,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
               <Icon name="check" size={17} color={colors.good} />
               <View style={{ flex: 1 }}>
                 <Text style={styles.caughtTitle}>You're caught up</Text>
-                <Text style={styles.caughtSub}>Pit will keep your place. Come back when the community has something new.</Text>
+                <Text style={styles.caughtSub}>Check back later for new posts.</Text>
               </View>
             </View>
           ) : null}

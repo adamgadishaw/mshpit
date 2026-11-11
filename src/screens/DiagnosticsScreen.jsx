@@ -81,11 +81,11 @@ export default function DiagnosticsScreen({ onClose }) {
         <View style={styles.intro}>
           <View style={styles.introIcon}><Icon name="discover" size={22} color={colors.amber} /></View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.introTitle}>{items.length ? `${items.length} recent signal${items.length === 1 ? "" : "s"}` : "Soundcheck is clear"}</Text>
+            <Text style={styles.introTitle}>{items.length ? `${items.length} recent error${items.length === 1 ? "" : "s"}` : "No recent errors"}</Text>
             <Text style={styles.introText}>
               {items.length
-                ? "These safe references show where Pit stumbled. Share the PIT code and request ID when asking for help."
-                : "Pit has not recorded a recent app or service failure on this device."}
+                ? "These references identify recent errors. Share the PIT code and request ID when asking for help."
+                : "Mshpit has not recorded a recent app or service failure on this device."}
             </Text>
           </View>
         </View>

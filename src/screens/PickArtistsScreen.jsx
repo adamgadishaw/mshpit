@@ -136,8 +136,7 @@ export default function PickArtistsScreen({ onDone, onSkip, showTheme = true, on
         action={{ label: saving ? "Saving..." : picked.size >= MIN_PICKS ? needsEmailVerification ? "Confirm to save" : `Done · ${picked.size}` : `Pick ${MIN_PICKS - picked.size} more`, onPress: save, disabled: saving || picked.size < MIN_PICKS }}
       />
       <Text style={styles.sub}>
-        Choose at least {MIN_PICKS} artists you love, your feed, recommendations, and events
-        get built around them.
+        Choose at least {MIN_PICKS} artists you like. Your choices help shape your feed, recommendations, and events.
       </Text>
       {needsEmailVerification && (
         <View style={styles.verifyNote} accessibilityRole="alert">
@@ -199,7 +198,7 @@ export default function PickArtistsScreen({ onDone, onSkip, showTheme = true, on
           ))}
         </CardGrid>
         {!query && all.length >= 20 && (
-          <Text style={styles.moreHint}>Showing popular artists. Search to find anyone.</Text>
+          <Text style={styles.moreHint}>Showing popular artists. Search for more.</Text>
         )}
         {!!saveError && <Text style={styles.saveError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{saveError}</Text>}
       </ScrollView>
