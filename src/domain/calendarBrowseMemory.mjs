@@ -23,7 +23,7 @@ export function calendarBrowseSnapshot(value = {}, previous = null) {
     presentation: choose("presentation", ["month", "agenda"], "month"),
     historyVisibleLimit: limit,
     agendaLimit: Number.isSafeInteger(value.agendaLimit) && value.agendaLimit >= 40 && value.agendaLimit % 40 === 0
-      ? Math.min(100000, value.agendaLimit) : previous?.agendaLimit || 40,
+      ? value.agendaLimit : previous?.agendaLimit || 40,
     scrollY: own(value, "scrollY") ? offset(value.scrollY) : previous?.scrollY || 0,
   });
 }

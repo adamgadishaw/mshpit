@@ -1,6 +1,6 @@
 // Offline source-map evidence only. This does not build or modify export artifacts.
 import { lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join, posix, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const LIMIT = 100;
@@ -153,7 +153,7 @@ export function run(args = process.argv.slice(2)) {
         let root;
         try { const actual = realpathSync(input); root = lstatSync(actual).isDirectory() ? actual : dirname(actual); } catch { continue; }
         const fromRoot = relative(root, output);
-        if (!fromRoot || (!fromRoot.startsWith(`..${posix.sep}`) && fromRoot !== '..' && !fromRoot.startsWith('/'))) {
+        if (!fromRoot || (!fromRoot.startsWith(`..${sep}`) && fromRoot !== '..' && !isAbsolute(fromRoot))) {
           throw new Error('report must be outside input artifact directories');
         }
       }

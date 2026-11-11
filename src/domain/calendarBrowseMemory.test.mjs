@@ -8,6 +8,14 @@ const identity = { accountId: "a", authEpoch: 1 };
 const layout = height => ({ nativeEvent: { layout: { height } } });
 const scroll = y => ({ nativeEvent: { contentOffset: { y } } });
 
+test("agenda paging keeps safe page increments beyond the former fixed ceiling", () => {
+  assert.equal(calendarBrowseSnapshot({ agendaLimit: 100040 }).agendaLimit, 100040);
+  assert.equal(calendarBrowseSnapshot({ agendaLimit: 2040 }).agendaLimit, 2040);
+  for (const agendaLimit of [Infinity, Number.MAX_SAFE_INTEGER + 1, -40, 41, "80"]) {
+    assert.equal(calendarBrowseSnapshot({ agendaLimit }, initial).agendaLimit, 40);
+  }
+});
+
 test("Show and Back restores the same calendar occurrence, not a newly opened calendar", () => {
   const memory = createCalendarBrowseMemory(); memory.account("a", 1);
   const occurrence = {};

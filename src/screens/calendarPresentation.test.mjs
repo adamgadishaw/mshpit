@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { calendarAgendaGroups, calendarDaysForScope, calendarJumpSelection, calendarMonthCount, calendarMonthGeometry, calendarMonthSelection, calendarShowStatus, calendarTimeLabel } from "./calendarPresentation.mjs";
+import { calendarAgendaGroups, calendarDateLabel, calendarDaysForScope, calendarJumpSelection, calendarMonthCount, calendarMonthGeometry, calendarMonthLabel, calendarMonthSelection, calendarShowName, calendarShowStatus, calendarTimeLabel } from "./calendarPresentation.mjs";
 
 test("month navigation preserves chosen day with explicit end-of-month clamp", () => {
   assert.deepEqual(calendarMonthSelection({ y: 2028, m: 0 }, 1, "2028-01-31"), { cursor: { y: 2028, m: 1 }, selected: "2028-02-29" });
@@ -12,6 +12,10 @@ test("jump validation refuses partial or outside-range input without normalizing
   for (const year of ["", "20", "2e03", "2026x", "1899", "2101", "NaN"]) assert.equal(calendarJumpSelection(year, 1, "2026-01-31"), null);
   for (const month of [-1, 12, NaN, 1.2]) assert.equal(calendarJumpSelection("2028", month, "2026-01-31"), null);
   assert.equal(calendarJumpSelection("2028", 1, "2026-01-31").selected, "2028-02-29");
+  assert.equal(calendarJumpSelection("2050", 1, "2049-01-31").selected, "2050-02-28");
+  assert.equal(calendarMonthSelection({ y: 2050, m: 0 }, 1, "2050-01-31").selected, "2050-02-28");
+  assert.equal(calendarDateLabel("2050-01-31", { year: "numeric" }, "en-US"), "Monday, January 31, 2050");
+  assert.equal(calendarDateLabel("2050-02-31"), "Date unavailable");
 });
 test("month geometry keeps every date once and seven adequate targets with either week start", () => {
   for (const width of [320, 390, 768]) for (const fontScale of [1, 1.2, 2, 3.1]) for (const weekStart of [0, 1]) {
@@ -46,4 +50,34 @@ test("time labels preserve venue time, uncertainty and festival continuation", (
   assert.equal(calendarTimeLabel({ date: "2026-11-10" }), "Time TBA");
   assert.equal(calendarTimeLabel({ date: "2026-11-10", calendarTiming: { status: "timed", startAt: "2026-11-10T19:00:00Z", timeZone: null, startLabel: "7:00 PM (UTC)" } }), "7:00 PM (UTC)");
   assert.equal(calendarShowStatus({ going: true, eventStatus: "cancelled" }, "upcoming"), "Cancelled");
+});
+
+test("agenda paging reaches every loaded performance past 2000 with meaningful remaining counts", () => {
+  const rows = Array.from({ length: 2041 }, (_, i) => ({ calendarKey: `show-${i}` }));
+  const days = { "2028-01-31": rows.slice(0, 2001), "2028-02-01": rows.slice(2001) };
+  for (let limit = 40; limit <= 2080; limit += 40) {
+    const page = calendarAgendaGroups(days, { selected: "2028-01-31", limit });
+    assert.equal(page.count, Math.min(limit, rows.length));
+    assert.equal(page.remaining, Math.max(0, rows.length - limit));
+    assert.deepEqual(page.groups.flatMap(g => g.events), rows.slice(0, limit));
+  }
+  for (const limit of [NaN, Infinity, -1, 0, 40.5, "80"]) assert.equal(calendarAgendaGroups(days, { selected: "2028-01-31", limit }).count, 40);
+});
+
+test("localized month and full dates retain Gregorian grid identity in non-Gregorian locales", () => {
+  for (const locale of ["th-TH", "ar-SA", "fa-IR", "en-US-u-ca-hebrew"]) {
+    const date = new Date(2028, 0, 31, 12);
+    assert.equal(calendarDateLabel("2028-01-31", { year: "numeric" }, locale),
+      new Intl.DateTimeFormat(locale, { weekday: "long", month: "long", day: "numeric", year: "numeric", calendar: "gregory" }).format(date));
+    assert.equal(calendarMonthLabel(2028, 0, locale),
+      new Intl.DateTimeFormat(locale, { month: "long", year: "numeric", calendar: "gregory" }).format(date));
+    assert.equal(calendarMonthLabel(2028, 0, locale, false),
+      new Intl.DateTimeFormat(locale, { month: "long", calendar: "gregory" }).format(date));
+  }
+});
+
+test("spoken show identity includes the visible event and distinct artist without repetition", () => {
+  assert.equal(calendarShowName({ eventName: "Festival", artist: "Headliner" }), "Festival, Headliner");
+  assert.equal(calendarShowName({ eventName: "Festival" }), "Festival");
+  assert.equal(calendarShowName({ eventName: "Headliner", artist: "Headliner" }), "Headliner");
 });

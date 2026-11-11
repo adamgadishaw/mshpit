@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AccessibilityInfo, ActionSheetIOS, ActivityIndicator, AppState, Keyboard, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
-import { colors, font, radius } from "../theme";
+import { colors, font, radius, themeIsDark } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "../components/Icon";
@@ -13,15 +13,16 @@ import { useProfileHistory } from "../features/profileHistory/useProfileHistory"
 import useIOSCalendarExport from "../hooks/useIOSCalendarExport";
 import useCalendarBrowseState from "../hooks/useCalendarBrowseState";
 import useIOSDetailBackBlock from "../hooks/useIOSDetailBackBlock";
+import { createCalendarClock } from "./calendarClock.mjs";
 import {
   CALENDAR_AGENDA_PAGE, CALENDAR_MAX_YEAR, CALENDAR_MIN_YEAR,
   calendarAgendaGroups, calendarDateKey, calendarDateLabel, calendarDaysForScope,
   calendarJumpSelection, calendarLocalDate, calendarMonthCount, calendarMonthGeometry,
-  calendarMonthSelection, calendarShowStatus, calendarTimeLabel,
+  calendarMonthSelection, calendarMonthLabel, calendarShowName, calendarShowStatus, calendarTimeLabel,
 } from "./calendarPresentation.mjs";
 
 const pressed = ({ pressed: down }) => [styles.control, down && styles.pressed];
-const monthName = (year, month) => new Date(year, month, 1, 12).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+const monthName = calendarMonthLabel;
 
 function Segment({ value, options, label, onChange }) {
   return <View style={styles.segment} accessibilityRole="tablist" accessibilityLabel={label}>
@@ -35,6 +36,8 @@ function Segment({ value, options, label, onChange }) {
 
 function ShowRow({ event, view, largeText, onOpen, onMore, exporting }) {
   const status = calendarShowStatus(event, view);
+  const name = calendarShowName(event);
+  const statuses = [status, event.soldOut && status !== "Cancelled" ? "Sold out" : ""].filter(Boolean);
   const endDate = event.endDate || event.eventEndDate;
   const span = endDate && endDate > event.date;
   const time = calendarTimeLabel(event);
@@ -42,17 +45,17 @@ function ShowRow({ event, view, largeText, onOpen, onMore, exporting }) {
   return <View style={styles.eventRow}>
     <Pressable style={({ pressed: down }) => [styles.eventMain, largeText && styles.eventMainLarge, down && styles.pressed]}
       onPress={() => onOpen(event)} accessibilityRole="button"
-      accessibilityLabel={[event.artist || "Show", time, venue, status, span ? `${calendarDateLabel(event.date)} to ${calendarDateLabel(endDate)}` : ""].filter(Boolean).join(", ")}>
+      accessibilityLabel={[name, time, venue, ...statuses, span ? `${calendarDateLabel(event.date, { year: "numeric" })} to ${calendarDateLabel(endDate, { year: "numeric" })}` : ""].filter(Boolean).join(", ")}>
       <Text style={[styles.eventTime, largeText && styles.eventTimeLarge]}>{time}</Text>
       <View style={styles.eventIdentity}>
         <Text style={styles.eventArtist}>{event.eventName || event.artist || "Show"}</Text>
         {event.eventName && event.artist && event.eventName !== event.artist ? <Text style={styles.eventVenue}>{event.artist}</Text> : null}
         <Text style={styles.eventVenue}>{venue}</Text>
-        {span ? <Text style={styles.eventVenue}>{calendarDateLabel(event.date, { weekday: undefined })} – {calendarDateLabel(endDate, { weekday: undefined })}</Text> : null}
-        {status || event.soldOut ? <Text style={[styles.eventStatus, ["Cancelled", "Postponed"].includes(status) && styles.error]}>{[status, event.soldOut && status !== "Cancelled" ? "Sold out" : ""].filter(Boolean).join(" · ")}</Text> : null}
+        {span ? <Text style={styles.eventVenue}>{calendarDateLabel(event.date, { weekday: undefined, year: "numeric" })} – {calendarDateLabel(endDate, { weekday: undefined, year: "numeric" })}</Text> : null}
+        {statuses.length ? <Text style={[styles.eventStatus, ["Cancelled", "Postponed"].includes(status) && styles.error]}>{statuses.join(" · ")}</Text> : null}
       </View>
     </Pressable>
-    <Pressable onPress={() => onMore(event)} style={pressed} accessibilityRole="button" accessibilityLabel={`More actions for ${event.artist || "show"}, ${time}`} accessibilityState={{ busy: exporting }}>
+    <Pressable onPress={() => onMore(event)} style={pressed} accessibilityRole="button" accessibilityLabel={`More actions for ${name}, ${time}`} accessibilityState={{ busy: exporting }}>
       {exporting ? <ActivityIndicator color={colors.amber} /> : <Icon name="menu" size={19} color={colors.textDim} />}
     </Pressable>
   </View>;
@@ -99,6 +102,7 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
   const [olderFailure, setOlderFailure] = useState(null);
   const [jump, setJump] = useState(null);
   const refreshRef = useRef(null), historyLoadRef = useRef(null), menuRef = useRef(null);
+  const clockRef = useRef(null);
   const serverTimeRef = useRef(serverTime);
   serverTimeRef.current = serverTime;
   const notice = feedback?.owner === isCurrent ? feedback.text : exportState.calendarNotice?.text;
@@ -116,19 +120,18 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
   }, [isCurrent]);
   useEffect(() => {
     const accepts = browse.capture();
-    const refreshClock = () => {
-      if (!accepts() || AppState.currentState !== "active") return;
-      setClock(new Date());
-      Promise.resolve().then(() => accepts() ? serverTimeRef.current() : null).then(result => {
-        if (accepts() && result?.now && Number.isFinite(new Date(result.now).getTime())) setClock(new Date(result.now));
-      }).catch(() => { /* device time remains a usable fallback */ });
-    };
-    refreshClock();
-    const subscription = AppState.addEventListener("change", value => { if (value === "active") refreshClock(); });
-    const midnight = new Date(); midnight.setHours(24, 0, 0, 25);
-    const timer = setTimeout(refreshClock, Math.max(1000, midnight.getTime() - Date.now()));
-    return () => { subscription.remove(); clearTimeout(timer); };
-  }, [isCurrent, todayKey]);
+    const owner = createCalendarClock({ readTime: () => serverTimeRef.current(), onChange: setClock,
+      isCurrent: accepts, isActive: () => AppState.currentState === "active", schedule: setTimeout, cancel: clearTimeout });
+    clockRef.current = owner;
+    void owner.refresh();
+    const subscription = AppState.addEventListener("change", value => {
+      if (value === "active") void owner.refresh();
+      // Retire callbacks only: native dismissal is global and could close a
+      // newer sheet presented by another feature.
+      else { owner.pause(); menuRef.current = null; }
+    });
+    return () => { subscription.remove(); owner.retire(); if (clockRef.current === owner) clockRef.current = null; };
+  }, [isCurrent]);
   useEffect(() => {
     if (!notice || !isCurrent() || AppState.currentState !== "active") return;
     AccessibilityInfo.announceForAccessibility(notice);
@@ -164,6 +167,7 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
     const token = {}; menuRef.current = token;
     try { ActionSheetIOS.showActionSheetWithOptions({ title, options: [...actions.map(action => action.title), "Cancel"],
       cancelButtonIndex: actions.length, disabledButtonIndices: actions.flatMap((action, i) => action.disabled ? [i] : []), tintColor: colors.amber,
+      userInterfaceStyle: themeIsDark ? "dark" : "light",
     }, index => {
       if (menuRef.current !== token) return;
       menuRef.current = null;
@@ -194,7 +198,7 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
         if (accepts()) setFeedback({ owner: isCurrent, text: "Tickets could not be opened. Please try again from the show." });
       } });
     } });
-    showMenu(event.artist || "Show", actions);
+    showMenu(calendarShowName(event), actions);
   };
   const changeScope = () => showMenu("Calendar shows", [
     { title: scope === "all" ? "All shows (selected)" : "All shows", run: () => choose({ scope: "all" }) },
@@ -214,11 +218,9 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
       Promise.resolve().then(() => accepts() ? refreshTourDates?.({ signal: controller.signal }) : false),
       Promise.resolve().then(() => accepts() ? accountId ? refreshMyAttendance?.({ signal: controller.signal }) : true : false),
       Promise.resolve().then(() => accepts() ? accountId ? history.retry() : true : false),
-      Promise.resolve().then(() => accepts() ? serverTime() : null),
+      Promise.resolve().then(() => accepts() ? clockRef.current?.refresh() : false),
     ]);
     if (!accepts() || controller.signal.aborted || refreshRef.current !== controller) return false;
-    const time = results[3];
-    if (time.status === "fulfilled" && time.value?.now && Number.isFinite(new Date(time.value.now).getTime())) setClock(new Date(time.value.now));
     const failed = results.some((result, index) => result.status === "rejected" || result.value === false || result.value == null || (index === 2 && result.value?.status === "error"));
     refreshRef.current = null; setRefreshState({ owner: isCurrent, busy: false, error: failed });
     if (failed) AccessibilityInfo.announceForAccessibility("Some calendar details could not refresh. Your loaded shows are still available.");
@@ -299,7 +301,7 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
             <Pressable style={pressed} onPress={() => changeJump({ year: String(Math.min(CALENDAR_MAX_YEAR, (Number(jump.year) || cursor.y) + 1)), error: false })} accessibilityRole="button" accessibilityLabel="Next year"><Icon name="plus" size={20} /></Pressable>
           </View>
           <View style={styles.monthChoices}>{Array.from({ length: 12 }, (_, m) => <Pressable key={m} style={({ pressed: down }) => [styles.monthChoice, largeText && styles.monthChoiceLarge, jump.month === m && styles.monthChoiceSelected, down && styles.pressed]} onPress={() => changeJump({ month: m })}
-            accessibilityRole="button" accessibilityState={{ selected: jump.month === m }}><Text style={[styles.monthChoiceText, jump.month === m && styles.segmentTextSelected]}>{new Date(2026, m, 1).toLocaleDateString(undefined, { month: "long" })}</Text></Pressable>)}</View>
+            accessibilityRole="button" accessibilityState={{ selected: jump.month === m }}><Text style={[styles.monthChoiceText, jump.month === m && styles.segmentTextSelected]}>{calendarMonthLabel(2026, m, undefined, false)}</Text></Pressable>)}</View>
           {jump.error ? <Text style={styles.error} accessibilityRole="alert">Enter a year from {CALENDAR_MIN_YEAR} to {CALENDAR_MAX_YEAR}.</Text> : null}
           <View style={styles.jumpActions}><Pressable style={pressed} onPress={closeJump} accessibilityRole="button"><Text style={styles.actionText}>Cancel</Text></Pressable><Pressable style={pressed} onPress={commitJump} accessibilityRole="button"><Text style={styles.actionText}>Show month</Text></Pressable></View>
         </View> : null}
@@ -322,17 +324,17 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
             </View>
           </ScrollView>
           <Text style={styles.monthSummary}>{monthCount} {monthCount === 1 ? "show" : "shows"} this month · Venue times unless labelled otherwise</Text>
-        </> : <Text style={styles.monthSummary}>{view === "past" ? "Through" : "From"} {calendarDateLabel(selected, { weekday: undefined })} · Venue times unless labelled otherwise</Text>}
+        </> : <Text style={styles.monthSummary}>{view === "past" ? "Through" : "From"} {calendarDateLabel(selected, { weekday: undefined, year: "numeric" })} · Venue times unless labelled otherwise</Text>}
         <View style={styles.section}>
           {refreshing || refreshError ? <View style={styles.statusBox}><Text style={[styles.statusText, refreshError && styles.error]} accessibilityRole={refreshError ? "alert" : "text"}>{refreshing ? "Refreshing your calendar…" : "Some details could not refresh. Your loaded shows are still available."}</Text>{refreshError ? <Pressable onPress={() => { void refreshCalendar(); }} style={pressed} accessibilityRole="button"><Text style={styles.actionText}>Try again</Text></Pressable> : null}</View> : null}
           {notice ? <Text style={[styles.notice, noticeError && styles.error]} accessibilityRole={noticeError ? "alert" : "text"}>{notice}</Text> : null}
           {groups.map(group => <View key={group.date} style={styles.dayGroup}>
-            <Text style={styles.heading} accessibilityRole="header">{calendarDateLabel(group.date)}</Text>
+            <Text style={styles.heading} accessibilityRole="header">{calendarDateLabel(group.date, { year: "numeric" })}</Text>
             {group.events.map(event => <ShowRow key={event.calendarKey} event={event} view={view} largeText={largeText} onOpen={openEvent} onMore={eventActions} exporting={exportState.exportingKey === `event-${event.calendarKey}`} />)}
           </View>)}
           {(presentation === "month" ? !selectedEvents.length : !agenda.count) ? <View style={styles.empty}>
             <Text style={styles.emptyTitle}>{historyInitialLoading && view === "past" ? "Loading your past shows…" : view === "past" ? "No shows in this part of your loaded history." : scope === "plans" ? "No plans on this date." : "No shows listed on this date."}</Text>
-            {nextRelevant ? <Pressable onPress={nextDate} style={pressed} accessibilityRole="button"><Text style={styles.actionText}>{view === "past" ? "Previous show" : "Next show"} · {calendarDateLabel(nextRelevant, { weekday: undefined })}</Text></Pressable> : view === "upcoming" && scope === "plans" ? <Pressable onPress={() => choose({ scope: "all" })} style={pressed} accessibilityRole="button"><Text style={styles.actionText}>Browse all shows</Text></Pressable> : null}
+            {nextRelevant ? <Pressable onPress={nextDate} style={pressed} accessibilityRole="button"><Text style={styles.actionText}>{view === "past" ? "Previous show" : "Next show"} · {calendarDateLabel(nextRelevant, { weekday: undefined, year: "numeric" })}</Text></Pressable> : view === "upcoming" && scope === "plans" ? <Pressable onPress={() => choose({ scope: "all" })} style={pressed} accessibilityRole="button"><Text style={styles.actionText}>Browse all shows</Text></Pressable> : null}
           </View> : null}
           {remaining ? <Pressable onPress={() => update({ agendaLimit: state.agendaLimit + CALENDAR_AGENDA_PAGE })} style={styles.loadButton} accessibilityRole="button"><Text style={styles.actionText}>Show more ({remaining})</Text></Pressable> : null}
           {accountId && (historyInitialLoading || history.error || olderFailure === isCurrent || historyWindow.hasMore) ? <View style={styles.historyBox}>

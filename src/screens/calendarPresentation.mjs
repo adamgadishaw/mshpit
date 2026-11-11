@@ -1,20 +1,25 @@
-import { toIsoDate } from "../domain/dates.mjs";
-
 export const CALENDAR_AGENDA_PAGE = 40;
 export const CALENDAR_MIN_YEAR = 1900;
 export const CALENDAR_MAX_YEAR = 2100;
 const pad = value => String(value).padStart(2, "0");
 export const calendarDateKey = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
 export function calendarLocalDate(key) {
-  const valid = toIsoDate(key);
-  if (!valid) return null;
-  const [y, m, d] = valid.split("-").map(Number);
-  return new Date(y, m - 1, d, 12);
+  // Browsing years is wider than the canonical performance-write window.
+  // Validate the day itself without applying a device-relative tour-date cutoff.
+  if (typeof key !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(key)) return null;
+  const [y, m, d] = key.split("-").map(Number);
+  if (y < 1000 || m < 1 || m > 12 || d < 1) return null;
+  const date = new Date(y, m - 1, d, 12);
+  return date.getFullYear() === y && date.getMonth() === m - 1 && date.getDate() === d ? date : null;
 }
 export function calendarDateLabel(key, options = {}, locale) {
   const date = calendarLocalDate(key);
-  return date ? date.toLocaleDateString(locale, { weekday: "long", month: "long", day: "numeric", ...options }) : "Date unavailable";
+  return date ? date.toLocaleDateString(locale, { weekday: "long", month: "long", day: "numeric", ...options, calendar: "gregory" }) : "Date unavailable";
 }
+export const calendarMonthLabel = (year, month, locale, includeYear = true) => new Date(year, month, 1, 12)
+  .toLocaleDateString(locale, { month: "long", ...(includeYear ? { year: "numeric" } : {}), calendar: "gregory" });
+export const calendarShowName = event => [event.eventName || event.artist || "Show",
+  event.eventName && event.artist && event.eventName !== event.artist ? event.artist : ""].filter(Boolean).join(", ");
 export function calendarWeekStart(locale) {
   try {
     const resolved = locale || new Intl.DateTimeFormat().resolvedOptions().locale;
@@ -33,7 +38,7 @@ export function calendarMonthGeometry({ y, m, width = 390, fontScale = 1, locale
     // Six rows keep the agenda anchored across month changes. At large text
     // the grid can pan horizontally; no month swipe competes for that gesture.
     cells: Array.from({ length: 42 }, (_, i) => i >= leading && i < leading + days ? i - leading + 1 : null),
-    weekdays: Array.from({ length: 7 }, (_, i) => new Date(2026, 10, 1 + (start + i) % 7).toLocaleDateString(locale, { weekday: "short" })),
+    weekdays: Array.from({ length: 7 }, (_, i) => new Date(2026, 10, 1 + (start + i) % 7).toLocaleDateString(locale, { weekday: "short", calendar: "gregory" })),
     width: Math.max(cell * 7, Math.min(560, Math.max(0, width - 8))),
     cellHeight: cell,
   };
@@ -60,7 +65,7 @@ export function calendarAgendaGroups(byDay, { selected, view = "upcoming", limit
   const past = view === "past";
   const keys = Object.keys(byDay).filter(key => past ? key <= selected : key >= selected).sort();
   if (past) keys.reverse();
-  const size = Math.max(1, Math.min(2000, Math.floor(Number(limit)) || CALENDAR_AGENDA_PAGE));
+  const size = Number.isSafeInteger(limit) && limit > 0 ? limit : CALENDAR_AGENDA_PAGE;
   let used = 0, remaining = 0;
   const groups = [];
   for (const date of keys) {

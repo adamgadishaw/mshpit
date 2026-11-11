@@ -120,11 +120,22 @@ test('all Metro chunks must have maps, including nested lazy chunks', (t) => {
   assert.equal(checkIsolation({ androidMap: f.androidMap, web: f.webMap }).passed, true);
 });
 
-test('empty web directory and symlinked chunks are rejected', (t) => {
+test('empty web directory is rejected', (t) => {
   const f = fixture(t);
   rmSync(f.webMap); rmSync(join(f.chunks, 'index.js'));
   assert.equal(f.check().passed, false);
-  symlinkSync(f.androidMap, join(f.chunks, 'linked.js.map'));
+});
+
+test('symlinked chunks are rejected when file-link creation is permitted', (t) => {
+  const f = fixture(t);
+  try { symlinkSync(f.androidMap, join(f.chunks, 'linked.js.map')); }
+  catch (error) {
+    if (process.platform === 'win32' && error.code === 'EPERM') {
+      t.skip('Windows account cannot create file symbolic links; directory junction coverage remains active');
+      return;
+    }
+    throw error;
+  }
   assert.equal(f.check().passed, false);
 });
 
@@ -135,7 +146,7 @@ test('symlinked Metro root and intermediate directories are rejected', (t) => {
     const other = join(f.root, 'outside');
     assert.equal(f.check().passed, true);
     renameSync(target, other);
-    symlinkSync(other, target);
+    symlinkSync(other, target, process.platform === 'win32' ? 'junction' : 'dir');
     assert.equal(f.check().passed, false, segments);
   }
 });
@@ -161,6 +172,18 @@ test('report is bounded, redacted and explicitly opt-in; failure leaves artifact
   assert.deepEqual(readFileSync(f.androidMap), before);
   assert.equal(f.cli('--report', join(f.web, 'report.json')).status, 1);
   assert.ok(!readdirSync(f.web).includes('report.json'));
+});
+
+test('report containment distinguishes sibling prefixes from nested artifact paths', (t) => {
+  const f = fixture(t);
+  const sibling = `${f.web}-reports`;
+  mkdirSync(sibling);
+  const report = join(sibling, 'report.json');
+  assert.equal(f.cli('--report', report).status, 0);
+  assert.equal(JSON.parse(readFileSync(report, 'utf8')).passed, true);
+  const nested = join(f.chunks, 'report.json');
+  assert.equal(f.cli('--report', nested).status, 1);
+  assert.ok(!readdirSync(f.chunks).includes('report.json'));
 });
 
 test('CLI rejects missing, unknown and repeated options', (t) => {

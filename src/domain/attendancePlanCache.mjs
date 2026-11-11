@@ -81,12 +81,28 @@ function matchingRows(rows, target, context = rows) {
   }));
 }
 
-const DETAIL_FIELDS = [
-  "tourDateId", "eventName", "eventKind", "eventEndDate", "eventEndDateTime", "endDate",
+const TIMING_FIELDS = [
+  "eventEndDate", "eventEndDateTime", "endDate",
   "startDateTime", "showStartDateTime", "startsAt", "startAt", "startLocalTime", "localStartTime", "showStartTime", "startTime",
   "endDateTime", "endsAt", "endAt", "endLocalTime", "eventTimezone", "timezone", "timeZone",
-  "doorsDateTime", "doorsLocalTime", "source", "provider", "providerEventId", "eventId", "ticketUrl", "status", "soldOut",
+  "doorsDateTime", "doorsLocalTime",
 ];
+const DETAIL_FIELDS = [
+  "tourDateId", "eventName", "eventKind", ...TIMING_FIELDS,
+  "source", "provider", "providerEventId", "eventId", "ticketUrl", "status", "soldOut",
+];
+
+function withoutSupersededTiming(previous, incoming) {
+  const previousDate = toIsoDate(previous?.localDate || previous?.date);
+  const incomingDate = toIsoDate(incoming?.localDate || incoming?.date);
+  const hasIncomingTiming = TIMING_FIELDS.some((field) => incoming?.[field] !== undefined);
+  if (!hasIncomingTiming && !(previousDate && incomingDate && previousDate !== incomingDate)) return previous;
+  // Start/end aliases, zone and doors describe one schedule. Retaining only
+  // part of an older schedule can override a newly supplied local time or clear.
+  const retained = { ...previous };
+  for (const field of TIMING_FIELDS) delete retained[field];
+  return retained;
+}
 
 // Local calendar/display metadata only. Do not copy arbitrary show payloads,
 // ticket-holder details, attendance visibility, or post content into Going.
@@ -106,7 +122,9 @@ export function replaceGoingPlan(rows, entry, desired, context = rows) {
   const matches = matchingRows(current, entry, Array.isArray(context) ? context : current);
   const next = current.filter((row) => !matches.has(row));
   if (desired) {
-    const previousDetails = [...matches].reduce((details, row) => ({ ...details, ...attendancePlanDetails(row) }), {});
+    const previousDetails = [...matches].reduce((details, row) => ({
+      ...details, ...attendancePlanDetails(withoutSupersededTiming(row, entry)),
+    }), {});
     next.push({ ...previousDetails, ...entry });
   }
   return next;
@@ -118,7 +136,9 @@ export function hydrateAttendanceGoingRows(goingRows, attendanceRows, previousRo
   // details to an exact matching performance that still exists in that snapshot.
   const enrich = (row) => ({
     ...previous.filter((candidate) => exactRelationship(candidate, row) === "same" && sameNight(candidate, row))
-      .reduce((details, candidate) => ({ ...details, ...attendancePlanDetails(candidate) }), {}),
+      .reduce((details, candidate) => ({
+        ...details, ...attendancePlanDetails(withoutSupersededTiming(candidate, row)),
+      }), {}),
     ...row,
   });
   const current = (Array.isArray(goingRows) ? goingRows : []).map(enrich);
@@ -137,7 +157,7 @@ function planningRow(show, result, previous, now) {
     || text(show?.localDate || show?.date || previous?.date);
   const canonicalKey = text(show?.canonicalKey || previous?.canonicalKey || show?.key || previous?.key) || null;
   return {
-    ...(previous || {}),
+    ...withoutSupersededTiming(previous, show),
     ...attendancePlanDetails(show),
     showId: text(result.showId),
     tourDateId: text(show?.tourDateId || previous?.tourDateId) || null,
@@ -169,7 +189,17 @@ export function reconcileAttendancePlan({ attendanceRows = [], goingRows = [], s
   const goingMatches = matchingRows(currentGoing, target, context);
   const previous = currentAttendance.find((row) => matches.has(row))
     || currentGoing.find((row) => goingMatches.has(row)) || null;
-  const nextRow = planningRow(show, result, previous, now);
+  // Canonical attendance owns state and privacy, but can omit display timing
+  // already held by Going. Borrow only exact same-night display fields; an
+  // earlier schedule or an ambiguous legacy plan cannot donate those details.
+  const detailTarget = { ...previous, ...show, localDate: show?.localDate || show?.date || previous?.date };
+  const previousDetails = [...goingMatches]
+    .filter((row) => exactRelationship(row, previous) === "same" && sameNight(row, previous) && sameNight(row, detailTarget))
+    .reduce((details, row) => ({ ...details, ...attendancePlanDetails(row) }), {});
+  for (const field of Object.keys(previousDetails)) {
+    if (show[field] === null) delete previousDetails[field];
+  }
+  const nextRow = planningRow(show, result, previous ? { ...previousDetails, ...previous } : null, now);
   const nextAttendance = currentAttendance.filter((row) => !matches.has(row));
   if (nextRow) nextAttendance.push(nextRow);
 

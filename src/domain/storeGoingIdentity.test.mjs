@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "@babel/parser";
-import { attendancePlanDetails, hydrateAttendanceGoingRows, replaceGoingPlan } from "./attendancePlanCache.mjs";
+import { attendancePlanDetails, hydrateAttendanceGoingRows, reconcileAttendancePlan, replaceGoingPlan } from "./attendancePlanCache.mjs";
 import { toIsoDate } from "./dates.mjs";
 import { createGoingIntentCoordinator, goingIntentKey } from "./goingIntent.mjs";
 
@@ -12,7 +12,7 @@ const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
 const provider = ast.program.body.find((node) => node.declaration?.id?.name === "StoreProvider").declaration;
 const declarations = provider.body.body.flatMap((node) => node.type === "VariableDeclaration" ? node.declarations : []);
-const names = ["norm", "concertKey", "goingTourDateId", "goingEntryIdentity", "goingEntryMatches", "adoptAttendanceSnapshot", "commitGoingState", "setGoingIntent"];
+const names = ["norm", "concertKey", "goingTourDateId", "goingEntryIdentity", "goingEntryMatches", "adoptAttendanceSnapshot", "applyMyAttendanceMutation", "commitGoingState", "setGoingIntent"];
 const callbacks = names.map((name) => {
   const node = declarations.find((entry) => entry.id?.name === name);
   assert.ok(node, `Store must expose ${name}`);
@@ -32,7 +32,7 @@ function fixture(rows = []) {
   const goingConfirmedRef = { current: new Map() };
   const goingPendingRef = { current: {} }, goingMutationRevisionRef = { current: 0 };
   const dependencies = {
-    attendancePlanDetails, hydrateAttendanceGoingRows, replaceGoingPlan, toIsoDate, goingIntentKey,
+    attendancePlanDetails, hydrateAttendanceGoingRows, reconcileAttendancePlan, replaceGoingPlan, toIsoDate, goingIntentKey,
     goingRef, goingIntentRef, goingConfirmedRef, goingPendingRef, goingMutationRevisionRef, sessionRef,
     currentMutationActor: () => sessionRef.current,
     setGoing: (value) => { state.going = value; },
@@ -140,4 +140,74 @@ test("Store hydration retains distinct performances and refuses a pre-mutation s
   f.goingMutationRevisionRef.current += 1;
   assert.equal(f.actions.adoptAttendanceSnapshot(owner.id, [], [], 0), false);
   assert.equal(f.goingRef.current[owner.id].length, 3);
+});
+
+test("a failed add after an authoritative refresh cannot revive stale confirmed membership", async () => {
+  const f = fixture([late]);
+  const initial = f.actions.setGoingIntent(early, true);
+  await tick();
+  f.calls[0].resolve({ going: true, showId: early.showId });
+  await initial;
+  const refreshed = f.actions.adoptAttendanceSnapshot(owner.id, [late], [], f.goingMutationRevisionRef.current);
+  assert.deepEqual(refreshed[owner.id], [late]);
+  const retry = f.actions.setGoingIntent(early, true);
+  await tick();
+  f.calls[1].reject(new Error("Add failed"));
+  assert.equal((await retry).going, false);
+  assert.deepEqual(f.state.going[owner.id], [late]);
+  assert.deepEqual(f.state.pending, {});
+});
+
+test("a failed add after typed attendance changes cannot restore an obsolete Going confirmation", async () => {
+  for (const state of ["interested", null]) {
+    const f = fixture([late]);
+    const initial = f.actions.setGoingIntent(early, true);
+    await tick();
+    f.calls[0].resolve({ going: true, showId: early.showId });
+    await initial;
+    assert.equal(f.actions.applyMyAttendanceMutation(early, {
+      showId: early.showId, attendance: state ? { state, visibility: "private" } : null,
+    }), true);
+    assert.deepEqual(f.state.going[owner.id], [late]);
+    const retry = f.actions.setGoingIntent(early, true);
+    await tick();
+    f.calls[1].reject(new Error("Add failed"));
+    assert.equal((await retry).going, false);
+    assert.deepEqual(f.state.going[owner.id], [late]);
+    assert.deepEqual(f.state.pending, {});
+    assert.equal(f.goingRef.attendance.rows[0]?.state ?? null, state);
+  }
+});
+
+test("a failed removal retains newer typed Going even after an earlier confirmed removal", async () => {
+  const f = fixture([early, late]);
+  const initial = f.actions.setGoingIntent(early, false);
+  await tick();
+  f.calls[0].resolve({ going: false, showId: early.showId });
+  await initial;
+  f.actions.applyMyAttendanceMutation(early, { showId: early.showId, attendance: { state: "going", visibility: "private" } });
+  const retry = f.actions.setGoingIntent(early, false);
+  await tick();
+  f.calls[1].reject(new Error("Removal failed"));
+  assert.equal((await retry).going, true);
+  assert.deepEqual(f.state.going[owner.id].map((row) => row.tourDateId), ["late", "early"]);
+  assert.equal(f.state.going[owner.id][1].startDateTime, early.startDateTime);
+  assert.equal(f.goingRef.attendance.rows[0].visibility, "private");
+  assert.deepEqual(f.state.pending, {});
+});
+
+test("Store refresh retains exact display timing and does not resurrect omitted plans", () => {
+  const f = fixture([early, late]);
+  const sparse = { key, artist: early.artist, venue: early.venue, date: early.date,
+    showId: early.showId, tourDateId: early.tourDateId, state: "going", visibility: "private" };
+  const result = f.actions.adoptAttendanceSnapshot(owner.id, [], [sparse], 0);
+  assert.equal(result[owner.id].length, 1);
+  assert.equal(result[owner.id][0].startDateTime, early.startDateTime);
+  assert.equal(result[owner.id][0].eventTimezone, early.eventTimezone);
+  assert.equal(result[owner.id][0].visibility, "private");
+  assert.equal(f.actions.applyMyAttendanceMutation({ showId: early.showId }, {
+    showId: early.showId, attendance: { state: "going", visibility: "private" },
+  }), true);
+  assert.equal(f.state.going[owner.id][0].startDateTime, early.startDateTime,
+    "a subsequent sparse typed write preserves the richer refreshed Going projection");
 });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { calendarDateLabel, calendarTimeLabel } from "./calendarPresentation.mjs";
+import { calendarDateLabel, calendarShowName, calendarTimeLabel } from "./calendarPresentation.mjs";
 import { localCalendarIso } from "../domain/dates.mjs";
 
 const require = createRequire(import.meta.url);
@@ -60,7 +60,8 @@ function projection(upcoming = [early, late, unknown, later], old = [past]) {
 // ownership hook. The model projection, history, native hosts and I/O are
 // synthetic boundaries; no API, calendar file, seller URL or device is touched.
 function fixture({ accountId = "account-a", initialDate = "2028-01-31", initialView = "upcoming", width = 390, fontScale = 1,
-  projected = projection(), history: initialHistory = {}, strict = false, delayClock = false } = {}) {
+  projected = projection(), history: initialHistory = {}, strict = false, delayClock = false, themeIsDark = true,
+  initialAgendaLimit = 40, initialPresentation = "month" } = {}) {
   const renderer = createRenderer(), modules = new Map(), menus = [], exports = [], tickets = [], opens = [], artists = [], announcements = [];
   const refreshes = [], attendanceRefreshes = [], historyRetries = [], historyLoads = [], clocks = [], appListeners = new Set();
   let epoch = 1, routeCurrent = true, attendance = [], browse, backBlocked = false, keyboardDismissals = 0;
@@ -82,14 +83,15 @@ function fixture({ accountId = "account-a", initialDate = "2028-01-31", initialV
   function imports(name, local) {
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
-    if (name === "../theme") return { colors: {}, radius: {}, font: "fixture" };
+    if (name === "../theme") return { colors: {}, radius: {}, font: "fixture", themeIsDark };
     if (name === "../store") return { useStore: () => ({ ...store, session: accountId ? { id: accountId } : null, chatAuthEpoch: epoch, myAttendance: attendance }) };
     if (name === "../components/ScreenHeader") return props => React.createElement("ScreenHeader", props, props.right);
     if (name.startsWith("../components/")) return name.split("/").at(-1);
     if (name === "../features/profileHistory/useProfileHistory") return { useProfileHistory: () => history };
     if (name === "../domain/calendarShows.mjs") return { memberCalendarModel: () => projected };
     if (name === "../hooks/useIOSDetailBackBlock") return value => { backBlocked = value; };
-    if (name === "../hooks/useCalendarBrowseState") return options => { browse = load("../hooks/useCalendarBrowseState.js").default(options); return browse; };
+    if (name === "../hooks/useCalendarBrowseState") return options => { browse = load("../hooks/useCalendarBrowseState.js").default({ ...options,
+      initialState: { ...options.initialState, agendaLimit: initialAgendaLimit, presentation: initialPresentation } }); return browse; };
     if (name === "../hooks/useIOSCalendarExport") return load("../hooks/useIOSCalendarExport.ios.js");
     if (name === "../lib/calendarExport") return { exportCalendarEvents: (events, options) => request(exports, { events, options }) };
     if (name === "../lib/ticketLinks") return { openTicketLink: (url, options) => { tickets.push({ url, options }); return Promise.resolve(false); } };
@@ -116,7 +118,7 @@ function fixture({ accountId = "account-a", initialDate = "2028-01-31", initialV
     byText(value) { return f.find(node => node.type === "Pressable" && text(node) === value); },
     press(label) { f.act(() => f.button(label).props.onPress()); },
     pressText(value) { f.act(() => f.byText(value).props.onPress()); },
-    more(event) { return f.button(`More actions for ${event.artist || "show"}, ${calendarTimeLabel(event)}`); },
+    more(event) { return f.button(`More actions for ${calendarShowName(event)}, ${calendarTimeLabel(event)}`); },
     showActions(event) { f.act(() => f.more(event).props.onPress()); },
     chooseMenu(title, menu = menus.at(-1)) { const index = menu.options.options.indexOf(title); assert.notEqual(index, -1, title); f.act(() => menu.callback(index)); },
     editYear(value) { f.act(() => f.find(node => node.type === "TextInput").props.onChangeText(value)); },
@@ -270,6 +272,68 @@ test("accepting a server date different from the device does not restart a clock
   f.clocks[0].resolve({ now: tomorrow.toISOString() }); await f.settle();
   assert.equal(f.clocks.length, 1, "changing the accepted date must not start more server reads");
   f.press("Go to today"); assert.equal(f.state().selected, localCalendarIso(tomorrow));
+});
+
+test("manual clock refresh supersedes the initial read and foreground supersedes background work", async t => {
+  const f = fixture({ delayClock: true }); t.after(f.close); await f.settle();
+  let result; f.act(() => { result = f.find(node => node.type === "VinylRefreshBoundary").props.onRefresh(); }); await f.settle();
+  f.refreshes[0].resolve(true); f.attendanceRefreshes[0].resolve(true); f.historyRetries[0].resolve({ status: "ready" });
+  f.clocks[1].resolve({ now: "2031-03-04T12:00:00Z" }); await result; await f.settle();
+  f.clocks[0].resolve({ now: "2030-01-01T12:00:00Z" }); await f.settle();
+  f.press("Go to today"); assert.equal(f.state().selected, localCalendarIso(new Date("2031-03-04T12:00:00Z")));
+  f.appState("background"); f.appState("active"); await f.settle();
+  assert.equal(f.clocks.length, 3);
+  f.appState("background"); f.appState("active"); await f.settle();
+  f.clocks[3].resolve({ now: "2032-05-06T12:00:00Z" }); await f.settle();
+  f.clocks[2].resolve({ now: "2030-01-01T12:00:00Z" }); await f.settle();
+  f.press("Go to today"); assert.equal(f.state().selected, localCalendarIso(new Date("2032-05-06T12:00:00Z")));
+});
+
+for (const themeIsDark of [true, false]) test(`native menu follows the ${themeIsDark ? "dark" : "light"} app theme`, t => {
+  const f = fixture({ themeIsDark }); t.after(f.close); f.showActions(early);
+  assert.equal(f.menus.at(-1).options.userInterfaceStyle, themeIsDark ? "dark" : "light");
+});
+
+for (const retirement of ["background", "account"]) test(`retired ${retirement} menu callbacks cannot consume a newer menu`, async t => {
+  const f = fixture(); t.after(f.close); await f.settle();
+  f.showActions(early); const old = f.menus.at(-1);
+  if (retirement === "background") { f.appState("background"); f.appState("active"); }
+  else f.scope("account-b");
+  f.showActions(late); const fresh = f.menus.at(-1); assert.notEqual(fresh, old);
+  f.chooseMenu("Open show", old); assert.equal(f.opens.length, 0);
+  f.chooseMenu("Open show", fresh); assert.deepEqual(f.opens.map(event => event.calendarKey), [late.calendarKey]);
+});
+
+test("event-only name, distinct artist and sold-out status match visible and spoken row content", t => {
+  const events = [{ ...early, eventName: "Winter Festival", artist: "Headliner", soldOut: true },
+    { ...late, eventName: "Community Night", artist: "", soldOut: true },
+    { ...unknown, eventName: "Cancelled Night", soldOut: true, eventStatus: "cancelled" }];
+  const f = fixture({ projected: projection(events) }); t.after(f.close);
+  for (const event of events) {
+    const row = f.find(node => node.type === "Pressable" && node.props.accessibilityLabel?.startsWith(`${calendarShowName(event)}, ${calendarTimeLabel(event)},`));
+    assert.equal(row.props.accessibilityLabel.includes("Sold out"), event.eventStatus !== "cancelled");
+    f.showActions(event); assert.equal(f.menus.at(-1).options.title, calendarShowName(event)); f.chooseMenu("Cancel");
+  }
+  assert.ok(f.text().includes("Winter Festival")); assert.ok(f.text().includes("Community Night"));
+});
+
+test("cross-year agenda headings and range identify the year", t => {
+  const nextYear = { ...later, calendarKey: "next-year", date: "2029-01-31", dayKey: "2029-01-31" };
+  const f = fixture({ projected: projection([early, nextYear]) }); t.after(f.close); f.press("Agenda");
+  const headings = f.all().filter(node => node.type === "Text" && node.props.accessibilityRole === "header").map(text);
+  assert.ok(headings.includes(calendarDateLabel(early.date, { year: "numeric" })));
+  assert.ok(headings.includes(calendarDateLabel(nextYear.date, { year: "numeric" })));
+  assert.ok(headings.some(heading => heading.includes("2029")));
+  assert.equal(headings.includes("Date unavailable"), false);
+  assert.ok(f.text().includes(`From ${calendarDateLabel(early.date, { weekday: undefined, year: "numeric" })}`));
+});
+
+test("actual agenda Show more reaches performances beyond 2000 and exhausts remaining rows", t => {
+  const rows = Array.from({ length: 2041 }, (_, i) => ({ ...early, calendarKey: `performance-${i}`, artist: `Artist ${i}` }));
+  const f = fixture({ projected: projection(rows), initialAgendaLimit: 2000, initialPresentation: "agenda" }); t.after(f.close);
+  f.pressText("Show more (41)"); f.pressText("Show more (1)");
+  assert.equal(f.state().agendaLimit, 2080); assert.ok(f.more(rows.at(-1)));
+  assert.equal(f.all().some(node => node.type === "Pressable" && text(node).startsWith("Show more")), false);
 });
 
 for (const expiration of ["account", "epoch", "cover", "unmount"]) test(`captured direct date and Jump controls cannot mutate after ${expiration}`, async t => {
