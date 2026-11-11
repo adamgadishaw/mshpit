@@ -3,6 +3,7 @@ import { catalogVenueEditorKey, readPublicCatalogEditorText } from "../catalogEd
 import {
   artistConcertsPath,
   artistPath,
+  confirmedArtistPath,
   concertPath,
   concertsPath,
   eventPath,
@@ -225,7 +226,7 @@ function canonicalArtistPath(paths, row) {
 
 function relatedArtistPath(paths, row) {
   const publicSlug = cleanLine(row?.artist_public_slug || row?.public_slug, 160);
-  if (!publicSlug) return null;
+  if (!confirmedArtistPath({ publicSlug })) return null;
   return canonicalArtistPath(paths, {
     name: row?.artist || row?.name,
     norm: row?.artist_key || row?.norm,

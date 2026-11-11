@@ -190,7 +190,7 @@ function ReviewMediaTile({ media, author, postId, onOpenPhotos }) {
 // community score and the setlist. It must render for ANY event shape - a
 // logged review, a bare tour date from the calendar, a lounge link - so every
 // field is guarded; a tour date has no score and that's a mode, not a crash.
-export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth }) {
+export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth, onPublicEventResource }) {
   const { width } = useWindowDimensions();
   const tabletLayout = width >= 720;
   const archiveReviewTileStyle = width >= 1100
@@ -213,6 +213,9 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const accountId = session?.id || null;
   const publicEventId = publicEventCandidateId(log);
   const { resource: publicEventResource, reload: reloadPublicEvent } = usePublicEventSnapshot({ eventId: publicEventId, accountId });
+  useEffect(() => {
+    onPublicEventResource?.(publicEventResource);
+  }, [onPublicEventResource, publicEventResource.scope, publicEventResource.status, publicEventResource.data, publicEventResource.updatedAt]);
   const eventIdentitySnapshot = readablePublicEventSnapshot(publicEventResource, { eventId: publicEventId, accountId });
   const [showDocumentRead, setShowDocumentRead] = useState(null);
   const documentIdentity = showDocumentIdentity(legacyKey, accountId);
@@ -233,6 +236,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const festivalReview = reviewFormat === "festival";
   const norm = {
     ...log,
+    eventName: eventIdentitySnapshot?.eventName || log.eventName || null,
     ...(festivalReview && log.endDate ? { eventEndDate: log.endDate } : {}),
     artist,
     artistKey: artistIdentityPending ? null : trustedShow?.artistKey || log.artistKey,

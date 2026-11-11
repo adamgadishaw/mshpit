@@ -1,5 +1,21 @@
 # Pit current status
 
+## 2026-10-31 Public review permalink (draft review candidate)
+
+- Isolated clone/branch `fix/public-review-permalink` starts at current master
+  `91cef8b9eabe2a97d3e7daf255dad67ec406e809`. No other working tree is changed.
+- Persisted post routes now open the individual review/discussion, including
+  reviews with a canonical archive show key. Genuine concert/event routes keep
+  performance navigation. No schema, content, styling or server changes.
+- Reproduction, session distinctions, validation and remaining limitations are
+  recorded in [the local review](docs/PUBLIC_REVIEW_PERMALINK_LOCAL_REVIEW_2026-10-31.md).
+  The owner authorized publishing this branch and opening a draft PR for checks.
+  No merge, auto-merge, deployment or production write is authorized.
+- Initial draft CI exposed an obsolete auth browser setup click. The follow-up
+  asserts the direct post shell, URL and text while retaining all existing
+  interaction/privacy checks. The two baseline festival failures remain separate.
+
+
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 
 - Local branch `fix/catalog-event-festival-20261027` uses a source snapshot of

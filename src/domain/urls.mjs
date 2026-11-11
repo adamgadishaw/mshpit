@@ -54,6 +54,15 @@ export const artistPath = (artistOrName, publicSlug = null) => {
   return slug ? `/artist/${slug}` : null;
 };
 
+// Related event links need a stored public identity; never slugify a bill.
+export function confirmedArtistPath(artist) {
+  const slug = artist?.publicSlug || artist?.public_slug;
+  if (artist?.artistIdentityPending === true || typeof slug !== "string"
+    || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 80
+    || isReservedSlug(slug)) return null;
+  return `/artist/${slug}`;
+}
+
 // A festival's page: /festival/<catalog slug>.
 export const festivalPath = (slug) => (/^[a-z0-9-]{1,80}$/u.test(String(slug || "")) ? `/festival/${slug}` : null);
 
