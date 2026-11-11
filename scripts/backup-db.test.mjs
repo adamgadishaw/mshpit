@@ -608,8 +608,12 @@ test("a real SIGKILL partial is reconciled before the next backup's disk admissi
     const owner = JSON.parse(readFileSync(ownerPath, "utf8"));
     assert.equal(owner.pid, child.pid);
     const old = Date.now() - BACKUP_PARTIAL_MIN_AGE_MS - 10000;
-    writeFileSync(ownerPath, JSON.stringify({ ...owner, createdAt: old }));
     utimesSync(partial, old / 1000, old / 1000);
+    // Synthetic aging changes birthtime on APFS; preserve the ownership binding
+    // to this actual killed writer's file after that deliberate metadata edit.
+    const aged = statSync(partial, { bigint: true });
+    const fileIdentity = [aged.dev, aged.ino, aged.birthtimeNs].map(String).join(":");
+    writeFileSync(ownerPath, JSON.stringify({ ...owner, createdAt: old, fileIdentity }));
     utimesSync(ownerPath, old / 1000, old / 1000);
     const legacy = join(backupDirectory, "pit-20000101-000000.db.partial-123");
     writeFileSync(legacy, "unproven legacy partial");

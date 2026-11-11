@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { isStaff } from "../domain/staffRoles.mjs";
 const require = createRequire(import.meta.url);
 const React = require("react"), reconciler = require("react-reconciler");
 const { transformSync } = require("@babel/core");
@@ -283,7 +284,7 @@ test('saved badge preferences survive fresh reads and render on self/public prof
   // roleBadge is exported, so its declaration lives under ExportNamedDeclaration.
   const ast = require('@babel/parser').parse(storeSource, { sourceType: 'module', plugins: ['jsx'] });
   const exportedRole = ast.program.body.flatMap(n => n.declaration?.declarations || []).find(n => n.id.name === 'roleBadge');
-  const roleBadge = new Function('return (' + storeSource.slice(exportedRole.init.start, exportedRole.init.end) + ')')();
+  const roleBadge = new Function('isStaff', 'return (' + storeSource.slice(exportedRole.init.start, exportedRole.init.end) + ')')(isStaff);
   const eligibilitySource = storeSource.slice(storeSource.indexOf('  const userBadges ='), storeSource.indexOf('  // --- Gamification'));
   const badgeEligibility = new Function('roleBadge', 'memberBadgeTypes', 'isTop100', eligibilitySource + '\nreturn userBadges;')(roleBadge, memberBadgeTypes, () => false);
   const id = 'badge_view_owner';
