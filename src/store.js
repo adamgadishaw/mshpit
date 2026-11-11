@@ -34,6 +34,7 @@ import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, persistedTourDateCache, publ
 import { toIsoDate } from "./domain/dates.mjs";
 import { createTicketRegistry } from "./domain/latestWins.mjs";
 import { recentSongTrack, withoutBlockedPersonSearches } from "./domain/unifiedSearch.mjs";
+import { venueDirectoryGroups } from "./domain/venueDirectory.mjs";
 import { memoizedUnifiedVenueSearchIndex, searchUnifiedVenueIndex } from "./domain/unifiedLocationSearch.mjs";
 import {
   createRecommendationPreferenceCoordinator,
@@ -90,7 +91,7 @@ import {
   trackProductEvent,
 } from "./lib/productAnalytics";
 import { analyticsDurationBucket } from "./domain/analyticsPolicy.mjs";
-import { isVenuePlaceActionable, locationCenterFromVenues, venuePlaceIdentity } from "./domain/venueDiscovery.mjs";
+import { locationCenterFromVenues } from "./domain/venueDiscovery.mjs";
 import { mapCoordinate } from "./domain/mapCoordinates.mjs";
 import { countryForCity } from "./geo";
 import {
@@ -6969,22 +6970,7 @@ export function StoreProvider({ children }) {
 
   // Every known venue grouped by city, with venue + upcoming counts. Powers the
   // "find venues by city" browser reached from the menu.
-  const venuesByCity = () => {
-    const groups = {};
-    allVenues().forEach((v) => {
-      if (!isVenuePlaceActionable(v.place)) return;
-      const place = venuePlaceIdentity(v.place);
-      (groups[place.id] ||= { ...place, venues: [] }).venues.push({ ...v, upcoming: venueUpcomingCount(v.name) });
-    });
-    return Object.values(groups)
-      .map((g) => ({
-        ...g,
-        count: g.venues.length,
-        upcoming: g.venues.reduce((s, v) => s + v.upcoming, 0),
-        venues: g.venues.sort((a, b) => b.upcoming - a.upcoming || a.name.localeCompare(b.name)),
-      }))
-      .sort((a, b) => b.count - a.count || a.city.localeCompare(b.city));
-  };
+  const venuesByCity = () => venueDirectoryGroups(venueSearchIndex);
 
   // Venues within `maxKm` of a center (defaults to your home city), nearest first.
   const localVenues = (maxKm = 75, center = home) => {
