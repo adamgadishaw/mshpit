@@ -61,11 +61,11 @@ function projection(upcoming = [early, late, unknown, later], old = [past]) {
 // synthetic boundaries; no API, calendar file, seller URL or device is touched.
 function fixture({ accountId = "account-a", initialDate = "2028-01-31", initialView = "upcoming", width = 390, fontScale = 1,
   projected = projection(), history: initialHistory = {}, strict = false, delayClock = false, themeIsDark = true,
-  initialAgendaLimit = 40, initialPresentation = "month", home = null, catalogue: initialCatalogue = {} } = {}) {
+  initialAgendaLimit = 40, initialPresentation = "month", initialCataloguePages = 1, home = null, catalogue: initialCatalogue = {} } = {}) {
   const renderer = createRenderer(), modules = new Map(), menus = [], exports = [], tickets = [], opens = [], artists = [], announcements = [];
   const refreshes = [], attendanceRefreshes = [], historyRetries = [], historyLoads = [], clocks = [], appListeners = new Set();
-  const catalogueQueries = [], catalogueLoads = [];
-  const catalogue = { events: [], status: "ready", coverage: { complete: true }, hasMore: false, error: null, summaryComplete: true, dayPresence: {},
+  const catalogueQueries = [], catalogueLoads = [], browseOptions = [];
+  const catalogue = { events: [], status: "ready", loadedPages: 1, coverage: { complete: true }, hasMore: false, error: null, summaryComplete: true, dayPresence: {},
     refresh: options => request(refreshes, { options }), loadMore: () => request(catalogueLoads, {}), ...initialCatalogue };
   let epoch = 1, routeCurrent = true, attendance = [], browse, backBlocked = false, keyboardDismissals = 0;
   const request = (list, data) => { const value = { ...deferred(), ...data }; list.push(value); return value.promise; };
@@ -94,8 +94,8 @@ function fixture({ accountId = "account-a", initialDate = "2028-01-31", initialV
     if (name === "../features/profileHistory/useProfileHistory") return { useProfileHistory: () => history };
     if (name === "../domain/calendarShows.mjs") return { memberCalendarModel: () => projected };
     if (name === "../hooks/useIOSDetailBackBlock") return value => { backBlocked = value; };
-    if (name === "../hooks/useCalendarBrowseState") return options => { browse = load("../hooks/useCalendarBrowseState.js").default({ ...options,
-      initialState: { ...options.initialState, agendaLimit: initialAgendaLimit, presentation: initialPresentation } }); return browse; };
+    if (name === "../hooks/useCalendarBrowseState") return options => { browseOptions.push(options); browse = load("../hooks/useCalendarBrowseState.js").default({ ...options,
+      initialState: { ...options.initialState, agendaLimit: initialAgendaLimit, presentation: initialPresentation, cataloguePages: initialCataloguePages } }); return browse; };
     if (name === "../hooks/useIOSCalendarExport") return load("../hooks/useIOSCalendarExport.ios.js");
     if (name === "../lib/calendarExport") return { exportCalendarEvents: (events, options) => request(exports, { events, options }) };
     if (name === "../lib/ticketLinks") return { openTicketLink: (url, options) => { tickets.push({ url, options }); return Promise.resolve(false); } };
@@ -115,7 +115,7 @@ function fixture({ accountId = "account-a", initialDate = "2028-01-31", initialV
   }
   const Screen = load("./CalendarScreen.ios.jsx").default;
   const f = {
-    menus, exports, tickets, opens, artists, announcements, refreshes, attendanceRefreshes, historyRetries, historyLoads, history, clocks, catalogue, catalogueQueries, catalogueLoads,
+    menus, exports, tickets, opens, artists, announcements, refreshes, attendanceRefreshes, historyRetries, historyLoads, history, clocks, catalogue, catalogueQueries, catalogueLoads, browseOptions,
     all: () => nodes(renderer.container), text: () => text(renderer.container), state: () => browse.state,
     find(predicate) { const node = f.all().find(predicate); assert.ok(node, "Expected rendered control"); return node; },
     button(label) { return f.find(node => node.type === "Pressable" && node.props.accessibilityLabel === label); },
@@ -481,4 +481,18 @@ test("agenda continuation starts the next month at day one without skipping earl
     f.pressText("Next month"); assert.equal(f.state().selected, expected);
     assert.equal(f.catalogueQueries.at(-1).selected, expected); assert.equal(f.state().scrollY, 0);
   }
+});
+
+test("deep calendar return waits for its prior page depth before restoring scroll", async t => {
+  const f = fixture({ initialAgendaLimit: 240, initialCataloguePages: 3,
+    catalogue: { loadedPages: 1, hasMore: true, coverage: { complete: false } } }); t.after(f.close);
+  assert.equal(f.catalogueQueries.at(-1).restorePages, 3); assert.equal(f.browseOptions.at(-1).restoreReady, false);
+  f.catalogue.loadedPages = 2; f.render(); assert.equal(f.browseOptions.at(-1).restoreReady, false);
+  f.catalogue.status = "error"; f.catalogue.error = new Error("offline"); f.render();
+  assert.equal(f.browseOptions.at(-1).restoreReady, false, "a partial failure must not clamp a saved deep offset");
+  f.catalogue.status = "ready"; f.catalogue.error = null; f.catalogue.loadedPages = 3; f.render(); await f.settle();
+  assert.equal(f.browseOptions.at(-1).restoreReady, true);
+  f.catalogue.loadedPages = 4; f.render(); await f.settle(); assert.equal(f.state().cataloguePages, 4);
+  f.catalogue.loadedPages = 0; f.catalogue.status = "loading";
+  f.press("Next month"); assert.equal(f.state().cataloguePages, 1); assert.equal(f.catalogueQueries.at(-1).restorePages, 1);
 });

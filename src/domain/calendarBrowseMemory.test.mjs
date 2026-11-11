@@ -3,7 +3,7 @@ import test from "node:test";
 import { calendarBrowseSnapshot, createCalendarBrowseMemory, createCalendarScrollReturn } from "./calendarBrowseMemory.mjs";
 
 const initial = { cursor: { y: 2026, m: 10 }, selected: "2026-11-10", view: "upcoming",
-  scope: "all", presentation: "month", historyVisibleLimit: 30, agendaLimit: 40, scrollY: 0 };
+  scope: "all", presentation: "month", historyVisibleLimit: 30, agendaLimit: 40, cataloguePages: 1, scrollY: 0 };
 const identity = { accountId: "a", authEpoch: 1 };
 const layout = height => ({ nativeEvent: { layout: { height } } });
 const scroll = y => ({ nativeEvent: { contentOffset: { y } } });
@@ -21,7 +21,7 @@ test("Show and Back restores the same calendar occurrence, not a newly opened ca
   const occurrence = {};
   const before = memory.claim(occurrence, identity, initial);
   const browsed = { cursor: { y: 2027, m: 2 }, selected: "2027-03-22", view: "past",
-    scope: "plans", presentation: "agenda", historyVisibleLimit: 90, agendaLimit: 120, scrollY: 641 };
+    scope: "plans", presentation: "agenda", historyVisibleLimit: 90, agendaLimit: 120, cataloguePages: 1, scrollY: 641 };
   before.save(browsed);
   const returned = memory.claim(occurrence, identity, initial);
   assert.equal(returned.restored, true);
@@ -128,4 +128,36 @@ test("explicit Local choice survives Show and Back without changing a fresh cale
   assert.equal(returned.scope, "local"); assert.equal(returned.selected, "2026-11-30"); assert.equal(returned.presentation, "agenda");
   assert.equal(memory.claim({}, identity, initial).read().scope, "all");
   assert.equal(Object.hasOwn(returned, "homeCity"), false, "navigation memory does not copy profile geography");
+});
+
+test("deep return retains only bounded page depth and no catalogue data", () => {
+  const memory = createCalendarBrowseMemory(); memory.account("a", 1); const occurrence = {};
+  const before = memory.claim(occurrence, identity, initial);
+  before.save({ cataloguePages: 3, events: [{ id: "private-event" }] });
+  const after = memory.claim(occurrence, identity, initial).read();
+  assert.equal(after.cataloguePages, 3); assert.equal(Object.hasOwn(after, "events"), false);
+  for (const cataloguePages of [0, -1, 1.5, Infinity, 10001, "3"]) assert.equal(calendarBrowseSnapshot({ cataloguePages }, after).cataloguePages, 3);
+});
+
+test("deep return waits for the matching final content measurement in either delivery order", () => {
+  for (const measureFirst of [true, false]) {
+    const calls = [], controller = createCalendarScrollReturn(1200, () => {});
+    const ref = { scrollTo: args => calls.push(args) };
+    controller.update(ref, false, 3); controller.onLayout(layout(500));
+    controller.onContentSizeChange(390, 700, 1);
+    if (measureFirst) controller.onContentSizeChange(390, 2200, 3);
+    controller.update(ref, true, 3);
+    if (!measureFirst) {
+      assert.deepEqual(calls, [], "first-page height must not clamp the saved offset");
+      controller.onContentSizeChange(390, 2200, 3);
+    }
+    assert.deepEqual(calls, [{ y: 1200, animated: false }]);
+  }
+});
+
+test("a genuinely shorter exhausted result restores against its own content version", () => {
+  const calls = [], controller = createCalendarScrollReturn(1200, () => {}), ref = { scrollTo: args => calls.push(args) };
+  controller.update(ref, false, 3); controller.onLayout(layout(500));
+  controller.onContentSizeChange(390, 700, 1); controller.update(ref, true, 1);
+  assert.deepEqual(calls, [{ y: 200, animated: false }]);
 });

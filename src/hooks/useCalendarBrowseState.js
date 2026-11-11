@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { calendarBrowseSnapshot, createCalendarBrowseMemory, createCalendarScrollReturn } from "../domain/calendarBrowseMemory.mjs";
 
 export default function useCalendarBrowseState({ memory, occurrence, accountId = null, authEpoch,
-  initialState, isCurrentRoute, restoreReady = true }) {
+  initialState, isCurrentRoute, restoreReady = true, restoreContentVersion = null }) {
   const local = useRef(null);
   if (!local.current) local.current = { memory: createCalendarBrowseMemory(), occurrence: {} };
   const ownerMemory = memory || local.current.memory;
@@ -45,7 +45,7 @@ export default function useCalendarBrowseState({ memory, occurrence, accountId =
     return () => { admission.mounted = false; };
   }, [owner]);
   useLayoutEffect(() => {
-    owner.scroll.update(scrollRef.current, restoreReady);
+    owner.scroll.update(scrollRef.current, restoreReady, restoreContentVersion);
   });
   const update = patch => {
     if (!current()) return false;
@@ -60,7 +60,7 @@ export default function useCalendarBrowseState({ memory, occurrence, accountId =
     state: owner.state, restored: !!owner.lease?.restored, update, scrollRef,
     onScroll: event => { if (current()) owner.scroll.onScroll(event); },
     onLayout: event => { if (current()) owner.scroll.onLayout(event); },
-    onContentSizeChange: (width, height) => { if (current()) owner.scroll.onContentSizeChange(width, height); },
+    onContentSizeChange: (width, height, contentVersion) => { if (current()) owner.scroll.onContentSizeChange(width, height, contentVersion); },
     onScrollBeginDrag: event => { if (current()) owner.scroll.onScrollBeginDrag(event); },
     // Both synchronous controls and delayed work retain render-time authority.
     isCurrent: current,

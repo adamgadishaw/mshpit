@@ -22,6 +22,8 @@ export function calendarBrowseSnapshot(value = {}, previous = null) {
     scope: choose("scope", ["all", "local", "plans"], "all"),
     presentation: choose("presentation", ["month", "agenda"], "month"),
     historyVisibleLimit: limit,
+    cataloguePages: Number.isSafeInteger(value.cataloguePages) && value.cataloguePages >= 1 && value.cataloguePages <= 10000
+      ? value.cataloguePages : previous?.cataloguePages || 1,
     agendaLimit: Number.isSafeInteger(value.agendaLimit) && value.agendaLimit >= 40 && value.agendaLimit % 40 === 0
       ? value.agendaLimit : previous?.agendaLimit || 40,
     scrollY: own(value, "scrollY") ? offset(value.scrollY) : previous?.scrollY || 0,
@@ -65,8 +67,10 @@ export function createCalendarBrowseMemory() {
 // and content events can arrive in either order; a new drag always wins.
 export function createCalendarScrollReturn(initialY, save, isCurrent = () => true) {
   let pending = offset(initialY), height = 0, content = 0, ready = false, target = null;
+  let requiredContentVersion = null, measuredContentVersion = null;
   const restore = () => {
     if (!isCurrent() || pending == null || !ready || height <= 0 || content <= 0 || !target?.scrollTo) return;
+    if (requiredContentVersion != null && measuredContentVersion !== requiredContentVersion) return;
     const y = Math.min(pending, Math.max(0, content - height));
     target.scrollTo({ y, animated: false });
     pending = null;
@@ -79,16 +83,16 @@ export function createCalendarScrollReturn(initialY, save, isCurrent = () => tru
       ? Math.min(offset(y), Math.max(0, content - height)) : offset(y) });
   };
   return {
-    update(ref, isReady) { if (isCurrent()) { target = ref; ready = !!isReady; restore(); } },
+    update(ref, isReady, contentVersion = null) { if (isCurrent()) { target = ref; ready = !!isReady; requiredContentVersion = contentVersion; restore(); } },
     onLayout(event) {
       if (!isCurrent()) return;
       const next = event?.nativeEvent?.layout?.height;
       if (Number.isFinite(next)) height = Math.max(0, next);
       restore();
     },
-    onContentSizeChange(_width, next) {
+    onContentSizeChange(_width, next, contentVersion = null) {
       if (!isCurrent()) return;
-      if (Number.isFinite(next)) content = Math.max(0, next);
+      if (Number.isFinite(next)) { content = Math.max(0, next); measuredContentVersion = contentVersion; }
       restore();
     },
     onScroll,

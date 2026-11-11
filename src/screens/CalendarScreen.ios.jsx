@@ -84,25 +84,20 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
   const historyInitialLoading = !!accountId && !history.updatedAt && !history.error
     && ["idle", "loading", "refreshing"].includes(history.status);
   const [clock, setClock] = useState(() => new Date());
-  const [catalogueRestoreReady, setCatalogueRestoreReady] = useState(false);
+  const [catalogueRestore, setCatalogueRestore] = useState({ ready: false, version: null });
   const todayKey = localCalendarIso(clock);
   const initial = calendarReadDate(initialDate) || todayKey;
   const initialDay = calendarLocalDate(initial);
   const browse = useCalendarBrowseState({ memory: browseMemory, occurrence: browseOccurrence, accountId, authEpoch: chatAuthEpoch,
     initialState: { selected: initial, cursor: { y: initialDay.getFullYear(), m: initialDay.getMonth() },
       view: initialView === "past" ? "past" : "upcoming", scope: "all", presentation: "month", historyVisibleLimit: CALENDAR_HISTORY_PAGE_SIZE },
-    isCurrentRoute, restoreReady: !historyInitialLoading && catalogueRestoreReady,
+    isCurrentRoute, restoreReady: !historyInitialLoading && catalogueRestore.ready, restoreContentVersion: catalogueRestore.version,
   });
   const { state, update, isCurrent } = browse;
   const { cursor, selected, view, scope, presentation } = state;
-  const catalogue = useCalendarShows({ cursor, selected, presentation, scope, homeCity, homeCountry,
+  const catalogue = useCalendarShows({ cursor, selected, presentation, scope, homeCity, homeCountry, restorePages: state.cataloguePages,
     accountId, authEpoch: chatAuthEpoch, enabled: view === "upcoming" && scope !== "plans", isCurrent, capture: browse.capture });
   const publicShows = view === "upcoming" && scope !== "plans";
-  useEffect(() => {
-    if (isCurrent() && (!publicShows || catalogue.status === "ready" || catalogue.status === "error" || catalogue.needsLocation)) {
-      setCatalogueRestoreReady(true);
-    }
-  }, [isCurrent, publicShows, catalogue.status, catalogue.needsLocation]);
   const historyWindow = useMemo(() => calendarHistoryWindow(history.posts, state.historyVisibleLimit, history.nextCursor),
     [history.posts, state.historyVisibleLimit, history.nextCursor]);
   const personalModel = useMemo(() => memberCalendarModel({ today: todayKey,
@@ -124,6 +119,17 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
       .map(([date, events]) => [date, events.filter(event => calendarLocalEvent(event, { homeCity, homeCountry, countryForCity }))])
       .filter(([, events]) => events.length)) : days;
   }, [model, view, scope, homeCity, homeCountry, publicShows, cursor.y, cursor.m]);
+  // A native content-size callback must belong to the rows being restored,
+  // even when history and catalogue pages finish in different orders.
+  const contentVersion = useMemo(() => ({}), [byDay, selected, presentation, state.agendaLimit, historyInitialLoading]);
+  useEffect(() => {
+    const restored = (catalogue.loadedPages || 0) >= state.cataloguePages;
+    const exhausted = catalogue.status === "ready" && !catalogue.hasMore;
+    if (isCurrent() && (!publicShows || restored || exhausted || catalogue.needsLocation)) {
+      setCatalogueRestore(current => current.ready && current.version === contentVersion ? current : { ready: true, version: contentVersion });
+    }
+    if (isCurrent() && publicShows && catalogue.loadedPages > state.cataloguePages) update({ cataloguePages: catalogue.loadedPages });
+  }, [isCurrent, publicShows, catalogue.status, catalogue.needsLocation, catalogue.loadedPages, catalogue.hasMore, state.cataloguePages, contentVersion]);
   const geometry = useMemo(() => calendarMonthGeometry({ ...cursor, width, fontScale }), [cursor, width, fontScale]);
   const agenda = useMemo(() => calendarAgendaGroups(byDay, { selected, view, limit: state.agendaLimit }), [byDay, selected, view, state.agendaLimit]);
   const selectedEvents = byDay[selected] || [];
@@ -176,7 +182,7 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
     if (!isCurrent()) return;
     refreshRef.current?.abort(); refreshRef.current = null;
     setRefreshState(null); setJump(null); setFeedback(null);
-    update({ ...patch, agendaLimit: CALENDAR_AGENDA_PAGE });
+    update({ ...patch, agendaLimit: CALENDAR_AGENDA_PAGE, cataloguePages: 1 });
   };
   const moveMonth = delta => {
     const next = calendarMonthSelection(cursor, delta, selected);
@@ -331,7 +337,7 @@ export default function CalendarScreen({ initialDate = null, initialView = "upco
       <ScrollView ref={browse.scrollRef} style={styles.fill} contentContainerStyle={styles.content}
         keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled" automaticallyAdjustKeyboardInsets
         onScroll={browse.onScroll} scrollEventThrottle={32} onScrollBeginDrag={browse.onScrollBeginDrag}
-        onLayout={browse.onLayout} onContentSizeChange={browse.onContentSizeChange}>
+        onLayout={browse.onLayout} onContentSizeChange={(contentWidth, contentHeight) => browse.onContentSizeChange(contentWidth, contentHeight, contentVersion)}>
         <View style={[styles.displayControls, (largeText || width < 380) && styles.displayControlsLarge]}>
           <Segment value={view} options={[["upcoming", "Shows"], ["past", "History", "Past shows"]]} label="Calendar show period" onChange={choosePeriod} />
           <Segment value={presentation} options={[["month", "Month"], ["agenda", "Agenda"]]} label="Calendar presentation" onChange={next => choose({ presentation: next })} />
