@@ -33,20 +33,28 @@ const META = {
   post_tag: { icon: "you", tint: colors.gold, verb: "tagged you in a post" },
   dm: { icon: "mail", tint: colors.good, verb: "sent you a message" },
   plan_join: { icon: "user-plus", tint: colors.good, verb: "joined your plan" },
+  creator_update: { icon: "music", tint: colors.amber, verb: "shared an update" },
   artist_update: { icon: "music", tint: colors.amber, verb: "" },
   welcome: { icon: "star", tint: colors.amber, verb: "" },
 };
 
+function reactionPhrase(notification) {
+  const noun = notification.creatorUpdate ? "update" : notification.postKind === "status" ? "post" : notification.postKind === "memory" ? "memory" : "review";
+  return notification.type === "like" ? `liked your ${noun}` : `commented on your ${noun}`;
+}
+const reactionReference = notification => !notification.creatorUpdate && notification.postKind !== "status" && notification.postKind !== "memory" && notification.artist;
+
 function notificationCopy(notification, actorName) {
-  if (notification.type === "welcome") return "Welcome to Pit! Follow people whose taste matches yours, log the shows you go to, and rate the band versus the room.";
+  if (notification.type === "welcome") return "Welcome to Mshpit. Log shows, share reviews, and follow other fans.";
   if (notification.type === "post_tag") return postTagNotificationCopy(actorName, notification.artist);
   if (notification.type === "plan_join") return `${actorName || "Someone"} ${planJoinPhrase(notification.artist)}`;
+  if (notification.type === "creator_update") return `${notification.artist || actorName || "A page you follow"}: ${notification.text || "new update"}`;
   if (notification.type === "artist_update") return `${notification.artist || "An artist you follow"}: ${notification.text || "new music"}`;
   const meta = META[notification.type] || META.like;
-  const reference = (notification.type === "like" || notification.type === "comment") && notification.artist
+  const reference = (notification.type === "like" || notification.type === "comment") && reactionReference(notification)
     ? ` of ${notification.artist}`
     : "";
-  return `${actorName || "Someone"} ${meta.verb}${reference}`;
+  return `${actorName || "Someone"} ${["like", "comment"].includes(notification.type) ? reactionPhrase(notification) : meta.verb}${reference}`;
 }
 
 // The activity feed, the social heartbeat that connects follows, likes, comments
@@ -70,7 +78,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
   const bundles = useMemo(() => bundleNotifications(items), [items]);
   const activityRows = viewMode === "digest"
     ? bundles.map((bundle) => ({ key: bundle.id, notification: bundle.primary, bundle }))
-    : items.map((notification) => ({ key: notification.id, notification, bundle: null }));
+    : items.filter(notification => viewMode !== "updates" || ["creator_update", "artist_update"].includes(notification.type)).map((notification) => ({ key: notification.id, notification, bundle: null }));
 
   const readCurrentNotifications = async ({ signal: externalSignal, replace = false } = {}) => {
     if (!accountIdRef.current) return null;
@@ -241,6 +249,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
             {[
               ["recent", "Recent"],
               ["digest", "Digest"],
+              ["updates", "Updates"],
             ].map(([value, label]) => {
               const selected = viewMode === value;
               return (
@@ -260,14 +269,14 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
           <Text style={styles.modeScope}>
             {viewMode === "digest"
               ? "Digest groups only the activity currently loaded here. It does not schedule or send push or email updates."
-              : "Recent shows each loaded activity item separately."}
+              : viewMode === "updates" ? "News from the artists, venues and events you follow." : "Recent shows each loaded activity item separately."}
           </Text>
         </View>
-        {items.length === 0 && (
+        {activityRows.length === 0 && (
           <View style={styles.empty}>
             <Icon name="heart" size={28} color={colors.textFaint} />
-            <Text style={styles.emptyTitle}>No activity yet</Text>
-            <Text style={styles.emptySub}>When people follow you, tag you, like your reviews, comment, or message you, it shows up here.</Text>
+            <Text style={styles.emptyTitle}>{viewMode === "updates" ? "No updates yet" : "No activity yet"}</Text>
+            <Text style={styles.emptySub}>{viewMode === "updates" ? "Updates from pages you follow will appear here." : "Follows, likes, comments, messages and page updates appear here."}</Text>
           </View>
         )}
         {activityRows.map(({ key, notification: n, bundle }) => {
@@ -286,7 +295,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
               accessibilityState={{ busy: openingNotificationId === n.id }}
             >
               <View style={styles.avatarWrap}>
-                {n.type === "artist_update" ? (
+                {["artist_update", "creator_update"].includes(n.type) ? (
                   <View style={styles.newsMark}><Icon name="music" size={18} color={colors.amber} /></View>
                 ) : (
                   <Avatar user={{ name: n.actorName, initials: n.actorInitials, avatarUri: n.actorUri, avatarColor: n.actorColor }} size={40} onPress={n.actorId ? () => onOpenProfile?.(n.actorId) : undefined} />
@@ -296,17 +305,17 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
                 </View>
               </View>
               <View style={{ flex: 1 }}>
-                {n.type === "artist_update" ? (
+                {["artist_update", "creator_update"].includes(n.type) ? (
                   <Text style={styles.text}><Text style={styles.who}>{n.artist || "An artist you follow"}</Text> {n.text || "has news"}</Text>
                 ) : n.type === "welcome" ? (
                   <Text style={styles.text}>
-                    <Text style={styles.who}>Welcome to Pit! </Text>
-                    Follow people whose taste matches yours, log the shows you go to, and rate the band vs. the room.
+                    <Text style={styles.who}>Welcome to Mshpit. </Text>
+                    Log shows, share reviews, and follow other fans.
                   </Text>
                 ) : (
                   <Text style={styles.text}>
-                    <Text style={styles.who}>{actorName}</Text> {n.type === "post_tag" ? postTagNotificationPhrase(n.artist) : n.type === "plan_join" ? planJoinPhrase(n.artist) : meta.verb}
-                    {(n.type === "like" || n.type === "comment") && n.artist ? <Text style={styles.ref}> of {n.artist}</Text> : null}
+                    <Text style={styles.who}>{actorName}</Text> {n.type === "post_tag" ? postTagNotificationPhrase(n.artist) : n.type === "plan_join" ? planJoinPhrase(n.artist) : ["like", "comment"].includes(n.type) ? reactionPhrase(n) : meta.verb}
+                    {(n.type === "like" || n.type === "comment") && reactionReference(n) ? <Text style={styles.ref}> of {n.artist}</Text> : null}
                   </Text>
                 )}
                 {n.type === "comment" && n.text ? <Text style={styles.preview} numberOfLines={1}>“{n.text}”</Text> : null}

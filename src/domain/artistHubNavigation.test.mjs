@@ -86,7 +86,7 @@ test("Artist HQ exposes one primary action for each distinct job", () => {
   assert.equal((hub.match(/onPress=\{onTourDates\}/g) || []).length, 1, "one upcoming-shows action");
   assert.equal((hub.match(/onPress=\{onEditAccount\}/g) || []).length, 1, "one personal-account action");
   assert.match(hub, />Preview artist page<\/Text>/);
-  assert.match(hub, /title="Live photos & videos"/);
+  assert.match(hub, /title="Post to followers"/);
   assert.match(hub, /title="Promote a concert or release"/);
   assert.equal((hub.match(/onPress=\{onMediaPost\}/g) || []).length, 1, "one normal live-media post action, distinct from capped featured promotions");
   assert.match(hub, /title="Upcoming shows"/);
@@ -107,7 +107,7 @@ test("Artist HQ launches the artist-only campaign composer and the feed renders 
   assert.match(afterparty, /palette\.mutedTextColor/);
   assert.match(afterparty, /campaignBubble/);
   assert.doesNotMatch(afterparty, /TextInput|loadComments|addComment|campaignSend/);
-  assert.match(hub, /Featured feed posts still appear in the main feed\./);
+  assert.match(hub, /New updates appear in the main feed and on your artist page/);
 });
 
 test("fan preview hides ownership affordances and unreleased dates", () => {
@@ -143,10 +143,11 @@ test("artist publishing reports authoritative outcomes and preserves failed draf
   assert.match(store, /return commandSuccess\(\{ id \}\)/);
   assert.match(store, /return commandError\(error, context\)/);
 
-  assert.match(hub, /const result = await addArtistPost/);
-  assert.match(hub, /const submittedDraft = draft/);
-  assert.match(hub, /setDraft\(\(current\) => current === submittedDraft \? "" : current\)/);
-  assert.match(hub, /draft is still here/i);
+  assert.match(hub, /<CreatorPostsSection/);
+  assert.match(hub, /onCompose=\{onMediaPost\}/);
+  assert.match(app, /postMode: "creator"/);
+  assert.match(composer, /persistDraftSnapshot\(normalizeComposerDraft/);
+  assert.match(composer, /showPostFailure\(result.error\)/);
   assert.doesNotMatch(artist, /addArtistPost|removeArtistPost|Publish page update|deletePageUpdate/);
   assert.match(artist, /Artist posts are read-only here/);
 });
@@ -194,7 +195,7 @@ test("Artist HQ page reads expose a retryable scoped contract and gate unconfirm
   assert.match(hub, /disabled=\{!hasConfirmedArtistPage\}/);
   assert.match(hub, /accessibilityLabel="Retry loading artist page data"/);
   assert.match(hub, /\{hasConfirmedArtistPage \? \(\s*<View style=\{styles\.statsRow\}>/);
-  assert.match(hub, /hasConfirmedArtistPage && !model\.feedEnabled/);
+  assert.match(hub, /hasConfirmedArtistPage && posts\.length > 0 && !model\.feedEnabled/);
   assert.match(hub, /\{!hasConfirmedArtistPage \? \([\s\S]*Existing artist posts will appear after the artist page loads\./);
   assert.match(artist, /loadArtistPage\(a\.name, \{ signal: controller\.signal \}\)/);
 });

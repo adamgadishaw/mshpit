@@ -419,6 +419,12 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           </>
         ) : null}
 
+        {!!log.creatorUpdate && <View style={{ gap: 8, paddingVertical: 12 }}>
+          <Text style={{ color: colors.amber, fontWeight: "700" }}>{log.creatorUpdate.entityName} · {log.creatorUpdate.kind === "show" ? "Show date" : log.creatorUpdate.kind === "release" ? "Release" : "Update"}</Text>
+          <Text selectable style={{ color: colors.text, fontWeight: "800", fontSize: 20 }}>{log.creatorUpdate.title}</Text>
+          {!!log.creatorUpdate.date && <Text selectable style={{ color: colors.textDim }}>{formatDate(log.creatorUpdate.date)}{log.creatorUpdate.location ? ` · ${log.creatorUpdate.location}` : ""}</Text>}
+          {!!log.creatorUpdate.url && <PublicTextLink href={log.creatorUpdate.url} onNavigate={() => { void Linking.openURL(log.creatorUpdate.url).catch(() => Alert.alert("Link unavailable", "This link could not be opened. Try again.")); }} style={{ color: colors.amber }}>{log.creatorUpdate.kind === "show" ? "Tickets and details" : "Find out more"}</PublicTextLink>}
+        </View>}
         {!!log.review && (
           <ExpandableText
             key={`status-copy:${log.id}`}

@@ -67,3 +67,14 @@ test("post delivery stops after its bounded retry budget", async () => {
   }), (error) => error === failure);
   assert.equal(calls, 3);
 });
+
+
+test("creator delivery rejects mixed-version responses that omit or change the page attachment", async () => {
+  const creatorUpdate = { version: 1, entityType: "artist", entityKey: "sample", kind: "release", title: "Album news", date: "", location: "", url: "" };
+  const body = { kind: "status", clientMutationId: "creator_delivery_1", creatorUpdate };
+  for (const post of [{ id: "p" }, { id: "p", creatorUpdate: { ...creatorUpdate, entityKey: "another" } }]) {
+    await assert.rejects(deliverPostCreate({ body, apiCall: async () => ({ id: "p", post }), retryDelaysMs: [] }), /could not be confirmed/);
+  }
+  const response = { id: "p", post: { id: "p", creatorUpdate: { ...creatorUpdate, entityName: "Sample" } } };
+  assert.equal(await deliverPostCreate({ body, apiCall: async () => response }), response);
+});

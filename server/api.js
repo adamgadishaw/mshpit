@@ -126,6 +126,8 @@ import { startFestivalScheduler } from "./features/festivals/festivalScan.js";
 import { newsLiveRoutes } from "./features/newsDesk/newsLiveRoutes.js";
 import { providerProfileRoutes } from "./features/providerProfiles/providerProfileRoutes.js";
 import { crewRoutes } from "./features/crew/crewRoutes.js";
+import { assertCreatorUpdate, persistCreatorUpdate, projectedCreatorUpdate } from "./features/creatorPosts/creatorPostService.js";
+import { creatorPostRoutes } from "./features/creatorPosts/creatorPostRoutes.js";
 import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoutes.js";
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
 import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
@@ -2489,6 +2491,7 @@ function canonicalAttendanceTicketCreateRequest(user, source, storedPost) {
 
 function canonicalCreateRequest(user, body, storedPost = null) {
   const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  const creatorUpdate = assertCreatorUpdate(db, user.id, source);
   const eventAddress = cleanEventAddress(source.eventAddress);
   if (["status", "memory"].includes(source.kind) && eventAddress) {
     throw new ApiError(400, "An event address can only be added to an in-person review.", "VALIDATION_FAILED");
@@ -2565,6 +2568,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       campaign,
       taggedUserIds,
       mediaSelection: stableMedia,
+      creatorUpdate,
       memorialMemory,
       artist: publishedArtist,
       binding: publishedBinding,
@@ -2574,7 +2578,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       "tagged song title": values.song?.title,
       "tagged song artist": values.song?.artist,
     });
-    if (!values.review && !values.photos.length && !stableMedia?.ids?.length && !values.song && !playlist) {
+    if (!creatorUpdate && !values.review && !values.photos.length && !stableMedia?.ids?.length && !values.song && !playlist) {
       throw new ApiError(400, "Write something, add media, tag a song, or share a playlist to post.", "VALIDATION_FAILED");
     }
     return {
@@ -2604,6 +2608,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
         song: values.song,
         playlistId: playlist?.id || null,
         campaign,
+        ...(creatorUpdate ? { creatorUpdate } : {}),
         experienceType: "in_person",
         onlineTitle: null,
         youtubeUrl: null,
@@ -3121,6 +3126,7 @@ function postJson(p, viewerId) {
     room: online.experienceType === "online" ? null : p.room,
     dims: online.experienceType === "online" ? {} : parseJsonObject(p.dims),
     review: p.review,
+    creatorUpdate: projectedCreatorUpdate(db, p),
     // A news desk story: headline and the outlets that confirmed it.
     news: p.kind === "status" && String(p.id).startsWith("news_") ? newsDeskReader.forPost(p.id, { viewerId }) : null,
     // A stable descriptor is the publication authority. If its verified
@@ -7296,6 +7302,7 @@ export const routes = {
         if (v.attendanceTicket) postAttendanceTicket.run(JSON.stringify(v.attendanceTicket), id, u.id);
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
         if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
+        persistCreatorUpdate(db, { accountId: u.id, postId: id, update: v.creatorUpdate, at: now(), artistIdentity: v.creatorUpdate?.entityType === "artist" ? fanClubArtistIdentity(v.creatorUpdate.entityKey) : null });
         addPostTagNotifications(transactionTaggedUserIds, u.id, id, v.memorialMemory ? v.artist : null);
         return null;
       });
@@ -7349,6 +7356,8 @@ export const routes = {
       throw new ApiError(409, "Going ticket posts cannot be edited. Remove it and share a new ticket instead.", "CONFLICT");
     }
 
+    if (current.creator_update) assertCreatorUpdate(db, u.id, { kind: "status", creatorUpdate: JSON.parse(current.creator_update) });
+    if (ctx.body?.creatorUpdate != null) throw new ApiError(400, "Publish a new update to change its date or release details.", "VALIDATION_FAILED");
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
     const editable = ["artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId",
@@ -7639,7 +7648,7 @@ export const routes = {
     }
 
     if (current.kind === "status") {
-      if (!next.review && !storedPhotos.length && !next.song && !next.playlist) {
+      if (!current.creator_update && !next.review && !storedPhotos.length && !next.song && !next.playlist) {
         throw new ApiError(400, "Keep some text, media, a tagged song, or a playlist in this post.", "VALIDATION_FAILED");
       }
     }
@@ -7760,6 +7769,7 @@ export const routes = {
     const nextTaggedUserIds = storedPostTaggedUserIds(next.tagged_user_ids);
     atomicWrite(() => {
       ctx.assertCurrentSession?.();
+      if (current.creator_update) assertCreatorUpdate(db, u.id, { kind: "status", creatorUpdate: JSON.parse(current.creator_update) });
       const transactionCurrent = db.prepare(`SELECT tagged_user_ids,COALESCE(updated_at,created_at) AS version
         FROM posts WHERE id=? AND user_id=? AND removed=0`).get(current.id, u.id);
       if (!transactionCurrent || transactionCurrent.version !== currentVersion) {
@@ -10147,6 +10157,7 @@ export const routes = {
       return row && !row.removed && !blockedEitherWay(viewerId, row.user_id) ? postJsonWithImpressions(row, viewerId) : null;
     },
   }),
+  ...creatorPostRoutes({ database: db, requireUser, rateLimit: limit, artistIdentity: fanClubArtistIdentity, readPost: (ctx, id) => routes["GET /api/posts/:id"]({ ...ctx, params: { id } }) }),
   ...artistUpdatesRoutes({
     ApiError,
     rateLimit: limit,

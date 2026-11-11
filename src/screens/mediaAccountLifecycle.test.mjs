@@ -251,7 +251,7 @@ test("manual upload cancellation still clears the current composer's busy state"
 
 const compileSubmit = callback("LogScreen.jsx", "LogScreen", "submit");
 const compileShowPostFailure = callback("LogScreen.jsx", "LogScreen", "showPostFailure");
-function submitFixture({ photosPublic = false } = {}) {
+function submitFixture({ photosPublic = false, creatorUpdate = null } = {}) {
   const accountTasks = scope(), response = deferred(), events = [], posts = [];
   const setPostError = () => events.push("setPostError");
   const showPostFailure = compileShowPostFailure({
@@ -272,7 +272,7 @@ function submitFixture({ photosPublic = false } = {}) {
     isDurableMediaUrl: () => true, mediaProjectSubmissionAssetIds: () => [], mediaProject: { assets: [] },
     mediaProjectPublishedMedia, isStatus: true, isMemorialMemory: false, protectedLegacyMemory: false,
     editing: null, review: "A private draft", memoryTextOnly: false, song: null, isCampaign: false,
-    artistMediaConsent: { photosPublic },
+    artistMediaConsent: { photosPublic }, isCreator: !!creatorUpdate, creatorUpdate,
     onPost: (post) => { events.push("post"); posts.push(post); return response.promise; },
     showPostFailure, setPostError, draftIdRef: { current: "draft-a" }, composerId: "composer-a",
     ...Object.fromEntries(["setPosting", "deleteDraft", "setDraftId", "setSavedDraftFingerprint", "onDraftIdentity"]
@@ -612,4 +612,20 @@ test("two finished attachments survive Retry with six pending files including a 
   assert.deepEqual(retry.pendingMediaAssetsRef.current, []);
   assert.match(message, /could not be recovered/u);
   assert.match(message, /1 original file is no longer available/u);
+});
+
+
+test("creator publication uses the same checkpoint, account boundary and retry identity as ordinary uploads", async () => {
+  const creatorUpdate = { version: 1, entityType: "venue", entityKey: "test-room", kind: "release", title: "New season", date: "", location: "", url: "" };
+  const f = submitFixture({ creatorUpdate }), first = f.run();
+  assert.equal(f.posts[0].creatorUpdate, creatorUpdate);
+  assert.equal(f.posts[0].id, "post-a");
+  f.response.resolve({ ok: false, error: new Error("connection interrupted") }); await first;
+  assert.equal(f.events.includes("deleteDraft"), false);
+  assert.equal(f.events.includes("checkpoint"), true);
+  for (const boundary of ["logout", "switch", "round-trip", "unmount"]) {
+    const f = submitFixture({ creatorUpdate }), run = f.run(); crossBoundary(f.accountTasks, boundary);
+    const before = f.events.length; f.response.resolve({ ok: true }); await run;
+    assert.equal(f.events.length, before, boundary);
+  }
 });

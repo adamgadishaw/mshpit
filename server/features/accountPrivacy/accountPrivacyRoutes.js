@@ -1,3 +1,4 @@
+import { exportCreatorRelationships } from "../creatorPosts/creatorEntityOwnership.js";
 import { exportArtistVerification } from "../artistAccounts/artistVerificationExport.js";
 import { readNewsRegionChoice } from "../newsDesk/newsRegions.js";
 
@@ -111,7 +112,7 @@ export function accountPrivacyRoutes({
           return grant ? {kind:"first-wave",number:grant.slot,grantedAt:grant.granted_at} : null;
         })(),
         posts: database.prepare("SELECT * FROM posts WHERE user_id=? ORDER BY created_at DESC").all(user.id)
-          .map((post) => ({ id: post.id, kind: post.kind || "review", experienceType: post.experience_type || "in_person", onlineTitle: post.online_title || null, youtubeUrl: post.youtube_url || null, youtubeVideoId: post.youtube_video_id || null, artist: post.artist, venue: post.venue, city: post.city, eventAddress: post.event_address || null, date: post.date, overall: post.overall, band: post.band, room: post.room, review: post.review, tour: post.tour, setlist: parseJson(post.setlist, []), supportingActs: parseJson(post.supporting_acts, []), showFormat: post.show_format || "headline", endDate: post.end_date || null, tags: parseJson(post.tags, []), taggedUserIds: parseJson(post.tagged_user_ids, []), campaign: parseJson(post.campaign, null), photos: parseJson(post.photos, []), photosPublic: !!post.photos_public, landingShowcase: !!post.landing_showcase, song: parseJson(post.song, null), playlist: parseJson(post.playlist, null), removed: !!post.removed, createdAt: post.created_at })),
+          .map((post) => ({ id: post.id, kind: post.kind || "review", experienceType: post.experience_type || "in_person", onlineTitle: post.online_title || null, youtubeUrl: post.youtube_url || null, youtubeVideoId: post.youtube_video_id || null, artist: post.artist, venue: post.venue, city: post.city, eventAddress: post.event_address || null, date: post.date, overall: post.overall, band: post.band, room: post.room, review: post.review, tour: post.tour, setlist: parseJson(post.setlist, []), supportingActs: parseJson(post.supporting_acts, []), showFormat: post.show_format || "headline", endDate: post.end_date || null, tags: parseJson(post.tags, []), taggedUserIds: parseJson(post.tagged_user_ids, []), creatorUpdate: parseJson(post.creator_update, null), campaign: parseJson(post.campaign, null), photos: parseJson(post.photos, []), photosPublic: !!post.photos_public, landingShowcase: !!post.landing_showcase, song: parseJson(post.song, null), playlist: parseJson(post.playlist, null), removed: !!post.removed, createdAt: post.created_at })),
         taggedInPosts: database.prepare(`SELECT t.post_id,p.user_id AS author_id,p.removed,p.created_at
           FROM post_user_tags t JOIN posts p ON p.id=t.post_id
           WHERE t.user_id=? ORDER BY p.created_at DESC,p.id DESC LIMIT 1000`).all(user.id)
@@ -217,6 +218,7 @@ export function accountPrivacyRoutes({
           .map((row) => ({ from: accountReference(row.from_id), text: row.text, removed: !!row.removed, createdAt: row.created_at })),
         messageAcceptances: database.prepare("SELECT other_id,accepted_at,source FROM dm_acceptances WHERE user_id=? ORDER BY accepted_at DESC,other_id").all(user.id)
           .map((row) => ({ other: accountReference(row.other_id), acceptedAt: row.accepted_at, source: row.source })),
+        creatorAccount: exportCreatorRelationships(database, user.id),
         artistAccount: {
           ...exportArtistVerification(database, user.id),
           requests: database.prepare("SELECT id,artist_name,note,status,created_at FROM artist_requests WHERE user_id=? ORDER BY created_at DESC").all(user.id)
