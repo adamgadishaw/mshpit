@@ -12,6 +12,8 @@ import {
 } from "../domain/mediaProject.mjs";
 import { artistCampaignLimitCooldownMs, postRateLimitCooldownMs } from "../domain/postRetryCooldown.mjs";
 import { normalizeComposerDraft, composerDraftFingerprint } from "../domain/composerDraft.mjs";
+import { clampRating } from "../domain/validation.mjs";
+import { computeReview } from "../data.js";
 
 const uploadDependencies = {};
 for (const file of ["../lib/mediaAssetFinalize.mjs", "../domain/mediaEdit.mjs", "../domain/mediaUploadPolicy.mjs", "../domain/mediaUploadIdentity.mjs", "../domain/mediaRequestRecovery.mjs", "../domain/mediaUploadDeadline.mjs"]) {
@@ -224,6 +226,7 @@ for (const outcome of ["failed", "missing", "processing", "ready", "failed-final
     "setDraftId", "setSavedDraftFingerprint", "setPostType", "setCampaign", "setExperienceType", "setArtist", "setArtistPicked", "setArtistKey", "setVenue", "setVenuePicked", "setCity", "setEventAddress", "setTour", "setShowFormat", "setEndDate", "setLineup", "setTimesSeen", "setDate", "setOnlineTitle", "setYoutubeUrl", "setOnlineRating", "setDims", "setReview", "setTaggedPeople", "setSong", "setSongUrl", "setPreservedPlaylist", "setPhotosPublic", "setLandingShowcase", "setShowSong", "setShowPhotos", "setShowPeople",
   ].map(name => [name, () => {}]));
   const resume = compileResumeComposer({
+    setOverallRating: value => { state.overall = value; }, clampRating, computeReview,
     ...resumeSetters, normalizeComposerDraft, composerDraftFingerprint, normalizeMediaProject, mediaProjectFromPost, originalMediaProjectAsset,
     draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: null },
     onDraftIdentity: null, composerId: "composer-a", isDurableMediaUrl: value => /^https:\/\//u.test(value || ""),

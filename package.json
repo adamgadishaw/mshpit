@@ -56,6 +56,7 @@
     "verify:discover-venues-browser": "node scripts/verify-discover-venues-browser.mjs",
     "verify:catalog-maintenance-browser": "node scripts/verify-catalog-maintenance-browser.mjs",
     "verify:quick-log-browser": "node scripts/verify-quick-log-browser.mjs",
+    "verify:review-retry-browser": "node scripts/verify-review-retry-browser.mjs",
     "verify:festivals-browser": "node scripts/verify-festivals-browser.mjs",
     "verify:discover-events-browser": "node scripts/verify-discover-events-browser.mjs",
     "verify:media-upload-browser": "node scripts/verify-media-upload-browser.mjs",

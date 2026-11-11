@@ -244,6 +244,7 @@ function postErrorMessage(error) {
   const code = error?.serverCode || error?.body?.code || error?.code;
   const status = Number(error?.status || error?.body?.status);
   if (code === "POST_REMOVED") return "That post was removed on another device. Close this composer and start a new post.";
+  if (code === "POST_MUTATION_CONFLICT") return "An earlier version of this post was saved. Your full draft is still here. Check the saved post before applying your changes.";
   if (status === 409) return "That post changed on another device. Close this composer, reopen the latest version, and apply your changes again.";
   if (code === "ARTIST_CAMPAIGN_LIMIT") return "You've used today's two Featured posts. Turn off Featured to publish this as a regular post, or try Featured again after the daily quota resets.";
   if (code === "RATE_LIMITED" || status === 429) return "You're posting quickly. Wait a moment and try again. Your post is still here.";

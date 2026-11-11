@@ -98,6 +98,8 @@ jobs:
       - name: Catalog upkeep and editor (mobile and desktop)
         run: npm run verify:catalog-maintenance-browser
       - run: npm run verify:quick-log-browser
+      - name: Review retries and restored drafts (disposable loopback database)
+        run: npm run verify:review-retry-browser
       - run: npm run verify:festivals-browser
       - run: npm run verify:discover-events-browser
       - run: npm run verify:media-upload-browser

@@ -81,6 +81,8 @@ export const serverCollectionPaths = Object.freeze([
 export const clientCollectionPaths = Object.freeze(["/artists", "/events", "/venues"]);
 export const navigationCases = Object.freeze([
   ...[390, 1280].flatMap(width => [
+    ...["overall-only", "performance"].map(mode => ({ name: `profile-score-artist-${mode}-${width}`, kind: "artist-profile-score", mode, path: artistPath, member: true, width })),
+    { name: `profile-score-venue-${width}`, kind: "venue-profile-score", path: venueHydrationPath, member: true, width },
     ...[false, true].map(member => ({ name: `archive-review-${member ? "member" : "guest"}-${width}`, kind: "archive-review", path: postPath, member, width })),
     ...[venueHydrationAlias, venueHydrationPath].map(path => ({ name: `cold-guest-venue-${path.split("/").at(-1)}-${width}`, kind: "venue-hydration", path, width })),
     ...[postPath, eventPath].map(path => ({ name: `deep-link-${width < 620 ? "home" : "intro"}-${path.startsWith("/post") ? "post" : "event"}-${width}`, kind: "deep-link", path, width })),
@@ -192,6 +194,8 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   if (pathname === "/api/me/seen-count") return { count: 1 };
   if (pathname === "/api/lineup/suggestions") return { suggestions: [] };
   if (pathname === "/api/artists/sets") return { summary: {}, sets: [], openedFor: [], festivals: [] };
+  if (pathname === "/api/artists/reviews") return { reviews: [], nextCursor: null };
+  if (pathname === "/api/artists/seen") return { count: 0, names: [] };
   if (pathname === "/api/discovery/sidebar") return { upcomingEvents: [], suggestedUsers: [], topArtists: [], trendingVenues: [], popularLounges: [], landingMedia: [], catalogTotals: { artists: 40, venues: 80 } };
   if (pathname === "/api/tourdates") return { tourDates: [] };
   if (pathname === "/api/discover/overview") return {
@@ -412,11 +416,22 @@ async function runCase(browser, origin, item) {
         assert.equal(url.searchParams.get("name"), discoverShowArtist.name);
         state.lookupAttempts += 1;
       }
+      if (item.kind === "venue-profile-score" && decodeURIComponent(url.pathname) === "/api/venues/lee's palace/reviews") {
+        // The first page deliberately has no prose reviews. The full aggregate
+        // still represents two members' latest valid standalone star ratings.
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ reviews: [], stats: { reviewCount: 0, ratingCount: 2, averageRating: 0.75 } }) });
+      }
       const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist", discoverShow, discoverArtwork: item.kind === "discover-event-back",
-        archiveReview: item.kind === "archive-review", venueHydration: item.kind === "venue-hydration", after: url.searchParams.get("after"),
+        archiveReview: item.kind === "archive-review", venueHydration: ["venue-hydration", "venue-profile-score"].includes(item.kind), after: url.searchParams.get("after"),
         cancelledEvent: item.kind === "cancelled-event",
         artistIdentityPending: (item.kind === "discover-show-artist-conflict" && !state.identityConfirmed) || (item.kind === "cancelled-event" && item.mode === "artist-fallback"),
         artistLookupTransient: item.kind === "discover-show-artist-recovery" && !state.catalogRepaired });
+      if (item.kind === "artist-profile-score" && url.pathname.endsWith("/live-summary")) {
+        body.reputation = { ...body.reputation, avgRating: 1, ratingCount: 3,
+          performanceRating: item.mode === "performance" ? 4.5 : null,
+          performanceRatingCount: item.mode === "performance" ? 2 : 0,
+          performanceMemberCount: item.mode === "performance" ? 2 : 0 };
+      }
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
     } catch (error) {
       if (item.kind === "delayed" && url.pathname === "/api/resolve" && state.resolveReleased && /closed|disposed|handled|aborted|canceled|cancelled/i.test(error.message)) return;
@@ -454,6 +469,26 @@ async function runCase(browser, origin, item) {
       await page.goForward({ waitUntil: "networkidle" }); await landing(page); await assertPath(page, "/");
       await page.goBack({ waitUntil: "networkidle" }); await assertReview();
       await snapshot("review restored through Back/Forward");
+    } else if (item.kind === "artist-profile-score") {
+      await page.getByText("LIVE PERFORMANCE", { exact: true }).waitFor();
+      const scoreCard = page.getByText("LIVE PERFORMANCE", { exact: true }).locator("..");
+      await page.getByText("Show experience 1.0/5", { exact: false }).waitFor();
+      if (item.mode === "performance") {
+        await scoreCard.getByText("4.5", { exact: true }).waitFor();
+        await scoreCard.getByText("2 performance ratings from 2 members", { exact: true }).waitFor();
+      } else {
+        await scoreCard.getByText("No performance ratings yet", { exact: true }).waitFor();
+        assert.equal(await scoreCard.getByText("1.0", { exact: true }).count(), 0, "Overall-only feedback must not become artist performance");
+      }
+      await snapshot("separate artist performance and show experience");
+    } else if (item.kind === "venue-profile-score") {
+      await page.getByText("VENUE SCORE", { exact: true }).waitFor();
+      await page.getByText("Rated by 2 members", { exact: true }).waitFor();
+      await page.getByText("2 member ratings · 0.8 average", { exact: true }).waitFor();
+      assert.equal(await page.getByText("ROOM SCORE", { exact: true }).count(), 0);
+      await page.getByRole("tab", { name: "Reviews venue page section", exact: true }).click();
+      await page.getByText("Rated by 2 members", { exact: true }).waitFor();
+      await snapshot("standalone venue half-star ratings survive empty prose page");
     } else if (item.kind === "venue-hydration") {
       const assertVenue = async () => {
         await page.getByRole("heading", { name: "Lee's Palace", exact: true }).waitFor();
