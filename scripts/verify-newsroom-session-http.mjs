@@ -9,7 +9,7 @@ import {pathToFileURL} from 'node:url';
 const root=resolve(import.meta.dirname,'..'),directory=mkdtempSync(join(tmpdir(),'pit-auth-real-browser-'));
 const probe=createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));
 const origin=`http://127.0.0.1:${port}`;
-const env=Object.fromEntries(['PATH','SystemRoot','WINDIR','TEMP','TMP','LOCALAPPDATA'].filter(k=>process.env[k]).map(k=>[k,process.env[k]]));
+const env=Object.fromEntries(['PATH','SystemRoot','WINDIR','TEMP','TMP','TMPDIR','LOCALAPPDATA'].filter(k=>process.env[k]).map(k=>[k,process.env[k]]));
 Object.assign(env,{NEWSROOM_BROWSER_SESSIONS_ENABLED:'true',NODE_ENV:'test',PORT:String(port),PUBLIC_ORIGIN:origin,PIT_DATA_DIR:directory,PIT_AUTH_BROWSER_FIXTURE:'1',PIT_NEWSROOM_BROWSER_FIXTURE:'1',PIT_ALLOW_EMPTY_DB_BOOTSTRAP:'true',
  ADMIN_PASSWORD:'Synthetic-bootstrap-pass1',ADMIN_EMAIL:'bootstrap@example.test',NEWS_DESK_ACCOUNT_ID:'newsroom_http_publisher',MEDIA_PUBLIC_BASE_URL:'https://media.example.test',
  NEWS_DESK_ENABLED:'false',PIT_MEDIA_API_ENABLED:'false',BACKUP_ENABLED:'false',EMAIL_CAMPAIGN_RECOVERY_ENABLED:'false',CACHE_WARM_ENABLED:'false',TOURDATE_REFRESH_ENABLED:'false',TOURDATE_DEMAND_REFRESH_ENABLED:'false',ARTIST_GENRE_REFRESH_ENABLED:'false',ARTIST_PHOTO_SEED_ENABLED:'false',ARTIST_DEATH_WATCH_SCHEDULER_ENABLED:'false'});
