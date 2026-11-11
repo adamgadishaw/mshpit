@@ -9,16 +9,14 @@ test("the show page uses compact responsive sections and contained review slides
   assert.match(showSource, /function ReviewMediaTile/);
   assert.match(showSource, /const tabletLayout = width >= 720/);
   assert.match(showSource, /archiveReviewTileStyle/);
-  assert.match(showSource, /showSummaryWide/);
-  assert.match(showSource, /showSummaryMediaColumnWide/);
-  assert.match(showSource, /presentation\.showPostEvent && tabletLayout/);
+  assert.match(showSource, /overviewWide/);
+  assert.match(showSource, /overviewPhotosWide/);
   assert.match(showSource, /archiveReviewGrid/);
-  assert.match(showSource, /archiveReviewCardHalf/);
-  assert.match(showSource, /archiveReviewCardThird/);
-  assert.match(showSource, /heroGridWide/);
+  assert.match(showSource, /archiveReviewCardFull/);
+  assert.match(showSource, /title="Event details"/);
   assert.match(showSource, /contain/);
   assert.match(showSource, /!archiveShowKey/);
-  assert.match(showSource, />Reviews<\/Text>/);
+  assert.match(showSource, /title="Reviews" initiallyOpen/);
   assert.match(venuePhotoSource, /compact/);
 });
 
