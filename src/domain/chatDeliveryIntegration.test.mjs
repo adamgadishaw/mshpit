@@ -21,20 +21,26 @@ const itemFor = (index = 1) => ({
   context: "Sending your direct message", status: "queued", from: "me", text: `hello ${index}`,
   at: 900, ts: "now", pending: true, failed: false,
 });
-function fixture(apiCall) {
+function fixture(apiCall, { queued = false } = {}) {
   const sessionRef = { current: { id: "me" } }, chatAuthEpochRef = { current: 1 };
   const chatOutboxRef = { current: [] }, confirmed = { dm: {}, fan: {}, lounge: {} }, requests = [];
+  const updates = [];
+  const commit = (kind, update) => {
+    const apply = () => { confirmed[kind] = update(confirmed[kind]); };
+    if (queued) updates.push(apply); else apply();
+  };
   const bindings = {
     ...delivery, mergeChatMessages, sessionRef, chatAuthEpochRef, chatOutboxRef,
     ago: (at) => `canonical:${at}`,
     commitChatOutbox: (update) => (chatOutboxRef.current = update(chatOutboxRef.current)),
-    setDms: (update) => { confirmed.dm = update(confirmed.dm); },
-    setFanClubMsgs: (update) => { confirmed.fan = update(confirmed.fan); },
-    setLounge: (update) => { confirmed.lounge = update(confirmed.lounge); },
+    setDms: (update) => commit("dm", update),
+    setFanClubMsgs: (update) => commit("fan", update),
+    setLounge: (update) => commit("lounge", update),
     api: async (path, options) => { requests.push({ path, ...options }); return apiCall(path, options); },
   };
   const functions = new Function(...Object.keys(bindings), `${commands}\nreturn { queueChatMessage, retryChatMessage, cancelChatMessage };`)(...Object.values(bindings));
-  return { ...functions, requests, confirmed, sessionRef, chatAuthEpochRef, chatOutboxRef };
+  return { ...functions, requests, confirmed, sessionRef, chatAuthEpochRef, chatOutboxRef,
+    flush: () => { while (updates.length) updates.shift()(); } };
 }
 
 test("a full outbox rejects admission without sending, displacing messages or clearing the draft", async () => {
@@ -138,5 +144,18 @@ for (const outcome of ["success", "failure"]) {
     assert.equal((await send).stale, true);
     assert.deepEqual(f.confirmed.dm, {});
     assert.equal(f.chatOutboxRef.current[0].status, "sending", "retired completion does not mutate current state");
+  });
+}
+
+for (const kind of ["dm", "fan", "lounge"]) {
+  test(`${kind} acknowledgements queued before account replacement cannot restore old plaintext`, async () => {
+    for (const rotation of ["account", "epoch"]) {
+      const f = fixture(() => ({ id: "confirmed", createdAt: 1000 }), { queued: true });
+      assert.equal((await f.queueChatMessage({ ...itemFor(), kind })).ok, true);
+      if (rotation === "account") f.sessionRef.current = { id: "new-account" };
+      else f.chatAuthEpochRef.current += 1;
+      f.flush();
+      assert.deepEqual(f.confirmed, { dm: {}, fan: {}, lounge: {} });
+    }
   });
 }

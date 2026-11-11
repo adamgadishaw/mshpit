@@ -5,7 +5,7 @@ import { parse } from "@babel/parser";
 import { createAccountReadCoordinator } from "./accountReadCoordinator.mjs";
 import { mergeChatMessages } from "./chatMessages.mjs";
 import { applyDMRequestState, dmRequestState, normalizeDMRequestState } from "../features/chat/directMessageConsent.mjs";
-import { createDirectMessageHistory, isMessageHistoryAccessError } from "./directMessageHistory.mjs";
+import { createDirectMessageHistory, createDirectMessageHistoryAnchor, isMessageHistoryAccessError } from "./directMessageHistory.mjs";
 
 function functionSource(path, name) {
   const source = readFileSync(new URL(path, import.meta.url), "utf8");
@@ -25,6 +25,7 @@ function functionSource(path, name) {
 }
 const storeLoad = functionSource("../store.js", "loadThread");
 const screenLoad = functionSource("../screens/ThreadScreen.jsx", "loadThreadPage");
+const screenEarlier = functionSource("../screens/ThreadScreen.jsx", "loadEarlier");
 const bind = (source, bindings) => new Function(...Object.keys(bindings), `return (${source});`)(...Object.values(bindings));
 const deferred = () => {
   let resolve, reject;
@@ -67,6 +68,30 @@ test("actual Store and screen page bridge retain1000 rows while the live cache s
   assert.equal(f.current().length, 750);
   assert.equal(f.history.display(f.current()).length, 1300);
   assert.equal(f.history.display(f.current())[0].id, "m0001");
+});
+
+test("actual earlier-page bridge anchors only rows that survive the returned removals", async () => {
+  const f = fixture(), scrolls = [];
+  const initial = f.loadPage({ strict: true });
+  f.calls[0].resolve({ messages: messages(5, 6), nextCursor: "before5" }); await initial;
+  const anchor = createDirectMessageHistoryAnchor({ web: true, scrollTo: value => scrolls.push(value) });
+  const layout = y => ({ nativeEvent: { layout: { y } } });
+  anchor.rowLayout("m0005", layout(100)); anchor.rowLayout("m0006", layout(150));
+  anchor.onScroll({ nativeEvent: { contentOffset: { y: 100 } } });
+  const loadEarlier = bind(screenEarlier, {
+    historyBlocked: false, admitComposerAction: () => true, history: f.history,
+    loadThread: f.loadThread, otherId: "peer", historyAnchor: anchor, messages: f.current(),
+  });
+  const earlier = loadEarlier(); await Promise.resolve();
+  f.calls[1].resolve({ messages: messages(1, 4), removedIds: ["m0005"], nextCursor: null }); await earlier;
+  assert.equal(f.history.read().error, false);
+  assert.deepEqual(f.history.display([]).map(row => row.id), ["m0001", "m0002", "m0003", "m0004", "m0006"]);
+  anchor.rowLayout("m0005", layout(999));
+  assert.deepEqual(scrolls, [], "late layout for the removed row cannot move the viewport");
+  assert.equal(anchor.contentChanged(), true);
+  anchor.rowLayout("m0006", layout(350));
+  assert.deepEqual(scrolls, [{ y: 300, animated: false }]);
+  assert.equal(anchor.contentChanged(), false);
 });
 
 test("a simultaneous older request cannot stale the current poll or overwrite its cursor", async () => {

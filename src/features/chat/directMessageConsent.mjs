@@ -17,13 +17,15 @@ export function dmRequestState(messages, accountId) {
   return state;
 }
 
-export function applyDMRequestState(messages, accountId, requestState) {
+export function applyDMRequestState(messages, accountId, requestState, previousMessages = []) {
   const rows = Array.isArray(messages) ? messages : [];
   const state = normalizeDMRequestState(requestState);
-  if (!accountId || !state) return rows;
   // Acceptance is monotonic. An inbox GET already in flight when Accept commits
   // must not move the conversation back into Requests on its later arrival.
-  const next = dmRequestState(rows, accountId) === "accepted" ? "accepted" : state;
+  // Capture evidence before removals/trimming discard the last accepted row.
+  const next = dmRequestState(previousMessages, accountId) === "accepted"
+    || dmRequestState(rows, accountId) === "accepted" ? "accepted" : state;
+  if (!accountId || !next) return rows;
   return rows.map(message => ({ ...message, requestState: next, requestStateOwnerId: accountId }));
 }
 

@@ -1623,9 +1623,10 @@ export function StoreProvider({ children }) {
 
   // Merge found users (people search) into local state so their profiles, avatars,
   // and follow buttons resolve everywhere, without touching the session.
-  const absorbUsers = (list) => {
+  const absorbUsers = (list, isCurrent = () => true) => {
     if (!Array.isArray(list) || !list.length) return;
     setUsers((all) => {
+      if (!isCurrent()) return all;
       let next = all;
       for (const su of list) {
         if (!su?.id) continue;
@@ -2647,6 +2648,7 @@ export function StoreProvider({ children }) {
       .then(({ threads, removedIds = [] }) => {
         if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current) || !Array.isArray(threads)) return;
         setUsers((all) => {
+          if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current)) return all;
           let next = all;
           threads.forEach((t) => {
             if (t.otherUser && !next.some((x) => x.id === t.otherUser.id)) next = [...next,
@@ -2655,6 +2657,7 @@ export function StoreProvider({ children }) {
           return next;
         });
         setDms((d) => {
+          if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current)) return d;
           const n = { ...reconcileRemovedDirectMessages(d, su.id, removedIds) };
           threads.forEach((t) => {
             const key = dmKey(su.id, t.otherId);
@@ -2668,11 +2671,12 @@ export function StoreProvider({ children }) {
               server: true,
               relationshipContext,
             }));
-            n[key] = applyDMRequestState(mergeChatMessages(n[key] || [], incoming, removedIds, 750), su.id, t.requestState);
+            n[key] = applyDMRequestState(mergeChatMessages(n[key] || [], incoming, removedIds, 750), su.id, t.requestState, d[key]);
           });
           return n;
         });
         setDmRead((current) => {
+          if (!chatReadsRef.current.isCurrent(dmHydrationRead, sessionRef.current)) return current;
           const next = { ...current };
           threads.forEach((thread) => {
             const cursor = normalizeDirectMessageReadCursor(thread.readCursor);
@@ -5158,12 +5162,18 @@ export function StoreProvider({ children }) {
     const message = confirmedChatMessage(item, acknowledgement);
     if (!message) return;
     if (Number.isFinite(acknowledgement?.createdAt) && acknowledgement.createdAt >= 0) message.ts = ago(message.at);
+    // React may execute this updater after the acknowledgement's account check
+    // and a subsequent auth reset. Never repopulate the replacement account.
+    const mergeConfirmed = (all, limit) => item.ownerId === sessionRef.current?.id
+      && item.authEpoch === chatAuthEpochRef.current
+      ? { ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], limit) }
+      : all;
     if (item.kind === "dm") {
-      setDms((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 750) }));
+      setDms((all) => mergeConfirmed(all, 750));
     } else if (item.kind === "fan") {
-      setFanClubMsgs((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 600) }));
+      setFanClubMsgs((all) => mergeConfirmed(all, 600));
     } else if (item.kind === "lounge") {
-      setLounge((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 600) }));
+      setLounge((all) => mergeConfirmed(all, 600));
     }
   };
   const deliverChatMessage = async (localId) => {
@@ -6422,8 +6432,10 @@ export function StoreProvider({ children }) {
     return api("/api/me/threads?summary=1", { signal, silent: true, context: "Refreshing your inbox" })
       .then(({ threads, removedIds = [] }) => {
         if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current) || !Array.isArray(threads)) return [];
-        absorbUsers(threads.map((thread) => thread.otherUser).filter(Boolean));
+        absorbUsers(threads.map((thread) => thread.otherUser).filter(Boolean),
+          () => !signal?.aborted && chatReadsRef.current.isCurrent(read, sessionRef.current));
         setDms((all) => {
+          if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return all;
           const next = { ...reconcileRemovedDirectMessages(all, accountId, removedIds) };
           for (const thread of threads) {
             const key = dmKey(accountId, thread.otherId);
@@ -6437,11 +6449,12 @@ export function StoreProvider({ children }) {
               server: true,
               relationshipContext,
             }));
-            next[key] = applyDMRequestState(mergeChatMessages(next[key] || [], incoming, removedIds, 750), accountId, thread.requestState);
+            next[key] = applyDMRequestState(mergeChatMessages(next[key] || [], incoming, removedIds, 750), accountId, thread.requestState, all[key]);
           }
           return next;
         });
         setDmRead((current) => {
+          if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return current;
           const next = { ...current };
           for (const thread of threads) {
             const cursor = normalizeDirectMessageReadCursor(thread.readCursor);
@@ -6508,10 +6521,11 @@ export function StoreProvider({ children }) {
           ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
         }));
         if (!before) setDms((d) => {
+          if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return d;
           const existing = hasRelationshipContext
             ? (d[key] || []).map((message) => ({ ...message, relationshipContext: normalizedRelationshipContext }))
             : (d[key] || []);
-          const live = applyDMRequestState(mergeChatMessages(existing, incoming, removedIds, 750), read.scope, requestState);
+          const live = applyDMRequestState(mergeChatMessages(existing, incoming, removedIds, 750), read.scope, requestState, existing);
           const next = { ...d };
           if (live.length) next[key] = live;
           else delete next[key];
@@ -6529,9 +6543,16 @@ export function StoreProvider({ children }) {
       })
       .catch((error) => {
         if (signal?.aborted) throw error;
+        // A superseded denial cannot revoke a newer authorized history owner.
+        if (!chatReadsRef.current.isCurrent(read, sessionRef.current)) {
+          return { syncCursor: after || null, hasMore: false, stale: true };
+        }
         const unavailable = [401, 403, 404].includes(Number(error?.status));
-        if (unavailable && chatReadsRef.current.isCurrent(read, sessionRef.current)) {
-          setDms((current) => { const next = { ...current }; delete next[key]; return next; });
+        if (unavailable) {
+          setDms((current) => {
+            if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return current;
+            const next = { ...current }; delete next[key]; return next;
+          });
         }
         if (strict || unavailable) throw error;
         return { syncCursor: after || null, hasMore: false };
@@ -6554,7 +6575,16 @@ export function StoreProvider({ children }) {
       if (response?.ok !== true || response?.requestState !== "accepted") return localCommandError("PIT-API-001", context);
       if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
         || blockedIdsRef.current.includes(otherId)) return localCommandError("PIT-AUTH-004", context);
-      setDms((current) => ({ ...current, [key]: applyDMRequestState(current[key], actor.id, response.requestState) }));
+      // Retire every read begun before the server confirmed this choice, even
+      // when its state updater is queued or its eventual response is a denial.
+      for (const lane of ["dm-inbox", `dm-thread:${otherId}`, `dm-history:${otherId}`]) {
+        chatReadsRef.current.invalidate(lane, sessionRef.current);
+      }
+      setDms((current) => {
+        if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
+          || blockedIdsRef.current.includes(otherId)) return current;
+        return { ...current, [key]: applyDMRequestState(current[key], actor.id, response.requestState) };
+      });
       return commandSuccess({ accountId: actor.id, otherId, requestState: response.requestState });
     } catch (error) {
       return commandError(error, context);

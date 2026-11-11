@@ -69,7 +69,14 @@ export function createDirectMessageHistory({ isCurrent = () => true } = {}) {
         const result = await load({ before: request.cursor, signal: request.controller.signal, strict: true, includeContext: false });
         if (!accepted() || result?.stale) throw cancelled();
         if (!Array.isArray(result?.messages) || result.nextCursor === request.cursor) throw new Error("Earlier messages could not be loaded.");
-        beforeCommit();
+        // A page can advance its cursor without changing retained rows: every
+        // message may already be loaded or removed by a concurrent live read.
+        // Web would then wait forever for an anchor row's unchanged layout.
+        // Compare the full merge so same-ID content replacements still measure
+        // before commit, including removals carried by this page itself.
+        const nextMessages = mergeChatMessages(snapshot.messages, result.messages,
+          [...removed, ...(result.removedIds || [])], Number.MAX_SAFE_INTEGER);
+        if (!sameRows(snapshot.messages, nextMessages)) beforeCommit(nextMessages);
         receive(result, { before: request.cursor });
         return result;
       }).catch((error) => {
@@ -121,8 +128,17 @@ export function createDirectMessageHistoryAnchor({ web = false, isCurrent = () =
       anchor = target ? { ...target, offset } : null;
     },
     contentChanged() {
-      if (!isCurrent() || !prepending) return false;
-      if (!web || !anchor) prepending = false;
+      if (!isCurrent()) return false;
+      if (!prepending) {
+        // A replacement can keep identical geometry, or the anchor can leave
+        // the rendered rows. Never suppress a later append or honor its late
+        // layout using an unresolved anchor from the previous content change.
+        anchor = null;
+        return false;
+      }
+      // Row layout can precede or follow this event. Keep one opportunity to
+      // correct its offset, but suppress ordinary following only once.
+      prepending = false;
       return true;
     },
   };

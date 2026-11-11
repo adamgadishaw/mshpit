@@ -135,7 +135,10 @@ export default function ThreadScreen({ otherId, draftLease, isCurrentIOSRoute, o
     if (historyBlocked || !admitComposerAction()) return Promise.resolve(null);
     return history.loadEarlier({
       load: (options) => loadThread(otherId, options),
-      beforeCommit: () => historyAnchor.prepare(messages.map((message) => message.id)),
+      beforeCommit: (nextMessages) => {
+        const survivingIds = new Set(nextMessages.map((message) => message.id));
+        historyAnchor.prepare(messages.filter((message) => survivingIds.has(message.id)).map((message) => message.id));
+      },
     });
   };
   const incomingReadTarget = latestIncomingDirectMessageId(messages, session?.id);

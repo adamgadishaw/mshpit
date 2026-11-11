@@ -49,6 +49,60 @@ test("a tombstone received during paging prevents late rows or live cache from r
   assert.deepEqual(history.display(rows(1, 9)).map((row) => row.at), [1, 2, 4, 5, 7, 8, 9]);
 });
 
+for (const kind of ["duplicate", "page tombstones", "live tombstones"]) test(`${kind} earlier pages advance without leaving a web scroll anchor waiting for layout`, async () => {
+  const history = createDirectMessageHistory(), pending = deferred();
+  const anchor = createDirectMessageHistoryAnchor({ web: true });
+  const initial = rows(5, 9);
+  history.receive({ messages: initial, nextCursor: "before5" });
+  anchor.rowLayout("m0005", { nativeEvent: { layout: { y: 100 } } });
+  anchor.onScroll({ nativeEvent: { contentOffset: { y: 100 } } });
+  let prepared = 0;
+  const loading = history.loadEarlier({
+    load: () => pending.promise,
+    beforeCommit: () => { prepared++; anchor.prepare(initial.map(row => row.id)); },
+  });
+  await Promise.resolve();
+  const removedIds = rows(1, 4).map(row => row.id);
+  if (kind === "live tombstones") history.receive({ messages: [], removedIds }, { after: "head" });
+  pending.resolve({
+    messages: kind === "duplicate" ? rows(5, 9) : rows(1, 4),
+    ...(kind === "page tombstones" ? { removedIds } : {}),
+    nextCursor: "before1",
+  });
+  await loading;
+  assert.deepEqual(history.display([]), initial);
+  assert.equal(history.read().nextCursor, "before1");
+  assert.equal(history.read().loading, false);
+  assert.equal(history.read().error, false);
+  assert.equal(prepared, 0, "unchanged rows have no new layout to resolve an anchor");
+  assert.equal(anchor.contentChanged(), false);
+  history.receive({ messages: rows(10, 10) }, { after: "head" });
+  assert.equal(anchor.contentChanged(), false, "subsequent appends can follow normally");
+});
+
+test("earlier pages prepare before inserting rows or replacing displayed content", async () => {
+  for (const incoming of [
+    rows(1, 4),
+    [{ ...rows(5, 5)[0], text: "A longer replacement message" }],
+    [{ ...rows(5, 5)[0], ts: "An updated time label" }],
+  ]) {
+    const history = createDirectMessageHistory();
+    const initial = rows(5, 9);
+    history.receive({ messages: initial, nextCursor: "before5" });
+    let prepared = 0;
+    await history.loadEarlier({
+      load: async () => ({ messages: incoming, nextCursor: null }),
+      beforeCommit: () => {
+        prepared++;
+        assert.deepEqual(history.display([]), initial, "measure retained rows before publishing changed layout");
+      },
+    });
+    assert.equal(prepared, 1);
+    assert.equal(history.read().nextCursor, null);
+    assert.deepEqual(history.display([]).find(row => row.id === incoming[0].id), incoming[0]);
+  }
+});
+
 test("repeat taps share a request, and a failed page keeps its retry cursor and current history", async () => {
   const history = createDirectMessageHistory(), pending = deferred();
   history.receive({ messages: rows(5, 9), nextCursor: "before5" });
@@ -139,6 +193,35 @@ test("web anchoring measures one retained row rather than counting simultaneous 
   assert.equal(calls.length, 0);
   anchor.rowLayout("b", layout(650));
   assert.deepEqual(calls, [{ y: 625, animated: false }]);
+  assert.equal(anchor.contentChanged(), false);
+  assert.equal(anchor.contentChanged(), false);
+});
+
+test("web replacement with unchanged geometry suppresses once and retires its unresolved anchor", async () => {
+  const history = createDirectMessageHistory(), calls = [];
+  const anchor = createDirectMessageHistoryAnchor({ web: true, scrollTo: options => calls.push(options) });
+  const initial = rows(5, 9);
+  history.receive({ messages: initial, nextCursor: "before5" });
+  anchor.rowLayout("m0005", { nativeEvent: { layout: { y: 100 } } });
+  anchor.onScroll({ nativeEvent: { contentOffset: { y: 100 } } });
+  await history.loadEarlier({
+    load: async () => ({ messages: [{ ...initial[0], ts: "1m" }], nextCursor: null }),
+    beforeCommit: () => anchor.prepare(initial.map(row => row.id)),
+  });
+  assert.equal(anchor.contentChanged(), true);
+  assert.equal(anchor.contentChanged(), false, "a later content change must resume ordinary scroll following");
+  anchor.rowLayout("m0005", { nativeEvent: { layout: { y: 1000 } } });
+  assert.deepEqual(calls, [], "an obsolete layout callback must not snap back to a retired anchor");
+  assert.equal(anchor.contentChanged(), false);
+});
+
+test("web anchoring also handles row layout before its one suppressed content change", () => {
+  const calls = [], anchor = createDirectMessageHistoryAnchor({ web: true, scrollTo: options => calls.push(options) });
+  anchor.rowLayout("a", { nativeEvent: { layout: { y: 100 } } });
+  anchor.onScroll({ nativeEvent: { contentOffset: { y: 100 } } });
+  anchor.prepare(["a"]);
+  anchor.rowLayout("a", { nativeEvent: { layout: { y: 300 } } });
+  assert.deepEqual(calls, [{ y: 300, animated: false }]);
   assert.equal(anchor.contentChanged(), true);
   assert.equal(anchor.contentChanged(), false);
 });
