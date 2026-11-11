@@ -28,16 +28,26 @@ assert.equal(map.sources.length, map.sourcesContent.length);
 const selected = new Set(map.sources);
 const required = [
   '/App.js', '/src/store.js', '/src/cityIdentity.native.js',
-  '/src/components/NativeAppHeader.native.jsx', '/src/components/NativeTabRail.native.jsx',
-  '/src/components/NativeSwipeRail.native.jsx', '/src/components/NativeFeedMediaLayer.jsx',
-  '/src/components/VinylRefreshBoundary.jsx', '/src/components/PageReturnContext.jsx',
-  '/src/screens/FeedScreen.jsx', '/src/screens/NotificationsScreen.jsx',
+  '/src/components/NativeAppHeader.ios.jsx', '/src/components/NativeTabRail.ios.jsx',
+  '/src/components/NativeSwipeRail.ios.jsx', '/src/components/NativeFeedMediaLayer.ios.jsx',
+  '/src/components/VinylRefreshBoundary.ios.jsx', '/src/components/PageReturnContext.jsx',
+  '/src/components/NativeLargeTitle.ios.jsx', '/src/components/ScreenHeader.ios.jsx',
+  '/src/screens/FeedScreen.ios.jsx', '/src/screens/FeedScreen.jsx', '/src/screens/NotificationsScreen.jsx',
   '/src/screens/CityScreen.jsx', '/src/screens/DiscoverScreen.jsx',
+  '/src/components/NativeDiscoverSectionPager.ios.jsx',
+  '/src/screens/PostScreen.ios.jsx', '/src/hooks/usePostAuthorBadges.js',
+  '/src/screens/CalendarScreen.ios.jsx', '/src/screens/calendarClock.mjs',
+  '/src/screens/ThreadScreen.jsx', '/src/features/chat/directMessageConsent.mjs',
   '/src/domain/postBadgeBundle.mjs', '/src/domain/notificationReadMutation.mjs',
-  '/src/features/socialReactions/useFollowingFeed.js',
+  '/src/features/notifications/notificationRuntime.mjs',
+  '/src/features/socialReactions/useFollowingFeed.ios.js',
 ];
 for (const path of required) assert.ok(selected.has(path), `Missing iOS source: ${path}`);
 assert.equal(selected.has('/src/cityIdentity.js'), false, 'iOS must use the Intl bootstrap');
+for (const component of ['NativeAppHeader', 'NativeTabRail', 'NativeSwipeRail']) {
+  assert.equal(selected.has(`/src/components/${component}.native.jsx`), false,
+    `Recovered iOS implementation must replace the older native fallback: ${component}`);
+}
 const projectModules = [];
 for (let index = 0; index < map.sources.length; index++) {
   const source = map.sources[index];
@@ -53,6 +63,7 @@ const report = {
   sourceMapBytes: mapBytes.length, sourceMapSha256: sha256(mapBytes),
   projectModuleCount: projectModules.length,
   nativeModules: projectModules.filter(module => /\.native\./.test(module.path)).map(module => module.path),
+  iosModules: projectModules.filter(module => /\.ios\./.test(module.path)).map(module => module.path),
   requiredModules: required, projectModules,
 };
 if (reportPath) writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n');

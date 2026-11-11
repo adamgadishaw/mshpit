@@ -9,6 +9,8 @@ import { artistPageAccessDenied } from "./artistPageRead.mjs";
 import { artistPageResourceKind } from "./artistPageCache.mjs";
 import { accountMutationIsCurrent, captureAccountMutation } from "./accountMutation.mjs";
 import { assertCurrentProfileRead, profileFailureOutcome, unavailableProfileOutcome, withoutUnavailableProfile, withoutUnavailableProfilePosts } from "./profileReadState.mjs";
+import { reconcilePostAuthorBadges, reconcileCommentAuthorBadges } from "./postBadgeBundle.mjs";
+import { publishAuthorBadgeChange } from "./authorBadgeChanges.mjs";
 import * as defaultPrivacy from "../lib/iosDetailPrivacy.js";
 import * as iosPrivacy from "../lib/iosDetailPrivacy.ios.js";
 
@@ -69,9 +71,13 @@ test("only the iOS adapter publishes generations and subscribers receive no priv
 function profileFixture() {
   const epoch = createIOSDetailPrivacyEpoch(), request = deferred();
   const sessionRef = { current: { id: "viewer" } }, accountMutationEpochRef = { current: 1 };
+  const profileReadAuthority = accountMutationEpochRef.profileReads = new Map();
   const writes = [], absorbed = [];
   const dependencies = {
     claimIOSProfileRead, session: sessionRef.current, sessionRef, accountMutationEpochRef,
+    profileReadAuthority, feedMutationRevisionRef: { current: 0 },
+    reconcilePostAuthorBadges, reconcileCommentAuthorBadges, publishAuthorBadgeChange,
+    setComments: (update) => update({}),
     captureAccountMutation, assertCurrentProfileRead, profileFailureOutcome, unavailableProfileOutcome,
     withoutUnavailableProfile, withoutUnavailableProfilePosts,
     invalidateIOSDetailPrivacy: epoch.invalidate,
@@ -82,7 +88,7 @@ function profileFixture() {
     setUserStats: () => writes.push(["stats", epoch.getSnapshot()]),
     absorbUsers: (users) => absorbed.push(users), follows: { viewer: [] }, setFollows: () => {},
   };
-  return { ...production(["loadUser"], dependencies), epoch, request, sessionRef, accountMutationEpochRef, writes, absorbed };
+  return { ...production(["reconcileAuthorBadges", "loadUser"], dependencies), epoch, request, sessionRef, accountMutationEpochRef, writes, absorbed };
 }
 
 test("real profile quarantine fences retained payload before React setters run", async () => {

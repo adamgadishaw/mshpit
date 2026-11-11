@@ -1,5 +1,17 @@
 # Pit current status
 
+## 2026-11-11 Recovered combined validation candidate
+
+- Complete PC, Mac iOS/calendar, messaging and native-harness histories are
+  integrated locally. The first full suite completed 9,642 pass /46 fail /2 skip;
+  all assigned failures are corrected and their focused groups pass. Final
+  aggregate rerun and fresh source-matched exports are next.
+- Five user changes are wired through actual iOS overrides. Durable DM consent
+  now agrees with unread counts; optional startup code fits the unchanged budget.
+- [Combined audit](docs/PC_RECOVERED_COMBINED_2026-11-11.md) records provenance,
+  behavior, measurements and the separate Mac in-place-update boundary.
+
+
 ## 2026-11-11 Combined restoration integration checkpoint
 
 - Preserves PC266a25de and full recovered iOS/calendar history through the

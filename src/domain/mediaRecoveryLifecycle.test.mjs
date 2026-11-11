@@ -137,6 +137,10 @@ function clipsFixture(platform = 'ios') {
     '../store': { useStore: () => ({ session: account ? { id: account } : null, toggleLike: noop, track: noop,
       loadClips: options => { const request = { ...deferred(), options }; requests.push(request); return request.promise; } }) },
   };
+  const pageReturnFile = new URL('src/components/PageReturnContext.jsx', rootUrl);
+  const pageReturnRequire = createRequire(pageReturnFile);
+  bindings['../components/PageReturnContext'] = execute(compile(pageReturnFile),
+    name => name in bindings ? bindings[name] : pageReturnRequire(name));
   const Screen = execute(componentCode, name => name in bindings ? bindings[name] : componentRequire(name)).default;
   const f = {
     requests, get tree() { return nodes(renderer.container); },

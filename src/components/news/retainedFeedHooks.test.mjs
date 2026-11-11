@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { transformSync } from "@babel/core";
 import * as newsState from "../../domain/newsReaderState.mjs";
+import * as authorBadgeChanges from "../../domain/authorBadgeChanges.mjs";
+import * as postBadgeBundle from "../../domain/postBadgeBundle.mjs";
 import * as loadState from "../../domain/loadState.mjs";
 import * as errorCatalog from "../../lib/errorCatalog.mjs";
 import { isAppErrorLike } from "../../domain/commandResult.mjs";
@@ -71,11 +73,14 @@ function fixture(kind, platform = "ios") {
     "./NewsInteractionContext": { useNewsInteractions: () => context },
     "../../domain/newsReaderState.mjs": newsState,
     "../../domain/loadState.mjs": loadState,
+    "../../domain/authorBadgeChanges.mjs": authorBadgeChanges,
+    "../../domain/postBadgeBundle.mjs": postBadgeBundle,
     "../../lib/diagnostics": diagnostics.exports,
     "../../domain/newsIntroductionSession.mjs": { newsIntroductionSession: createNewsIntroductionSession() },
     "../../domain/chatDelivery.mjs": { createChatClientMutationId: () => `request-${++sequence}` },
     "./socialReactionsApi": {
       readFollowingFeed: socialApi.exports.readFollowingFeed,
+      readLocalFeed: socialApi.exports.readLocalFeed,
       subscribeSocialReactionChanges(listener) {
         listeners.add(listener); listenerHistory.push(listener);
         const unsubscribe = socialApi.exports.subscribeSocialReactionChanges(listener);
@@ -238,13 +243,15 @@ test("News auth readiness loss clears retained data even when the account/privac
   f.render(options("news")); f.commit(); assert.equal(f.calls.length, 2); f.unmount();
 });
 
-test("Following old polling callbacks stay inert after retained re-entry", async () => {
+test("Following retains history without polling and only fresh explicit reloads can refresh it", async () => {
   const f = fixture("following"); f.render(options("following")); f.commit(); f.calls[0].resolve(result("following", ["one"])); await settle();
-  f.render(); const timer = f.timerHistory[0];
-  f.render(options("following", false)); timer(); f.commit();
-  f.render(options("following")); f.commit(); timer();
-  assert.equal(f.calls.length, 1);
-  f.tick(); assert.equal(f.calls.length, 2, "current visible polling still works"); f.unmount();
+  const old = f.render(); assert.equal(f.timerHistory.length, 0, "background polling must not collapse opened history");
+  f.render(options("following", false)); f.commit();
+  f.render(options("following")); f.commit();
+  await old.reload(); f.tick(); assert.equal(f.calls.length, 1, "retired callbacks cannot refresh after re-entry");
+  const current = f.render().reload(); assert.equal(f.calls.length, 2);
+  f.calls[1].resolve(result("following", ["fresh"])); await current;
+  assert.deepEqual(f.render().posts, [{id:"fresh"}]); f.unmount();
 });
 
 test("Following queued invalidation survives interrupted pagination but waits for visible re-entry", async () => {

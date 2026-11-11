@@ -37,7 +37,8 @@ const status = h => h.owner.getSnapshot().status;
 const fixtureUrl = new URL("./feedImageRetryIntegration.test.mjs", import.meta.url);
 let screenFixture = readFileSync(fixtureUrl, "utf8").split("test('actual Feed emits")[0]
   .replace(/^import .*;\n/gm, "").replaceAll("import.meta.url", JSON.stringify(fixtureUrl.href));
-screenFixture = screenFixture.replace("useRef(value){", "useSyncExternalStore(subscribe,getSnapshot){react.useLayoutEffect(()=>subscribe(()=>render()),[subscribe]);return getSnapshot();},useRef(value){")
+screenFixture = screenFixture.replace("if(dep.endsWith('/useFollowingFeed'))return ()=>({posts:[],reload:()=>request()});", "if(dep.endsWith('/useFollowingFeed'))return args=>args.mode==='local' ? (props.localSection || {posts:[],status:'ready',loaded:true,reload:()=>request()}) : ({posts:[],reload:()=>request()});")
+  .replace("useRef(value){", "useSyncExternalStore(subscribe,getSnapshot){react.useLayoutEffect(()=>subscribe(()=>render()),[subscribe]);return getSnapshot();},useRef(value){")
   .replace("const retry=run(retryCodes[platform],()=>react);", "const retry=run(retryCodes[platform],()=>react); const head=run(compile(platform==='ios'?'../hooks/feedHeadStatus.ios.js':'../hooks/feedHeadStatus.js'),dep=>dep==='react'?react:headDomain);")
   .replace("return {useFeedHeadStatus:()=>null};", "return head;")
   .replace("if(dep.endsWith('/feedExperience.mjs'))", "if(dep.endsWith('/feedPagination.mjs'))return pagination; if(dep.endsWith('/feedExperience.mjs'))");
@@ -92,10 +93,15 @@ test("actual cold failure renders error and Refresh, never the cursorless older 
   h.calls[2].resolve(good);await retry;f.sync();assert.match(emptyText(f),/No posts to show yet/);
   assert.doesNotMatch(emptyText(f),/No shows logged yet|could not load/);
 });
-test("Local uses the same head failure and retry, not an empty projection claim",async()=>{
-  const h=harness(),f=screen(h);f.filter("Local");const pending=h.render().hydrateFeed();await failHead(h);await pending;f.sync();
-  assert.match(emptyText(f),/Your feed could not load/);assert.doesNotMatch(emptyText(f),/No recent posts|Nothing in/);assertNoFooterControls(f);
+test("Local uses its independent endpoint failure and retry instead of the global head",async()=>{
+  const h=harness(),f=screen(h);let localReads=0;
+  f.props.localSection={posts:[],status:"error",loaded:false,retry:async()=>{localReads++;return true;}};
+  f.filter("Local");const pending=h.render().hydrateFeed();await failHead(h);await pending;f.sync();
+  assert.match(emptyText(f),/Local couldn't load/);assert.doesNotMatch(emptyText(f),/No recent posts|Nothing in|Your feed could not load/);
+  const retry=nodes(list(f).props.ListFooterComponent).find(node=>node.props?.accessibilityLabel==="Retry loading feed");
+  assert.ok(retry);retry.props.onPress();assert.equal(localReads,1);assert.equal(h.calls.length,2,"Local retry never requests a global page");
 });
+
 test("actual failed refresh retains cached cards and prior receipt, then succeeds without moving the request owner",async()=>{
   const h=harness({cold:false}),f=screen(h);let pending=h.render().hydrateFeed();
   const row={id:"p_existing"};h.calls[0].resolve({posts:[row],nextCursor:"next"});await pending;f.sync();
@@ -159,7 +165,7 @@ test("captured iOS retry rejects synchronous epoch reset, provider replacement, 
 test("privacy filtering of a successfully read head never claims no shows were logged",async()=>{
   const h=harness(),f=screen(h);const pending=h.render().hydrateFeed();h.calls[0].resolve({posts:[{id:"p_private"}],nextCursor:null});await pending;
   f.props.feed=[];f.render();assert.match(emptyText(f),/No posts to show yet/);assert.doesNotMatch(emptyText(f),/No shows logged yet/);
-  f.props.hasMore=false;f.filter("Local");assert.match(emptyText(f),/No posts from your city to show yet/);assert.doesNotMatch(emptyText(f),/Be the first/);
+  f.props.hasMore=false;f.filter("Local");assert.match(emptyText(f),/Nothing in your city yet/);assert.doesNotMatch(emptyText(f),/Be the first/);
 });
 test("Following/News and Android/web retain their existing presentation and request behavior",()=>{
   for(const platform of ["android","web"]) {
@@ -170,7 +176,7 @@ test("Following/News and Android/web retain their existing presentation and requ
 });
 test("Store wiring resets status at both synchronous epoch boundaries and initial effect cleanup, with no additional hooks or loader",()=>{
   const store=readFileSync(new URL("../store.js",import.meta.url),"utf8");
-  assert.equal((store.match(/accountMutationEpochRef.current \+= 1;\n    feedRefreshRef.current.headStatus\?\.reset\(\);/g)||[]).length,2);
+  assert.equal((store.match(/accountMutationEpochRef.current \+= 1;\s+(?:profileReadAuthority.clear\(\);\s+)?feedRefreshRef.current.headStatus\?\.reset\(\);/g)||[]).length,2);
   assert.match(store,/controller.abort\(\);\n      feedRefreshRef.current.headStatus\?\.reset\(\);\n      feedRefreshRef.current.sequence/);
   assert.match(store,/if \(!\("headStatus" in feedRefreshRef.current\)\) feedRefreshRef.current.headStatus = createFeedHeadStatus\(\)/);
   const app=readFileSync(new URL("../../App.js",import.meta.url),"utf8");assert.match(app,/headStatusOwner=\{feedHeadStatus\}/);

@@ -15,7 +15,8 @@ function execute(path, imports, timers = { setTimeout, clearTimeout }) {
   }).code);
   const module = { exports: {} };
   new Function("require", "module", "exports", "setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame", codes.get(path))(
-    name => imports(name, createRequire(file)), module, module.exports, timers.setTimeout, timers.clearTimeout, callback => setTimeout(callback, 0), clearTimeout);
+    name => imports(name, createRequire(file)), module, module.exports, timers.setTimeout, timers.clearTimeout,
+    timers.requestAnimationFrame || (callback => setTimeout(callback, 0)), timers.cancelAnimationFrame || clearTimeout);
   return module.exports;
 }
 function createRenderer() {
@@ -62,6 +63,15 @@ const offline = () => Object.assign(new Error('Synthetic offline'), { name: 'App
 const flatten = style => Object.assign({}, ...(Array.isArray(style) ? style.flat(Infinity).filter(Boolean) : [style]));
 function fixture({ guidance = false, managed = false, strict = false, platform = 'ios', self = true, guest = false, cached = [], banner = 'https://media.test/banner-original.jpg', withViewer = true, now = () => 0 } = {}) {
   const renderer = createRenderer(), reads = [], opened = [], rewards = [], readiness = [], profileReads = [], mutations = [], sheets = [], edits = [];
+  const frames = new Map(); let nextFrame = 0;
+  const frameScheduler = { setTimeout, clearTimeout,
+    requestAnimationFrame: callback => { const id = ++nextFrame; frames.set(id, callback); return id; },
+    cancelAnimationFrame: id => frames.delete(id),
+  };
+  // Run one frame's admitted callbacks; nested requests belong to the next frame.
+  const advanceFrame = () => renderer.act(() => {
+    for (const [id, callback] of [...frames]) if (frames.delete(id)) callback();
+  });
   const detailContext = require('../components/iosDetailPresentationContext.mjs');
   const privacy = require('../domain/iosDetailPrivacyEpoch.mjs').createIOSDetailPrivacyEpoch();
   let admission = null, life = null;
@@ -165,7 +175,7 @@ function fixture({ guidance = false, managed = false, strict = false, platform =
   smartImage = execute(`../components/SmartImage${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
   refreshBoundary = execute('../components/VinylRefreshBoundary.jsx', imports);
   presentation = execute(`../features/profileMedia/ProfileMediaPresentation${platform === 'ios' ? '.ios' : ''}.jsx`, imports);
-  const Screen = execute(`./ProfileScreen${platform === 'ios' ? '.ios' : ''}.jsx`, imports).default;
+  const Screen = execute(`./ProfileScreen${platform === 'ios' ? '.ios' : ''}.jsx`, imports, frameScheduler).default;
   const reportReady = ready => readiness.push(ready);
   const render = () => renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null,
     React.createElement(detailContext.IOSDetailPresentationContext.Provider, { value: admission },
@@ -178,7 +188,7 @@ function fixture({ guidance = false, managed = false, strict = false, platform =
   const text = () => all().map(n => n.text || '').join(' ');
   const image = fragment => all().find(n => n.type === 'ExpoImage' && decodeURIComponent(n.props.source.uri).includes(fragment));
   const flush = async () => { for (let i=0; i<6; i++) { await new Promise(r => setImmediate(r)); renderer.act(noop); } };
-  return { state, render, all, byId, text, image, reads, opened, rewards, readiness, flush, store, act: renderer.act, profileReads, mutations, sheets, edits,
+  return { state, render, all, byId, text, image, reads, opened, rewards, readiness, flush, advanceFrame, store, act: renderer.act, profileReads, mutations, sheets, edits,
     invalidatePrivacy() { privacy.invalidate(); },
     commitPrivacy() { publishCommands(); render(); },
     get presentation() { return admission; },
@@ -461,14 +471,14 @@ for (const parentFirst of [true, false]) test(`concert-history entry uses nested
   const concertLayout = () => f.byId('profile-concert-anchor').props.onLayout({ nativeEvent: { layout: { y: 120 } } });
   f.act(parentFirst ? sectionLayout : concertLayout);
   f.act(parentFirst ? concertLayout : sectionLayout);
-  await new Promise(resolve => setTimeout(resolve, 15)); await f.flush();
+  f.advanceFrame(); f.advanceFrame(); await f.flush();
   const scroll = f.all().find(n => n.type === 'ScrollView');
   assert.equal(scroll.scrolls.at(-1).y, 708);
   assert.equal(scroll.scrolls.at(-1).animated, false);
   const completed = scroll.scrolls.length;
   f.press('profile-tab-posts'); f.press('profile-tab-shows');
   f.act(sectionLayout); f.act(concertLayout);
-  await new Promise(resolve => setTimeout(resolve, 15)); await f.flush();
+  f.advanceFrame(); f.advanceFrame(); await f.flush();
   assert.equal(scroll.scrolls.length, completed, 'returning to Shows does not force a second deep-link scroll');
   f.unmount();
 });
@@ -480,7 +490,7 @@ test('choosing Posts cancels a pending concert-history focus and late hidden lay
   f.act(() => { sectionLayout({ nativeEvent: { layout: { y: 600 } } }); concertLayout({ nativeEvent: { layout: { y: 120 } } }); });
   f.press('profile-tab-posts');
   f.act(() => { sectionLayout({ nativeEvent: { layout: { y: 0 } } }); concertLayout({ nativeEvent: { layout: { y: 0 } } }); });
-  await new Promise(resolve => setTimeout(resolve, 15)); await f.flush();
+  f.advanceFrame(); f.advanceFrame(); await f.flush();
   assert.equal(f.all().find(n => n.type === 'ScrollView').scrolls.length, 0);
   f.unmount();
 });
@@ -492,11 +502,14 @@ test('a later explicit concert-history entry on the same profile can focus again
     f.byId('profile-section-shows').props.onLayout({ nativeEvent: { layout: { y: 600 } } });
     f.byId('profile-concert-anchor').props.onLayout({ nativeEvent: { layout: { y: 120 } } });
   });
-  measure(); await new Promise(resolve => setTimeout(resolve, 15)); await f.flush();
-  const scroll = f.all().find(n => n.type === 'ScrollView'); assert.equal(scroll.scrolls.length, 1);
+  measure();
+  const scroll = f.all().find(n => n.type === 'ScrollView');
+  assert.equal(scroll.scrolls.length, 0);
+  f.advanceFrame(); assert.equal(scroll.scrolls.length, 0, 'focus waits for both layout frames');
+  f.advanceFrame(); await f.flush(); assert.equal(scroll.scrolls.length, 1);
   f.state.initialSection = null; f.render();
   f.state.initialSection = 'concert-history'; f.render(); measure();
-  await new Promise(resolve => setTimeout(resolve, 15)); await f.flush();
+  f.advanceFrame(); f.advanceFrame(); await f.flush();
   assert.equal(scroll.scrolls.length, 2); f.unmount();
 });
 

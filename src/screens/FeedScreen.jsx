@@ -688,14 +688,14 @@ export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible
               ? (following.status === "error" ? "Following couldn't load" : !following.loaded ? "Loading your Following feed..." : effectiveHasMore ? "More followed posts are available" : "Your Following feed is quiet")
               : filter === "local"
               ? (local.status === "error" ? "Local couldn't load" : !local.loaded ? "Loading your city's posts..." : `Nothing in ${homeCity || "your city"} yet`)
-              : "No shows logged yet"}
+              : primaryHead ? "No posts to show yet" : "No shows logged yet"}
           </Text>
           <Text style={styles.emptySub}>
             {filter === "following"
               ? (following.status === "error" ? "Refresh to try again. Your existing posts are kept." : "Posts and reposts from people you follow appear here, always credited to their original authors.")
               : filter === "local"
               ? (local.status === "error" ? "Try again below or refresh the feed. Your existing posts are kept." : "Concert posts from people based in your home city appear here.")
-              : "Log the first show, tap the + to rate the band and the room."}
+              : primaryHead ? "New concert posts will appear here. Tap the + to log a show." : "Log the first show, tap the + to rate the band and the room."}
           </Text>
           <View style={styles.emptyActions}>
             <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />

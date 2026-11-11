@@ -32,6 +32,7 @@ export const PULL_REFRESH_COVERAGE = Object.freeze([
   coverage("VenuesScreen.jsx", "required", "Remote venue directory and upcoming-show counts for the active region."),
 
   coverage("CalendarScreen.jsx", "primary-navigation", "Primary surface owns its deliberate refresh in the navigation refresh pass."),
+  coverage("CalendarScreen.ios.jsx", "primary-navigation", "Native calendar awaits an account- and route-owned refresh while preserving its selected date and browse state."),
   coverage("DiscoverScreen.jsx", "primary-navigation", "Primary surface owns discovery refresh and region switching."),
   coverage("FeedScreen.jsx", "primary-navigation", "Primary surface owns deliberate feed refresh and pagination."),
   coverage("SearchScreen.jsx", "primary-navigation", "Search is query-driven and owns request cancellation in the primary navigation pass."),
