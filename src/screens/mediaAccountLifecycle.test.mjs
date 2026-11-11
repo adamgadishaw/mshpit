@@ -14,6 +14,7 @@ import { artistCampaignLimitCooldownMs, postRateLimitCooldownMs } from "../domai
 import { normalizeComposerDraft, composerDraftFingerprint } from "../domain/composerDraft.mjs";
 import { clampRating } from "../domain/validation.mjs";
 import { computeReview } from "../data.js";
+import { mediaDisplayKind } from "../domain/postMediaDisplay.mjs";
 
 const uploadDependencies = {};
 for (const file of ["../lib/mediaAssetFinalize.mjs", "../domain/mediaEdit.mjs", "../domain/mediaUploadPolicy.mjs", "../domain/mediaUploadIdentity.mjs", "../domain/mediaRequestRecovery.mjs", "../domain/mediaUploadDeadline.mjs"]) {
@@ -297,7 +298,7 @@ function composerUploadFixture() {
     uploadOriginalMediaAsset: (options) => { started.resolve(options); return upload.promise; },
     ...Object.fromEntries(["setUploadProgress", "setUploadingPhotos", "setMediaError", "setPendingMediaAssets"]
       .map((name) => [name, (value) => events.push({ name, value })])),
-    setMediaProject: compileProjectSetter({ mediaProjectRef, renderMediaProject: (value) => events.push({ name: "setMediaProject", value }) }),
+    setMediaProject: compileProjectSetter({ mediaProjectRef, setCampaign: (value) => events.push({ name: "setCampaign", value }), renderMediaProject: (value) => events.push({ name: "setMediaProject", value }) }),
     setPhotos: compilePhotosSetter({ photosRef, renderPhotos: (value) => events.push({ name: "setPhotos", value }) }),
   };
   const run = compileComposerUpload(bindings);
@@ -696,4 +697,202 @@ test("two finished attachments survive Retry with six pending files including a 
   assert.deepEqual(retry.pendingMediaAssetsRef.current, []);
   assert.match(message, /could not be recovered/u);
   assert.match(message, /1 original file is no longer available/u);
+});
+
+
+// Campaign background regressions run the real composer callbacks. Queue
+// campaign setters like React instead of making cross-state updates immediate.
+function campaignMediaFixture(assets, initialCampaign) {
+  const mediaProjectRef = { current: normalizeMediaProject({ assets }) };
+  const updates = [];
+  let campaign = initialCampaign;
+  const setCampaign = (update) => updates.push(update);
+  const setMediaProject = compileProjectSetter({ mediaProjectRef, setCampaign, renderMediaProject: () => {} });
+  return {
+    mediaProjectRef, setMediaProject, setCampaign,
+    flush() {
+      while (updates.length) {
+        const update = updates.shift();
+        if (typeof update !== "function") { campaign = update; continue; }
+        const pendingUpdates = updates.length;
+        const next = update(campaign);
+        assert.deepEqual(update(campaign), next, "React may replay a pure campaign updater");
+        assert.equal(updates.length, pendingUpdates, "updater must not enqueue other setters");
+        campaign = next;
+      }
+      return campaign;
+    },
+  };
+}
+const campaignImage = (patch = {}) => ({ id: "background-image", assetId: "ma_background_12345678", kind: "image",
+  status: "ready", sourceUrl: "https://media.test/background.jpg", ...patch });
+const campaignSelection = (patch = {}) => ({ version: 1, treatment: "spotlight", backgroundAssetId: "ma_background_12345678", ...patch });
+
+for (const outcome of ["ready", "missing", "retryable"]) test(`restored featured image ${outcome} recovery reconciles background identity through the actual composer`, async () => {
+  const f = campaignMediaFixture([], null), upload = composerUploadFixture();
+  const state = { pending: [], photos: [], errors: [] };
+  const savedImage = campaignImage({ status: "finalizing", sourceUrl: null, uri: "", altText: "The band under blue stage lights" });
+  const neighbor = normalizeMediaProjectAsset(campaignImage({ id: "other", assetId: "ma_other_12345678",
+    sourceUrl: "https://media.test/other.jpg", altText: "The crowd", edit: { aspect: "square", zoom: 1.5, focalX: 0.3, focalY: 0.7, rotation: 90 } }));
+  const pendingMediaAssetsRef = { current: [] }, photosRef = { current: [] };
+  const setPendingMediaAssets = compilePendingSetter({ pendingMediaAssetsRef, renderPendingMediaAssets: value => { state.pending = value; } });
+  const setPhotos = compilePhotosSetter({ photosRef, renderPhotos: value => { state.photos = value; } });
+  const resumeSetters = Object.fromEntries([
+    "setDraftId", "setSavedDraftFingerprint", "setPostType", "setExperienceType", "setArtist", "setArtistPicked", "setArtistKey", "setVenue", "setVenuePicked", "setCity", "setEventAddress", "setTour", "setShowFormat", "setEndDate", "setLineup", "setTimesSeen", "setDate", "setOnlineTitle", "setYoutubeUrl", "setOnlineRating", "setDims", "setReview", "setTaggedPeople", "setSong", "setSongUrl", "setPreservedPlaylist", "setPhotosPublic", "setLandingShowcase", "setShowSong", "setShowPhotos", "setShowPeople",
+  ].map(name => [name, () => {}]));
+  const resume = compileResumeComposer({
+    setOverallRating: value => { state.overall = value; }, clampRating, computeReview,
+    ...resumeSetters, normalizeComposerDraft, composerDraftFingerprint, normalizeMediaProject, mediaProjectFromPost, originalMediaProjectAsset,
+    draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: null },
+    onDraftIdentity: null, composerId: "composer-a", isDurableMediaUrl: value => /^https:\/\//u.test(value || ""),
+    ONLINE_REVIEW_EXPERIENCE: "online", lineupFromPost: () => [], restoredComposerDate: value => value,
+    hasLandingCompatibleImage: () => true, setMediaProject: f.setMediaProject, setCampaign: f.setCampaign,
+    setPhotos, setPendingMediaAssets, recoverRestoredMedia: async () => {},
+  });
+  const saved = normalizeComposerDraft({ id: "featured-draft", postType: "status", campaign: campaignSelection(),
+    photos: [neighbor.sourceUrl], mediaProject: { assets: [savedImage, neighbor] } });
+  const snapshot = () => normalizeComposerDraft({ ...saved, campaign: f.flush(), photos: state.photos, mediaProject: f.mediaProjectRef.current });
+  resume(saved);
+  resume(snapshot()); // Saving and reopening before recovery must not move or detach the waiting image.
+  assert.equal(f.flush().backgroundAssetId, savedImage.assetId);
+  assert.deepEqual(state.pending.map(asset => asset.id), [savedImage.id]);
+  assert.deepEqual(f.mediaProjectRef.current.assets.map(asset => asset.id), [savedImage.id, neighbor.id]);
+  const requests = [];
+  const retry = compileComposerRetry({ ...upload.bindings, pendingMediaAssetsRef, setPendingMediaAssets,
+    submitBusy: false, mediaRetryOperationRef: { current: null },
+    recoverMediaDraftAssets: async assets => { assert.deepEqual(assets, [], "owner-scoped server identities need no local file"); return []; },
+    uploadOriginalMedia: compileComposerUpload({ ...upload.bindings, mediaProjectRef: f.mediaProjectRef,
+      setMediaProject: f.setMediaProject, photosRef, setPhotos, setPendingMediaAssets,
+      setMediaError: value => state.errors.push(value),
+      uploadOriginalMediaAsset: options => actualOriginalUpload(options, { recovery: { wait: async () => {} }, apiCall: async (path, request) => {
+        requests.push({ path, method: request.method || "GET" });
+        assert.equal(request.expectedAccountId, "a");
+        if (outcome === "missing") throw Object.assign(new Error("Missing"), { status: 404, serverCode: "NOT_FOUND" });
+        if (outcome === "retryable") throw Object.assign(new Error("Temporarily unavailable"), { status: 503 });
+        return { asset: { id: savedImage.assetId, kind: "image", status: "ready", url: "https://media.test/new-background.jpg?version=2" } };
+      } }),
+    }),
+  });
+  await retry();
+  assert.deepEqual(requests, Array.from({ length: outcome === "retryable" ? 3 : 1 }, () => ({
+    path: `/api/media/assets/${savedImage.assetId}`, method: "GET",
+  })));
+  assert.equal(f.flush().backgroundAssetId, outcome === "missing" ? undefined : savedImage.assetId);
+  assert.deepEqual(f.mediaProjectRef.current.assets.find(asset => asset.id === neighbor.id), neighbor, "unrelated recipes and alt text remain intact");
+  if (outcome === "ready") {
+    assert.deepEqual(state.pending, []);
+    assert.deepEqual(state.photos, ["https://media.test/new-background.jpg?version=2", neighbor.sourceUrl]);
+    assert.deepEqual(mediaProjectSubmissionAssetIds(f.mediaProjectRef.current, state.photos), [savedImage.assetId, neighbor.assetId]);
+    assert.equal(f.mediaProjectRef.current.assets[0].altText, savedImage.altText);
+    resume(snapshot());
+    assert.deepEqual(state.pending, []);
+    assert.equal(f.flush().backgroundAssetId, savedImage.assetId, "a new delivery URL must not detach the featured image");
+    assert.deepEqual(f.mediaProjectRef.current.assets.map(asset => asset.id), [savedImage.id, neighbor.id]);
+  } else if (outcome === "missing") {
+    assert.deepEqual(state.pending, []);
+    assert.deepEqual(mediaProjectSubmissionAssetIds(f.mediaProjectRef.current, state.photos), [neighbor.assetId]);
+    assert.match(state.errors.at(-1), /Choose any missing originals again/u);
+  } else {
+    assert.deepEqual(state.pending.map(asset => asset.id), [savedImage.id], "failed recovery remains actionable and blocks posting");
+    assert.match(state.errors.at(-1), /Temporarily unavailable/u);
+  }
+});
+
+test("featured background selection requires an attached ready nonwaiting image", () => {
+  const source = readFileSync(new URL("./LogScreen.jsx", import.meta.url), "utf8");
+  const expression = source.match(/const canBeCampaignBackground = ([\s\S]*?);/u)?.[1];
+  assert.ok(expression);
+  const eligible = new Function("isCampaign", "waiting", "descriptor", "uri", "backgroundAssetId", "mediaDisplayKind", `return ${expression};`);
+  for (const [asset, waiting, isCampaign, expected] of [
+    [campaignImage(), false, true, true],
+    [campaignImage({ status: "selected", sourceUrl: null }), true, true, false],
+    [campaignImage(), true, true, false],
+    [campaignImage({ status: "failed" }), false, true, false],
+    [campaignImage({ sourceUrl: null }), false, true, false],
+    [campaignImage({ kind: "video" }), false, true, false],
+    [campaignImage({ assetId: null }), false, true, false],
+    [campaignImage(), false, false, false],
+  ]) assert.equal(eligible(isCampaign, waiting, asset, asset.sourceUrl, asset.assetId, mediaDisplayKind), expected);
+});
+
+test("project cleanup preserves chosen image identity across reorder, recovery and queued draft restores", () => {
+  const selected = Object.freeze(campaignSelection());
+  const image = campaignImage();
+  const clip = { id: "clip", assetId: "ma_clip_12345678", kind: "video", status: "processing" };
+  const f = campaignMediaFixture([image, clip], selected);
+  let calls = 0;
+  f.setMediaProject((current) => { calls += 1; return { ...current, assets: current.assets.slice().reverse() }; });
+  assert.equal(f.flush(), selected);
+  assert.equal(calls, 1, "project updater runs synchronously once, not inside React's campaign updater");
+  for (const [status, sourceUrl] of [["selected", null], ["uploading", null], ["finalizing", null],
+    ["ready", null], ["ready", "https://media.test/new-delivery.jpg?version=2"]]) {
+    f.setMediaProject(normalizeMediaProject({ assets: [campaignImage({ status, uri: "", sourceUrl }), clip] }));
+    assert.equal(f.flush(), selected, `${status} keeps the original stable image ID`);
+  }
+  const restoredA = campaignSelection({ treatment: "tour-poster" });
+  const restoredB = campaignSelection({ backgroundAssetId: "ma_restored_12345678", treatment: "after-dark" });
+  // resume replaces campaign state before it installs that draft's project.
+  f.setCampaign(restoredA);
+  f.setMediaProject(normalizeMediaProject({ assets: [campaignImage({ status: "selected", uri: "", sourceUrl: null })] }));
+  f.setCampaign(restoredB);
+  f.setMediaProject(normalizeMediaProject({ assets: [campaignImage({ assetId: restoredB.backgroundAssetId })] }));
+  assert.equal(f.flush(), restoredB, "a superseded restore cannot clear the newer draft's background");
+});
+
+test("removing a restored waiting image clears only its selected campaign background", () => {
+  const image = campaignImage({ status: "selected", sourceUrl: null });
+  const f = campaignMediaFixture([image], campaignSelection());
+  const pendingMediaAssetsRef = { current: [image] };
+  const remove = callback("LogScreen.jsx", "LogScreen", "removePendingMedia")({
+    pendingMediaAssetsRef, setPendingMediaAssets: update => { pendingMediaAssetsRef.current = update(pendingMediaAssetsRef.current); },
+    setMediaProject: f.setMediaProject, removeMediaProjectAsset, setMediaError: () => {},
+    retireRemoteDrafts: async () => {}, releaseMediaDraftAsset: async () => {},
+  });
+  remove(image.id);
+  assert.equal(pendingMediaAssetsRef.current.length, 0);
+  assert.equal(f.mediaProjectRef.current.assets.length, 0);
+  assert.deepEqual(f.flush(), { version: 1, treatment: "spotlight", backgroundAssetId: undefined });
+});
+
+for (const missing of [false, true]) test(`campaign image ${missing ? "terminal rejection clears" : "retryable failure preserves"} its background identity`, async () => {
+  const image = campaignImage({ status: "selected", sourceUrl: null });
+  const selected = Object.freeze(campaignSelection());
+  const f = campaignMediaFixture([image], selected);
+  const upload = composerUploadFixture();
+  let pending = [image];
+  const result = await compileComposerUpload({ ...upload.bindings,
+    mediaProjectRef: f.mediaProjectRef, mediaProject: f.mediaProjectRef.current,
+    setMediaProject: f.setMediaProject, photosRef: { current: [] }, photos: [],
+    setPendingMediaAssets: update => { pending = update(pending); },
+    uploadOriginalMediaAsset: async ({ expectedAccountId }) => {
+      assert.equal(expectedAccountId, "a");
+      throw Object.assign(new Error(missing ? "Missing" : "Try again"), { code: missing ? "MEDIA_SOURCE_MISSING" : "MEDIA_FINALIZE_PENDING" });
+    },
+  })(pending);
+  assert.equal(result.ok, false);
+  assert.equal(pending.length, missing ? 0 : 1);
+  assert.equal(f.mediaProjectRef.current.assets.length, missing ? 0 : 1);
+  const actual = f.flush();
+  if (missing) assert.equal(actual.backgroundAssetId, undefined);
+  else assert.equal(actual, selected);
+});
+
+test("background cleanup retains unrelated selections and clears removed or reclassified image IDs", () => {
+  const selected = Object.freeze(campaignSelection());
+  const other = campaignImage({ id: "other", assetId: "ma_other_12345678" });
+  const f = campaignMediaFixture([campaignImage(), other], selected);
+  f.setMediaProject((project) => removeMediaProjectAsset(project, other.id));
+  assert.equal(f.flush(), selected);
+  f.setMediaProject(normalizeMediaProject({ assets: [campaignImage({ assetId: "ma_replacement_12345678" })] }));
+  assert.equal(f.flush().backgroundAssetId, undefined);
+  f.setCampaign(selected);
+  f.setMediaProject(normalizeMediaProject({ assets: [campaignImage({ kind: "video" })] }));
+  assert.equal(f.flush().backgroundAssetId, undefined);
+  f.setCampaign(null);
+  f.setMediaProject(normalizeMediaProject());
+  assert.equal(f.flush(), null);
+  const withoutBackground = Object.freeze({ version: 1, treatment: "after-dark" });
+  f.setCampaign(withoutBackground);
+  f.setMediaProject(normalizeMediaProject());
+  assert.equal(f.flush(), withoutBackground);
 });
