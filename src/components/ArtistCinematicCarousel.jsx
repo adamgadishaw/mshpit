@@ -12,6 +12,7 @@ const initialsFor = (name) => artistInitials(name, "A");
 export default function ArtistCinematicCarousel({
   artistName,
   bannerUri = null,
+  bannerContain = false,
   profileUri = null,
   gallery = [],
   onOpenMedia,
@@ -73,7 +74,8 @@ export default function ArtistCinematicCarousel({
           <SmartImage
             uri={current.uri}
             style={StyleSheet.absoluteFill}
-            contain={false}
+            // Catalog portraits are fallback artwork, not composed banners.
+            contain={current.role === "banner" && bannerContain}
             previewWidth={previewWidth}
             accessibilityLabel={`Open featured ${artistName} photo${current.by ? ` by ${current.by}` : ""}`}
             onPress={openCurrent}
