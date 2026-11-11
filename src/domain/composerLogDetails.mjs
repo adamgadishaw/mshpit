@@ -16,6 +16,18 @@ export function composerRatingDims(post = {}) {
   return { performance: band, setlist: band, sound: room, venue: room, crowd: 0, experience: overall };
 }
 
+// Preserve untouched legacy aggregates and dimensions independently of the overall.
+export function composerReviewRatings({ overall = 0, dims = {}, computed = {}, editing = null } = {}) {
+  const initial = editing ? composerRatingDims(editing) : {};
+  const changed = (keys) => keys.some((key) => Number(dims[key] || 0) !== Number(initial[key] || 0));
+  return {
+    overall,
+    band: editing && !changed(["performance", "setlist"]) ? editing.band : computed.band,
+    room: editing && !changed(["sound", "venue", "crowd"]) ? editing.room : computed.room,
+    dims: editing && !changed(RATING_KEYS) ? editing.dims : dims,
+  };
+}
+
 export function hasDetailedComposerRatings(dims = {}) {
   return RATING_KEYS.some((key) => key !== "experience" && rating(dims[key]) > 0);
 }
@@ -30,6 +42,6 @@ export function composerLogRequirement({ artist = "", venue = "", city = "", eve
   if (!artist.trim()) return "Add the artist to log this show.";
   if (!venue.trim() && !city.trim()) return "Add a venue or just the city. You don't need to know the room.";
   if (eventAddress.trim() && !city.trim()) return "Add the city for the event address.";
-  if (!(Number(overall) > 0)) return "Add one rating, or use Share for a memory without ratings. You can also save a draft.";
+  if (!(Number(overall) > 0)) return "Choose your overall score, or use Share for a memory without ratings. You can also save a draft.";
   return "Ready to post. The date, tour, extra ratings and review can stay blank.";
 }

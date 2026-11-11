@@ -34,3 +34,26 @@ test("readiness copy describes the real minimum and distinguishes optional detai
   assert.match(composerLogRequirement({ artist: "Artist", city: "Toronto" }), /Share for a memory without ratings/);
   assert.match(composerLogRequirement({ artist: "Artist", city: "Toronto", overall: 4 }), /date, tour, extra ratings and review can stay blank/);
 });
+
+
+test("independent overall and detail edits preserve untouched legacy categories", async () => {
+  const { composerReviewRatings } = await import("./composerLogDetails.mjs");
+  const editing = { overall: 4.2, band: 4.7, room: null };
+  const dims = composerRatingDims(editing);
+  const unchanged = composerReviewRatings({ overall: 4.2, dims, computed: { overall: 1, band: 5, room: 5 }, editing });
+  assert.equal(unchanged.overall, 4.2);
+  assert.equal(unchanged.band, 4.7);
+  assert.equal(unchanged.room, null);
+  assert.equal(unchanged.dims, undefined);
+  const changed = composerReviewRatings({ overall: 2, dims: { ...dims, sound: 5 }, computed: { overall: 5, band: 5, room: 5 }, editing });
+  assert.equal(changed.overall, 2);
+  assert.equal(changed.band, 4.7);
+  assert.equal(changed.room, 5);
+  assert.equal(composerReviewRatings({ overall: 0, dims: { performance: 5 }, computed: { overall: 5 } }).overall, 0);
+});
+
+test("drafts retain a chosen or deliberately cleared overall and mark older drafts for fallback", () => {
+  assert.equal(normalizeComposerDraft({ overallRating: 2, dims: { performance: 5 } }).overallRating, 2);
+  assert.equal(normalizeComposerDraft({ overallRating: 0, dims: { experience: 5 } }).overallRating, 0);
+  assert.equal(normalizeComposerDraft({ dims: { experience: 5 } }).overallRating, null);
+});

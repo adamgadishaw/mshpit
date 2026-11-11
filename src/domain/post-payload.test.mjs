@@ -202,3 +202,13 @@ test("editing back to an in-person review explicitly clears online-only fields",
   assert.equal(body.youtubeUrl, null);
   assert.equal(body.venue, "Rogers Centre");
 });
+
+
+test("review edits omit unchanged legacy ratings and text without rounding or truncating", () => {
+  const previous = { overall: 4.2, band: null, room: 3.7, review: "x".repeat(42000) };
+  const body = buildReviewEditBody({ ...previous, city: "Toronto" }, previous);
+  for (const key of ["overall", "band", "room", "dims", "review"]) assert.equal(Object.hasOwn(body, key), false, key);
+  const changed = buildReviewEditBody({ ...previous, overall: 4.5, review: "y".repeat(32001) }, previous);
+  assert.equal(changed.overall, 4.5);
+  assert.equal(changed.review.length, 32001, "the server must reject, not receive a silently shortened edit");
+});

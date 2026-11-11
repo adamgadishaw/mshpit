@@ -805,7 +805,7 @@ async function runCase(browser, origin, item) {
       await page.getByLabel("Concert venue, optional with a city", { exact: true }).scrollIntoViewIfNeeded();
       await page.screenshot({ path: join(root, ".tmp", `location-composer-${item.width}.png`) });
       await page.getByRole("button", { name: "Next: The music", exact: true }).click();
-      await page.getByLabel("Rating", { exact: true }).first().press("End");
+      await page.getByLabel("Overall concert rating", { exact: true }).press("End");
       await page.getByRole("button", { name: "Next: Your story", exact: true }).click();
       const postButton = page.getByRole("button", { name: "Post to feed", exact: true });
       assert.equal(await postButton.isEnabled(), true, "A rated city-only concert must be publishable.");
