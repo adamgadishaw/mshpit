@@ -854,9 +854,9 @@ async function runCase(browser, origin, item) {
       assert.equal(await page.getByRole("heading", { name: "Good to see you.", exact: true }).count(), 0);
       assert.deepEqual(state.calls.filter(call => call.path.startsWith("/api/feed") || /\/api\/users\/.*\/(posts|concert-history)$/.test(call.path)), []);
     } else if (guestCase) {
-      if (publicPost.kind === "review" && publicPost.experienceType !== "online") {
-        await page.getByText("Open the original fan post", { exact: true }).click();
-      }
+      await page.getByTestId("post-content-shell").waitFor();
+      assert.equal(new URL(page.url()).pathname, "/post/" + publicPost.id);
+      await page.getByText(publicPost.review, { exact: true }).last().waitFor();
       const like = () => page.getByRole("button", { name: "Like, 3 likes", exact: true }).last();
       await like().waitFor();
       const after = state.calls.length;

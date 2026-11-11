@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { publicFramePath } from "./publicFrameNavigation.mjs";
 import { publicBrowserDestination } from "./publicBrowserDestination.mjs";
 import { mainTabForPath, MAIN_TAB_PATHS, serverDocumentNavigationPath } from "./browserNavigation.mjs";
 
@@ -91,7 +92,7 @@ test("matching public presentation hint keeps a concert's post discussion after 
   assert.equal(JSON.stringify(result).includes("Old guest payload"), false);
 });
 
-test("mismatched or malformed presentation hints do not override the fresh record's normal destination", async () => {
+test("post routes open the fresh review without relying on a presentation hint", async () => {
   const freshPost = { id: "p", kind: "review", artist: "Band", venue: "Hall" };
   for (const hint of [null, "p", ["p"], { postId: "other" }, { postId: 1 }, { postId: "" }, { postId: "p".repeat(201) }]) {
     let reads = 0;
@@ -101,7 +102,7 @@ test("mismatched or malformed presentation hints do not override the fresh recor
       readPost: async () => { reads += 1; return freshPost; },
     });
     assert.equal(reads, 1);
-    assert.equal(result.stack.at(-1).openLog, freshPost);
+    assert.equal(result.stack.at(-1).post, freshPost);
   }
 });
 
@@ -114,4 +115,33 @@ test("post hints cannot bypass missing records or cancellation during the fresh 
     controller.abort(); return { id: "p", kind: "review", venue: "Hall" };
   } });
   assert.equal(canceled, null);
+});
+
+
+test("archive-linked review permalinks retain post identity for guests and members", async () => {
+  // Public API shape of the reported review; synthetic identity and content.
+  const post = { id: "p_archive_review", userId: "fixture-author", kind: "review",
+    artist: "Hollowfest / Nessfest", venue: "The Woods", city: "Perth, Ontario, Canada", date: "2026-10-16",
+    archiveShowKey: "show.WyJob2xsb3dmZXN0IC8gbmVzc2Zlc3QiLCJ0aGUgd29vZHMiLCIiLCIyMDI2LTEwLTE2Il0" };
+  for (const accountId of [null, "member"]) for (const kind of ["review", "status", undefined]) {
+    const record = { ...post, kind };
+    const result = await publicBrowserDestination("/post/p_archive_review", { accountId,
+      resolveEntity: async () => ({ kind: "show", id: post.id, path: "/post/p_archive_review" }),
+      readPost: async () => record });
+    assert.deepEqual(result.stack.at(-1), { post: record });
+    assert.equal(result.path, "/post/p_archive_review");
+    assert.equal(publicFramePath(result.stack.at(-1)), result.path);
+    assert.equal(result.accountId, accountId);
+  }
+});
+
+test("genuine canonical concerts and events still open performance frames", async () => {
+  for (const [kind, path, entity] of [["concert", "/concert/show.fixture", { archiveShowKey: "show.fixture" }],
+    ["event", "/event/event-fixture", { id: "event-fixture" }]]) {
+    const result = await publicBrowserDestination(path, {
+      resolveEntity: async () => ({ kind, path, ...entity }),
+      readPost: () => assert.fail("performance routes must not read a post") });
+    assert.equal(result.stack.at(-1).openLog.performanceEvent, true);
+    assert.equal(publicFramePath(result.stack.at(-1)), path);
+  }
 });
