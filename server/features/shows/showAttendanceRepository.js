@@ -158,6 +158,24 @@ export function createShowAttendanceRepository(database) {
     return resolveShow(key);
   }
 
+  function sourceTourDateId(show) {
+    if (show?.tourDateId) {
+      const source = database.prepare(`SELECT owner_id,source,provider_event_id
+        FROM tour_dates WHERE id=?`).get(show.tourDateId);
+      if (source && (source.owner_id != null
+        || String(source.source || "").toLowerCase() !== String(show.provider || "").toLowerCase()
+        || source.provider_event_id !== show.providerEventId)) return null;
+      return show.tourDateId;
+    }
+    if (!show?.provider || !show?.providerEventId) return null;
+    // Older Shows may only carry provider identity. Do not guess between
+    // multiple source rows or accept a member-authored row as provider proof.
+    const sources = database.prepare(`SELECT id FROM tour_dates
+      WHERE owner_id IS NULL AND source=? AND provider_event_id=? LIMIT 2`)
+      .all(show.provider, show.providerEventId);
+    return sources.length === 1 ? sources[0].id : null;
+  }
+
   function exactShowDescriptor(input, at) {
     const tourDateId = normalizeTourDateId(input?.tourDateId);
     if (!tourDateId) return null;
@@ -616,6 +634,7 @@ export function createShowAttendanceRepository(database) {
     ownAttendance,
     ownExactAttendance,
     resolveShow,
+    sourceTourDateId,
     writeAttendance,
     writeExactAttendance,
   });

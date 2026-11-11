@@ -7,10 +7,14 @@
 - DB01–03 and DB11 add privacy-safe mute/block management, enforce Nobody for
   first contact across age rules, atomically save DMs/consent/notifications, and
   include owned mutes and festival plans in password-confirmed account export.
-- The combined focused selection passes 73 tests. The required aggregate gate
+- DB09–10/DB12–13 source `6652e88a` is locally integrated with both histories
+  retained: reply ancestry during erasure, current-source Here eligibility,
+  unread indexing and indexed inbox/read projections. Combined focused checks
+  pass 225 tests with no failures/skips; independent overlap review passes.
+- The own-only focused selection passes 73 tests. Its required aggregate gate
   passes (7,252 tests, 0 failures, 1 Windows file-link skip; dependency audit,
-  syntax, architecture and web export pass). Parallel recovery/data-integrity
-  integration and final combined checks remain pending. This candidate
+  syntax, architecture and web export pass). Recovery DB04–08 integration and
+  final combined checks remain pending. This candidate
   is local only; no production, account, device or deployment action occurred.
 - Root causes, compatibility and validation limits are in
   [the remediation record](docs/DATABASE_REMEDIATION_2026-11-11.md).

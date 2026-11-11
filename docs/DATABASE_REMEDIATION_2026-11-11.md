@@ -41,6 +41,37 @@ No schema or client changes are required for these four fixes. New export keys
 are additive. Production adoption requires the normal separately authorized
 server release; this local patch does not alter the installed iPhone build.
 
+## Data integrity and read performance (DB09–10, DB12–13)
+
+Verified and locally integrated source commit
+`6652e88a50470a83d5c9a792c1d76f8cb82a5179`, also based on released `c2bbe882`.
+All 21 supplied delivery/evidence hashes and bundle prerequisites matched. Both
+source histories are retained. `server/api.js` merged without conflicts and its
+privacy projection and atomic send boundaries were compared against `72af15a`.
+
+- **DB09:** Shared account erasure reparents another member's surviving replies
+  to the nearest surviving ancestor inside the deletion transaction. It preserves
+  surviving ancestor privacy restrictions and keeps malformed ancestry unavailable.
+  Authored content still cascades away; existing production orphans are not repaired.
+- **DB10:** Fresh Here transitions resolve current source eligibility while
+  holding the write lock, covering stable Show IDs and aliases. Stale cancellation,
+  timing, missing/reassigned sources or visibility cannot authorize a fresh check-in.
+  Public Show reads use current lifecycle when authoritative evidence exists and
+  retain historical timing when it is missing, mismatched or ambiguous. After source
+  deletion, existing retry/privacy/removal compatibility uses stable IDs or aliases;
+  requests carrying `tourDateId` still resolve the source first, as before this fix.
+- **DB12:** Additive startup initialization creates the partial unread-notification
+  index. Privacy and acknowledgement predicates are unchanged. No live index build
+  has run; production build duration/storage impact is unmeasured.
+- **DB13:** Indexed directional peer seeks replace complete-history ranking and
+  enumeration for inbox previews/read projections. Full unread totals, consent,
+  stable timestamp/ID ordering, the existing 750-removal inbox window and complete
+  per-thread removal history remain. Send and authorization code is preserved.
+
+The committed performance documents give reproducible local synthetic evidence.
+They are not production timings or a capacity guarantee. Shallow many-peer inboxes
+have overhead, and removal-heavy histories still dominate remaining query work.
+
 ## Validation
 
 - Combined owned regression selection: **73 passed, 0 failed, 0 skipped**.
@@ -63,9 +94,14 @@ server release; this local patch does not alter the installed iPhone build.
   notification repair, or tested cross-process crash recovery. One optional
   Windows CIM process-detail read was denied; it was not retried, and ordinary
   gate logs and completion receipts established successful completion instead.
-- Recovery and data-integrity workstreams remain separate until their verified
-  commits are integrated and checked on the combined tree. Those final combined
-  checks are still pending and are not represented by the gate above.
+- The two-stream combined selection passes **225 tests, 0 failures, 0 skips**
+  (~20.34 seconds). Independent messaging/privacy and erasure/attendance reviews
+  found no merge-introduced blockers. Changed Node syntax, architecture and diff
+  whitespace checks pass. Evidence: `combined-two-streams-focused.log` and
+  `two-stream-source-boundaries.json` in the evidence directory below.
+- Recovery DB04–08 is still awaiting its verified commit. The final aggregate
+  gate is deliberately reserved for all three integrated streams; the own-only
+  aggregate result above does not certify the combined source.
 
 Evidence directory: `database-fixes-evidence-20261111` beside this checkout.
 No production SQL, production restore, native compilation or device checks were

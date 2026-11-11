@@ -9,6 +9,7 @@ import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
 import { createVenueMapCatalogueResponse } from "./venueMapCatalogueResponse.mjs";
 import { LEGACY_ARTIST_DEATH_DATE_CUTOFF, isLegacyArtistMemorial } from "../src/domain/artistLegacy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
+import { reparentRepliesForAccountErasure } from "./features/accountPrivacy/commentErasure.js";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
 import { retainedProfileProjection, retainedContributor } from "./features/artistAccounts/artistAccessPublication.js";
 // API routes. Conventions that keep this hard to crash and easy to fix:
@@ -97,6 +98,7 @@ import {
 import { mediaAssetRoutes } from "./mediaAssetRoutes.js";
 import { mediaLegacyFinalizeRoutes } from "./mediaLegacyFinalizeRoutes.js";
 import { directMessageReadFor, directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
+import { directMessageInboxRemovedIds, directMessageLatestPerPeer } from "./features/messaging/directMessageThreads.js";
 import { directMessageConsentFor, directMessageConsentProjection, directMessageConsentRoutes } from "./features/messaging/directMessageConsent.js";
 import { createMessageRelationshipContextService } from "./features/messaging/messageRelationshipContext.js";
 import { notificationRoutes } from "./features/notifications/notificationRoutes.js";
@@ -149,6 +151,7 @@ import { showAttendanceRoutes } from "./features/shows/showAttendanceRoutes.js";
 import { showRoutes } from "./features/shows/showRoutes.js";
 import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
 import { normalizeShowAliasKey, normalizeTourDateId } from "./features/shows/showIdentity.js";
+import { tourDateShowLifecycle } from "./features/shows/showLifecycle.js";
 import { socialShareCardRoutes } from "./features/socialSharing/socialShareCardRoutes.js";
 import { createSocialShareCardRenderer } from "./features/socialSharing/socialShareCardRenderer.js";
 import { createLoungeLifecycleService } from "./features/lounges/loungeLifecycleService.js";
@@ -2284,21 +2287,6 @@ function visibleTicketTourDate(user, tourDateId, at = now()) {
   return row;
 }
 
-function tourDateShowLifecycle(row, at) {
-  const status = String(row?.event_status || "").trim().toLowerCase();
-  if (status === "cancelled" || status === "canceled") return "cancelled";
-  if (status === "postponed") return "postponed";
-  const startAt = Date.parse(row?.start_date_time || "");
-  if (Number.isFinite(startAt)) {
-    if (at < startAt) return "upcoming";
-    return at <= startAt + 12 * 60 * 60 * 1000 ? "happening" : "completed";
-  }
-  const today = liveEventQueryFloorDate(at);
-  if (row?.date < today) return "completed";
-  if (row?.date > today) return "upcoming";
-  return "unknown";
-}
-
 function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
   const id = normalizeTourDateId(tourDateId);
   const row = id ? visibleTourDateRows(user, { id, limit: 2, at })
@@ -2866,9 +2854,7 @@ function removedDmIdsFor(userId, otherId = null) {
       ORDER BY created_at DESC,id DESC`)
       .all(userId, otherId, otherId, userId).map((row) => row.id);
   }
-  return db.prepare(`SELECT id FROM dms WHERE removed=1 AND (from_id=? OR to_id=?)
-    ORDER BY created_at DESC,id DESC LIMIT ?`)
-    .all(userId, userId, DM_TOMBSTONE_LIMIT).map((row) => row.id);
+  return directMessageInboxRemovedIds(db, userId, DM_TOMBSTONE_LIMIT);
 }
 
 const REPORTABLE_TARGET_TYPES = new Set([
@@ -4681,6 +4667,9 @@ function eraseAccountData(u, { at = now(), journal = true } = {}) {
   // Structured post tags are JSON rather than foreign-key rows, so account
   // erasure must explicitly remove this id from posts authored by others.
   scrubTaggedUserFromPosts(u.id);
+  // Preserve other authors' reply chains before authored comments cascade.
+  // This shares the deletion transaction, including inactivity and replay.
+  reparentRepliesForAccountErasure(db, u.id);
   // Off-host record so restoring an older backup cannot bring the account back.
   if (journal) recordPrivacyEvent(db, { kind: "account_erased", subjectId: u.id, at });
   db.prepare("DELETE FROM users WHERE id=?").run(u.id);
@@ -8100,27 +8089,17 @@ export const routes = {
   },
 
   // ---- direct messages (SQLite migration slice 4) ----
-  // Every user I've DM'd + that thread's messages. At prototype scale returning
-  // all messages is cheap and lets the client compute the Requests/Friends split
-  // and unread exactly as it does locally (read markers stay client-side).
+  // Thread previews and server-owned read/consent state. Older messages remain
+  // available through the existing cursor-paginated single-conversation route.
   "GET /api/me/threads": (ctx) => {
     const u = requireUser(ctx);
     const hidden = blockedIdSet(u.id);
     const readProjection = directMessageReadProjection(db, u.id);
     const consentProjection = directMessageConsentProjection(db, u.id);
-    // Inbox refreshes need only one latest message per conversation. A windowed
-    // query avoids downloading up to 500 messages for every thread every time the
-    // inbox is opened or refreshed, while the full route remains for hydration.
+    // Seek the latest visible row in each direction instead of ranking history.
+    // The full route remains available for hydration with its existing limits.
     if (String(ctx.query?.summary || "") === "1") {
-      const latest = db.prepare(`SELECT id,from_id,to_id,text,created_at,other_id FROM (
-        SELECT id,from_id,to_id,text,created_at,
-          CASE WHEN from_id=? THEN to_id ELSE from_id END AS other_id,
-          ROW_NUMBER() OVER (
-            PARTITION BY CASE WHEN from_id=? THEN to_id ELSE from_id END
-            ORDER BY created_at DESC,id DESC
-          ) AS row_number
-        FROM dms WHERE removed=0 AND (from_id=? OR to_id=?)
-      ) WHERE row_number=1 ORDER BY created_at DESC,id DESC LIMIT 200`).all(u.id, u.id, u.id, u.id);
+      const latest = directMessageLatestPerPeer(db, u.id);
       const visibleLatest = latest.filter((message) => !hidden.has(message.other_id));
       const relationshipContexts = messageRelationshipContextService.forPeers(
         u.id,
@@ -8139,8 +8118,7 @@ export const routes = {
         } : null;
       }).filter(Boolean), removedIds: removedDmIdsFor(u.id) };
     }
-    const others = db.prepare(`SELECT DISTINCT CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other
-                               FROM dms WHERE removed=0 AND (from_id = ? OR to_id = ?)`).all(u.id, u.id, u.id);
+    const others = directMessageLatestPerPeer(db, u.id, -1).map(message => ({ other: message.other_id }));
     const visibleOthers = others.filter((entry) => !hidden.has(entry.other));
     const relationshipContexts = messageRelationshipContextService.forPeers(
       u.id,

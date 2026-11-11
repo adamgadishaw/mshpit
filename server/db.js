@@ -593,6 +593,8 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifs_user ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifs_cursor ON notifications(user_id, created_at DESC, id DESC);
+-- Count candidates without revisiting read history; visibility remains a query-time check.
+CREATE INDEX IF NOT EXISTS idx_notifs_unread_user ON notifications(user_id) WHERE read=0;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notifs_post_tag_unique
   ON notifications(user_id, post_id, type) WHERE type='post_tag' AND post_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_notifs_post_tag_actor_recipient_created

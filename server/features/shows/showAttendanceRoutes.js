@@ -183,6 +183,21 @@ export function showAttendanceRoutes({
           && visibility === "private";
         if (!removal && !privacyOnly) requireVerifiedUser(ctx);
 
+        // A stable ID or legacy alias locates the attendance identity, not
+        // current event authority. Re-resolve the source for every fresh Here
+        // transition while holding the write lock; cancellation, rescheduling,
+        // removal, and visibility changes must invalidate an old Show copy.
+        let liveDescriptor = exactDescriptor;
+        if (freshLiveTransition && existing.show?.persisted
+          && (!exactDescriptor || existing.show.tourDateId || existing.show.provider)) {
+          const sourceId = repository.sourceTourDateId(existing.show);
+          if (!sourceId) liveDescriptor = null;
+          else if (!liveDescriptor) {
+            liveDescriptor = typeof resolveTourDateShow === "function"
+              ? resolveTourDateShow(user, sourceId, operationAt) : null;
+          }
+        }
+
         let artist = "";
         let venue = "";
         let city = "";
@@ -211,7 +226,7 @@ export function showAttendanceRoutes({
           // has only validated request fields. Include the alias so the policy
           // can verify its artist segment independently of duplicated client
           // metadata.
-          const policyIdentity = exactDescriptor || existing.show || {};
+          const policyIdentity = liveDescriptor || exactDescriptor || existing.show || {};
           const storedIdentity = current?.snapshot || {};
           assertLiveAttendanceAvailable({
             artistKey: policyIdentity.artistKey || storedIdentity.artistKey || artistKey,
@@ -221,9 +236,11 @@ export function showAttendanceRoutes({
         }
 
         const writeAt = now();
-        const exactShow = freshLiveTransition && exactDescriptor
-          ? repository.ensureExactShow(exactDescriptor, writeAt) : null;
-        if (freshLiveTransition && !repository.checkInAvailable(exactShow?.id || key, writeAt)) {
+        const exactShow = freshLiveTransition && liveDescriptor
+          ? repository.ensureExactShow(liveDescriptor, writeAt) : null;
+        if (freshLiveTransition && (!exactShow
+          || (!exactDescriptor && exactShow.id !== existing.show?.id)
+          || !repository.checkInAvailable(exactShow.id, writeAt))) {
           throw new ApiError(
             409,
             "Live check-in is not available for this show yet. You can still mark Going or Went.",
