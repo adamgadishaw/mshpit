@@ -1,9 +1,14 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { calendarEventTiming } from "../src/domain/calendarEventTiming.mjs";
 import { postAuthorBadgeProjection } from "./postAuthorBadgeProjection.js";
 import { postBadgeBundle } from "../src/domain/postBadgeBundle.mjs";
 import { mapLibreServerEnabled } from "./mapLibreConfiguration.mjs";
 import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
 import { createVenueMapCatalogueResponse } from "./venueMapCatalogueResponse.mjs";
+import {
+  encodeTourDateCalendarCursor, tourDateCalendarPublicRange,
+  tourDateCalendarRequest, tourDateCalendarSummary,
+} from "./tourDateCalendarRange.mjs";
 import { LEGACY_ARTIST_DEATH_DATE_CUTOFF, isLegacyArtistMemorial } from "../src/domain/artistLegacy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
@@ -1057,17 +1062,24 @@ function tourDateRangePage(viewer, range, timestamp) {
   let lastScanned = null;
   let scanned = 0;
   let exhausted = false;
+  const rawScanLimit = Math.min(range.rawScanLimit ?? TOUR_DATE_RANGE_MAX_RAW_SCAN, TOUR_DATE_RANGE_MAX_RAW_SCAN);
+  const scanBatch = Math.min(range.scanBatch ?? TOUR_DATE_RANGE_SCAN_BATCH, TOUR_DATE_RANGE_SCAN_BATCH);
+  const queryFloor = liveEventQueryFloorDate(timestamp);
+  // Calendar is an explicit month archive; discovery remains current/upcoming.
+  const today = range.calendarFrom || queryFloor;
+  const encodeCursor = (row) => range.cursorScope ? encodeTourDateCalendarCursor(row, range) : encodeTourDateCursor(row);
 
-  // The SQL lifecycle predicate deliberately includes one prior UTC day so a
-  // negative-offset event is not dropped before its local day ends. Apply the
-  // timezone-aware predicate while filling the requested page, rather than
-  // limiting raw candidates first and returning a short or empty page.
-  while (visible.length <= range.limit && scanned < TOUR_DATE_RANGE_MAX_RAW_SCAN) {
-    const batchLimit = Math.min(TOUR_DATE_RANGE_SCAN_BATCH, TOUR_DATE_RANGE_MAX_RAW_SCAN - scanned);
+  // Discovery includes one prior UTC day and then checks each venue's local
+  // lifecycle. Calendar instead checks its explicit, renderable date window.
+  // Fill visible pages after either filter, preserving progress through rows
+  // that cannot be shown rather than mistaking a short page for exhaustion.
+  while (visible.length <= range.limit && scanned < rawScanLimit) {
+    const batchLimit = Math.min(scanBatch, rawScanLimit - scanned);
     const candidates = visibleTourDateRows(viewer, {
-      today: liveEventQueryFloorDate(timestamp),
+      today,
       at: timestamp,
-      through: range.through,
+      through: range.calendarThrough ? null : range.through,
+      calendarThrough: range.calendarThrough,
       city: range.city,
       countryCode: range.countryCode,
       country: range.country,
@@ -1084,12 +1096,15 @@ function tourDateRangePage(viewer, range, timestamp) {
     const tail = candidates.at(-1);
     lastScanned = { date: tail.date, id: tail.id };
     for (const row of candidates) {
-      if (lifecycle.isCurrentOrUpcoming({
-        date: row.date,
-        eventEndDate: row.event_end_date,
-        eventTimezone: row.event_timezone,
-        eventStatus: row.event_status,
-      })) visible.push(row);
+      const eligible = range.calendarFrom
+        ? calendarTourDateJson(row, range) != null
+        : lifecycle.isCurrentOrUpcoming({
+          date: row.date,
+          eventEndDate: row.event_end_date,
+          eventTimezone: row.event_timezone,
+          eventStatus: row.event_status,
+        });
+      if (eligible) visible.push(row);
       if (visible.length > range.limit) break;
     }
 
@@ -1103,13 +1118,13 @@ function tourDateRangePage(viewer, range, timestamp) {
 
   const rows = visible.slice(0, range.limit);
   if (visible.length > range.limit && rows.length) {
-    return { rows, nextCursor: encodeTourDateCursor(rows.at(-1)) };
+    return { rows, nextCursor: encodeCursor(rows.at(-1)), scanned };
   }
   // A pathological prior-day backlog can consume the bounded scan budget. In
   // that case advance past every inspected row (all eligible rows were already
   // returned) so the next request makes progress without losing unseen data.
-  const nextCursor = !exhausted && lastScanned ? encodeTourDateCursor(lastScanned) : null;
-  return { rows, nextCursor };
+  const nextCursor = !exhausted && lastScanned ? encodeCursor(lastScanned) : null;
+  return { rows, nextCursor, scanned };
 }
 
 const tourDateArtistPhotos = createTourDateArtistPhotoReader(db);
@@ -1148,6 +1163,23 @@ function tourDateJson(row) {
       eventSourceUrl: row.event_source_url || null,
       billedArtists,
     } : {}),
+  };
+}
+
+function calendarTourDateJson(row, range) {
+  if (["cancelled", "canceled"].includes(String(row.event_status || "").trim().toLowerCase())) return null;
+  const event = tourDateJson(row);
+  const artist = typeof event.artist === "string"
+    ? event.artist.replace(/[\u0000-\u001f\u007f]/gu, "").replace(/\s+/gu, " ").trim().slice(0, 240) : "";
+  const venue = publicTourDateVenueName(row);
+  // Match the calendar model's projectable dates and spans. The summary and
+  // selected rows must never advertise a performance that the client drops.
+  const timing = calendarEventTiming({ date: event.date, eventEndDate: event.eventEndDate });
+  if (!timing.date || !artist || !venue
+    || timing.date > range.calendarThrough || timing.endDate < range.calendarFrom) return null;
+  return {
+    ...event, artist, venue, date: timing.date,
+    eventEndDate: timing.endDate > timing.date ? timing.endDate : null,
   };
 }
 
@@ -6783,6 +6815,25 @@ export const routes = {
     // in the artist archive; letting expired provider rows consume this bounded
     // 5,000-row window would hide current worldwide dates as coverage grows.
     const timestamp = now();
+    let calendarRange;
+    try {
+      calendarRange = tourDateCalendarRequest(ctx.query || {}, { viewerId: ctx.user?.id || null });
+    } catch (error) {
+      if (!(error instanceof TypeError)) throw error;
+      throw new ApiError(400, error.message, "VALIDATION_FAILED");
+    }
+    if (calendarRange) {
+      ctx.setHeader?.("Cache-Control", "private, no-store");
+      const result = tourDateRangePage(ctx.user, calendarRange, timestamp);
+      return {
+        tourDates: result.rows.map((row) => calendarTourDateJson(row, calendarRange)),
+        nextCursor: result.nextCursor,
+        complete: result.nextCursor === null,
+        range: tourDateCalendarPublicRange(calendarRange),
+        monthSummary: tourDateCalendarSummary(calendarRange,
+          (range) => tourDateRangePage(ctx.user, range, timestamp)),
+      };
+    }
     if (ctx.query?.view === "venue-map" && mapLibreServerEnabled(process.env)) {
       return venueMapCatalogue.get({ signal: ctx.signal }).then(createVenueMapCatalogueResponse).catch(cause => {
         const error = new ApiError(503, "Venue map could not refresh. Try again shortly.", "DATABASE_UNAVAILABLE", cause);
