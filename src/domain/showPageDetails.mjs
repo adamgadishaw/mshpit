@@ -9,7 +9,9 @@ export function savedShowRating(value) {
 // artist/venue aggregates, likes, comments, or the number of review excerpts.
 export function showPageRating(log = {}) {
   const overall = savedShowRating(log.overall);
-  const individual = !log.archiveShowKey && hasPostDiscussion(log);
+  // Persisted reviews also carry archive identity and can enter show navigation
+  // as performance events. Their authored score still belongs to that member.
+  const individual = hasPostDiscussion(log);
   const count = !individual && Number.isSafeInteger(log.ratingCount) && log.ratingCount >= 0 ? log.ratingCount : null;
   return {
     overall,

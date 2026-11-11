@@ -19,7 +19,13 @@ test("an individual review is never presented as a community rating", () => {
   const post = { id: "review", userId: "fan", user: { name: "Alex" }, overall: 4.5, ratingCount: 10 };
   assert.equal(showPageRating(post).label, "Alex's overall show rating");
   assert.equal(showPageRating(post).countLabel, null);
-  assert.equal(showPageRating({ ...post, archiveShowKey: "exact-night" }).label, "Overall show rating");
+  const archivedPost = { ...post, kind: "review", archiveShowKey: "exact-night", performanceEvent: true };
+  assert.equal(showPageRating(archivedPost).label, "Alex's overall show rating");
+  assert.equal(showPageRating(archivedPost).countLabel, null);
+  assert.equal(showPageRating({ ...archivedPost, kind: undefined }).label, "Alex's overall show rating");
+  const aggregate = { id: "exact-night", kind: "concert", archiveShowKey: "exact-night", overall: 4.3, ratingCount: 17 };
+  assert.equal(showPageRating(aggregate).label, "Overall show rating");
+  assert.equal(showPageRating(aggregate).countLabel, "17 ratings");
 });
 
 test("event artwork needs the existing provider attribution contract and cannot promote attachments", () => {

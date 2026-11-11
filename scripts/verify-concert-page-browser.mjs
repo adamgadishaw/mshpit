@@ -54,10 +54,11 @@ async function scenario(browser, origin, width, theme, mode = "archive") {
   page.setDefaultTimeout(15000);
   page.on("pageerror", error => state.errors.push(error.message));
   const upcoming = mode === "upcoming" || mode === "cancelled";
-  const targetPath = upcoming ? "/event/fixture-night" : mode === "individual" ? `/post/${review.id}` : path;
+  const individual = mode === "individual" || mode === "individual-archive";
+  const post = mode === "individual-archive" ? { ...review, archiveShowKey: "fixture-night" } : review;
+  const targetPath = upcoming ? "/event/fixture-night" : individual ? `/post/${review.id}` : path;
   const entity = { ...concert, ...(mode === "empty" ? { overall: null, ratingCount: 0, cover: null, setlist: [] } : {}),
     ...(mode === "long" ? { eventName: "Fixture Artist and Friends: An Evening of Very Long Concert Titles", venue: "Fixture Venue with an Exceptionally Long Name and Outdoor Stage" } : {}),
-    ...(mode === "individual" ? { ...review, archiveShowKey: null, kind: "concert", path, dims: { performance: 4.1, setlist: 4.1, sound: 3.6, venue: 3.6 } } : {}),
     ...(upcoming ? { kind: "event", path: targetPath, name: "Fixture Artist", publicEventSnapshot: true, archiveShowKey: null, overall: null, date: "2099-10-01", ticketUrl: "https://www.ticketmaster.com/event/fixture", eventStatus: mode === "cancelled" ? "cancelled" : "active", cover: null,
       eventImage: { uri: "https://concert.fixture.invalid/photo.jpg", attribution: "Fixture promoter", sourcePage: "https://www.ticketmaster.com/event/fixture", width: 1200, height: 800 }, source: "ticketmaster" } : {}) };
   await context.route("**/*", async route => {
@@ -71,7 +72,7 @@ async function scenario(browser, origin, width, theme, mode = "archive") {
       if (url.pathname === `/api/venues/${encodeURIComponent(entity.venue.toLowerCase())}/photos`) return await json({ photos: [], state: "ready" });
       if (url.pathname === "/api/resolve" && url.searchParams.get("path") === (upcoming ? targetPath : path)) return await json({ entity });
       if (url.pathname === "/api/resolve" && url.searchParams.get("path") === `/post/${review.id}`) return await json({ entity: { kind: "show", id: review.id, path: `/post/${review.id}` } });
-      if (url.pathname === `/api/posts/${review.id}`) return await json({ post: review });
+      if (url.pathname === `/api/posts/${review.id}`) return await json({ post });
       if (url.pathname === `/api/posts/${review.id}/comments`) return await json({ comments: [] });
       if (url.pathname === "/api/artists/archive/reviews") {
         state.requests++;
@@ -93,7 +94,7 @@ async function scenario(browser, origin, width, theme, mode = "archive") {
   });
   try {
     await page.goto(origin + targetPath, { waitUntil: "domcontentloaded" });
-    if (mode === "individual") {
+    if (individual) {
       // A persisted review permalink owns its discussion. Enter ShowScreen via
       // its explicit show action, preserving the review route contract.
       await page.getByText("No comments yet. Start the conversation.", { exact: true }).waitFor();
@@ -121,11 +122,14 @@ async function scenario(browser, origin, width, theme, mode = "archive") {
       await page.getByText("No reviews to show yet.", { exact: true }).waitFor();
       await page.getByText("No overall show rating yet", { exact: true }).waitFor();
       assert.equal(await page.getByText("0.0", { exact: true }).count(), 0);
-    } else if (!upcoming && mode !== "individual") {
+    } else if (!upcoming && !individual) {
       await page.getByText("17 ratings", { exact: true }).waitFor();
       await page.getByRole("button", { name: "Open Alex Fixture's review and comments", exact: true }).waitFor();
     }
-    if (mode !== "empty" && mode !== "individual") {
+    if (mode === "individual-archive") {
+      await page.getByRole("button", { name: "Open Alex Fixture's review and comments", exact: true }).waitFor();
+    }
+    if (mode !== "empty" && !individual) {
       await page.waitForFunction(() => [...document.images].some(img => img.src.includes("concert.fixture.invalid") && img.complete && img.naturalWidth > 0));
     }
     await page.screenshot({ path: join(shots, `${name}-overview.png`), fullPage: true });
@@ -165,7 +169,7 @@ async function scenario(browser, origin, width, theme, mode = "archive") {
       await page.goBack();
       await section("Reviews").waitFor();
     }
-    if (mode === "individual") {
+    if (individual) {
       await page.getByText("Alex Fixture's overall show rating", { exact: true }).waitFor();
       await page.getByLabel("4.7 out of 5", { exact: true }).waitFor();
       assert.equal(await page.getByText("17 ratings", { exact: true }).count(), 0);
@@ -220,5 +224,6 @@ try {
   const filter = process.argv[2] || "";
   for (const width of [390, 1280]) for (const theme of ["stage", "daylight"]) if (`archive-${theme}-${width}`.includes(filter)) await scenario(browser, origin, width, theme);
   for (const mode of ["empty", "loading", "error", "individual", "upcoming", "cancelled"]) if (`${mode}-stage-390`.includes(filter)) await scenario(browser, origin, 390, "stage", mode);
+  for (const width of [390, 1280]) if (`individual-archive-stage-${width}`.includes(filter)) await scenario(browser, origin, width, "stage", "individual-archive");
   if ("long-stage-320".includes(filter)) await scenario(browser, origin, 320, "stage", "long");
 } finally { await browser?.close(); await new Promise(done => server.close(done)); }
