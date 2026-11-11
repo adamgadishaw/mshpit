@@ -47,7 +47,7 @@ function ArtistTile({ a, picked, onToggle, disabled = false }) {
 const MIN_PICKS = 3;
 
 export default function PickArtistsScreen({ onDone, onSkip, showTheme = true, onRequireVerification }) {
-  const { session, updateProfile, chooseTheme, searchArtistsApi } = useStore();
+  const { session, authReady, updateProfile, chooseTheme, searchArtistsApi } = useStore();
   const [q, setQ] = useState("");
   const [remoteArtists, setRemoteArtists] = useState([]);
   const [artistsLoading, setArtistsLoading] = useState(true);
@@ -58,7 +58,7 @@ export default function PickArtistsScreen({ onDone, onSkip, showTheme = true, on
   const [saveError, setSaveError] = useState("");
   const query = q.trim().toLowerCase();
   const needsEmailVerification = session?.emailVerified === false;
-  const onboardingThemes = visibleThemeChoices(THEMES, { selectedKey: theme });
+  const onboardingThemes = visibleThemeChoices(THEMES, { selectedKey: theme, account: authReady ? session : null });
 
   useEffect(() => {
     const controller = new AbortController();

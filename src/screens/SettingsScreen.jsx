@@ -11,6 +11,7 @@ import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { profileManagementAction } from "../domain/artistAccountIdentity.mjs";
 import { CONTACT_URL, JOBS_URL, SUPPORT_EMAIL, SUPPORT_URL } from "../domain/contact.mjs";
 import { visibleThemeChoices } from "../domain/themeChoices.mjs";
+import { isStaff } from "../domain/staffRoles.mjs";
 import AccountPasswordForm from "../features/signupOnboarding/AccountPasswordForm";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
 const AuthScreen = lazyWithRetry(() => import("./AuthScreen"), "AuthScreen");
@@ -64,7 +65,7 @@ function Toggle({ value, busy = false }) {
 }
 
 export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout, onOpenCatalogEditor, onOpenNewsroom, onOpenModeration, onOpenAdministration, onRequestArtist, initialAccountAction = null }) {
-  const { session, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, updateProfile } = useStore();
+  const { session, authReady, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, updateProfile } = useStore();
   const blocked = session ? blockedUsers() : [];
   const muted = session ? mutedUsers() : [];
   const [exporting, setExporting] = useState(false);
@@ -105,7 +106,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
   const manageProfile = profileManagementAction(session);
   const publicProfileLabel = manageProfile.destination === "artistHub" ? "View public artist page" : "View public profile";
   const publicProfileDetail = manageProfile.destination === "artistHub" ? session?.artistName : `@${session?.handle || ""}`;
-  const themeChoices = visibleThemeChoices(THEMES, { expanded: showMoreThemes, selectedKey: themeKey });
+  const themeChoices = visibleThemeChoices(THEMES, { expanded: showMoreThemes, selectedKey: themeKey, account: authReady ? session : null });
   const doExport = async () => {
     if (exporting || !exportPassword) return;
     setExporting(true);
@@ -220,7 +221,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
             <ThemeSwatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => t.key !== themeKey && chooseTheme(t.key)} showMode />
           ))}
         </View>
-        <Pressable
+        {authReady && isStaff(session?.role) && <Pressable
           style={({ focused }) => [styles.moreThemesButton, focused && focusRing]}
           onPress={() => setShowMoreThemes((value) => !value)}
           accessibilityRole="button"
@@ -229,7 +230,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
         >
           <Text style={styles.moreThemesText}>{showMoreThemes ? "Show primary themes" : "More themes"}</Text>
           <Icon name="chevron-right" size={16} color={colors.amber} />
-        </Pressable>
+        </Pressable>}
 
         {session && (
           <>

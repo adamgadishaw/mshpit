@@ -1,5 +1,7 @@
 import { Platform } from "react-native";
 import { nativeThemeRuntime, readThemeSelection, persistThemeSelection, clearThemeSelection, reloadTheme } from "./lib/themeRuntime";
+import { canAccessTheme, resolveTheme, resolveAccountTheme } from "./domain/themeAccess.mjs";
+import { readStartupTheme } from "./lib/themeStartup.mjs";
 
 export const CONTENT_COLUMN_MAX_WIDTH = 900;
 
@@ -119,9 +121,7 @@ const validTheme = next => typeof next === "string" && Object.hasOwn(PRESETS, ne
 let key = "stage";
 try {
   const saved = readThemeSelection().theme;
-  if (saved === "light") key = "daylight";
-  else if (saved === "dark") key = "stage";
-  else if (validTheme(saved)) key = saved;
+  key = readStartupTheme() ?? resolveTheme(saved, null);
 } catch { /* the default remains usable when storage is unavailable */ }
 
 export const themeKey = key;
@@ -158,26 +158,28 @@ export const storedThemeSelection = readThemeSelection;
 export function clearStoredTheme() {
   try { clearThemeSelection(); } catch { /* next account reconciliation ignores another owner's choice */ }
 }
-export function setTheme(next, ownerId = null) {
-  if (!validTheme(next)) return;
+export function setTheme(next, ownerId = null, account = null) {
+  if (!canAccessTheme(next, account?.id === ownerId ? account : null)) return;
   try { if (persistTheme(next, ownerId)) reloadTheme(); } catch { /* keep the current usable appearance */ }
 }
-export function syncThemeFromAccount(next, ownerId) {
-  if (!validTheme(next)) return;
-  try { if (persistTheme(next, ownerId) && next !== key) reloadTheme(); } catch { /* no reload without verified persistence */ }
+export function syncThemeFromAccount(next, ownerId, account = null) {
+  const actor = account?.id === ownerId ? account : ownerId ? { id: ownerId, theme: next } : null;
+  const local = storedThemeSelection();
+  if (local.unavailable) return;
+  const selected = resolveAccountTheme(actor, local);
+  // Preserve a dormant restricted preference; startup resolves it using current
+  // authority. Do not rewrite the server or silently delete a Pit Team choice.
+  const dormant = local.ownerId === (ownerId || "guest") && validTheme(local.theme) && !canAccessTheme(local.theme, actor);
+  try {
+    if ((dormant || persistTheme(selected, ownerId)) && selected !== key) reloadTheme();
+  } catch { /* no reload without verified persistence or a safely gated dormant choice */ }
 }
 
 // Native has no document/localStorage. Preserve the website's owner-scoped
 // local-choice priority, without its best-effort account PATCH during recovery.
 export function syncNativeAccountTheme(account) {
   if (!nativeThemeRuntime) return false;
-  const ownerId = account?.id || "guest";
-  const local = storedThemeSelection();
-  // An unreadable store is not an empty one: never replace a choice we could not inspect.
-  if (local.unavailable) return true;
-  const next = local.ownerId === ownerId && validTheme(local.theme) ? local.theme
-    : account?.id && validTheme(account.theme) ? account.theme : "stage";
-  syncThemeFromAccount(next, ownerId);
+  syncThemeFromAccount(account?.theme, account?.id || null, account);
   return true;
 }
 

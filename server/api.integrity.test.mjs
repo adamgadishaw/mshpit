@@ -2937,12 +2937,12 @@ test("PATCH /api/me schemas extras, filters public song text, and keeps trusted 
   assert.equal(publicUser(q.userById.get(user.id)).searchIndexingOptOut, undefined);
 
   const protectedPreference = handler({
-    user: q.userById.get(user.id), ip: "profile-test", body: { extras: { theme: "neon", searchIndexingOptOut: false } },
+    user: q.userById.get(user.id), ip: "profile-test", body: { extras: { theme: "daylight", searchIndexingOptOut: false } },
   });
   assert.equal(protectedPreference.user.searchIndexingOptOut, true,
     "generic extras writes cannot silently erase the dedicated privacy preference");
   assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), {
-    theme: "neon", nowPlaying: { title: "Safe Song", artist: "Safe Artist" }, searchIndexingOptOut: true,
+    theme: "daylight", nowPlaying: { title: "Safe Song", artist: "Safe Artist" }, searchIndexingOptOut: true,
   });
 
   const optedIn = handler({
@@ -2996,7 +2996,7 @@ test("PATCH /api/me extras keeps server-owned fields and dedicated overrides aut
       return user;
     },
     body: {
-      theme: "neon", searchIndexingOptOut: false, concertMapVisible: true,
+      theme: "daylight", searchIndexingOptOut: false, concertMapVisible: true,
       extras: {
         theme: "stage", bass: { title: "New song", artist: "New artist" },
         consentAt: 100, analyticsConsentAt: 200, termsAcceptedAt: 300, termsVersion: "forged",
@@ -3006,7 +3006,7 @@ test("PATCH /api/me extras keeps server-owned fields and dedicated overrides aut
   });
   assert.equal(checks, 2);
   assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), {
-    ...current, theme: "neon", searchIndexingOptOut: false, concertMapVisible: true,
+    ...current, theme: "daylight", searchIndexingOptOut: false, concertMapVisible: true,
     bass: { title: "New song", artist: "New artist" },
   });
 });
@@ -3020,12 +3020,12 @@ test("PATCH /api/me dedicated preference-only patches retain current nonmusic me
   };
   db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify(current), user.id);
   const patch = (body) => routes["PATCH /api/me"]({ user, ip: "extras-preferences-test", body });
-  patch({ theme: "neon" });
+  patch({ theme: "daylight" });
   patch({ concertMapVisible: true });
   patch({ searchIndexingOptOut: false });
   patch({ bio: "Unrelated profile edit", directMessagePolicy: "nobody", profileAudience: "only_me" });
   assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), {
-    ...current, theme: "neon", concertMapVisible: true, searchIndexingOptOut: false,
+    ...current, theme: "daylight", concertMapVisible: true, searchIndexingOptOut: false,
   });
   assert.equal(q.userById.get(user.id).dm_policy, "nobody");
   assert.equal(q.userById.get(user.id).profile_audience, "only_me");

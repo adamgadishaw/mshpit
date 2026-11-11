@@ -178,7 +178,7 @@ test("verification write failure rolls back preference, confirmation, token and 
 
 test("private preference survives profile extras edits but cannot be forged through them", async () => {
   const created = (await signup("keep_preference"));
-  const saved = routes["PATCH /api/me"]({ user: created.user, body: { extras: { theme: "neon" } }, ip: "pending-extras" });
+  const saved = routes["PATCH /api/me"]({ user: created.user, body: { extras: { theme: "daylight" } }, ip: "pending-extras" });
   assert.equal(JSON.parse(q.userById.get(created.user.id).extras).pendingSignupHandle, "keep_preference");
   assert.equal(saved.user.pendingSignupHandle, "keep_preference");
   assert.equal(JSON.stringify(publicUser(q.userById.get(created.user.id))).includes("keep_preference"), false);
