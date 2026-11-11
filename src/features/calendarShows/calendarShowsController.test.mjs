@@ -19,11 +19,14 @@ test("pages beyond 500 retained rows without silent cap and completes only at cu
     assert.equal(request.limit, 100);
     return page(Array.from({ length: 100 }, (_, i) => event(`show-${start + i}`)), calls < 6 ? `page-${calls}` : null);
   } });
+  assert.equal(controller.getSnapshot().loadedPages, 0);
   await controller.refresh();
+  assert.equal(controller.getSnapshot().loadedPages, 1);
   assert.equal(calls, 1, "month presence must not cause an automatic full-month download");
   assert.equal(controller.getSnapshot().coverage.complete, false);
   for (let i = 0; i < 5; i += 1) await controller.loadMore();
   assert.equal(controller.getSnapshot().events.length, 600);
+  assert.equal(controller.getSnapshot().loadedPages, 6);
   assert.equal(controller.getSnapshot().coverage.complete, true);
   assert.equal(controller.getSnapshot().hasMore, false);
 });
@@ -34,11 +37,13 @@ test("empty scanned page with a next cursor remains incomplete and can make prog
     seen.push(after); return after ? page([event("found")]) : page([], "scanned-forward");
   } });
   await controller.refresh();
+  assert.equal(controller.getSnapshot().loadedPages, 1);
   assert.equal(controller.getSnapshot().hasMore, true);
   assert.equal(controller.getSnapshot().coverage.complete, false);
   await controller.loadMore();
   assert.deepEqual(seen, [null, "scanned-forward"]);
   assert.equal(controller.getSnapshot().events[0].id, "found");
+  assert.equal(controller.getSnapshot().loadedPages, 2);
 });
 
 test("request failures retain only the same query's last good rows and indicate incomplete coverage", async () => {
@@ -50,6 +55,7 @@ test("request failures retain only the same query's last good rows and indicate 
   assert.equal((await controller.refresh()).ok, false);
   assert.equal(controller.getSnapshot().events[0].id, "saved");
   assert.equal(controller.getSnapshot().status, "error");
+  assert.equal(controller.getSnapshot().loadedPages, 1);
   assert.equal(controller.getSnapshot().coverage.complete, false);
 });
 
@@ -61,6 +67,7 @@ test("selected date, scope, account and auth epoch each create an empty independ
     assert.notEqual(changed.key, query.key);
     const controller = createCalendarShowsController({ query: changed, read: async () => page([]) });
     assert.deepEqual(controller.getSnapshot().events, []);
+    assert.equal(controller.getSnapshot().loadedPages, 0);
   }
 });
 
@@ -88,6 +95,7 @@ test("aborted refresh restores settled rows even when it superseded another refr
   first.resolve(page([event("superseded")])); await refreshA;
   assert.equal(controller.getSnapshot().status, "ready");
   assert.deepEqual(controller.getSnapshot().events.map(row => row.id), ["settled"]);
+  assert.equal(controller.getSnapshot().loadedPages, 1);
 });
 
 test("duplicate or cyclic cursors fail visibly without losing previous rows", async () => {
@@ -98,6 +106,27 @@ test("duplicate or cyclic cursors fail visibly without losing previous rows", as
   assert.deepEqual(controller.getSnapshot().events.map(row => row.id), ["one", "two"]);
   assert.equal(controller.getSnapshot().status, "error");
   assert.equal(controller.getSnapshot().hasMore, true);
+  assert.equal(controller.getSnapshot().loadedPages, 2);
+});
+
+test("settled page depth survives cancelled pagination and resets only after a successful refresh", async () => {
+  const cancelledPage = deferred(); let calls = 0;
+  const controller = createCalendarShowsController({ query, read: () => {
+    calls += 1;
+    if (calls === 3) return cancelledPage.promise;
+    return Promise.resolve(page([event(`page-${calls}`)], `cursor-${calls}`));
+  } });
+  await controller.refresh(); await controller.loadMore();
+  assert.equal(controller.getSnapshot().loadedPages, 2);
+  const pending = controller.loadMore();
+  controller.pause();
+  cancelledPage.resolve(page([event("stale-third-page")], "stale-cursor"));
+  assert.equal((await pending).value, null);
+  assert.equal(controller.getSnapshot().loadedPages, 2);
+  controller.resume();
+  await controller.refresh();
+  assert.equal(controller.getSnapshot().loadedPages, 1);
+  assert.deepEqual(controller.getSnapshot().events.map(row => row.id), ["page-4"]);
 });
 
 test("plans, missing Local location and inactive ownership start no public query", async () => {

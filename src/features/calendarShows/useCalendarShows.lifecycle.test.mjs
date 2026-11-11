@@ -60,7 +60,7 @@ function fixture({ strict = false } = {}) {
   function Calendar() {
     const browse = useCalendarBrowseState({ memory, occurrence, ...props,
       initialState: { selected: "2026-11-20", cursor: { y: 2026, m: 10 }, scope: "all", presentation: "month" } });
-    const shows = useCalendarShows({ ...browse.state, ...props, capture: browse.capture, isCurrent: browse.isCurrent,
+    const shows = useCalendarShows({ ...browse.state, restorePages: browse.state.cataloguePages, ...props, capture: browse.capture, isCurrent: browse.isCurrent,
       homeCity: "Toronto", homeCountry: "Canada" });
     latest = { browse, shows };
     if (hidden) throw waiting;
@@ -143,5 +143,105 @@ test("real React Suspense cover retires month reads and old handlers remain reti
   assert.deepEqual(f.read().shows.events, []);
   f.answer(f.requests.length - 1, "fresh-reveal"); await f.settle();
   assert.equal(f.read().shows.events[0].id, "fresh-reveal");
+  f.render(false);
+});
+
+for (const depth of [2, 3]) test(`real React remount replays the saved ${depth}-page depth without retaining event rows`, async () => {
+  const f = fixture(); f.render(); await f.settle();
+  for (let page = 1; page <= depth; page++) {
+    if (page > 1) f.host.act(() => { void f.read().shows.loadMore(); });
+    f.answer(f.requests.length - 1, `before-${page}`, `cursor-${page}`); await f.settle();
+  }
+  const queryKey = f.read().shows.queryKey, before = f.requests.length;
+  f.host.act(() => f.read().browse.update({ cataloguePages: depth })); await f.settle();
+  assert.equal(f.read().shows.queryKey, queryKey);
+  assert.equal(f.requests.length, before, "recording loaded depth does not restart the query");
+  f.render(false); f.render(); await f.settle();
+  assert.deepEqual(f.read().shows.events, []);
+  assert.equal(f.read().shows.loadedPages, 0);
+  for (let page = 1; page <= depth; page++) {
+    const index = f.requests.length - 1;
+    assert.equal(f.requests[index].options.after, page === 1 ? null : `cursor-${page - 1}`);
+    f.answer(index, `returned-${page}`, `cursor-${page}`); await f.settle();
+    assert.equal(f.read().shows.loadedPages, page);
+  }
+  assert.equal(f.requests.length, before + depth);
+  assert.deepEqual(f.read().shows.events.map(row => row.id), Array.from({ length: depth }, (_, i) => `returned-${i + 1}`));
+  assert.equal(f.read().shows.status, "ready");
+  assert.equal(f.read().shows.hasMore, true, "replay stops at saved depth even when more pages exist");
+  f.render(); await f.settle();
+  assert.equal(f.requests.length, before + depth);
+  f.render(false);
+});
+
+test("real React replay stops on errors across rerenders and resumes only after an explicit retry", async () => {
+  const f = fixture(); f.change({ restorePages: 3 }); await f.settle();
+  f.answer(f.requests.length - 1, "first", "one"); await f.settle();
+  const failed = f.requests.length - 1;
+  assert.equal(f.requests[failed].options.after, "one");
+  f.requests[failed].reject(new Error("offline")); await f.settle();
+  assert.equal(f.read().shows.status, "error");
+  assert.equal(f.read().shows.loadedPages, 1);
+  for (let i = 0; i < 6; i++) { f.render(); await f.settle(); }
+  assert.equal(f.requests.length, failed + 1, "an error must not become an automatic retry loop");
+  f.host.act(() => { void f.read().shows.loadMore(); });
+  f.answer(f.requests.length - 1, "second", "two"); await f.settle();
+  assert.equal(f.requests.at(-1).options.after, "two");
+  f.answer(f.requests.length - 1, "third", "three"); await f.settle();
+  assert.equal(f.read().shows.loadedPages, 3);
+  assert.deepEqual(f.read().shows.events.map(row => row.id), ["first", "second", "third"]);
+  f.render(false);
+});
+
+test("real React replay stops at exhaustion before a previously saved depth", async () => {
+  const f = fixture(); f.change({ restorePages: 3 }); await f.settle();
+  f.answer(f.requests.length - 1, "only-page"); await f.settle();
+  const count = f.requests.length;
+  assert.equal(f.read().shows.loadedPages, 1);
+  assert.equal(f.read().shows.coverage.complete, true);
+  f.render(); await f.settle();
+  assert.equal(f.requests.length, count);
+  f.render(false);
+});
+
+for (const change of ["date", "account"]) test(`real React ${change} change retires in-flight replay and starts with the new depth`, async () => {
+  const f = fixture(); f.render(); await f.settle();
+  f.host.act(() => f.read().browse.update({ cataloguePages: 3 }));
+  f.answer(f.requests.length - 1, "old-first", "old-one"); await f.settle();
+  const oldPage = f.requests.length - 1, oldShows = f.read().shows;
+  if (change === "date") f.host.act(() => f.read().browse.update({ selected: "2026-11-30", cataloguePages: 1 }));
+  else f.change({ accountId: "b", authEpoch: 2 });
+  await f.settle();
+  assert.equal(f.requests[oldPage].options.signal.aborted, true);
+  assert.equal(f.read().shows.loadedPages, 0);
+  assert.deepEqual(f.read().shows.events, []);
+  const currentPage = f.requests.length - 1;
+  f.answer(oldPage, "stale-second", "old-two");
+  f.answer(currentPage, "new-first", "new-one"); await f.settle();
+  assert.equal(f.read().shows.loadedPages, 1);
+  assert.deepEqual(f.read().shows.events.map(row => row.id), ["new-first"]);
+  const count = f.requests.length;
+  assert.equal((await oldShows.loadMore()).value, null);
+  f.render(); await f.settle();
+  assert.equal(f.requests.length, count, "old replay depth cannot follow a new query or account");
+  f.render(false);
+});
+
+test("real React cover pauses replay and reveal resumes settled depth with fresh ownership", async () => {
+  const f = fixture(); f.change({ restorePages: 3 }); await f.settle();
+  f.answer(f.requests.length - 1, "first", "one"); await f.settle();
+  const old = f.read().shows, covered = f.requests.length - 1;
+  f.hide(true); await f.settle();
+  f.answer(covered, "covered-second", "two"); await f.settle();
+  const count = f.requests.length;
+  assert.equal(f.read().shows.loadedPages, 1);
+  f.hide(false); await f.settle();
+  assert.equal(f.requests.length, count + 1);
+  assert.equal(f.requests.at(-1).options.after, "one");
+  assert.equal((await old.loadMore()).value, null);
+  f.answer(f.requests.length - 1, "fresh-second", "two"); await f.settle();
+  f.answer(f.requests.length - 1, "fresh-third", "three"); await f.settle();
+  assert.equal(f.read().shows.loadedPages, 3);
+  assert.deepEqual(f.read().shows.events.map(row => row.id), ["first", "fresh-second", "fresh-third"]);
   f.render(false);
 });

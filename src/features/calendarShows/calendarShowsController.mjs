@@ -10,7 +10,7 @@ export function createCalendarShowsController({ query, read, asError, initialSum
   if (typeof asError !== "function") throw new TypeError("Calendar reads require the application error adapter.");
   let active = null, paused = false, disposed = false, loadingMore = false;
   let consumedCursors = new Set();
-  const empty = { events: [], nextCursor: null, complete: false,
+  const empty = { events: [], nextCursor: null, complete: false, loadedPages: 0,
     monthSummary: initialSummary || { dayPresence: {}, complete: false } };
   let resource = createLoadState({ scope: query.key, status: query.enabled ? "loading" : "idle", data: empty });
   let snapshot;
@@ -18,7 +18,7 @@ export function createCalendarShowsController({ query, read, asError, initialSum
   const emit = () => {
     const data = resource.data || empty;
     snapshot = {
-      events: data.events, status: resource.status, error: resource.error, loadingMore,
+      events: data.events, status: resource.status, error: resource.error, loadingMore, loadedPages: data.loadedPages,
       nextCursor: data.nextCursor, hasMore: data.nextCursor !== null, needsLocation: query.needsLocation,
       dayPresence: data.monthSummary.dayPresence, summaryComplete: data.monthSummary.complete,
       coverage: { from: query.from, through: query.through, complete: resource.status === "ready" && data.complete },
@@ -50,7 +50,8 @@ export function createCalendarShowsController({ query, read, asError, initialSum
       const events = more ? mergeRows(before.data.events, page.events) : mergeRows([], page.events);
       if (!more) consumedCursors = new Set();
       else consumedCursors.add(after);
-      resource = resolveLoadState({ scope: query.key, data: { ...page, events } });
+      resource = resolveLoadState({ scope: query.key,
+        data: { ...page, events, loadedPages: more ? before.data.loadedPages + 1 : 1 } });
       return true;
     } catch (error) {
       if (!current(request) || isLoadCancellation(error, request.controller.signal)) {
