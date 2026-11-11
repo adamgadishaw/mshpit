@@ -4695,12 +4695,12 @@ function setMarketingPreferenceJournaled(preference) {
 export function replayPrivacyJournalOnRestore(options = {}) {
   return replayPrivacyJournalIfRestored(db, {
     ...options,
-    erase: (userId) => atomicWrite(() => {
+    erase: (userId) => {
       const user = q.userById.get(userId);
       if (!user || isOwnerId(db, user.id)) return false;
       eraseAccountData(user, { at: now(), journal: false });
       return true;
-    }),
+    },
     optOut: (userId) => {
       const user = q.userById.get(userId);
       if (!user || user.marketing_opt_out === 1) return false;
@@ -8110,7 +8110,7 @@ export const routes = {
         const other = q.userById.get(message.other_id);
         return other ? {
           otherId: message.other_id,
-          otherUser: publicUser(other),
+          otherUser: projectManagedUser(other, u),
           messages: [{ id: message.id, from: message.from_id, text: message.text, createdAt: message.created_at }],
           relationshipContext: relationshipContexts.get(message.other_id) || null,
           ...readProjection.forOther(message.other_id),
@@ -8133,7 +8133,7 @@ export const routes = {
         .all(u.id, o.other, o.other, u.id);
       return {
         otherId: o.other,
-        otherUser: publicUser(other),
+        otherUser: projectManagedUser(other, u),
         messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })),
         relationshipContext: relationshipContexts.get(o.other) || null,
         ...readProjection.forOther(o.other),

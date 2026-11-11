@@ -7,6 +7,7 @@ import { privateErrorLabel } from "./errors.js";
 import { isProduction } from "./environment.js";
 import { boundedBackupTimeout } from "../scripts/backup-db-verification.mjs";
 import { privateBackupStorageConfig } from "./backupStorageSecurity.js";
+import { backupStorageIdentity } from "./backupStorageIdentity.js";
 import { startPeriodicJob } from "./periodicJobScheduler.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -15,6 +16,8 @@ const SCRIPT = join(ROOT, "scripts", "backup-db.mjs");
 const TRUE_VALUES = new Set(["1", "true", "yes", "on", "enabled"]);
 const FALSE_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
 const BACKUP_NAME = /^pit-\d{8}-\d{6}\.db$/;
+// Keep the original marker path so a confirmed upload replaces legacy proof.
+// Only the destination-bound v2 payload is eligible as current evidence.
 const OFFHOST_RECEIPT_NAME = ".offhost-upload-receipt-v1.json";
 const UPLOAD_KEYS = ["BACKUP_S3_ENDPOINT", "BACKUP_S3_BUCKET", "BACKUP_S3_ACCESS_KEY_ID", "BACKUP_S3_SECRET_ACCESS_KEY"];
 const HOUR_MS = 60 * 60 * 1000;
@@ -79,6 +82,7 @@ function offhostReceiptPath(env = process.env) {
 export function recordOffhostBackupReceipt(env = process.env, {
   backupName,
   uploadedAt = Date.now(),
+  storageIdentity = backupStorageIdentity(env),
 } = {}) {
   const name = String(backupName || "").trim();
   const timestamp = Number(uploadedAt);
@@ -86,11 +90,14 @@ export function recordOffhostBackupReceipt(env = process.env, {
   if (!Number.isSafeInteger(timestamp) || timestamp <= 0) {
     throw new TypeError("Off-host backup receipt requires a positive millisecond timestamp.");
   }
+  if (!storageIdentity || storageIdentity !== backupStorageIdentity(env)) {
+    throw new TypeError("Off-host backup receipt requires the confirmed storage identity.");
+  }
   let published = false;
   try { published = statSync(join(backupDirectory(env), name)).isFile(); }
   catch { /* architecture: allow-empty-catch -- absence is reported by the explicit published-snapshot guard below */ }
   if (!published) throw new Error("Off-host backup receipt requires the published local snapshot.");
-  const receipt = Object.freeze({ version: 1, backupName: name, uploadedAt: timestamp });
+  const receipt = Object.freeze({ version: 2, backupName: name, uploadedAt: timestamp, storageIdentity });
   // This marker contains no credentials, bucket names, or object keys. A torn
   // write is treated as unavailable by the reader instead of as fresh proof.
   writeFileSync(offhostReceiptPath(env), `${JSON.stringify(receipt)}\n`, {
@@ -105,9 +112,11 @@ export function offhostBackupReceipt(env = process.env) {
     const parsed = JSON.parse(readFileSync(offhostReceiptPath(env), "utf8"));
     const backupName = String(parsed?.backupName || "").trim();
     const uploadedAt = Number(parsed?.uploadedAt);
-    if (parsed?.version !== 1 || !BACKUP_NAME.test(backupName)
+    const storageIdentity = backupStorageIdentity(env);
+    if (parsed?.version !== 2 || !storageIdentity || parsed?.storageIdentity !== storageIdentity
+      || !BACKUP_NAME.test(backupName)
       || !Number.isSafeInteger(uploadedAt) || uploadedAt <= 0) return null;
-    return Object.freeze({ version: 1, backupName, uploadedAt });
+    return Object.freeze({ version: 2, backupName, uploadedAt, storageIdentity });
   } catch {
     return null;
   }
@@ -192,10 +201,11 @@ function backupAbortError(signal) {
 }
 
 class BackupReceiptWriteError extends Error {
-  constructor(cause, receipt) {
+  constructor(cause, receipt, directory) {
     super("Private backup upload completed, but its local receipt could not be written.", { cause });
     this.name = "BackupReceiptWriteError";
     this.receipt = Object.freeze(receipt);
+    this.directory = directory;
   }
 }
 
@@ -208,9 +218,11 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
     // Do not hand the backup subprocess unrelated production credentials such
     // as admin, email, maps, ticketing, media-write, or verifier secrets.
     const childEnv = backupChildEnvironment(env);
-    const expectsUpload = scheduledBackupArgs(env).includes("--upload");
-    const beforeSnapshot = expectsUpload ? latestBackupSnapshot(env) : null;
-    const child = spawnProcess(process.execPath, scheduledBackupArgs(env), {
+    const args = scheduledBackupArgs(env);
+    const expectsUpload = args.includes("--upload");
+    const storageIdentity = expectsUpload ? backupStorageIdentity(env) : null;
+    const beforeSnapshot = expectsUpload ? latestBackupSnapshot(childEnv) : null;
+    const child = spawnProcess(process.execPath, args, {
       cwd: ROOT,
       env: childEnv,
       stdio: ["ignore", "pipe", "pipe"],
@@ -240,15 +252,17 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
     const timeout = setTimeout(() => {
       // A wedged VACUUM/upload must not own the global maintenance coordinator
       // forever. SIGKILL is deliberate: the unpublished .partial file is ignored
-      // and cleaned on the next run, while a graceful signal could hang too.
-      try { child.kill?.("SIGKILL"); } catch {}
+      // and eligible abandoned owned partials are reconciled by a later run,
+      // while a graceful signal could hang too.
+      try { child.kill?.("SIGKILL"); } catch { /* architecture: allow-empty-catch -- process deadline still reports failure if termination signaling races exit */ }
       finish(new Error(`backup process timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     timeout.unref?.();
     abortListener = () => {
       // The backup script publishes via a verified temporary snapshot. Killing
       // its child cannot mutate the source database; an unpublished partial is
-      // ignored and cleaned by the next run. Wait for `close` before allowing
+      // ignored; eligible abandoned owned partials are reconciled by a later
+      // run. Wait for `close` before allowing
       // the web process to close SQLite.
       try { child.kill?.("SIGKILL"); }
       catch { /* architecture: allow-empty-catch -- the 55s process guard remains the final shutdown boundary if child signaling itself fails */ }
@@ -265,16 +279,18 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
         return;
       }
       if (expectsUpload) {
-        const published = latestBackupSnapshot(env);
+        // Completion belongs to the child's captured destination and paths,
+        // even if the caller changes its environment while this job runs.
+        const published = latestBackupSnapshot(childEnv);
         if (!published || published.name === beforeSnapshot?.name) {
           finish(new Error("backup process reported success without publishing a new snapshot"));
           return;
         }
-        const receipt = { backupName: published.name, uploadedAt: Date.now() };
+        const receipt = { backupName: published.name, uploadedAt: Date.now(), storageIdentity };
         try {
-          recordOffhostBackupReceipt(env, receipt);
+          recordOffhostBackupReceipt(childEnv, receipt);
         } catch (error) {
-          finish(new BackupReceiptWriteError(error, receipt));
+          finish(new BackupReceiptWriteError(error, receipt, backupDirectory(childEnv)));
           return;
         }
       }
@@ -293,7 +309,7 @@ export async function runBackupJobSafely(job, report = (error) => {
     await job();
     return true;
   } catch (error) {
-    try { report(error); } catch {}
+    try { report(error); } catch { /* architecture: allow-empty-catch -- diagnostic sink failure cannot escape a contained backup job */ }
     return false;
   }
 }
@@ -321,14 +337,28 @@ export function startBackupScheduler({
   const childTimeoutMs = boundedBackupTimeout(env?.BACKUP_PROCESS_TIMEOUT_MS, 10 * 60 * 1000, {
     min: 30_000, max: 30 * 60 * 1000,
   });
-  // The shared scheduler's regular timer starts at process startup, while a
-  // snapshot's mtime is its completion time. With a strict 24h freshness gate,
+  // A snapshot's mtime is its completion time. With a strict 24h freshness gate,
   // a first backup at +5m (or its recovery retry) makes the +24h tick skip an
   // entire day. Allow only that bounded completion window: normally 40m, never
   // over 90m or 1/16 of the cadence. Timers still run daily, not every 40m.
   const completionGraceMs = Math.min(90 * 60_000, cadenceMs / 16,
     startupDelayMs + recoveryDelayMs + 2 * childTimeoutMs);
   const freshnessIntervalMs = Math.max(60_000, cadenceMs - completionGraceMs);
+  const scheduledAt = Date.now();
+  const currentLocalAt = latestBackupAt(env);
+  const currentOffhostAt = offhostBackupConfigured(env)
+    ? backupOperationalStatus(env, { now: scheduledAt }).latestOffhostBackupAt || 0
+    : null;
+  const oldestEvidenceAt = currentOffhostAt === null
+    ? currentLocalAt : Math.min(currentLocalAt, currentOffhostAt);
+  const remainingFreshnessMs = oldestEvidenceAt + freshnessIntervalMs - scheduledAt;
+  // A restart must not postpone an 18h-old upload until a new +24h timer makes
+  // it 42h old. Align the first ordinary tick to existing evidence, then keep
+  // the daily cadence. When startup is already due, retain its normal daily
+  // interval so a nearby ordinary tick cannot reopen its single retry window.
+  const initialIntervalDelayMs = remainingFreshnessMs > startupDelayMs
+    ? Math.min(cadenceMs, Math.ceil(remainingFreshnessMs))
+    : cadenceMs;
   // One confirmed child result may survive a receipt-write error until this
   // scheduler's bounded recovery retry. Retrying that write must not upload the
   // same recovery point again. A restart loses this in-memory evidence and must
@@ -336,6 +366,7 @@ export function startBackupScheduler({
   let pendingReceipt = null;
   return schedule({
     initialDelayMs: startupDelayMs,
+    initialIntervalDelayMs,
     intervalMs: cadenceMs,
     retryDelayMs: recoveryDelayMs,
     run: ({ signal } = {}) => runBackgroundJob(async () => {
@@ -343,9 +374,11 @@ export function startBackupScheduler({
       const latest = latestBackupSnapshot(env);
       const offhostConfigured = offhostBackupConfigured(env);
       if (pendingReceipt) {
-        if (offhostConfigured && latest?.name === pendingReceipt.backupName
-          && !shouldRunScheduledBackup(pendingReceipt.uploadedAt, observedAt, cadenceMs)) {
-          recordOffhostBackupReceipt(env, pendingReceipt);
+        const { receipt, directory } = pendingReceipt;
+        if (offhostConfigured && receipt.storageIdentity === backupStorageIdentity(env)
+          && directory === backupDirectory(env) && latest?.name === receipt.backupName
+          && !shouldRunScheduledBackup(receipt.uploadedAt, observedAt, cadenceMs)) {
+          recordOffhostBackupReceipt(env, receipt);
         }
         // Do not retain stale evidence or a snapshot since removed/replaced.
         // A failed write throws above and leaves the one pending receipt intact.
@@ -362,7 +395,9 @@ export function startBackupScheduler({
       let result;
       try { result = await run({ signal }); }
       catch (error) {
-        if (error instanceof BackupReceiptWriteError) pendingReceipt = error.receipt;
+        if (error instanceof BackupReceiptWriteError) {
+          pendingReceipt = { receipt: error.receipt, directory: error.directory };
+        }
         throw error;
       }
       logger.log?.(`[pit] database backup verified${result?.uploaded ? " and uploaded off-host" : " on persistent disk"}.`);

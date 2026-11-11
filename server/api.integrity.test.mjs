@@ -3197,10 +3197,15 @@ test("capped social endpoints return the newest window in chronological order", 
   const threads = routes["GET /api/me/threads"]({ user: userA });
   assert.equal(threads.threads[0].messages[0].createdAt, 6);
   assert.equal(threads.threads[0].messages.at(-1).createdAt, 505);
-  assert.deepEqual(threads.threads[0].otherUser.home, { city: "Toronto" });
+  const participant = threads.threads[0].otherUser;
+  assert.equal(participant.id, "u_b");
+  assert.equal(participant.handle, "userb");
+  assert.deepEqual(Object.keys(participant).sort(),
+    ["id", "name", "handle", "initials", "avatarUri", "avatarColor", "profileUpdatedAt"].sort());
   const threadSummary = routes["GET /api/me/threads"]({ user: userA, query: { summary: "1" } });
   assert.equal(threadSummary.threads.length, 1);
   assert.deepEqual(threadSummary.threads[0].messages.map((message) => message.createdAt), [505]);
+  assert.deepEqual(threadSummary.threads[0].otherUser, participant);
 
   for (let i = 506; i <= 508; i++) insertDm.run(`dm_${String(i).padStart(4, "0")}`, "u_a", "u_b", `dm ${i}`, i);
   const newerDirect = routes["GET /api/dms/:otherId"]({ user: userA, params: { otherId: "u_b" }, query: { after: direct.syncCursor, limit: 2 } });

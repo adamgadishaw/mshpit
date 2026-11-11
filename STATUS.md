@@ -13,11 +13,33 @@
   pass 225 tests with no failures/skips; independent overlap review passes.
 - The own-only focused selection passes 73 tests. Its required aggregate gate
   passes (7,252 tests, 0 failures, 1 Windows file-link skip; dependency audit,
-  syntax, architecture and web export pass). Recovery DB04–08 integration and
-  final combined checks remain pending. This candidate
+  syntax, architecture and web export pass). Recovery DB04–08 source `389105e`
+  is integrated, including reviewed replay-resume and zero-pending health fixes.
+  Both inbox participant projections also close the confirmed inherited private
+  profile disclosure. Exact final-source checks accompany the delivery manifest;
+  earlier workstream results are not substituted for that combined receipt. This candidate
   is local only; no production, account, device or deployment action occurred.
 - Root causes, compatibility and validation limits are in
   [the remediation record](docs/DATABASE_REMEDIATION_2026-11-11.md).
+
+## 2026-11-11 Database recovery remediation DB04-DB08 (local candidate)
+
+- Isolated `fix/db04-db08-recovery` starts at released `c2bbe88246f249a5fa7cd60f3184f55b6b8794bf`.
+  Production remains that release. No deployment, push, IAM change or real
+  production restore was performed.
+- Backup receipts now bind to storage identity, and privacy replay requires a
+  complete destination-bound signed chain/checkpoint. Unknown legacy coverage
+  requires the existing recorded recovery decision. Conditional checkpoint
+  writes preserve newer progress across interrupted/concurrent work.
+- Backup timing follows the persisted due time across restarts. Aged, proven
+  abandoned owned partials are reconciled before capacity admission. The daily
+  health digest includes aggregate journal readiness, backlog and failures.
+- The runbook specifies both object prefixes, exact checkpoint access, scoped
+  listing and disposable permission/restore verification. No real IAM policy
+  was inspected or modified.
+- Implementation, synthetic matrix, checks and operational limits are recorded
+  in `docs/DATABASE_RECOVERY_REMEDIATION_2026-11-11.md`. Original audit/evidence,
+  its checkout, other worktrees and the prior transfer artifacts remain intact.
 
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 

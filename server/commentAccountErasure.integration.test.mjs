@@ -15,6 +15,7 @@ const { db, q } = await import("./db.js");
 const { routes } = await import("./api.js");
 const { hashPassword } = await import("./auth.js");
 const { reparentRepliesForAccountErasure } = await import("./features/accountPrivacy/commentErasure.js");
+const { readContinuity } = await import("./privacyJournalContinuity.js");
 after(() => {
   db.close();
   globalThis.fetch = originalFetch;
@@ -121,18 +122,27 @@ test("a failure after reply reparenting rolls back ancestry, erasure, and its pr
   const state = fixture();
   const parent = comment(state, state.erased);
   const reply = comment(state, state.author, parent.id);
-  db.exec(`CREATE TEMP TRIGGER reject_comment_account_erasure BEFORE DELETE ON users
-    WHEN OLD.id='${state.erased.id}' BEGIN SELECT RAISE(ABORT,'injected comment erasure failure'); END;`);
-  try { await assert.rejects(erase(state), /injected comment erasure failure/); }
-  finally { db.exec("DROP TRIGGER reject_comment_account_erasure"); }
-  assert.ok(q.userById.get(state.erased.id));
-  assert.equal(db.prepare("SELECT text FROM comments WHERE id=?").get(parent.id).text, parent.body.text);
-  assert.equal(db.prepare("SELECT parent_id FROM comments WHERE id=?").get(reply.id).parent_id, parent.id);
-  assert.equal(db.prepare("SELECT COUNT(*) n FROM privacy_journal_outbox WHERE subject_id=?").get(state.erased.id).n, 0);
-  assert.equal(db.isTransaction, false);
+  const continuityBefore = readContinuity(db);
+  for (const failurePoint of [
+    `BEFORE INSERT ON privacy_journal_outbox WHEN NEW.subject_id='${state.erased.id}'`,
+    "BEFORE UPDATE ON app_meta WHEN NEW.key='privacy-journal:continuity:v1'",
+    `BEFORE DELETE ON users WHEN OLD.id='${state.erased.id}'`,
+  ]) {
+    db.exec(`CREATE TEMP TRIGGER reject_comment_account_erasure ${failurePoint}
+      BEGIN SELECT RAISE(ABORT,'injected comment erasure failure'); END;`);
+    try { await assert.rejects(erase(state), /injected comment erasure failure/); }
+    finally { db.exec("DROP TRIGGER reject_comment_account_erasure"); }
+    assert.ok(q.userById.get(state.erased.id));
+    assert.equal(db.prepare("SELECT text FROM comments WHERE id=?").get(parent.id).text, parent.body.text);
+    assert.equal(db.prepare("SELECT parent_id FROM comments WHERE id=?").get(reply.id).parent_id, parent.id);
+    assert.equal(db.prepare("SELECT COUNT(*) n FROM privacy_journal_outbox WHERE subject_id=?").get(state.erased.id).n, 0);
+    assert.deepEqual(readContinuity(db), continuityBefore, "ancestry, erasure and chain head share one rollback");
+    assert.equal(db.isTransaction, false);
+  }
   assert.equal(like(state, reply.id).liked, true);
   await erase(state);
   assert.equal(page(state).comments.find((row) => row.id === reply.id).parentId, null);
+  assert.equal(readContinuity(db).sequence, continuityBefore.sequence + 1, "a successful retry records exactly one event");
 });
 
 for (const restriction of ["dormant", "banned", "suspended", "viewer_block", "ancestor_block"]) {

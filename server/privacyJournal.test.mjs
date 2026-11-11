@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { RESTORE_GATE_KEY } from "./databaseRecovery.js";
+import { backupStorageIdentity } from "./backupStorageIdentity.js";
+import { COVERAGE_OBJECT, readContinuity, writeContinuity } from "./privacyJournalContinuity.js";
 import {
   PRIVACY_REPLAY_EVIDENCE_KEY,
   ensurePrivacyJournalSchema,
@@ -43,6 +46,7 @@ function bucket({ failPutAfter = Infinity } = {}) {
   const objects = new Map();
   const calls = [];
   let puts = 0;
+  const etag = (key) => `"${createHash("sha256").update(objects.get(key)).digest("hex")}"`;
   const fetchImpl = async (url, init = {}) => {
     const target = new URL(url);
     const signed = target.searchParams.has("X-Amz-Signature");
@@ -50,8 +54,10 @@ function bucket({ failPutAfter = Infinity } = {}) {
     if (!signed) return new Response("", { status: 403 });
     const key = decodeURIComponent(target.pathname.replace(/^\/mshpit-backups\/?/u, ""));
     if (init.method === "PUT") {
-      puts += 1;
-      if (puts > failPutAfter) return new Response("", { status: 503 });
+      if (key !== COVERAGE_OBJECT) puts += 1;
+      if (key !== COVERAGE_OBJECT && puts > failPutAfter) return new Response("", { status: 503 });
+      if (init.headers?.["If-None-Match"] === "*" && objects.has(key)) return new Response("", { status: 412 });
+      if (init.headers?.["If-Match"] && (!objects.has(key) || init.headers["If-Match"] !== etag(key))) return new Response("", { status: 412 });
       objects.set(key, init.body);
       return new Response("", { status: 200 });
     }
@@ -62,9 +68,9 @@ function bucket({ failPutAfter = Infinity } = {}) {
       const more = start + 2 < names.length;
       return new Response(`<ListBucketResult>${page.map((name) => `<Contents><Key>${name}</Key></Contents>`).join("")}<IsTruncated>${more}</IsTruncated>${more ? `<NextContinuationToken>${start + 2}</NextContinuationToken>` : ""}</ListBucketResult>`);
     }
-    return objects.has(key) ? new Response(objects.get(key)) : new Response("", { status: 404 });
+    return objects.has(key) ? new Response(objects.get(key), { headers: { ETag: etag(key) } }) : new Response("", { status: 404 });
   };
-  return { objects, calls, fetchImpl };
+  return { objects, calls, fetchImpl, recover: () => { failPutAfter = Infinity; } };
 }
 
 test("entries are signed, tamper-evident and named by day", () => {
@@ -95,11 +101,12 @@ test("events wait without a key or storage, then ship oldest first and stop at a
   assert.ok(flaky.calls.slice(0, 2).every((call) => !call.signed), "the bucket is proven private before anything is sent");
   assert.equal(privacyJournalStatus(db, ENV).lastError, "HTTP_503");
 
-  const store = bucket();
+  const store = flaky;
+  store.recover();
   const rest = await shipPrivacyJournal(db, { env: ENV, fetchImpl: store.fetchImpl, now: () => AT + 20 });
   assert.deepEqual(rest, { shipped: 2, pending: 0, waiting: null });
-  const shipped = [...store.objects.values()].map((body) => JSON.parse(body));
-  assert.deepEqual(shipped.map((entry) => entry.subjectId), ["u_b", "u_c"]);
+  const shipped = [...store.objects.entries()].filter(([name]) => name !== COVERAGE_OBJECT).map(([, body]) => JSON.parse(body));
+  assert.deepEqual(shipped.map((entry) => entry.subjectId), ["u_a", "u_b", "u_c"]);
   assert.ok(shipped.every((entry) => verifyPrivacyEntry(entry, KEY)));
   const status = privacyJournalStatus(db, ENV);
   assert.deepEqual({ pending: status.pending, lastShippedAt: status.lastShippedAt, signingKey: status.signingKey, storage: status.storage },
@@ -134,9 +141,9 @@ test("a restored database must replay the journal before serving, once", async (
   db.prepare("INSERT INTO app_meta VALUES (?,?)").run(RESTORE_GATE_KEY, JSON.stringify({ version: 1, state: "reviewed", preparedAt: AT }));
   const store = bucket();
   for (const [index, subjectId] of ["u_a", "u_b", "u_c"].entries()) {
-    const signed = signPrivacyEntry({ id: `00000000-0000-4000-8000-00000000000${index}`, kind: "account_erased", subjectId, at: AT - 1000 + index }, KEY);
-    store.objects.set(privacyObjectKey(signed), JSON.stringify(signed));
+    recordPrivacyEvent(db, { id: `00000000-0000-4000-8000-00000000000${index}`, kind: "account_erased", subjectId, at: AT - 1000 + index });
   }
+  await shipPrivacyJournal(db, { env: ENV, fetchImpl: store.fetchImpl, now: () => AT });
   store.objects.set("privacy-journal/v1/2026/09/27/broken.json", "{not json");
   const listed = await listPrivacyJournal({ env: ENV, fetchImpl: store.fetchImpl });
   assert.equal(listed.entries.length, 3, "listing follows continuation pages");
@@ -167,7 +174,7 @@ test("a restored database must replay the journal before serving, once", async (
   db.prepare("UPDATE app_meta SET value=? WHERE key=?").run(JSON.stringify({ version: 1, state: "reviewed", preparedAt: AT + 50 }), RESTORE_GATE_KEY);
   const waived = await replayPrivacyJournalIfRestored(db, { env: { PRIVACY_JOURNAL_REPLAY_WAIVER: "incident-2026-10/privacy" }, now: () => AT + 60 });
   assert.deepEqual({ waived: waived.waived, reason: waived.reason }, { waived: "incident-2026-10/privacy", reason: "PRIVACY_JOURNAL_UNAVAILABLE" });
-  assert.equal(restoredDatabaseNeedsReplay(db), null);
+  assert.equal(restoredDatabaseNeedsReplay(db, ENV), null);
 });
 
 test("wrong-key erasure entries block every startup until repaired or explicitly waived", async (t) => {
@@ -203,13 +210,19 @@ test("legacy, incomplete and malformed replay receipts never grant restore readi
   const db = database(t);
   db.prepare("INSERT INTO app_meta VALUES (?,?)").run(RESTORE_GATE_KEY, JSON.stringify({ version: 1, state: "reviewed", preparedAt: AT }));
   const put = db.prepare("INSERT INTO app_meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
-  const good = { version: 1, verificationVersion: 2, preparedAt: AT, replayedAt: AT + 1, entries: 0, verified: 0, rejected: 0, erased: 0, optedOut: 0, absent: 0, unreadable: 0, newestAt: null };
-  for (const bad of [{ preparedAt: AT }, { ...good, verificationVersion: undefined }, { ...good, rejected: 1 }, { ...good, unreadable: 1 }, { ...good, verified: 1 }, { ...good, replayedAt: AT - 1 }, { ...good, entries: -1 }]) {
+  writeContinuity(db, { ...readContinuity(db), storageIdentity: backupStorageIdentity(ENV) });
+  const good = { version: 1, verificationVersion: 4, storageIdentity: backupStorageIdentity(ENV), continuityVerified: true,
+    streamId: readContinuity(db).streamId, coverageSequence: 0, coverageHead: readContinuity(db).head, preparedAt: AT, replayedAt: AT + 1,
+    entries: 0, verified: 0, rejected: 0, erased: 0, optedOut: 0, absent: 0, unreadable: 0, newestAt: null };
+  for (const bad of [{ preparedAt: AT }, { ...good, verificationVersion: undefined }, { ...good, verificationVersion: 2 }, { ...good, verificationVersion: 3 },
+    { ...good, coverageHead: undefined }, { ...good, coverageHead: "f".repeat(64) }, { ...good, coverageSequence: 1 }, { ...good, streamId: "other-stream" },
+    { ...good, continuityVerified: undefined }, { ...good, storageIdentity: undefined }, { ...good, storageIdentity: "a".repeat(64) },
+    { ...good, rejected: 1 }, { ...good, unreadable: 1 }, { ...good, verified: 1 }, { ...good, replayedAt: AT - 1 }, { ...good, entries: -1 }]) {
     put.run(PRIVACY_REPLAY_EVIDENCE_KEY, JSON.stringify(bad));
-    assert.ok(restoredDatabaseNeedsReplay(db));
+    assert.ok(restoredDatabaseNeedsReplay(db, ENV));
   }
   put.run(PRIVACY_REPLAY_EVIDENCE_KEY, JSON.stringify(good));
-  assert.equal(restoredDatabaseNeedsReplay(db), null);
+  assert.equal(restoredDatabaseNeedsReplay(db, ENV), null);
   put.run(PRIVACY_REPLAY_EVIDENCE_KEY, JSON.stringify({ version: 1, preparedAt: AT, replayedAt: AT + 1, waived: "incident/prior-owner-review", reason: "PRIVACY_JOURNAL_UNAVAILABLE" }));
   assert.equal(restoredDatabaseNeedsReplay(db), null, "an existing explicit owner waiver is preserved");
 });
