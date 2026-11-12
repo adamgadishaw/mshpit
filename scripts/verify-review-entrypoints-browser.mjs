@@ -76,6 +76,7 @@ async function scenario(browser, origin, width, mode) {
     if (url.pathname === "/api/page-head") return json({ path: url.searchParams.get("path"), head: "<title>Review entry fixtures</title>" });
     if (url.pathname === "/api/discover/overview") return json({ artists: [], venues: [], events: [], genres: [], countries: [], topRatedShows: [{ ...ranked, ...(mode === "legacy" ? { artistKey: null } : {}) }] });
     if (url.pathname === "/api/artists/reviews") return json({ reviews: [{ ...review, photosPublic: true }] });
+    if (url.pathname === "/api/artists/seen") return json({ count: 3, last: "2026-10-01" });
     if (url.pathname === "/api/artists/archive") return json({ archive });
     if (url.pathname === "/api/artists/archive/reviews") {
       if (url.searchParams.get("tourKey") === "tour.fixture") return json({ reviews: [{ ...review, archiveShowKey: undefined }], nextCursor: null, total: 1 });
@@ -95,6 +96,8 @@ async function scenario(browser, origin, width, mode) {
     await page.goto(origin + (artistMode ? "/artist/fixture-artist" : "/discover"), { waitUntil: "domcontentloaded" });
     let opener;
     if (artistMode) {
+      await page.getByLabel("You have seen Fixture Artist live 3 times", { exact: true }).waitFor();
+      assert.equal(calls.filter(call => call.startsWith("/api/artists/seen?")).length, 1, "Artist profile reads personal count through the real Store");
       await page.getByText("TOP TAKE", { exact: true }).waitFor();
       if (before) {
         await page.getByText(/FULL REVIEW START/).first().click();

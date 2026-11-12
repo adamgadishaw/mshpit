@@ -254,6 +254,26 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
   };
 }
 
+test("native Artist renders the personal seen count and rejects a late count from a departed account", async () => {
+  const f = fixture();
+  const countChip = count => f.all().find(node => node.props?.accessibilityLabel === `You have seen Fixture Artist live ${count} times`);
+  try {
+    const first = f.reads.find(call => call.kind === "seen");
+    assert.ok(first);
+    await f.complete(first, { count: 3, last: "2026-10-01" }); await f.settle();
+    assert.ok(countChip(3));
+    assert.match(f.text(), /3 times/);
+    f.account("account-B");
+    const obsolete = f.reads.filter(call => call.kind === "seen").at(-1);
+    assert.notEqual(obsolete, first);
+    f.account("account-C");
+    assert.equal(obsolete.args[1].signal.aborted, true);
+    await f.complete(obsolete, { count: 99 }); await f.settle();
+    assert.equal(countChip(99), undefined);
+    assert.equal(countChip(3), undefined);
+  } finally { f.close(); }
+});
+
 test("Top Take review body opens the saved review and retired native callbacks cannot reopen it", async () => {
   const f = fixture();
   try {

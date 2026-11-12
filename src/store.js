@@ -520,6 +520,8 @@ const loadRecentSearches = (accountId) => {
 };
 
 export function StoreProvider({ children }) {
+  // Factories capture dependencies during render, so initialize this before them.
+  const norm = (s) => (s || "").trim().toLowerCase();
   // Hydrate the identity-critical state from storage so a refresh / new page keeps
   // you logged in and keeps your data. (See src/lib/persist.js.)
   const [users, setUsers] = useState(() =>
@@ -4974,7 +4976,6 @@ export function StoreProvider({ children }) {
   // Roll a single artist's live reputation up across every logged night +
   // community-aggregated show, with their upcoming dates. This is the answer to
   // "is this band worth seeing?" - the core question the app exists for.
-  const norm = (s) => (s || "").trim().toLowerCase();
 
   // A stable id for a concert (artist + venue + date) so the lounge, the going
   // list, and attendees all key off the same thing. The date is canonicalized
