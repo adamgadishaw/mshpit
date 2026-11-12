@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 import { createApiResponseHeaderSetter } from "./responseHeaders.js";
+import { publicVenueFanPhotos } from "./venueGallery.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-venue-gallery-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -234,4 +235,36 @@ test("fan-gallery post lookups stay on the bounded venue indexes", () => {
     WHERE p.removed=0 AND p.venue_key IS NULL AND trim(COALESCE(p.venue,''))<>''
       AND pit_public_slug(p.venue) IN (?) ORDER BY p.created_at DESC,p.id DESC LIMIT ?`).all("history", 24);
   assert.match(legacyPlan.map((row) => row.detail).join("\n"), /idx_posts_venue_public_slug/u);
+});
+
+test('discovery covers require concert consent, location or exact identity, public authors and current eligibility', () => {
+  const owner = addUser('cover-owner'), privateOwner = addUser('cover-private'), viewer = addUser('cover-viewer');
+  const eligible = readyImage(owner, 'cover-eligible'), wrongCity = readyImage(owner, 'cover-wrong-city');
+  const privateImage = readyImage(privateOwner, 'cover-private'), noConsent = readyImage(owner, 'cover-no-consent');
+  const exact = readyImage(owner, 'cover-exact');
+  addPost(owner, { id: 'cover_good', image: eligible, venue: 'Cover Room', venueKey: 'cover room' });
+  addPost(owner, { id: 'cover_wrong_city', image: wrongCity, venue: 'Cover Room', venueKey: 'cover room' });
+  addPost(privateOwner, { id: 'cover_private', image: privateImage, venue: 'Cover Room', venueKey: 'cover room' });
+  addPost(owner, { id: 'cover_no_consent', image: noConsent, venue: 'Cover Room', venueKey: 'cover room', photosPublic: 0 });
+  addPost(owner, { id: 'cover_exact', image: exact, venue: 'Cover Room', venueKey: '/venue/ticketmaster-cover' });
+  db.prepare("UPDATE posts SET city='Toronto, Ontario, Canada' WHERE id IN ('cover_good','cover_private','cover_no_consent')").run();
+  db.prepare("UPDATE posts SET city='London, England, United Kingdom' WHERE id='cover_wrong_city'").run();
+  db.prepare("UPDATE users SET profile_audience='only_me' WHERE id=?").run(privateOwner.id);
+  const options = { venueKey: 'Cover Room', strictVenue: { path: '/venue/ticketmaster-cover', place: 'Toronto, Ontario, Canada' }, viewerId: viewer.id };
+  const result = publicVenueFanPhotos(db, options);
+  assert.deepEqual(new Set(result.map(row => row.uri)), new Set([eligible.url, exact.url]));
+  assert.ok(result.every(row => row.postId && row.credit && row.ownerId === owner.id));
+  db.prepare('INSERT INTO blocks(blocker_id,blocked_id,created_at) VALUES(?,?,?)').run(owner.id, viewer.id, Date.now());
+  assert.deepEqual(publicVenueFanPhotos(db, options), []);
+  db.prepare('DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?').run(owner.id, viewer.id);
+  db.prepare("UPDATE posts SET photos_public=0 WHERE id='cover_good'").run();
+  db.prepare("UPDATE posts SET removed=1 WHERE id='cover_exact'").run();
+  assert.deepEqual(publicVenueFanPhotos(db, options), []);
+});
+
+test('legacy venue review routes cannot bypass canonical rating privacy and validation', () => {
+  const author = addUser('canonical-boundary');
+  const params = { key: encodeURIComponent('/venue/ticketmaster-room') };
+  assert.throws(() => routes['GET /api/venues/:key/reviews']({ params, query: {} }), { status: 400 });
+  assert.throws(() => routes['POST /api/venues/:key/reviews']({ user: author, params, body: { rating: 4 }, ip: 'canonical-boundary' }), { status: 400 });
 });

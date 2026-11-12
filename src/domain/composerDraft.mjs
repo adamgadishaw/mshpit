@@ -54,6 +54,7 @@ export function normalizeComposerDraft(value = {}) {
     submissionId: text(value.submissionId) || null,
     postType,
     creatorUpdate: postType === "status" ? creatorUpdateDraft(value.creatorUpdate) : null,
+    creatorIntent: postType === "status" && (value.creatorIntent === true || !!value.creatorUpdate),
     campaign: postType === "status" ? normalizeArtistCampaign(value.campaign) : null,
     experienceType,
     artist: text(value.artist),

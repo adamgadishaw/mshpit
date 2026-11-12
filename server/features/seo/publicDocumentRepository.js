@@ -905,7 +905,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       };
     },
 
-    readVenue({ venueKey = null, name, providerVenueId = null, source = null, postLimit = 8, eventLimit = 8, eventAfter = null, includeCommunity = true, at = Date.now(), today = null } = {}) {
+    readVenue({ venueKey = null, canonicalPath = null, name, providerVenueId = null, source = null, postLimit = 8, eventLimit = 8, eventAfter = null, includeCommunity = true, at = Date.now(), today = null } = {}) {
       const venueName = typeof name === "string" ? name.trim() : "";
       const key = typeof venueKey === "string" && venueKey.trim() ? venueKey.trim() : venueName.toLowerCase();
       if (!venueName || !key) return null;
@@ -933,7 +933,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         posts,
         events,
         eventsHasMore: eventRows.length > eventPageSize,
-        venueReviews: (includeCommunity && venueReviews?.read({ venueKey: key, limit: 8 })) || {
+        venueReviews: (includeCommunity && venueReviews?.read({ venueKey: key, canonicalPath, limit: 8 })) || {
           reviews: [],
           stats: { reviewCount: 0, ratingCount: 0, averageRating: null },
         },

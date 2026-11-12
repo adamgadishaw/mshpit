@@ -36,6 +36,7 @@ import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import CatalogMaintenancePanel from "../features/catalogMaintenance/CatalogMaintenancePanel";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
+const VenueClaimsPanel = lazyWithRetry(() => import("./VenueScreens").then(module => ({ default: module.VenueClaimsPanel })), "VenueClaimsPanel");
 
 // The newsroom loads with its own chunk (shared with the Newsroom screen).
 const EventClaimReviewPanel = lazyWithRetry(() => import("../features/eventAccounts/EventClaimReviewPanel"), "EventClaimReviewPanel");
@@ -1174,6 +1175,7 @@ export default function AdminScreen({ onClose }) {
         {activeTab === "requests" && (
           <>
             {iAmAdmin && <Suspense fallback={<ActivityIndicator color={colors.amber} />}><EventClaimReviewPanel key={`${session?.id}:event-access`} accountId={session?.id} /></Suspense>}
+            <Suspense fallback={<Text style={styles.policy}>Loading venue claims...</Text>}><VenueClaimsPanel key={`venue-claims:${artistRequestScope}`} accountId={session?.id} /></Suspense>
             <ArtistIdentitySafetyPanel key={`artist-identity-safety:${artistRequestScope}`} searchArtists={searchArtistIdentities} reviewIdentity={reviewArtistIdentity} returnToCatalogue={returnArtistPageToCatalogue} />
             <Text style={styles.policy}>Verify the established official identity and this member's authority before granting a check. A name, follower count, screenshot or supplied URL alone is not proof. Identity holds are separate from ordinary unverified pages. Ownership claims also grant management access.</Text>
             {scopedArtistRequestAction.status === "error" && (

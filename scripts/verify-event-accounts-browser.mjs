@@ -42,6 +42,7 @@ try {
         return json({ id: "p_event_fixture", post: { ...body, id: "p_event_fixture", userId: user.id, user, creatorUpdate: { ...body.creatorUpdate, entityName: entity.name }, media: [], photos: [] } });
       }
       if(url.pathname === "/api/admin/event-claims") return json({ claims: state.claims.filter(row => row.status === (url.searchParams.get("status") || "pending")), nextCursor: null });
+        if(url.pathname === "/api/admin/venue-claims") return json({ claims: [], nextCursor: null });
       if(url.pathname === `/api/admin/event-claims/${claim.id}/approve`) {
         const body = request.postDataJSON(); state.writes.push(body);
         assert.equal(body.officialAccountConfirmed, true); assert.equal(body.ownershipConfirmed, true); assert.equal(body.expectedOwnerId, null); assert.equal(body.reason, reason);

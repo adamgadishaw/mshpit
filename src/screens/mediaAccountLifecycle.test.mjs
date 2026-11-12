@@ -228,6 +228,7 @@ for (const outcome of ["failed", "missing", "processing", "ready", "failed-final
   ].map(name => [name, () => {}]));
   const resume = compileResumeComposer({
     setCreatorUpdate: value => { state.creatorUpdate = value; },
+    setCreatorIntent: value => { state.creatorIntent = value; },
     setOverallRating: value => { state.overall = value; }, clampRating, computeReview,
     ...resumeSetters, normalizeComposerDraft, composerDraftFingerprint, normalizeMediaProject, mediaProjectFromPost, originalMediaProjectAsset,
     draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: null },
@@ -743,6 +744,7 @@ for (const outcome of ["ready", "missing", "retryable"]) test(`restored featured
   ].map(name => [name, () => {}]));
   const resume = compileResumeComposer({
     setCreatorUpdate: value => { state.creatorUpdate = value; },
+    setCreatorIntent: value => { state.creatorIntent = value; },
     setOverallRating: value => { state.overall = value; }, clampRating, computeReview,
     ...resumeSetters, normalizeComposerDraft, composerDraftFingerprint, normalizeMediaProject, mediaProjectFromPost, originalMediaProjectAsset,
     draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: null },

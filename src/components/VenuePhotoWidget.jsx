@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Image, Pressable, Linking, Platform, ActivityIn
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { colors, focusRing, mono, radius } from "../theme";
 import Icon from "../components/Icon";
-import { mapsDir } from "../lib/afterparty";
+import { mapsDir } from "../lib/mapsDirections.mjs";
 import { displaySrc, proxied, isHttp } from "../lib/img";
 import { venuePhotoAttemptScope } from "../domain/venuePhotos.mjs";
 import { venuePhotoAttribution, verifiedHttpsUrl } from "../domain/venuePhotoProvenance.mjs";

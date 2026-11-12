@@ -1,5 +1,51 @@
 # Pit current status
 
+## 2026-11-11 Venue account and posting completion (isolated review)
+
+- `feature/venue-completion-20261111` extends the initial venue candidate with
+  reviewed, explicitly acknowledged fan-to-venue account conversion; atomic
+  ownership/audit/session invalidation; revocation that preserves held/removed
+  pages and unrelated ownership; and paginated staff/applicant claim history.
+- Genuine unclaimed venues can be followed through trusted owner-null provisioning
+  in the shared creator registry. Venue pages now use shared follow preferences,
+  creator updates and the authorized composer, including Activity notifications.
+  Pending claims and ordinary concert contributions confer no creator privileges.
+- Stable creator posting `5f5fcbd` is assembled locally as dependency `58ebf95`.
+  Event provisioning `de773df` was inspected for compatibility, not rewritten.
+  The separate rating candidate still needs parent integration; no ShowScreen or
+  after-show changes are included. No publication, deployment or device install.
+- Exact contracts, copy surfaces and acceptance scope are documented in
+  [the completion review](docs/VENUE_COMPLETION_REVIEW_2026-11-11.md); final-source
+  test results, manifests and artifact hashes accompany the isolated delivery.
+
+## 2026-11-11 Venue discovery and community pages (isolated review)
+
+- Branch `feature/venue-community-20261111` starts at combined candidate
+  `2b0151a448e8f29affb5d7e3b0052a3adc3e2cd5`. No merge, publication, deployment
+  or device installation is included.
+- Venue discovery uses the existing artist tile layout with eligible concert-photo
+  credit, bounded batches and country/city scoping. Canonical venue pages add
+  member ratings and manually verified operator claims with admin review/revocation.
+- Ordinary fan contributions and pending claims never grant creator posting access.
+  Approved venue claims use the shared `creator_entities` registry atomically and
+  require an existing venue account; no parallel ownership/follow registry is added.
+  Creator classification/posting/notifications and the separate review-score
+  package must be integrated against the documented canonical ownership boundary.
+- Contracts, privacy rules, shared files and acceptance limits are in
+  [the local review record](docs/VENUE_COMMUNITY_REVIEW_2026-11-11.md).
+## 2026-11-11 After-show planning refresh (isolated local candidate)
+
+- Branch `aftershow-refresh` starts at PR #98 source
+  `2b0151a448e8f29affb5d7e3b0052a3adc3e2cd5` in `task-8/aftershow`.
+- Astra research informed a compact section beside attendance/Lounge with Food,
+  Stay out and Get home choices. Category searches remain clearly unverified;
+  typed routes use the venue as origin without requesting device location.
+- No business feed, hours cache, end-time estimate, provider purchase, schema,
+  production data or publication change. Integration with the concert redesign
+  and physical phone acceptance remain separate from this local delivery.
+- Evidence, precise shared-file adapter and validation receipt:
+  [after-show refresh](docs/AFTERSHOW_REFRESH_2026-11-11.md).
+
 ## 2026-11-11 Separate database and theme integration candidate
 
 - Branch `integrate/database-themes-20261111` combines standalone DB release

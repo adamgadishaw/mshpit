@@ -1,4 +1,5 @@
 import { publicProviderEventText } from "./providerEventText.js";
+import { venueLookupKeys } from "../src/domain/venueIdentity.mjs";
 // Public discovery documents, canonical URL resolution, and crawler controls.
 //
 // The interactive app remains an Expo web bundle. Public entity routes receive
@@ -95,6 +96,7 @@ const artistNews = createArtistNewsReader(db, {
 
 const publicDocuments = createPublicDocumentService({
   database: db,
+  resolveVenueReviewKeys,
   origin: origin(),
   artistNews: (options) => artistNews.read(options),
   // Mshpit News stories about the artist ("In the news" on the artist page).
@@ -465,6 +467,17 @@ export function publicVenueSnapshotForPath(pathname, after = null) {
   if (parsed?.type !== "venue") return null;
   const resolution = venueResolution(parsed.value);
   return resolution ? publicDocuments.venueSnapshot({ ...resolution.documentRequest, after }) : null;
+}
+
+// Reuse the public resolver's physical-venue ambiguity checks. Historical notes
+// stay in their original namespace; only proven aliases join a canonical score.
+export function resolveVenueReviewKeys({ venueKey, canonicalPath = null }) {
+  const requested = canonicalPath || (venueKey.startsWith('/venue/') ? venueKey : null);
+  const resolved = requested ? venueResolution(requested.slice('/venue/'.length)) : venueResolution(slugify(venueKey));
+  if (!resolved) return requested ? [requested] : venueLookupKeys(venueKey);
+  const path = resolved.canonicalPath;
+  const legacy = venueLookupKeys(resolved.documentRequest.venueKey).filter(key => venueResolution(slugify(key))?.canonicalPath === path);
+  return [...new Set([path, ...legacy])];
 }
 
 const APP_SCREENS = new Set([

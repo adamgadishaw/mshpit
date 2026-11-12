@@ -16,7 +16,7 @@ test("Discover retains upcoming events and deeper discovery alongside its connec
   const source = await read("../screens/DiscoverScreen.jsx");
   const upcoming = source.indexOf('title="Upcoming events"');
   const venue = source.indexOf("<DiscoverVenues");
-  const explorer = await read("../components/discover/DiscoverVenues.jsx");
+  const explorer = await read("../features/venueCommunity/DiscoverVenues.jsx");
   const chart = source.indexOf("<DiscoverChart");
   const genres = source.indexOf("<DiscoverGenres");
   assert.ok(upcoming >= 0 && venue > upcoming, "Shows and the venue explorer must remain available in programme order");

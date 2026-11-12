@@ -53,7 +53,10 @@ test("ShowScreen links to one original post without presenting a second comment 
   // Fan posts stay "Original post"; a Mshpit News story is labelled as a story.
   assert.match(postScreen, /kicker=\{activeLog\.news \? "Mshpit News" : isOnlineReview \? "Online concert review" : activeLog\.review \? "Review" : "Post"\}/);
   assert.match(postScreen, /title=\{activeLog\.news \? "Story" : "Original post"\}/);
-  assert.match(showScreen, /<NearbyAfterparty\s+log=\{norm\}\s+coord=\{coord\}/);
+  assert.match(showScreen, /<AfterShowSection\s+log=\{norm\}\s+venueIdentity=\{venuePhotoIdentity\}\s+accountId=\{accountId\}/);
+  const bridge = readFileSync(new URL("../screens/AfterShowSection.jsx", import.meta.url), "utf8");
+  assert.match(bridge, /usePublicVenueSnapshot\(\{ name: log\.venue, identity: venueIdentity, accountId \}\)/);
+  assert.match(bridge, /coord=\{snapshot\?\.venue\.coord \|\| null\}/);
   assert.doesNotMatch(showScreen, /AfterpartySection|TextInput|addComment|deleteOwnComment|loadComments|commentsFor/);
   assert.equal(existsSync(new URL("../components/AfterpartySection.jsx", import.meta.url)), false);
 });
@@ -100,9 +103,12 @@ test("comment projections rotate synchronously at every account identity boundar
 });
 
 test("nearby post-show spots stay a Maps-only discovery surface", () => {
-  // Searches are anchored on the venue by name and coordinates.
-  assert.match(nearbyAfterparty, /nearbyShowSearches\(coord, \[log\?\.venue, log\?\.city\]/);
+  // Search hints and route origins use the caller's venue context. The typed
+  // destination is routing input; this surface must not become another chat.
+  assert.match(nearbyAfterparty, /afterShowContext\(log, coord, lifecycle\)/);
+  assert.match(nearbyAfterparty, /afterpartySearches\(context\.location, context\.place, intent\)/);
+  assert.match(nearbyAfterparty, /afterShowDirections\(context\.location, destination, mode\)/);
   assert.match(nearbyAfterparty, /Google Maps/);
-  assert.match(nearbyAfterparty, /Verify hours, distance, age rules, and accessibility/);
-  assert.doesNotMatch(nearbyAfterparty, /useStore|TextInput|addComment|deleteOwnComment|loadComments|toggleLike/);
+  assert.match(nearbyAfterparty, /Hours and availability aren’t verified by mshpit/);
+  assert.doesNotMatch(nearbyAfterparty, /useStore|addComment|deleteOwnComment|loadComments|toggleLike/);
 });

@@ -1,6 +1,6 @@
 import { venueLookupKeys } from "../../../src/domain/venueIdentity.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../../../src/domain/mediaUploadPolicy.mjs";
-import { activeAccountSql } from "../../accountVisibility.js";
+import { venueReviewVisibilitySql } from "./venueReviewVisibility.js";
 import { safeOwnedReadyMediaUrl } from "../../publicMedia.js";
 
 const DEFAULT_REVIEW_LIMIT = 8;
@@ -106,24 +106,27 @@ function projectedReview(row, { text, photos, rating }) {
   };
 }
 
-export function createPublicVenueReviewService(database) {
+export function createPublicVenueReviewService(database, { resolveReviewKeys = null } = {}) {
   if (!database?.prepare) throw new TypeError("Public venue reviews require a database");
 
-  const rowsForVenue = database.prepare(`SELECT r.id,r.user_id,r.rating,r.text,r.photos,r.photos_public,r.created_at,
+  const hasEditTime = database.prepare('PRAGMA table_info(venue_reviews)').all().some(column => column.name === 'updated_at');
+  const orderAt = hasEditTime ? 'coalesce(r.updated_at,r.created_at)' : 'r.created_at';
+  const rowsForVenue = database.prepare(`SELECT r.id,r.user_id,r.rating,r.text,r.photos,r.photos_public,r.created_at,${orderAt} AS rating_at,
       u.name,u.handle
     FROM venue_reviews r
     JOIN users u ON u.id=r.user_id
-    WHERE r.venue_key IN (SELECT value FROM json_each(?)) AND r.removed=0 AND ${activeAccountSql("u")}
-      AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM blocks b WHERE
-        (b.blocker_id=? AND b.blocked_id=r.user_id) OR (b.blocker_id=r.user_id AND b.blocked_id=?)))
-      AND (? IS NULL OR r.created_at<? OR (r.created_at=? AND r.id<?))
-    ORDER BY r.created_at DESC,r.id DESC
-    LIMIT ?`);
+    WHERE r.venue_key IN (SELECT value FROM json_each(@keys)) AND ${venueReviewVisibilitySql()}
+      AND (@cursorAt IS NULL OR ${orderAt}<@cursorAt OR (${orderAt}=@cursorAt AND r.id<@cursorId))
+    ORDER BY ${orderAt} DESC,r.id DESC
+    LIMIT @limit`);
 
   return Object.freeze({
-    read({ venueKey, viewerId = null, limit = DEFAULT_REVIEW_LIMIT } = {}) {
+    read({ venueKey, canonicalPath = null, viewerId = null, limit = DEFAULT_REVIEW_LIMIT } = {}) {
       const key = normalizedVenueKey(venueKey);
       if (!key) return null;
+      // A canonical target never borrows name-only history without resolver proof.
+      const keys = resolveReviewKeys ? resolveReviewKeys({ venueKey: key, canonicalPath })
+        : canonicalPath ? [canonicalPath] : key.startsWith('/venue/') ? [key] : venueLookupKeys(key);
       const visibleLimit = boundedLimit(limit);
       const reviews = [];
       const latestEligibleUsers = new Set();
@@ -134,15 +137,7 @@ export function createPublicVenueReviewService(database) {
       let cursorId = null;
 
       while (true) {
-        const rows = rowsForVenue.all(
-          JSON.stringify(venueLookupKeys(key)),
-          viewerId, viewerId, viewerId,
-          cursorAt,
-          cursorAt,
-          cursorAt,
-          cursorId,
-          READ_BATCH_SIZE,
-        );
+        const rows = rowsForVenue.all({ keys: JSON.stringify(keys), viewer: viewerId, cursorAt, cursorId, limit: READ_BATCH_SIZE });
         if (!rows.length) break;
 
         for (const row of rows) {
@@ -169,7 +164,7 @@ export function createPublicVenueReviewService(database) {
 
         if (rows.length < READ_BATCH_SIZE) break;
         const last = rows.at(-1);
-        cursorAt = Number(last.created_at);
+        cursorAt = Number(last.rating_at);
         cursorId = String(last.id);
       }
 

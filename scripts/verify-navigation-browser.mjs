@@ -166,6 +166,9 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
     };
   }
   if (pathname.startsWith("/api/catalog-text/")) return { text: null };
+  if (pathname === "/api/venue-community") return { path: resolvedPath, ownership: "community", isOperator: false,
+    claim: null, myReview: null, creatorEntity: null, rating: { count: 0, average: null },
+    stats: { reviewCount: 0, ratingCount: 0, averageRating: null }, reviews: [], nextCursor: null };
   if (pathname === "/api/me") return { user: member ? navigationUser : null };
   if (pathname === "/api/page-head") {
     assert.match(resolvedPath, /^\/[a-zA-Z0-9_/-]*$/, "Fixture metadata paths must be inert local paths.");
@@ -420,6 +423,13 @@ async function runCase(browser, origin, item) {
         // The first page deliberately has no prose reviews. The full aggregate
         // still represents two members' latest valid standalone star ratings.
         return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ reviews: [], stats: { reviewCount: 0, ratingCount: 2, averageRating: 0.75 } }) });
+      }
+      if (item.kind === "venue-profile-score" && url.pathname === "/api/venue-community") {
+        assert.equal(url.searchParams.get("path"), venueHydrationPath);
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+          path: venueHydrationPath, ownership: "community", isOperator: false, claim: null, myReview: null, creatorEntity: null,
+          rating: { count: 2, average: 0.75 }, stats: { reviewCount: 0, ratingCount: 2, averageRating: 0.75 }, reviews: [], nextCursor: null,
+        }) });
       }
       const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist", discoverShow, discoverArtwork: item.kind === "discover-event-back",
         archiveReview: item.kind === "archive-review", venueHydration: ["venue-hydration", "venue-profile-score"].includes(item.kind), after: url.searchParams.get("after"),

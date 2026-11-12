@@ -6,9 +6,9 @@ import { countryForCity } from "../geo";
 import Icon from "../components/Icon";
 import DiscoverChart from "../components/discover/DiscoverChart";
 import DiscoverGenres from "../components/discover/DiscoverGenres";
-import DiscoverVenues from "../components/discover/DiscoverVenues";
 import DiscoverPhotoPanel from "../features/discoverPhotos/DiscoverPhotoPanel";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
+const DiscoverVenues = lazyWithRetry(() => import("./VenueScreens").then(module => ({ default: module.DiscoverVenues })), "DiscoverVenues");
 
 // Loaded on demand with the rest of the festivals feature (festivalsEntry).
 const FestivalsPanel = lazyWithRetry(() => import("../features/festivals/festivalsEntry").then((module) => ({ default: module.FestivalsPanel })), "FestivalsPanel");
@@ -123,6 +123,7 @@ export default function DiscoverScreen({
     refreshTourDates,
     refreshDiscoverySidebar,
     venueDirectoryIndex,
+    venuePhotoPrivacyRevision,
     myAttendance = [],
   } = useStore();
   const { width } = useWindowDimensions();
@@ -842,7 +843,9 @@ export default function DiscoverScreen({
 
       {programme === "cities" && <View nativeID="discover-panel-cities" {...tabPanelAccessibilityProps(Platform.OS, "discover-tab-cities")}><CityDiscoveryTiles country={region === "Worldwide" ? "" : region} limit={6} onOpenCity={openCity} registerRefresh={registerCityRefresh} /></View>}
       {programme === "venues" && <View nativeID="discover-panel-venues" {...tabPanelAccessibilityProps(Platform.OS, "discover-tab-venues")} style={styles.programmePanel}>
-        <DiscoverVenues region={region} homeCity={homeCity} session={session} venueDirectoryIndex={venueDirectoryIndex} tourDates={tourDates} onOpenVenue={onOpenVenue} onOpenEvent={onOpen} onOpenVenues={onOpenVenues} />
+        <Suspense fallback={<Text style={{ color: colors.textDim }}>Loading venues…</Text>}>
+        <DiscoverVenues region={region} homeCity={homeCity} session={session} privacyRevision={venuePhotoPrivacyRevision} venueDirectoryIndex={venueDirectoryIndex} tourDates={tourDates} onOpenVenue={onOpenVenue} onOpenEvent={onOpen} onOpenVenues={onOpenVenues} />
+        </Suspense>
       </View>}
 
       {programme === "shows" && <View style={styles.quickSection}>

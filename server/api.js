@@ -1,4 +1,5 @@
 import { createPublicVenueReviewService } from "./features/seo/publicVenueReviews.js";
+import { venueReviewVisibilitySql } from "./features/seo/venueReviewVisibility.js";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
 import { canAccessTheme, isThemeKey } from "../src/domain/themeAccess.mjs";
 import { calendarEventTiming } from "../src/domain/calendarEventTiming.mjs";
@@ -188,9 +189,11 @@ import {
   legacyImageRecoveryHealth,
 } from "./legacyPostImageRecovery.js";
 import { discoverySidebar } from "./discovery.js";
-import { pageHeadFor, publicDocumentForPath, publicVenueSnapshotForPath, resolveEntity, sitemapSnapshotHealth, catalogSeoMaintenanceStatus } from "./seo.js";
+import { pageHeadFor, publicDocumentForPath, publicVenueSnapshotForPath, resolveVenueReviewKeys, resolveEntity, sitemapSnapshotHealth, catalogSeoMaintenanceStatus } from "./seo.js";
 import { pageHeadRoutes } from "./features/seo/pageHeadRoutes.js";
 import { publicVenueSnapshotRoutes } from "./features/seo/publicVenueSnapshot.js";
+import { venueCommunityRoutes } from "./features/venueCommunity/routes.js";
+import { canonicalVenueCreatorTarget } from "./features/venueCommunity/creatorTarget.js";
 import { userRewards } from "./rewards.js";
 import { prepareVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
 import { memberBadgeFor, grantFirstWaveBadge } from "./memberBadges.js";
@@ -4624,6 +4627,7 @@ function eraseAccountData(u, { at = now(), journal = true } = {}) {
   // actions performed by this account and actions about its reports/content.
   db.prepare(`DELETE FROM moderation_actions WHERE target_type='report'
     AND target_id IN (SELECT id FROM reports WHERE ${accountReportWhere})`).run(...accountReportParams);
+  db.prepare("DELETE FROM moderation_actions WHERE target_type='venue_claim' AND target_id IN (SELECT id FROM venue_claims WHERE user_id=?)").run(u.id);
   db.prepare(`DELETE FROM moderation_actions WHERE actor_id=?
     OR (target_type='user' AND target_id=?)
     OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
@@ -4769,6 +4773,7 @@ export const routes = {
   ...discoverPhotoRoutes({ database: db, rateLimit: limit, ApiError }),
   ...pageHeadRoutes({ ApiError, rateLimit: limit, pageHeadFor }),
   ...publicVenueSnapshotRoutes({ rateLimit: limit, readSnapshot: publicVenueSnapshotForPath }),
+  ...venueCommunityRoutes({ db, readSnapshot: publicVenueSnapshotForPath, resolveReviewKeys: resolveVenueReviewKeys, requireUser, requireAdmin, limit, atomicWrite, uid, now, clean, assertSafeAuthoredText, moderationRecord }),
   ...capacityHandshakeRoutes({
     ApiError,
     databasePath: DATABASE_PATH,
@@ -10075,23 +10080,19 @@ export const routes = {
   // ---- venue reviews (slice 7) ----
   "GET /api/venues/:key/reviews": (ctx) => {
     const key = canonicalVenueKey(decodedPathParam(ctx, "key", { max: 200, label: "venue link" }));
+    if (key?.startsWith('/venue/')) throw new ApiError(400, "Open the venue page to read its ratings.", "VALIDATION_FAILED");
     if (!key) throw new ApiError(400, "Choose a venue first.", "VALIDATION_FAILED");
     const lookupKeys = venueLookupKeys(key);
     const viewer = ctx.user?.id || null;
     const { cursor, limit } = pageRequest(ctx, 200, 200);
-    const blockSql = viewer ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
-      (b.blocker_id=? AND b.blocked_id=r.user_id) OR (b.blocker_id=r.user_id AND b.blocked_id=?))` : "";
-    const cursorSql = cursor ? "AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : "";
-    const args = [...lookupKeys];
-    if (viewer) args.push(viewer, viewer);
-    if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
-    args.push(limit + 1);
-    const keyPlaceholders = lookupKeys.map(() => "?").join(",");
+    const cursorSql = cursor ? "AND (r.created_at < @at OR (r.created_at = @at AND r.id < @id))" : "";
+    const args = { keys: JSON.stringify(lookupKeys), viewer, limit: limit + 1,
+      ...(cursor ? { at: cursor.createdAt, id: cursor.id } : {}) };
     const found = db.prepare(`SELECT r.*, u.name, u.initials FROM venue_reviews r JOIN users u ON u.id=r.user_id
-                             WHERE r.venue_key IN (${keyPlaceholders}) AND r.removed=0 AND ${activeAccountSql("u")} ${blockSql} ${cursorSql}
-                             ORDER BY r.created_at DESC, r.id DESC LIMIT ?`).all(...args);
+                             WHERE r.venue_key IN (SELECT value FROM json_each(@keys)) AND ${venueReviewVisibilitySql()} ${cursorSql}
+                             ORDER BY r.created_at DESC, r.id DESC LIMIT @limit`).all(args);
     const { rows, nextCursor } = finishPage(found, limit);
-    return { stats: createPublicVenueReviewService(db).read({ venueKey: key, viewerId: viewer, limit: 0 }).stats, reviews: rows.map((r) => ({
+    return { stats: createPublicVenueReviewService(db, { resolveReviewKeys: resolveVenueReviewKeys }).read({ venueKey: key, viewerId: viewer, limit: 0 }).stats, reviews: rows.map((r) => ({
       id: r.id,
       userId: r.user_id,
       name: r.name,
@@ -10108,6 +10109,7 @@ export const routes = {
     const u = requireUser(ctx);
     limit(ctx, "venuereview", 30, 60 * 60 * 1000);
     const key = canonicalVenueKey(decodedPathParam(ctx, "key", { max: 200, label: "venue link" }));
+    if (key?.startsWith('/venue/')) throw new ApiError(400, "Open the venue page to rate this venue.", "VALIDATION_FAILED");
     const rating = clampRating(ctx.body?.rating);
     if (!key || !rating) throw new ApiError(400, "Bad review.");
     const text = clean(ctx.body?.text, { max: LIMITS.review, newlines: true });
@@ -10178,7 +10180,9 @@ export const routes = {
     },
   }),
   ...eventAccountRoutes({ database: db, requireUser, requireAdmin, rateLimit: limit, moderationRecord, uid, pageRequest, finishPage, now }),
-  ...creatorPostRoutes({ database: db, requireUser, rateLimit: limit, artistIdentity: fanClubArtistIdentity, readPost: (ctx, id) => routes["GET /api/posts/:id"]({ ...ctx, params: { id } }) }),
+  ...creatorPostRoutes({ database: db, requireUser, rateLimit: limit, artistIdentity: fanClubArtistIdentity,
+    resolveUnclaimedEntity: (type, key) => type === 'venue' ? canonicalVenueCreatorTarget(publicVenueSnapshotForPath, key) : null,
+    readPost: (ctx, id) => routes["GET /api/posts/:id"]({ ...ctx, params: { id } }) }),
   ...artistUpdatesRoutes({
     ApiError,
     rateLimit: limit,

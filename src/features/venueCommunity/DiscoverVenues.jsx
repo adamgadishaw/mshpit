@@ -1,19 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, space } from "../../theme";
 import { countryForCity } from "../../geo";
 import { buildDiscoverVenueCities } from "../../domain/discoverVenues.mjs";
 import { discoverVenueCityChoices, discoverVenueCityMatches, discoverVenueExplorerRows } from "../../domain/discoverVenueExplorer.mjs";
 import { eventDateMeta, venueHomePlaceId } from "../../domain/venueDiscovery.mjs";
-import Icon from "../Icon";
-import VenueMap from "./DiscoverVenueMap";
-import { useVenueMapCatalogue } from "./useVenueMapCatalogue";
+import Icon from "../../components/Icon";
+import VenueMap from "../../components/discover/DiscoverVenueMap";
+import { useVenueMapCatalogue } from "../../components/discover/useVenueMapCatalogue";
 import { reconcileVenueMapSelection, snapshotVenueMapSelection } from "../../domain/venueMapSelection.mjs";
+import { discoverRowMatchesRegion } from "../../domain/discoverScene.mjs";
+import { publicVenueRequestPath } from "../../domain/publicVenueSnapshot.mjs";
+import useVenueCommunity from "./useVenueCommunity";
+import VenueCover from "./VenueCover";
 
 const EMPTY = [];
 const feedback = ({ pressed, hovered, focused }) => [hovered && styles.hover, pressed && styles.pressed, focused && focusRing];
 
-export default function DiscoverVenues({ region = "Worldwide", homeCity = "", venueDirectoryIndex = EMPTY, tourDates = EMPTY, session, onOpenVenue, onOpenEvent, onOpenVenues }) {
+export default function DiscoverVenues({ region = "Worldwide", homeCity = "", venueDirectoryIndex = EMPTY, tourDates = EMPTY, session, privacyRevision = 0, onOpenVenue, onOpenEvent, onOpenVenues }) {
+  const { width: windowWidth, fontScale } = useWindowDimensions();
+  const [gridWidth, setGridWidth] = useState(0);
+  const available = gridWidth || Math.min(windowWidth - 60, 900);
+  const columns = fontScale > 1.25 ? 1 : Math.max(2, Math.min(4, Math.floor(available / 190) || 2));
+  const tileWidth = Math.floor((available - 12 * (columns - 1)) / columns);
   const [query, setQuery] = useState("");
   const [cityQuery, setCityQuery] = useState("");
   const [cityPickerOpen, setCityPickerOpen] = useState(false);
@@ -24,9 +33,9 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
   const [chosenVenue, setChosenVenue] = useState(null);
   const [mapLocationIds, setMapLocationIds] = useState(null);
   const [expandedShowsFor, setExpandedShowsFor] = useState(null);
-  const [visible, setVisible] = useState(8);
+
   const [cityLimit, setCityLimit] = useState(6);
-  const [allVenuesOpen, setAllVenuesOpen] = useState(true);
+  const [allVenuesOpen, setAllVenuesOpen] = useState(false);
   const [page, setPage] = useState(0);
   const venueRows = useRef(new Map());
   const pendingReveal = useRef(null);
@@ -34,17 +43,20 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
   const catalogue = useVenueMapCatalogue({ venueDirectoryIndex, tourDates });
   const catalogueEnabled = !!catalogue;
   const worldwide = !!catalogue && allVenuesOpen;
-  const cities = useMemo(() => catalogue ? catalogue.cities : buildDiscoverVenueCities(venueDirectoryIndex, tourDates, { region, countryForCity }), [catalogue?.cities, venueDirectoryIndex, tourDates, region]);
+  const cities = useMemo(() => catalogue ? catalogue.cities.map(city => ({ ...city, venues: city.venues.filter(row => discoverRowMatchesRegion(row, region, { countryForCity })) })).filter(city => city.venues.length) : buildDiscoverVenueCities(venueDirectoryIndex, tourDates, { region, countryForCity }), [catalogue?.cities, venueDirectoryIndex, tourDates, region]);
   const homeValue = session?.home || { city: homeCity };
   const home = venueHomePlaceId({ ...homeValue, city: String(homeValue.city || "").split(",")[0], label: homeValue.city }, cities);
   const city = cities.find(row => row.id === chosenCity) || cities.find(row => row.id === home) || cities[0];
   const matchingCities = useMemo(() => discoverVenueCityMatches(cities, cityQuery), [cities, cityQuery]);
   const cityChoices = discoverVenueCityChoices(matchingCities, city?.id, cityLimit);
-  const venues = useMemo(() => discoverVenueExplorerRows(worldwide ? { venues: catalogue.rows } : city, query), [worldwide, catalogue?.rows, city, query]);
-  const listStart = catalogue ? Math.min(page * 12, Math.max(0, Math.floor((venues.length - 1) / 12) * 12)) : 0;
-  const shownVenues = venues.slice(listStart, catalogue ? listStart + 12 : visible);
-  const areaLabel = worldwide ? "Worldwide" : city?.city || region;
-  const changeQuery = value => { setQuery(value); setChosenVenue(null); setExpandedShowsFor(null); setVisible(8); setPage(0); pendingReveal.current = null; chosenSnapshot.current = null; };
+  const venues = useMemo(() => discoverVenueExplorerRows(worldwide ? { venues: cities.flatMap(row => row.venues) } : city, query), [worldwide, cities, city, query]);
+  const listStart = Math.min(page * 12, Math.max(0, Math.floor((venues.length - 1) / 12) * 12));
+  const shownVenues = venues.slice(listStart, listStart + 12);
+  const coverPaths = shownVenues.map(row => publicVenueRequestPath(row.name, row));
+  const covers = useVenueCommunity(coverPaths.length ? `/api/venue-community/covers?paths=${coverPaths.map(encodeURIComponent).join(',')}&revision=${privacyRevision}` : null, session?.id);
+  const coverMap = new Map((covers.resource.data?.covers || []).map(row => [row.path, row.photo]));
+  const areaLabel = worldwide ? region : city?.city || region;
+  const changeQuery = value => { setQuery(value); setChosenVenue(null); setExpandedShowsFor(null); setPage(0); pendingReveal.current = null; chosenSnapshot.current = null; };
   const selectCity = id => { setAllVenuesOpen(false); setChosenCity(id); changeQuery(""); setCityQuery(""); setCityLimit(6); setCityPickerOpen(false); };
   const selectAllVenues = () => { setAllVenuesOpen(true); changeQuery(""); setCityPickerOpen(false); };
   const toggleCityPicker = () => { setCityPickerOpen(open => !open); setCityQuery(""); setCityLimit(6); };
@@ -59,10 +71,9 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
     chosenSnapshot.current = snapshotVenueMapSelection(venues.find(row => row.id === id));
     pendingReveal.current = id;
     setChosenVenue(id); setExpandedShowsFor(null);
-    if (catalogue) setPage(Math.max(0, Math.floor(venues.findIndex(row => row.id === id) / 12)));
-    else setVisible(current => Math.max(current, venues.findIndex(row => row.id === id) + 1));
+    setPage(Math.max(0, Math.floor(venues.findIndex(row => row.id === id) / 12)));
   };
-  useEffect(() => { if (chosenVenue) revealVenue(chosenVenue); }, [chosenVenue, visible, page]);
+  useEffect(() => { if (chosenVenue) revealVenue(chosenVenue); }, [chosenVenue, page]);
   useEffect(() => {
     if (!catalogueEnabled || !chosenVenue) return;
     const current = venues.find(row => row.id === chosenVenue);
@@ -76,15 +87,15 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
   }, [venues, chosenVenue, catalogueEnabled]);
   useEffect(() => {
     setChosenCity(null); setChosenVenue(null); setExpandedShowsFor(null); setQuery("");
-    setCityQuery(""); setVisible(8); setPage(0); setAllVenuesOpen(true); setCityLimit(6); setCityPickerOpen(false); setMapOpen(true);
+    setCityQuery(""); setPage(0); setAllVenuesOpen(false); setCityLimit(6); setCityPickerOpen(false); setMapOpen(true);
     pendingReveal.current = null;
     chosenSnapshot.current = null;
   }, [region]);
 
   return <View style={styles.root}>
     <View style={styles.heading}>
-      <View style={styles.flex}><Text style={styles.title} accessibilityRole="header">Venues{worldwide ? " worldwide" : city ? ` in ${city.city}` : ""}</Text><Text style={styles.body}>{worldwide ? "Explore the entire venue catalogue" : city ? city.region : region}</Text></View>
-      {catalogue && !worldwide && <Pressable onPress={selectAllVenues} accessibilityRole="button" style={state => [styles.textButton, ...feedback(state)]}><Text style={styles.link}>All venues worldwide</Text></Pressable>}
+      <View style={styles.flex}><Text style={styles.title} accessibilityRole="header">Venues{worldwide ? ` in ${region}` : city ? ` in ${city.city}` : ""}</Text><Text style={styles.body}>{worldwide ? `Explore venues in ${region}` : city ? city.region : region}</Text></View>
+      {catalogue && !worldwide && <Pressable onPress={selectAllVenues} accessibilityRole="button" style={state => [styles.textButton, ...feedback(state)]}><Text style={styles.link}>All venues in {region}</Text></Pressable>}
       <Pressable onPress={toggleCityPicker} accessibilityRole="button" accessibilityLabel="Change city" accessibilityState={{ expanded: cityPickerOpen }} style={state => [styles.textButton, ...feedback(state)]}><Text style={styles.link}>{cityPickerOpen ? "Close cities" : "Change city"}</Text><Icon name={cityPickerOpen ? "chevron-up" : "chevron-down"} size={16} color={colors.amber} /></Pressable>
     </View>
     {cityPickerOpen && <View style={styles.cityPicker} accessibilityLabel="Choose a venue city">
@@ -113,15 +124,20 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
       {mapOpen && <VenueMap venues={venues} selected={chosenVenue} onSelect={selectMapVenue} city={areaLabel} trustedCatalogueRows={catalogue?.sourceRows} providerEvents={catalogue?.providerEvents} providerFetchedAt={catalogue?.providerFetchedAt} onMapLocations={setMapLocationIds} />}
       {!venues.length ? <View style={styles.empty}><Text style={styles.subtitle}>No venues match “{query.trim()}”</Text><Text style={styles.body}>Search another name{worldwide ? "" : ` in ${areaLabel}`}, or change city.</Text><Pressable onPress={() => changeQuery("")} accessibilityRole="button" style={state => [styles.textButton, ...feedback(state)]}><Text style={styles.link}>{worldwide ? "Show all venues" : `Show all venues in ${areaLabel}`}</Text></Pressable></View> :
       <View testID="discover-venue-list">
+        {covers.resource.status === 'error' && <View accessibilityRole="alert"><Text style={styles.small}>Concert photos could not be loaded.</Text><Pressable accessibilityRole="button" onPress={covers.load} style={styles.textButton}><Text style={styles.link}>Retry concert photos</Text></Pressable></View>}
+        <View style={styles.tileGrid} onLayout={event => setGridWidth(event.nativeEvent.layout.width)}>
         {shownVenues.map((venue, index) => {
           const expanded = chosenVenue === venue.id;
           const showAll = expandedShowsFor === venue.id;
           const nextShow = venue.shows[0];
           const condensedShows = catalogue && venue.venueUpcomingCount > venue.shows.length;
-          return <View key={venue.id} ref={node => { if (node) venueRows.current.set(venue.id, node); else venueRows.current.delete(venue.id); }} onLayout={() => revealVenue(venue.id)} style={[styles.venueCard, expanded && styles.venueSelected]} accessibilityLabel={`Venue: ${venue.name}`}>
-            <Pressable onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open venue ${venue.name}`} accessibilityHint="Opens the full venue page." style={state => [styles.venueRow, ...feedback(state)]}>
+          return <View key={venue.id} ref={node => { if (node) venueRows.current.set(venue.id, node); else venueRows.current.delete(venue.id); }} onLayout={() => revealVenue(venue.id)} style={[styles.venueCard, { width: tileWidth }, expanded && styles.venueSelected]} accessibilityLabel={`Venue: ${venue.name}`}>
+            <Pressable onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open venue ${venue.name}`} accessibilityHint="Opens the full venue page." style={state => [...feedback(state)]}>
+              <VenueCover photo={coverMap.get(publicVenueRequestPath(venue.name, venue))} name={venue.name} loading={covers.resource.status === 'loading'} />
+              <View style={styles.venueRow}>
               {mapOpen && <Text style={styles.rowNumber}>{listStart + index + 1}</Text>}
               <View style={styles.flex}><Text style={styles.venueName}>{venue.name}</Text>{catalogue && <Text style={styles.small}>{venue.place || "Location not listed"}</Text>}<Text style={styles.small}>{condensedShows ? `${venue.venueUpcomingCount} upcoming shows · ` : ""}{nextShow ? `Next: ${eventDateMeta(nextShow.date).timing} · ${nextShow.eventName || nextShow.artist || "Live show"}` : "No upcoming shows listed"}</Text></View><Icon name="chevron-right" size={18} color={colors.amber} />
+              </View>
             </Pressable>
             {!!venue.shows.length && <Pressable onPress={() => { chosenSnapshot.current = expanded ? null : snapshotVenueMapSelection(venue); setChosenVenue(expanded ? null : venue.id); setExpandedShowsFor(null); pendingReveal.current = null; }} accessibilityRole="button" accessibilityState={{ expanded }} aria-expanded={expanded} accessibilityLabel={condensedShows ? `${expanded ? "Hide" : "Show"} next concert at ${venue.name}` : `${expanded ? "Hide" : "Show"} ${venue.shows.length} upcoming show${venue.shows.length === 1 ? "" : "s"} at ${venue.name}`} style={state => [styles.showsToggle, ...feedback(state)]}>
               <Text style={styles.link}>{expanded ? "Hide shows" : condensedShows ? "Next concert" : `${venue.shows.length} upcoming show${venue.shows.length === 1 ? "" : "s"}`}</Text><Icon name={expanded ? "chevron-up" : "chevron-down"} size={15} color={colors.amber} />
@@ -134,7 +150,8 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
             </View>}
           </View>;
         })}
-        {catalogue ? <View style={styles.listHeading}><Pressable disabled={!listStart} accessibilityRole="button" accessibilityLabel="Previous venue page" onPress={() => setPage(Math.max(0, listStart / 12 - 1))} style={state => [styles.textButton, !listStart && { opacity: .35 }, ...feedback(state)]}><Text style={styles.link}>Previous</Text></Pressable><Text style={styles.small}>{listStart + 1}–{Math.min(listStart + 12, venues.length)} of {venues.length}</Text><Pressable disabled={listStart + 12 >= venues.length} accessibilityRole="button" accessibilityLabel="Next venue page" onPress={() => setPage(listStart / 12 + 1)} style={state => [styles.textButton, listStart + 12 >= venues.length && { opacity: .35 }, ...feedback(state)]}><Text style={styles.link}>Next</Text></Pressable></View> : visible < venues.length && <Pressable accessibilityRole="button" onPress={() => setVisible(current => current + 12)} style={state => [styles.more, ...feedback(state)]}><Text style={styles.link}>Show more venues ({venues.length - visible})</Text><Icon name="chevron-down" size={16} color={colors.amber} /></Pressable>}
+        </View>
+        <View style={styles.listHeading}><Pressable disabled={!listStart} accessibilityRole="button" accessibilityLabel="Previous venue page" onPress={() => setPage(Math.max(0, listStart / 12 - 1))} style={state => [styles.textButton, !listStart && { opacity: .35 }, ...feedback(state)]}><Text style={styles.link}>Previous</Text></Pressable><Text style={styles.small}>{listStart + 1}–{Math.min(listStart + 12, venues.length)} of {venues.length}</Text><Pressable disabled={listStart + 12 >= venues.length} accessibilityRole="button" accessibilityLabel="Next venue page" onPress={() => setPage(listStart / 12 + 1)} style={state => [styles.textButton, listStart + 12 >= venues.length && { opacity: .35 }, ...feedback(state)]}><Text style={styles.link}>Next</Text></Pressable></View>
       </View>}
     </>}
     <Pressable onPress={() => onOpenVenues?.(region)} accessibilityRole="button" style={state => [styles.textButton, ...feedback(state)]}><Text style={styles.link}>Browse the full venue directory</Text><Icon name="chevron-right" size={16} color={colors.amber} /></Pressable>
@@ -157,7 +174,8 @@ const styles = StyleSheet.create({
   search: { flexDirection: "row", alignItems: "center", gap: space(3), borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, paddingHorizontal: space(3), backgroundColor: colors.surface }, input: { minHeight: 48, flex: 1, minWidth: 0, color: colors.text, fontFamily: font, fontSize: 15 }, clear: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   cityPicker: { gap: space(2), padding: space(3), backgroundColor: colors.surface, borderRadius: radius.md }, cityChoice: { flexDirection: "row", alignItems: "center", gap: space(3), minHeight: 58, paddingHorizontal: space(3), paddingVertical: space(2), borderRadius: radius.sm }, citySelected: { backgroundColor: colors.surfaceAlt },
   listHeading: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: space(2), justifyContent: "space-between" },
-  venueCard: { borderBottomWidth: StyleSheet.hairlineWidth, borderColor: colors.lineSoft }, venueSelected: { backgroundColor: colors.surface, borderRadius: radius.sm },
+  tileGrid: { width: '100%', flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  venueCard: { borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md, overflow: 'hidden', backgroundColor: colors.bgElev }, venueSelected: { borderColor: colors.amber },
   venueRow: { flexDirection: "row", alignItems: "center", gap: space(3), minHeight: 68, paddingHorizontal: space(3), paddingTop: space(3), paddingBottom: space(2) }, rowNumber: { fontFamily: mono, fontSize: 12, color: colors.textFaint, minWidth: 20 }, venueName: { fontFamily: font, fontSize: 15, lineHeight: 21, color: colors.text, fontWeight: "700" },
   showsToggle: { minHeight: 44, flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: space(2), paddingHorizontal: space(3), paddingBottom: space(2) }, shows: { paddingHorizontal: space(3), paddingBottom: space(3), gap: space(2) }, more: { minHeight: 48, flexDirection: "row", justifyContent: "center", alignItems: "center", gap: space(2) },
   subtitle: { color: colors.text, fontFamily: displayFont, fontSize: 20, lineHeight: 27, fontWeight: "800" },

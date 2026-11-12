@@ -106,6 +106,7 @@ function createDatabase() {
       photos TEXT NOT NULL DEFAULT '[]',photos_public INTEGER NOT NULL DEFAULT 0,
       removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL
     );
+    CREATE TABLE reports (target_type TEXT,target_id TEXT,status TEXT);
   `);
   database.exec(`CREATE TABLE blocks(blocker_id TEXT,blocked_id TEXT);
     CREATE TABLE artist_tourdate_refresh_queue(artist_key TEXT PRIMARY KEY,status TEXT,attempted_at INTEGER,
@@ -463,8 +464,7 @@ test("artist SEO omits ambiguous lifespan years and exposes typed facts only in 
 test("public city venue directories use the city repository's canonical guide and moderated label", () => {
   const database = createDatabase();
   try {
-    database.exec(`CREATE TABLE reports (target_id TEXT,status TEXT);
-      CREATE TABLE moderation_actions (id TEXT,actor_id TEXT,action TEXT,target_type TEXT,target_id TEXT,
+    database.exec(`CREATE TABLE moderation_actions (id TEXT,actor_id TEXT,action TEXT,target_type TEXT,target_id TEXT,
         reason TEXT,prior_state TEXT,next_state TEXT,request_id TEXT,created_at INTEGER);`);
     ensureCitySchema(database,{ venues:[],seeds:[],previousSeeds:[],geo:{},banner:null });
     addArtist(database);

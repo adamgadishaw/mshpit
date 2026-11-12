@@ -8,6 +8,7 @@ reuse a published `PIT-*` code for a different meaning.
 
 | Code | Category | Meaning | Retry |
 | --- | --- | --- | --- |
+| `PIT-LINK-001` | Navigation | External link could not open on the device | Yes |
 | `PIT-NET-001` | Connectivity | The client could not reach Pit | Yes |
 | `PIT-NET-002` | Connectivity | A request timed out or was aborted | Yes |
 | `PIT-AUTH-001` | Authentication | Session missing, invalid, or expired | Sign in first |

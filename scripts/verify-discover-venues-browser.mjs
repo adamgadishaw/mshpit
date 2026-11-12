@@ -146,6 +146,8 @@ async function assertCityMap(page, state, city, mode) {
 
 export function discoverVenueFixture(pathname, options = {}) {
   assert.equal(options.method || "GET", "GET", "The guest venue explorer must not mutate data.");
+  if (pathname === '/api/venue-community/covers') return { covers: [] };
+  if (pathname === '/api/venue-community') return { path: options.resolvedPath, ownership: 'community', isOperator: false, claim: null, myReview: null, rating: { count: 0, average: null }, reviews: [], nextCursor: null };
   if (pathname === "/api/tourdates") return { tourDates: discoverVenueEvents };
   if (pathname === "/api/venue-snapshot") {
     assert.equal(options.resolvedPath, "/venue/ticketmaster-fixture-london-river");
@@ -162,7 +164,7 @@ export function discoverVenueFixture(pathname, options = {}) {
   return fixtureApiResponse(pathname, { ...options, member: false });
 }
 
-async function localServer() {
+export async function localServer() {
   const directory = resolve(root, process.env.PIT_NAVIGATION_BROWSER_DIST || "dist");
   const htmlPath = join(directory, "index.html");
   assert.ok(statSync(htmlPath).isFile(), "Build the current web export first.");

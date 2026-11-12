@@ -1,7 +1,7 @@
 import CatalogText from "../features/catalogEditor/CatalogText";
 import usePublicVenueSnapshot from "../features/venuePublic/usePublicVenueSnapshot";
 import { publicVenueArtistTarget, publicVenueUpcomingLabel } from "../domain/publicVenueSnapshot.mjs";
-import { useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore } from "../store";
@@ -26,12 +26,15 @@ import ExpandableText from "../components/ExpandableText";
 import ResearchedAbout from "../components/ResearchedAbout";
 import { VenueVisitorDetails } from "../components/WebProfileBlocks";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
+import CreatorPostsSection from "./CreatorPostsPanel";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+const VenueCommunityPanel = lazyWithRetry(() => import("./VenueScreens").then(module => ({ default: module.VenueCommunityPanel })), "VenueCommunityPanel");
 
 const REVIEW_BATCH = 8;
 const HISTORY_BATCH = 12;
 const UPCOMING_BATCH = 6;
 
-export default function VenueScreen({ venueName, venueIdentity = null, onClose, onOpenShow, onOpenArtist, onReviewVenue, onOpenProfile, onOpenPhotos, onReport, onRequireAuth }) {
+export default function VenueScreen({ venueName, venueIdentity = null, onClose, onOpenShow, onOpenArtist, onReviewVenue, onOpenProfile, onOpenPhotos, onReport, onRequireAuth, onOpenVenue, onOpenPost, onCompose }) {
   const { width } = useWindowDimensions();
   const wide = width >= 760;
   const {
@@ -53,12 +56,13 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
   const photos = venuePhotos(venue.name, photoIdentity);
   const photoState = venuePhotoState(venue.name, photoIdentity);
   const reviews = venueReviewsFor(venue.name);
-  const scoreScope = JSON.stringify([venue.name, session?.id, venuePhotoPrivacyRevision]);
+  const scoreScope = JSON.stringify([venue.name, snapshot?.path, session?.id, venuePhotoPrivacyRevision]);
   const [profileScore, setProfileScore] = useState(null);
   const scoreStats = profileScore?.scope === scoreScope ? profileScore.stats : null;
+  const receiveCommunityRating = useCallback(stats => setProfileScore({ scope: scoreScope, stats }), [scoreScope]);
   const readProfileReviews = async (signal) => {
     const result = await loadVenueReviews(venue.name, { signal });
-    if (result?.ok && !signal?.aborted) setProfileScore({ scope: scoreScope, stats: result.stats });
+    if (result?.ok && !signal?.aborted && !snapshot?.path) setProfileScore({ scope: scoreScope, stats: result.stats });
     return result;
   };
   const reviewRevision = reviews.map(review => review.id).join("|");
@@ -82,7 +86,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
     if (session) void readProfileReviews(controller.signal);
     void loadVenuePhotos(venue.name, { ...photoIdentity, signal: controller.signal }).catch(() => { /* architecture: allow-empty-catch -- the venue page retains its licensed empty state and visible retry control */ });
     return () => controller.abort();
-  }, [venue.name, photoIdentity?.source, photoIdentity?.providerVenueId, venuePhotoPrivacyRevision, session?.id, reviewRevision]);
+  }, [venue.name, snapshot?.path, photoIdentity?.source, photoIdentity?.providerVenueId, venuePhotoPrivacyRevision, session?.id, reviewRevision]);
 
   const fanRating = scoreStats?.averageRating ?? null;
   const fullGridPhotos = venueTopPhotos(venue.name, wide ? 24 : 18);
@@ -131,6 +135,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         contentContainerStyle={styles.content}
         contentInsetAdjustmentBehavior="automatic"
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         <View style={styles.heroShell}>
           <VenuePhotoWidget
@@ -163,13 +168,16 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
         </View>
 
         <VenuePageSectionNav active={sectionModel.active} onChange={setActiveSection} />
+        {snapshot && activeSection !== 'shows' && <Suspense fallback={<Text style={styles.noUpcomingBody}>Loading venue community…</Text>}><VenueCommunityPanel key={`${session?.id || 'guest'}:${snapshot.path}`}
+          path={snapshot.path} venueName={venue.name} session={session} privacyRevision={`${venuePhotoPrivacyRevision}:${reviewRevision}`} canClaim={!!snapshot.venue.providerVenueId} onRatingChange={receiveCommunityRating}
+          onRequireAuth={onRequireAuth} onReport={onReport} onOpenProfile={onOpenProfile} onOpenVenue={onOpenVenue} onOpenPost={onOpenPost} onCompose={onCompose} renderUpdates={props => <CreatorPostsSection {...props} />} /></Suspense>}
 
         {publicVenue.resource.status === "error" ? <View accessibilityRole="alert">
           <Text style={styles.noUpcomingBody}>Venue details could not be loaded. Please try again.</Text>
           <SectionSwitchButton label="Retry venue details" onPress={() => { void publicVenue.load(); }} />
         </View> : null}
 
-        {!session ? <AccountSnapshotPrompt title="Venue reviews and concert photos" body="Sign in to read fan reviews, view concert photos, or review this venue. Shows, directions, and visitor information are open to browse." onRequireAuth={onRequireAuth} /> : null}
+        {!session ? <AccountSnapshotPrompt title="Been here?" body="Sign in to rate this venue and explore more concert photos." onRequireAuth={onRequireAuth} /> : null}
 
         {sectionModel.showGuide ? (
           <><CatalogText type="venue" entityKey={photoIdentity?.source && photoIdentity?.providerVenueId ? `${photoIdentity.source}:${photoIdentity.providerVenueId}` : null} /><ResearchedAbout kind="venue" entityKey={venue.name} city={String(venue.place || "").split(",")[0].trim() || null} label="ABOUT THIS VENUE" /></>
@@ -229,7 +237,7 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
               <View style={styles.noUpcomingIcon}><Icon name="calendar" size={22} color={colors.textFaint} /></View>
               <View style={styles.flexCopy}>
                 <Text style={styles.noUpcomingTitle}>{publicVenueBusy ? "Loading upcoming shows" : snapshot?.after ? "No more upcoming shows" : snapshot ? "No announced shows yet" : "Upcoming shows unavailable"}</Text>
-                <Text style={styles.noUpcomingBody}>{snapshot && !publicVenueBusy ? "No released upcoming dates were found on this page." : publicVenueBusy ? "Checking this venue’s announced dates." : "Try refreshing the venue page."}</Text>
+                <Text style={styles.noUpcomingBody}>{snapshot && !publicVenueBusy ? "No upcoming shows are listed here yet." : publicVenueBusy ? "Checking this venue’s announced dates." : "Try refreshing the venue page."}</Text>
                 {snapshot?.after && !publicVenueBusy ? <SectionSwitchButton label="First upcoming shows" onPress={() => { void publicVenue.load(); }} /> : null}
               </View>
             </View>
@@ -253,15 +261,6 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
               </View>
             </View>
           </View>
-          <Pressable
-            style={({ pressed, focused }) => [styles.reviewButton, pressed && styles.buttonPressed, focused && focusRing]}
-            onPress={() => { if (!session) return onRequireAuth?.(); onReviewVenue?.(venue.name); }}
-            accessibilityRole="button"
-            accessibilityLabel={`Review ${venue.name}`}
-          >
-            <Icon name="edit" size={16} color="#1A1206" />
-            <Text style={styles.reviewButtonText}>{reviews.length ? "Add your take" : "Write the first review"}</Text>
-          </Pressable>
         </Section>
         ) : null}
 
@@ -286,8 +285,8 @@ export default function VenueScreen({ venueName, venueIdentity = null, onClose, 
           </Section>
         ) : null}
 
-        {sectionModel.showReviews ? (
-        <Section title="Fan notes" count={reviews.length}>
+        {sectionModel.showReviews && reviews.length > 0 ? (
+        <Section title="Earlier fan notes" count={reviews.length}>
           {reviews.length ? (
             <View style={styles.stack}>
               {visibleReviews.map((review) => {

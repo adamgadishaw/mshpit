@@ -204,6 +204,8 @@ export function accountPrivacyRoutes({
             updatedAt: row.updated_at,
           })),
         ratings: database.prepare("SELECT kind,ref,rating FROM ratings WHERE user_id=?").all(user.id),
+        venueClaims: database.prepare('SELECT id,venue_path,venue_name,website,note,status,created_at,reviewed_at,conversion_consent,conversion_consent_at,account_role_at_request FROM venue_claims WHERE user_id=? ORDER BY created_at DESC,id DESC').all(user.id),
+
         venueReviews: database.prepare("SELECT id,venue_key,rating,text,photos,photos_public,removed,created_at FROM venue_reviews WHERE user_id=? ORDER BY created_at DESC").all(user.id)
           .map((row) => ({ id: row.id, venueKey: row.venue_key, rating: row.rating, text: row.text, photos: parseJson(row.photos, []), photosPublic: !!row.photos_public, removed: !!row.removed, createdAt: row.created_at })),
         fanClubs: {

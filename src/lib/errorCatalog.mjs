@@ -2,6 +2,15 @@
 // screenshots, and diagnostics history use them to identify a failure class.
 // User-facing copy is intentionally useful first and lightly themed second.
 export const ERROR_CATALOG = Object.freeze({
+  "PIT-LINK-001": Object.freeze({
+    category: "navigation",
+    severity: "warning",
+    title: "The link could not open",
+    message: "The external link could not be opened on this device.",
+    failurePoint: "Opening an external link",
+    guidance: "Try again, or search for the place in your maps app.",
+    retryable: true,
+  }),
   "PIT-NET-001": Object.freeze({
     category: "connectivity",
     severity: "warning",

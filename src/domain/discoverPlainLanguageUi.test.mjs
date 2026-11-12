@@ -10,7 +10,7 @@ const files = {
   genres: await read("../components/discover/DiscoverGenres.jsx"),
   primitives: await read("../components/discover/DiscoverPrimitives.jsx"),
   banner: await read("../components/discover/DiscoverEventBanner.jsx"),
-  venues: await read("../components/discover/DiscoverVenues.jsx"),
+  venues: await read("../features/venueCommunity/DiscoverVenues.jsx"),
   photos: await read("../features/discoverPhotos/DiscoverPhotoPanel.jsx"),
 };
 const combined = Object.values(files).join("\n");

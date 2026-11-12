@@ -307,6 +307,9 @@ export default function LogScreen({
   });
   const isCampaign = isStatus && !!campaign;
   const [creatorUpdate, setCreatorUpdate] = useState(() => editing?.creatorUpdate || (defaultMode === "creator" ? creatorUpdateDraft(creatorEntityForComposer(user, prefill?.creatorEntity)) : null));
+  // Entry points choose the initial intent; a resumed draft owns its intent.
+  // Keep an incomplete creator draft blocked rather than converting it to a post.
+  const [creatorIntent, setCreatorIntent] = useState(() => editing ? !!editing.creatorUpdate : defaultMode === "creator");
   const [creatorAuthorizedAccount, setCreatorAuthorizedAccount] = useState(null);
   const isCreator = isStatus && !!creatorUpdate;
   const [draftId, setDraftId] = useState(null);
@@ -1289,7 +1292,7 @@ export default function LogScreen({
     : isFestival && endDate && (!date || festivalSpanDays < 0 || festivalSpanDays >= 14) ? "Pick the festival's first day, then a last day up to two weeks later."
       : isCoHeadline && !lineup.some((act) => act.role === "co_headliner") ? "Add the other headliner, or switch to Concert."
         : "";
-  const creatorProblem = isCreator ? creatorUpdateError(creatorUpdate) : defaultMode === "creator" ? "Choose a page account." : null;
+  const creatorProblem = isCreator ? creatorUpdateError(creatorUpdate) : creatorIntent ? "Choose a page account." : null;
   const canPost = !!canPostBase && !lineupProblem && !reviewTooLong && !creatorProblem && (!isCreator || creatorAuthorizedAccount === user?.id) && pendingMediaAssets.length === 0;
   const submitBusy = pickingMedia || uploadingPhotos || resolvingSong || posting || artistAttaching;
   const engagementPrompt = useMemo(() => protectedLegacyMemory || isCreator || (!isStatus && !isOnlineReview) ? null : composerEngagementPrompt({
@@ -1348,6 +1351,7 @@ export default function LogScreen({
     submissionId: submissionIdRef.current,
     postType,
     creatorUpdate: isCreator ? creatorUpdate : null,
+    creatorIntent,
     campaign: isStatus ? campaign : null,
     experienceType,
     artist,
@@ -1378,7 +1382,7 @@ export default function LogScreen({
     photosPublic,
     landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatiblePhoto,
     panels: { song: showSong, photos: showPhotos, people: !isStatus && !isOnlineReview && showPeople },
-  }), [draftId, postType, isStatus, isOnlineReview, isCreator, creatorUpdate, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, showFormat, endDate, lineup, timesSeen, date, onlineTitle, youtubeUrl, onlineRating, overallRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
+  }), [draftId, postType, isStatus, isOnlineReview, isCreator, creatorUpdate, creatorIntent, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, showFormat, endDate, lineup, timesSeen, date, onlineTitle, youtubeUrl, onlineRating, overallRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasPendingMedia = pendingMediaAssets.length > 0;
@@ -1525,6 +1529,7 @@ export default function LogScreen({
     setPostType(restored.postType);
     setCampaign(restored.campaign);
     setCreatorUpdate(restored.creatorUpdate);
+    setCreatorIntent(restored.creatorIntent);
     setExperienceType(restored.experienceType);
     setArtist(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey); setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
     setEventAddress(restored.eventAddress || "");

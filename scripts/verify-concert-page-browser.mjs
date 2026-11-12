@@ -69,6 +69,9 @@ async function scenario(browser, origin, width, theme, mode = "archive") {
       if (url.origin !== origin) { state.external.push(url.origin); return await route.abort(); }
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       if (url.pathname === "/api/health") return await json({ ok: true });
+      if (url.pathname === "/api/venue-snapshot") return await json({ path: url.searchParams.get("path"), venue: {
+        name: entity.venue, place: "Toronto", source: null, providerVenueId: null, coord: { lat: 43.65, lng: -79.38 }, address: null, capacity: null,
+      }, events: [], hasMore: false, nextCursor: null });
       if (url.pathname === `/api/venues/${encodeURIComponent(entity.venue.toLowerCase())}/photos`) return await json({ photos: [], state: "ready" });
       if (url.pathname === "/api/resolve" && url.searchParams.get("path") === (upcoming ? targetPath : path)) return await json({ entity });
       if (url.pathname === "/api/resolve" && url.searchParams.get("path") === `/post/${review.id}`) return await json({ entity: { kind: "show", id: review.id, path: `/post/${review.id}` } });
@@ -134,7 +137,7 @@ async function scenario(browser, origin, width, theme, mode = "archive") {
     }
     await page.screenshot({ path: join(shots, `${name}-overview.png`), fullPage: true });
     const reviewRequestsBeforeToggles = state.requests;
-    for (const title of ["Reviews", "Event details", "Crowd & Lounge", "Nearby"]) {
+    for (const title of ["Reviews", "Event details", "Crowd & Lounge", mode === "upcoming" ? "After the show" : "Around the venue"]) {
       const toggle = section(title), initial = await toggle.getAttribute("aria-expanded");
       for (let i = 0; i < 4; i++) await toggle.click();
       assert.equal(await toggle.getAttribute("aria-expanded"), initial);

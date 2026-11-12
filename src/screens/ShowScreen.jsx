@@ -2,7 +2,7 @@ import ShowSection from "../features/showDetails/ShowSection";
 import { savedShowRating, showPageRating, showPageEventArtwork } from "../domain/showPageDetails.mjs";
 import EventPhotoCredit from "../components/EventPhotoCredit";
 import CatalogText from "../features/catalogEditor/CatalogText";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import LineupDetails from "../components/LineupDetails";
 import { postHeadline } from "../domain/lineup.mjs";
 import { ordinalWord } from "../domain/supportingActs.mjs";
@@ -11,7 +11,7 @@ import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
 import RatingSplit from "../components/RatingSplit";
 import RatingBreakdown from "../components/RatingBreakdown";
-import NearbyAfterparty from "../components/NearbyAfterparty";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
 import Icon from "../components/Icon";
 import VenuePhotoWidget from "../components/VenuePhotoWidget";
 import ScreenHeader from "../components/ScreenHeader";
@@ -50,6 +50,7 @@ import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
 import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
 import usePublicEventSnapshot from "../hooks/usePublicEventSnapshot";
 import { publicEventArtistIdentityPending, publicEventCandidateId, readablePublicEventSnapshot } from "../domain/publicEventSnapshot.mjs";
+const AfterShowSection = lazyWithRetry(() => import("./VenueScreens").then(module => ({ default: module.AfterShowSection })), "AfterShowSection");
 
 const CROWD_FILTER_LABELS = Object.freeze({
   everyone: "Everyone",
@@ -97,7 +98,7 @@ function PublicEventSnapshotPanel({
   const venue = { name: event.venue, source: event.source, providerVenueId: event.providerVenueId };
   const cancelled = showLifecycleView(null, null, false, Date.now(), event, event).lifecycle === "cancelled";
   return (
-    <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       <View style={styles.ticket}>
         <Text style={styles.ticketKicker}>{cancelled ? "THIS SHOW WAS CANCELLED" : "EVENT DETAILS"}</Text>
         <Text style={styles.artist}>{event.name}</Text>
@@ -646,7 +647,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         onRefresh={refreshShow}
         accessibilityLabel={`Refresh ${eventTitle} show page`}
       >
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <View style={[styles.overview, tabletLayout && (archiveCover || eventArtwork) && styles.overviewWide]}>
           <View style={[styles.overviewPhotos, tabletLayout && (archiveCover || eventArtwork) && styles.overviewPhotosWide]}>
         {archiveCover ? (
@@ -1038,6 +1039,14 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         )}
 
         </ShowSection> : null}
+        <ShowSection key={`nearby:${socialIdentity}`} keepMounted title={["completed", "cancelled", "postponed"].includes(lifecycleView.lifecycle) || (lifecycleView.lifecycle === "unknown" && presentation.showPostEvent) ? "Around the venue" : "After the show"} summary="Food, places to go & routes home">
+        {/* Nearby discovery is deliberately Maps-only: Pit makes no claims
+            about a business being open, close, accessible, or age-appropriate. */}
+          <Suspense fallback={<ActivityIndicator accessibilityLabel="Loading after-show planning" color={colors.amber} />}>
+            <AfterShowSection log={norm} venueIdentity={venuePhotoIdentity} accountId={accountId} lifecycle={lifecycleView.lifecycle === "unknown" && presentation.showPostEvent ? "completed" : lifecycleView.lifecycle} />
+          </Suspense>
+
+        </ShowSection>
         {setlist.length > 0 && (
           <ShowSection key={`setlist:${socialIdentity}`} title="Setlist" summary={`${setlist.length} songs${log.inTourWindow ? " · Spoilers" : ""}`}>
             {revealed ? (
@@ -1065,14 +1074,6 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             )}
           </ShowSection>
         )}
-        <ShowSection key={`nearby:${socialIdentity}`} title="Nearby" summary="Explore around the venue">
-        {/* Nearby discovery is deliberately Maps-only: Pit makes no claims
-            about a business being open, close, accessible, or age-appropriate. */}
-        <View style={styles.afterCard}>
-          <NearbyAfterparty log={norm} coord={coord} />
-        </View>
-
-        </ShowSection>
       </ScrollView>
       </VinylRefreshBoundary>}
     </View>

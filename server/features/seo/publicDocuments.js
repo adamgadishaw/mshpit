@@ -26,10 +26,10 @@ import {
  * public URL resolver owns ambiguous vanity-route precedence; this layer owns
  * only privacy-safe reads, public projection and HTML rendering.
  */
-export function createPublicDocumentService({ database, origin, paths, artistMemorialService = null, artistNews = null, artistHeadlines = null } = {}) {
+export function createPublicDocumentService({ database, origin, paths, artistMemorialService = null, artistNews = null, artistHeadlines = null, resolveVenueReviewKeys = null } = {}) {
   let artistLiveSummary;
   const repository = createPublicDocumentRepository(database, {
-    venueReviews: createPublicVenueReviewService(database),
+    venueReviews: createPublicVenueReviewService(database, { resolveReviewKeys: resolveVenueReviewKeys }),
     artistLiveSummary: (options) => {
       artistLiveSummary ||= createArtistLiveSummaryService({ database, projectDate: (row) => row });
       return artistLiveSummary.read(options);

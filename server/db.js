@@ -8,6 +8,7 @@
 import { ensureEventAccountSchema } from "./features/eventAccounts/eventAccountSchema.js";
 import { ensureCreatorPostSchema } from "./features/creatorPosts/creatorPostSchema.js";
 import { DatabaseSync } from "node:sqlite";
+import { ensureVenueCommunitySchema } from "./features/venueCommunity/schema.js";
 import { resolveTheme } from "../src/domain/themeAccess.mjs";
 import { ensureJobSchema } from "./features/jobs/jobRepository.js";
 import { ensureArtistAccessRetentionSchema } from "./features/artistAccounts/artistAccessRetention.js";
@@ -2513,6 +2514,8 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at,t
 export const STORAGE_MAINTENANCE_BATCH_SIZE = 500;
 
 // --- tiny helpers ------------------------------------------------------------
+ensureVenueCommunitySchema(db);
+
 export const q = {
   userByEmail: db.prepare("SELECT * FROM users WHERE lower(trim(email)) = lower(trim(?)) ORDER BY created_at,id LIMIT 1"),
   usersByEmail: db.prepare("SELECT * FROM users WHERE lower(trim(email)) = lower(trim(?)) ORDER BY created_at,id LIMIT 2"),
