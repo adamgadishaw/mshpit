@@ -78,11 +78,12 @@ test("sale evidence requires real public timestamp and explicit known start", ()
   assert.equal(ticketmasterPublicSale({ id: "1", sales: { presales: [{ startDateTime: "2026-11-13T12:00:00Z" }] }, dates: { access: { startDateTime: "2026-11-13T12:00:00Z" } } }), null);
 });
 
-test("new local date delivers once; remote city, ambiguous home and non-followers receive none", t => {
-  const f = fixture(t); f.account(); f.account("remote", "London, England, United Kingdom"); f.account("ambiguous", "London"); f.account("notfollowing", "Toronto", []); f.event();
-  f.plan(); assert.equal(f.alerts.deliverDue().delivered, 1);
+test("tour announcements remain global, including missing or ambiguous home cities", t => {
+  const f = fixture(t); f.account(); f.account("remote", "London, England, United Kingdom"); f.account("ambiguous", "London"); f.account("missing", ""); f.account("notfollowing", "Toronto", []); f.event();
+  f.plan(); assert.equal(f.alerts.deliverDue().delivered, 4);
   f.plan(); assert.equal(f.alerts.deliverDue().delivered, 0);
-  assert.deepEqual(f.db.prepare("SELECT user_id,type FROM notifications").all().map(row => ({ ...row })), [{ user_id: "fan", type: "local_show" }]);
+  assert.deepEqual(f.db.prepare("SELECT user_id FROM notifications ORDER BY user_id").all().map(row => row.user_id), ["ambiguous", "fan", "missing", "remote"]);
+  assert.equal(f.db.prepare("SELECT type FROM notifications").get().type, "artist_tour_date");
 });
 
 test("historical fan-club alias follows canonical artist, mute overrides it", t => {
@@ -107,11 +108,10 @@ test("bounded recipient cursor survives restart without duplicate notices", t =>
   assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications").get().n, 7);
 });
 
-for (const mutation of ["unfollow", "city", "banned", "hidden", "cancelled", "date", "deleted", "mute", "block"]) test(`recheck ${mutation} before delivery`, t => {
+for (const mutation of ["unfollow", "banned", "hidden", "cancelled", "date", "deleted", "mute", "block"]) test(`recheck ${mutation} before delivery`, t => {
   const f = fixture(t); f.account(); f.account("owner", "Toronto", []); f.event(); f.enable(); f.plan();
   f.db.exec("INSERT INTO artist_profiles VALUES ('fixture artist','owner',0)");
   if (mutation === "unfollow") f.db.exec("UPDATE users SET favorite_artists='[]' WHERE id='fan'");
-  if (mutation === "city") f.db.exec("UPDATE users SET home_city='Vancouver, Canada' WHERE id='fan'");
   if (mutation === "banned") f.db.exec("UPDATE users SET is_banned=1 WHERE id='fan'");
   if (mutation === "hidden") f.hidden.add("tm_1");
   if (mutation === "cancelled") f.db.exec("UPDATE tour_dates SET event_status='cancelled'");
@@ -309,4 +309,18 @@ test("read and push targets reject an artist hold after inbox delivery", t => {
   assert.ok(f.alerts.readAlertTarget("fan", id));
   f.hidden.add("tm_1"); assert.equal(f.alerts.readAlertTarget("fan", id), null);
   assert.equal(f.alerts.readAlertTarget("fan", id, { forPush: true }), null);
+});
+
+test("ticket sales use home city; moving after planning cancels only the sale reminder", t => {
+  const f = fixture(t); f.account(); f.account("remote", "Vancouver, Canada"); f.account("unknown", "London"); f.event(); f.sale(START + 1000); f.plan();
+  assert.deepEqual(f.db.prepare("SELECT account_id FROM local_event_alerts WHERE kind='sale'").all().map(row => row.account_id), ["fan"]);
+  f.db.exec("UPDATE users SET home_city='Vancouver, Canada' WHERE id='fan'"); f.advance(1000);
+  assert.deepEqual(f.alerts.deliverDue(), { delivered: 3, cancelled: 1, awaitingEvidence: 0 });
+  assert.deepEqual(f.db.prepare("SELECT DISTINCT type FROM notifications").all().map(row => row.type), ["artist_tour_date"]);
+});
+
+test("unstructured event city does not silence an otherwise canonical tour announcement", t => {
+  const f = fixture(t); f.account("fan", ""); f.event("tm_1", { venue_city: null, venue_country_code: null });
+  f.sale(START + 1000); f.plan(); assert.equal(f.alerts.deliverDue().delivered, 1);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_event_alerts WHERE kind='sale'").get().n, 0);
 });

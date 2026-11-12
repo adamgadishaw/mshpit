@@ -35,7 +35,7 @@ export function createLocalPushController({ api, notifications, installationStor
         return commandSuccess(result);
       }
       // Android's channel exists before the OS permission request.
-      if (platform === "android") await notifications.setNotificationChannelAsync("local-shows", { name: "Local shows", importance: notifications.AndroidImportance.DEFAULT });
+      if (platform === "android") await notifications.setNotificationChannelAsync("local-shows", { name: "Show updates", importance: notifications.AndroidImportance.DEFAULT });
       context.assertCurrent();
       let permission = await notifications.getPermissionsAsync(); context.assertCurrent();
       if (permission.status !== "granted" && requestPermission) { permission = await notifications.requestPermissionsAsync(); context.assertCurrent(); }

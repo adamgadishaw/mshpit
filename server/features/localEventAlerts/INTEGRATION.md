@@ -1,4 +1,4 @@
-# Local show and ticket notifications: isolated implementation
+# Tour announcements and local ticket sales: isolated implementation
 
 Status: **not mounted; not launch complete**. These new modules and their synthetic
 tests are based on installed Build 12 commit
@@ -17,15 +17,18 @@ permission question is pending; no alternate channel was used to bypass it.
 - An additive seven-table schema, authenticated route factory, canonical-policy
   audience adapter, durable account/event fan-out cursors, inbox delivery and
   push outbox. None starts work on import.
-- Date alerts for a current followed/favourited artist in the account's exact
-  canonical home city. Initial catalogue scans are quiet. Copy says “New show
-  listed” because provider first-seen time is not an announcement timestamp.
+- Tour-date alerts for a current followed/favourited artist are global: a remote,
+  unknown or missing home city does not mute them. Home-city filtering applies
+  to ticket-sale alerts only, preserving Adam's clarified distinction. Existing
+  artist-wide creator and generic tour announcements remain unchanged. Initial
+  catalogue scans are quiet. Copy says “New show date listed” because provider
+  first-seen time is not an announcement timestamp.
 - Ticketmaster public-sale evidence, explicit offsets and valid dates, no
   presale/doors/status-derived times. Unknown/TBD, changed, removed, stale or
   expired evidence stops delivery. Source/event association is rechecked.
 - Account changes queue a bounded scan of future sales without replaying old
   date announcements. Follow/home-city hooks still require mounting.
-- Separate date/sale inbox and push preferences. Inbox defaults on; device push
+- Separate global tour-date/local ticket-sale inbox and push preferences. Inbox defaults on; device push
   defaults off. Existing artist-level opt-out, favourites/fan clubs, blocks,
   mutes and account visibility are evaluated through canonical identity.
 - Existing creator-calendar inbox notices are reused by exact post/event
@@ -98,31 +101,35 @@ permission question is pending; no alternate channel was used to bypass it.
 
 ## Inbox and generic-news integration still required
 
-`deliverDue` writes existing `notifications` rows with type `local_show` or
+`deliverDue` writes existing `notifications` rows with type `artist_tour_date` or
 `local_ticket_sale`; reused creator notices retain their existing type. Join the
 owning `local_event_alerts` row to add alert/event target metadata. Extend
 `server/features/notifications/notificationRoutes.js` so current public event,
-follow/home-city and author visibility apply to rows, unread counts and scoped
+follow and author visibility (plus home city for sales only) apply to rows, unread counts and scoped
 acknowledgements **before LIMIT**. Do not filter only the displayed page after
 pagination; that would leak counts and create empty pages. The current isolated
 `readAlertTarget` provides a fresh tap-time guard but is not a replacement for
 this inbox query policy. This shared SQL/read integration is not implemented.
 
 The old global artist-update scanner can also emit a generic `artist_update`
-for imported shows. It needs an exact event-aware recipient exclusion/association
+for imported shows. Preserve these global announcements. It needs an exact
+event-aware recipient exclusion/association
 in `server/features/artistUpdates/artistUpdatesService.js`. Do not mount both paths
-unchanged and claim all generic/local duplicates are solved. Creator-publication
+unchanged and claim all generic/new date duplicates are solved. Never suppress
+an artist-wide tour announcement merely because some dates are outside home city.
+Creator-publication
 deduplication is implemented; generic-news suppression is not yet wired.
 
 ## Native and UI composition still required
 
 - Keep new UI lazy. The frozen combined application had very little startup
   budget; new unused modules do not measure the eventual wired bundle cost.
-- Add settings controls, using mshpit's existing layout/components: local dates
-  and ticket sales, each with inbox and device channels. OS permission is a
+- Add settings controls, using mshpit's existing layout/components: tour dates
+  (all locations) and ticket sales (home city), each with inbox and device channels. OS permission is a
   separate explicit “Enable device notifications” action. Ambiguous/missing
-  home city should point to the existing location picker, without guessing.
-- Add `local_show`/`local_ticket_sale` to Activity's updates filter and display
+  home city should point to the existing location picker for ticket-sale alerts,
+  without blocking global tour announcements or guessing.
+- Add `artist_tour_date`/`local_ticket_sale` to Activity's updates filter and display
   their concrete artist/show data. Extend the existing deep-link/navigation
   contract to a canonical tour-date ID. No archive key, arbitrary push URL,
   attendance, or ticket-purchase claim may be substituted.
@@ -167,8 +174,8 @@ implemented or visually/device tested** in this package.
   within 24 hours when a sale is delivered, with a two-hour delivery window.
   A missing refresh can therefore suppress a reminder rather than assert a stale
   sale. Date announcements have a 24-hour delivery window.
-- City matching is exact to the existing curated city identity. Ambiguous bare
-  names and unknown free text are ineligible; this is not metropolitan-radius
+- Sale city matching is exact to the existing curated city identity. Ambiguous bare
+  names and unknown free text are ineligible for sale alerts; this is not metropolitan-radius
   matching. Canonical/provider duplicate event merging remains the catalogue's
   responsibility; delivery deduplication keys use its stable event ID.
 - Fan-out is bounded per page but has not been load-tested against production

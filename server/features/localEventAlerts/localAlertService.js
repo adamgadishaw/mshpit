@@ -31,16 +31,19 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
     const event = readPublicEvent(eventId, at);
     if (!alertEventIsCurrent(event, at) || !event.artist_key) return null;
     const city = resolveAlertEventCity(event);
-    if (!city) return null;
     const sale = db.prepare("SELECT * FROM local_event_sales WHERE event_id=?").get(eventId);
     const validSale = event.source === "ticketmaster" && !event.owner_id && sale?.provider_event_id === event.provider_event_id ? sale : null;
     return { event, city, sale: validSale, fingerprint: fingerprint(event, validSale) };
   };
-  const eligible = (accountId, current, at) => {
+  const eligible = (accountId, current, at, kind = "sale") => {
     const account = db.prepare("SELECT * FROM users WHERE id=?").get(accountId);
     if (!accountIsPublic(account, at) || !current) return false;
+    if (canNotifyArtist(accountId, current.event, at) !== true) return false;
+    // Tour announcements remain artist-wide. Home city narrows ticket-sale
+    // alerts only; a missing city must never mute an artist's tour announcement.
+    if (kind === "date") return true;
     const home = resolveAlertHomeCity(account.home_city);
-    return !!home && home.path === current.city.path && canNotifyArtist(accountId, current.event, at) === true;
+    return !!home && !!current.city && home.path === current.city.path;
   };
   const cancelAlert = (row) => {
     if (row.owns_notice && row.notification_id) db.prepare("DELETE FROM notifications WHERE id=? AND user_id=?").run(row.notification_id, row.account_id);
@@ -48,7 +51,7 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
     db.prepare("UPDATE local_push_outbox SET state='cancelled',lease_key=NULL WHERE alert_id=? AND state IN ('ready','sending','accepted')").run(row.id);
   };
   const stillValid = (alert, current, at) => !!current && current.fingerprint === alert.fingerprint
-    && current.city.path === alert.city_path && eligible(alert.account_id, current, at)
+    && (current.city?.path || "") === alert.city_path && eligible(alert.account_id, current, at, alert.kind)
     && (alert.kind !== "sale" || (current.sale?.starts_at === Number(alert.trigger_key)
       && current.sale.starts_at <= at && (current.sale.ends_at == null || current.sale.ends_at > at)));
   const freshSale = (current, at) => current?.sale && current.sale.observed_at <= at && at - current.sale.observed_at <= SALE_FRESHNESS_MS;
@@ -102,14 +105,14 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
         (id,account_id,event_id,kind,trigger_key,fingerprint,city_path,due_at,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`);
       let planned = 0;
       for (const { id: accountId } of rows) {
-        if (!eligible(accountId, current, at)) continue;
+        if (!eligible(accountId, current, at, "date")) continue;
         const pref = preferences(accountId);
         if (observation.announce_until > at && (pref.datesInbox || pref.datesPush)) {
-          planned += Number(insert.run(randomUUID(), accountId, eventId, "date", "first", current.fingerprint, current.city.path,
+          planned += Number(insert.run(randomUUID(), accountId, eventId, "date", "first", current.fingerprint, current.city?.path || "",
             at, observation.announce_until, at).changes);
         }
         const sale = current.sale;
-        if ((pref.salesInbox || pref.salesPush) && freshSale(current, at) && sale.starts_at != null
+        if ((pref.salesInbox || pref.salesPush) && eligible(accountId, current, at) && freshSale(current, at) && sale.starts_at != null
           && sale.starts_at + SALE_DELIVERY_WINDOW_MS > at && (sale.ends_at == null || sale.ends_at > at)) {
           planned += Number(insert.run(randomUUID(), accountId, eventId, "sale", String(sale.starts_at), current.fingerprint, current.city.path,
             sale.starts_at, Math.min(sale.starts_at + SALE_DELIVERY_WINDOW_MS, sale.ends_at ?? Infinity), at).changes);
@@ -141,8 +144,8 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
           notificationId = existing?.id || `local_${alert.id}`;
           if (!existing) {
             db.prepare(`INSERT INTO notifications(id,user_id,actor_id,type,artist,text,created_at) VALUES (?,?,NULL,?,?,?,?)`)
-              .run(notificationId, alert.account_id, alert.kind === "date" ? "local_show" : "local_ticket_sale", current.event.artist,
-                alert.kind === "date" ? `New show listed in ${current.city.city}.` : `Tickets are on sale in ${current.city.city}.`, at);
+              .run(notificationId, alert.account_id, alert.kind === "date" ? "artist_tour_date" : "local_ticket_sale", current.event.artist,
+                alert.kind === "date" ? "New show date listed." : `Tickets are on sale in ${current.city.city}.`, at);
             ownsNotice = true;
           }
         }

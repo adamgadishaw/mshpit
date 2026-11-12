@@ -44,7 +44,7 @@ export function createLocalPushDelivery({ db, alerts, transport, enabled = false
       if (!claimed) continue;
       let result;
       try {
-        result = await transport.send({ to: claimed.device.token, title: "mshpit", body: "You have a new local show update.",
+        result = await transport.send({ to: claimed.device.token, title: "mshpit", body: "You have a new show update.",
           data: { kind: "local_event_alert", alertId: claimed.alert_id, installationId: claimed.installation_id, generation: claimed.generation },
           channelId: "local-shows", ttl: 3600 });
       } catch (error) {
