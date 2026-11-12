@@ -411,7 +411,7 @@ export function createArtistRecommendationService(database) {
               key: candidate.norm,
               name: candidate.name,
               publicSlug: cleanText(candidate.public_slug, 200),
-              ...discoverArtistPhotoFields({ ...photoRows.get(candidate.norm), photo: safeHttpsUrl(candidate.photo) }),
+              ...discoverArtistPhotoFields({ ...photoRows.get(candidate.norm), photo: safeHttpsUrl(candidate.photo) }, { database, viewer }),
               genre: candidate.genre || null,
               country: cleanText(candidate.country, 80),
             },

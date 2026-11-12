@@ -13,11 +13,13 @@ const require = createRequire(import.meta.url);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const shots = join(root, ".tmp", "review-entrypoints-browser");
 mkdirSync(shots, { recursive: true });
+const sharp = require("sharp");
+const layoutImages = Object.fromEntries(await Promise.all([["portrait", 240, 1000], ["landscape", 1000, 240]].map(async ([name, width, height]) => [name, await sharp({ create: { width, height, channels: 3, background: name === "portrait" ? "#e88b46" : "#5898b0" } }).png().toBuffer()])));
 const image = readFileSync(join(root, "public/images/news/live-music-context.jpg"));
 let video;
 const archiveKey = archiveShowKey({ artistIdentity: "fixture-artist", venueIdentity: "Fixture Venue", date: "2026-10-01" });
 const path = `/concert/${encodeURIComponent(archiveKey)}`;
-const review = { id: "concert-fixture-review", archiveShowKey: archiveKey, version: 2, kind: "review", userId: "public-fixture-author",
+const baseReview = { id: "concert-fixture-review", archiveShowKey: archiveKey, version: 2, kind: "review", userId: "public-fixture-author",
   user: { id: "public-fixture-author", name: "Alex Fixture", handle: "alexfixture", role: "fan" },
   artist: "Fixture Artist", artistKey: "fixture-artist", venue: "Fixture Venue", city: "Toronto",
   date: "2026-10-01", overall: 4.7, band: 4.1, room: 3.6, review: "FULL REVIEW START. " + "A vivid live memory with independent scores. ".repeat(720) + " FULL REVIEW END.",
@@ -28,6 +30,7 @@ const review = { id: "concert-fixture-review", archiveShowKey: archiveKey, versi
     { id: "clip", uri: "https://concert.fixture.invalid/clip.webm", kind: "video", posterUrl: "https://concert.fixture.invalid/poster.jpg", altText: "Encore video" },
     { id: "last", uri: "https://concert.fixture.invalid/last.jpg", kind: "image", altText: "Final crowd photo" },
   ], at: 1790812800000 };
+const review = baseReview;
 const concert = { id: archiveKey, kind: "concert", path, archiveShowKey: archiveKey,
   artist: "Fixture Artist", artistKey: "fixture-artist", venue: "Fixture Venue", city: "Toronto",
   date: "2026-10-01", overall: 4.3, ratingCount: 17, reviewCount: 2,
@@ -57,8 +60,13 @@ const ranked = { key: "show:fixture-artist:provider%3Aticketmaster%3Avenue-7:202
   artistKey: review.artistKey, venue: review.venue, date: review.date, city: "Toronto, Canada", place: "Toronto, Canada",
   avgRating: 4.3, ratingCount: 17, reviewCount: 2, source: "ticketmaster", providerVenueId: "venue-7" };
 const archiveShow = { ...ranked, key: archiveKey, tourKey: "tour.fixture" };
-const archive = { artist: navigationArtist, shows: [archiveShow], topShows: [archiveShow], tours: [{ key: "tour.fixture", name: "Fixture Tour", showCount: 1, reviewCount: 1, ratingCount: 17, avgRating: 4.3 }], upcoming: [], totals: {}, truncated: false };
+const archiveFixture = { artist: navigationArtist, shows: [archiveShow], topShows: [archiveShow], tours: [{ key: "tour.fixture", name: "Fixture Tour", showCount: 1, reviewCount: 1, ratingCount: 17, avgRating: 4.3 }], upcoming: [], totals: {}, truncated: false };
 async function scenario(browser, origin, width, mode) {
+  const layout = mode.startsWith("layout-") ? mode.slice(7) : null;
+  const review = layout ? { ...baseReview, photosPublic: layout !== "hidden", photos: layout === "missing" ? [] : baseReview.photos,
+    media: layout === "missing" ? [] : baseReview.media } : baseReview;
+  const cover = layout && !["missing", "hidden"].includes(layout) ? { ...concert.cover, uri: review.photos[0], userId: review.userId } : null;
+  const archive = layout ? { ...archiveFixture, shows: [{ ...archiveShow, cover }], topShows: [{ ...archiveShow, cover }] } : archiveFixture;
   const name = `${mode}-${width}`, before = process.env.PIT_EXPECT_BASELINE === "1";
   const context = await browser.newContext({ viewport: { width, height: 950 }, serviceWorkers: "block" });
   await context.addInitScript(user => { localStorage.setItem("pit.session", JSON.stringify(user)); localStorage.setItem("pit.users", JSON.stringify([user])); }, navigationUser);
@@ -69,13 +77,13 @@ async function scenario(browser, origin, width, mode) {
     const request = route.request(), url = new URL(request.url());
     const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
     if (url.hostname === "concert.fixture.invalid" && url.pathname.endsWith(".webm")) return route.fulfill({ contentType: "video/webm", body: video });
-    if (["wsrv.nl", "concert.fixture.invalid"].includes(url.hostname)) return route.fulfill({ contentType: "image/jpeg", body: image });
+    if (["wsrv.nl", "concert.fixture.invalid"].includes(url.hostname)) return route.fulfill({ contentType: layoutImages[layout] ? "image/png" : "image/jpeg", body: layoutImages[layout] || image });
     if (url.origin !== origin) { errors.push(`Blocked external ${url.origin}`); return route.abort(); }
     if (!url.pathname.startsWith("/api/")) return route.continue();
     calls.push(url.pathname + url.search);
     if (url.pathname === "/api/page-head") return json({ path: url.searchParams.get("path"), head: "<title>Review entry fixtures</title>" });
     if (url.pathname === "/api/discover/overview") return json({ artists: [], venues: [], events: [], genres: [], countries: [], topRatedShows: [{ ...ranked, ...(mode === "legacy" ? { artistKey: null } : {}) }] });
-    if (url.pathname === "/api/artists/reviews") return json({ reviews: [{ ...review, photosPublic: true }] });
+    if (url.pathname === "/api/artists/reviews") return json({ reviews: [{ ...review, photosPublic: review.photosPublic !== false }] });
     if (url.pathname === "/api/artists/seen") return json({ count: 3, last: "2026-10-01" });
     if (url.pathname === "/api/artists/archive") return json({ archive });
     if (url.pathname === "/api/artists/archive/reviews") {
@@ -92,7 +100,7 @@ async function scenario(browser, origin, width, mode) {
     return json(fixtureApiResponse(url.pathname, { member: true, method: request.method(), resolvedPath: url.searchParams.get("path") || "/artist/fixture-artist" }));
   });
   try {
-    const artistMode = ["artist", "private", "artist-event", "tour"].includes(mode);
+    const artistMode = !!layout || ["artist", "private", "artist-event", "tour"].includes(mode);
     await page.goto(origin + (artistMode ? "/artist/fixture-artist" : "/discover"), { waitUntil: "domcontentloaded" });
     let opener;
     if (artistMode) {
@@ -132,6 +140,30 @@ async function scenario(browser, origin, width, mode) {
       }
       opener = page.getByRole("button", { name: "Open Alex Fixture's review and comments", exact: true });
       await page.getByText("4.3", { exact: true }).waitFor();
+    }
+    if (layout) {
+      const eventLink = page.getByRole("link", { name: "View the exact Fixture Artist show reviewed by Alex Fixture", exact: true });
+      const media = page.getByRole("button", { name: "Open media from Alex Fixture's review of Fixture Artist", exact: true });
+      const hasMedia = !["missing", "hidden"].includes(layout);
+      assert.equal(await media.count(), hasMedia ? 1 : 0);
+      await eventLink.scrollIntoViewIfNeeded();
+      const geometry = await eventLink.evaluate(node => {
+        let card = node.parentElement;
+        while (card && !card.querySelector('[aria-label="Open Alex Fixture\'s full review of Fixture Artist"]')) card = card.parentElement;
+        const bounds = card.getBoundingClientRect(), button = node.getBoundingClientRect();
+        return { card: { width: bounds.width, height: bounds.height }, clipped: button.right > bounds.right + 1 || button.left < bounds.left - 1,
+          horizontalOverflow: card.scrollWidth > card.clientWidth + 1 };
+      });
+      assert.ok(geometry.card.height < 650, JSON.stringify(geometry));
+      assert.equal(geometry.clipped, false); assert.equal(geometry.horizontalOverflow, false);
+      if (hasMedia) {
+        const bounds = await media.boundingBox(); assert.equal(bounds.width, 88); assert.equal(bounds.height, 88);
+        assert.ok(await media.locator('img').evaluate(img => img.complete && img.naturalWidth > 0));
+        await media.click(); await page.getByLabel("Media 1 of 3", { exact: true }).waitFor();
+        await page.keyboard.press("Escape"); await opener.waitFor();
+      }
+      await eventLink.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(shots, `${name}-card.png`) });
     }
     await opener.waitFor(); await opener.focus();
     await opener.evaluate(node => {
@@ -188,6 +220,32 @@ async function scenario(browser, origin, width, mode) {
       await page.getByRole("dialog").getByText(/FULL REVIEW START[\s\S]*FULL REVIEW END\./).waitFor();
       assert.equal(new URL(page.url()).pathname, `/post/${review.id}`);
     }
+    if (layout) {
+      await page.getByLabel("Shows artist page section", { exact: true }).click();
+      await page.getByRole("button", { name: "Open Fixture Artist live archive", exact: true }).click();
+      const row = page.getByRole("button", { name: /^Number 1, Fixture Artist/ }); await row.waitFor();
+      const bounds = await row.evaluate(node => {
+        const rect = node.parentElement.getBoundingClientRect();
+        return { width: rect.width, height: rect.height, overflow: node.parentElement.scrollWidth > node.parentElement.clientWidth + 1 };
+      });
+      assert.ok(bounds.height < 400, JSON.stringify(bounds)); assert.equal(bounds.overflow, false);
+      const photo = page.getByRole("button", { name: "Open fan media from Fixture Venue", exact: true }).first();
+      const hasPhoto = !["missing", "hidden"].includes(layout);
+      assert.equal(await photo.count(), hasPhoto ? 1 : 0);
+      if (hasPhoto) {
+        await photo.click(); await page.getByLabel("Media 1 of 1", { exact: true }).waitFor();
+        await page.keyboard.press("Escape"); await row.waitFor();
+      }
+      if (hasPhoto) {
+        await photo.scrollIntoViewIfNeeded();
+        await page.waitForFunction(() => [...document.querySelectorAll('[aria-label="Open fan media from Fixture Venue"] img')].some(img => img.complete && img.naturalWidth > 0));
+      }
+      await row.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: join(shots, `${name}-archive.png`) });
+      await row.click(); await page.waitForURL(origin + path); await row.waitFor({ state: "hidden" });
+      await page.getByRole("button", { name: "Open Alex Fixture\'s review and comments", exact: true }).waitFor();
+      await page.goBack(); await row.waitFor();
+    }
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ name, passed: true, canonicalReviewRequest: calls.filter(x => x.startsWith("/api/artists/archive/reviews")) }));
   } catch (error) {
@@ -212,6 +270,6 @@ try {
     recording.stop(); return await result;
   }));
   await recorder.close();
-  const modes = process.env.PIT_EXPECT_BASELINE === "1" ? ["artist", "ranked"] : ["artist", "ranked", "legacy", "private", "artist-event", "tour"];
-  for (const width of [390, 1280]) for (const mode of modes) if (`${mode}-${width}`.includes(process.argv[2] || "")) await scenario(browser, origin, width, mode);
+  const modes = process.env.PIT_LAYOUT_CASES === "1" ? ["layout-portrait", "layout-landscape", "layout-missing", "layout-hidden"] : process.env.PIT_EXPECT_BASELINE === "1" ? ["artist", "ranked"] : ["artist", "ranked", "legacy", "private", "artist-event", "tour"];
+  for (const width of process.env.PIT_LAYOUT_CASES === "1" ? [320, 375, 1280] : [390, 1280]) for (const mode of modes) if (`${mode}-${width}`.includes(process.argv[2] || "")) await scenario(browser, origin, width, mode);
 } finally { await browser?.close(); await new Promise(done => server.close(done)); }

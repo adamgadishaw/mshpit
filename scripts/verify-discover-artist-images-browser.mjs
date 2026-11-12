@@ -82,9 +82,10 @@ try {
       await page.screenshot({ path: resolve(out, `${name}-profile.png`) });
       // A fresh catalogue snapshot with missing or invalid attribution must not
       // retain the old image. A bad URI falls back without inventing a photo.
-      for (const mode of ['missing', 'invalid', 'broken', 'replacement', 'generic']) {
+      for (const mode of ['missing', 'invalid', 'broken', 'replacement', 'generic', 'curated']) {
         row = mode === 'missing' ? { name: 'Drake', key: 'drake', publicSlug: 'drake', genre: 'Hip-Hop', photo: null }
           : mode === 'invalid' ? { ...original, photoCredit: 'Unverified' }
+          : mode === 'curated' ? { name: 'Drake', key: 'drake', publicSlug: 'drake', genre: 'Hip-Hop', photo: 'https://profile-art.fixture.invalid/verified-avatar.jpg' }
           : mode === 'generic' ? { ...original, photo: 'https://cdn-images.dzcdn.net/images/artist/fixture.jpg' }
           : { ...original, spotifyPhoto: `https://i.scdn.co/image/${mode === 'broken' ? 'brokenFixture' : 'replacementFixture'}` };
         await page.goto(origin + '/artists', { waitUntil: 'domcontentloaded' }); await cards().first().waitFor();
@@ -94,7 +95,16 @@ try {
         } else {
           await page.waitForFunction(() => [...document.querySelectorAll('a[aria-label="Open Drake, Hip-Hop"] img')].every(img => img.complete && img.naturalWidth === 300));
           assert.ok(await cards().first().locator('img').count());
-          assert.equal((await cards().first().locator('img').getAttribute('src')).includes(mode === 'generic' ? 'wsrv.nl' : 'replacementFixture'), true);
+          assert.equal((await cards().first().locator('img').getAttribute('src')).includes(['generic', 'curated'].includes(mode) ? 'wsrv.nl' : 'replacementFixture'), true);
+        }
+        if (mode === 'curated') {
+          assert.equal(await credit().count(), 0, 'curated artwork is not mislabeled Spotify');
+          for (const card of await cards().all()) assert.ok((await card.locator('img').getAttribute('src')).includes(encodeURIComponent(row.photo)));
+          if (member) {
+            const recommendation = page.getByRole('button', { name: 'Open Drake. Based on your saved Hip-Hop taste.', exact: true });
+            assert.ok((await recommendation.locator('img').getAttribute('src')).includes(encodeURIComponent(row.photo)));
+          }
+          await page.screenshot({ path: resolve(out, `${name}-curated-discover.png`) });
         }
       }
       assert.deepEqual(errors, []);

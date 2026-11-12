@@ -248,19 +248,34 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
           </View>
         </View>
 
-        <ExpandableText
-          text={reviewBody}
-          renderText={({ text }) => <PublicPressableLink href={postPath(review.id)}
-            onNavigate={guard(() => onOpenPost?.(review))}
-            accessibilityLabel={`Open ${author}'s full review of ${artistName}`}
-            accessibilityHint="Opens the complete review, ratings and gallery">
-            <Text style={styles.topReviewExcerpt}>{text}</Text>
-          </PublicPressableLink>}
-          style={styles.topReviewExcerpt}
-          toggleStyle={styles.topReviewExcerptToggle}
-          moreAccessibilityLabel={`Read the full review from ${author}`}
-          lessAccessibilityLabel={`Show a shorter review from ${author}`}
-        />
+        <View style={styles.topReviewBody}>
+          <ExpandableText
+            containerStyle={styles.topReviewExcerptWrap}
+            text={reviewBody}
+            renderText={({ text }) => <PublicPressableLink href={postPath(review.id)}
+              onNavigate={guard(() => onOpenPost?.(review))}
+              accessibilityLabel={`Open ${author}'s full review of ${artistName}`}
+              accessibilityHint="Opens the complete review, ratings and gallery">
+              <Text style={styles.topReviewExcerpt}>{text}</Text>
+            </PublicPressableLink>}
+            style={styles.topReviewExcerpt}
+            toggleStyle={styles.topReviewExcerptToggle}
+            moreAccessibilityLabel={`Read the full review from ${author}`}
+            lessAccessibilityLabel={`Show a shorter review from ${author}`}
+          />
+          {thumbnail ? (
+            <SmartImage
+              uri={thumbnail.uri}
+              posterUri={mediaPosterUri(thumbnail)}
+              mediaKind={mediaDisplayKind(thumbnail)}
+              style={styles.topReviewMedia}
+              contain={true}
+              previewWidth={320}
+              accessibilityLabel={`Open media from ${author}'s review of ${artistName}`}
+              onPress={guard(() => onOpenPhotos?.(publicMedia, 0, review.id))}
+            />
+          ) : null}
+        </View>
 
         <View style={styles.topReviewFooter}>
           {!memorialMode ? (
@@ -273,7 +288,7 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
             <Icon name="heart" size={12} color={colors.magenta} />
             <Text style={styles.topReviewLikes}>{compactCount(likes)}</Text>
           </View>
-          <Text style={styles.topReviewMeta} numberOfLines={1}>{review.venue || "Live show"} · {date}</Text>
+          <Text style={styles.topReviewMeta} numberOfLines={2}>{review.venue || "Live show"} · {date}</Text>
         </View>
 
         <View style={styles.topReviewActions}>
@@ -282,6 +297,7 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
             onNavigate={guard(() => onOpenPost?.(review))}
             style={({ pressed, focused }) => [
               styles.topReviewAction,
+              styles.topReviewActionSlot,
               styles.topReviewPostAction,
               pressed && styles.topReviewActionPressed,
               focused && focusRing,
@@ -297,6 +313,7 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
             <Suspense fallback={<Text>View show</Text>}><ReviewEventLink
               review={review}
               onOpenShow={onOpenShow}
+              containerStyle={styles.topReviewActionSlot}
               style={({ pressed, focused }) => [
                 styles.topReviewAction,
                 pressed && styles.topReviewActionPressed,
@@ -311,19 +328,6 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
           ) : null}
         </View>
       </View>
-
-      {thumbnail ? (
-        <SmartImage
-          uri={thumbnail.uri}
-          posterUri={mediaPosterUri(thumbnail)}
-          mediaKind={mediaDisplayKind(thumbnail)}
-          style={styles.topReviewMedia}
-          contain={false}
-          previewWidth={320}
-          accessibilityLabel={`Open media from ${author}'s review of ${artistName}`}
-          onPress={guard(() => onOpenPhotos?.(publicMedia, 0, review.id))}
-        />
-      ) : null}
     </View>
   );
 }
@@ -2206,7 +2210,7 @@ const styles = StyleSheet.create({
   topReviewsList: { gap: 10, marginTop: 11 },
   topReviewCard: { minHeight: 150, flexDirection: "row", overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, ...shadow.card },
   topReviewCardLead: { borderColor: colors.amber },
-  topReviewMain: { flex: 1, minHeight: 150, gap: 5, padding: 10 },
+  topReviewMain: { flex: 1, minWidth: 0, minHeight: 150, gap: 5, padding: 10 },
   topReviewActionPressed: { opacity: 0.78, backgroundColor: colors.surfaceAlt },
   topReviewHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
   topReviewAuthorAction: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 4, borderRadius: radius.sm },
@@ -2217,18 +2221,21 @@ const styles = StyleSheet.create({
   topReviewRankLead: { borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.09)" },
   topReviewRankText: { color: colors.textDim, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 0.8 },
   topReviewRankTextLead: { color: colors.gold },
+  topReviewBody: { flexDirection: "row", alignItems: "flex-start", gap: 10 },
+  topReviewExcerptWrap: { flex: 1, minWidth: 0 },
   topReviewExcerpt: { color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: "600" },
   topReviewExcerptToggle: { marginTop: -2 },
-  topReviewFooter: { minHeight: 24, flexDirection: "row", alignItems: "center", gap: 9 },
+  topReviewFooter: { minHeight: 24, flexDirection: "row", flexWrap: "wrap", alignItems: "center", columnGap: 9, rowGap: 4 },
   topReviewSignal: { flexDirection: "row", alignItems: "center", gap: 3 },
   topReviewScore: { color: colors.gold, fontFamily: mono, fontSize: 11.5, fontWeight: "900", fontVariant: ["tabular-nums"] },
   topReviewLikes: { color: colors.textDim, fontFamily: mono, fontSize: 11, fontWeight: "800", fontVariant: ["tabular-nums"] },
-  topReviewMeta: { flex: 1, color: colors.textFaint, fontSize: 10.5 },
-  topReviewActions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 2 },
-  topReviewAction: { flexGrow: 1, minWidth: 92, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, paddingHorizontal: 9, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  topReviewMeta: { width: "100%", color: colors.textFaint, fontSize: 10.5, lineHeight: 15 },
+  topReviewActions: { flexDirection: "row", flexWrap: "wrap", alignItems: "stretch", gap: 6, marginTop: 2 },
+  topReviewActionSlot: { flexBasis: 120, flexGrow: 1, minWidth: 120 },
+  topReviewAction: { minHeight: 44, paddingVertical: 10, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, paddingHorizontal: 9, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
   topReviewPostAction: { borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.07)" },
-  topReviewActionText: { color: colors.textDim, fontSize: 10.5, fontWeight: "900" },
-  topReviewMedia: { width: 108, minHeight: 150, borderLeftWidth: 1, borderLeftColor: colors.lineSoft },
+  topReviewActionText: { flexShrink: 1, textAlign: "center", color: colors.textDim, fontSize: 10.5, fontWeight: "900" },
+  topReviewMedia: { width: 88, height: 88, flexShrink: 0, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft },
   galleryRow: { gap: 10, paddingRight: 16 },
   galleryTile: { width: 140, height: 140, borderRadius: 10 },
   fanGrid: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10 },

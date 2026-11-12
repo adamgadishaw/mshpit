@@ -50,6 +50,21 @@ test("iOS venue sections wrap and scaled counts have no fixed height", () => {
   assert.ok(s.guideActionBody.fontSize >= 15);
 });
 
+test("native review and Lounge controls share a shrink-safe width basis and grow for scaled labels", () => {
+  const { styles: s } = styleFixture("show", "ios");
+  for (const name of ["reviewCtaInline", "loungeBtn"]) {
+    assert.equal(s[name].flex, 1);
+    assert.equal(s[name].flexBasis, 140);
+    assert.equal(s[name].minWidth, 140);
+    assert.ok(s[name].minHeight >= 44);
+    assert.equal(s[name].height, undefined);
+    assert.equal(s[name].paddingHorizontal, 12);
+  }
+  assert.equal(s.socialRow.flexWrap, "wrap");
+  assert.equal(s.reviewCtaTxt.flexShrink, 1);
+  assert.equal(s.loungeTxt.flexShrink, 1);
+});
+
 test("live text-size changes stack iOS columns without changing other platforms", () => {
   for (const threshold of [720, 760]) {
     for (const scale of [1, 2, 3.1, 1]) {

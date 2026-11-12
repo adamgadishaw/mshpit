@@ -86,6 +86,21 @@ test("iOS artist and spotlight rails preserve original-only art, its credit and 
     assert.equal(nodes(renderedImage).find(node => node.type === 'Image').props.contentFit, 'contain');
   }
 });
+
+test("iOS artist and spotlight rails render the verified profile avatar returned by Discover", () => {
+  const c = fixture(), artist = { name: "Drake", key: "drake", publicSlug: "drake", photo: "https://profile-art.fixture.invalid/avatar.jpg" };
+  for (const kind of ["rail", "spotlight"]) {
+    let selected;
+    const tree = kind === "rail" ? c.render(c.exports.ArtistRail, { rows: [artist], onOpen: row => { selected = row; } })
+      : c.render(c.exports.FeaturedRail, { artists: [artist], width: 320, onOpenArtist: row => { selected = row; } });
+    const image = named(tree, "BrowseArtwork");
+    assert.equal(image.props.uri, artist.photo);
+    const rendered = c.render(c.exports.BrowseArtwork, image.props);
+    assert.equal(nodes(rendered).find(node => node.type === "Image").props.source.uri, `proxy:${artist.photo}`);
+    nodes(tree).find(node => node.props.accessibilityRole === "button").props.onPress();
+    assert.equal(selected, artist);
+  }
+});
 const props = (overrides = {}) => ({ programme: "shows", region: "Worldwide", countries: [{ country: "Worldwide" }, { country: "Canada" }],
   chart: { rows: [{ name: "Real Artist", genre: "rock", photo: "file://artist" }] }, overviewStatus: "ready", genres: [{ genre: "rock", count: 2 }],
   selectedGenre: "rock", genreRows: [], genreStatus: "ready", query: "", slides: [], events: [], rangeEvents: [],

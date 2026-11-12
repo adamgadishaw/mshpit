@@ -71,7 +71,7 @@ const overview = (ids = ["event-one"], hasMore = true) => ({ artist: { name: "Fi
 // reconcile together. Only native hosts, Store data/commands, assets and API IO
 // are mocked. A synthetic immutable owner drives real context/hook lifecycle
 // edges. This proves retained instances/closures, not Root wiring or frame rate.
-function fixture({ strict = false, managed = true, initialSection, returnState = {}, resourceOnly = false, foreignEditor = false, topRated = false, tour = false } = {}) {
+function fixture({ strict = false, managed = true, initialSection, returnState = {}, resourceOnly = false, foreignEditor = false, topRated = false, tour = false, archiveScreen = false, width = 393, fontScale = 1 } = {}) {
   const calls = { reads: [], mutations: [], receipts: [], actions: [], speech: [], privacyInvalidations: [], focus: [], blur: [], scroll: [], media: [], saves: [], animations: [] };
   const renderer = createRenderer(calls), modules = new Map(), timers = new Map(), listeners = new Map(), blocks = new Set();
   let account = "account-A", epoch = 0, commandEpoch = 0, admitted = true, visible = true, suspended = false, latestResources;
@@ -103,8 +103,8 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
     FlatList: props => React.createElement("FlatList", props, props.data.map(item => React.createElement(React.Fragment, { key: item.key }, props.renderItem({ item }))), props.ListFooterComponent),
     RefreshControl: "RefreshControl", ActivityIndicator: "ActivityIndicator", KeyboardAvoidingView: "KeyboardAvoidingView",
     Platform: { OS: "ios", select: value => value.ios ?? value.native ?? value.default }, PixelRatio: { get: () => 2 },
-    StyleSheet: { create: value => value, flatten: value => value, absoluteFill: {}, absoluteFillObject: {}, hairlineWidth: 1 },
-    Dimensions: { get: () => ({ width: 393, height: 852 }) }, useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1 }),
+    StyleSheet: { create: value => value, flatten: value => value, absoluteFill: {}, absoluteFillObject: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }, hairlineWidth: 1 },
+    Dimensions: { get: () => ({ width, height: 852 }) }, useWindowDimensions: () => ({ width, height: 852, fontScale }),
     Animated: { Value: NativeValue, View: "AnimatedView", timing: animation, spring: animation, sequence: animation, parallel: animation, loop: animation, createAnimatedComponent: component => component },
     Easing: { linear: noop, out: value => value, quad: noop, cubic: noop },
     Alert: { alert: (...args) => calls.actions.push(["alert", ...args]) }, Linking: { openURL: (...args) => { calls.actions.push(["link", ...args]); return Promise.resolve(); } },
@@ -195,7 +195,7 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
   const newPresentation = () => { const generation = ++epoch; const current = () => admitted && visible && generation === epoch;
     return commandPresentation(current, current); };
   let presentation = newPresentation();
-  const Screen = load(tour ? "src/screens/TourArchiveScreen.jsx" : topRated ? "src/screens/TopRatedScreen.jsx" : "src/screens/ArtistScreen.ios.jsx").default;
+  const Screen = load(archiveScreen ? "src/screens/ArtistArchiveScreen.jsx" : tour ? "src/screens/TourArchiveScreen.jsx" : topRated ? "src/screens/TopRatedScreen.jsx" : "src/screens/ArtistScreen.ios.jsx").default;
   const ResourceProbe = () => {
     const options = { accountId: account, artistKey: "fixture-artist", name: "Fixture Artist" };
     if (resourceOnly === "eventReviews") {
@@ -947,6 +947,75 @@ test("Artist retained review media and server-gallery items project removed URIs
     assert.equal(media(), undefined); assert.equal(f.text().includes("Photos by"), false);
   } finally { f.close(); }
 });
+
+const flatStyle = value => Object.assign({}, ...[value].flat(Infinity).filter(Boolean));
+for (const width of [320, 393]) for (const shape of ["portrait", "landscape", "missing", "hidden"]) {
+  test(`native Top Take ${shape} at ${width} retains bounded media, full-width actions and safe navigation`, async () => {
+    const f = fixture({ width, fontScale: 2 });
+    const uri = `https://images.example/${shape}.jpg`;
+    const item = { uri, kind: "image", width: shape === "portrait" ? 300 : 1600, height: shape === "portrait" ? 1600 : 300 };
+    const row = { ...review, venue: "A particularly long venue name with detailed location information", photosPublic: shape !== "hidden",
+      photos: shape === "missing" ? [] : [uri], media: shape === "missing" ? [] : [item] };
+    f.defaults.reviews = [row];
+    try {
+      await f.settle();
+      const label = "Open media from Fixture Fan's review of Fixture Artist";
+      const media = f.find(label);
+      assert.equal(!!media, !["missing", "hidden"].includes(shape));
+      if (media) {
+        const style = flatStyle(media.props.style);
+        assert.equal(style.width, 88); assert.equal(style.height, 88);
+        const image = walk(media).find(node => node.type === "ExpoImage");
+        assert.equal(image.props.contentFit, "contain", "both portrait and landscape previews retain the full image");
+        f.press(label);
+        assert.equal(f.calls.actions.at(-1)[0], "onOpenPhotos");
+        assert.equal(f.calls.actions.at(-1)[1][0].uri, uri);
+      }
+      const action = f.find("View the exact Fixture Artist show reviewed by Fixture Fan");
+      assert.ok(action);
+      const slot = f.all().find(node => node.children?.includes(action));
+      assert.equal(flatStyle(slot.props.style).flexBasis, 120, "the actual outer link wrapper owns the row slot");
+      assert.equal(flatStyle(slot.props.style).flexGrow, 1);
+      const open = f.event("Open Fixture Fan's full review of Fixture Artist");
+      f.act(open); assert.deepEqual(f.calls.actions.at(-1), ["onOpenPost", row]);
+      f.cover(); const count = f.calls.actions.length; f.act(open);
+      assert.equal(f.calls.actions.length, count);
+      f.uncover(); await f.settle();
+      f.press("Open Fixture Fan's full review of Fixture Artist");
+      assert.equal(f.calls.actions.length, count + 1);
+      f.account("account-B"); f.act(open);
+      assert.equal(f.calls.actions.length, count + 1, "old-account action stays retired");
+    } finally { f.close(); }
+  });
+}
+
+for (const shape of ["portrait", "landscape", "missing", "hidden"]) {
+  test(`native archive ${shape} cover does not participate in row height calculation`, async () => {
+    const f = fixture({ archiveScreen: true, width: 320, fontScale: 2 });
+    const cover = ["missing", "hidden"].includes(shape) ? null : {
+      uri: `https://images.example/archive-${shape}.jpg`, width: shape === "portrait" ? 300 : 1600,
+      height: shape === "portrait" ? 1600 : 300, by: "Fixture Fan", userId: review.userId, postId: review.id,
+    };
+    const row = { ...rankedRows[0], cover, reviewCount: 2, mediaCount: cover ? 1 : 0 };
+    f.defaults.archive = { ...rankedArchive, topShows: [row], shows: [row], totals: {} };
+    try {
+      await f.settle();
+      const media = f.find("Open fan media from Fixture Venue");
+      assert.equal(!!media, !!cover);
+      if (media) {
+        const style = flatStyle(media.props.style);
+        assert.equal(style.position, "absolute");
+        assert.equal(style.height, undefined, "no percentage height against an indefinite FlatList row");
+        assert.equal(style.top, 0); assert.equal(style.bottom, 0);
+        f.act(media.props.onPress);
+        assert.equal(f.calls.actions.at(-1)[0], "onOpenPhotos");
+        assert.equal(f.calls.actions.at(-1)[1][0].uri, cover.uri);
+      }
+      f.press(rankedLabel(1));
+      assert.equal(f.calls.actions.at(-1)[0], "onOpenShow");
+    } finally { f.close(); }
+  });
+}
 
 test("Artist settled private review snapshot is withdrawn synchronously on privacy revision and fresh reload works", async () => {
   const f = fixture({ resourceOnly: true });

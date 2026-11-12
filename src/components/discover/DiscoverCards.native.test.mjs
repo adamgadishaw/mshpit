@@ -98,6 +98,17 @@ test("personalized recommendation artwork uses a contained original and recovers
   tree = c.render(c.exports.ArtistPhoto, { artist: { ...row, spotifyPhoto: 'https://i.scdn.co/image/replacement' } });
   assert.equal(nodes(tree).find(node => node.type === 'Image').props.source.uri, 'https://i.scdn.co/image/replacement');
 });
+
+test("native Discover and recommendation cards render a server-verified profile avatar without inventing Spotify credit", () => {
+  const row = { name: "Drake", key: "drake", photo: "https://profile-art.fixture.invalid/verified-avatar.jpg" };
+  const card = component("./DiscoverArtistCard.jsx", { extra: "\nexport { ArtistPhoto };" });
+  const tree = card.render(card.exports.ArtistPhoto, { row, size: 150 });
+  assert.equal(nodes(tree).find(node => node.type === "Image").props.source.uri, row.photo);
+  const credit = component("./DiscoverArtistPhotoCredit.jsx");
+  assert.equal(credit.render(credit.exports.default, { artist: row }), null);
+  const rail = component('../../features/artistRecommendations/ArtistRecommendationsRail.jsx', { extra: '\nexport { ArtistPhoto };' });
+  assert.equal(nodes(rail.render(rail.exports.ArtistPhoto, { artist: row })).find(node => node.type === "SmartImage").props.uri, row.photo);
+});
 test("festival artwork failure preserves backdrop, long title and the original edition destination",()=>{
   const c=component("../../features/festivals/FestivalCard.jsx",{fontScale:1.5}),edition={id:"f1",name:title,startDate:"2026-11-02",endDate:"2026-11-03",imageUrl:"file://one",headliners:["One","Two"]};let selected;const props={edition,onOpen:e=>selected=e};let tree=c.render(c.exports.default,props);assert.ok(nodes(tree).some(n=>n.type==="FestivalBackdrop"));assert.equal(nodes(tree).find(n=>n.type==="Text"&&n.props.children===title).props.numberOfLines,undefined);tree.props.onPress();assert.equal(selected,edition);nodes(tree).find(n=>n.type==="Image").props.onError();tree=c.render(c.exports.default,props);assert.equal(nodes(tree).some(n=>n.type==="Image"),false);assert.ok(nodes(tree).some(n=>n.type==="FestivalBackdrop"));
 });

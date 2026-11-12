@@ -9,6 +9,7 @@ import { eligiblePopularityArtists } from "./artistPopularityEligibility.js";
 import { createEventCoverageService } from "./features/discovery/eventCoverageService.js";
 import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
 import { rememberDiscoverArtists } from "./discoverArtistPriority.js";
+import { discoverProfilePhoto } from "./features/artistPhotos/discoverProfilePhoto.js";
 import { artistDiscoverPhotoUri } from "./features/artistPhotos/discoverPhoto.js";
 
 const ARTIST_RATING_CANDIDATE_LIMIT = 5_000;
@@ -58,9 +59,9 @@ function projectedGenre(artist, data = artistData(artist)) {
   return canonicalGenre(projected.genre);
 }
 
-export function discoverArtistPhotoFields(artist) {
+export function discoverArtistPhotoFields(artist, { database, viewer } = {}) {
   const data = artistData(artist);
-  const photo = (artist?.photo && !spotifyCdnHostedUrl(artist.photo) ? artist.photo : null) || artistDiscoverPhotoUri(data);
+  const photo = discoverProfilePhoto(database, artist, viewer) || (artist?.photo && !spotifyCdnHostedUrl(artist.photo) ? artist.photo : null) || artistDiscoverPhotoUri(data);
   // Reuse the profile's validated provenance, including legacy stored Spotify
   // identity. Select only display fields; never spread the metadata blob here.
   const original = !photo ? spotifyArtistPhotoModel(publicArtist(artist)) : null;
@@ -68,7 +69,7 @@ export function discoverArtistPhotoFields(artist) {
     photoSource: "spotify", photoCredit: original.credit, photoDisplayPolicy: "original" } : {}) };
 }
 
-function chartRow(name, artist, rank, extra = {}) {
+function chartRow(name, artist, rank, extra = {}, photoOptions) {
   const data = artistData(artist);
   const firstTrack = Array.isArray(data.topTracks) ? data.topTracks[0] : null;
   return {
@@ -82,7 +83,7 @@ function chartRow(name, artist, rank, extra = {}) {
     // Same rule as db.publicArtist: Spotify artwork never takes the generic,
     // cropped photo path. An artist whose page shows a Spotify photo offers its
     // Discover-only Deezer image instead.
-    ...discoverArtistPhotoFields(artist),
+    ...discoverArtistPhotoFields(artist, photoOptions),
     topTrack: firstTrack?.title ? { title: firstTrack.title, url: firstTrack.url || null } : null,
     ...extra,
   };
@@ -214,7 +215,7 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
         avgRating: Number(row.avgRating.toFixed(2)),
         ratingCount: row.ratingCount,
         reviewCount: row.reviewCount,
-      });
+      }, { database, viewer });
     }).filter(Boolean);
   }
 
@@ -267,7 +268,7 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
         label: "Community listening · delayed and grouped",
         live: false,
         privacy: { minimumListeners: PUBLIC_PLAY_MIN_LISTENERS, delayedHours: PUBLIC_PLAY_DELAY_MS / 3_600_000, counts: "lower-bound" },
-        rows: publicRows.map(({ row, plays }, index) => chartRow(row.play_name, row, index + 1, { plays, playsApproximate: true })),
+        rows: publicRows.map(({ row, plays }, index) => chartRow(row.play_name, row, index + 1, { plays, playsApproximate: true }, { database, viewer })),
       };
     }
 
@@ -294,7 +295,7 @@ export function createDiscoverService({ database = db, clock = Date.now, reviewe
     });
     const popularRows = rows.map((row, index) => chartRow(row.name, row, index + 1, {
       ...(genreFilter ? { rankingGroup: "popular" } : {}),
-    }));
+    }, { database, viewer }));
     if (!genreFilter) return { source, label, live: true, rows: popularRows };
 
     const ratedRows = topReviewedArtistsForGenre(artistNorms, Math.min(6, rowLimit), viewer);

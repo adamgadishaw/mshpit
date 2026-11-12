@@ -14,9 +14,9 @@ const read = async (post, { signal }) => {
   return entity?.kind === "concert" || entity?.kind === "event" ? { ...entity, performanceEvent: true } : null;
 };
 
-export default function ReviewEventLink({ review, onOpenShow, children, ...props }) {
+export default function ReviewEventLink({ review, onOpenShow, children, containerStyle, ...props }) {
   if (!review?.id && !reviewEventPath(review)) return null;
-  return <EventPageNavigation read={read} onOpen={onOpenShow}>{({ open, state }) => <View>
+  return <EventPageNavigation read={read} onOpen={onOpenShow}>{({ open, state }) => <View style={containerStyle}>
     <PublicPressableLink {...props} href={reviewEventPath(review)} onNavigate={() => open(review)}
       accessibilityState={{ busy: state?.status === "loading" }}>
       {children}
