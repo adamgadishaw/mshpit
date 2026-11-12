@@ -1,5 +1,5 @@
 import { Linking } from 'react-native';
-import { createNativeStartupLinks } from './nativeStartupLinks.mjs';
+import { createNativeStartupLinks } from './nativeStartupLinkBuffer.mjs';
 
 let startup;
 export function startNativeStartupLinkCapture() {

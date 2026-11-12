@@ -28,6 +28,8 @@ assert.equal(map.sources.length, map.sourcesContent.length);
 const selected = new Set(map.sources);
 const required = [
   '/App.js', '/src/store.js', '/src/cityIdentity.native.js',
+  '/src/AppearanceApp.jsx', '/src/lib/nativeStartupLinks.native.js',
+  '/src/lib/nativeStartupLinkBuffer.mjs',
   '/src/components/NativeAppHeader.ios.jsx', '/src/components/NativeTabRail.ios.jsx',
   '/src/components/NativeSwipeRail.ios.jsx', '/src/components/NativeFeedMediaLayer.ios.jsx',
   '/src/components/VinylRefreshBoundary.ios.jsx', '/src/components/PageReturnContext.jsx',
@@ -43,6 +45,9 @@ const required = [
   '/src/features/socialReactions/useFollowingFeed.ios.js',
 ];
 for (const path of required) assert.ok(selected.has(path), `Missing iOS source: ${path}`);
+for (const path of ['/src/lib/nativeStartupLinks.mjs', '/src/lib/nativeStartupLinks.js']) {
+  assert.equal(selected.has(path), false, `iOS startup must use its platform adapter: ${path}`);
+}
 assert.equal(selected.has('/src/cityIdentity.js'), false, 'iOS must use the Intl bootstrap');
 for (const component of ['NativeAppHeader', 'NativeTabRail', 'NativeSwipeRail']) {
   assert.equal(selected.has(`/src/components/${component}.native.jsx`), false,

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { parse } from '@babel/parser';
-import { createNativeStartupLinks } from './nativeStartupLinks.mjs';
+import { createNativeStartupLinks } from './nativeStartupLinkBuffer.mjs';
 import { connectNativeAccountLinks } from '../domain/nativeAccountLink.mjs';
 import { nativeNewsLinkFrame } from '../domain/nativeNewsLink.mjs';
 
