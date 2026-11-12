@@ -100,7 +100,10 @@ export function createCreatorCalendarService({ database: db, requireUser, author
           event = writeTourDateBatch(db, { batch, user, uid, at: now() })[0];
           db.prepare("UPDATE tour_dates SET creator_revision=1,music_evidence=? WHERE id=?").run(CALENDAR_EVIDENCE, event.id);
         } else {
-          db.prepare(`UPDATE tour_dates SET venue=?,place=?,date=?,ticket_url=?,release_at=?,event_status=?,
+          if (privateWithdrawal) {
+            db.prepare("UPDATE tour_dates SET event_status='cancelled',creator_revision=creator_revision+1,updated_at=? WHERE id=? AND owner_id=? AND creator_revision=?")
+              .run(now(), prior.id, user.id, prior.creator_revision);
+          } else db.prepare(`UPDATE tour_dates SET venue=?,place=?,date=?,ticket_url=?,release_at=?,event_status=?,
             creator_revision=creator_revision+1,updated_at=?,music_evidence=? WHERE id=? AND owner_id=? AND creator_revision=?`)
             .run(entry.venue, entry.place, entry.date, entry.ticketUrl, cancellation ? prior.release_at : batch.releaseAt,
               cancellation ? "cancelled" : prior.event_status, now(), CALENDAR_EVIDENCE, prior.id, user.id, prior.creator_revision);

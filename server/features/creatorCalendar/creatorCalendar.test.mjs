@@ -428,6 +428,18 @@ test('managing another artist identity does not authorize withdrawal of a former
   assert.equal(db.prepare('SELECT creator_revision FROM tour_dates WHERE id=?').get(saved.calendarReceipt.eventId).creator_revision,1);
 });
 
+test('withdrawal changes only lifecycle fields even when stored ticket or evidence metadata has changed',()=>{
+  const artist=account('artist'),body=draft(artist,{releaseAt:Date.now()+3600000}),saved=submit(artist,body);
+  memorial(artist);assert.equal(creatorCalendarService.runDue({at:body.creatorUpdate.calendar.releaseAt+1}).blocked,1);
+  db.prepare('UPDATE tour_dates SET ticket_url=NULL,music_evidence=? WHERE id=?').run('reviewed historical evidence',saved.calendarReceipt.eventId);
+  const before=db.prepare('SELECT * FROM tour_dates WHERE id=?').get(saved.calendarReceipt.eventId);
+  const cancel=draft(artist,{action:'cancel',eventId:before.id,expectedRevision:1});cancel.creatorUpdate.url='';
+  assert.equal(submit(artist,cancel).calendarReceipt.state,'cancelled');
+  const after=db.prepare('SELECT * FROM tour_dates WHERE id=?').get(before.id);
+  const lifecycle=new Set(['event_status','creator_revision','updated_at']);
+  for(const key of Object.keys(before))if(!lifecycle.has(key))assert.equal(after[key],before[key],key);
+});
+
 for(const attached of [false,true])test('withdrawal preserves media referenced by '+(attached?'a published post':'another blocked schedule'),async()=>{
   const {cancelMediaAsset}=await import('../../mediaAssets.js');
   const artist=account('artist'),image=addReadyPostImage(artist.id,'shared-withdraw-'+attached),releaseAt=Date.now()+3600000;
