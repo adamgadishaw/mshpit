@@ -146,9 +146,11 @@ test("lost response, inbox insertion failure and retry roll back atomically", t 
   assert.throws(() => f.alerts.deliverDue(), /fixture rollback/);
   assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications").get().n, 0);
   assert.equal(f.db.prepare("SELECT state FROM local_event_alerts").get().state, "queued");
+  assert.equal(f.db.prepare("SELECT delivery_locked FROM local_event_alerts").get().delivery_locked, 0);
   f.db.exec("DROP TRIGGER fail_push"); f.alerts.deliverDue(); f.alerts.deliverDue();
   assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications").get().n, 1);
   assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_outbox").get().n, 1);
+  assert.equal(f.db.prepare("SELECT delivery_locked FROM local_event_alerts").get().delivery_locked, 1);
 });
 
 test("sale changes cancel old reminders and out-of-order provider responses cannot restore them", t => {
@@ -325,4 +327,128 @@ test("unstructured event city does not silence an otherwise canonical tour annou
   const f = fixture(t); f.account("fan", ""); f.event("tm_1", { venue_city: null, venue_country_code: null });
   f.sale(START + 1000); f.plan(); assert.equal(f.alerts.deliverDue().delivered, 1);
   assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_event_alerts WHERE kind='sale'").get().n, 0);
+});
+
+for (const field of ["ticket_url", "venue"]) test(`same-time sale survives a ${field} edit with one stable reminder`, t => {
+  const f = fixture(t); f.account(); f.event(); f.enable(); f.sale(START + 1000); f.plan("tm_1", { baseline: true });
+  const original = f.db.prepare("SELECT * FROM local_event_alerts WHERE kind='sale'").get();
+  f.db.prepare(`UPDATE tour_dates SET ${field}=? WHERE id='tm_1'`).run(field === "venue" ? "Updated Hall" : "https://tickets.example.test/updated");
+  f.plan(); f.plan();
+  const updated = f.db.prepare("SELECT * FROM local_event_alerts WHERE kind='sale'").get();
+  assert.equal(updated.id, original.id); assert.equal(updated.state, "queued");
+  assert.notEqual(updated.fingerprint, original.fingerprint); assert.equal(updated.due_at, original.due_at);
+  f.advance(1000); assert.equal(f.alerts.deliverDue().delivered, 1); assert.equal(f.alerts.deliverDue().delivered, 0);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications").get().n, 1);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_outbox").get().n, 1);
+});
+
+test("account sales scan can repair an undelivered same-time reminder", t => {
+  const f = fixture(t); f.account(); f.event(); f.sale(START + 1000); f.plan("tm_1", { baseline: true });
+  const original = f.db.prepare("SELECT id FROM local_event_alerts").get().id;
+  f.db.exec("UPDATE tour_dates SET venue='Updated Hall'"); f.alerts.reconcileEvent("tm_1");
+  f.alerts.requestAccountScan("fan"); f.alerts.planAccountSalesPage("fan");
+  const row = f.db.prepare("SELECT * FROM local_event_alerts").get(); assert.equal(row.id, original); assert.equal(row.state, "queued");
+  f.advance(1000); assert.equal(f.alerts.deliverDue().delivered, 1);
+});
+
+for (const transportState of ["not-started", "accepted", "unknown"]) test(`committed sale cannot replay after metadata edits (${transportState})`, async t => {
+  const f = fixture(t); f.account(); f.event(); f.enable(); f.sale(START + 1000); f.plan("tm_1", { baseline: true });
+  f.advance(1000); f.alerts.deliverDue();
+  let sends = 0;
+  const worker = createLocalPushDelivery({ db: f.db, alerts: f.alerts, enabled: true, now: f.now, transport: {
+    send: async () => { sends++; return transportState === "unknown" ? { status: "unknown" } : { status: "accepted", ticketId: "fixture-ticket" }; },
+  } });
+  if (transportState !== "not-started") await worker.run();
+  f.db.exec("UPDATE tour_dates SET ticket_url='https://tickets.example.test/revised'"); f.plan();
+  f.alerts.requestAccountScan("fan"); f.alerts.planAccountSalesPage("fan");
+  assert.equal(f.alerts.deliverDue().delivered, 0); await worker.run();
+  assert.equal(sends, transportState === "not-started" ? 0 : 1);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_event_alerts").get().n, 1);
+  assert.equal(f.db.prepare("SELECT delivery_locked FROM local_event_alerts").get().delivery_locked, 1);
+});
+
+test("an edit during dispatch cannot replace a committed reminder", async t => {
+  const f = fixture(t); f.account(); f.event(); f.enable(); f.sale(START + 1000); f.plan("tm_1", { baseline: true });
+  f.advance(1000); f.alerts.deliverDue(); let sends = 0;
+  const worker = createLocalPushDelivery({ db: f.db, alerts: f.alerts, enabled: true, now: f.now, transport: { send: async () => {
+    sends++; f.db.exec("UPDATE tour_dates SET venue='Changed during dispatch'"); f.plan();
+    assert.equal(f.alerts.deliverDue().delivered, 0); return { status: "accepted", ticketId: "inflight-ticket" };
+  } } });
+  await worker.run(); await worker.run(); assert.equal(sends, 1);
+  assert.equal(f.db.prepare("SELECT state FROM local_push_outbox").get().state, "cancelled");
+});
+
+for (const restriction of ["unfollow", "city", "mute", "hidden", "cancelled"]) test(`replacement rechecks ${restriction} eligibility`, t => {
+  const f = fixture(t); f.account(); f.event(); f.sale(START + 1000); f.plan("tm_1", { baseline: true });
+  f.db.exec("UPDATE tour_dates SET venue='Updated Hall'");
+  if (restriction === "unfollow") f.db.exec("UPDATE users SET favorite_artists='[]'");
+  if (restriction === "city") f.db.exec("UPDATE users SET home_city='Vancouver, Canada'");
+  if (restriction === "mute") f.db.exec("INSERT INTO creator_follows VALUES ('fan','artist','fixture artist',0)");
+  if (restriction === "hidden") f.hidden.add("tm_1");
+  if (restriction === "cancelled") f.db.exec("UPDATE tour_dates SET event_status='cancelled'");
+  f.plan(); f.alerts.requestAccountScan("fan"); f.alerts.planAccountSalesPage("fan"); f.advance(1000);
+  assert.equal(f.alerts.deliverDue().delivered, 0);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications").get().n, 0);
+});
+
+test("offsale permits announcements and future reminders but cannot claim tickets are on sale", t => {
+  const f = fixture(t); f.account(); f.event("tm_1", { event_status: "offsale" }); f.sale(START + 1000); f.plan();
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_event_alerts").get().n, 2);
+  assert.equal(f.alerts.deliverDue().delivered, 1);
+  const saleId = f.db.prepare("SELECT id FROM local_event_alerts WHERE kind='sale'").get().id;
+  f.advance(1000); assert.equal(f.alerts.deliverDue().awaitingEvidence, 1);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications WHERE type='local_ticket_sale'").get().n, 0);
+  f.db.exec("UPDATE tour_dates SET event_status='onsale'"); f.advance(1); f.sale(START + 1000); f.plan();
+  assert.equal(f.db.prepare("SELECT id FROM local_event_alerts WHERE kind='sale'").get().id, saleId);
+  assert.equal(f.alerts.deliverDue().delivered, 1); assert.equal(f.alerts.deliverDue().delivered, 0);
+});
+
+test("offsale without reliable public timing never schedules a sale; elapsed reminders expire", t => {
+  const f = fixture(t); f.account(); f.event("tm_1", { event_status: "offsale" }); f.plan("tm_1", { baseline: true });
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_event_alerts").get().n, 0);
+  f.sale(START + 1000); f.plan(); f.advance(1000 + 2 * 60 * 60_000);
+  assert.equal(f.alerts.deliverDue().cancelled, 1);
+  f.db.exec("UPDATE tour_dates SET event_status='onsale'"); f.plan(); assert.equal(f.alerts.deliverDue().delivered, 0);
+});
+
+test("legacy ambiguous cancellations stay locked while queued reminders migrate safely", t => {
+  const f = fixture(t); f.account(); f.event(); f.sale(START + 1000); f.plan();
+  f.db.exec("DROP TRIGGER local_alert_lock_delivery; DROP TRIGGER local_alert_keep_delivery_lock; ALTER TABLE local_event_alerts DROP COLUMN delivery_locked; UPDATE local_event_alerts SET state='cancelled' WHERE kind='date'");
+  ensureLocalAlertSchema(f.db); ensureLocalAlertSchema(f.db);
+  assert.equal(f.db.prepare("SELECT delivery_locked FROM local_event_alerts WHERE kind='date'").get().delivery_locked, 1);
+  assert.equal(f.db.prepare("SELECT delivery_locked FROM local_event_alerts WHERE kind='sale'").get().delivery_locked, 0);
+  f.db.exec("UPDATE tour_dates SET venue='Migration update'"); f.plan(); f.advance(1000);
+  assert.equal(f.alerts.deliverDue().delivered, 1);
+});
+
+test("delivery receipt survives schema restart, legacy state writes and attempted reset", t => {
+  const f = fixture(t); f.account(); f.event(); f.sale(START + 1000); f.plan("tm_1", { baseline: true });
+  // An older writer does not know the receipt column but still transitions the
+  // durable row through delivered before it can cancel a notice.
+  f.db.exec("UPDATE local_event_alerts SET state='delivered'; UPDATE local_event_alerts SET state='cancelled'");
+  ensureLocalAlertSchema(f.db);
+  assert.equal(f.db.prepare("SELECT delivery_locked FROM local_event_alerts").get().delivery_locked, 1);
+  assert.throws(() => f.db.exec("UPDATE local_event_alerts SET delivery_locked=0"), /committed alert cannot be replayed/);
+  f.db.exec("UPDATE tour_dates SET venue='Later update'"); f.plan(); f.advance(1000);
+  assert.equal(f.alerts.deliverDue().delivered, 0);
+});
+
+test("sale status is rechecked after inbox commit and before a queued push", async t => {
+  const f = fixture(t); f.account(); f.event(); f.enable(); f.sale(START + 1000); f.plan("tm_1", { baseline: true });
+  f.advance(1000); f.alerts.deliverDue();
+  f.db.exec("UPDATE tour_dates SET event_status='offsale'");
+  const worker = createLocalPushDelivery({ db: f.db, alerts: f.alerts, enabled: true, now: f.now,
+    transport: { send: () => assert.fail("Offsale must not dispatch a sale push") } });
+  await worker.run(); assert.equal(f.db.prepare("SELECT state FROM local_push_outbox").get().state, "cancelled");
+});
+
+test("fresh source evidence resumes a repair that previously waited on stale timing", t => {
+  const f = fixture(t); f.account(); f.event(); f.sale(START + 3 * 86400000); f.plan("tm_1", { baseline: true });
+  const original = f.db.prepare("SELECT id FROM local_event_alerts").get().id;
+  f.advance(2 * 86400000); f.db.exec("UPDATE tour_dates SET venue='Fresh source hall'"); f.plan();
+  assert.equal(f.db.prepare("SELECT state FROM local_event_alerts").get().state, "cancelled");
+  f.advance(1); f.sale(START + 3 * 86400000);
+  assert.equal(f.alerts.planEventPage("tm_1").planned, 1);
+  assert.equal(f.db.prepare("SELECT id FROM local_event_alerts").get().id, original);
+  f.advance(86400000); assert.equal(f.alerts.deliverDue().delivered, 1);
 });

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { withImmediateWrite } from "../../databaseTransaction.js";
 import { accountIsPublic } from "../../accountVisibility.js";
 import { ApiError } from "../../errors.js";
-import { alertEventIsCurrent, resolveAlertHomeCity, resolveAlertEventCity, ticketmasterPublicSale,
+import { alertEventIsCurrent, alertSaleIsOpen, resolveAlertHomeCity, resolveAlertEventCity, ticketmasterPublicSale,
   DEFAULT_LOCAL_ALERT_PREFERENCES, SALE_FRESHNESS_MS, SALE_DELIVERY_WINDOW_MS, DATE_DELIVERY_WINDOW_MS } from "./localAlertPolicy.js";
 
 const fingerprint = (event, sale) => createHash("sha256").update(JSON.stringify([
@@ -56,6 +56,23 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
       && current.sale.starts_at <= at && (current.sale.ends_at == null || current.sale.ends_at > at)));
   const freshSale = (current, at) => current?.sale && current.sale.observed_at <= at && at - current.sale.observed_at <= SALE_FRESHNESS_MS;
 
+  // Preserve the stable reminder ID when metadata changes but its public-sale
+  // timestamp does not. Only an undelivered reminder may be refreshed/rearmed;
+  // the permanent delivery receipt survives cancellation and notice deletion.
+  const queueSale = (accountId, eventId, current, at) => {
+    const sale = current.sale;
+    return Number(db.prepare(`INSERT INTO local_event_alerts
+      (id,account_id,event_id,kind,trigger_key,fingerprint,city_path,due_at,expires_at,created_at) VALUES (?,?,?,'sale',?,?,?,?,?,?)
+      ON CONFLICT(account_id,event_id,kind,trigger_key) DO UPDATE SET
+        fingerprint=excluded.fingerprint,city_path=excluded.city_path,due_at=excluded.due_at,
+        expires_at=excluded.expires_at,state='queued'
+      WHERE local_event_alerts.delivery_locked=0 AND local_event_alerts.state IN ('queued','cancelled')
+        AND (local_event_alerts.state='cancelled' OR local_event_alerts.fingerprint<>excluded.fingerprint
+          OR local_event_alerts.city_path<>excluded.city_path OR local_event_alerts.expires_at<>excluded.expires_at)`)
+      .run(randomUUID(), accountId, eventId, String(sale.starts_at), current.fingerprint, current.city.path,
+        sale.starts_at, Math.min(sale.starts_at + SALE_DELIVERY_WINDOW_MS, sale.ends_at ?? Infinity), at).changes);
+  };
+
   function reconcileEvent(eventId, { baseline = false } = {}) {
     return withImmediateWrite(db, () => {
       const at = now(), current = currentEvent(eventId, at);
@@ -90,7 +107,15 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
       db.prepare(`INSERT INTO local_event_sales(event_id,provider_event_id,starts_at,ends_at,observed_at) VALUES (?,?,?,?,?)
         ON CONFLICT(event_id) DO UPDATE SET provider_event_id=excluded.provider_event_id,starts_at=excluded.starts_at,
           ends_at=excluded.ends_at,observed_at=excluded.observed_at`).run(eventId, row.provider_event_id, sale?.startsAt ?? null, sale?.endsAt ?? null, observedAt);
-      if (db.prepare("SELECT 1 FROM local_event_observations WHERE event_id=?").get(eventId)) reconcileEvent(eventId);
+      if (db.prepare("SELECT 1 FROM local_event_observations WHERE event_id=?").get(eventId)) {
+        const reconciled = reconcileEvent(eventId), at = now();
+        // A metadata repair may have completed its fan-out while timing was
+        // stale. Fresh evidence with the same timestamp must resume that scan,
+        // without resetting an in-progress cursor or replaying delivered rows.
+        if (reconciled.visible && old && at - old.observed_at > SALE_FRESHNESS_MS && at - observedAt <= SALE_FRESHNESS_MS) {
+          db.prepare("UPDATE local_event_observations SET scan_cursor='',scan_complete=0 WHERE event_id=? AND scan_complete=1").run(eventId);
+        }
+      }
       return { updated: true, known: !!sale };
     });
   }
@@ -114,8 +139,7 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
         const sale = current.sale;
         if ((pref.salesInbox || pref.salesPush) && eligible(accountId, current, at) && freshSale(current, at) && sale.starts_at != null
           && sale.starts_at + SALE_DELIVERY_WINDOW_MS > at && (sale.ends_at == null || sale.ends_at > at)) {
-          planned += Number(insert.run(randomUUID(), accountId, eventId, "sale", String(sale.starts_at), current.fingerprint, current.city.path,
-            sale.starts_at, Math.min(sale.starts_at + SALE_DELIVERY_WINDOW_MS, sale.ends_at ?? Infinity), at).changes);
+          planned += queueSale(accountId, eventId, current, at);
         }
       }
       const more = rows.length === bound(limit, 100, 500);
@@ -128,7 +152,7 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
   function deliverDue({ limit = 100 } = {}) {
     return withImmediateWrite(db, () => {
       const at = now();
-      const rows = db.prepare("SELECT * FROM local_event_alerts WHERE state='queued' AND due_at<=? ORDER BY due_at,id LIMIT ?")
+      const rows = db.prepare("SELECT * FROM local_event_alerts WHERE state='queued' AND delivery_locked=0 AND due_at<=? ORDER BY due_at,id LIMIT ?")
         .all(at, bound(limit, 100, 500));
       let delivered = 0, cancelled = 0, awaitingEvidence = 0;
       for (const alert of rows) {
@@ -136,7 +160,7 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
         const inbox = alert.kind === "date" ? pref.datesInbox : pref.salesInbox;
         const push = alert.kind === "date" ? pref.datesPush : pref.salesPush;
         if (alert.expires_at <= at || !stillValid(alert, current, at) || (!inbox && !push)) { cancelAlert(alert); cancelled++; continue; }
-        if (alert.kind === "sale" && !freshSale(current, at)) { awaitingEvidence++; continue; }
+        if (alert.kind === "sale" && (!freshSale(current, at) || !alertSaleIsOpen(current.event, current.sale, at))) { awaitingEvidence++; continue; }
         let notificationId = null, ownsNotice = false;
         if (inbox) {
           const related = alert.kind === "date" ? findRelatedNotice(alert.account_id, current.event, at) : null;
@@ -149,7 +173,7 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
             ownsNotice = true;
           }
         }
-        db.prepare("UPDATE local_event_alerts SET state='delivered',notification_id=?,owns_notice=? WHERE id=?")
+        db.prepare("UPDATE local_event_alerts SET state='delivered',delivery_locked=1,notification_id=?,owns_notice=? WHERE id=?")
           .run(notificationId, Number(ownsNotice), alert.id);
         if (push) db.prepare(`INSERT OR IGNORE INTO local_push_outbox(id,alert_id,installation_id,generation,next_at)
           SELECT lower(hex(randomblob(16))),?,i.installation_id,i.generation,? FROM local_push_installations i
@@ -197,10 +221,7 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
         const current = currentEvent(eventId, at), sale = current?.sale;
         if (!(pref.salesInbox || pref.salesPush) || !eligible(accountId, current, at) || !freshSale(current, at)
           || sale?.starts_at == null || (sale.ends_at != null && sale.ends_at <= at)) continue;
-        planned += Number(db.prepare(`INSERT OR IGNORE INTO local_event_alerts
-          (id,account_id,event_id,kind,trigger_key,fingerprint,city_path,due_at,expires_at,created_at) VALUES (?,?,?,'sale',?,?,?,?,?,?)`)
-          .run(randomUUID(), accountId, eventId, String(sale.starts_at), current.fingerprint, current.city.path,
-            sale.starts_at, Math.min(sale.starts_at + SALE_DELIVERY_WINDOW_MS, sale.ends_at ?? Infinity), at).changes);
+        planned += queueSale(accountId, eventId, current, at);
       }
       const more = rows.length === size;
       if (more) db.prepare("UPDATE local_alert_account_scans SET event_cursor=? WHERE account_id=?").run(rows.at(-1).event_id, accountId);
@@ -217,7 +238,8 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
     if (!stillValid(alert, current, at)) return null;
     if (forPush) {
       const pref = preferences(accountId);
-      if (!(alert.kind === "date" ? pref.datesPush : pref.salesPush) || alert.expires_at <= at || (alert.kind === "sale" && !freshSale(current, at))) return null;
+      if (!(alert.kind === "date" ? pref.datesPush : pref.salesPush) || alert.expires_at <= at
+        || (alert.kind === "sale" && (!freshSale(current, at) || !alertSaleIsOpen(current.event, current.sale, at)))) return null;
     }
     return { alertId: alert.id, eventId: alert.event_id, artist: current.event.artist, kind: alert.kind, path: `/event/${encodeURIComponent(alert.event_id)}` };
   }

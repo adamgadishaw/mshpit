@@ -1,6 +1,9 @@
+import { withImmediateWrite } from "../../databaseTransaction.js";
+
 // Called explicitly by the database migration boundary. Importing this feature
 // never opens a database, starts a worker, registers a device or sends a push.
 export function ensureLocalAlertSchema(db) {
+  return withImmediateWrite(db, () => {
   db.exec(`
     CREATE TABLE IF NOT EXISTS local_alert_preferences (
       account_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -32,6 +35,7 @@ export function ensureLocalAlertSchema(db) {
       fingerprint TEXT NOT NULL, city_path TEXT NOT NULL,
       due_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
       state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued','delivered','cancelled')),
+      delivery_locked INTEGER NOT NULL DEFAULT 0 CHECK(delivery_locked IN (0,1)),
       notification_id TEXT REFERENCES notifications(id) ON DELETE SET NULL,
       owns_notice INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
@@ -65,6 +69,21 @@ export function ensureLocalAlertSchema(db) {
       WHEN OLD.owns_notice=1 AND OLD.notification_id IS NOT NULL
       BEGIN DELETE FROM notifications WHERE id=OLD.notification_id; END;
   `);
+    if (!db.prepare("PRAGMA table_info(local_event_alerts)").all().some(column => column.name === "delivery_locked")) {
+      db.exec(`ALTER TABLE local_event_alerts ADD COLUMN delivery_locked INTEGER NOT NULL DEFAULT 0 CHECK(delivery_locked IN (0,1));
+        UPDATE local_event_alerts SET delivery_locked=1 WHERE state<>'queued' OR notification_id IS NOT NULL
+          OR EXISTS (SELECT 1 FROM local_push_outbox p WHERE p.alert_id=local_event_alerts.id);`);
+    }
+    // Old cancelled rows lost their original delivery state. Lock them rather
+    // than guess that an inbox-only or uncertain push delivery never happened.
+    // The trigger also preserves receipts if an older writer shares this DB.
+    db.exec(`CREATE TRIGGER IF NOT EXISTS local_alert_lock_delivery AFTER UPDATE OF state ON local_event_alerts
+      WHEN NEW.state='delivered' AND NEW.delivery_locked=0
+      BEGIN UPDATE local_event_alerts SET delivery_locked=1 WHERE id=NEW.id; END;
+      CREATE TRIGGER IF NOT EXISTS local_alert_keep_delivery_lock BEFORE UPDATE OF delivery_locked ON local_event_alerts
+      WHEN OLD.delivery_locked=1 AND NEW.delivery_locked<>1
+      BEGIN SELECT RAISE(ABORT,'A committed alert cannot be replayed'); END;`);
+  });
 }
 
 export const LOCAL_ALERT_TABLES = Object.freeze([

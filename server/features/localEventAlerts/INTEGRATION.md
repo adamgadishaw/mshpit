@@ -6,6 +6,47 @@ tests are based on installed Build 12 commit
 changed. No production data, live device token, push delivery, credentials,
 deployment, phone installation, or remote Git publication was used.
 
+## Reminder lifecycle correction after e2f457d1
+
+The schema now includes `local_event_alerts.delivery_locked` (0/1). Delivery sets
+this permanent receipt in the same transaction as the inbox row and push outbox.
+Cancellation and removal of an owned inbox notice retain it. Database triggers
+also lock a legacy writer's transition through `delivered` and reject clearing
+an established lock. Run `ensureLocalAlertSchema` before using the updated
+service; schema creation and upgrade are atomic and nested-transaction safe.
+
+Both event and account sale planners upsert the existing stable alert ID for the
+same account/event/sale timestamp only while delivery remains unlocked. Thus a
+URL, venue or other fingerprint edit can repair an undelivered reminder instead
+of leaving it permanently cancelled. Every repair still requires current public
+visibility, artist eligibility, home city, channel preferences, fresh trusted
+timing and an unexpired delivery window. Once delivery commits, later edits
+cannot repeat it, including accepted, in-flight or uncertain device delivery.
+If a repair scan completed while timing was stale, a fresh trusted observation
+reopens that completed scan even when the public-sale timestamp is unchanged.
+It does not reset an in-progress recipient cursor.
+
+For an older schema, already delivered/cancelled rows and any row with surviving
+notification/outbox evidence are conservatively locked. Older cancelled rows
+lost the information needed to prove no inbox delivery occurred; migration does
+not guess that they are safe to replay. Previously queued rows without delivery
+evidence remain repairable. There is no production rollout of the old feature.
+
+`offsale` no longer hides an otherwise public upcoming concert or prevents
+planning from a reliable future `sales.public.startDateTime`. At delivery and
+before device dispatch, a sale notice additionally requires current `onsale`
+status. An offsale/unknown status waits within the existing two-hour window and
+then expires; a timestamp alone cannot assert tickets are currently on sale.
+Global date announcements remain independent of home city and sale status.
+`awaitingEvidence` includes waiting for this current sale-status confirmation.
+
+Ticketmaster documents event status separately from public-sale start/end and
+TBD information: https://developer.ticketmaster.com/products-and-docs/apis/discovery-api/v2/
+
+Still outside this correction: app/server mounting, generic-news deduplication,
+native capability/configuration, account-switch revocation composition, and
+bounding the existing per-event cancellation scan. No live transport was used.
+
 Shared-file edits were held because coordination with integration task
 `01a192c2-1da6-7237-8909-ab10556a40d5` was required before making them. The tool's
 automatic approval review rejected that message: explicit human authorization

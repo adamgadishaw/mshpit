@@ -46,8 +46,15 @@ export function resolveAlertEventCity(event) {
 export function alertEventIsCurrent(event, at) {
   if (!event || !Number.isSafeInteger(at)) return false;
   if (event.release_at > at || (!event.owner_id && event.provider_active === 0)) return false;
-  if (["cancelled", "canceled", "postponed", "offsale", "rescheduled"].includes(normalize(event.event_status))) return false;
+  if (["cancelled", "canceled", "postponed", "rescheduled"].includes(normalize(event.event_status))) return false;
   return currentOrUpcomingTourDateRow(event, new Date(at).toISOString().slice(0, 10));
+}
+
+// Offsale does not hide a public upcoming concert or its announced sale time.
+// It does prevent us claiming tickets are available when the reminder is due.
+export function alertSaleIsOpen(event, sale, at) {
+  return normalize(event?.event_status) === "onsale" && sale?.starts_at != null
+    && sale.starts_at <= at && (sale.ends_at == null || sale.ends_at > at);
 }
 
 export function exactSaleTimestamp(value) {
