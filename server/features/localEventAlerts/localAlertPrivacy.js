@@ -7,6 +7,11 @@ export function exportLocalAlerts(db, accountId) {
     // Token, session hash, installation secret and raw home location are never
     // included in portable account exports or exposed through a GET route.
     devices: db.prepare("SELECT platform,enabled,permission,updated_at FROM local_push_installations WHERE account_id=? ORDER BY updated_at").all(accountId),
+    pushDeliveries: db.prepare(`SELECT p.alert_id,i.platform,p.state,p.attempts,p.next_at,p.sent_at,p.error_code
+      FROM local_push_outbox p JOIN local_event_alerts a ON a.id=p.alert_id
+      JOIN local_push_installations i ON i.installation_id=p.installation_id
+      WHERE a.account_id=? AND i.account_id=a.account_id AND i.generation=p.generation
+      ORDER BY a.created_at,p.id`).all(accountId),
   };
 }
 

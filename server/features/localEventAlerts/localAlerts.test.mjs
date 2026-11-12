@@ -258,7 +258,9 @@ test("route guards, target ownership, GET read-only and export/delete privacy", 
   assert.equal(f.db.prepare("SELECT total_changes() n").get().n, before);
   const id = f.db.prepare("SELECT id FROM local_event_alerts WHERE account_id='fan'").get().id;
   assert.equal(f.alerts.readAlertTarget("fan", id).eventId, "tm_1"); assert.equal(f.alerts.readAlertTarget("other", id), null);
-  const exported = JSON.stringify(exportLocalAlerts(f.db, "fan"));
+  const exportData = exportLocalAlerts(f.db, "fan");
+  assert.equal(exportData.pushDeliveries.length, 1); assert.equal(exportData.pushDeliveries[0].state, "ready");
+  const exported = JSON.stringify(exportData);
   for (const value of [secret, "ExpoPushToken", "session_fan", "secret_hash", "city_path"]) assert.equal(exported.includes(value), false);
   eraseLocalAlerts(f.db, "fan");
   for (const table of ["local_event_alerts", "local_push_installations", "local_alert_preferences"]) assert.equal(f.db.prepare(`SELECT COUNT(*) n FROM ${table} WHERE account_id='fan'`).get().n, 0);
