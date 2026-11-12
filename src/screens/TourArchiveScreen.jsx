@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+import { Suspense, useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useStore } from "../store";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
@@ -16,7 +17,6 @@ import {
   archiveRatingLabel,
   archiveReviewMedia,
   compactArchiveCount,
-  findArchiveShowForReview,
   selectArchiveTour,
   showsForArchiveTour,
 } from "../domain/artistEventArchive.mjs";
@@ -124,12 +124,11 @@ function TourShowRow({ show, wide, onOpenShow, onOpenPhotos, onOpenProfile }) {
   );
 }
 
-function ReviewRow({ review, shows, wide, onOpenShow, onOpenPost, onOpenPhotos, onOpenProfile }) {
+function ReviewRow({ review, wide, onOpenShow, onOpenPost, onOpenPhotos, onOpenProfile }) {
   const author = review?.user?.name || "A Pit fan";
   const handle = review?.user?.handle ? `@${review.user.handle}` : "Pit fan";
   const media = archiveReviewMedia(review);
   const thumbnail = media[0] || null;
-  const show = findArchiveShowForReview(shows, review);
   const reviewText = String(review?.review || "").trim();
   return (
     <View style={[styles.reviewCard, wide && styles.reviewCardWide]}>
@@ -161,16 +160,17 @@ function ReviewRow({ review, shows, wide, onOpenShow, onOpenPost, onOpenPhotos, 
             <Text style={styles.reviewOpen}>Read post</Text>
           </View>
         </Pressable>
-        <Pressable
+        <Suspense fallback={<Text>View show</Text>}><ReviewEventLink
           style={({ pressed, focused }) => [styles.nightLink, pressed && styles.pressed, focused && focusRing]}
-          onPress={() => onOpenShow?.(show || review)}
+          review={review}
+          onOpenShow={onOpenShow}
           accessibilityRole="button"
           accessibilityLabel={`Open ${review?.venue || "the show"}, ${archiveDateLabel(review?.date)}`}
         >
           <Icon name="calendar" size={12} color={colors.amber} />
           <Text style={styles.nightLinkText} numberOfLines={1}>{review?.venue || "Live show"} · {archiveDateLabel(review?.date)}</Text>
           <Icon name="chevron-right" size={13} color={colors.amber} />
-        </Pressable>
+        </ReviewEventLink></Suspense>
       </View>
       {thumbnail ? (
         <SmartImage
@@ -249,7 +249,7 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
   const renderRow = ({ item }) => {
     if (item.type === "section") { const { key, ...section } = item; return <SectionRow key={key} {...section} />; }
     if (item.type === "show") return <TourShowRow show={item.show} wide={wide} onOpenShow={onOpenShow} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
-    if (item.type === "review") return <ReviewRow review={item.review} shows={shows} wide={wide} onOpenShow={onOpenShow} onOpenPost={onOpenPost} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
+    if (item.type === "review") return <ReviewRow review={item.review} wide={wide} onOpenShow={onOpenShow} onOpenPost={onOpenPost} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
     if (item.type === "loading") return <View style={styles.loadingRow} accessibilityLiveRegion="polite"><ActivityIndicator color={colors.amber} /><Text style={styles.stateText}>Loading every review…</Text></View>;
     if (item.type === "empty") return <EmptyRow title={item.title} copy={item.copy} />;
     return null;
@@ -331,6 +331,8 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
     </View>
   );
 }
+
+const ReviewEventLink = lazyWithRetry(() => import("./ReviewEventLink"), "ReviewEventLink");
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
