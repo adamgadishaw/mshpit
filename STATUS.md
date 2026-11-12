@@ -1,5 +1,22 @@
 # Pit current status
 
+## 2026-11-12 Venue search focus and city results (isolated follow-up)
+
+- Reproduced the reported one-letter symptom on combined source `7be234d`:
+  changing the result mode remounted the search input. Search now stays mounted
+  while typing, clearing, submitting and receiving catalogue responses.
+- City matches have explicit, region-qualified choices alongside venue matches.
+  City browsing retains the existing index's provider identity and applies the
+  selected country before the result cap. No device location or query requests.
+- Six exported-browser cases pass for guests/members at 320, 375 and 1280 px;
+  aggregate tests: 7,525 pass, zero fail, one skip. Web startup: 523,575/524,288
+  gzip bytes. iOS export passes; native keyboard interaction was not exercised.
+- Build 8 source `31860b2` was unavailable locally and through the read-only
+  GitHub commit lookup. This reproduces and fixes the combined PC candidate,
+  without claiming an exact installed-build comparison or phone verification.
+- [Evidence and integration limits](docs/VENUE_SEARCH_FOCUS_2026-11-12.md).
+  No release, deployment, remote publication or device work.
+
 ## 2026-11-11 Venue account and posting completion (isolated review)
 
 - `feature/venue-completion-20261111` extends the initial venue candidate with

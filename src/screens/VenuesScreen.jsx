@@ -7,24 +7,24 @@ import Icon from "../components/Icon";
 import { VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { venueDirectoryTotals, venueHomePlaceId } from "../domain/venueDiscovery.mjs";
+import { venueDirectoryCities, matchingVenueCities } from "../domain/venueDirectorySearch.mjs";
 import { discoverRowMatchesRegion } from "../domain/discoverScene.mjs";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { countryForCity } from "../geo";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 
 export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onOpenVenue }) {
-  const { venuesByCity, searchVenues, session, tourDates, refreshTourDates } = useStore();
+  const { venueDirectoryIndex, searchVenues, session, refreshTourDates } = useStore();
   const [q, setQ] = useState("");
   const [city, setCity] = useState(null); // complete place identity, not ambiguous city text
   const [refreshError, setRefreshError] = useState(false);
   const query = q.trim();
-  // The core catalog is static, but upcoming dates hydrate after mount. Rebuild
-  // only when that source changes so counts/order cannot remain stuck at zero.
+  // Both directory and search keep the complete indexed place/provider identity.
+  // Hydration can replace this snapshot without replacing the input or its value.
   const region = String(initialRegion || "Worldwide").trim() || "Worldwide";
-  const cities = useMemo(() => venuesByCity().filter((entry) => discoverRowMatchesRegion({
-    city: entry.city,
-    place: [entry.city, entry.region].filter(Boolean).join(", "),
-  }, region, { countryForCity })), [region, tourDates]);
+  const cities = useMemo(() => venueDirectoryCities(venueDirectoryIndex, {
+    filter: venue => discoverRowMatchesRegion(venue, region, { countryForCity }),
+  }), [region, venueDirectoryIndex]);
   const totals = useMemo(() => venueDirectoryTotals(cities), [cities]);
   const homePlaceId = useMemo(() => venueHomePlaceId(session?.home, cities), [cities, session?.home]);
   const cityList = useMemo(() => {
@@ -35,9 +35,10 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
     });
   }, [cities, homePlaceId]);
   const selected = city ? cities.find((entry) => entry.id === city) : null;
-  const venueResults = query ? searchVenues(query).filter((venue) => (
-    discoverRowMatchesRegion(venue, region, { countryForCity })
-  )) : [];
+  const cityResults = useMemo(() => matchingVenueCities(cityList, query), [cityList, query]);
+  const venueResults = query ? searchVenues(query, 50, {
+    filter: venue => discoverRowMatchesRegion(venue, region, { countryForCity }),
+  }) : [];
   const mode = query ? "search" : selected ? "city" : "cities";
   const data = mode === "search" ? venueResults : mode === "city" ? selected.venues : cityList;
   const title = mode === "search" ? "Venue search" : selected?.city || (region === "Worldwide" ? "Find venues" : `Venues in ${region}`);
@@ -63,9 +64,9 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
     return (
       <Pressable
         style={({ pressed, hovered, focused }) => [styles.cityCard, hovered && styles.cardHover, pressed && styles.cardPressed, focused && focusRing]}
-        onPress={() => setCity(item.id)}
+        onPress={() => { setCity(item.id); setQ(""); }}
         accessibilityRole="button"
-        accessibilityLabel={`${item.city}, ${item.count} venues${item.upcoming ? `, ${item.upcoming} upcoming shows` : ""}`}
+        accessibilityLabel={`Browse venues in ${[item.city, item.region].filter(Boolean).join(", ")}, ${item.count} venues`}
       >
         <View style={styles.cityMark}>
           <Text style={styles.cityInitial}>{item.city.slice(0, 2).toLocaleUpperCase()}</Text>
@@ -92,13 +93,38 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
   return (
     <View style={styles.wrap}>
       <ScreenHeader title={title} onBack={goBack} />
+      {/* Search owns a stable native input outside the changing result list. */}
+      <View style={styles.searchBar}>
+        <View style={styles.searchField}>
+          <Icon name="search" size={19} color={colors.textDim} />
+          <TextInput
+            style={styles.input}
+            placeholder="Search venues or cities"
+            placeholderTextColor={colors.textFaint}
+            value={q}
+            onChangeText={setQ}
+            autoCapitalize="none"
+            autoCorrect={false}
+            maxLength={80}
+            returnKeyType="search"
+            // RN Web 0.21 still uses blurOnSubmit; native uses submitBehavior.
+            blurOnSubmit={false}
+            submitBehavior="submit"
+            accessibilityLabel="Search venues or cities"
+          />
+          {q ? (
+            <Pressable style={styles.clearButton} onPress={() => setQ("")} accessibilityRole="button" accessibilityLabel="Clear venue search">
+              <Icon name="x" size={16} color={colors.textDim} />
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
       <VinylRefreshBoundary
         refreshing={venuesRefreshing}
         onRefresh={refreshVenues}
         accessibilityLabel="Refresh venues and upcoming shows"
       >
       <FlatList
-        key={mode}
         data={data}
         renderItem={mode === "cities" ? renderCity : renderVenue}
         keyExtractor={(item) => mode === "cities" ? item.id : item.identity || `${item.name}|${item.place || ""}`}
@@ -128,26 +154,10 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
               </View>
             ) : null}
 
-            <View style={styles.searchField}>
-              <Icon name="search" size={19} color={colors.textDim} />
-              <TextInput
-                style={styles.input}
-                placeholder="Search venues or cities"
-                placeholderTextColor={colors.textFaint}
-                value={q}
-                onChangeText={setQ}
-                autoCapitalize="none"
-                autoCorrect={false}
-                maxLength={80}
-                returnKeyType="search"
-                accessibilityLabel="Search venues or cities"
-              />
-              {q ? (
-                <Pressable style={styles.clearButton} onPress={() => setQ("")} accessibilityRole="button" accessibilityLabel="Clear venue search">
-                  <Icon name="x" size={16} color={colors.textDim} />
-                </Pressable>
-              ) : null}
-            </View>
+            {mode === "search" && cityResults.length > 0 ? <View style={styles.cityMatches}>
+              <Text accessibilityRole="header" style={styles.sectionTitle}>Cities</Text>
+              {cityResults.map(item => <View key={item.id}>{renderCity({ item })}</View>)}
+            </View> : null}
 
             {mode === "city" ? (
               <View style={styles.cityOverview}>
@@ -171,8 +181,8 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
         ListEmptyComponent={(
           <View style={styles.emptyCard}>
             <View style={styles.emptyIcon}><Icon name="search" size={24} color={colors.textFaint} /></View>
-            <Text style={styles.emptyTitle}>No venues found</Text>
-            <Text style={styles.emptyBody}>Try a city, neighbourhood, or a shorter venue name.</Text>
+            <Text style={styles.emptyTitle}>{mode === "search" && !cityResults.length ? "No venues or cities found" : "No venues found"}</Text>
+            <Text style={styles.emptyBody}>{cityResults.length ? "Choose a city above to browse its venues." : "Try a city or a shorter venue name."}</Text>
             {query ? <Pressable style={styles.emptyAction} onPress={() => setQ("")}><Text style={styles.emptyActionText}>Clear search</Text></Pressable> : null}
           </View>
         )}
@@ -197,6 +207,8 @@ function ListGap() {
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
+  searchBar: { width: "100%", maxWidth: 980, alignSelf: "center", paddingHorizontal: 16, paddingVertical: 12 },
+  cityMatches: { gap: 10 },
   content: { width: "100%", maxWidth: 980, alignSelf: "center", paddingHorizontal: 16, paddingBottom: 56 },
   headerContent: { gap: 16, paddingTop: 12, paddingBottom: 14 },
   refreshError: { color: colors.danger, fontSize: 12.5, lineHeight: 18 },
