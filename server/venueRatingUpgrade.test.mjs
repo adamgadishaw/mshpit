@@ -85,6 +85,12 @@ test('old duplicate canonical reviews survive real repeated startup, latest-vali
     assert.equal(writes[0].myReview.id, writes[1].myReview.id, 'Concurrent writes reuse the same canonical record');
     assert.equal(database.prepare("SELECT count(*) n FROM venue_reviews WHERE user_id='new_writer'").get().n, 1);
     assert.ok([0.5, 4.5].includes(run('read', 'new_writer').myReview.rating));
+    const precise = run('write', 'private', '4.2');
+    assert.equal(precise.myReview.id, 'private_latest'); assert.equal(precise.myReview.rating, 4.2);
+    assert.equal(precise.myReview.text, 'An explicitly edited venue note.');
+    assert.equal(run('write', 'private', '4.3').status, 400, 'New precise values remain invalid');
+    assert.equal(run('write', 'private', '4.5').myReview.rating, 4.5);
+    assert.equal(run('write', 'private', '4.2').status, 400, 'A stale precise edit cannot restore a replaced score');
     assert.equal(database.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
   } finally { database?.close(); rmSync(directory, { recursive: true, force: true }); }
 });

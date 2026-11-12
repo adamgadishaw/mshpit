@@ -114,12 +114,16 @@ export function venueCommunityRoutes({ db, readSnapshot, resolveReviewKeys = nul
     'PUT /api/venue-community/rating': ctx => {
       const user = member(ctx); limit(ctx, 'venue-community-rate', 30, 3600000);
       const snapshot = resolve(ctx.body?.path), rating = ctx.body?.rating;
-      if (typeof rating !== 'number' || !Number.isFinite(rating) || rating < 0.5 || rating > 5 || !Number.isInteger(rating * 2)) throw invalid('Choose a rating from 0.5 to 5 stars.');
+      if (typeof rating !== 'number' || !Number.isFinite(rating) || rating < 0.5 || rating > 5) throw invalid('Choose a rating from 0.5 to 5 stars.');
       const text = clean(ctx.body?.text, { max: 2000, newlines: true }) || '';
       assertSafeAuthoredText(text, { field: 'venue review' });
       atomicWrite(() => {
         ctx.assertCurrentSession?.();
         const prior = ownReview.get(snapshot.path, user.id);
+        // An unchanged historical precise score survives a note-only edit.
+        // Newly selected values still use half-stars, checked against the row
+        // under the writer lock so a stale request cannot restore an old score.
+        if (!Number.isInteger(rating * 2) && prior?.rating !== rating) throw invalid('Choose a rating from 0.5 to 5 stars.');
         if (prior && db.prepare("SELECT 1 FROM reports WHERE target_type='venue_review' AND target_id=? AND status='open'").get(prior.id)) throw conflict();
         if (prior) db.prepare('UPDATE venue_reviews SET rating=?,text=?,updated_at=? WHERE id=?').run(rating, text, now(), prior.id);
         else db.prepare("INSERT INTO venue_reviews(id,venue_key,user_id,rating,text,created_at) VALUES(?,?,?,?,?,?)").run(uid('vr'), snapshot.path, user.id, rating, text, now());

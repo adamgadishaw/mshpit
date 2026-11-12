@@ -55,7 +55,12 @@ test("canonical and legacy venue ratings agree across authenticated HTTP, SQLite
     for (const [id, author, rating] of [["vr_http_old", member.id, 4.2], ["vr_http_other", other.id, 0.5]]) {
       database.prepare("INSERT INTO venue_reviews(id,venue_key,user_id,rating,text,created_at) VALUES(?,?,?,?,?,?)").run(id, name.toLowerCase(), author, rating, "", 1);
     }
+    database.prepare("INSERT INTO venue_reviews(id,venue_key,user_id,rating,text,created_at) VALUES('vr_http_precise',?,?,4.2,'Historical note',1)").run(path, member.id);
     database.exec('COMMIT');
+    const precise = await request("/api/venue-community/rating", { path, rating: 4.2, text: "Only updating the note." }, "PUT");
+    assert.equal(precise.status, 200, JSON.stringify(precise.data));
+    assert.equal(precise.data.myReview.id, 'vr_http_precise'); assert.equal(precise.data.myReview.rating, 4.2);
+    assert.equal(database.prepare("SELECT rating FROM venue_reviews WHERE id='vr_http_precise'").get().rating, 4.2);
     const saved = await request("/api/venue-community/rating", { path, rating: 0.5, text: "" }, "PUT");
     assert.equal(saved.status, 200, JSON.stringify(saved.data));
     assert.deepEqual(saved.data.rating, { count: 2, average: 0.5 });

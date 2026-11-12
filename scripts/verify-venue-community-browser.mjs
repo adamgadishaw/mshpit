@@ -15,11 +15,13 @@ const { server, origin } = await localServer();
 let browser;
 try {
   browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
-  for (const width of [375, 1280]) for (const member of [false, true]) {
+  for (const width of [375, 1280]) for (const mode of ['guest', 'member', 'legacy-precise']) {
+    const member = mode !== 'guest', precise = mode === 'legacy-precise';
     const context = await browser.newContext({ viewport: { width, height: 900 }, serviceWorkers: 'block' });
     const errors = [], mutations = [];
     let readFailure = true, saveFailure = true, claimFailure = true;
     const community = { path, ownership: 'community', isOperator: false, claim: null, myReview: null, rating: { count: 0, average: null }, reviews: [], nextCursor: null };
+    if (precise) { community.myReview = { id: 'vr_historical', rating: 4.2, text: 'Historical authored note.' }; community.rating = { count: 1, average: 4.2 }; }
     await context.route('**/*', async route => {
       const req = route.request(), url = new URL(req.url());
       if (url.origin !== origin) return route.abort();
@@ -54,12 +56,12 @@ try {
       } catch (error) { errors.push(error.message); return respond({ error: 'Missing fixture', code: 'INTERNAL_ERROR' }, 500); }
     });
     const page = await context.newPage(); page.setDefaultTimeout(15000); page.on('pageerror', error => errors.push(error.message));
-    const name = `venue-community-${member ? 'member' : 'guest'}-${width}`;
+    const name = `venue-community-${mode}-${width}`;
     try {
       await page.goto(origin + path, { waitUntil: 'domcontentloaded' });
       await page.getByRole('button', { name: 'Retry venue community', exact: true }).click();
       await page.getByText('Community-run page', { exact: true }).waitFor();
-      await page.getByText('No venue ratings yet', { exact: true }).waitFor();
+      if (!precise) await page.getByText('No venue ratings yet', { exact: true }).waitFor();
       if (member) {
         await page.getByRole('button', { name: 'Rate this venue', exact: true }).click();
         await page.getByLabel('Your venue rating', { exact: true }).press('End');
@@ -71,8 +73,8 @@ try {
         assert.equal(await draft.inputValue(), 'Clear sound with good views from the balcony.');
         await page.getByRole('button', { name: 'Save venue rating', exact: true }).click();
         await page.getByText('Your venue rating is saved.', { exact: true }).waitFor();
-        await page.getByText('4.5', { exact: true }).first().waitFor();
-        assert.equal(community.myReview.rating, 4.5, 'Half-stars survive the composer and save/retry path');
+        await page.getByText(precise ? '4.2' : '4.5', { exact: true }).first().waitFor();
+        assert.equal(community.myReview.rating, precise ? 4.2 : 4.5, 'Unchanged legacy precision and half-stars survive note edits and failed-save retry');
         await page.getByRole('button', { name: 'Edit your venue rating', exact: true }).click();
         await page.getByLabel('Your venue rating', { exact: true }).press('End');
         await page.getByRole('button', { name: 'Save venue rating', exact: true }).click();
