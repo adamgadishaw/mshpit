@@ -1,3 +1,4 @@
+import { assertEventRsvpAvailable } from "./domain/eventRsvp.mjs";
 const claimIOSCommentRead = Platform.OS === "ios" ? require("./lib/iosCommentReadFence.ios.js").claimIOSCommentRead : null;
 import { createFeedHeadStatus, hasFeedHeadReceipt } from "./hooks/feedHeadStatus";
 const invalidateIOSDetailPrivacy = Platform.OS === "ios" ? require("./lib/iosDetailPrivacy").invalidateIOSDetailPrivacy : null;
@@ -5090,6 +5091,10 @@ export function StoreProvider({ children }) {
       venue: entry.venue, venueKey: entry.venueKey, city: entry.city, date: entry.date, tour: entry.tour,
     };
     const scope = goingIntentKey(actor.id, goingEntryIdentity(entry));
+    // Opening an already-saved Lounge is a read, not another RSVP write.
+    if (desired && previousEntry && !Object.hasOwn(goingPendingRef.current, scope)) {
+      return Promise.resolve({ ok: true, going: true });
+    }
     const currentGoing = (goingRef.current[actor.id] || [])
       .some((item) => goingEntryMatches(item, key, tourDateId));
     if (!Object.prototype.hasOwnProperty.call(goingPendingRef.current, scope)) goingConfirmedRef.current.set(scope, currentGoing);
@@ -5099,12 +5104,15 @@ export function StoreProvider({ children }) {
       accountId: actor.id,
       showKey: goingEntryIdentity(entry),
       desired,
-      send: () => api("/api/going", {
-        method: "POST",
-        body: { ...requestEntry, going: desired },
-        context,
-        expectedAccountId: actor.id,
-      }),
+      send: () => {
+        if (desired) assertEventRsvpAvailable(entry);
+        return api("/api/going", {
+          method: "POST",
+          body: { ...requestEntry, going: desired },
+          context,
+          expectedAccountId: actor.id,
+        });
+      },
     });
     goingPendingRef.current = { ...goingPendingRef.current, [scope]: operation.revision };
     setGoingPending(goingPendingRef.current);

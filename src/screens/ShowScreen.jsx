@@ -1,3 +1,5 @@
+import useEventRsvp from "../hooks/useEventRsvp";
+import { eventRsvpWindow } from "../domain/eventRsvp.mjs";
 import ShowSection from "../features/showDetails/ShowSection";
 import { savedShowRating, showPageRating, showPageEventArtwork } from "../domain/showPageDetails.mjs";
 import useIOSDetailBackBlock from "../hooks/useIOSDetailBackBlock";
@@ -561,6 +563,10 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     eventIdentitySnapshot,
   );
   const presentation = showPresentationModel(lifecycleView);
+  const rsvpShow = { ...norm, ...(trustedShow || {}),
+    eventTimezone: trustedShow?.timezone || norm.eventTimezone,
+  };
+  const rsvp = useEventRsvp(rsvpShow);
   const [, setCountdownRevision] = useState(0);
   const handleCountdownComplete = useCallback(() => {
     // Doors, access, and showtime are separate phases. The label owns the
@@ -608,6 +614,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     }
   };
   const toggleLegacyGoing = async () => {
+    if (!going && !eventRsvpWindow(rsvpShow).canPlan) return;
     if (!session) {
       onRequireAuth?.();
       return;
@@ -621,7 +628,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     }
     if (!wasGoing && tourDateId) setGoingTicketPrompt({ ready: true });
   };
-  const legacyGoingButton = liveActionsAvailable && !lifecycleView.trusted && presentation.allowGoing ? <Pressable
+  const legacyGoingButton = liveActionsAvailable && !lifecycleView.trusted && (going || (presentation.allowGoing && rsvp.canPlan)) ? <Pressable
             style={[styles.goingBtn, going && styles.goingOn, goingBusy && styles.goingBusy]}
             onPress={() => { void toggleLegacyGoing(); }}
             accessibilityRole="button"
@@ -822,7 +829,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             lifecycle={lifecycleView.lifecycle}
             onRequireAuth={onRequireAuth}
             onSaved={handleAttendanceSaved}
-            show={{ ...trustedShow, tourDateId }}
+            show={{ ...rsvpShow, tourDateId }}
           />
         ) : null}
 

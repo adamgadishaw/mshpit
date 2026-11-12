@@ -26,6 +26,7 @@ export const ERROR_CATALOG = Object.freeze({
   ACCOUNT_CHANGED: { status: 409, retryable: false },
   ALREADY_VERIFIED: { status: 409, retryable: false },
   CHECK_IN_UNAVAILABLE: { status: 409, retryable: false },
+  EVENT_RSVP_CLOSED: { status: 409, retryable: false },
   IDEMPOTENCY_MISMATCH: { status: 409, retryable: false },
   IDENTITY_CHANGED: { status: 409, retryable: false },
   POST_REMOVED: { status: 409, retryable: false },

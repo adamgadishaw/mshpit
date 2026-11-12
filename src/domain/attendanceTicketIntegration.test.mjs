@@ -40,7 +40,7 @@ test("ticket transport sends only the exact event identity and explicit seat con
   assert.match(store, /\.\.\.\(tourDateId \? \{ tourDateId \} : \{\}\)/,
     "legacy Going writes retain the exact catalogue event alongside the display key");
   assert.match(show, /toggleGoing\(\{ \.\.\.norm, tourDateId \}\)/);
-  assert.match(show, /show=\{\{ \.\.\.trustedShow, tourDateId \}\}/,
+  assert.match(show, /show=\{\{ \.\.\.rsvpShow, tourDateId \}\}/,
     "typed attendance writes retain the same exact catalogue identity");
 });
 

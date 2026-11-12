@@ -23,7 +23,7 @@ function fixture() {
     PRAGMA foreign_keys=ON;
     CREATE TABLE tour_dates (
       id TEXT PRIMARY KEY,owner_id TEXT,artist_identity_status TEXT,source TEXT,provider_event_id TEXT,
-      date TEXT,start_date_time TEXT,start_local_time TEXT,event_timezone TEXT,event_status TEXT
+      date TEXT,start_date_time TEXT,start_local_time TEXT,event_timezone TEXT,event_end_date TEXT, event_status TEXT
     );
     CREATE TABLE users (
       id TEXT PRIMARY KEY, is_banned INTEGER NOT NULL DEFAULT 0,

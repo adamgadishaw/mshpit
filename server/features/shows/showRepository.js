@@ -32,6 +32,7 @@ function sourceTiming(source, at) {
     localDate: source.date || null,
     startsAt: Number.isFinite(startAt) ? startAt : null,
     startLocalTime: source.start_local_time || null,
+    eventEndDate: source.event_end_date || null,
     timezone: liveEventTimeZone(source),
     lifecycle: tourDateShowLifecycle(source, at),
   };
@@ -44,7 +45,7 @@ export function createShowRepository(database, { now = () => Date.now() } = {}) 
   // the lazy attendance allocator, so an unknown URL cannot create catalogue data.
   const byId = database.prepare("SELECT * FROM shows WHERE id=?");
   const sourceFields = `owner_id,artist_identity_status,source,provider_event_id,
-    date,start_date_time,start_local_time,event_timezone,event_status`;
+    date,start_date_time,start_local_time,event_timezone,event_status,event_end_date`;
   const sourceById = database.prepare(`SELECT ${sourceFields} FROM tour_dates WHERE id=?`);
   const sourceByProvider = database.prepare(`SELECT owner_id,artist_identity_status FROM tour_dates
     WHERE owner_id IS NULL AND source=? AND provider_event_id=?

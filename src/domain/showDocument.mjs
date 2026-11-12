@@ -55,6 +55,8 @@ export function normalizeShowDocument(payload) {
     date: text(source.date),
     localDate: text(source.localDate),
     startsAt: timestamp(source.startsAt),
+    ...(text(source.eventEndDate) ? { eventEndDate: text(source.eventEndDate) } : {}),
+    ...(timestamp(source.endsAt) ? { endsAt: timestamp(source.endsAt) } : {}),
     startLocalTime: text(source.startLocalTime),
     timezone: text(source.timezone),
     lifecycle: SHOW_LIFECYCLES.has(lifecycle) ? lifecycle : "unknown",
@@ -128,7 +130,7 @@ export function showPresentationModel(lifecycleView) {
       showCountdown: upcoming,
       showPostEvent: !upcoming,
       allowTickets: upcoming,
-      allowGoing: true,
+      allowGoing: upcoming,
     };
   }
   switch (view.lifecycle) {
@@ -148,7 +150,7 @@ export function showPresentationModel(lifecycleView) {
         showCountdown: false,
         showPostEvent: true,
         allowTickets: false,
-        allowGoing: true,
+        allowGoing: false,
       };
     default:
       return {

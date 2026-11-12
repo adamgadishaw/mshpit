@@ -11,15 +11,17 @@ const React = require("react"), reconciler = require("react-reconciler");
 const { transformSync } = require("@babel/core");
 const noop = () => {};
 const codes = new Map();
-function execute(file, imports) {
+function execute(file, imports, timers = null) {
   const absolute = path.join(root, file);
   if (!codes.has(file)) codes.set(file, transformSync(readFileSync(absolute, "utf8"), {
     filename: absolute, babelrc: false, configFile: false,
     plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
   }).code);
   const module = { exports: {} };
-  new Function("require", "module", "exports", codes.get(file))(
-    name => imports(name, createRequire(absolute)), module, module.exports);
+  new Function("require", "module", "exports", "setTimeout", "clearTimeout", codes.get(file))(
+    name => imports(name, createRequire(absolute)), module, module.exports,
+    timers ? fn => { const key = {}; timers.set(key, fn); return key; } : setTimeout,
+    timers ? key => timers.delete(key) : clearTimeout);
   return module.exports;
 }
 function createRenderer() {
@@ -59,14 +61,15 @@ const privateReview = { id: "private-review", userId: "reviewer", user: { id: "r
 // Production Show, attendance, public-event/memorial/archive hooks, composer,
 // countdown, sourced context, maps and ticket actions. Only native hosts,
 // transport and account Store are synthetic. No network or account is touched.
-function fixture({ strict = false, publicEvent = false, deferredLinks = false, nativeTickets = false, nativeStack = false } = {}) {
+function fixture({ strict = false, publicEvent = false, deferredLinks = false, nativeTickets = false, nativeStack = false, logOverrides = {}, savedAttendance = null } = {}) {
   const renderer = createRenderer(), reads = [], writes = [], receipts = [], opens = [], speech = [], timers = new Map();
+  const rsvpTimers = new Map();
   const modules = new Map(), context = require("./src/components/iosDetailPresentationContext.mjs");
   const privacy = require("./src/domain/iosDetailPrivacyEpoch.mjs").createIOSDetailPrivacyEpoch();
   let active = true, authority = {}, account = "A", epoch = 1, suspended = false;
   const log = { id: "tm_fixture", artist: "Fixture artist", artistKey: "artist_fixture", venue: "Fixture hall", city: "Fixture city",
     date: "2099-01-01", startDateTime: "2099-01-01T20:00:00Z", source: "ticketmaster", ticketUrl: "https://concert-seller.com/ticket",
-    inTourWindow: true, setlist: ["First song"], ...(publicEvent ? { artistIdentityPending: true } : { archiveShowKey: "show_archive" }) };
+    inTourWindow: true, setlist: ["First song"], ...(publicEvent ? { artistIdentityPending: true } : { archiveShowKey: "show_archive" }), ...logOverrides };
   const document = { id: "show_" + "a".repeat(64), canonicalKey: "fixture-key", artist: log.artist, artistKey: log.artistKey,
     venue: log.venue, localDate: log.date, startsAt: Date.parse(log.startDateTime), lifecycle: "upcoming",
     provider: { name: "ticketmaster", eventId: log.id, backed: true } };
@@ -91,7 +94,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
     },
     timing: animation, loop: animation, sequence: animation,
   };
-  const native = { Animated, Easing: { linear: value => value }, AppState: { currentState: "active" }, Platform: { OS: "ios", select: choices => choices.ios || choices.default },
+  const native = { Animated, Easing: { linear: value => value }, AppState: { currentState: "active", addEventListener: () => ({ remove: noop }) }, Platform: { OS: "ios", select: choices => choices.ios || choices.default },
     View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", RefreshControl: "RefreshControl",
     StyleSheet: { create: value => value, absoluteFill: {} }, useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1 }),
     Linking: { openURL: url => { const request = { kind: "link", url, ...deferred() }; opens.push(request);
@@ -144,6 +147,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
     if (name.endsWith("/useArtistEventArchive")) return load("src/features/artistEvents/useArtistEventArchive.ios.js");
     if (name.endsWith("/useCanonicalArtistIdentity")) return load("src/hooks/useCanonicalArtistIdentity.ios.js");
     if (name.endsWith("/usePublicEventSnapshot")) return load("src/hooks/usePublicEventSnapshot.ios.js");
+    if (name.endsWith("/useEventRsvp")) return execute("src/hooks/useEventRsvp.js", imports, rsvpTimers);
     if (name.endsWith("/useScopedRefresh")) return load("src/hooks/useScopedRefresh.ios.js");
     if (name.endsWith("/VinylRefreshBoundary")) return load("src/components/VinylRefreshBoundary.ios.jsx");
     if (name.endsWith("/ShowAttendanceControls")) return load("src/features/showSocial/ShowAttendanceControls.ios.jsx");
@@ -227,7 +231,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
         request.done = true;
         const defaults = {
           document, public: { ...log, name: log.artist, artistIdentityPending: false }, memorial: null, photos: [],
-          crowd: { scope: request.options.scope, attendees: [{ id: "fan", name: "Fixture fan", state: "going" }], total: 1 },
+          crowd: { viewerAttendance: savedAttendance, scope: request.options.scope, attendees: [{ id: "fan", name: "Fixture fan", state: "going" }], total: 1 },
           lounge: { messageCount: 3 }, reviews: { reviews: [], total: 0 }, catalog: { text: { summary: "Verified context", sources: [{ label: "Event source", url: "https://fixture.test/source" }] } },
         };
         request.resolve(defaults[request.kind]);
@@ -235,7 +239,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
       await flush();
     }
   };
-  const f = { reads, writes, receipts, opens, speech, timers, document, render, flush, all, label, layers, resolveReads,
+  const f = { reads, writes, receipts, opens, speech, timers, rsvpTimers, log, document, render, flush, all, label, layers, resolveReads,
     text: () => text(activeTree()), act: renderer.act,
     pushDuplicate() { frames = [...frames, { openLog: { ...log } }]; render(); },
     popDuplicate() { frames = frames.slice(0, -1); render(); },
@@ -586,4 +590,56 @@ test("privacy-only invalidation retires Maps, source alerts and queued countdown
   f.render(); source(); maps(); assert.equal(f.opens.length, 2);
   f.act(f.label("Source: Event source").props.onNavigate); assert.equal(f.opens.length, 3);
   f.opens[2].resolve();
+});
+
+for (const strict of [false, true]) test('past Top Rated native show has no planning actions (StrictMode ' + strict + ')', async t => {
+  const f = fixture({ strict, logOverrides: { date: "2020-01-01", startDateTime: "2020-01-01T20:00:00Z", performanceEvent: true, overall: 4.7, ratingCount: 17 } });
+  t.after(f.close); await f.ready();
+  assert.equal(f.label("Interested"), undefined);
+  assert.equal(f.label("Going"), undefined);
+  assert.equal(f.label("Add this show to Going"), undefined);
+  assert.ok(f.label("Attended"), "history recording remains available");
+  assert.equal(f.writes.length, 0);
+});
+
+test("captured native RSVP cannot dispatch after exact end, including suspended timer delivery", async t => {
+  let now = Date.parse("2026-11-12T22:59:59Z");
+  t.mock.method(Date, "now", () => now);
+  const f = fixture({ logOverrides: { date: "2026-11-12", startDateTime: "2026-11-12T21:00:00Z", endAt: "2026-11-12T23:00:00Z" } });
+  t.after(f.close); await f.ready();
+  const going = f.label("Going").props.onPress, interested = f.label("Interested").props.onPress;
+  now += 1000;
+  f.act(() => { going(); interested(); });
+  assert.equal(f.writes.length, 0, "expiry checked at action time, before transport");
+  f.act(() => { for (const tick of [...f.rsvpTimers.values()]) tick(); });
+  await f.flush();
+  assert.equal(f.label("Going"), undefined);
+  assert.equal(f.label("Interested"), undefined);
+  assert.ok(f.label("Attended"));
+  f.cover(); await f.flush();
+  assert.equal(f.rsvpTimers.size, 0, "covered native detail owns no expiry timers");
+});
+
+test("past native plans retain explicit removal and private visibility without granting new RSVP", async t => {
+  const f = fixture({ logOverrides: { date: "2020-01-01", startDateTime: "2020-01-01T20:00:00Z" },
+    savedAttendance: { state: "going", visibility: "members" } });
+  t.after(f.close); await f.ready();
+  assert.equal(f.label("Going"), undefined);
+  assert.equal(f.label("Interested"), undefined);
+  const remove = f.all().find(node => node.props?.accessibilityLabel?.startsWith("Remove ") && node.props.accessibilityLabel.endsWith(" from this show"));
+  assert.ok(remove);
+  f.act(() => remove.props.onPress());
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.writes[0].options.state, null);
+});
+
+test("an ongoing native multi-day range permits planning despite stale completed opening-night lifecycle", async t => {
+  t.mock.method(Date, "now", () => Date.parse("2026-11-14T12:00:00Z"));
+  const f = fixture({ logOverrides: { date: "2026-11-10", startDateTime: "2026-11-10T20:00:00Z",
+    eventEndDate: "2026-11-15", eventTimezone: "America/Toronto" } });
+  f.document.lifecycle = "completed";
+  t.after(f.close); await f.ready();
+  assert.ok(f.label("Going"));
+  f.press("Going");
+  assert.equal(f.writes.length, 1);
 });

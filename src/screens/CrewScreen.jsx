@@ -1,3 +1,4 @@
+import { eventRsvpWindow } from "../domain/eventRsvp.mjs";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import ScrollView from "../components/PageScrollView";
@@ -119,14 +120,27 @@ export default function CrewScreen({ initialTab = "shows", onClose, onOpenShow, 
     setDeck((current) => ({ ...current, shows: without(current.shows) }));
     try {
       if (direction === "left") { await passCrewShow(show.tourDateId); return; }
+      if (!eventRsvpWindow(show).canPlan) { flash("This show has ended and is no longer available for new plans."); return; }
       const state = direction === "up" ? "interested" : "going";
-      await markCrewShow(show.tourDateId, state);
+      await markCrewShow(show.tourDateId, state, show);
       setSaved({ show, state });
     } catch (error) {
       setDeck((current) => ({ ...current, shows: [show, ...without(current.shows)] }));
       flash(error?.userMessage || "That didn't save. Check your connection and try again.");
     }
   };
+
+  const deckBoundary = deck.shows.reduce((first, show) => {
+    const window = eventRsvpWindow(show);
+    return window.canPlan && window.closesAt != null && (first == null || window.closesAt < first) ? window.closesAt : first;
+  }, null);
+  useEffect(() => {
+    if (deckBoundary == null) return undefined;
+    const timer = setTimeout(() => setDeck(current => ({ ...current })),
+      Math.min(60_000, Math.max(1, deckBoundary - Date.now())));
+    return () => clearTimeout(timer);
+  }, [deck, deckBoundary]);
+  const availableShows = deck.shows.filter(show => eventRsvpWindow(show).canPlan);
 
   if (!session) {
     return (
@@ -198,7 +212,7 @@ export default function CrewScreen({ initialTab = "shows", onClose, onOpenShow, 
             {deck.status === "loading" && !deck.shows.length ? <ActivityIndicator color={colors.amber} style={{ marginTop: 60 }} /> : (
               <SwipeDeck
                 ref={deckRef}
-                items={deck.shows}
+                items={availableShows}
                 keyOf={(show) => show.tourDateId}
                 reduceMotion={reduceMotion}
                 labels={{ left: "Skip", right: "Going", up: "Interested" }}
@@ -220,7 +234,7 @@ export default function CrewScreen({ initialTab = "shows", onClose, onOpenShow, 
                 )}
               />
             )}
-            {deck.shows.length ? (
+            {availableShows.length ? (
               <DeckButtons
                 onPass={() => deckRef.current?.swipe("left")}
                 onInterested={() => deckRef.current?.swipe("up")}

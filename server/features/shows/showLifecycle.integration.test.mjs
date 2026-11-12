@@ -197,3 +197,44 @@ test("elapsed allocation becomes eligible in time, while saved Here privacy and 
   assert.equal(f.post(f.owner, { key: f.alias, state: "went" }).state, "went");
   assert.equal(f.post(f.owner, { key: f.saved.showId, state: null }).attendance, null);
 });
+
+test("new plans expire for exact IDs, stable IDs and aliases without deleting old attendance", t => {
+  const f = fixture(t);
+  f.setNow(AT + 3 * 24 * HOUR);
+  const before = db.prepare("SELECT * FROM show_attendance WHERE user_id=?").get(f.owner.id);
+  for (const [index, identity] of f.identities.entries()) {
+    const user = f.addUser("expired_" + index);
+    for (const state of ["going", "interested"]) assert.throws(
+      () => f.post(user, {...identity, state, date:"2099-01-01"}),
+      error => error.code === "EVENT_RSVP_CLOSED" && error.status === 409);
+    assert.equal(db.prepare("SELECT count(*) n FROM show_attendance WHERE user_id=?").get(user.id).n, 0);
+  }
+  assert.deepEqual(db.prepare("SELECT * FROM show_attendance WHERE user_id=?").get(f.owner.id), before);
+  assert.equal(f.post(f.owner, {key:f.saved.showId,state:"going"}).attendance.state,"going", "exact retry is not a new plan");
+  assert.equal(f.post(f.owner, {key:f.saved.showId,visibility:"private"}).attendance.visibility,"private");
+  assert.equal(f.post(f.owner, {key:f.saved.showId,state:null}).attendance,null);
+  assert.throws(()=>f.post(f.owner,{key:f.saved.showId,state:"going"}),error=>error.code==="EVENT_RSVP_CLOSED");
+  assert.equal(f.post(f.owner,{key:f.saved.showId,state:"went"}).attendance.state,"went");
+});
+
+test("past legacy alias cannot be made future by request metadata and allocates no rows", t => {
+  const f=fixture(t), user=f.addUser("legacy_expired");
+  const before=db.prepare("SELECT count(*) n FROM shows").get().n;
+  assert.throws(()=>f.post(user,{key:"Old artist|Old venue|2020-01-01",artist:"Old artist",venue:"Old venue",
+    date:"2027-01-01",going:true}),error=>error.code==="EVENT_RSVP_CLOSED");
+  assert.equal(db.prepare("SELECT count(*) n FROM shows").get().n,before);
+  assert.equal(db.prepare("SELECT count(*) n FROM going WHERE user_id=?").get(user.id).n,0);
+});
+
+test("current multi-day source survives opening-night expiry and fresh cancellation closes planning", t => {
+  const f=fixture(t);
+  f.update({date:"2026-11-08",start_date_time:"2026-11-08T19:00:00Z",event_end_date:"2026-11-15",event_kind:"festival"});
+  for(const [index,identity] of f.identities.entries()) {
+    const user=f.addUser("ongoing_"+index);
+    assert.equal(f.post(user,{...identity,state:"interested"}).state,"interested");
+  }
+  f.update({event_status:"cancelled"});
+  for(const [index,identity] of f.identities.entries()) assert.throws(
+    ()=>f.post(f.addUser("cancelled_"+index),{...identity,state:"going"}),error=>error.code==="EVENT_RSVP_CLOSED");
+  assert.equal(f.post(f.owner,{key:f.saved.showId,state:null}).attendance,null);
+});

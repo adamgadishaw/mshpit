@@ -1,3 +1,4 @@
+import { eventRsvpWindow } from "./eventRsvp.mjs";
 export const ATTENDANCE_STATES = Object.freeze(["interested", "going", "here", "went"]);
 export const ATTENDANCE_VISIBILITIES = Object.freeze(["members", "followers", "private"]);
 export const CROWD_SCOPES = Object.freeze(["everyone", "following", "friends"]);
@@ -73,6 +74,8 @@ export function attendanceStateDisplayLabel(state, { show = null, now = Date.now
   if (!normalized) return null;
   if (normalized === "interested") return "Interested";
   if (normalized === "went") return "Attended";
+  // An opening-night display estimate must not relabel an ongoing range.
+  if (show && eventRsvpWindow(show, now).canPlan) return normalized === "here" ? "Here" : "Going";
   const cutoff = parsedTime(cutoffAt) ?? postShowAttendanceCutoff(show);
   if ((normalized === "going" || normalized === "here") && cutoff != null && Number(now) >= cutoff) {
     return "Attended";

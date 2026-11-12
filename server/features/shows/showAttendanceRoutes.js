@@ -1,4 +1,5 @@
 import { createShowAttendanceRepository } from "./showAttendanceRepository.js";
+import { eventRsvpWindow } from "../../../src/domain/eventRsvp.mjs";
 import {
   isAttendeeState,
   normalizeAttendanceState,
@@ -167,6 +168,7 @@ export function showAttendanceRoutes({
         }
 
         const removal = state === null;
+        const newPlan = ["interested", "going"].includes(state) && state !== current?.state;
         const freshLiveTransition = state === "here" && current?.state !== "here";
         const visibility = !removal && hasVisibility
           ? requestedVisibility
@@ -188,7 +190,7 @@ export function showAttendanceRoutes({
         // transition while holding the write lock; cancellation, rescheduling,
         // removal, and visibility changes must invalidate an old Show copy.
         let liveDescriptor = exactDescriptor;
-        if (freshLiveTransition && existing.show?.persisted
+        if ((freshLiveTransition || newPlan) && existing.show?.persisted
           && (!exactDescriptor || existing.show.tourDateId || existing.show.provider)) {
           const sourceId = repository.sourceTourDateId(existing.show);
           if (!sourceId) liveDescriptor = null;
@@ -196,6 +198,10 @@ export function showAttendanceRoutes({
             liveDescriptor = typeof resolveTourDateShow === "function"
               ? resolveTourDateShow(user, sourceId, operationAt) : null;
           }
+        }
+
+        if (newPlan && existing.show?.persisted && existing.show?.provider && !liveDescriptor) {
+          throw new ApiError(404, "That event is no longer available for new plans.", "NOT_FOUND");
         }
 
         let artist = "";
@@ -236,6 +242,16 @@ export function showAttendanceRoutes({
         }
 
         const writeAt = now();
+        const aliasDates = [...new Set([key, ...(existing.show?.aliases || [])]
+          .map(alias => cleanDate(String(alias || "").split("|").at(-1))).filter(Boolean))];
+        const planningShow = liveDescriptor || exactDescriptor || {
+          ...(existing.show || {}),
+          date: existing.show?.date || (aliasDates.length === 1 ? aliasDates[0] : null)
+            || current?.snapshot?.date || date,
+        };
+        if (newPlan && !eventRsvpWindow(planningShow, writeAt).canPlan) {
+          throw new ApiError(409, "This show is no longer available for new plans. You can still remove an existing plan or record attendance.", "EVENT_RSVP_CLOSED");
+        }
         const exactShow = freshLiveTransition && liveDescriptor
           ? repository.ensureExactShow(liveDescriptor, writeAt) : null;
         if (freshLiveTransition && (!exactShow
@@ -243,7 +259,7 @@ export function showAttendanceRoutes({
           || !repository.checkInAvailable(exactShow.id, writeAt))) {
           throw new ApiError(
             409,
-            "Live check-in is not available for this show yet. You can still mark Going or Went.",
+            "Live check-in is not available for this show. You can still record past attendance.",
             "CHECK_IN_UNAVAILABLE",
           );
         }

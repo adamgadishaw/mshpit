@@ -2364,6 +2364,7 @@ function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
     startAt: Number.isFinite(startAt) ? startAt : null,
     startLocalTime: providerFields.startLocalTime,
     timezone: liveEventTimeZone(row),
+    eventEndDate: row.event_end_date || null,
     lifecycle: tourDateShowLifecycle(row, at),
     tour: providerFields.tourName,
     provider: providerFields.providerEventId ? provider : null,

@@ -8,6 +8,7 @@ import {
 } from "../../domain/showAttendance.mjs";
 import { normalizeLoungeMeta } from "../../domain/showSocial.mjs";
 import { normalizeShowDocument } from "../../domain/showDocument.mjs";
+import { assertEventRsvpAvailable } from "../../domain/eventRsvp.mjs";
 
 const expectedAccountId = (value) => value == null || value === "" ? null : String(value);
 
@@ -92,6 +93,10 @@ export async function writeShowAttendance(options = {}, services = {}) {
     : null;
   if (hasVisibility && !ATTENDANCE_VISIBILITIES.includes(nextVisibility)) {
     throw new TypeError("Typed attendance visibility is invalid");
+  }
+  if (["interested", "going"].includes(nextState)
+    && !(hasVisibility && options.currentAttendance?.state === nextState)) {
+    assertEventRsvpAvailable(show, services.now?.() ?? Date.now());
   }
   const body = {
     key: id,

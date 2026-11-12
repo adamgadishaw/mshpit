@@ -1,3 +1,4 @@
+import { assertEventRsvpAvailable } from "../domain/eventRsvp.mjs";
 import { api } from "./api";
 
 // Show swipe. Every call is silent so the screen shows its own friendly
@@ -14,7 +15,8 @@ export function passCrewShow(tourDateId) {
 }
 
 // Right or up on a show: the same attendance every other screen uses.
-export function markCrewShow(tourDateId, state) {
+export function markCrewShow(tourDateId, state, show = null) {
+  if (show) assertEventRsvpAvailable(show);
   return request("/api/going", {
     method: "POST",
     body: { tourDateId, state },

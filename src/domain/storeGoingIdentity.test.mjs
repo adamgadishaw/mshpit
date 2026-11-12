@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import test from "node:test";
+import test, { beforeEach } from "node:test";
+import { assertEventRsvpAvailable } from "./eventRsvp.mjs";
+beforeEach(t => t.mock.method(Date, "now", () => Date.parse("2026-09-16T12:00:00Z")));
 import { parse } from "@babel/parser";
 import { attendancePlanDetails, hydrateAttendanceGoingRows, reconcileAttendancePlan, replaceGoingPlan } from "./attendancePlanCache.mjs";
 import { toIsoDate } from "./dates.mjs";
@@ -32,7 +34,7 @@ function fixture(rows = []) {
   const goingConfirmedRef = { current: new Map() };
   const goingPendingRef = { current: {} }, goingMutationRevisionRef = { current: 0 };
   const dependencies = {
-    attendancePlanDetails, hydrateAttendanceGoingRows, reconcileAttendancePlan, replaceGoingPlan, toIsoDate, goingIntentKey,
+    assertEventRsvpAvailable, attendancePlanDetails, hydrateAttendanceGoingRows, reconcileAttendancePlan, replaceGoingPlan, toIsoDate, goingIntentKey,
     goingRef, goingIntentRef, goingConfirmedRef, goingPendingRef, goingMutationRevisionRef, sessionRef,
     currentMutationActor: () => sessionRef.current,
     setGoing: (value) => { state.going = value; },
@@ -210,4 +212,36 @@ test("Store refresh retains exact display timing and does not resurrect omitted 
   }), true);
   assert.equal(f.state.going[owner.id][0].startDateTime, early.startDateTime,
     "a subsequent sparse typed write preserves the richer refreshed Going projection");
+});
+
+test("past Store planning does not dispatch, but removal and existing Lounge access remain supported", async t => {
+  t.mock.method(Date, "now", () => Date.parse("2027-01-01T12:00:00Z"));
+  const fresh=fixture();
+  assert.equal((await fresh.actions.setGoingIntent(early,true)).ok,false);
+  assert.equal(fresh.calls.length,0);
+  const saved=fixture([early]);
+  assert.equal((await saved.actions.setGoingIntent(early,true)).going,true);
+  assert.equal(saved.calls.length,0,"already-saved history is not rewritten");
+  const remove=saved.actions.setGoingIntent(early,false);
+  await tick();
+  assert.equal(saved.calls.length,1);
+  assert.equal(saved.calls[0].options.body.going,false);
+  saved.calls[0].resolve({going:false});
+  assert.equal((await remove).ok,true);
+});
+
+test("a queued Store RSVP rechecks its time before dispatch and rolls back an expired optimistic plan", async t => {
+  let now=Date.parse("2026-09-16T19:59:59Z");
+  t.mock.method(Date,"now",()=>now);
+  const event={...early,eventEndDate:null,startDateTime:"2026-09-16T18:00:00Z",endAt:"2026-09-16T20:00:00Z"};
+  const f=fixture([event]);
+  const removal=f.actions.setGoingIntent(event,false);
+  await tick();
+  const add=f.actions.setGoingIntent(event,true);
+  now+=1000;
+  f.calls[0].resolve({going:false});
+  await removal;
+  assert.equal((await add).ok,false);
+  assert.equal(f.calls.length,1,"expired queued addition never reaches transport");
+  assert.deepEqual(f.state.going[owner.id],[]);
 });

@@ -72,7 +72,7 @@ function firstAbsolute(values) {
 }
 
 /** Venue timing only: doors/access/countdown defaults are never show starts. */
-export function calendarEventTiming(event = {}) {
+export function calendarEventTiming(event = {}, { allowStandaloneEnd = false } = {}) {
   const date = calendarReadDate(event.date || event.localDate);
   const proposedEnd = calendarReadDate(event.eventEndDate || event.endDate);
   // Bound malformed spans before the calendar expands them into day cells.
@@ -114,7 +114,11 @@ export function calendarEventTiming(event = {}) {
       .map((value) => localClock(value, endDate)).find(Boolean);
     endAt = localInstant(endDate, endClock, timeZone);
   }
-  if (!startAt || !endAt || endAt <= startAt) endAt = null;
+  if ((!startAt && !allowStandaloneEnd) || !endAt || (startAt && endAt <= startAt)) endAt = null;
+  if (endAt && allowStandaloneEnd && date) {
+    const finalDay = timeZone ? zoneParts(Date.parse(endAt), timeZone).slice(0, 10) : endAt.slice(0, 10);
+    if (timeZone ? finalDay < date : Date.parse(date) - Date.parse(finalDay) > DAY_MS) endAt = null;
+  }
   if (endAt && endDate > date) {
     const finalDay = timeZone ? zoneParts(Date.parse(endAt), timeZone).slice(0, 10) : endAt.slice(0, 10);
     if (finalDay < endDate) endAt = null;
@@ -128,4 +132,13 @@ export function calendarEventTiming(event = {}) {
     startLabel = `${hour % 12 || 12}:${displayClock.slice(3, 5)} ${hour >= 12 ? "PM" : "AM"}${!startLocalTime && offsetLabel ? ` (${offsetLabel})` : ""}`;
   }
   return { date, endDate, timeZone, startAt, endAt, startLocalTime, startLabel, status };
+}
+
+// Exclusive end of the venue's final calendar day. Unknown/ambiguous zones
+// wait until that day has ended everywhere (UTC-12), never the viewer's zone.
+export function calendarDayEndAt(date, timeZone) {
+  if (!calendarReadDate(date)) return null;
+  const next = nextCalendarDay(date);
+  const local = localInstant(next, "00:00:00", timeZone);
+  return local ? Date.parse(local) : Date.parse(`${next}T12:00:00Z`);
 }

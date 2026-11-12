@@ -1,3 +1,5 @@
+import useEventRsvp from "../../hooks/useEventRsvp";
+import { eventRsvpWindow } from "../../domain/eventRsvp.mjs";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 
@@ -43,7 +45,10 @@ export default function ShowAttendanceControls({
 }) {
   const presentation = useIOSDetailPresentation();
   const canAct = presentation.canAct || presentation.current;
-  const options = attendanceOptionsForPhase(lifecycle);
+  const rsvp = useEventRsvp(show);
+  const attendancePhase = !rsvp.canPlan ? rsvp.phase
+    : lifecycle === "completed" && rsvp.phase !== "unknown" ? "upcoming" : lifecycle;
+  const options = attendanceOptionsForPhase(attendancePhase);
   const identity = attendanceMutationIdentity(show?.id, accountId);
   const activeIdentityRef = useRef({ identity });
   if (activeIdentityRef.current?.identity !== identity) activeIdentityRef.current = { identity };
@@ -60,7 +65,7 @@ export default function ShowAttendanceControls({
   const pending = scopedMutation?.status === "saving";
   useIOSDetailBackBlock(pending);
   const shareState = accountId && !pending
-    && (attendance?.state === "going" || attendance?.state === "interested")
+    && rsvp.canPlan && (attendance?.state === "going" || attendance?.state === "interested")
     ? attendance.state
     : null;
   const shareModel = useMemo(
@@ -77,12 +82,13 @@ export default function ShowAttendanceControls({
 
   if (!attendanceControlsVisible({
     showId: show?.id,
-    phase: lifecycle,
+    phase: attendancePhase,
     currentAttendance: attendance,
     mutationPending: pending,
   })) return null;
 
   const save = async ({ state, visibility }) => {
+    if (["interested", "going"].includes(state) && state !== attendance?.state && !eventRsvpWindow(show).canPlan) return;
     if (!canAct() || activeIdentityRef.current !== owner || !owner.mounted) return;
     if (!accountId) {
       onRequireAuth?.();
@@ -101,6 +107,7 @@ export default function ShowAttendanceControls({
         state,
         ...(hasVisibility ? { visibility } : {}),
         show,
+        currentAttendance: previous,
         accountId,
       });
       // The original Show callback owns the account/epoch-scoped Store receipt.

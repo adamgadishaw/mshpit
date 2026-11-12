@@ -50,6 +50,7 @@ test("server failure codes normalize to stable PIT references", () => {
     ACCOUNT_CHANGED: "PIT-REQ-003",
     ALREADY_VERIFIED: "PIT-REQ-003",
     CHECK_IN_UNAVAILABLE: "PIT-SHOW-001",
+    EVENT_RSVP_CLOSED: "PIT-SHOW-002",
     IDEMPOTENCY_MISMATCH: "PIT-REQ-003",
     IDENTITY_CHANGED: "PIT-AUTH-004",
     POST_REMOVED: "PIT-REQ-003",
@@ -165,7 +166,7 @@ test("closed live check-ins have specific safe recovery copy", () => {
   assert.equal(catalogueCode({ serverCode: "CHECK_IN_UNAVAILABLE", status: 409 }), "PIT-SHOW-001");
   const entry = catalogEntry("PIT-SHOW-001");
   assert.equal(entry.retryable, false);
-  assert.match(entry.message, /Going or Went/);
+  assert.match(entry.message, /Live check-in is not available/);
   assert.doesNotMatch(`${entry.message} ${entry.guidance}`, /provider|timezone|lifecycle|database/i);
 });
 
