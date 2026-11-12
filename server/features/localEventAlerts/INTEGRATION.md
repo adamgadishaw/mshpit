@@ -6,6 +6,43 @@ tests are based on installed Build 12 commit
 changed. No production data, live device token, push delivery, credentials,
 deployment, phone installation, or remote Git publication was used.
 
+## Unsent-push correction after 9bf544e
+
+`delivery_locked` records the atomic inbox/outbox commit, not an attempted or
+successful device send. The original outbox is the per-device delivery receipt:
+`ready` with zero attempts has never been dispatched; `sending`, `accepted` and
+`unknown` must not be reset to ready because a show was edited. A ready row after
+an explicit rate-limit rejection retains its existing bounded retry policy.
+
+The additive nullable `local_event_alerts.delivery_fingerprint` records the same
+event context as the full fingerprint, excluding only the display venue name and
+ticket URL. For an already committed alert, changes to only those fields retain
+the existing inbox notice and outbox rows in place. Reconciliation updates the
+full fingerprint without changing alert/notice/outbox IDs, timestamps, attempts,
+leases, ticket receipts, retry times, or the permanent lock. This lets a push-only
+recipient's never-attempted ready row send once while other devices' accepted or
+uncertain rows remain untouched. It never creates replacement deliveries or
+enrols newly registered devices in an already committed alert.
+
+The read-only target guard uses the same comparison if dispatch runs before the
+reconciliation hook. Current public visibility, account/follow permissions,
+home city for sales, channel preference, installation generation, sale timing,
+freshness, onsale status and expiry are still checked at their existing boundaries.
+Artist, event dates, city, owner, creator revision, status and sale evidence remain
+part of the comparison; those changes are not treated as display-only edits.
+Material invalidation still cancels pending delivery. Accepted remote pushes
+cannot be recalled, and uncertain sends are not retried automatically.
+
+Run `ensureLocalAlertSchema` before the updated service. Existing rows acquire
+the additional snapshot only while their full stored fingerprint still matches
+the current canonical event, or at their first delivery commit. If an old committed
+row was already edited before that snapshot existed, the service cannot prove
+the edit was harmless and keeps the prior fail-closed cancellation behavior.
+Previously cancelled rows are never revived by this correction. There has been
+no production deployment of these isolated modules. Backup/restore must include
+the new column; portable account exports still omit internal fingerprints, and
+existing account/event cascades and privacy erasure cover it.
+
 ## Reminder lifecycle correction after e2f457d1
 
 The schema now includes `local_event_alerts.delivery_locked` (0/1). Delivery sets

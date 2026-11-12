@@ -32,7 +32,7 @@ export function ensureLocalAlertSchema(db) {
       account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       event_id TEXT NOT NULL REFERENCES tour_dates(id) ON DELETE CASCADE,
       kind TEXT NOT NULL CHECK(kind IN ('date','sale')), trigger_key TEXT NOT NULL,
-      fingerprint TEXT NOT NULL, city_path TEXT NOT NULL,
+      fingerprint TEXT NOT NULL, delivery_fingerprint TEXT, city_path TEXT NOT NULL,
       due_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
       state TEXT NOT NULL DEFAULT 'queued' CHECK(state IN ('queued','delivered','cancelled')),
       delivery_locked INTEGER NOT NULL DEFAULT 0 CHECK(delivery_locked IN (0,1)),
@@ -73,6 +73,11 @@ export function ensureLocalAlertSchema(db) {
       db.exec(`ALTER TABLE local_event_alerts ADD COLUMN delivery_locked INTEGER NOT NULL DEFAULT 0 CHECK(delivery_locked IN (0,1));
         UPDATE local_event_alerts SET delivery_locked=1 WHERE state<>'queued' OR notification_id IS NOT NULL
           OR EXISTS (SELECT 1 FROM local_push_outbox p WHERE p.alert_id=local_event_alerts.id);`);
+    }
+    if (!db.prepare("PRAGMA table_info(local_event_alerts)").all().some(column => column.name === "delivery_fingerprint")) {
+      // A missing snapshot is not evidence that a historical edit was harmless.
+      // The service adopts it only while the full stored fingerprint still matches.
+      db.exec("ALTER TABLE local_event_alerts ADD COLUMN delivery_fingerprint TEXT");
     }
     // Old cancelled rows lost their original delivery state. Lock them rather
     // than guess that an inbox-only or uncertain push delivery never happened.

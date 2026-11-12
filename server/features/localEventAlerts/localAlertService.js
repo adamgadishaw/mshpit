@@ -33,7 +33,11 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
     const city = resolveAlertEventCity(event);
     const sale = db.prepare("SELECT * FROM local_event_sales WHERE event_id=?").get(eventId);
     const validSale = event.source === "ticketmaster" && !event.owner_id && sale?.provider_event_id === event.provider_event_id ? sale : null;
-    return { event, city, sale: validSale, fingerprint: fingerprint(event, validSale) };
+    return { event, city, sale: validSale, fingerprint: fingerprint(event, validSale),
+      // Only display venue and ticket URL may change without replacing the
+      // delivery. Artist, dates, city, ownership, revision, status and sale
+      // evidence retain their exact original comparison.
+      deliveryFingerprint: fingerprint({ ...event, venue: null, ticket_url: null }, validSale) };
   };
   const eligible = (accountId, current, at, kind = "sale") => {
     const account = db.prepare("SELECT * FROM users WHERE id=?").get(accountId);
@@ -50,7 +54,9 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
     db.prepare("UPDATE local_event_alerts SET state='cancelled',notification_id=NULL,owns_notice=0 WHERE id=?").run(row.id);
     db.prepare("UPDATE local_push_outbox SET state='cancelled',lease_key=NULL WHERE alert_id=? AND state IN ('ready','sending','accepted')").run(row.id);
   };
-  const stillValid = (alert, current, at) => !!current && current.fingerprint === alert.fingerprint
+  const sameDelivery = (alert, current) => !!current && (current.fingerprint === alert.fingerprint
+    || (alert.state === "delivered" && !!alert.delivery_fingerprint && current.deliveryFingerprint === alert.delivery_fingerprint));
+  const stillValid = (alert, current, at) => sameDelivery(alert, current)
     && (current.city?.path || "") === alert.city_path && eligible(alert.account_id, current, at, alert.kind)
     && (alert.kind !== "sale" || (current.sale?.starts_at === Number(alert.trigger_key)
       && current.sale.starts_at <= at && (current.sale.ends_at == null || current.sale.ends_at > at)));
@@ -62,14 +68,14 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
   const queueSale = (accountId, eventId, current, at) => {
     const sale = current.sale;
     return Number(db.prepare(`INSERT INTO local_event_alerts
-      (id,account_id,event_id,kind,trigger_key,fingerprint,city_path,due_at,expires_at,created_at) VALUES (?,?,?,'sale',?,?,?,?,?,?)
+      (id,account_id,event_id,kind,trigger_key,fingerprint,delivery_fingerprint,city_path,due_at,expires_at,created_at) VALUES (?,?,?,'sale',?,?,?,?,?,?,?)
       ON CONFLICT(account_id,event_id,kind,trigger_key) DO UPDATE SET
-        fingerprint=excluded.fingerprint,city_path=excluded.city_path,due_at=excluded.due_at,
+        fingerprint=excluded.fingerprint,delivery_fingerprint=excluded.delivery_fingerprint,city_path=excluded.city_path,due_at=excluded.due_at,
         expires_at=excluded.expires_at,state='queued'
       WHERE local_event_alerts.delivery_locked=0 AND local_event_alerts.state IN ('queued','cancelled')
         AND (local_event_alerts.state='cancelled' OR local_event_alerts.fingerprint<>excluded.fingerprint
           OR local_event_alerts.city_path<>excluded.city_path OR local_event_alerts.expires_at<>excluded.expires_at)`)
-      .run(randomUUID(), accountId, eventId, String(sale.starts_at), current.fingerprint, current.city.path,
+      .run(randomUUID(), accountId, eventId, String(sale.starts_at), current.fingerprint, current.deliveryFingerprint, current.city.path,
         sale.starts_at, Math.min(sale.starts_at + SALE_DELIVERY_WINDOW_MS, sale.ends_at ?? Infinity), at).changes);
   };
 
@@ -78,7 +84,16 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
       const at = now(), current = currentEvent(eventId, at);
       const previous = db.prepare("SELECT * FROM local_event_observations WHERE event_id=?").get(eventId);
       for (const alert of db.prepare("SELECT * FROM local_event_alerts WHERE event_id=? AND state<>'cancelled'").all(eventId)) {
-        if (!current || alert.fingerprint !== current.fingerprint) cancelAlert(alert);
+        if (current && alert.fingerprint === current.fingerprint) {
+          if (!alert.delivery_fingerprint) db.prepare("UPDATE local_event_alerts SET delivery_fingerprint=? WHERE id=?")
+            .run(current.deliveryFingerprint, alert.id);
+        } else if (alert.state === "delivered" && stillValid(alert, current, at)) {
+          // A commit receipt prevents another inbox/outbox insertion; it does
+          // not mean a ready device push was attempted. Preserve the original
+          // notice and every outbox row, including its state, attempts, lease
+          // and retry time. Accepted/unknown sends are never reset to ready.
+          db.prepare("UPDATE local_event_alerts SET fingerprint=? WHERE id=?").run(current.fingerprint, alert.id);
+        } else cancelAlert(alert);
       }
       if (!current) {
         if (previous) db.prepare("UPDATE local_event_observations SET scan_complete=1 WHERE event_id=?").run(eventId);
@@ -127,13 +142,13 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
       if (!current || !observation || observation.scan_complete || current.fingerprint !== observation.fingerprint) return { planned: 0, more: false };
       const rows = db.prepare("SELECT id FROM users WHERE id>? ORDER BY id LIMIT ?").all(observation.scan_cursor, bound(limit, 100, 500));
       const insert = db.prepare(`INSERT OR IGNORE INTO local_event_alerts
-        (id,account_id,event_id,kind,trigger_key,fingerprint,city_path,due_at,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+        (id,account_id,event_id,kind,trigger_key,fingerprint,delivery_fingerprint,city_path,due_at,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
       let planned = 0;
       for (const { id: accountId } of rows) {
         if (!eligible(accountId, current, at, "date")) continue;
         const pref = preferences(accountId);
         if (observation.announce_until > at && (pref.datesInbox || pref.datesPush)) {
-          planned += Number(insert.run(randomUUID(), accountId, eventId, "date", "first", current.fingerprint, current.city?.path || "",
+          planned += Number(insert.run(randomUUID(), accountId, eventId, "date", "first", current.fingerprint, current.deliveryFingerprint, current.city?.path || "",
             at, observation.announce_until, at).changes);
         }
         const sale = current.sale;
@@ -173,8 +188,8 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
             ownsNotice = true;
           }
         }
-        db.prepare("UPDATE local_event_alerts SET state='delivered',delivery_locked=1,notification_id=?,owns_notice=? WHERE id=?")
-          .run(notificationId, Number(ownsNotice), alert.id);
+        db.prepare("UPDATE local_event_alerts SET state='delivered',delivery_locked=1,delivery_fingerprint=?,notification_id=?,owns_notice=? WHERE id=?")
+          .run(current.deliveryFingerprint, notificationId, Number(ownsNotice), alert.id);
         if (push) db.prepare(`INSERT OR IGNORE INTO local_push_outbox(id,alert_id,installation_id,generation,next_at)
           SELECT lower(hex(randomblob(16))),?,i.installation_id,i.generation,? FROM local_push_installations i
           JOIN sessions s ON s.token_hash=i.session_hash AND s.user_id=i.account_id AND s.expires_at>?
