@@ -90,7 +90,7 @@ try {
         await page.goto(origin + "/concert/fixture-archive"); await page.getByRole("button", { name: "Reviews", exact: true }).waitFor();
         assert.equal(await section().count(), 0);
         await page.goto(origin + postPath); await page.getByText(archiveReviewFixture.review, { exact: true }).last().waitFor();
-        await page.getByRole("link", { name: /View .* show/ }).click();
+        await page.getByRole("link", { name: "View event page", exact: true }).click();
         await page.getByRole("button", { name: "Reviews", exact: true }).waitFor(); assert.equal(await section().count(), 0); assert.equal(state.reads.length, 0);
       } else {
         await page.goto(origin + eventPath); await section().waitFor();

@@ -19,6 +19,9 @@ import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import { CommentLikeButton } from "../components/SocialReactionButtons";
+import { readPublicPost, resolvePublicEntity } from "../features/publicNavigation/publicNavigationService";
+import { isReviewDetail } from "../domain/showNavigation.mjs";
+import { currentReview, reviewEventPath, reviewIsUnavailable } from "../domain/reviewDetail.mjs";
 
 const ago = (ts) => {
   if (!ts) return "";
@@ -88,19 +91,81 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
 
 // Post detail — the actual post + its comment thread. This is where like/comment
 // notifications land (not the performance page), and where forum-style replies live.
-export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag }) {
+export default function PostScreen(props) {
+  return isReviewDetail(props.log) ? <ReviewContentLoader {...props} /> : <PostContent {...props} />;
+}
+
+function ReviewContentLoader(props) {
+  const { session, blockedIds, removedIds } = useStore();
+  const scope = accountTargetScope(session?.id, `review:${props.log.id}`);
+  const owner = useRef(scope);
+  owner.current = scope;
+  const [attempt, setAttempt] = useState(0);
+  const [resource, setResource] = useState({ scope, status: "loading", post: null });
+  useEffect(() => {
+    const controller = new AbortController();
+    setResource({ scope, status: "loading", post: null });
+    readPublicPost(props.log.id, { signal: controller.signal }).then(post => {
+      if (!controller.signal.aborted && owner.current === scope) setResource({ scope, status: post ? "ready" : "unavailable", post });
+    }).catch(error => {
+      if (!controller.signal.aborted && owner.current === scope) setResource({ scope, status: [403, 404].includes(error?.status) ? "unavailable" : "error", post: null });
+    });
+    return () => controller.abort();
+  }, [scope, attempt]);
+  const current = resource.scope === scope ? resource : { status: "loading", post: null };
+  if (current.status === "ready" && !reviewIsUnavailable(current.post, blockedIds, removedIds)) return <PostContent {...props} log={current.post} />;
+  return <View style={styles.wrap}>
+    <ReviewHeader onClose={props.onClose} />
+    <View style={styles.threadState} accessibilityLiveRegion="polite">
+      {current.status === "loading" ? <ActivityIndicator color={colors.amber} /> : null}
+      <Text style={styles.threadStateText}>{current.status === "loading" ? "Loading review..." : current.status === "error" ? "This review could not load. Check your connection and try again." : "This review is unavailable. It may be private or removed."}</Text>
+      {current.status === "error" ? <Pressable accessibilityRole="button" onPress={() => setAttempt(value => value + 1)}><Text style={styles.retryText}>Retry review</Text></Pressable> : null}
+    </View>
+  </View>;
+}
+
+function ReviewHeader({ onClose, title = "Original post", kicker = "Review", backLabel = "Leave the original post", backHint }) {
+  return <ScreenHeader title={title} kicker={kicker} onBack={onClose} backLabel={backLabel} backHint={backHint}
+    right={<Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close review" style={{ padding: 12 }}><Icon name="x" size={22} color={colors.text} /></Pressable>} />;
+}
+
+function PostContent({ log, onClose, onRequireAuth, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag }) {
   const { session, feed, commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, userById, userBadges, setCommentLike } = useStore();
+  const detail = isReviewDetail(log);
+  const Header = detail ? ReviewHeader : ScreenHeader;
   const [postLocalOverrides, setPostLocalOverrides] = useState({});
   // Navigation keeps the post that was originally opened. Resolve it against
   // live feed state so an edit made on this screen appears immediately. A
   // server-confirmed self-untag also overlays notification-fetched posts that
   // were never part of this feed page.
   const activeLog = applyPostLocalOverride(
-    feed.find((post) => post.id === log.id) || log,
+    detail ? currentReview(log, feed.find((post) => post.id === log.id)) : feed.find((post) => post.id === log.id) || log,
     postLocalOverrides,
     session?.id || null,
   );
   const isOnlineReview = activeLog.experienceType === "online" || activeLog.experience_type === "online";
+  const eventHref = detail ? reviewEventPath(activeLog) : null;
+  const [eventState, setEventState] = useState("idle");
+  const eventRequest = useRef(null);
+  useEffect(() => () => eventRequest.current?.abort(), []);
+  const openEvent = async () => {
+    if (!eventHref || eventRequest.current) return;
+    const controller = new AbortController();
+    eventRequest.current = controller;
+    setEventState("loading");
+    try {
+      const entity = await resolvePublicEntity(eventHref, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      if (entity?.kind === "concert" || entity?.kind === "event") {
+        setEventState("idle");
+        onOpenShow?.({ ...entity, performanceEvent: true });
+      } else setEventState("unavailable");
+    } catch {
+      if (!controller.signal.aborted) setEventState("error");
+    } finally {
+      if (eventRequest.current === controller) eventRequest.current = null;
+    }
+  };
   const reconcileSelfTagRemoval = (result) => {
     if (!result?.userId || !result?.id) return;
     setPostLocalOverrides((current) => withRemovedSelfPostTag(current, {
@@ -278,9 +343,10 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
 
   return (
     <View style={styles.wrap} testID="post-content-shell">
-      <ScreenHeader
+      <Header
         kicker={activeLog.news ? "Mshpit News" : isOnlineReview ? "Online concert review" : activeLog.review ? "Review" : "Post"}
         title={activeLog.news ? "Story" : "Original post"}
+        onClose={onClose}
         onBack={onClose}
         backLabel={activeLog.news ? "Leave the story" : "Leave the original post"}
         backHint={isOnlineReview ? "Returns to the page or feed you came from" : "Returns to the show, artist, or feed you came from"}
@@ -291,9 +357,15 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
         accessibilityLabel="Refresh post and comments"
       >
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        {eventHref ? <PublicTextLink href={eventHref} onNavigate={openEvent} accessibilityLabel="View event page" style={styles.eventLink}>
+          {eventState === "loading" ? "Opening event..." : "View event page"}
+        </PublicTextLink> : null}
+        {eventState === "error" || eventState === "unavailable" ? <Text accessibilityLiveRegion="polite" style={styles.threadStateText}>
+          {eventState === "error" ? "The event could not load. Try View event page again." : "The event page is unavailable. Your review is still here."}
+        </Text> : null}
         {activeLog.news ? (
           <NewsStoryCard story={activeLog.news} post={activeLog} full accountId={session?.id || null} onOpen={showComments} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onDelete={removePost} onRequireAuth={onRequireAuth} />
-        ) : <TicketStub log={activeLog} compactContent={false} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} onRequireAuth={onRequireAuth} onComment={showComments} onOpenPost={showComments} />}
+        ) : <TicketStub log={activeLog} compactContent={false} showComments={false} renderReviewText={detail ? ({ text, accessibilityLabel, style }) => <Text selectable accessibilityLabel={accessibilityLabel} style={style}>{text}</Text> : undefined} ratingDescription={detail ? `${resolvePostAuthor({ userId: activeLog.userId, cached: userById?.(activeLog.userId), embedded: activeLog.user }).name}’s ratings` : undefined} onOpen={detail ? showComments : isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={detail || isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} onRequireAuth={onRequireAuth} onComment={showComments} onOpenPost={showComments} />}
 
         <Text style={styles.sectionLabel}>
           {commentsUsable ? `${flat.length} COMMENT${flat.length === 1 ? "" : "S"}` : "COMMENTS"}
@@ -371,6 +443,7 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
 }
 
 const styles = StyleSheet.create({
+  eventLink: { color: colors.amber, fontWeight: "700", paddingVertical: 14, fontSize: 16 },
   wrap: { flex: 1, minWidth: 0, width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.bg },
   content: { padding: 16, paddingBottom: 24 },
   sectionLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 4, marginBottom: 12 },

@@ -40,12 +40,12 @@ test("online review cards never present physical show, venue, attendance, or arc
   const card = source("../components/TicketStub.jsx");
   const postScreen = source("../screens/PostScreen.jsx");
   assert.match(card, /isOnlineReview \? "ONLINE CONCERT"/);
-  assert.match(card, /!isOnlineReview \? \([\s\S]*?<TicketActionRail/);
+  assert.match(card, /!isOnlineReview && !renderReviewText \? \([\s\S]*?<TicketActionRail/);
   assert.match(card, /isOnlineReview && youtubeUrl \? \([\s\S]*?Watch on YouTube/);
   assert.match(card, /!isOnlineReview && \([\s\S]*?styles\.perfWrap/);
   assert.match(card, /!isOnlineReview && setlist\.length/);
   assert.match(card, /concertContext=\{!isOnlineReview\}/);
-  assert.match(postScreen, /onOpenShow=\{isOnlineReview \? undefined : onOpenShow\}/);
+  assert.match(postScreen, /onOpenShow=\{detail \|\| isOnlineReview \? undefined : onOpenShow\}/);
   assert.match(postScreen, /onOpenVenue=\{isOnlineReview \? undefined : onOpenVenue\}/);
   assert.match(postScreen, /onOpenArtistArchive=\{isOnlineReview \? undefined : onOpenArtistArchive\}/);
 });

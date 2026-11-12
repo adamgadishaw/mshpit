@@ -55,7 +55,7 @@ async function scenario(browser, origin, width, theme, mode = "archive") {
   page.on("pageerror", error => state.errors.push(error.message));
   const upcoming = mode === "upcoming" || mode === "cancelled";
   const individual = mode === "individual" || mode === "individual-archive";
-  const post = mode === "individual-archive" ? { ...review, archiveShowKey: "fixture-night" } : review;
+  const post = { ...review, archiveShowKey: "fixture-night" };
   const targetPath = upcoming ? "/event/fixture-night" : individual ? `/post/${review.id}` : path;
   const entity = { ...concert, ...(mode === "empty" ? { overall: null, ratingCount: 0, cover: null, setlist: [] } : {}),
     ...(mode === "long" ? { eventName: "Fixture Artist and Friends: An Evening of Very Long Concert Titles", venue: "Fixture Venue with an Exceptionally Long Name and Outdoor Stage" } : {}),
@@ -103,8 +103,8 @@ async function scenario(browser, origin, width, theme, mode = "archive") {
       await page.getByText("No comments yet. Start the conversation.", { exact: true }).waitFor();
       assert.equal(new URL(page.url()).pathname, `/post/${review.id}`);
       assert.equal(await page.getByRole("button", { name: "Event details", exact: true }).count(), 0);
-      const showLink = page.getByRole("link", { name: "View Fixture Artist show", exact: true });
-      assert.equal(await showLink.innerText(), "View this show");
+      const showLink = page.getByRole("link", { name: "View event page", exact: true });
+      assert.equal(await showLink.innerText(), "View event page");
       await showLink.click();
     }
     await page.getByRole("button", { name: "Event details", exact: true }).waitFor();
@@ -173,31 +173,20 @@ async function scenario(browser, origin, width, theme, mode = "archive") {
       await section("Reviews").waitFor();
     }
     if (individual) {
-      await page.getByText("Alex Fixture's overall show rating", { exact: true }).waitFor();
-      await page.getByLabel("4.7 out of 5", { exact: true }).waitFor();
-      assert.equal(await page.getByText("17 ratings", { exact: true }).count(), 0);
-      await section("Rating breakdown").click();
-      await page.getByText("Artist and venue ratings stay separate.", { exact: false }).waitFor();
-      await page.getByLabel("4.7 out of 5", { exact: true }).waitFor();
+      // The explicit event action always resolves canonical aggregate data.
+      await page.getByText("Overall show rating", { exact: true }).waitFor();
+      await page.getByLabel("4.3 out of 5", { exact: true }).waitFor();
+      await page.getByText("17 ratings", { exact: true }).waitFor();
+      assert.equal(new URL(page.url()).pathname, path);
       await page.goBack();
-      await page.getByText("No comments yet. Start the conversation.", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Close review", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Overall 4.7 out of 5. Show the rating breakdown.", exact: true }).waitFor();
       await page.goForward();
-      await section("Reviews").waitFor();
-      await page.getByLabel("4.7 out of 5", { exact: true }).waitFor();
+      await page.getByText("17 ratings", { exact: true }).waitFor();
       if (mode === "individual-archive") {
-        assert.equal(new URL(page.url()).pathname, path);
-        // A fresh canonical concert read owns the aggregate. Its score and
-        // attribution must differ from the review carried by the in-app action.
         await page.reload({ waitUntil: "domcontentloaded" });
-        await page.getByText("Overall show rating", { exact: true }).waitFor();
         await page.getByLabel("4.3 out of 5", { exact: true }).waitFor();
         await page.getByText("17 ratings", { exact: true }).waitFor();
-        assert.equal(await page.getByText("Alex Fixture's overall show rating", { exact: true }).count(), 0);
-        await page.goBack();
-        await page.getByText("No comments yet. Start the conversation.", { exact: true }).waitFor();
-        await page.getByRole("link", { name: "View Fixture Artist show", exact: true }).click();
-        await page.getByText("Alex Fixture's overall show rating", { exact: true }).waitFor();
-        await page.getByLabel("4.7 out of 5", { exact: true }).waitFor();
       }
     }
     if (upcoming) {

@@ -189,7 +189,7 @@ function TicketActionRail({ showHref, onOpenShow, compareHref, onCompare, artist
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
-export default function TicketStub({ log, mediaViewable = null, compactContent = false, swipeActions = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+export default function TicketStub({ log, renderReviewText, ratingDescription, mediaViewable = null, compactContent = false, swipeActions = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const onOpenCity = useContext(CityNavigationContext);
   const cityIdentity = cityIdentityForLocation(log);
   const cityHref = cityIdentity ? cityPath(cityIdentity) : null;
@@ -550,11 +550,11 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
             )}
           </View>
         </View>
-        {!isOnlineReview ? (
+        {!isOnlineReview && !renderReviewText ? (
           <TicketActionRail
             showHref={canonicalPostHref}
             onOpenShow={cityOnlyReview ? openPostDetail : () => (onOpenShow || onOpen)?.(log)}
-            reviewOnly={cityOnlyReview}
+            reviewOnly
             compareHref={canCompareArtistShows ? postContext.artistConcertsHref : null}
             onCompare={openArtistShows}
             artist={postContext.artist}
@@ -604,7 +604,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
             <SpinStar size={40} />
             <View style={{ flex: 1 }}>
               <Text style={styles.statsScore}>{overall.toFixed(1)} <Text style={styles.statsOutOf}>/ 5</Text></Text>
-              <Text style={styles.statsSub}>{isOnlineReview ? "Your online concert score" : hasDimensions && factors ? "The details you rated" : factors ? "Band vs room" : "Your overall score"}</Text>
+              <Text style={styles.statsSub}>{ratingDescription || (isOnlineReview ? "Your online concert score" : hasDimensions && factors ? "The details you rated" : factors ? "Band vs room" : "Your overall score")}</Text>
             </View>
           </View>
           {isOnlineReview
@@ -621,7 +621,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           limit={POST_CONTENT_PREVIEW_LIMIT}
           compact={compactContent}
           containerStyle={[styles.reviewWrap, Platform.OS !== "web" && styles.nativeReviewWrap]}
-          renderText={({ text, accessibilityLabel }) => (
+          renderText={({ text, accessibilityLabel }) => renderReviewText ? renderReviewText({ text, accessibilityLabel, style: styles.review }) : (
             <PublicPressableLink href={canonicalPostHref} onNavigate={isOnlineReview ? openPostDetail : () => onOpen?.(log)} accessibilityLabel={`${accessibilityLabel}. Open ${isOnlineReview ? "online concert review" : log.artist || "concert post"}.`}>
               <Text accessibilityLabel={accessibilityLabel} style={styles.review}>{text}</Text>
             </PublicPressableLink>

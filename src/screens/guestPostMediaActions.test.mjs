@@ -63,6 +63,7 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
       addComment: async (...args) => { calls.comments.push(args); return storeOverrides.addComment ? storeOverrides.addComment(...args) : { ok: true }; },
       deleteOwnComment: () => assert.fail("guest must not delete"), deleteOwnPost: () => assert.fail("guest must not delete"),
     }) };
+    if (dependency === "../features/publicNavigation/publicNavigationService") return { readPublicPost: async () => null, resolvePublicEntity: async () => null };
     if (dependency === "../hooks/useScopedRefresh") return () => ({ refresh() {}, refreshing: false });
     if (dependency.endsWith("/Badge")) return { BadgeRow: "BadgeRow" };
     if (dependency.endsWith("/PublicWebLinks")) return { PublicTextLink: "PublicTextLink" };
@@ -70,7 +71,7 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
     return localRequire(dependency);
   };
   const module = { exports: {} };
-  new Function("require", "module", "exports", compiled.get(name))(componentRequire, module, module.exports);
+  new Function("require", "module", "exports", (compiled.get(name) + (name === "PostScreen" ? "\nmodule.exports.default = PostContent;" : "")))(componentRequire, module, module.exports);
   const log = { id: "p_public", artist: "Public Artist", venue: "Public Venue", review: "A public review" };
   let props = {
     log, photos: ["https://example.test/first.jpg", "https://example.test/second.jpg"], index: 0, postId: log.id,
@@ -144,7 +145,7 @@ test("PostScreen member reply and send preserve the parent comment and clear the
 
 test("PostScreen send guard rejects a guest even when a nonempty draft reaches the callback", async () => {
   const ast = parseSync(postSource, { filename: "PostScreen.jsx", babelrc: false, configFile: false, parserOpts: { plugins: ["jsx"] } });
-  const screen = ast.program.body.find((node) => node.type === "ExportDefaultDeclaration").declaration;
+  const screen = ast.program.body.find((node) => node.type === "FunctionDeclaration" && node.id.name === "PostContent");
   const send = screen.body.body.filter((node) => node.type === "VariableDeclaration")
     .flatMap((node) => node.declarations).find((node) => node.id.name === "send").init;
   for (const session of [null, undefined, {}]) {

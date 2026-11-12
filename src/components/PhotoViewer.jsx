@@ -166,13 +166,22 @@ export default function PhotoViewer({
         tagName: e.target?.tagName,
         isContentEditable: !!e.target?.isContentEditable,
       });
-      if (action === "close") onClose?.();
-      else if (action === "previous" && photos.length > 1) prev();
+      // Escape closes on keyup, so a single press cannot also dismiss the
+      // review exposed underneath. Capture it before RN Web's Modal handler;
+      // this also works while the viewer's opening animation is in progress.
+      if (action === "previous" && photos.length > 1) prev();
       else if (action === "next" && photos.length > 1) next();
       if (action) e.preventDefault?.();
     };
+    const onKeyUp = (event) => {
+      if (galleryKeyAction({ key: event.key, tagName: event.target?.tagName, isContentEditable: !!event.target?.isContentEditable }) !== "close") return;
+      event.stopPropagation();
+      event.preventDefault();
+      onClose?.();
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp, true);
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("keyup", onKeyUp, true); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photos.length, onClose]);
 

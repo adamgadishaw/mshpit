@@ -148,7 +148,7 @@ import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
 import { profileManagementAction, publicIdentityTarget } from "./src/domain/artistAccountIdentity.mjs";
-import { isCityOnlyReview, prepareShowNavigation } from "./src/domain/showNavigation.mjs";
+import { isCityOnlyReview, isReviewDetail, prepareShowNavigation } from "./src/domain/showNavigation.mjs";
 import { isOnlineReview } from "./src/domain/onlineReview.mjs";
 import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
 import { authLinkIntent } from "./src/domain/authLinkIntent.mjs";
@@ -165,6 +165,7 @@ import { countryForCity } from "./src/geo";
 import { accountThemeNavigationReady } from "./src/domain/accountThemeNavigation.mjs";
 import { screenTransitionDirection, screenTransitionKey } from "./src/domain/screenTransition.mjs";
 import ScreenTransition from "./src/components/ScreenTransition";
+import ReviewPresentation from "./src/components/ReviewPresentation";
 import NativeAppHeader from "./src/components/NativeAppHeader";
 import {
   PLAYER_POSITION_STORAGE_KEY,
@@ -1250,7 +1251,9 @@ function Root() {
     const hit = (found || []).find((x) => x.handle === h);
     if (hit) openProfile(hit.id, hit);
   };
+  const postOpenSequence = useRef(0);
   const openPost = (log, analytics = {}) => {
+    postOpenSequence.current++;
     if (!log) return;
     if (Platform.OS !== "web" && !session && (log.news || String(log.id || "").startsWith("news_"))) { openSignIn(); return; }
     track("content_open", {
@@ -1263,7 +1266,11 @@ function Root() {
   // An opener's review linked from the main review: load it, then open it.
   const openPostById = async (postId) => {
     if (Platform.OS !== "web" && !session && String(postId || "").startsWith("news_")) { openSignIn(); return; }
+    const ticket = ++postOpenSequence.current;
+    const accountId = sessionRef.current?.id;
+    const origin = stackRef.current;
     const post = postId ? await loadPostForView(postId) : null;
+    if (ticket !== postOpenSequence.current || accountId !== (sessionRef.current?.id) || origin !== stackRef.current) return;
     if (post) openPost(post, { surface: "linked-review" });
   };
   // A story from the news panel, strip or News tab opens its post and comments.
@@ -1282,24 +1289,16 @@ function Root() {
   // the exact performance projection produced by calendarShowFromPost.
   const openShow = (log, analytics = {}) => {
     if (!log) return;
+    if (isReviewDetail(log)) return openPost(log, analytics);
     if ((log.kind === "status" && log.performanceEvent !== true) || isOnlineReview(log) || isCityOnlyReview(log)) return openPost(log, analytics);
     const navigation = prepareShowNavigation(log);
     if (!navigation) return;
-    const { destination } = navigation;
-    if (navigation.kind === "performance") {
-      // Provider ids and opaque archive keys are not Pit post ids. Keep them out
-      // of post analytics; the categorical view measures performance-page use.
-      track("view_performance");
-    } else {
-      track("content_open", {
-        postId: navigation.postId,
-        surface: analytics.surface || "direct",
-        ...(Number.isSafeInteger(analytics.position) ? { position: analytics.position } : {}),
-      });
-      track("view_show", { postId: navigation.postId });
-    }
-    go({ openLog: destination });
+    if (navigation.kind === "post") return openPost(log, analytics);
+    // Provider ids and archive keys are performance identities, not post ids.
+    track("view_performance");
+    go({ openLog: navigation.destination });
   };
+  const openPostEvent = (log) => { if (sessionRef.current?.id === session?.id && stackRef.current.at(-1)?.post?.id === nav.post.id) openShow(log); };
   const openPostEditor = (log) => requireVerifiedMutation("post", () => { if (log?.id) go({ editingPost: log }); });
   const openBadges = (userId) => go({ badges: { userId } });
   const openFestival = (slug, editionId = null) => {
@@ -1523,7 +1522,7 @@ function Root() {
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onOpenFanClub={openFanClub} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} renderEventAccount={renderEventAccount} />;
-  else if (nav.post) overlay = <PostScreen key={`${session?.id || "guest"}:${nav.post.id}`} log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
+  else if (nav.post) overlay = <PostScreen key={`${session?.id || "guest"}:${nav.post.id}`} log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openPostEvent} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
   else if (nav.festival?.slug) overlay = <FestivalScreen key={`${session?.id || "guest"}:${nav.festival.slug}`} slug={nav.festival.slug} editionId={nav.festival.editionId || null}
     signedIn={!!session} accountId={session?.id || null} author={session ? { name: session.name } : null} onClose={back} onOpenArtist={openArtist} onRequireAuth={openSignIn}
@@ -1749,6 +1748,10 @@ function Root() {
 </NativeTabRail>
   );
 
+  const presentScreen = (content) => <ReviewPresentation key={session?.id || "guest"} depth={stack.length} review={isReviewDetail(nav.post)} onClose={back} fallback={<ScreenLoading />}>
+    <ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{content}</ScreenTransition>
+  </ReviewPresentation>;
+
   // Keep the web route mounted across the desktop breakpoint. Resizing changes
   // chrome and layout, not the editor, pagination, or other active screen state.
   const responsiveWeb = (
@@ -1784,9 +1787,7 @@ function Root() {
             onOpenArtist={openArtist}
             onOpenEvent={openShow}
           />
-          <Suspense fallback={<ScreenLoading />}>
-            <ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay || tabScreens}</ScreenTransition>
-          </Suspense>
+          {presentScreen(overlay || tabScreens)}
           {!wide && !overlay ? mobileTabBar : null}
         </View>
         {wide && showRightRail && <Suspense fallback={null}><RightRail showSponsorPlaceholder={showSponsorPlaceholders} showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} /></Suspense>}
@@ -1935,14 +1936,12 @@ function Root() {
                   {retainNativeFeed ? <NativeFeedMediaLayer key={session.id} obscured={!!overlay}
                     header={<NativeAppHeader onHome={() => switchTab("discover")} loggedIn onAccount={() => openProfileManagement()} />}
                     tabBar={mobileTabBar}
-                    media={<Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense>}>
+                    media={presentScreen(overlay)}>
                     <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey="main:feed">{tabScreens}</ScreenTransition></Suspense>
-                  </NativeFeedMediaLayer> : overlay ? <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{overlay}</ScreenTransition></Suspense> : (
-                    <>
-                      <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{tabScreens}</ScreenTransition></Suspense>
-                      {mobileTabBar}
-                    </>
-                  )}
+                  </NativeFeedMediaLayer> : <>
+                    {presentScreen(overlay || tabScreens)}
+                    {!overlay ? mobileTabBar : null}
+                  </>}
                 </>
               )}
             </View>

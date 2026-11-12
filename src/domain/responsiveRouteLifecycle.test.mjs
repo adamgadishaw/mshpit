@@ -11,7 +11,7 @@ import { transformSync } from "@babel/core";
 const require = createRequire(import.meta.url);
 const appSource = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
 const logSource = readFileSync(new URL("../screens/LogScreen.jsx", import.meta.url), "utf8");
-let shell, route, reviewState;
+let shell, route, reviewState, presentation;
 function visit(node, inspect) {
   if (!node || typeof node !== "object") return;
   inspect(node);
@@ -21,6 +21,7 @@ function visit(node, inspect) {
   }
 }
 visit(parse(appSource, { sourceType: "module", plugins: ["jsx"] }), (node) => {
+  if (node.type === "VariableDeclarator" && node.id.name === "presentScreen") presentation = appSource.slice(node.init.start, node.init.end);
   if (node.type === "VariableDeclarator" && node.id.name === "responsiveWeb") shell = appSource.slice(node.init.start, node.init.end);
   if (node.type === "ConditionalExpression" && node.test.name === "web" && node.consequent.name === "responsiveWeb") route = appSource.slice(node.start, node.end);
 });
@@ -41,7 +42,15 @@ function fixture({ deferredDesktopNavigation = false } = {}) {
   });
   const passthrough = ({ children }) => React.createElement("div", null, children);
   const nil = () => null;
+  const presentationModule = { exports: {} };
+  const presentationCode = transformSync(readFileSync(new URL("../components/ReviewPresentation.jsx", import.meta.url), "utf8"), {
+    filename: "ReviewPresentation.jsx", configFile: false, babelrc: false,
+    plugins: [[require.resolve("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require.resolve("@babel/plugin-transform-modules-commonjs")],
+  }).code;
+  new Function("require", "module", "exports", presentationCode)(name => name === "react-native" ? { View: "div" }
+    : name === "../lib/lazyWithRetry" ? { lazyWithRetry: () => nil } : require(name), presentationModule, presentationModule.exports);
   const data = {
+    ReviewPresentation: presentationModule.exports.default, stack: [{}], isReviewDetail: () => false, back: noop,
     React, Suspense: React.Suspense, View: "div", ScreenLoading: nil,
     DesktopTopNav: deferredDesktopNavigation ? React.lazy(() => new Promise(() => {})) : nil,
     PublicWebTrail: nil, PublicDirectoryPanel: nil, RightRail: nil, SponsorPlaceholder: nil,
@@ -57,6 +66,7 @@ function fixture({ deferredDesktopNavigation = false } = {}) {
     overlay: React.createElement(Editor, { editing: { review: "Original saved review" } }),
   };
   const body = `function Fixture({width}) { const wide = width >= 1200;
+    const presentScreen = (${presentation});
     const responsiveWeb = (${shell}); return (${route}); } globalThis.Fixture = Fixture;`;
   vm.runInNewContext(transformSync(body, {
     configFile: false, babelrc: false,
