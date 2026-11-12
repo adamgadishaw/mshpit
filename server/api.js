@@ -4789,6 +4789,7 @@ const projectManagedUser = createRelationshipManagementProjection({
 
 const CALENDAR_PUBLISH = Symbol("calendar-publish");
 export const creatorCalendarService = createCreatorCalendarService({ database: db, requireUser, uid, now,
+  authorizeWithdrawal: user => assertArtistPostCleanupCandidate(user, normName(user.artist_name)),
   authorize: user => {
     assertArtistPublicationAllowed(user);
     if (!managedCreatorEntity(db, user.id, "artist", normName(user.artist_name))) throw new ApiError(403, "This account no longer manages its artist page.", "FORBIDDEN");

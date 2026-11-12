@@ -121,6 +121,42 @@ test("calendar receipts, privacy and venue/event/festival follows share the real
     assert.equal(edited.status,200,JSON.stringify(edited.data)); assert.equal(edited.data.calendarReceipt.eventId,eventId);
     assert.equal(edited.data.calendarReceipt.revision,2);
     assert.equal((await request('/api/posts',{...edit,clientMutationId:'http_calendar_stale'})).status,409);
+    // Real authenticated withdrawal of a persisted private receipt after its
+    // publication is blocked. The service suite exercises the actual due
+    // worker; here the state transition is a disposable SQLite fixture.
+    const withdrawals=[];
+    for(const suffix of ['memorial','held']){
+      const body=draft('http_private_'+suffix,{venue:'Withdraw Hall '+suffix,releaseAt:Date.now()+3600000});
+      const result=await request('/api/posts',body);assert.equal(result.status,200,JSON.stringify(result.data));
+      withdrawals.push({body,result});
+    }
+    const stamp=Date.now(),mbid='4825c19c-4185-46a3-bd87-2d1537fe3e4f';
+    database.exec('BEGIN IMMEDIATE');
+    database.prepare('INSERT INTO artists(norm,name,mbid,created_at,updated_at) VALUES(?,?,?,?,?)').run(artistKey,artistName,mbid,stamp,stamp);
+    database.prepare(`INSERT INTO artist_memorials(artist_key,artist_name,artist_mbid,status,death_date,summary,thank_you,accomplishments,source_url,published_at,spotlight_started_at,created_at,updated_at)
+      VALUES(?,?,?,'published',?,'Verified fixture memorial.','Thank you.','["A musical legacy"]','https://example.com/memorial',?,?,?,?)`)
+      .run(artistKey,artistName,mbid,new Date(stamp).toISOString().slice(0,10),stamp,stamp,stamp,stamp);
+    for(const {result} of withdrawals)database.prepare("UPDATE creator_calendar_publications SET state='blocked' WHERE id=?").run(result.data.calendarReceipt.id);
+    database.exec('COMMIT');
+    const postsBefore=database.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(member.id).n;
+    const noticesBefore=database.prepare('SELECT count(*) n FROM notifications WHERE actor_id=?').get(member.id).n;
+    for(const [index,{body,result}] of withdrawals.entries()){
+      if(index)database.prepare("UPDATE artist_profiles SET identity_review_status='pending' WHERE artist_key=?").run(artistKey);
+      const eventId=result.data.calendarReceipt.eventId;
+      const list=await request('/api/me/artist-calendar',undefined,'GET');assert.equal(list.status,200);assert.ok(list.data.events.some(row=>row.id===eventId));
+      const cancel=draft('http_withdraw_'+index,{...body.creatorUpdate.calendar,action:'cancel',eventId,expectedRevision:1});
+      assert.equal((await request('/api/posts',{...cancel,creatorUpdate:{...cancel.creatorUpdate,calendar:{...cancel.creatorUpdate.calendar,expectedRevision:0}}})).status,409);
+      const withdrawn=await request('/api/posts',cancel);assert.equal(withdrawn.status,200,JSON.stringify(withdrawn.data));
+      assert.equal(withdrawn.data.calendarReceipt.state,'cancelled');assert.equal(withdrawn.data.post,undefined);
+      // Discard the first response and retry the unchanged authored request.
+      const replay=await request('/api/posts',structuredClone(cancel));
+      assert.equal(replay.status,200);assert.deepEqual(replay.data.calendarReceipt,withdrawn.data.calendarReceipt);assert.equal(replay.data.post,undefined);
+      assert.equal((await request('/api/posts',{...cancel,review:'Changed withdrawal body'})).status,409);
+      const row=database.prepare('SELECT * FROM tour_dates WHERE id=?').get(eventId);assert.equal(row.creator_revision,2);assert.equal(row.event_status,'cancelled');assert.equal(row.release_at,Number.MAX_SAFE_INTEGER);
+      assert.equal((await fanRequest(endpoint('event','event:'+eventId),{following:true})).status,404);
+    }
+    assert.equal(database.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(member.id).n,postsBefore);
+    assert.equal(database.prepare('SELECT count(*) n FROM notifications WHERE actor_id=?').get(member.id).n,noticesBefore);
     database.prepare('UPDATE artist_profiles SET owner_id=NULL WHERE artist_key=?').run(artistKey);
     const denied = await request('/api/posts',draft('http_calendar_revoked',{action:'cancel',eventId,expectedRevision:2}));
     assert.equal(denied.status,403,JSON.stringify(denied.data));

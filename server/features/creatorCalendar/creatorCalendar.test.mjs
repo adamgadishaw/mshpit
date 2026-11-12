@@ -345,3 +345,137 @@ for (const change of ['memorial','ownership','account']) test('due release reche
     for(const key of [image.sourceKey,image.renderKey]) assert.equal(db.prepare('SELECT status FROM media_objects WHERE object_key=?').get(key).status,'associated');
   } finally { if(db.isTransaction)db.exec('ROLLBACK');await worker.stop(); }
 });
+
+for (const reason of ['memorial','identity-hold']) test('an owned never-published '+reason+' schedule can be withdrawn without lifting its publication restriction', async () => {
+  const {cancelMediaAsset}=await import('../../mediaAssets.js');
+  const {enqueueExpiredMediaTickets}=await import('../../mediaDeletion.js');
+  const artist=account('artist'), image=addReadyPostImage(artist.id,'withdraw-'+reason), releaseAt=Date.now()+3600000;
+  const body=draft(artist,{releaseAt});body.photos=[image.renderUrl];body.mediaAssetIds=[image.assetId];
+  const saved=submit(artist,body), before=db.prepare('SELECT * FROM tour_dates WHERE id=?').get(saved.calendarReceipt.eventId);
+  const originalPayload=db.prepare('SELECT payload FROM creator_calendar_publications WHERE id=?').get(saved.calendarReceipt.id).payload;
+  if(reason==='memorial')memorial(artist);
+  else db.prepare("UPDATE artist_profiles SET identity_review_status='pending' WHERE artist_key=?").run(artist.artist_name.toLowerCase());
+  assert.deepEqual(creatorCalendarService.runDue({at:releaseAt+1}),{published:0,blocked:1});
+  assertPrivateBlocked(artist,saved,originalPayload);
+  fail(()=>cancelMediaAsset(db,{ownerId:artist.id,assetId:image.assetId}),409);
+  const cancel=draft(artist,{action:'cancel',eventId:before.id,expectedRevision:1,releaseAt});
+  // The chooser carries the old schedule time; withdrawal never uses it to
+  // reschedule or publish. A changed ticket URL is not part of withdrawal.
+  const changed=structuredClone(cancel);changed.creatorUpdate.url='https://tickets.example.com/other';
+  fail(()=>submit(artist,changed),409);
+  const foreign=account('artist'), spoof=draft(foreign,{action:'cancel',eventId:before.id,expectedRevision:1});
+  fail(()=>submit(foreign,spoof),403);
+  fail(()=>submit(artist,draft(artist,{action:'cancel',eventId:before.id,expectedRevision:0})),409);
+  fail(()=>submit(artist,draft(artist,{action:'edit',eventId:before.id,expectedRevision:1})),409);
+  const withdrawn=submit(artist,cancel);assert.equal(withdrawn.calendarReceipt.state,'cancelled');assert.equal(withdrawn.post,undefined);
+  const after=db.prepare('SELECT * FROM tour_dates WHERE id=?').get(before.id);
+  assert.equal(after.creator_revision,2);assert.equal(after.event_status,'cancelled');
+  for(const key of ['artist','artist_key','owner_id','source','venue','place','date','ticket_url','release_at','music_evidence'])assert.equal(after[key],before[key],key);
+  assert.equal(db.prepare('SELECT payload FROM creator_calendar_publications WHERE id=?').get(saved.calendarReceipt.id).payload,originalPayload);
+  assert.equal(db.prepare('SELECT state FROM creator_calendar_publications WHERE id=?').get(saved.calendarReceipt.id).state,'cancelled');
+  assert.equal(db.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(artist.id).n,0);
+  assert.equal(db.prepare('SELECT count(*) n FROM notifications WHERE actor_id=?').get(artist.id).n,0);
+  for(const key of [image.sourceKey,image.renderKey])assert.equal(db.prepare('SELECT status FROM media_objects WHERE object_key=?').get(key).status,'issued');
+  if(reason==='memorial')assert.equal(cancelMediaAsset(db,{ownerId:artist.id,assetId:image.assetId}).removed,true);
+  else {
+    enqueueExpiredMediaTickets(db,{at:Date.now()+10*86400000});
+    assert.equal(db.prepare('SELECT 1 FROM media_assets WHERE id=?').get(image.assetId),undefined);
+    for(const key of [image.sourceKey,image.renderKey])assert.ok(db.prepare('SELECT 1 FROM media_deletion_queue WHERE object_key=?').get(key));
+  }
+  assert.deepEqual(submit(artist,structuredClone(cancel)),withdrawn,'lost response retry survives media cleanup and the same eligibility restriction');
+  const mutated=structuredClone(cancel);mutated.review+=' changed';fail(()=>submit(artist,mutated),409);
+  assert.deepEqual(creatorCalendarService.runDue({at:releaseAt+2}),{published:0,blocked:0});
+  assert.ok(db.prepare('SELECT 1 FROM artist_profiles WHERE artist_key=?').get(artist.artist_name.toLowerCase()));
+});
+
+test('private withdrawal cannot change calendar facts, release a public event or bypass publication restrictions', () => {
+  const artist=account('artist'), published=submit(artist,draft(artist));
+  const publicStatus=db.prepare('SELECT event_status FROM tour_dates WHERE id=?').get(published.calendarReceipt.eventId).event_status;
+  const body=draft(artist,{releaseAt:Date.now()+3600000,venue:'Private Hall'}), saved=submit(artist,body);
+  memorial(artist);
+  const cancel=draft(artist,{action:'cancel',eventId:saved.calendarReceipt.eventId,expectedRevision:1,venue:'Private Hall'});
+  for(const field of ['date','venue','place','url']) {
+    const altered=structuredClone(cancel);
+    if(field==='date')altered.creatorUpdate.date=day(42);
+    else if(field==='url')altered.creatorUpdate.url='https://tickets.example.com/changed';
+    else altered.creatorUpdate.calendar[field]+=' changed';
+    fail(()=>submit(artist,altered),409);
+  }
+  for(const action of ['create','edit']) {
+    const edit=draft(artist,{action,eventId:saved.calendarReceipt.eventId,expectedRevision:1,venue:'Private Hall'});
+    assert.throws(()=>submit(artist,edit),error=>error.code==='ARTIST_MEMORIALIZED');
+  }
+  const publicCancel=draft(artist,{action:'cancel',eventId:published.calendarReceipt.eventId,expectedRevision:1});
+  assert.throws(()=>submit(artist,publicCancel),error=>error.code==='ARTIST_MEMORIALIZED');
+  // A future release value alone is never proof of private history.
+  db.prepare('UPDATE tour_dates SET release_at=? WHERE id=?').run(Number.MAX_SAFE_INTEGER,published.calendarReceipt.eventId);
+  assert.throws(()=>submit(artist,publicCancel),error=>error.code==='ARTIST_MEMORIALIZED');
+  assert.equal(submit(artist,cancel).calendarReceipt.state,'cancelled');
+  assert.equal(db.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(artist.id).n,1);
+  assert.equal(db.prepare('SELECT event_status FROM tour_dates WHERE id=?').get(published.calendarReceipt.eventId).event_status,publicStatus);
+});
+
+test('managing another artist identity does not authorize withdrawal of a former identity schedule',()=>{
+  const artist=account('artist'),body=draft(artist,{releaseAt:Date.now()+3600000}),saved=submit(artist,body),replacement=account('artist');
+  memorial(artist);assert.equal(creatorCalendarService.runDue({at:body.creatorUpdate.calendar.releaseAt+1}).blocked,1);
+  const cancel=draft(artist,{action:'cancel',eventId:saved.calendarReceipt.eventId,expectedRevision:1});
+  db.prepare('UPDATE artist_profiles SET owner_id=? WHERE artist_key=?').run(replacement.id,artist.artist_name.toLowerCase());
+  const nextName='New Artist Identity '+artist.id;
+  db.prepare('UPDATE users SET artist_name=? WHERE id=?').run(nextName,artist.id);
+  db.prepare('INSERT INTO artist_profiles(artist_key,owner_id,updated_at) VALUES(?,?,?)').run(nextName.toLowerCase(),artist.id,Date.now());
+  fail(()=>submit(q.userById.get(artist.id),cancel),403);
+  assert.equal(db.prepare('SELECT state FROM creator_calendar_publications WHERE id=?').get(saved.calendarReceipt.id).state,'blocked');
+  assert.equal(db.prepare('SELECT creator_revision FROM tour_dates WHERE id=?').get(saved.calendarReceipt.eventId).creator_revision,1);
+});
+
+for(const attached of [false,true])test('withdrawal preserves media referenced by '+(attached?'a published post':'another blocked schedule'),async()=>{
+  const {cancelMediaAsset}=await import('../../mediaAssets.js');
+  const artist=account('artist'),image=addReadyPostImage(artist.id,'shared-withdraw-'+attached),releaseAt=Date.now()+3600000;
+  const saved=[];
+  for(const venue of ['First Hall','Second Hall']){
+    const body=draft(artist,{releaseAt,venue});body.photos=[image.renderUrl];body.mediaAssetIds=[image.assetId];
+    saved.push({venue,result:submit(artist,body)});
+  }
+  if(attached)submit(artist,{kind:'status',review:'Published image',photos:[image.renderUrl],mediaAssetIds:[image.assetId]});
+  memorial(artist);assert.deepEqual(creatorCalendarService.runDue({at:releaseAt+1}),{published:0,blocked:2});
+  for(let i=0;i<saved.length;i++){
+    const {venue,result}=saved[i];submit(artist,draft(artist,{action:'cancel',eventId:result.calendarReceipt.eventId,expectedRevision:1,venue}));
+    for(const key of [image.sourceKey,image.renderKey])assert.equal(db.prepare('SELECT status FROM media_objects WHERE object_key=?').get(key).status,i===0||attached?'associated':'issued');
+    if(i===0||attached)fail(()=>cancelMediaAsset(db,{ownerId:artist.id,assetId:image.assetId}),409);
+  }
+  if(!attached)assert.equal(cancelMediaAsset(db,{ownerId:artist.id,assetId:image.assetId}).removed,true);
+});
+
+for(const first of ['withdrawal','due'])test('private withdrawal and due worker serialize safely when '+first+' obtains the lock first',{timeout:45000},async()=>{
+  const artist=account('artist'),releaseAt=Date.now()+3600000,body=draft(artist,{releaseAt}),saved=submit(artist,body);
+  memorial(artist);
+  const cancel=draft(artist,{action:'cancel',eventId:saved.calendarReceipt.eventId,expectedRevision:1});
+  const worker=await publicationWorker(artist,first==='withdrawal'?{at:releaseAt+1}:cancel,'withdraw-race-'+first,{due:first==='withdrawal'});
+  try{
+    await worker.wait('-ready');db.exec('BEGIN IMMEDIATE');worker.go();await worker.wait('-waiting');
+    if(first==='withdrawal')assert.equal(submit(artist,cancel).calendarReceipt.state,'cancelled');
+    else assert.deepEqual(creatorCalendarService.runDue({at:releaseAt+1}),{published:0,blocked:1});
+    db.exec('COMMIT');const result=await worker.result();
+    if(first==='withdrawal')assert.deepEqual(result,{published:0,blocked:0});
+    else assert.equal(result.calendarReceipt.state,'cancelled');
+    assert.equal(db.prepare('SELECT event_status FROM tour_dates WHERE id=?').get(saved.calendarReceipt.eventId).event_status,'cancelled');
+    assert.equal(db.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(artist.id).n,0);
+    assert.equal(db.prepare('SELECT count(*) n FROM notifications WHERE actor_id=?').get(artist.id).n,0);
+    assert.equal(submit(artist,cancel).calendarReceipt.state,'cancelled');
+  }finally{if(db.isTransaction)db.exec('ROLLBACK');await worker.stop();}
+});
+
+for(const change of ['ownership','revision'])test('withdrawal rechecks '+change+' changed while waiting on the writer lock',{timeout:45000},async()=>{
+  const artist=account('artist'),releaseAt=Date.now()+3600000,body=draft(artist,{releaseAt}),saved=submit(artist,body);
+  memorial(artist);assert.equal(creatorCalendarService.runDue({at:releaseAt+1}).blocked,1);
+  const cancel=draft(artist,{action:'cancel',eventId:saved.calendarReceipt.eventId,expectedRevision:1});
+  const worker=await publicationWorker(artist,cancel,'withdraw-change-'+change);
+  try{
+    await worker.wait('-ready');db.exec('BEGIN IMMEDIATE');worker.go();await worker.wait('-waiting');
+    if(change==='ownership')db.prepare('UPDATE artist_profiles SET owner_id=NULL WHERE artist_key=?').run(artist.artist_name.toLowerCase());
+    else assert.equal(submit(artist,{...cancel,clientMutationId:cancel.clientMutationId+'_winner'}).calendarReceipt.state,'cancelled');
+    db.exec('COMMIT');assert.equal((await worker.result()).status,change==='ownership'?403:409);
+    assert.equal(db.prepare('SELECT 1 FROM creator_calendar_publications WHERE mutation_id=?').get(cancel.clientMutationId),undefined);
+    assert.equal(db.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(artist.id).n,0);
+  }finally{if(db.isTransaction)db.exec('ROLLBACK');await worker.stop();}
+});
