@@ -52,14 +52,23 @@ function mediaForRows(rows, viewerId, projectMediaState) {
   return byPost;
 }
 
-function rowMatchesShow(row, decoded) {
-  return archiveIdentityPart(row.artist_key || row.artist) === archiveIdentityPart(decoded.artistIdentity)
+function rowMatchesArtist(row, decoded, canonicalName) {
+  // The repository admits legacy keyless posts by the resolved catalogue name.
+  // Their archive keys use the canonical key, not that display name. Keep the
+  // same identity rule here without admitting posts with a different saved key.
+  return row.artist_key
+    ? archiveIdentityPart(row.artist_key) === archiveIdentityPart(decoded.artistIdentity)
+    : archiveIdentityPart(row.artist) === archiveIdentityPart(canonicalName);
+}
+
+function rowMatchesShow(row, decoded, canonicalName) {
+  return rowMatchesArtist(row, decoded, canonicalName)
     && archiveIdentityPart(row.venue_key || row.venue) === archiveIdentityPart(decoded.venueIdentity)
     && row.date === decoded.date;
 }
 
-function rowMatchesTour(row, decoded) {
-  return normalizeArchivePart(row.artist_key || row.artist) === normalizeArchivePart(decoded.artistIdentity)
+function rowMatchesTour(row, decoded, canonicalName) {
+  return rowMatchesArtist(row, decoded, canonicalName)
     && archiveTourIdentity(row).identity === canonicalArchiveTourIdentity(decoded.tourIdentity, row.artist);
 }
 
@@ -339,7 +348,7 @@ export function createArtistArchiveService({
       const selection = decodedShow ? { show: decodedShow } : { tour: decodedTour };
       const candidates = repository.findScopedReviewRows({
         artistKey, name, viewerId, ...selection, cursor: decodedCursor, limit: take + 1,
-      }).filter((row) => decodedShow ? rowMatchesShow(row, decodedShow) : rowMatchesTour(row, decodedTour));
+      }).filter((row) => decodedShow ? rowMatchesShow(row, decodedShow, name) : rowMatchesTour(row, decodedTour, name));
       const hasMore = candidates.length > take;
       const page = candidates.slice(0, take);
       const mediaByPost = mediaForRows(page, viewerId, projectMediaState);

@@ -123,6 +123,22 @@ test("archive keys are opaque, reversible, typed, and reject malformed input", (
   );
 });
 
+test("canonical archives include legacy name-only reviews without admitting a foreign saved artist key", () => {
+  const legacy = { ...row({ id: "legacy", artist: "Alpha", artistKey: null }), artist_key: null };
+  const wrongKey = row({ id: "other-key", artist: "Alpha", artistKey: "other-artist" });
+  const wrongName = { ...row({ id: "namesake", artist: "Beta", artistKey: null }), artist_key: null };
+  // The mock deliberately returns extraneous rows to exercise the service's
+  // defense in depth in addition to repository artist/viewer filtering.
+  const service = fixture([legacy, wrongKey, wrongName]);
+  const archive = service.readArchive({ artistKey: "canonical-alpha", name: "Alpha" });
+  const show = archive.shows[0];
+  const showPage = service.readReviews({ artistKey: "canonical-alpha", name: "Alpha", showKey: show.key });
+  assert.deepEqual(showPage.reviews.map(review => review.id), ["legacy"]);
+  const tourPage = service.readReviews({ artistKey: "canonical-alpha", name: "Alpha", tourKey: show.tourKey });
+  assert.deepEqual(tourPage.reviews.map(review => review.id), ["legacy"]);
+  assert.equal(service.readReviews({ artistKey: "other-artist", name: "Alpha", showKey: show.key }), null);
+});
+
 test("archive aggregates distinct performances and reviewers, ranks confidence, and fails private media closed", () => {
   const rows = [
     row({ id: "single-five", venue: "Tiny Club", date: "2025-01-01", overall: 5, tour: null }),

@@ -4,8 +4,13 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { archiveShowKey, decodeArchiveShowKey } from "../../server/features/artistArchive/artistArchiveKeys.js";
+import { prepareShowNavigation } from "../domain/showNavigation.mjs";
+import { artistEventReviewsRequest } from "../features/artistEvents/artistEventRequest.mjs";
 
-const root = fileURLToPath(new URL("../../", import.meta.url));
+// Optional read-only source root lets the same host harness demonstrate the
+// installed Build 9 failure without modifying that frozen checkout.
+const root = process.env.PIT_REVIEW_COMPONENT_ROOT || fileURLToPath(new URL("../../", import.meta.url));
 const require = createRequire(new URL("../../package.json", import.meta.url));
 const React = require("react"), reconciler = require("react-reconciler");
 const { transformSync } = require("@babel/core");
@@ -50,6 +55,10 @@ function createRenderer(calls) {
 const review = { id: "review-one", userId: "fan-one", user: { name: "Fixture Fan", handle: "fixturefan" },
   artist: "Fixture Artist", venue: "Fixture Venue", date: "2026-10-01", overall: 4, likes: 5,
   archiveShowKey: "fixture-show", photosPublic: true, review: "A memorable concert with exceptional songs. ".repeat(20) };
+const rankedRows = ["one", "two"].map((id, index) => ({ key: `show:fixture-artist:provider%3Aticketmaster%3A${id}:2026-10-0${index + 1}`,
+  artist: "Fixture Artist", artistKey: "fixture-artist", venue: "Fixture Venue", venueKey: "fixture-venue", date: `2026-10-0${index + 1}`, avgRating: 4.3, ratingCount: 17 }));
+const rankedArchive = { artist: { key: "fixture-artist", name: "Fixture Artist" }, shows: rankedRows.map(row => ({ ...row,
+  key: archiveShowKey({ artistIdentity: "fixture-artist", venueIdentity: row.venueKey, date: row.date }), avgRating: 4.1 })), topShows: [], tours: [] };
 const albums = Array.from({ length: 8 }, (_, i) => ({ id: `album-${i}`, title: `Album ${i}`, year: String(2026 - i),
   tracks: [{ id: `track-${i}`, title: `Album track ${i}`, duration: 120 }] }));
 const discography = { status: "ready", stale: false, artist: { id: 123, name: "Fixture Artist" }, albums,
@@ -62,7 +71,7 @@ const overview = (ids = ["event-one"], hasMore = true) => ({ artist: { name: "Fi
 // reconcile together. Only native hosts, Store data/commands, assets and API IO
 // are mocked. A synthetic immutable owner drives real context/hook lifecycle
 // edges. This proves retained instances/closures, not Root wiring or frame rate.
-function fixture({ strict = false, managed = true, initialSection, returnState = {}, resourceOnly = false, foreignEditor = false } = {}) {
+function fixture({ strict = false, managed = true, initialSection, returnState = {}, resourceOnly = false, foreignEditor = false, topRated = false, tour = false } = {}) {
   const calls = { reads: [], mutations: [], receipts: [], actions: [], speech: [], privacyInvalidations: [], focus: [], blur: [], scroll: [], media: [], saves: [], animations: [] };
   const renderer = createRenderer(calls), modules = new Map(), timers = new Map(), listeners = new Map(), blocks = new Set();
   let account = "account-A", epoch = 0, commandEpoch = 0, admitted = true, visible = true, suspended = false, latestResources;
@@ -75,6 +84,7 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
   const meta = { name: "Fixture Artist", bio: "An independently documented artist.", photo: "https://images.example/artist.jpg", albums: [], topTracks: [] };
   let session = { id: account, favoriteArtists: [], role: "user" };
   const store = {
+    loadDiscoverOverview: args => read("discover", args), resolveArtist: (...args) => read("resolveArtist", args),
     blockedIds: [], removedIds: [], isPhotoRemoved: () => false,
     artistSummary: () => ({ name: "Fixture Artist", profileKey: "fixture-artist", genre: "Rock", nights: [], bio: meta.bio, photo: meta.photo }),
     albumRating: () => ({ mine: 0, avg: 0, count: 0 }), songRating: () => ({ mine: 0, avg: 0, count: 0 }),
@@ -90,6 +100,7 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
   const animation = () => ({ start() { calls.animations.push("start"); }, stop() { calls.animations.push("stop"); } });
   const ScrollView = props => React.createElement("ScrollView", props, props.refreshControl, props.children);
   const native = { View: "View", Text: "Text", Pressable: "Pressable", ScrollView, Modal: "Modal", Image: "Image", TextInput: "TextInput",
+    FlatList: props => React.createElement("FlatList", props, props.data.map(item => React.createElement(React.Fragment, { key: item.key }, props.renderItem({ item }))), props.ListFooterComponent),
     RefreshControl: "RefreshControl", ActivityIndicator: "ActivityIndicator", KeyboardAvoidingView: "KeyboardAvoidingView",
     Platform: { OS: "ios", select: value => value.ios ?? value.native ?? value.default }, PixelRatio: { get: () => 2 },
     StyleSheet: { create: value => value, flatten: value => value, absoluteFill: {}, absoluteFillObject: {}, hairlineWidth: 1 },
@@ -154,11 +165,14 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
     if (/\/config\/runtime\.mjs$/.test(name)) return { ENABLE_MUSIC_PLAYER: true };
     if (/\/api$/.test(name)) return { AppError, api: (...args) => read("api", args), apiUrl: value => value };
     if (/\/diagnostics$/.test(name)) return { AppError, toAppError: error => error instanceof AppError ? error : new AppError("Request failed", { cause: error }), captureException: noop };
+    if (name.endsWith("/publicNavigationApi.mjs")) return load(resolveFile(name, from));
     if (/Api(?:\.mjs)?$/.test(name)) return io;
     if (/\/themeRuntime$/.test(name)) return { nativeThemeRuntime: true, readThemeSelection: () => "stage", persistThemeSelection: noop, clearThemeSelection: noop, reloadTheme: noop };
     if (/\/persist$/.test(name)) return { load: (_key, fallback) => fallback, save: noop };
     if (/\/lazyWithRetry$/.test(name)) return { lazyWithRetry: (_read, label) => {
       if (label === "CreatorPostsSection") return "CreatorPostsSection";
+      if (label === "EventPageNavigation") return props => React.createElement(load("src/screens/EventPageNavigation.jsx").default, props);
+      if (label === "ReviewEventLink") return props => React.createElement(load("src/screens/ReviewEventLink.jsx").default, props);
       assert.equal(label, "ArtistNewsSection");
       return props => React.createElement(load("src/components/news/NewsViews.ios.jsx").ArtistNewsSection, props);
     } };
@@ -181,7 +195,7 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
   const newPresentation = () => { const generation = ++epoch; const current = () => admitted && visible && generation === epoch;
     return commandPresentation(current, current); };
   let presentation = newPresentation();
-  const Screen = load("src/screens/ArtistScreen.ios.jsx").default;
+  const Screen = load(tour ? "src/screens/TourArchiveScreen.jsx" : topRated ? "src/screens/TopRatedScreen.jsx" : "src/screens/ArtistScreen.ios.jsx").default;
   const ResourceProbe = () => {
     const options = { accountId: account, artistKey: "fixture-artist", name: "Fixture Artist" };
     if (resourceOnly === "eventReviews") {
@@ -198,7 +212,7 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
   };
   const Reconnect = ({ children }) => { if (suspended) throw pendingReveal; return children; };
   const action = kind => (...args) => calls.actions.push([kind, ...args]);
-  const props = { artistName: "Fixture Artist", initialSection, artistReturn: { read: () => returnState, save: value => calls.saves.push(value) },
+  const props = { onOpen: action("onOpen"), artistKey: "fixture-artist", tourKey: "fixture-tour", artistName: "Fixture Artist", initialSection, artistReturn: { read: () => returnState, save: value => calls.saves.push(value) },
     ...Object.fromEntries(["onClose", "onOpenArtist", "onOpenPost", "onOpenShow", "onOpenArchive", "onOpenPhotos", "onOpenGallery", "onOpenProfile", "onOpenFanClub", "onOpenNewsStory", "onPlay", "onAddToPlaylist", "onReport", "onRequireAuth"].map(key => [key, action(key)])) };
   const element = () => React.createElement(strict ? React.StrictMode : React.Fragment, null,
     React.createElement(Posts.Provider, { value: action("openPostById") },
@@ -213,7 +227,7 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
   const all = () => walk(renderer.container);
   const find = label => all().find(node => node.props?.accessibilityLabel === label && typeof node.props.onPress === "function");
   const event = label => { const node = find(label); assert.ok(node, `${label}; available: ${all().filter(n => n.props?.onPress).map(n => n.props.accessibilityLabel).join(" | ")}`); return node.props.onPress; };
-  const defaults = { memorial: null, reviews: [review], archive: { topShows: [], shows: [], tours: [] }, overview: overview(),
+  const defaults = { discover: { topRatedShows: rankedRows }, memorial: null, reviews: [review], archive: { topShows: [], shows: [], tours: [] }, overview: overview(),
     eventReviews: { reviews: [review], nextCursor: "reviews-next", total: 3 },
     page: { ok: true, value: { legacyProfile: false, profile: {}, posts: [], loadedAt: 1 } }, photos: { ok: true }, seen: { count: 0 }, sets: { summary: {}, sets: [] }, discography,
     webProfile: null, research: null, catalogText: { text: null }, artistNews: [], newsDesk: { stories: [], items: [], hasMore: false }, rating: null };
@@ -239,6 +253,140 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
     close() { renderer.render(null); },
   };
 }
+
+test("Top Take review body opens the saved review and retired native callbacks cannot reopen it", async () => {
+  const f = fixture();
+  try {
+    await f.settle();
+    const open = f.event("Open Fixture Fan's full review of Fixture Artist");
+    f.act(open);
+    assert.deepEqual(f.calls.actions.at(-1), ["onOpenPost", review]);
+    const count = f.calls.actions.length;
+    f.precommit(); f.act(open); f.cover(); f.act(open);
+    assert.equal(f.calls.actions.length, count);
+    f.uncover(); await f.settle();
+    f.press("Open Fixture Fan's full review of Fixture Artist");
+    assert.equal(f.calls.actions.length, count + 1);
+    f.store.blockedIds = [review.userId]; f.render();
+    assert.equal(f.find("Open Fixture Fan's full review of Fixture Artist"), undefined);
+  } finally { f.close(); }
+});
+
+const rankedLabel = number => `Number ${number}, Fixture Artist at Fixture Venue, 4.3 stars from 17 ratings`;
+test("actual native Top Rated row resolves the archive before the review request boundary", async () => {
+  const f = fixture({ topRated: true });
+  try {
+    await f.settle(); f.press(rankedLabel(1));
+    const read = f.reads.filter(call => call.kind === "archive").at(-1);
+    assert.ok(read, `Native row must resolve its canonical archive before opening; immediate actions: ${JSON.stringify(f.calls.actions)}`);
+    assert.equal(read.args.artistKey, "fixture-artist"); assert.equal(read.args.accountId, "account-A");
+    assert.equal(f.calls.actions.length, 0, "ranking key never reaches ShowScreen while canonical read is pending");
+    await f.complete(read, rankedArchive);
+    const [action, selected] = f.calls.actions.at(-1);
+    assert.equal(action, "onOpen"); assert.equal(selected.overall, 4.1);
+    const target = prepareShowNavigation(selected).destination;
+    const request = artistEventReviewsRequest({ artistKey: target.artistKey, name: target.artist, showKey: target.archiveShowKey, accountId: "account-A" });
+    assert.equal(request.expectedAccountId, "account-A");
+    assert.deepEqual(decodeArchiveShowKey(new URL(request.path, "http://fixture.test").searchParams.get("showKey")), {
+      artistIdentity: "fixture-artist", venueIdentity: "fixture-venue", city: "", date: rankedRows[0].date,
+    });
+  } finally { f.close(); }
+});
+
+test("native Top Rated retries unavailable/error states and admits only the latest selected night", async () => {
+  const f = fixture({ topRated: true });
+  try {
+    await f.settle(); f.press(rankedLabel(1));
+    await f.reject(f.reads.at(-1), { code: "PIT-API-001" });
+    assert.match(f.text(), /could not load/);
+    f.press(rankedLabel(1)); await f.complete(f.reads.at(-1), { ...rankedArchive, shows: [] });
+    assert.match(f.text(), /not available in the artist archive/);
+    f.press(rankedLabel(1)); const first = f.reads.at(-1);
+    f.press(rankedLabel(2)); const latest = f.reads.at(-1);
+    assert.equal(first.args.signal.aborted, true);
+    await f.complete(latest, rankedArchive); await f.complete(first, rankedArchive);
+    assert.equal(f.calls.actions.length, 1); assert.equal(f.calls.actions[0][1].date, rankedRows[1].date);
+  } finally { f.close(); }
+});
+
+for (const invalidate of ["cover", "account", "privacy"]) test(`native Top Rated cannot navigate after ${invalidate}`, async () => {
+  const f = fixture({ topRated: true });
+  try {
+    await f.settle(); f.press(rankedLabel(1)); const pending = f.reads.at(-1);
+    if (invalidate === "account") f.account("account-B"); else f[invalidate]();
+    await f.complete(pending, rankedArchive);
+    assert.equal(f.calls.actions.length, 0);
+  } finally { f.close(); }
+});
+
+test("native legacy Top Rated resolves only stored artists before opening their canonical archive", async () => {
+  const f = fixture({ topRated: true });
+  try {
+    await f.complete(f.reads.find(call => call.kind === "discover"), { topRatedShows: [{ ...rankedRows[0], artistKey: null }] });
+    f.press(rankedLabel(1));
+    const lookup = f.reads.at(-1); assert.equal(lookup.kind, "resolveArtist"); assert.equal(lookup.args[1].scope, "stored");
+    await f.complete(lookup, { key: "fixture-artist", name: "Fixture Artist", transient: false });
+    const read = f.reads.at(-1); assert.equal(read.kind, "archive"); assert.equal(read.args.artistKey, "fixture-artist");
+    await f.complete(read, rankedArchive); assert.equal(f.calls.actions.at(-1)[1].archiveShowKey, rankedArchive.shows[0].key);
+  } finally { f.close(); }
+});
+
+test("native Top Take event link reads the canonical event, retries errors and drops covered results", async () => {
+  const f = fixture();
+  const label = "View the exact Fixture Artist show reviewed by Fixture Fan";
+  try {
+    await f.settle(); f.press(label);
+    let call = f.reads.at(-1); assert.equal(call.kind, "api"); assert.match(call.args[0], /api\/resolve\?path=%2Fconcert%2Ffixture-show/);
+    await f.reject(call, { code: "PIT-API-001" }); assert.match(f.text(), /event could not open/);
+    f.press(label); call = f.reads.at(-1); f.cover();
+    await f.complete(call, { entity: { kind: "concert", archiveShowKey: "fixture-show", overall: 2.5 } });
+    assert.equal(f.calls.actions.length, 0);
+    f.uncover(); await f.settle(); f.press(label); call = f.reads.at(-1);
+    await f.complete(call, { entity: { kind: "concert", archiveShowKey: "fixture-show", overall: 2.5 } });
+    assert.deepEqual(f.calls.actions.at(-1), ["onOpenShow", { kind: "concert", archiveShowKey: "fixture-show", overall: 2.5, performanceEvent: true }]);
+  } finally { f.close(); }
+});
+
+for (const knownShow of [false, true]) test(`native Tour review keeps the post opener and resolves its event (known show ${knownShow})`, async () => {
+  const f = fixture({ tour: true });
+  try {
+    const archivedReview = { ...review, archiveShowKey: undefined };
+    f.defaults.eventReviews = { reviews: [archivedReview], total: 1, nextCursor: null };
+    f.defaults.archive = { shows: knownShow ? [{ ...review, key: "fixture-show", tourKey: "fixture-tour" }] : [], topShows: [], tours: [] };
+    await f.settle(); await tick(); f.render();
+    assert.ok(f.find("Open Fixture Fan's review of Fixture Artist"), JSON.stringify({ text: f.text(), reads: f.reads.map(call => ({ kind: call.kind, done: call.done })) }));
+    f.press("Open Fixture Fan's review of Fixture Artist");
+    assert.deepEqual(f.calls.actions.at(-1), ["onOpenPost", archivedReview]);
+    const link = f.all().filter(node => node.props?.onPress && /^Open Fixture Venue,/.test(node.props.accessibilityLabel || "")).at(-1);
+    assert.ok(link); f.act(() => link.props.onPress());
+    let call = f.reads.at(-1); assert.equal(call.kind, "api");
+    assert.equal(call.args[0], "/api/posts/review-one");
+    await f.complete(call, { post: review }); call = f.reads.at(-1);
+    assert.match(call.args[0], /api\/resolve\?path=%2Fconcert%2Ffixture-show/);
+    await f.complete(call, { entity: { kind: "concert", archiveShowKey: "fixture-show", overall: 2.5 } });
+    assert.equal(f.calls.actions.at(-1)[0], "onOpenShow");
+    assert.equal(f.calls.actions.at(-1)[1].overall, 2.5);
+    assert.equal(f.calls.actions.at(-1)[1].performanceEvent, true);
+  } finally { f.close(); }
+});
+
+for (const reason of ["denied", "account", "cover"]) test(`native Tour saved-post event lookup stops before resolution when ${reason}`, async () => {
+  const f = fixture({ tour: true });
+  try {
+    f.defaults.eventReviews = { reviews: [{ ...review, archiveShowKey: undefined }], total: 1, nextCursor: null };
+    await f.settle(); await tick(); f.render();
+    const link = f.all().find(node => node.props?.onPress && /^Open Fixture Venue,/.test(node.props.accessibilityLabel || ""));
+    assert.ok(link); f.act(() => link.props.onPress());
+    const postRead = f.reads.at(-1); assert.equal(postRead.args[0], "/api/posts/review-one");
+    if (reason === "denied") await f.reject(postRead, { status: 404 });
+    else {
+      if (reason === "account") f.account("account-B"); else f.cover();
+      await f.complete(postRead, { post: review });
+    }
+    assert.equal(f.reads.some(call => call.kind === "api" && call.args[0].startsWith("/api/resolve")), false);
+    assert.equal(f.calls.actions.length, 0);
+  } finally { f.close(); }
+});
 
 test("actual Artist retains About, album, expanded songs and scroll while old actions stay retired", async () => {
   const f = fixture();

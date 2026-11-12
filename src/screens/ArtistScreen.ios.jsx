@@ -63,6 +63,8 @@ import { fetchArtistSets } from "../lib/lineupApi";
 import { useIOSScreenReaderEnabled } from "../hooks/iosOnlyAccessibility";
 import { createIOSArtistAnnouncements, iosArtistLayout } from "../domain/iosArtistPresentation.ios.mjs";
 import { createBrowseScrollReturn } from "../domain/iosBrowseReturn.mjs";
+const ReviewEventLink = lazyWithRetry(() => import("./ReviewEventLink"), "ReviewEventLink");
+
 const IS_IOS = Platform.OS === "ios";
 
 const ArtistNewsSection = lazyWithRetry(() => import("../components/news/NewsViews").then((module) => ({ default: module.ArtistNewsSection })), "ArtistNewsSection");
@@ -248,6 +250,12 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
 
         <ExpandableText
           text={reviewBody}
+          renderText={({ text }) => <PublicPressableLink href={postPath(review.id)}
+            onNavigate={guard(() => onOpenPost?.(review))}
+            accessibilityLabel={`Open ${author}'s full review of ${artistName}`}
+            accessibilityHint="Opens the complete review, ratings and gallery">
+            <Text style={styles.topReviewExcerpt}>{text}</Text>
+          </PublicPressableLink>}
           style={styles.topReviewExcerpt}
           toggleStyle={styles.topReviewExcerptToggle}
           moreAccessibilityLabel={`Read the full review from ${author}`}
@@ -286,9 +294,9 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
             <Text style={styles.topReviewActionText}>Read fan post</Text>
           </PublicPressableLink>
           {canOpenExactShow ? (
-            <PublicPressableLink
-              href={concertPath(review.archiveShowKey)}
-              onNavigate={guard(() => onOpenShow?.(review))}
+            <Suspense fallback={<Text>View show</Text>}><ReviewEventLink
+              review={review}
+              onOpenShow={onOpenShow}
               style={({ pressed, focused }) => [
                 styles.topReviewAction,
                 pressed && styles.topReviewActionPressed,
@@ -299,7 +307,7 @@ function TopReviewCard({ review, rank, artistName, onOpenPost, onOpenShow, onOpe
             >
               <Icon name="calendar" size={12} color={colors.textDim} />
               <Text style={styles.topReviewActionText}>View show</Text>
-            </PublicPressableLink>
+            </ReviewEventLink></Suspense>
           ) : null}
         </View>
       </View>
