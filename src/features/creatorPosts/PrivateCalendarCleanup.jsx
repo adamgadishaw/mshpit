@@ -54,7 +54,9 @@ export default function PrivateCalendarCleanup({ accountId }) {
         setConfirmation(null);setReload(value=>value+1);
       }
     }catch(error){
-      if(active())setNotice({accountId,error:true,text:error.userMessage||error.message||'This could not be completed. Refresh your calendar before trying again.',
+      if(active())setNotice({accountId,error:true,text:kind==='withdraw'&&error.status===409
+        ? 'This show changed. Refresh your private calendar. This attempt did not publish a cancellation.'
+        : error.userMessage||error.message||'This could not be completed. Refresh your calendar before trying again.',
         retry:![400,401,403,404,409].includes(error.status)?{event,kind}:null});
     }finally{controllers.current.delete(controller);if(active()){inFlight.current=false;setBusy(false);}}
   };

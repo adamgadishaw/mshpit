@@ -498,10 +498,63 @@ for(const first of ['withdrawal','due'])test('private withdrawal and due worker 
   }finally{if(db.isTransaction)db.exec('ROLLBACK');await worker.stop();}
 });
 
+for(const first of ['withdrawal','due'])test('private-only cleanup and eligible due publication serialize when '+first+' wins the writer lock',{timeout:45000},async()=>{
+  const {cancelMediaAsset}=await import('../../mediaAssets.js');
+  const artist=account('artist'),fan=account(),image=addReadyPostImage(artist.id,'private-only-'+first);
+  db.prepare('UPDATE users SET favorite_artists=? WHERE id=?').run(JSON.stringify([artist.artist_name]),fan.id);
+  const body=draft(artist,{releaseAt:Date.now()+3600000});body.photos=[image.renderUrl];body.mediaAssetIds=[image.assetId];
+  const saved=submit(artist,body),id=saved.calendarReceipt.eventId;
+  // Advance this fixture's deadline, not publication state. The real due
+  // worker must perform all eligibility, publication and notice writes.
+  db.prepare('UPDATE creator_calendar_publications SET release_at=? WHERE id=?').run(Date.now()-1000,saved.calendarReceipt.id);
+  const cancel=draft(artist,{action:'cancel',eventId:id,expectedRevision:1,privateOnly:true});
+  const worker=await publicationWorker(artist,first==='withdrawal'?{at:Date.now()}:cancel,'private-only-race-'+first,{due:first==='withdrawal'});
+  let withdrawn,live;
+  try{
+    await worker.wait('-ready');db.exec('BEGIN IMMEDIATE');worker.go();await worker.wait('-waiting');
+    if(first==='withdrawal')withdrawn=submit(artist,cancel);
+    else {assert.deepEqual(creatorCalendarService.runDue(),{published:1,blocked:0});live=db.prepare('SELECT * FROM tour_dates WHERE id=?').get(id);}
+    db.exec('COMMIT');const result=await worker.result();
+    if(first==='withdrawal'){
+      assert.equal(withdrawn.calendarReceipt.state,'cancelled');assert.equal(withdrawn.post,undefined);
+      assert.deepEqual(result,{published:0,blocked:0});
+      assert.equal(cancelMediaAsset(db,{ownerId:artist.id,assetId:image.assetId}).removed,true);
+      assert.deepEqual(submit(artist,structuredClone(cancel)),withdrawn);
+      for(const altered of [{...cancel,review:'Changed'}, {...cancel,creatorUpdate:{...cancel.creatorUpdate,calendar:{...cancel.creatorUpdate.calendar,privateOnly:undefined}}}])fail(()=>submit(artist,altered),409);
+    }else{
+      assert.equal(result.status,409,'A private-only request cannot fall through to public cancellation');
+      fail(()=>submit(artist,structuredClone(cancel)),409);
+      fail(()=>submit(artist,{...cancel,review:'Changed retry'}),409);
+      assert.deepEqual(db.prepare('SELECT * FROM tour_dates WHERE id=?').get(id),live);
+      assert.equal(db.prepare('SELECT 1 FROM creator_calendar_publications WHERE mutation_id=?').get(cancel.clientMutationId),undefined);
+      fail(()=>cancelMediaAsset(db,{ownerId:artist.id,assetId:image.assetId}),409);
+      assert.equal(db.prepare('SELECT count(*) n FROM post_media WHERE asset_id=?').get(image.assetId).n,1);
+    }
+    assert.equal(db.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(artist.id).n,first==='due'?1:0);
+    assert.equal(db.prepare("SELECT count(*) n FROM notifications WHERE actor_id=? AND type='creator_update'").get(artist.id).n,first==='due'?1:0);
+    assert.equal(db.prepare('SELECT payload FROM creator_calendar_publications WHERE id=?').get(saved.calendarReceipt.id).payload,JSON.stringify(Object.fromEntries(Object.entries(body))));
+  }finally{if(db.isTransaction)db.exec('ROLLBACK');await worker.stop();}
+});
+
+test('private-only intent is validated and receipt-bound while explicit public cancellation still publishes normally',()=>{
+  const artist=account('artist'),fan=account();db.prepare('UPDATE users SET favorite_artists=? WHERE id=?').run(JSON.stringify([artist.artist_name]),fan.id);
+  const saved=submit(artist,draft(artist)),id=saved.calendarReceipt.eventId;
+  const foreign=account('artist');fail(()=>submit(foreign,draft(foreign,{action:'cancel',eventId:id,expectedRevision:1,privateOnly:true})),403);
+  for(const privateOnly of [false,null,'true',1])fail(()=>submit(artist,draft(artist,{action:'cancel',eventId:id,expectedRevision:1,privateOnly})),400);
+  fail(()=>submit(artist,draft(artist,{privateOnly:true,venue:'Another hall'})),400);
+  fail(()=>submit(artist,draft(artist,{action:'edit',eventId:id,expectedRevision:1,privateOnly:true})),400);
+  fail(()=>submit(artist,draft(artist,{action:'cancel',eventId:id,expectedRevision:1,privateOnly:true})),409);
+  const cancel=draft(artist,{action:'cancel',eventId:id,expectedRevision:1}),result=submit(artist,cancel);
+  assert.ok(result.post);assert.equal(result.calendarReceipt.state,'published');assert.equal(submit(artist,structuredClone(cancel)).id,result.id);
+  fail(()=>submit(artist,{...cancel,creatorUpdate:{...cancel.creatorUpdate,calendar:{...cancel.creatorUpdate.calendar,privateOnly:true}}}),409);
+  assert.equal(db.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(artist.id).n,2);
+  assert.equal(db.prepare("SELECT count(*) n FROM notifications WHERE actor_id=? AND type='creator_update'").get(artist.id).n,2);
+});
+
 for(const change of ['ownership','revision'])test('withdrawal rechecks '+change+' changed while waiting on the writer lock',{timeout:45000},async()=>{
   const artist=account('artist'),releaseAt=Date.now()+3600000,body=draft(artist,{releaseAt}),saved=submit(artist,body);
   memorial(artist);assert.equal(creatorCalendarService.runDue({at:releaseAt+1}).blocked,1);
-  const cancel=draft(artist,{action:'cancel',eventId:saved.calendarReceipt.eventId,expectedRevision:1});
+  const cancel=draft(artist,{action:'cancel',privateOnly:true,eventId:saved.calendarReceipt.eventId,expectedRevision:1});
   const worker=await publicationWorker(artist,cancel,'withdraw-change-'+change);
   try{
     await worker.wait('-ready');db.exec('BEGIN IMMEDIATE');worker.go();await worker.wait('-waiting');

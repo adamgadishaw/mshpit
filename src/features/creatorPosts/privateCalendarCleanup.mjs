@@ -8,7 +8,7 @@ export function privateCalendarWithdrawal(event, clientMutationId) {
     version: 1, entityType: 'artist', entityKey: event.withdrawal.entityKey, kind: 'show',
     title: 'Scheduled show withdrawn', date: event.date,
     location: [event.venue,event.place].filter(Boolean).join(', ').slice(0,200), url: event.ticketUrl || '',
-    calendar: { action: 'cancel', eventId: event.id, expectedRevision: event.revision,
+    calendar: { action: 'cancel', privateOnly: true, eventId: event.id, expectedRevision: event.revision,
       venue: event.venue, place: event.place, releaseAt: 0 },
   } };
 }

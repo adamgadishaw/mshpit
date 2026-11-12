@@ -63,6 +63,8 @@ export function createCreatorCalendarService({ database: db, requireUser, author
     submit(ctx) {
       const cancellationRequested = ctx.body?.creatorUpdate?.calendar?.action === "cancel";
       currentArtist(ctx, cancellationRequested);
+      const privateOnly = ctx.body?.creatorUpdate?.calendar?.privateOnly;
+      if (privateOnly !== undefined && (privateOnly !== true || !cancellationRequested)) fail("Private cleanup is only available for withdrawal.");
       const payload = Object.fromEntries(fields.filter(key => Object.hasOwn(ctx.body || {}, key)).map(key => [key, ctx.body[key]]));
       if (JSON.stringify(payload).length > 100000) fail("This show update is too large.");
       const mutationId = payload.clientMutationId;
@@ -73,6 +75,7 @@ export function createCreatorCalendarService({ database: db, requireUser, author
         const previous = receipt(user.id, mutationId);
         if (previous) {
           if (previous.payload_hash !== payloadHash) fail("This submission already has different details. Reopen the saved update before retrying.", 409);
+          if (privateOnly && (previous.state !== "cancelled" || previous.post_id)) fail("That saved request was not a private withdrawal. Refresh your calendar.", 409);
           if (cancellationRequested && previous.state !== "cancelled") authorize(user);
           return response(ctx, previous);
         }
@@ -95,6 +98,10 @@ export function createCreatorCalendarService({ database: db, requireUser, author
         // still private and has never published before bypassing eligibility.
         // Current owner/session and revision checks above remain mandatory.
         const privateWithdrawal = cancellation && canWithdraw(prior,user);
+        // A cleanup-only confirmation is not consent to announce a public
+        // cancellation. The due worker may have won this same writer lock
+        // without changing creator_revision since the panel loaded.
+        if (privateOnly && !privateWithdrawal) fail("This show is no longer private. Refresh your calendar; no cancellation was posted by this request.", 409);
         if (privateWithdrawal) {
           const error = creatorUpdateError(update); if (error) fail(error);
           if (update.url !== (prior.ticket_url || "")) fail("Refresh the show before cancelling it.", 409);

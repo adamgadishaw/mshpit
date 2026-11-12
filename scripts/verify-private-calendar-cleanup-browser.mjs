@@ -18,16 +18,20 @@ const reservation=createServer();await new Promise(done=>reservation.listen(0,'1
 const origin=`http://127.0.0.1:${port}`,directory=mkdtempSync(join(tmpdir(),'pit-auth-real-browser-'));
 const env=Object.fromEntries(['PATH','SystemRoot','WINDIR','TEMP','TMP','USERPROFILE','LOCALAPPDATA'].filter(k=>process.env[k]).map(k=>[k,process.env[k]]));
 Object.assign(env,{NODE_ENV:'test',PORT:String(port),PUBLIC_ORIGIN:origin,PIT_DATA_DIR:directory,PIT_AUTH_BROWSER_FIXTURE:'1',PIT_ALLOW_EMPTY_DB_BOOTSTRAP:'true',ADMIN_PASSWORD:'Synthetic-local-password1',ADMIN_EMAIL:'owner@example.test',EMAIL_VERIFICATION_ENABLED:'true',EMAIL_CAMPAIGN_RECOVERY_ENABLED:'false',BACKUP_ENABLED:'false',TOURDATE_REFRESH_ENABLED:'false',TOURDATE_DEMAND_REFRESH_ENABLED:'false',ARTIST_GENRE_REFRESH_ENABLED:'false',ARTIST_PHOTO_SEED_ENABLED:'false',ARTIST_DEATH_WATCH_SCHEDULER_ENABLED:'false',CACHE_WARM_ENABLED:'false',MEDIA_ENDPOINT:'https://objects.example.com/s3',MEDIA_BUCKET:'pit-media',MEDIA_SOURCE_BUCKET:'pit-media-private',MEDIA_REGION:'auto',MEDIA_ACCESS_KEY_ID:'fixture',MEDIA_SECRET_ACCESS_KEY:'fixture',MEDIA_PUBLIC_BASE_URL:'https://media.example.com/cdn'});
-const child=fork(join(root,'server/index.js'),[],{cwd:root,env,execArgv:['--import',pathToFileURL(join(root,'scripts/fixtures/auth-real-server-preload.mjs')).href],stdio:['ignore','pipe','pipe','ipc'],windowsHide:true});
+const child=fork(join(root,'server/index.js'),[],{cwd:root,env,execArgv:['--import',pathToFileURL(join(root,'scripts/fixtures/calendar-cleanup-server-preload.mjs')).href],stdio:['ignore','pipe','pipe','ipc'],windowsHide:true});
 let fixture,bound,output='',browser,db,passed=0;
 child.on('message',m=>{if(m.kind==='fixture')fixture=m;if(m.kind==='listener-bound')bound=m.address;});
+let dueSequence=0;const dueResults=new Map();
+child.on('message',m=>{if(m.kind==='calendar-cleanup-due-result')dueResults.set(m.id,m);});
+const runDue=async()=>{const id=++dueSequence;child.send({kind:'calendar-cleanup-run-due',id});await wait(()=>dueResults.has(id),'Real calendar worker response');const result=dueResults.get(id);dueResults.delete(id);assert.equal(result.error,undefined);return result.result;};
 for(const stream of [child.stdout,child.stderr])stream.on('data',b=>{output=(output+b).slice(-8000);});
 try{
   await wait(()=>{assert.equal(child.exitCode,null,output);return fixture&&bound;},'Server startup',60000);assert.equal(bound,'127.0.0.1');
   db=new DatabaseSync(join(directory,'pit.db'));registerPitSqliteFunctions(db);db.exec('PRAGMA busy_timeout=10000');
   const {chromium}=createRequire(import.meta.url)(process.env.PIT_PLAYWRIGHT_MODULE||'playwright');
   browser=await chromium.launch({headless:true,executablePath:process.env.PIT_BROWSER_EXECUTABLE||undefined});
-  for(const width of [375,1280])for(const mode of ['held','lost-response','stale','revoked','account-read','account-write']){
+  for(const width of [375,1280])for(const mode of ['held','lost-response','stale','revoked','account-read','account-write','due-first','withdrawal-first']){
+    const race=mode==='due-first'||mode==='withdrawal-first';let publishedSnapshot;
     const member=fixture.readers[passed],other=fixture.readers[90],name=`Cleanup Artist ${passed}`,key=name.toLowerCase();
     const request=async(path,body,method='POST',actor=member)=>{const r=await fetch(origin+path,{method,headers:{Cookie:actor.cookie,Origin:origin,'Content-Type':'application/json','X-Pit-Expected-Account':actor.id},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(15000)});return{status:r.status,data:await r.json()};};
     db.prepare("UPDATE users SET role='artist',artist_name=? WHERE id=?").run(name,member.id);
@@ -36,9 +40,12 @@ try{
     const body={clientMutationId:`browser_schedule_${passed}`,kind:'status',review:'Retain the full authored announcement.',photos:[image.renderUrl],mediaAssetIds:[image.assetId],creatorUpdate:{version:1,entityType:'artist',entityKey:key,kind:'show',title:'Private show',date,location:'Cleanup Hall, Toronto, Canada',url:'',calendar:{action:'create',eventId:'',expectedRevision:0,venue:'Cleanup Hall',place:'Toronto, Canada',releaseAt:Date.now()+3600000}}};
     const saved=await request('/api/posts',body);assert.equal(saved.status,200,JSON.stringify(saved.data));
     const eventId=saved.data.calendarReceipt.eventId,payload=db.prepare('SELECT payload FROM creator_calendar_publications WHERE id=?').get(saved.data.calendarReceipt.id).payload;
-    db.prepare("UPDATE artist_profiles SET identity_review_status='pending' WHERE artist_key=?").run(key);
-    db.prepare("UPDATE creator_calendar_publications SET state='blocked' WHERE event_id=?").run(eventId);
-    assert.deepEqual((await request('/api/me/creator-entities',undefined,'GET')).data.entities,[]);
+    if(race)db.prepare('UPDATE users SET favorite_artists=? WHERE id=?').run(JSON.stringify([name]),fixture.readers[89].id);
+    else{
+      db.prepare("UPDATE artist_profiles SET identity_review_status='pending' WHERE artist_key=?").run(key);
+      db.prepare("UPDATE creator_calendar_publications SET state='blocked' WHERE event_id=?").run(eventId);
+      assert.deepEqual((await request('/api/me/creator-entities',undefined,'GET')).data.entities,[]);
+    }
     assert.equal((await request(`/api/media/assets/${image.assetId}`,undefined,'DELETE')).status,409);
     const context=await browser.newContext({viewport:{width,height:900},serviceWorkers:'block'});
     const setCookie=actor=>context.addCookies([{name:fixture.cookieName,value:actor.cookie.slice(fixture.cookieName.length+1),url:origin,httpOnly:true,sameSite:'Lax'}]);await setCookie(member);
@@ -50,7 +57,7 @@ try{
       const hold=delay&&(mode==='account-read'?url.pathname==='/api/me/artist-calendar':write);
       if(write||remove||hold){
         const response=await route.fetch();const data=await response.json();
-        if(write){assert.equal(req.headers()['x-pit-expected-account'],member.id);writes.push({body:req.postDataJSON(),status:response.status(),data});}
+        if(write){assert.equal(req.headers()['x-pit-expected-account'],member.id);assert.equal(req.postDataJSON().creatorUpdate.calendar.privateOnly,true);writes.push({body:req.postDataJSON(),status:response.status(),data});}
         if(remove)deletes.push({status:response.status(),data});
         if(hold){delayed=true;await new Promise(done=>{release=done;});}
         if(write&&lose)return route.abort('failed');
@@ -74,7 +81,17 @@ try{
         if(mode==='held'){await page.getByRole('button',{name:'Manage private scheduled shows',exact:true}).click();await page.getByRole('button',{name:'Manage private scheduled shows',exact:true}).click();await withdraw.waitFor();}
         if(mode==='stale')db.prepare('UPDATE tour_dates SET creator_revision=2 WHERE id=?').run(eventId);
         if(mode==='revoked')db.prepare('UPDATE artist_profiles SET owner_id=NULL WHERE artist_key=?').run(key);
-        await withdraw.click();await page.getByRole('button',{name:`Confirm withdrawal for ${label}`,exact:true}).click();
+        await withdraw.click();
+        if(mode==='due-first'){
+          // Only advance the fixture's deadline. The actual worker must write
+          // the public event, post, media linkage and Activity notification.
+          db.prepare('UPDATE creator_calendar_publications SET release_at=? WHERE id=?').run(Date.now()-1000,saved.data.calendarReceipt.id);
+          const due=await runDue();assert.equal(due.blocked,0);assert.ok(due.published<=1);
+          assert.equal(db.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(member.id).n,1);
+          assert.equal(db.prepare("SELECT count(*) n FROM notifications WHERE actor_id=? AND type='creator_update'").get(member.id).n,1);
+          publishedSnapshot=db.prepare('SELECT * FROM tour_dates WHERE id=?').get(eventId);
+        }
+        await page.getByRole('button',{name:`Confirm withdrawal for ${label}`,exact:true}).click();
       }
       if(mode.startsWith('account-')){
         await wait(()=>delayed,'Response must be pending before account switch');
@@ -91,6 +108,27 @@ try{
         assert.equal(await page.getByRole('button',{name:`Confirm withdrawal for ${label}`,exact:true}).isEnabled(),false);
         assert.equal(await page.getByRole('button',{name:'Retry withdrawal',exact:true}).count(),0);assert.equal(deletes.length,0);
         assert.equal(db.prepare('SELECT event_status FROM tour_dates WHERE id=?').get(eventId).event_status,null,'Rejected withdrawal preserves the original stored status');
+      }else if(mode==='due-first'){
+        await wait(()=>writes.length===1,'Private-only stale confirmation');assert.equal(writes[0].status,409);
+        assert.match(writes[0].data.error,/This show is no longer private/);
+        await page.getByRole('alert').filter({hasText:'Refresh your private calendar. This attempt did not publish a cancellation.'}).waitFor();
+        assert.equal(await page.getByRole('button',{name:`Confirm withdrawal for ${label}`,exact:true}).isEnabled(),false);
+        assert.equal(await page.getByRole('button',{name:'Retry withdrawal',exact:true}).count(),0);
+        for(const retry of [writes[0].body,{...writes[0].body,review:'Changed retry'}])assert.equal((await request('/api/posts',retry)).status,409);
+        assert.deepEqual(db.prepare('SELECT * FROM tour_dates WHERE id=?').get(eventId),publishedSnapshot);
+        assert.equal(db.prepare('SELECT 1 FROM creator_calendar_publications WHERE mutation_id=?').get(writes[0].body.clientMutationId),undefined);
+        assert.equal(db.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(member.id).n,1);
+        assert.equal(db.prepare("SELECT count(*) n FROM notifications WHERE actor_id=? AND type='creator_update'").get(member.id).n,1);
+        assert.equal((await request(`/api/media/assets/${image.assetId}`,undefined,'DELETE')).status,409);
+        assert.equal(db.prepare('SELECT count(*) n FROM post_media WHERE asset_id=?').get(image.assetId).n,1);
+        await page.getByRole('button',{name:'Refresh private calendar',exact:true}).click();
+        await page.getByText('No private schedules to withdraw on this page.',{exact:true}).waitFor();
+        assert.equal(await withdraw.count(),0);assert.equal(deletes.length,0);
+        // Separate, explicitly authorized ordinary public cancellation remains
+        // available. It is not the cleanup request or a retry of that request.
+        const explicit=structuredClone(writes[0].body);delete explicit.creatorUpdate.calendar.privateOnly;explicit.clientMutationId=`explicit_public_cancel_${passed}`;
+        const normal=await request('/api/posts',explicit);assert.equal(normal.status,200,JSON.stringify(normal.data));assert.ok(normal.data.post);
+        assert.equal((await request('/api/posts',structuredClone(explicit))).data.id,normal.data.id);
       }else{
         if(lose){
           await page.getByRole('button',{name:'Retry withdrawal',exact:true}).waitFor();assert.equal(writes.length,1);assert.equal(writes[0].status,200);
@@ -98,6 +136,12 @@ try{
           await wait(()=>writes.length===2,'Same withdrawal retry');assert.deepEqual(writes[1].body,writes[0].body);assert.deepEqual(writes[1].data.calendarReceipt,writes[0].data.calendarReceipt);
         }
         await page.getByText('Show withdrawn. No update was published.',{exact:true}).waitFor();
+        if(mode==='withdrawal-first'){
+          db.prepare('UPDATE creator_calendar_publications SET release_at=? WHERE id=?').run(Date.now()-1000,saved.data.calendarReceipt.id);
+          assert.deepEqual(await runDue(),{published:0,blocked:0});
+          assert.equal((await request('/api/posts',structuredClone(writes[0].body))).data.calendarReceipt.id,writes[0].data.calendarReceipt.id);
+          for(const changed of [{...writes[0].body,review:'Changed retry'},{...writes[0].body,creatorUpdate:{...writes[0].body.creatorUpdate,calendar:{...writes[0].body.creatorUpdate.calendar,privateOnly:undefined}}}])assert.equal((await request('/api/posts',changed)).status,409);
+        }
         // Cold restoration must rediscover cleanup eligibility from the server.
         await page.goto(origin+'/you');await page.getByRole('button',{name:'Manage profile',exact:true}).last().click();await page.getByRole('button',{name:'Manage private scheduled shows',exact:true}).click();
         await page.getByRole('button',{name:`Remove unused uploads for ${label}`,exact:true}).click();
@@ -106,11 +150,13 @@ try{
         assert.equal(db.prepare('SELECT 1 FROM media_assets WHERE id=?').get(image.assetId),undefined);
         for(const objectKey of [image.sourceKey,image.renderKey])assert.ok(db.prepare('SELECT 1 FROM media_deletion_queue WHERE object_key=?').get(objectKey));
         assert.equal(db.prepare('SELECT event_status FROM tour_dates WHERE id=?').get(eventId).event_status,'cancelled');
-        assert.deepEqual((await request('/api/me/creator-entities',undefined,'GET')).data.entities,[]);
-        assert.equal((await request('/api/posts',{...body,clientMutationId:`denied_publish_${passed}`})).status,409);
+        if(!race){
+          assert.deepEqual((await request('/api/me/creator-entities',undefined,'GET')).data.entities,[]);
+          assert.equal((await request('/api/posts',{...body,clientMutationId:`denied_publish_${passed}`})).status,409);
+        }
       }
-      assert.equal(db.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(member.id).n,0);
-      assert.equal(db.prepare('SELECT count(*) n FROM notifications WHERE actor_id=?').get(member.id).n,0);
+      assert.equal(db.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(member.id).n,mode==='due-first'?2:0);
+      assert.equal(db.prepare('SELECT count(*) n FROM notifications WHERE actor_id=?').get(member.id).n,mode==='due-first'?2:0);
       assert.equal(db.prepare('SELECT payload FROM creator_calendar_publications WHERE id=?').get(saved.data.calendarReceipt.id).payload,payload);
       assert.deepEqual(errors,[]);await page.screenshot({path:join(shots,`${mode}-${width}.png`)});passed++;console.log(JSON.stringify({width,mode,passed:true,writes:writes.length,deletes:deletes.length}));
     }catch(error){await page.screenshot({path:join(shots,`failure-${mode}-${width}.png`)});console.error((await page.locator('body').innerText()).slice(-6000));throw error;}
