@@ -105,6 +105,16 @@ canonical profile route, account-target reads and independent rating labels.
 Normalize this isolated checkout to Git's LF blobs for exact-source native
 snapshot checks; this does not change tracked source contents.
 
+Independent review also found that a route-keyed native wrapper remounted the
+retained stack and that creator external links bypassed its current-card guard.
+Modal route identity is now separate from the native host's stable mount
+identity. Native creator links and their delayed failure alerts use the existing
+card ownership predicate. The real Root fixture uses production route keys,
+real ShowSection state and real creator cards: four targeted regressions fail
+against the preserved predecessor source and pass with this correction. Tests
+cover Back, StrictMode, gallery/comment retention, account replacement, covered
+and retired presses, and current versus stale external-link failures.
+
 Preserve Build 8's themes, native UI, recovery and navigation, including its
 distinct pure startup-helper filename and actual Metro iOS/Android/web
 resolution regression. Do not reconstruct or substitute the startup repair.

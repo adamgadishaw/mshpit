@@ -515,7 +515,7 @@ export default function TicketStub({
             <Text style={styles.flaggedTxt}>REPORTED · {log.flags}</Text>
           </View>}
 
-        {!!log.creatorUpdate && <Suspense fallback={<Text style={{ color: colors.textDim }}>Loading update…</Text>}><CreatorUpdateCard update={log.creatorUpdate} /></Suspense>}
+        {!!log.creatorUpdate && <Suspense fallback={<Text style={{ color: colors.textDim }}>Loading update…</Text>}><CreatorUpdateCard update={log.creatorUpdate} isCurrent={currentCard} /></Suspense>}
         {attendanceTicketCard ? <>
             <ConcertTicketCard ticket={attendanceTicketCard} style={styles.attendanceTicketCard} onPress={attendanceTicketShow && onOpenShow ? () => onOpenShow(attendanceTicketShow) : undefined} accessibilityHint={attendanceTicketShow && onOpenShow ? "Open the exact show or event page" : undefined} />
             <TicketActionRail showHref={canonicalPostHref} onOpenShow={attendanceTicketShow && onOpenShow ? () => onOpenShow(attendanceTicketShow) : () => onOpen?.(log)} compareHref={canCompareArtistShows ? postContext.artistConcertsHref : null} onCompare={openArtistShows} artist={postContext.artist} palette={campaignTreatment} />

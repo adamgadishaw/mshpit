@@ -132,7 +132,7 @@ function fixture({ strict = false, frames: initialFrames, realPost = false, lazy
       if (!keyboard.has(event)) keyboard.set(event, new Set()); keyboard.get(event).add(callback);
       return { remove: () => keyboard.get(event).delete(callback) };
     } }, AccessibilityInfo: { announceForAccessibilityWithOptions: noop, announceForAccessibility: noop },
-    Alert: { alert: (...args) => actions.push(["alert", ...args]) }, Linking: { openURL: url => actions.push(["external", url]) } };
+    Alert: { alert: (...args) => actions.push(["alert", ...args]) }, Linking: { openURL: async url => actions.push(["external", url]) } };
   const useSharedValue = initial => { const ref = React.useRef(null);
     if (!ref.current) ref.current = { value: initial, get() { return this.value; }, set(value) { this.value = value; } }; return ref.current; };
   const Gesture = { Pan() { const values = {}; const proxy = new Proxy(values, { get: (target, key) => key === "recording" ? values : value => { target[key] = value; return proxy; } }); return proxy; } };
@@ -161,7 +161,7 @@ function fixture({ strict = false, frames: initialFrames, realPost = false, lazy
   };
   function imports(name, file) {
     const base = name.split("/").at(-1);
-    if (base === "lazyWithRetry") return { lazyWithRetry: (_read, label) => label === "ReviewDialog" ? load("src/components/ReviewDialog.jsx").default : label };
+    if (base === "lazyWithRetry") return { lazyWithRetry: (_read, label) => ["ReviewDialog", "CreatorUpdateCard"].includes(label) ? load(`src/components/${label}.jsx`).default : label };
     if (base === "publicNavigationService") return { readPublicPost: async id => frames.findLast(frame => frame.post?.id === id)?.post || review, resolvePublicEntity: async () => null };
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;
@@ -203,6 +203,7 @@ function fixture({ strict = false, frames: initialFrames, realPost = false, lazy
     return require(name);
   }
   const usePresentation = load(real.useIOSDetailPresentation).default;
+  const ShowSection = load("src/features/showDetails/ShowSection.jsx").default;
   const useTicket = load(real.useIOSTicketAction).default, KeyboardView = load(real.IOSPostKeyboardView).default;
   function Probe(props) {
     const presentation = usePresentation(), liveStore = React.useContext(Store);
@@ -217,6 +218,7 @@ function fixture({ strict = false, frames: initialFrames, realPost = false, lazy
       React.createElement("ScrollView", { testID: "probe-scroll" },
         React.createElement("TextInput", { value: draft, onChangeText: presentation.guard(setDraft) }),
         React.createElement("Section", { value: section, onPress: presentation.guard(() => setSection("shows")) }),
+        props.log ? React.createElement(ShowSection, { title: "After the show" }, React.createElement("AfterShowContent", { testID: "retained-after-show" })) : null,
         React.createElement("Ticket", { onPress: () => ticket.open("https://ticket.example/show") }))));
   }
   const Artist = lazyArtist ? React.lazy(() => pendingArtist.promise) : Probe;
@@ -233,7 +235,7 @@ function fixture({ strict = false, frames: initialFrames, realPost = false, lazy
     Suspense: React.Suspense, ScreenLoading: () => React.createElement("ScreenLoading"), ScreenTransition: ({ children }) => children,
     ArtistScreen: Artist, ProfileScreen: Probe, ShowScreen: Probe, PostScreen: realPost ? load(real.PostScreen).default : Probe, Protected: () => React.createElement("Protected"),
     iosBackGestureAllowed: require("./src/domain/iosNavigationPolicy.mjs").iosBackGestureAllowed,
-    screenTransitionKey: frame => JSON.stringify(frame), activeTab: "feed", screenKey: "detail", screenDirection: "forward",
+    screenTransitionKey: require("./src/domain/screenTransition.mjs").screenTransitionKey, activeTab: "feed", screenDirection: "forward",
     authReady: true, landing: false, status: "ok", nativeAccountLinkActive: false, nativeAccountLinkActiveRef: { current: false }, resetToken: null, ownerApprovalToken: null,
     appActive: true, iosMenuOpen: false, acctOpen: false, welcome: null, unsubToken: null, verifyToken: null, publicNavigationNotice: null, newsStoryNotice: null,
     commentDraftsRef: { current: require("./src/domain/iosCommentDrafts.mjs").createIOSCommentDrafts() },
@@ -250,6 +252,7 @@ function fixture({ strict = false, frames: initialFrames, realPost = false, lazy
     bindings.commentDraftsRef.current.account(account, epoch);
     Object.assign(bindings, { stack: frames, nav: frames.at(-1), session: { id: account }, chatAuthEpoch: epoch, linkedNavigationScope: linked.account(account, epoch),
       artistReturn: { key: "artist", revision: capturedRevision }, ...flags });
+    bindings.screenKey = bindings.screenTransitionKey(frames.at(-1), bindings.activeTab);
     for (const name of callbackBindings) bindings[name] = (...args) => actions.push([name, capturedRevision, ...args]);
     // Each function gets its own immutable render binding object, like Root.
     const snapshot = { ...bindings };
@@ -590,4 +593,53 @@ test("Root review modal drops prior account comments and private presentation on
   assert.ok(nextInput); assert.equal(nextInput.props.value, "");
   const before = f.writes.length; f.act(() => input.props.onChangeText("Old account overwrite"));
   assert.equal(nextInput.props.value, ""); assert.equal(f.writes.length, before);
+});
+
+for (const strict of [false, true]) test(`actual changing Root route keys retain a concert disclosure after artist Back (StrictMode ${strict})`, t => {
+  const f = fixture({ strict, reviewPresentation: true, frames: [{}, { openLog: review }] }); t.after(f.close);
+  const button = () => f.all().find(node => node.props?.accessibilityLabel === "After the show");
+  const original = f.active(), key = f.bindings.screenKey;
+  f.act(() => button().props.onPress());
+  assert.equal(button().props.accessibilityState.expanded, true);
+  const content = f.all().find(node => node.props?.testID === "retained-after-show");
+  assert.ok(content); const oldPress = button().props.onPress;
+  f.push({ artistName: "Another artist" }); assert.notEqual(f.bindings.screenKey, key);
+  f.act(oldPress); f.back();
+  assert.equal(f.bindings.screenKey, key); assert.ok(f.active() === original, "Back must preserve the original concert occurrence");
+  assert.equal(button().props.accessibilityState.expanded, true);
+  assert.equal(f.all().find(node => node.props?.testID === "retained-after-show"), content);
+  f.act(oldPress); assert.equal(button().props.accessibilityState.expanded, true, "covered callbacks do not revive on Back");
+  f.act(() => button().props.onPress()); assert.equal(button().props.accessibilityState.expanded, false);
+});
+
+test("real creator post links honor current card ownership across cover, Back, account change and retirement", async t => {
+  const url = "https://fixture.test/current-tickets";
+  const post = { ...review, kind: "status", creatorUpdate: { kind: "show", entityName: "Artist", title: "New date", url } };
+  const f = fixture({ realPost: true, reviewPresentation: true, frames: [{}, { post }] }); t.after(f.close); await f.settle();
+  const link = () => f.all().find(node => node.type === "PublicTextLink" && node.props.href === url);
+  assert.ok(link()); const old = link().props.onNavigate;
+  f.act(old); assert.equal(f.actions.filter(action => action[0] === "external").length, 1);
+  f.push({ artistName: "Covered successor" }); f.act(old); f.back(); await f.settle(); f.act(old);
+  assert.equal(f.actions.filter(action => action[0] === "external").length, 1);
+  const current = link().props.onNavigate; f.act(current);
+  assert.equal(f.actions.filter(action => action[0] === "external").length, 2);
+  f.changeAccount("B"); await f.settle(); f.act(current); f.act(old);
+  assert.equal(f.actions.filter(action => action[0] === "external").length, 2);
+  const next = link().props.onNavigate; f.act(next);
+  assert.equal(f.actions.filter(action => action[0] === "external").length, 3);
+  f.close(); f.act(next); assert.equal(f.actions.filter(action => action[0] === "external").length, 3);
+});
+
+test("creator link rejection cannot alert a covered successor but a current failure stays actionable", async t => {
+  const url = "https://fixture.test/release";
+  const post = { ...review, kind: "status", creatorUpdate: { kind: "release", entityName: "Artist", title: "Release", url } };
+  const f = fixture({ realPost: true, reviewPresentation: true, frames: [{}, { post }] }); t.after(f.close); await f.settle();
+  const link = () => f.all().find(node => node.type === "PublicTextLink" && node.props.href === url);
+  let reject; f.native.Linking.openURL = () => new Promise((_resolve, fail) => { reject = fail; });
+  f.act(() => link().props.onNavigate()); f.push({ artistName: "Successor" });
+  await f.settle(() => reject(new Error("Synthetic link failure")));
+  assert.equal(f.actions.some(action => action[0] === "alert"), false);
+  f.back(); await f.settle(); f.act(() => link().props.onNavigate());
+  await f.settle(() => reject(new Error("Synthetic current failure")));
+  assert.equal(f.actions.filter(action => action[0] === "alert").length, 1);
 });

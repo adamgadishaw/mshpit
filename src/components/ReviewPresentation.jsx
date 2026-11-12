@@ -7,18 +7,20 @@ const ReviewDialog = lazyWithRetry(() => import("./ReviewDialog"), "ReviewDialog
 // Keep the actual originating screen mounted, including its scroll/disclosure
 // state. A review's child gallery and event page share this bounded visit stack.
 // The parent keys this host by account; no retained element crosses identities.
-export default function ReviewPresentation({ children, depth, review, onClose, fallback }) {
-  const current = { key: children.key, depth, content: children, review };
+export default function ReviewPresentation({ children, routeKey, depth, review, onClose, fallback }) {
+  // Route identity tracks modal visits; it must not remount the native retained
+  // stack that owns ordinary detail occurrences. Web keeps keyed transitions.
+  const current = { key: routeKey ?? children.key, depth, content: children, review };
   const [stored, setStored] = useState([current]);
   const previous = stored.at(-1);
-  const changed = previous.key !== children.key || previous.depth !== depth;
+  const changed = previous.key !== current.key || previous.depth !== depth;
   const retain = (review || stored.some(page => page.review)) && depth > stored[0].depth;
   const pages = [...(changed ? retain ? stored.filter(page => page.depth < depth) : [] : stored.slice(0, -1)), current];
   if (changed || previous.content !== children) setStored(pages);
   const base = pages[0].review ? null : pages[0];
   const modal = pages.slice(base ? 1 : 0);
   return <>
-    {base ? <View key={base.key} style={fill} pointerEvents={modal.length ? "none" : "auto"}
+    {base ? <View key="origin" style={fill} pointerEvents={modal.length ? "none" : "auto"}
       aria-hidden={!!modal.length} accessibilityElementsHidden={!!modal.length}
       importantForAccessibility={modal.length ? "no-hide-descendants" : "auto"}>
       <Suspense fallback={fallback}>{base.content}</Suspense>

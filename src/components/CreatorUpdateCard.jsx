@@ -3,7 +3,7 @@ import { colors } from "../theme";
 import { formatDate } from "../domain/dates.mjs";
 import { PublicTextLink } from "./PublicWebLinks";
 
-export default function CreatorUpdateCard({ update }) {
+export default function CreatorUpdateCard({ update, isCurrent }) {
   const event = update.calendarEvent, cancelled = ["cancelled", "canceled"].includes(event?.status);
   const url = event ? event.ticketUrl : update.url;
   return <View style={{ gap: 8, paddingVertical: 12 }}>
@@ -13,7 +13,12 @@ export default function CreatorUpdateCard({ update }) {
     {!!event && <Text selectable style={{ color: cancelled ? colors.danger : colors.textDim }}>
       {cancelled ? "Cancelled" : "Current calendar date"}: {formatDate(event.date)} · {event.venue}, {event.place}
     </Text>}
-    {!!url && !cancelled && <PublicTextLink href={url} onNavigate={() => { void Linking.openURL(url).catch(() => Alert.alert("Link unavailable", "This link could not be opened. Try again.")); }} style={{ color: colors.amber }}>
+    {!!url && !cancelled && <PublicTextLink href={url} onNavigate={() => {
+      if (isCurrent?.() === false) return;
+      void Linking.openURL(url).catch(() => {
+        if (isCurrent?.() !== false) Alert.alert("Link unavailable", "This link could not be opened. Try again.");
+      });
+    }} style={{ color: colors.amber }}>
       {update.kind === "show" ? "Tickets and details" : "Find out more"}
     </PublicTextLink>}
   </View>;

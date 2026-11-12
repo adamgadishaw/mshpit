@@ -2002,8 +2002,8 @@ function Root() {
   // Preserve the native retained detail stack inside the review presentation.
   // The underlying feed remains mounted by NativeFeedMediaLayer; the modal
   // owns the review and its gallery/auth children without replacing that feed.
-  const presentNativeScreen = (content) => <ReviewPresentation key={session?.id || "guest"} depth={stack.length} review={isReviewDetail(nav.post)} onClose={back} fallback={<ScreenLoading />}>
-    <View key={screenKey} style={styles.appContent}>{content}</View>
+  const presentNativeScreen = (content) => <ReviewPresentation key={session?.id || "guest"} routeKey={screenKey} depth={stack.length} review={isReviewDetail(nav.post)} onClose={back} fallback={<ScreenLoading />}>
+    <View key="native-detail" style={styles.appContent}>{content}</View>
   </ReviewPresentation>;
 
   // Keep the web route mounted across the desktop breakpoint. Resizing changes
