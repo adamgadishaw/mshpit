@@ -45,7 +45,7 @@ test("viewability cancellation releases a lease without consuming the retry budg
 });
 
 test("web probes CORS before mounting or decoding a remote legacy video", () => {
-  const source = readFileSync(new URL("./videoPoster.web.js", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./videoPosterWebImplementation.mjs", import.meta.url), "utf8");
   const probe = source.indexOf("await assertRemotePosterCors(source, guard, normalized.signal)");
   const decoder = source.indexOf('document.createElement("video")');
   assert.ok(probe >= 0 && decoder > probe);

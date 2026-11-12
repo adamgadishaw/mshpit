@@ -196,7 +196,7 @@ async function scenario(browser, origin, width, mode) {
 const chromium = require(process.env.PIT_PLAYWRIGHT_MODULE || "playwright").chromium;
 const { server, origin } = await localServer(); let browser;
 try {
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
   // Create an actual short playable fixture locally, without a download or API.
   const recorder = await browser.newPage();
   video = Buffer.from(await recorder.evaluate(async () => {

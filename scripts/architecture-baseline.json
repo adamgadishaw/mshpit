@@ -347,10 +347,6 @@
       "count": 2,
       "fingerprint": "4ed3b449f83870e53928"
     },
-    "src/lib/videoPoster.web.js": {
-      "count": 5,
-      "fingerprint": "5086d58cf2e6458dcfba"
-    },
     "src/lib/videoPosterAssetLease.mjs": {
       "count": 1,
       "fingerprint": "240a3f93878d70fba271"

@@ -5,7 +5,8 @@ import { createRequire } from 'node:module';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { localServer } from './verify-discover-venues-browser.mjs';
-import { fixtureApiResponse, navigationUser } from './verify-navigation-browser.mjs';
+import { archiveShowKey, decodeArchiveShowKey } from '../server/features/artistArchive/artistArchiveKeys.js';
+import { fixtureApiResponse, navigationUser, navigationArtist } from './verify-navigation-browser.mjs';
 const require=createRequire(import.meta.url);
 const {chromium}=require(process.env.PIT_PLAYWRIGHT_MODULE || 'playwright');
 const output=resolve('.tmp/past-event-rsvp-browser');mkdirSync(output,{recursive:true});
@@ -20,6 +21,8 @@ async function scenario(browser,origin,width,mode) {
   const date=past?'2020-01-01':mode==='multi-day'?'2026-11-10':'2026-11-12';
   const entity={id:'rsvp-fixture',kind:'event',path:'/event/rsvp-fixture',publicEventSnapshot:true,name:'Fixture Artist',artist:'Fixture Artist',artistKey:'fixture-artist',venue:'Fixture Venue',city:'Toronto',date,eventTimezone:'America/Toronto',eventStatus:'active',source:'ticketmaster',startDateTime:date+'T18:00:00-05:00',...(mode==='multi-day'?{eventEndDate:'2026-11-15'}:{})};
   const show={...entity,id,canonicalKey:'ticketmaster:rsvp-fixture',lifecycle:past||mode==='multi-day'?'completed':'upcoming',startsAt:mode==='expiry'?now-3600000:Date.parse(entity.startDateTime),timezone:entity.eventTimezone,endsAt:mode==='expiry'?now+30000:null,provider:{name:'ticketmaster',eventId:'rsvp-fixture',backed:true}};
+  const archiveKey=archiveShowKey({artistIdentity:'fixture-artist',venueIdentity:'Fixture Venue',date});
+  const archiveShow={key:archiveKey,artist:entity.artist,artistKey:entity.artistKey,venue:entity.venue,city:entity.city,date,avgRating:4.7,ratingCount:17,reviewCount:1};
   page.on('pageerror',error=>state.errors.push(error.message));
   await context.route('**/*',async route=>{
     const request=route.request(),url=new URL(request.url()),path=url.pathname,method=request.method();
@@ -35,11 +38,20 @@ async function scenario(browser,origin,width,mode) {
         return await json({showId:id,attendance:state.attendance,going:body.state==='going'});
       }
       assert.equal(method,'GET',`Unexpected mutation ${method} ${path}`);
+      if(path==='/api/page-head'){
+        const requestedPath=url.searchParams.get('path');
+        assert.ok(requestedPath?.startsWith('/')&&!requestedPath.startsWith('//'));
+        return await json({path:requestedPath,head:'<title>RSVP fixture</title>'});
+      }
       if(path==='/api/discover/overview')return await json({...fixtureApiResponse(path,{member:true}),topRatedShows:[{key:'fixture-rated',artist:'Fixture Artist',artistKey:'fixture-artist',venue:'Fixture Venue',city:'Toronto',date,avgRating:4.7,ratingCount:17,reviewCount:1}]});
       if(path==='/api/resolve'&&url.searchParams.get('path')===entity.path)return await json({entity});
       if(path.startsWith('/api/shows/'))return await json({show:mode==='top-rated'?null:{...show,viewerAttendance:state.attendance}});
       if(path.startsWith('/api/going/')&&path.endsWith('/attendees'))return await json({showId:id,attendees:[],total:0,scope:'everyone',viewerAttendance:state.attendance});
-      if(path==='/api/artists/archive/reviews')return await json({reviews:[],total:0,nextCursor:null});
+      if(path==='/api/artists/archive')return await json({archive:{artist:navigationArtist,shows:[archiveShow],topShows:[archiveShow],tours:[],upcoming:[],totals:{},truncated:false}});
+      if(path==='/api/artists/archive/reviews'){
+        if(mode==='top-rated')assert.equal(decodeArchiveShowKey(url.searchParams.get('showKey'))?.date,date);
+        return await json({reviews:[],total:0,nextCursor:null});
+      }
       if(path.startsWith('/api/event-accounts/'))return await json({entity:null});
       return await json(fixtureApiResponse(path,{member:true,method,resolvedPath:url.searchParams.get('path')||entity.path}));
     }catch(error){if(state.closing||/closed|disposed|handled|aborted/i.test(error.message))return;state.errors.push(error.message);await route.abort().catch(()=>{});}
