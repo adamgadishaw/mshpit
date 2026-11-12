@@ -54,9 +54,11 @@ for (const keyed of [true, false]) test(`notification failure rolls back ${keyed
   assert.equal(db.isTransaction, false);
   const result = send(ctx);
   assert.ok(result.id);
+  assert.equal(result.createdAt, db.prepare("SELECT created_at FROM dms WHERE id=?").get(result.id).created_at);
+  assert.ok(Number.isFinite(result.createdAt));
   assert.deepEqual(counts(sender, recipient), { messages: 1, notifications: 1, consent: 2 });
   if (keyed) {
-    assert.deepEqual(send(ctx), { id: result.id, duplicate: true });
+    assert.deepEqual(send(ctx), { id: result.id, createdAt: result.createdAt, duplicate: true });
     assert.deepEqual(counts(sender, recipient), { messages: 1, notifications: 1, consent: 2 });
   }
 });
@@ -68,7 +70,7 @@ test("recipient mute deliberately suppresses notifications without failing deliv
   const first = failNotifications(() => send(ctx));
   assert.deepEqual(counts(sender, recipient), { messages: 1, notifications: 0, consent: 2 });
   db.prepare("DELETE FROM account_mutes WHERE muter_id=? AND muted_id=?").run(recipient.id, sender.id);
-  assert.deepEqual(send(ctx), { id: first.id, duplicate: true });
+  assert.deepEqual(send(ctx), { id: first.id, createdAt: first.createdAt, duplicate: true });
   assert.deepEqual(counts(sender, recipient), { messages: 1, notifications: 0, consent: 2 });
 });
 

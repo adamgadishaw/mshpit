@@ -53,14 +53,21 @@ test("artist update deletion is server-first and exposes scoped retry feedback",
   assert.match(artistHub, /This artist post was not removed, so it is still visible/);
 });
 
-test("notification read is server-first and never clears uncaptured rows", () => {
-  const source = mutationSlice("const markNotificationsRead =", "const postOwner =");
-  assertServerFirst(source, "setNotifications(");
-  assert.match(source, /reconcileConfirmedNotificationReads/);
-  assert.match(source, /const notificationIds = notifications/);
-  assert.match(notifications, /await markNotificationsRead\(\{ signal: controller\.signal \}\)/);
-  assert.match(notifications, /notificationReadState\.scope === notificationReadScope/);
-  assert.match(notifications, /unread badge is unchanged/);
+test("notification read lives in the scoped feature and only sends explicit IDs", () => {
+  const state = readFileSync(new URL("../features/notifications/notificationActivityState.mjs", import.meta.url), "utf8");
+  const transport = readFileSync(new URL("../features/notifications/notificationsApi.js", import.meta.url), "utf8");
+  const command = readFileSync(new URL("../features/notifications/notificationReadCommand.mjs", import.meta.url), "utf8");
+  assert.match(store, /useNotificationActivity/);
+  assert.doesNotMatch(store, /api\("\/api\/me\/notifications\/read"/);
+  assert.match(state, /markNotificationRows\(/);
+  assert.match(command, /await writeReads\(/);
+  assert.ok(command.indexOf("reconcileConfirmedNotificationReads(previous") > command.indexOf("await writeReads("));
+  assert.match(command, /response\.notificationIds/);
+  assert.match(transport, /\/api\/me\/notifications\/read\/scoped/);
+  assert.match(notifications, /await markNotificationsRead\(\{ rows, signal:/);
+  assert.match(notifications, /refreshNotifications\(\{ signal, accountId, allHistory: true \}\)/);
+  assert.match(notifications, /notificationReadState\?\.scope === notificationReadScope/);
+  assert.match(notifications, /Unconfirmed notifications remain new/);
 });
 
 test("a post response cannot enter a different account's local feed", () => {
@@ -76,4 +83,16 @@ test("a post response cannot enter a different account's local feed", () => {
     "a stale failure must not remove content from the next account's feed");
   assert.match(success, /return \{ ok: true, id: id \|\| localId, post: null, stale: true \}/);
   assert.match(failure, /return \{ ok: false, error, stale: true \}/);
+});
+
+
+test("production Inbox badge uses server totals, not the one-message thread cache", () => {
+  const source = mutationSlice("const inboxUnread =", "const requestCount =");
+  const select = new Function("session", "ENABLE_DEMO_DATA", "notificationActivity", "mainThreads", `${source}; return inboxUnread();`);
+  const onePreview = () => [{ unread: 1 }];
+  assert.equal(select({ id: "A" }, false, { data: { inboxUnread: 126 } }, onePreview), 126);
+  assert.equal(select({ id: "A" }, false, { data: { inboxUnread: 0 } }, onePreview), 0);
+  assert.equal(select({ id: "B" }, false, { data: { inboxUnread: null } }, onePreview), 0);
+  assert.equal(select(null, false, { data: { inboxUnread: 126 } }, onePreview), 0);
+  assert.equal(select({ id: "demo" }, true, { data: { inboxUnread: null } }, onePreview), 1);
 });

@@ -7,11 +7,12 @@ import React from "react";
 import reconciler from "react-reconciler";
 import { parse } from "@babel/parser";
 import { transformSync } from "@babel/core";
+import { createPageReturnController } from "./pageReturn.mjs";
 
 const require = createRequire(import.meta.url);
 const appSource = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
 const logSource = readFileSync(new URL("../screens/LogScreen.jsx", import.meta.url), "utf8");
-let shell, route, reviewState, presentation;
+let shell, route, reviewState, presentation, pageActivation;
 function visit(node, inspect) {
   if (!node || typeof node !== "object") return;
   inspect(node);
@@ -24,14 +25,16 @@ visit(parse(appSource, { sourceType: "module", plugins: ["jsx"] }), (node) => {
   if (node.type === "VariableDeclarator" && node.id.name === "presentScreen") presentation = appSource.slice(node.init.start, node.init.end);
   if (node.type === "VariableDeclarator" && node.id.name === "responsiveWeb") shell = appSource.slice(node.init.start, node.init.end);
   if (node.type === "ConditionalExpression" && node.test.name === "web" && node.consequent.name === "responsiveWeb") route = appSource.slice(node.start, node.end);
+  if (node.type === "CallExpression" && node.callee.name === "useLayoutEffect" && appSource.slice(node.start, node.end).includes("pageReturnRef.current.activate(pageReturnScope)")) pageActivation = appSource.slice(node.start, node.end);
 });
 visit(parse(logSource, { sourceType: "module", plugins: ["jsx"] }), (node) => {
   if (node.type === "VariableDeclarator" && node.id.type === "ArrayPattern" && node.id.elements[0]?.name === "review") reviewState = `const ${logSource.slice(node.start, node.end)};`;
 });
 assert.ok(shell && route && reviewState, "Exercise the actual routed JSX and existing-post review initializer");
+assert.ok(pageActivation, "Visible-page activation must live in a commit layout effect");
 
 const noop = () => {};
-function fixture({ deferredDesktopNavigation = false } = {}) {
+function fixture({ deferredDesktopNavigation = false, pageController = createPageReturnController() } = {}) {
   let mounts = 0, unmounts = 0, review, setReview;
   const Editor = vm.runInNewContext(`(function Editor({editing}) { ${reviewState}
     expose(review, setReview); useEffect(() => { mount(); return unmount; }, []);
@@ -51,6 +54,7 @@ function fixture({ deferredDesktopNavigation = false } = {}) {
     : name === "../lib/lazyWithRetry" ? { lazyWithRetry: () => nil } : require(name), presentationModule, presentationModule.exports);
   const data = {
     ReviewPresentation: presentationModule.exports.default, stack: [{}], isReviewDetail: () => false, back: noop,
+    useLayoutEffect: React.useLayoutEffect, pageReturnRef: { current: pageController }, pendingRoute: new Promise(() => {}), cancelPublicRoute: noop,
     React, Suspense: React.Suspense, View: "div", ScreenLoading: nil,
     DesktopTopNav: deferredDesktopNavigation ? React.lazy(() => new Promise(() => {})) : nil,
     PublicWebTrail: nil, PublicDirectoryPanel: nil, RightRail: nil, SponsorPlaceholder: nil,
@@ -64,8 +68,10 @@ function fixture({ deferredDesktopNavigation = false } = {}) {
     showRightRail: false, showMobilePublicTrail: false, retainNativeFeed: false,
     mobileTabBar: null, tabScreens: null,
     overlay: React.createElement(Editor, { editing: { review: "Original saved review" } }),
+    pageOverlay: React.createElement(Editor, { editing: { review: "Original saved review" } }),
   };
-  const body = `function Fixture({width}) { const wide = width >= 1200;
+  const body = `function Fixture({width, scope = "fixture", suspend = false}) { const wide = width >= 1200;
+    const pageReturnScope = scope; ${pageActivation}; if (suspend) throw pendingRoute;
     const presentScreen = (${presentation});
     const responsiveWeb = (${shell}); return (${route}); } globalThis.Fixture = Fixture;`;
   vm.runInNewContext(transformSync(body, {
@@ -101,12 +107,30 @@ function fixture({ deferredDesktopNavigation = false } = {}) {
   const root = renderer.createContainer({ children: [] }, 1, null, false, null, "", (error) => { throw error; }, (error) => { throw error; }, (error) => { throw error; }, null);
   const flush = (element) => { renderer.updateContainerSync(element, root, null, null); renderer.flushSyncWork(); renderer.flushPassiveEffects(); };
   return {
-    render(width, key = data.screenKey) { data.screenKey = key; flush(React.createElement(data.Fixture, { width })); },
+    render(width, key = data.screenKey, scope = "fixture", suspend = false) { data.screenKey = key; flush(React.createElement(data.Fixture, { width, scope, suspend })); },
     edit(value) { renderer.flushSyncFromReconciler(() => setReview(value)); },
     state: () => ({ review, mounts, unmounts }),
     close() { flush(null); },
   };
 }
+
+test("a speculative suspended route cannot steal gestures from the committed visible page", () => {
+  const controller = createPageReturnController(), gestures = [];
+  controller.register("account|feed", () => gestures.push("feed"));
+  controller.register("account|discover", () => gestures.push("discover"));
+  const f = fixture({ pageController: controller });
+  try {
+    f.render(1280, "route", "account|feed");
+    assert.equal(controller.request("account|feed"), true);
+    f.render(1280, "route", "account|discover", true);
+    assert.equal(controller.request("account|feed"), true, "the suspended render did not commit a replacement");
+    assert.equal(controller.request("account|discover"), false);
+    f.render(1280, "route", "account|discover");
+    assert.equal(controller.request("account|feed"), false);
+    assert.equal(controller.request("account|discover"), true);
+    assert.deepEqual(gestures, ["feed", "feed", "discover"]);
+  } finally { f.close(); }
+});
 
 test("responsive web chrome preserves unsaved existing-post edits in both breakpoint directions", () => {
   const f = fixture();

@@ -21,6 +21,8 @@ function fixture() {
   const blockedIdsRef = { current: [], accountId: "a", status: "ready" };
   const venuePhotoCacheRef = { current: { privacy: { revision: 1, blockGraphAuthoritative: true, pendingMutations: new Set() } } };
   const dependencies = {
+    Platform: { OS: "ios" },
+    invalidateIOSDetailPrivacy: () => 0,
     sessionRef, accountMutationEpochRef, blockedIdsRef, venuePhotoCacheRef,
     api: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
     setBlockedIds: (next) => { if (typeof next !== "function") { blockedIdsRef.current = next; applied.push([...next]); } },

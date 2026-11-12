@@ -15,10 +15,10 @@ test("DM reads use server-projected relationship context and skip repeat polling
   assert.doesNotMatch(store, /relationshipContext[^\n]*sharedShows/u);
 });
 
-test("Inbox and Thread surface compact relationship context without new Store state", () => {
+test("Relationship context stays in the conversation without repetitive inbox badges", () => {
   const inbox = source("../screens/InboxScreen.jsx");
   const thread = source("../screens/ThreadScreen.jsx");
-  assert.match(inbox, /messageRelationshipChips\(t\.relationshipContext\)/u);
+  assert.doesNotMatch(inbox, /messageRelationshipChips/u);
   assert.match(thread, /messageRelationshipSummary\(relationshipContext\)/u);
   assert.match(thread, /relationshipLoadedRef/u);
   assert.match(thread, /includeContext/u);

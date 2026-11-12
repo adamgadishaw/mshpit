@@ -1,0 +1,420 @@
+import { useCallback, useContext, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Platform, Linking, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import { Image as ExpoImage } from "expo-image";
+import { colors, displayFont, font, mono, radius, space } from "../../theme";
+import Icon from "../../components/Icon";
+import Button from "../../components/Button";
+import Stars from "../../components/Stars";
+import { PostNavigationContext } from "../../components/PostNavigationContext";
+import SocialShareStudio from "../../components/SocialShareStudio";
+import FestivalArtwork from "./FestivalArtwork";
+import useFestivalDay from "./useFestivalDay";
+import { currentFestivalEditions, pastFestivalEditions, distinctFestivalAnnouncement, confirmedFestivalPlan } from "./festivalPresentation.ios.mjs";
+import { captureFestivalIdentity } from "./services/festivalIdentity";
+import Rise from "./Rise";
+import { buildFestivalShareModel } from "./festivalShare.mjs";
+import { readFestival, removeFestivalPlan, saveFestivalPlan } from "./festivalApi.mjs";
+import { festivalAccent, festivalCountdown, festivalDateRange, festivalDayLabel, festivalLength, festivalPlace, lineupHasDays, lineupTiers } from "./festivalFormat.mjs";
+import useFestivalResource from "./useFestivalResource";
+
+const openLink = (url) => { if (url) void Linking.openURL(url).catch(() => {}); }; // architecture: allow-empty-catch -- an unopenable link leaves the page as it was
+
+// One festival: its next edition (dates, lineup by day, who's going, your
+// plan), what fans said about past years, when the next one is expected,
+// past editions, and its history from Wikipedia.
+export default function FestivalScreen(props) {
+  const scope = JSON.stringify([props.slug, props.editionId || null, !!props.signedIn, props.accountId || null]);
+  const ownerRef = useRef(null);
+  if (ownerRef.current?.scope !== scope) ownerRef.current = { scope, active: true };
+  const owner = ownerRef.current;
+  const identityCurrent = captureFestivalIdentity(props.accountId);
+  const isCurrent = () => ownerRef.current === owner && owner.active && (!props.signedIn || identityCurrent());
+  useLayoutEffect(() => { owner.active = true; return () => { owner.active = false; }; }, [owner]);
+  const close = () => { if (ownerRef.current === owner && owner.active) { owner.active = false; props.onClose?.(); } };
+  return <FestivalPage key={scope} {...props} isCurrent={isCurrent} onClose={close} />;
+}
+
+function FestivalPage({ slug, editionId = null, signedIn = false, accountId = null, author = null, onClose, onOpenArtist, onRequireAuth, onReviewFestival, renderEventAccount, isCurrent }) {
+  const openPostById = useContext(PostNavigationContext);
+  const { width } = useWindowDimensions();
+  const wide = width >= 900;
+  const EditionSelector = Platform.OS === "web" ? View : ScrollView;
+  const load = useCallback((signal) => readFestival(slug, { signal }), [slug]);
+  const member = !!signedIn && !!accountId;
+  const resource = useFestivalResource(JSON.stringify(["festival", slug, member ? accountId : "guest"]), load);
+  const today = useFestivalDay();
+  const refreshRef = useRef(null);
+  const writeRef = useRef(false);
+  const selectionRef = useRef(null);
+  useLayoutEffect(() => () => { refreshRef.current?.abort(); refreshRef.current = null; }, []);
+  const refresh = async () => {
+    if (!isCurrent() || writeRef.current || refreshRef.current) return;
+    const controller = new AbortController(); refreshRef.current = controller;
+    try { await resource.refresh({ signal: controller.signal }); }
+    catch { /* architecture: allow-empty-catch -- this screen renders the retained resource error */ }
+    finally { if (refreshRef.current === controller) refreshRef.current = null; }
+  };
+  const page = resource.data;
+  const [selectedId, setSelectedId] = useState(editionId);
+  const upcoming = currentFestivalEditions(page?.upcoming, today);
+  const past = pastFestivalEditions(page, today);
+  const announcement = distinctFestivalAnnouncement(page, today);
+  const edition = upcoming.find(item => item.id === selectedId) || upcoming[0] || null;
+  selectionRef.current = edition?.id;
+  const canEdit = () => member && isCurrent() && selectionRef.current === edition?.id && currentFestivalEditions([edition]).length > 0;
+  const beginEdit = () => {
+    if (!isCurrent() || writeRef.current || refreshRef.current) return;
+    if (!member) { onRequireAuth?.(); return; }
+    if (canEdit()) setEditing(open => !open);
+  };
+  const [day, setDay] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [shareModel, setShareModel] = useState(null);
+
+  if (!page) {
+    return <View style={styles.screen}>
+      <Header title="Festival" onClose={onClose} />
+      <View style={styles.center}>
+        {resource.error ? <>
+          <Text style={styles.error} accessibilityRole="alert">{resource.error?.status === 404 ? "That festival is not on Mshpit yet." : "This festival could not load. Check your connection and try again."}</Text>
+          {resource.error?.status === 404 ? null : <Button small variant="secondary" title="Try again" onPress={resource.reload} />}
+        </> : <ActivityIndicator color={colors.amber} />}
+      </View>
+    </View>;
+  }
+
+  const festival = page.festival;
+  const lineup = edition?.lineup || [];
+  const days = edition?.days || [];
+  const showDayTabs = days.length > 1 && lineupHasDays(lineup);
+  const activeDay = showDayTabs && days.includes(day) ? day : null;
+  const plan = member ? edition?.plan || null : null;
+  const mustSeeSet = new Set((plan?.mustSee || []).map((name) => name.toLowerCase()));
+  const wanted = new Map((edition?.mustSee || []).map((act) => [act.name.toLowerCase(), act.fans]));
+  const accent = festivalAccent(festival.slug);
+  const countdown = edition ? festivalCountdown(edition) : null;
+  const dayCounts = days.map((item) => Number(edition?.goingByDay?.[item]) || 0);
+  const busiestDay = Math.max(0, ...dayCounts);
+  const replacePlan = (nextPlan) => { if (!canEdit()) return; resource.replace((current) => ({
+    ...current,
+    upcoming: current.upcoming.map((item) => item.id !== edition.id ? item : {
+      ...item,
+      plan: nextPlan,
+      going: Math.max(0, (Number(item.going) || 0) + (nextPlan && !item.plan ? 1 : !nextPlan && item.plan ? -1 : 0)),
+    }),
+  })); };
+
+  return <View style={styles.screen}>
+    <Header title={festival.name} onClose={onClose} />
+    <ScrollView contentContainerStyle={[styles.content, wide && styles.contentWide]} keyboardShouldPersistTaps="handled"
+      refreshControl={<RefreshControl refreshing={resource.status === "refreshing"} onRefresh={refresh} tintColor={colors.amber} />}>
+      {resource.error ? <View style={styles.readError}><Text style={styles.muted} accessibilityRole="alert">Could not refresh this festival. Previously loaded information is still shown.</Text><Button small variant="secondary" title="Try again" onPress={refresh} /></View> : null}
+      {renderEventAccount?.({ targetKind: "festival", targetId: festival.slug, accountId, onOpenPost: post => { if (isCurrent()) openPostById?.(post.id); }, onRequireAuth: () => { if (isCurrent()) onRequireAuth?.(); } })}
+      {announcement ? <Section title="Official dates"><Text style={styles.pastWhen}>{announcement.name || festival.name}</Text><Text style={styles.muted}>{festivalDateRange(announcement.startDate, announcement.endDate)}</Text><Text style={styles.muted}>{festivalPlace(announcement)}</Text>
+        {announcement.source?.url ? <Pressable style={styles.touchLink} accessibilityRole="link" accessibilityLabel="Open official festival announcement" onPress={() => { if (isCurrent()) openLink(announcement.source.url); }}><Text style={styles.link}>Official announcement ↗</Text></Pressable> : null}
+      </Section> : null}
+      {upcoming.length > 1 ? <EditionSelector horizontal={Platform.OS !== "web"} showsHorizontalScrollIndicator={false}
+        style={Platform.OS !== "web" && styles.nativeEditionSelector}
+        contentContainerStyle={Platform.OS !== "web" ? styles.nativeEditionChips : undefined}
+        {...(Platform.OS === "web" ? { style: styles.editionChips } : {})} accessibilityRole="tablist" accessibilityLabel="Festival editions">
+        {upcoming.map((item) => <Pressable key={item.id} onPress={() => { if (!isCurrent() || writeRef.current) return; setSelectedId(item.id); setDay(null); setEditing(false); }}
+          style={[styles.chip, item.id === edition?.id && styles.chipOn]} accessibilityRole="tab" accessibilityState={{ selected: item.id === edition?.id }} aria-selected={item.id === edition?.id}>
+          <Text style={[styles.chipText, item.id === edition?.id && styles.chipTextOn]}>{`${item.city || item.name} · ${festivalDateRange(item.startDate, item.endDate)}`}</Text>
+        </Pressable>)}
+      </EditionSelector> : null}
+
+      {edition ? <View style={[styles.hero, wide && styles.heroWide, Platform.OS !== "web" && styles.nativeHero]}>
+        <FestivalArtwork edition={edition} />
+        <View style={[styles.heroBody, Platform.OS !== "web" && styles.nativeHeroBody]}>
+          <Rise index={0} style={styles.heroTop}>
+            <Text style={styles.kicker}>Festival</Text>
+            {countdown ? <View style={[styles.countPill, countdown.live && styles.countPillLive]}>
+              <Text style={[styles.countText, countdown.live && styles.countTextLive]}>{countdown.label}</Text>
+            </View> : null}
+          </Rise>
+          <Rise index={1}><Text style={[styles.heroTitle, wide && styles.heroTitleWide, Platform.OS !== "web" && styles.nativeHeroTitle]} accessibilityRole="header">{edition.name}</Text></Rise>
+          <Rise index={2} style={styles.heroPlace}>
+            <Text style={styles.heroWhen}>{festivalDateRange(edition.startDate, edition.endDate)}</Text>
+            {festivalPlace(edition) ? <Text style={styles.heroWhere}>{festivalPlace(edition)}</Text> : null}
+          </Rise>
+          <Rise index={3} style={styles.stats}>
+            {festivalLength(edition) ? <Stat label="Length" value={festivalLength(edition)} /> : null}
+            {edition.lineupCount ? <Stat label="Lineup" value={`${edition.lineupCount} acts`} /> : null}
+            <Stat label="Going" value={edition.going ? Number(edition.going).toLocaleString("en-US") : "Be the first"} />
+          </Rise>
+          <Rise index={4} style={styles.actions}>
+            <Button title={plan ? `Going · ${plan.days.map((item) => festivalDayLabel(item)).join(", ")}` : "I'm going"} small
+              onPress={beginEdit} accessibilityLabel={plan ? "Edit your festival plan" : "Say you're going"} />
+            {edition.ticketUrl ? <Button title="Tickets" variant="secondary" small onPress={() => openLink(edition.ticketUrl)} accessibilityLabel="Open tickets" /> : null}
+            <Button title="Share lineup" variant="secondary" small onPress={() => setShareModel(buildFestivalShareModel({ festival, edition, intent: "lineup" }))} accessibilityLabel="Share this festival's lineup" />
+            {plan ? <Button title="Share my plan" variant="secondary" small onPress={() => { if (canEdit()) setShareModel(buildFestivalShareModel({ festival, edition, plan, intent: "going", author })); }} accessibilityLabel="Share the days you're going" /> : null}
+          </Rise>
+        </View>
+      </View> : <View style={[styles.hero, styles.nativeHero]}>
+        <View style={[styles.heroBody, styles.nativeHeroBody]}>
+          <Text style={styles.kicker}>Festival</Text><Text style={[styles.heroTitle, styles.nativeHeroTitle]} accessibilityRole="header">{festival.name}</Text>
+          <Text style={styles.heroWhere}>{announcement ? "Official dates are listed above. An edition is not listed here yet." : "No upcoming edition is listed here."}</Text>
+          {page.expected && !announcement ? <Text style={styles.heroWhere}>{`${page.expected.label}. This is an estimate from a past edition, not a confirmed date.`}</Text> : null}
+        </View>
+      </View>}
+
+      {edition && editing ? <PlanEditor key={edition.id} slug={festival.slug} edition={edition} plan={plan}
+        isCurrent={canEdit} canStart={() => !refreshRef.current} onBusy={busy => { writeRef.current = busy; }} onSaved={(next) => { replacePlan(next); setEditing(false); }} onCancel={() => { if (canEdit() && !writeRef.current) setEditing(false); }} /> : null}
+
+      {edition ? <Section title={lineup.length ? "Lineup" : "Lineup not listed here yet"} detail={lineup.length && edition.lineupCount > lineup.length ? `${lineup.length} of ${edition.lineupCount} acts listed so far` : null}>
+        {showDayTabs ? <View style={styles.editionChips} accessibilityRole="tablist">
+          {[null, ...days].map((item) => <Pressable key={item || "all"} onPress={() => setDay(item)} style={[styles.chip, activeDay === item && styles.chipOn]}
+            accessibilityRole="tab" accessibilityState={{ selected: activeDay === item }} aria-selected={activeDay === item}>
+            <Text style={[styles.chipText, activeDay === item && styles.chipTextOn]}>{item ? festivalDayLabel(item, { long: true }) : "All days"}</Text>
+          </Pressable>)}
+        </View> : null}
+        {lineup.length ? <View style={[styles.poster, { borderColor: accent[0] }]}>{lineupTiers(lineup, { day: activeDay }).map((tier, tierIndex) => <Rise key={`${activeDay || "all"}:${tier.key}`} index={tierIndex} style={styles.tier}>
+          {tier.acts.map((act, index) => <View key={act.name} style={styles.tierItem}>
+            <Pressable style={styles.touchLink} onPress={() => { if (isCurrent()) onOpenArtist?.(act.name); }} accessibilityRole="link"
+              accessibilityLabel={`Open ${act.name}${mustSeeSet.has(act.name.toLowerCase()) ? ", on your must-see list" : ""}${wanted.get(act.name.toLowerCase()) ? `, ${wanted.get(act.name.toLowerCase())} members want to see them` : ""}`}>
+              <Text style={[styles.tierName, styles[`tier_${tier.key}`], mustSeeSet.has(act.name.toLowerCase()) && styles.mustSeeName]}>{act.name}</Text>
+            </Pressable>
+            {index < tier.acts.length - 1 ? <Text style={[styles.tierDot, styles[`tier_${tier.key}`]]}> · </Text> : null}
+          </View>)}
+        </Rise>)}</View> : <Text style={styles.muted}>No lineup is currently listed in our festival catalogue. Check the official site for announcements.</Text>}
+        {lineup.length && !showDayTabs && days.length > 1 ? <Text style={styles.muted}>Day-by-day times are not listed yet.</Text> : null}
+      </Section> : null}
+
+      {edition && edition.going ? <Section title="Who's going" detail={edition.going === 1 ? "1 member is going" : `${Number(edition.going).toLocaleString("en-US")} members are going`}>
+        {days.length > 1 && busiestDay > 0 ? <View style={styles.dayBars}>
+          {days.map((item, index) => <View key={item} style={styles.dayBar} accessibilityLabel={`${festivalDayLabel(item, { long: true })}: ${dayCounts[index]} going`}>
+            <View style={styles.dayBarTrack}><View style={[styles.dayBarFill, { backgroundColor: accent[index % 2], height: `${Math.round((dayCounts[index] / busiestDay) * 100)}%` }]} /></View>
+            <Text style={styles.dayBarCount}>{dayCounts[index]}</Text>
+            <Text style={styles.dayBarLabel}>{festivalDayLabel(item)}</Text>
+          </View>)}
+        </View> : null}
+        {edition.mustSee?.length ? <Text style={styles.muted}>{`Most wanted: ${edition.mustSee.slice(0, 6).map((act) => `${act.name} (${act.fans})`).join(", ")}`}</Text> : null}
+      </Section> : null}
+
+      {page.reviews.some((review) => review.photos?.length) ? <Section title="From the crowd">
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoStrip}>
+          {page.reviews.flatMap((review) => (review.photos || []).map((uri, index) => <Pressable key={`${review.postId}:${index}`}
+            onPress={() => openPostById?.(review.postId)} accessibilityRole="button" accessibilityLabel={`Open ${review.user.name}'s photo from ${review.name}`}>
+            <ExpoImage source={{ uri }} style={styles.photo} contentFit="cover" transition={120} accessibilityIgnoresInvertColors />
+          </Pressable>))}
+        </ScrollView>
+      </Section> : null}
+
+      <Section title={page.reviewStats.reviews ? `Fan reviews · ${page.reviewStats.reviews}` : "Fan reviews"}>
+        {page.reviewStats.average ? <View style={styles.reviewScore}><Text style={styles.reviewScoreNumber}>{page.reviewStats.average.toFixed(1)}</Text><Stars value={page.reviewStats.average} size={14} /></View> : null}
+        {page.reviews.length ? page.reviews.map((review) => <Pressable key={review.postId} onPress={() => openPostById?.(review.postId)} style={({ pressed }) => [styles.review, pressed && styles.pressed]}
+          accessibilityRole="button" accessibilityLabel={`Open ${review.user.name}'s review of ${review.name}`}>
+          <View style={styles.reviewHead}>
+            <Text style={styles.reviewName} numberOfLines={1}>{review.name}</Text>
+            <Text style={styles.reviewScoreSmall}>{Number(review.overall).toFixed(1)}</Text>
+          </View>
+          <Text style={styles.muted}>{[festivalDateRange(review.date, review.endDate), review.city].filter(Boolean).join(" · ")}</Text>
+          {review.review ? <Text style={styles.reviewText} numberOfLines={4}>{review.review}</Text> : null}
+          <Text style={styles.by}>{`${review.user.name} @${review.user.handle}`}</Text>
+        </Pressable>) : <Text style={styles.muted}>No reviews yet. Been before? Yours can be the first.</Text>}
+        {onReviewFestival ? <Button title="Review this festival" variant="secondary" small onPress={() => onReviewFestival({
+          showFormat: "festival", artist: festival.name, artistKey: null,
+          ...(edition && edition.startDate <= new Date().toISOString().slice(0, 10) ? { date: edition.startDate, endDate: edition.endDate, venue: edition.venue || "", city: [edition.city, edition.region].filter(Boolean).join(", ") } : {}),
+        })} /> : null}
+      </Section>
+
+      {past.length ? <Section title="Past editions">
+        {past.map((item) => <View key={item.id} style={styles.pastRow}>
+          <Text style={styles.pastYear}>{item.startDate.slice(0, 4)}</Text>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.pastWhen}>{festivalDateRange(item.startDate, item.endDate)}</Text>
+            <Text style={styles.muted} numberOfLines={1}>{[festivalPlace(item), item.headliners?.slice(0, 3).join(", ")].filter(Boolean).join(" · ")}</Text>
+          </View>
+        </View>)}
+      </Section> : null}
+
+      {festival.about ? <Section title="About">
+        <Text style={styles.about}>{festival.about}</Text>
+        <View style={styles.facts}>
+          {festival.foundedYear ? <Text style={styles.fact}>{`First held in ${festival.foundedYear}`}</Text> : null}
+          {festival.website ? <Pressable style={styles.touchLink} onPress={() => { if (isCurrent()) openLink(festival.website); }} accessibilityRole="link"><Text style={styles.link}>Official site</Text></Pressable> : null}
+        </View>
+        {festival.aboutSource?.url ? <Pressable style={styles.touchLink} onPress={() => { if (isCurrent()) openLink(festival.aboutSource.url); }} accessibilityRole="link" accessibilityLabel="Open the Wikipedia article">
+          <Text style={styles.source}>{`From Wikipedia, ${festival.aboutSource.license || "CC BY-SA 4.0"}`}</Text>
+        </Pressable> : null}
+      </Section> : null}
+    </ScrollView>
+    {shareModel ? <SocialShareStudio key={shareModel.id} accountId={accountId} model={shareModel} onClose={() => setShareModel(null)} /> : null}
+  </View>;
+}
+
+function Header({ title, onClose }) {
+  return <View style={styles.header}>
+    <Pressable onPress={onClose} style={styles.back} accessibilityRole="button" accessibilityLabel="Back"><Icon name="chevron-left" size={20} color={colors.text} /></Pressable>
+    <Text style={styles.headerTitle} numberOfLines={1}>{title}</Text>
+    <View style={styles.back} />
+  </View>;
+}
+
+function Section({ title, detail = null, children }) {
+  return <View style={styles.section}>
+    <View style={styles.sectionHead}>
+      <Text style={styles.sectionTitle} accessibilityRole="header">{title}</Text>
+      {detail ? <Text style={styles.sectionDetail}>{detail}</Text> : null}
+    </View>
+    {children}
+  </View>;
+}
+
+function Stat({ label, value }) {
+  return <View style={styles.stat}><Text style={styles.statLabel}>{label}</Text><Text style={styles.statValue}>{value}</Text></View>;
+}
+
+// Going: pick the days and the sets you don't want to miss.
+function PlanEditor({ slug, edition, plan, onSaved, onCancel, isCurrent, canStart, onBusy }) {
+  const [days, setDays] = useState(() => plan?.days || (edition.days.length === 1 ? edition.days : []));
+  const [mustSee, setMustSee] = useState(() => plan?.mustSee || []);
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const pending = useRef(null);
+  const mounted = useRef(true);
+  useLayoutEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const matches = useMemo(() => {
+    const term = query.trim().toLowerCase();
+    // Acts on the chosen days, plus any already picked.
+    const pool = (edition.lineup || []).filter((act) => mustSee.includes(act.name) || !days.length || !act.days?.length || act.days.some((item) => days.includes(item)));
+    return (term ? pool.filter((act) => act.name.toLowerCase().includes(term)) : pool).slice(0, 24);
+  }, [query, edition.lineup, days, mustSee]);
+  const toggle = (list, setList, value) => { if (mounted.current && !pending.current && isCurrent()) setList(list.includes(value) ? list.filter(item => item !== value) : [...list, value]); };
+  const command = async (remove = false) => {
+    if (!mounted.current || pending.current || !isCurrent() || !canStart() || (!remove && !days.length)) return;
+    const token = {}; pending.current = token; onBusy(true); setBusy(true); setError("");
+    const owns = () => mounted.current && pending.current === token && isCurrent();
+    try {
+      const result = remove ? await removeFestivalPlan(slug, edition.id) : await saveFestivalPlan(slug, { editionId: edition.id, days, mustSee });
+      if (!owns()) return;
+      if (remove ? !result || !Object.hasOwn(result, "plan") || result.plan !== null : !confirmedFestivalPlan(result?.plan, edition)) {
+        setError("The saved plan could not be confirmed. Refresh this festival before trying again.");
+        return;
+      }
+      onSaved(remove ? null : result.plan);
+    } catch {
+      if (owns()) setError("Your festival plan could not be saved. Check your connection, then try again.");
+    } finally {
+      if (pending.current === token) { pending.current = null; onBusy(false); if (mounted.current) setBusy(false); }
+    }
+  };
+  const save = () => command(false);
+  const remove = () => command(true);
+  return <View style={styles.plan}>
+    <Text style={styles.planTitle}>Which days are you going?</Text>
+    <View style={styles.editionChips}>
+      {edition.days.map((item) => <Pressable key={item} onPress={() => toggle(days, setDays, item)} style={[styles.chip, days.includes(item) && styles.chipOn]}
+        disabled={busy} accessibilityRole="checkbox" accessibilityState={{ checked: days.includes(item), disabled: busy }} accessibilityLabel={festivalDayLabel(item, { long: true })}>
+        <Text style={[styles.chipText, days.includes(item) && styles.chipTextOn]}>{festivalDayLabel(item, { long: true })}</Text>
+      </Pressable>)}
+    </View>
+    {edition.lineup?.length ? <>
+      <Text style={styles.planTitle}>{`Sets you can't miss${mustSee.length ? ` · ${mustSee.length}` : ""}`}</Text>
+      <TextInput style={styles.input} value={query} editable={!busy} onChangeText={value => { if (!pending.current && isCurrent()) setQuery(value); }} placeholder="Find an act on the lineup" placeholderTextColor={colors.textFaint}
+        accessibilityLabel="Find an act on the lineup" autoCorrect={false} />
+      <View style={styles.editionChips}>
+        {matches.map((act) => <Pressable key={act.name} onPress={() => toggle(mustSee, setMustSee, act.name)} style={[styles.chip, mustSee.includes(act.name) && styles.chipOn]}
+          disabled={busy} accessibilityRole="checkbox" accessibilityState={{ checked: mustSee.includes(act.name), disabled: busy }} accessibilityLabel={`${act.name} is a must-see`}>
+          <Text style={[styles.chipText, mustSee.includes(act.name) && styles.chipTextOn]}>{act.name}</Text>
+        </Pressable>)}
+      </View>
+    </> : null}
+    {error ? <Text style={styles.error} accessibilityRole="alert">{error}</Text> : null}
+    <View style={styles.actions}>
+      <Button title={busy ? "Saving..." : "Save my plan"} small onPress={save} disabled={busy || !days.length} />
+      {plan ? <Button title="Not going" variant="secondary" small onPress={remove} disabled={busy} /> : null}
+      <Button title="Cancel" variant="secondary" small onPress={() => { if (!pending.current && isCurrent()) onCancel(); }} disabled={busy} />
+    </View>
+  </View>;
+}
+
+const absoluteFill = StyleSheet.absoluteFillObject || StyleSheet.absoluteFill;
+const styles = StyleSheet.create({
+  readError: { gap: 12, padding: 16, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
+  touchLink: { minWidth: 44, minHeight: 44, flexShrink: 1, justifyContent: "center" },
+  screen: { flex: 1, backgroundColor: colors.bg },
+  header: { flexDirection: "row", alignItems: "center", gap: space(2), paddingHorizontal: space(3), paddingVertical: space(2), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
+  back: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  headerTitle: { flex: 1, color: colors.text, fontFamily: font, fontSize: 16, fontWeight: "900", textAlign: "center" },
+  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: space(3), padding: space(5) },
+  content: { padding: space(4), gap: space(5), paddingBottom: space(10) },
+  contentWide: { maxWidth: 980, width: "100%", alignSelf: "center" },
+  editionChips: { flexDirection: "row", flexWrap: "wrap", gap: space(2) },
+  nativeEditionSelector: { flexGrow: 0 },
+  nativeEditionChips: { flexDirection: "row", gap: space(2), paddingVertical: 4 },
+  chip: { minHeight: 44, justifyContent: "center", borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 12, paddingVertical: 7 },
+  chipOn: { backgroundColor: colors.amber, borderColor: colors.amber },
+  chipText: { color: colors.textDim, fontFamily: font, fontSize: 13, fontWeight: "800" },
+  chipTextOn: { color: colors.bg },
+  // Theme-aware editorial content follows separately credited artwork.
+  nativeHero: { minHeight: 0, padding: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md },
+  nativePoster: { width: "100%", aspectRatio: 2, backgroundColor: colors.bg },
+  nativeHeroBody: { padding: 16, gap: 10 },
+  nativeHeroTitle: { fontSize: 25, lineHeight: 30, textShadowRadius: 0 },
+  hero: { minHeight: 0, justifyContent: "flex-end", borderRadius: radius.lg, overflow: "hidden", backgroundColor: "#0B0A10" },
+  heroWide: { minHeight: 360 },
+  heroShade: { ...absoluteFill, backgroundColor: "rgba(6,6,10,0.62)" },
+  heroBody: { padding: space(5), gap: space(2) },
+  heroTop: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(2) },
+  kicker: { color: colors.textDim, fontFamily: mono, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },
+  countPill: { borderRadius: radius.pill, backgroundColor: "#FFFFFF", paddingHorizontal: 10, paddingVertical: 4 },
+  countPillLive: { backgroundColor: "#FF3D6E" },
+  countText: { color: "#111114", fontFamily: font, fontSize: 12, fontWeight: "900" },
+  countTextLive: { color: "#FFFFFF" },
+  heroTitle: { color: colors.text, fontFamily: displayFont, fontSize: 36, fontWeight: "900", lineHeight: 40, textShadowColor: "rgba(0,0,0,0.35)", textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 12 },
+  heroTitleWide: { fontSize: 52, lineHeight: 56 },
+  heroPlace: { gap: 2 },
+  heroWhen: { color: colors.text, fontFamily: font, fontSize: 17, fontWeight: "900" },
+  heroWhere: { color: colors.textDim, fontFamily: font, fontSize: 14, lineHeight: 20 },
+  stats: { flexDirection: "row", flexWrap: "wrap", gap: space(2), marginTop: space(1) },
+  stat: { flexGrow: 1, flexBasis: 90, maxWidth: 200, gap: 2, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: 12, paddingVertical: 8 },
+  statLabel: { color: colors.textDim, fontFamily: font, fontSize: 11.5, fontWeight: "800" },
+  statValue: { color: colors.text, fontFamily: font, fontSize: 15, fontWeight: "900" },
+  actions: { flexDirection: "row", flexWrap: "wrap", gap: space(2), marginTop: space(2) },
+  attribution: { color: "rgba(255,255,255,0.7)", fontFamily: font, fontSize: 11 },
+  section: { gap: space(3) },
+  sectionHead: { gap: 2 },
+  sectionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 20, fontWeight: "900" },
+  sectionDetail: { color: colors.textFaint, fontFamily: font, fontSize: 12.5, fontWeight: "700" },
+  planTitle: { color: colors.text, fontFamily: font, fontSize: 14, fontWeight: "900" },
+  poster: { gap: space(2), borderRadius: radius.lg, borderWidth: 1, backgroundColor: colors.surface, paddingHorizontal: space(4), paddingVertical: space(5) },
+  tier: { flexDirection: "row", flexWrap: "wrap", alignItems: "baseline", justifyContent: "center" },
+  tierItem: { maxWidth: "100%", minWidth: 0, flexShrink: 1, flexDirection: "row", alignItems: "baseline" },
+  tierName: { color: colors.text, fontFamily: displayFont, fontWeight: "900", textAlign: "center" },
+  tierDot: { color: colors.textFaint },
+  tier_top: { fontSize: 28, lineHeight: 36 },
+  tier_middle: { fontSize: 18, lineHeight: 26 },
+  tier_rest: { fontSize: 14, lineHeight: 21, fontWeight: "700", color: colors.textDim },
+  mustSeeName: { color: colors.amber },
+  muted: { color: colors.textFaint, fontFamily: font, fontSize: 12.5, lineHeight: 18 },
+  dayBars: { flexDirection: "row", gap: space(3), alignItems: "flex-end" },
+  dayBar: { alignItems: "center", gap: 4, flex: 1, maxWidth: 80 },
+  dayBarTrack: { width: 22, height: 80, borderRadius: 6, backgroundColor: colors.surfaceAlt, justifyContent: "flex-end", overflow: "hidden" },
+  dayBarFill: { width: "100%", backgroundColor: colors.amber, borderRadius: 6 },
+  dayBarCount: { color: colors.text, fontFamily: mono, fontSize: 12, fontWeight: "900" },
+  dayBarLabel: { color: colors.textDim, fontFamily: font, fontSize: 11.5, fontWeight: "800" },
+  reviewScore: { flexDirection: "row", alignItems: "center", gap: space(2) },
+  reviewScoreNumber: { color: colors.text, fontFamily: displayFont, fontSize: 26, fontWeight: "900" },
+  review: { gap: 4, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, padding: space(3) },
+  pressed: { opacity: 0.85 },
+  reviewHead: { flexDirection: "row", alignItems: "center", gap: space(2) },
+  reviewName: { flex: 1, color: colors.text, fontFamily: font, fontSize: 14, fontWeight: "900" },
+  reviewScoreSmall: { color: colors.amber, fontFamily: mono, fontSize: 13, fontWeight: "900" },
+  reviewText: { color: colors.textDim, fontFamily: font, fontSize: 13.5, lineHeight: 19 },
+  by: { color: colors.textFaint, fontFamily: font, fontSize: 12, fontWeight: "700" },
+  photoStrip: { gap: space(2) },
+  photo: { width: 160, height: 200, borderRadius: radius.md, backgroundColor: colors.surfaceAlt },
+  pastRow: { flexDirection: "row", alignItems: "center", gap: space(3), paddingVertical: space(2), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
+  pastYear: { color: colors.amber, fontFamily: displayFont, fontSize: 20, fontWeight: "900", width: 56 },
+  pastWhen: { color: colors.text, fontFamily: font, fontSize: 13.5, fontWeight: "800" },
+  about: { color: colors.textDim, fontFamily: font, fontSize: 14, lineHeight: 21 },
+  facts: { flexDirection: "row", flexWrap: "wrap", gap: space(3) },
+  fact: { color: colors.text, fontFamily: font, fontSize: 13, fontWeight: "800" },
+  link: { color: colors.amber, fontFamily: font, fontSize: 13, fontWeight: "900" },
+  source: { color: colors.textFaint, fontFamily: font, fontSize: 11.5, textDecorationLine: "underline" },
+  plan: { gap: space(3), borderRadius: radius.lg, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface, padding: space(4) },
+  input: { color: colors.text, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14 },
+  error: { color: colors.danger, fontFamily: font, fontSize: 13, textAlign: "center" },
+});

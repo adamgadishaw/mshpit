@@ -116,7 +116,7 @@ if (process.env.PIT_CATALOG_EDITOR_FIXTURE === "1") {
   test("real isolated HTTP catalog editor authorizes staff, preserves facts and publishes sourced text without outbound work", { timeout: 45000 }, async t => {
     const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
     const directory = mkdtempSync(join(tmpdir(), "pit-catalog-editor-http-"));
-    const env = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LOCALAPPDATA"].filter(key => process.env[key]).map(key => [key, process.env[key]]));
+    const env = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "LOCALAPPDATA"].filter(key => process.env[key]).map(key => [key, process.env[key]]));
     Object.assign(env, { NODE_ENV: "test", RENDER: "true", PORT: "3000", PUBLIC_ORIGIN: FIXTURE_ORIGIN,
       PIT_DATA_DIR: directory, PIT_CATALOG_EDITOR_FIXTURE: "1", PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "true", ADMIN_EMAIL: "catalog_fixture_admin@example.test",
       NEWS_DESK_ENABLED: "false", ARTIST_KNOWLEDGE_ENABLED: "false", CATALOG_RESEARCH_ENABLED: "false", BACKUP_ENABLED: "false",

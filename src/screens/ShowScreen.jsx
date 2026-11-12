@@ -1,5 +1,9 @@
 import ShowSection from "../features/showDetails/ShowSection";
 import { savedShowRating, showPageRating, showPageEventArtwork } from "../domain/showPageDetails.mjs";
+import useIOSDetailBackBlock from "../hooks/useIOSDetailBackBlock";
+import ShowRefreshNotice, { isTransientShowReadFailure, isRetainedShowDocument, restrictedShowAvailabilityCopy } from "./ShowRefreshRecovery";
+import { concertDetailStyles, concertDetailWide } from "../components/concertDetailLayout";
+import useIOSTicketAction from "../components/useIOSTicketAction";
 import EventPhotoCredit from "../components/EventPhotoCredit";
 import CatalogText from "../features/catalogEditor/CatalogText";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,7 +17,7 @@ import RatingSplit from "../components/RatingSplit";
 import RatingBreakdown from "../components/RatingBreakdown";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
 import Icon from "../components/Icon";
-import VenuePhotoWidget from "../components/VenuePhotoWidget";
+import VenuePhotoWidget from "../components/VenuePhotoPanel";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
@@ -38,7 +42,6 @@ import { readShowCrowdAttendance, readShowDocument, readShowLoungeMeta } from ".
 import ShowAttendanceControls from "../features/showSocial/ShowAttendanceControls";
 import GoingTicketComposer from "../components/GoingTicketComposer";
 import LegacyArtistArchiveGate from "../components/artist/LegacyArtistArchiveGate";
-import { openTicketLink } from "../lib/ticketLinks";
 import { ENABLE_CANONICAL_SHOW_READ } from "../config/runtime.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
@@ -62,10 +65,11 @@ const CROWD_FILTER_LABELS = Object.freeze({
 // catalogue artist. This intentionally receives only the validated server
 // snapshot: no local post data or artist-only interaction callbacks.
 function PublicEventSnapshotPanel({
-  event, status, onRetry, onOpenVenue, artistIdentityPending = false,
+  event, status, onRetry, onOpenVenue, ticketScope, artistIdentityPending = false,
   artistStatus = null, artistError = null, artistMissing = false,
-  onRetryArtist, artistRetryDisabled = false, eventAccountSection = null,
+  onRetryArtist, artistRetryDisabled = false, eventAccountSection = null, canonicalPresentation = null, refreshNotice = null,
 }) {
+  const ticketAction = useIOSTicketAction(ticketScope);
   const loading = status === "loading" || status === "refreshing";
   const artistChecking = !artistIdentityPending && artistStatus === "checking";
   const artistUnavailable = !artistIdentityPending && !artistMissing
@@ -80,6 +84,7 @@ function PublicEventSnapshotPanel({
   </Pressable> : null;
   if (!event) return (
     <ScrollView contentContainerStyle={styles.content}>
+      {refreshNotice}
       <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
         {loading ? <ActivityIndicator color={colors.amber} /> : <Icon name="calendar" size={18} color={colors.amber} />}
         <View style={styles.reviewUnavailableCopy}>
@@ -96,15 +101,20 @@ function PublicEventSnapshotPanel({
     </ScrollView>
   );
   const venue = { name: event.venue, source: event.source, providerVenueId: event.providerVenueId };
-  const cancelled = showLifecycleView(null, null, false, Date.now(), event, event).lifecycle === "cancelled";
+  const canonicalRestriction = Platform.OS === "ios" ? canonicalPresentation : null;
+  const publicCancelled = showLifecycleView(null, null, false, Date.now(), event, event).lifecycle === "cancelled";
+  const cancelled = publicCancelled || canonicalRestriction?.screenKicker === "Cancelled";
+  const allowTickets = !cancelled && canonicalRestriction?.allowTickets !== false;
+  const unavailableCopy = restrictedShowAvailabilityCopy({ allowTickets, artistIdentityPending, artistChecking, artistUnavailable });
   return (
     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      {refreshNotice}
       <View style={styles.ticket}>
-        <Text style={styles.ticketKicker}>{cancelled ? "THIS SHOW WAS CANCELLED" : "EVENT DETAILS"}</Text>
-        <Text style={styles.artist}>{event.name}</Text>
+        <Text style={styles.ticketKicker}>{cancelled ? "THIS SHOW WAS CANCELLED" : canonicalRestriction?.ticketKicker || "EVENT DETAILS"}</Text>
+        <Text style={styles.artist} accessibilityRole={Platform.OS === "ios" ? "header" : undefined}>{event.name}</Text>
         <View style={styles.perfWrap}><View style={styles.dashed} /></View>
         <View style={styles.stubRow}>
-          <Pressable style={{ flex: 1 }} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
+          <Pressable style={Platform.OS === "ios" ? { minHeight: 44, justifyContent: "center" } : { flex: 1 }} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
             <Text style={styles.stubLabel}>THE ROOM</Text>
             <Text style={styles.venueLink}>{event.venue}</Text>
             {!!event.city && <Text style={styles.stubCity}>{event.city}</Text>}
@@ -113,14 +123,15 @@ function PublicEventSnapshotPanel({
           <View style={styles.stubDateColumn}>
             <Text style={styles.stubLabel}>THE DATE</Text>
             <Text style={styles.date}>{formatDate(event.date, event.date)}</Text>
-            {!cancelled && event.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
+            {allowTickets && event.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
           </View>
         </View>
       </View>
       <CatalogText type="event" entityKey={event.id} />
-      {!cancelled && event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${event.name} at ${event.venue}`}>
-        <Text style={styles.ticketsTxt}>Get tickets</Text>
+      {allowTickets && event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void ticketAction.open(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`${Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"} for ${event.name} at ${event.venue}`}>
+        <Text style={styles.ticketsTxt}>{Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"}</Text>
       </Pressable> : null}
+      {ticketAction.error ? <Text style={styles.ticketError} accessibilityRole="alert">{ticketAction.error}</Text> : null}
       {eventAccountSection}
       {!cancelled && <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
         <View style={styles.reviewUnavailableCopy}>
@@ -129,13 +140,13 @@ function PublicEventSnapshotPanel({
             : artistChecking ? "Checking artist availability"
               : artistUnavailable ? "Artist information is temporarily unavailable"
                 : "The event is here. Artist features are separate."}</Text>
-          <Text style={styles.reviewUnavailableText}>{artistIdentityPending
+          <Text style={styles.reviewUnavailableText}>{unavailableCopy || (artistIdentityPending
             ? "This show is available, but its artist identity still needs a confirmed match. To avoid opening a different artist with the same name, profile, ratings and archive links are paused. You can still view the date, venue and available tickets."
             : artistChecking
               ? "Confirming this artist's profile and status. You can still view the event details and available tickets."
               : artistUnavailable
                 ? "We couldn't check this artist right now. The event details and available tickets are still here. Try the artist check again shortly."
-                : "This listing's date and venue are available. Artist profiles and live ratings need a verified artist match; an event name is not always an artist."}</Text>
+                : "This listing's date and venue are available. Artist profiles and live ratings need a verified artist match; an event name is not always an artist.")}</Text>
           {artistRetryControl}
           {status === "error" ? <Text style={styles.reviewUnavailableText}>The latest refresh failed. Showing the event details already loaded.</Text> : null}
           <Pressable style={styles.reviewUnavailableRetry} onPress={onRetry} disabled={loading} accessibilityRole="button" accessibilityState={{ busy: loading, disabled: loading }} accessibilityLabel="Refresh event details">
@@ -195,8 +206,8 @@ function ReviewMediaTile({ media, author, postId, onOpenPhotos }) {
 // logged review, a bare tour date from the calendar, a lounge link - so every
 // field is guarded; a tour date has no score and that's a mode, not a crash.
 export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth, renderEventAccount }) {
-  const { width } = useWindowDimensions();
-  const tabletLayout = width >= 720;
+  const { width, fontScale } = useWindowDimensions();
+  const tabletLayout = concertDetailWide(width, fontScale, Platform.OS, 720);
   const archiveReviewTileStyle = styles.archiveReviewCardFull;
   const appActive = useAppActive();
   const {
@@ -216,9 +227,11 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const eventIdentitySnapshot = readablePublicEventSnapshot(publicEventResource, { eventId: publicEventId, accountId });
   const [showDocumentRead, setShowDocumentRead] = useState(null);
   const documentIdentity = showDocumentIdentity(legacyKey, accountId);
+  const ticketAction = useIOSTicketAction(documentIdentity);
+  const retainedShowDocument = isRetainedShowDocument(showDocumentRead, documentIdentity);
   const trustedShow = ENABLE_CANONICAL_SHOW_READ
     && showDocumentRead?.identity === documentIdentity
-    && showDocumentRead.status === "ready"
+    && (showDocumentRead.status === "ready" || retainedShowDocument)
     ? showDocumentRead.show
     : null;
   const artistIdentityPending = trustedShow?.artistIdentityPending === true
@@ -344,6 +357,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const [socialRead, setSocialRead] = useState(null);
   const [attendanceRefreshVersion, setAttendanceRefreshVersion] = useState(0);
   const [goingTicketPrompt, setGoingTicketPrompt] = useState(null);
+  useIOSDetailBackBlock(!!goingTicketPrompt || goingBusy);
   const showDocumentRequestRef = useRef(0);
   const showSocialRequestRef = useRef(0);
   const socialIdentity = showSocialIdentity(key, accountId);
@@ -424,7 +438,14 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
       if (signal?.aborted || showDocumentRequestRef.current !== request) return { ok: false, stale: true };
       // A legacy/member-created key may intentionally have no public canonical
       // document. Preserve the existing ShowScreen instead of surfacing noise.
-      setShowDocumentRead({ identity, status: "unavailable", show: null });
+      if (Platform.OS === "ios" && isTransientShowReadFailure(error)) {
+        setShowDocumentRead((previous) => previous?.identity === identity
+          && ["ready", "stale"].includes(previous.status) && previous.show?.provider?.backed === true
+          ? { identity, status: "stale", show: previous.show }
+          : { identity, status: "unavailable", show: null });
+      } else {
+        setShowDocumentRead({ identity, status: "unavailable", show: null });
+      }
       return { ok: false, unavailable: true, error };
     }
   };
@@ -524,6 +545,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         refreshShowSocial({ signal, strict: true }),
         loadVenuePhotos(venue, { ...venuePhotoIdentity, force: true, signal }),
       ]);
+      if (Platform.OS === "ios" && documentResult.error) throw documentResult.error;
       return { documentResult, socialResult, refreshedPhotos };
     },
   });
@@ -611,6 +633,16 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             )}
             <Text style={[styles.goingTxt, going && { color: "#1A1206" }]}>{goingBusy ? "Saving…" : going ? "Going" : "I'm going"}</Text>
           </Pressable> : null;
+  const refreshNotice = retainedShowDocument
+    ? <ShowRefreshNotice styles={styles} onRetry={refreshShow} refreshing={showRefreshing} /> : null;
+  const archiveGate = <LegacyArtistArchiveGate
+    artistName={artist}
+    state={profileGateState}
+    onBack={onClose}
+    onRetry={retryProfileStatus}
+    retryDisabled={artistIdentityStatus === "unavailable" && artistIdentityRetryDisabled}
+    identityMissing={artistIdentityMissing}
+  />;
   return (
     <View style={styles.wrap}>
       <ScreenHeader
@@ -625,6 +657,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         publicEventId && !legacyMode ? <PublicEventSnapshotPanel
           event={publicEventSnapshot}
           eventAccountSection={eventAccountSection}
+          ticketScope={documentIdentity}
           status={publicEventResource.status}
           artistIdentityPending={artistIdentityPending}
           artistStatus={profileGateState}
@@ -634,20 +667,16 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           onRetry={reloadPublicEvent}
           onRetryArtist={retryProfileStatus}
           onOpenVenue={onOpenVenue}
-        /> : <LegacyArtistArchiveGate
-          artistName={artist}
-          state={profileGateState}
-          onBack={onClose}
-          onRetry={retryProfileStatus}
-          retryDisabled={artistIdentityStatus === "unavailable" && artistIdentityRetryDisabled}
-          identityMissing={artistIdentityMissing}
-        />
+          canonicalPresentation={Platform.OS === "ios" && lifecycleView.trusted && !presentation.allowTickets ? presentation : null}
+          refreshNotice={refreshNotice}
+        /> : refreshNotice ? <ScrollView contentContainerStyle={styles.content}>{refreshNotice}{archiveGate}</ScrollView> : archiveGate
       ) : <VinylRefreshBoundary
         refreshing={showRefreshing}
         onRefresh={refreshShow}
         accessibilityLabel={`Refresh ${eventTitle} show page`}
       >
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        {refreshNotice}
         <View style={[styles.overview, tabletLayout && (archiveCover || eventArtwork) && styles.overviewWide]}>
           <View style={[styles.overviewPhotos, tabletLayout && (archiveCover || eventArtwork) && styles.overviewPhotosWide]}>
         {archiveCover ? (
@@ -677,14 +706,15 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           {!presentation.showPostEvent && <Text style={styles.ticketKicker}>{presentation.ticketKicker}</Text>}
           {festivalReview ? (
             <View>
-              <Text style={styles.artist}>{eventTitle}</Text>
+              <Text style={styles.artist} accessibilityRole={Platform.OS === "ios" ? "header" : undefined}>{eventTitle}</Text>
               <Text style={styles.eventLineup}>FESTIVAL</Text>
             </View>
           ) : isNamedLiveEvent ? (
             <View>
-              <Text style={styles.artist}>{eventTitle}</Text>
-              {!!eventLineup && <Text style={styles.eventLineup} numberOfLines={2}>LINEUP · {eventLineup}</Text>}
+              <Text style={styles.artist} accessibilityRole={Platform.OS === "ios" ? "header" : undefined}>{eventTitle}</Text>
+              {!!eventLineup && <Text style={styles.eventLineup} numberOfLines={Platform.OS === "ios" ? undefined : 2}>LINEUP · {eventLineup}</Text>}
               <Pressable
+                style={Platform.OS === "ios" ? { minHeight: 44, justifyContent: "center" } : undefined}
                 onPress={() => onOpenArtist?.(artist)}
                 accessibilityRole="button"
                 accessibilityLabel={`Open ${artist}'s profile`}
@@ -698,7 +728,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               accessibilityRole="button"
               accessibilityLabel={archiveShowKey ? `Open every recorded ${artist} night` : `Open ${artist}'s profile`}
             >
-              <Text style={styles.artist}>{artist}</Text>
+              <Text style={styles.artist} accessibilityRole={Platform.OS === "ios" ? "header" : undefined}>{artist}</Text>
               <Text style={styles.artistLink}>{archiveShowKey ? "View concert archive" : "Artist profile"} ›</Text>
             </Pressable>
           )}
@@ -771,11 +801,13 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         ) : null}
 
         {liveActionsAvailable && presentation.allowTickets && log.ticketUrl ? (
-          <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(log.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${eventTitle} at ${venue}`}>
+          <Pressable style={styles.ticketsBtn} onPress={() => { void ticketAction.open(log.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`${Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"} for ${eventTitle} at ${venue}`}>
             <Icon name="star" size={15} color="#1A1206" />
-            <Text style={styles.ticketsTxt}>Get tickets</Text>
+            <Text style={styles.ticketsTxt}>{Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"}</Text>
           </Pressable>
         ) : null}
+
+        {ticketAction.error ? <Text style={styles.ticketError} accessibilityRole="alert">{ticketAction.error}</Text> : null}
 
         {/* Typed attendance is available only when the canonical provider
             lifecycle makes each state safe. Legacy/member-created Shows keep
@@ -1080,7 +1112,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = {
+  ticketError: { color: colors.danger, fontSize: 15, lineHeight: 22, marginTop: 10 },
   wrap: { flex: 1, backgroundColor: colors.bg },
   overview: { gap: 14 },
   summaryDivider: { borderTopWidth: 1, borderTopColor: colors.lineSoft, marginVertical: 14 },
@@ -1242,4 +1275,6 @@ const styles = StyleSheet.create({
     paddingLeft: 2,
   },
   previewHint: { color: colors.textFaint, fontSize: 11, marginTop: 10, fontStyle: "italic" },
-});
+};
+
+const styles = StyleSheet.create(concertDetailStyles(baseStyles, Platform.OS, "show", colors));

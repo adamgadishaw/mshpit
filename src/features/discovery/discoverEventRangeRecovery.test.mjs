@@ -72,7 +72,7 @@ function harness({ local = true } = {}) {
     responses, calls, request, state: () => state.current,
     addingLaterDates: () => {
       const eventRange = state.current;
-      const rangeMatchesScene = evaluate(screenCode.named("rangeMatchesScene"), { eventRange, rangeScopeKey });
+      const rangeMatchesScene = evaluate(screenCode.named("rangeMatchesScene"), { eventRange, rangeScopeKey, selectedRangeDays: eventRange.days });
       const loadingMore = evaluate(screenCode.named("rangeLoadingMore"), { eventRange, rangeMatchesScene, ...rangeDomain });
       // Evaluate the actual list JSX condition on its last available week.
       return evaluate(listCode.loadingCondition, { loadingMore, next: null });
@@ -221,4 +221,19 @@ test("startup treats invalid row arrays as failed lanes and preserves a valid co
   }
   const invalid = apiWith(async () => ({ tourDates: [null] }));
   await assert.rejects(invalid.startup({ homeCountry: "Canada" }), TypeError);
+});
+
+
+test("a selected list view keeps cached events as a list while the range is loading or failed", () => {
+  const cached = [event];
+  for (const status of ["loading", "error"]) {
+    const eventRange = { scopeKey: "local", days: 30, rows: [], status };
+    const rangeMatchesScene = evaluate(screenCode.named("rangeMatchesScene"), {
+      eventRange, rangeScopeKey: "local", selectedRangeDays: 30,
+    });
+    const listEvents = evaluate(screenCode.named("listEvents"), { rangeMatchesScene, rangeEvents: [], visibleLiveEvents: cached });
+    assert.deepEqual(listEvents, cached);
+    assert.equal(evaluate(screenCode.named("listView"), { eventView: "list", listEvents }), true);
+    assert.equal(evaluate(screenCode.named("listView"), { eventView: "cards", listEvents }), false);
+  }
 });

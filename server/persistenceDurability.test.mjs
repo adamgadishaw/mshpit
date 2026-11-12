@@ -39,7 +39,7 @@ async function startHttpRecoveryFixture(directory, phase) {
   const port = probe.address().port;
   await new Promise(done => probe.close(done));
   const origin = `http://127.0.0.1:${port}`;
-  const env = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LOCALAPPDATA"]
+  const env = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "LOCALAPPDATA"]
     .filter(key => process.env[key]).map(key => [key, process.env[key]]));
   Object.assign(env, {
     NODE_ENV: "test", PORT: String(port), PUBLIC_ORIGIN: origin, PIT_DATA_DIR: directory,

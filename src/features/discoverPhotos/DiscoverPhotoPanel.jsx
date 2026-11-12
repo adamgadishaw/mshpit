@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import useNativeTabContentReady from "../../hooks/useNativeTabContentReady";
+import { useEffect, useMemo } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, focusRing, font, radius } from "../../theme";
 import { DiscoverPhotos } from "../../components/discover/DiscoverCommunity";
@@ -6,9 +7,14 @@ import { useDiscoverPhotos } from "./useDiscoverPhotos";
 import { visibleDiscoverPhotos } from "./discoverPhotosApi.mjs";
 
 export default function DiscoverPhotoPanel({
-  region = "Worldwide", city = "", accountId = null, removedIds = [], blockedIds = [], compact, width, onOpenPhotos,
+  region = "Worldwide", city = "", accountId = null, removedIds = [], blockedIds = [], compact, width, onOpenPhotos, registerRefresh,
 }) {
   const gallery = useDiscoverPhotos({ region, city, accountId });
+  useNativeTabContentReady(gallery.status === "ready" || gallery.status === "error");
+  useEffect(() => {
+    registerRefresh?.(gallery.refresh);
+    return () => registerRefresh?.(null);
+  }, [gallery.refresh, registerRefresh]);
   const photos = useMemo(() => visibleDiscoverPhotos(gallery.photos, { removedIds, blockedIds }),
     [gallery.photos, removedIds, blockedIds]);
   const location = city || (region === "Worldwide" ? "around the world" : `in ${region}`);

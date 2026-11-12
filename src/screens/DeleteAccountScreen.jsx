@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import Button from "../components/Button";
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";

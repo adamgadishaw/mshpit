@@ -160,20 +160,53 @@ test("obsolete head responses cannot change feed mode or start a legacy fallback
   }
 });
 
-test("valid current-account fallback keeps card positions and adopts a legacy cursor", async () => {
+test("failed recommended pagination retains order and cursor for a truthful retry", async () => {
   const h = feedHarness();
   const page = h.render().loadMoreFeed();
   assert.equal(await h.render().loadMoreFeed(), false, "duplicate end-reached is locked immediately");
   h.calls[0].reject({ status: 503 });
-  await Promise.resolve();
-  assert.match(h.calls[1].url, /^\/api\/feed\?limit=/);
-  assert.equal(h.calls[1].options.signal, h.calls[0].options.signal);
-  h.calls[1].resolve({ posts: [{ id: "legacy-page" }], nextCursor: "legacy-next" });
-  assert.equal(await page, true);
-  assert.deepEqual(h.state.posts, [{ id: "head" }, { id: "legacy-page" }]);
-  assert.equal(h.state.cursor, "legacy-next");
-  assert.equal(h.refs.feedModeRef.current, "legacy");
-  assert.equal(h.refs.feedAlgorithmRef.current, "chronological-v1");
+  assert.equal(await page, false);
+  assert.equal(h.calls.length, 1, "never substitute a different feed halfway through a snapshot");
+  assert.deepEqual(h.state.posts, [{ id: "head" }]);
+  assert.equal(h.state.cursor, "initial-cursor");
+  const retry = h.render().loadMoreFeed();
+  assert.match(h.calls[1].url, /cursor=initial-cursor/);
+  h.calls[1].resolve({ posts: [{ id: "retry-page" }], nextCursor: null });
+  assert.equal(await retry, true);
+  assert.equal(h.state.hasMore, false);
+});
+
+test("expired recommendation pages require explicit refresh instead of retrying the invalid cursor", async () => {
+  for (const serverCode of ["RECOMMENDATION_CURSOR_EXPIRED", "RECOMMENDATION_CURSOR_INVALID"]) {
+    const h = feedHarness();
+    const page = h.render().loadMoreFeed();
+    h.calls[0].reject({ status: 400, serverCode });
+    assert.deepEqual(await page, { ok: false, refreshRequired: true });
+    assert.deepEqual(h.state.posts, [{ id: "head" }]);
+    assert.equal(h.state.cursor, "initial-cursor");
+    assert.equal(h.state.hasMore, true, "expiry does not mean all posts were loaded");
+    assert.equal(h.calls.length, 1, "no silent head reset");
+    const refreshed = h.render().hydrateFeed();
+    assert.doesNotMatch(h.calls[1].url, /cursor=/);
+    h.calls[1].resolve({ posts: [{ id: "fresh" }], nextCursor: "fresh-cursor", algorithm: { snapshotAt: 2 } });
+    assert.equal(await refreshed, true);
+    assert.equal(h.state.cursor, "fresh-cursor");
+  }
+});
+
+test("a cancelled head cannot block the next explicit refresh while its transport is unresolved", async () => {
+  const h = feedHarness();
+  const controller = new AbortController();
+  const oldHead = h.render().hydrateFeed({ signal: controller.signal });
+  controller.abort();
+  const freshHead = h.render().hydrateFeed();
+  assert.equal(h.calls.length, 2, "a new page visit can refresh immediately after cancellation");
+  h.calls[1].resolve({ posts: [{ id: "fresh" }], nextCursor: "fresh-cursor", algorithm: { snapshotAt: 2 } });
+  assert.equal(await freshHead, true);
+  h.calls[0].resolve({ posts: [{ id: "cancelled" }], nextCursor: "cancelled-cursor" });
+  assert.equal(await oldHead, null);
+  assert.deepEqual(h.state.posts, [{ id: "fresh" }]);
+  assert.equal(h.state.cursor, "fresh-cursor");
 });
 
 test("local mutations invalidate pending pages without changing existing feed state", async () => {
@@ -221,4 +254,48 @@ test("authorization failures never retry against an alternate feed endpoint", as
       assert.equal(h.state.loading, false);
     }
   }
+});
+
+test("iOS endless pages reject malformed, repeated and cyclic cursors without publishing or claiming exhaustion", async () => {
+  for (const payload of [{}, { posts: [], nextCursor: "initial-cursor" }, { posts: [], nextCursor: 123 }, { posts: [] }]) {
+    const h = feedHarness(); const page = h.render().loadMoreFeed({ requireProgress: true });
+    h.calls[0].resolve(payload); assert.equal(await page, false);
+    assert.equal(h.state.cursor, "initial-cursor"); assert.equal(h.state.hasMore, true);
+    assert.deepEqual(h.state.posts, [{ id: "head" }]); assert.equal(h.state.loading, false);
+  }
+  const h = feedHarness(); const oldReader = h.render();
+  const first = oldReader.loadMoreFeed({ requireProgress: true });
+  h.calls[0].resolve({ posts: [], nextCursor: "second" }); assert.equal(await first, true);
+  assert.equal(await oldReader.loadMoreFeed({ requireProgress: true }), false);
+  assert.equal(h.calls.length, 1, "a consumed cursor cannot be redispatched by an old callback");
+  const second = h.render().loadMoreFeed({ requireProgress: true });
+  h.calls[1].resolve({ posts: [], nextCursor: "initial-cursor" }); assert.equal(await second, false);
+  assert.equal(h.state.cursor, "second"); assert.equal(h.state.hasMore, true);
+  const retry = h.render().loadMoreFeed({ requireProgress: true });
+  h.calls[2].resolve({ posts: [], nextCursor: null }); assert.equal(await retry, true);
+  assert.equal(h.state.hasMore, false); assert.equal(h.state.cursor, null);
+});
+
+test("a deliberate fresh head permits the same cursor in a new iOS paging sequence", async () => {
+  const h = feedHarness(); const page = h.render().loadMoreFeed({ requireProgress: true });
+  h.calls[0].resolve({ posts: [], nextCursor: "next" }); await page;
+  const refresh = h.render().hydrateFeed({ resetPagination: true });
+  h.calls[1].resolve({ posts: [{ id: "fresh" }], nextCursor: "initial-cursor", algorithm: { snapshotAt: 2 } }); await refresh;
+  const next = h.render().loadMoreFeed({ requireProgress: true });
+  assert.equal(h.calls.length, 3);
+  h.calls[2].resolve({ posts: [], nextCursor: null }); assert.equal(await next, true);
+});
+
+test("iOS stable append updates duplicates in place and adds each new post once", () => {
+  let posts = [{ id: "a", createdAt: 2 }, { id: "b", createdAt: 1 }];
+  const source = store.slice(store.indexOf("const mergeServerFeed ="), readersStart);
+  const merge = new Function("normalizeServerPost", "sameServerPost", "setFeed", "setLikes", "setMyLikes", `${source}; return mergeServerFeed;`)(
+    post => post, (a, b) => JSON.stringify(a) === JSON.stringify(b), update => { posts = update(posts); }, () => {}, () => {},
+  );
+  merge([{ id: "a", createdAt: 3, edited: true }, { id: "c", createdAt: 0 }, { id: "c", createdAt: 0 }], { prepend: false, stableAppend: true });
+  assert.deepEqual(posts.map(post => post.id), ["a", "b", "c"]);
+  assert.equal(posts[0].edited, true);
+  merge([{ id: "b", createdAt: 100, edited: true }, { id: "d", createdAt: 99 }], { prepend: false, preserveOrder: true, stableAppend: true });
+  assert.deepEqual(posts.map(post => post.id), ["a", "b", "c", "d"], "fallback chronology must not move admitted cards during scroll");
+  assert.equal(posts[1].edited, true);
 });

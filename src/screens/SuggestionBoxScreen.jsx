@@ -1,9 +1,11 @@
 import { useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import ScrollView from "../components/PageScrollView";
 
 import Button from "../components/Button";
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
+import useIOSSuggestionComposer from "../hooks/useIOSSuggestionComposer";
 import {
   SUGGESTION_BODY_LIMIT,
   SUGGESTION_CATEGORIES,
@@ -14,16 +16,24 @@ import {
 import { submitSuggestion } from "../features/suggestions/suggestionService";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 
-export default function SuggestionBoxScreen({ onClose, initialSurface = null }) {
+export default function SuggestionBoxScreen({ onClose, initialSurface = null, accountId = null, authEpoch, closeGuardRef, isCurrentRoute }) {
   const safeInitialSurface = normalizeSuggestionSurface(initialSurface);
-  const [category, setCategory] = useState("idea");
-  const [body, setBody] = useState("");
-  const [includeSurface, setIncludeSurface] = useState(false);
-  const [clientMutationId, setClientMutationId] = useState(() => createSuggestionClientMutationId());
-  const [attempted, setAttempted] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [confirmation, setConfirmation] = useState(null);
+  const [legacyCategory, setCategory] = useState("idea");
+  const [legacyBody, setBody] = useState("");
+  const [legacyIncludeSurface, setIncludeSurface] = useState(false);
+  const [legacyClientMutationId, setClientMutationId] = useState(() => createSuggestionClientMutationId());
+  const [legacyAttempted, setAttempted] = useState(false);
+  const [legacyBusy, setBusy] = useState(false);
+  const [legacyError, setError] = useState("");
+  const [legacyConfirmation, setConfirmation] = useState(null);
+
+  const suggestionIOS = useIOSSuggestionComposer({ accountId, authEpoch, safeInitialSurface,
+    submitSuggestion, onClose, closeGuardRef, isCurrentRoute });
+  const { category, body, includeSurface, clientMutationId, attempted, busy, error, confirmation } = suggestionIOS || {
+    category: legacyCategory, body: legacyBody, includeSurface: legacyIncludeSurface, clientMutationId: legacyClientMutationId,
+    attempted: legacyAttempted, busy: legacyBusy, error: legacyError, confirmation: legacyConfirmation,
+  };
+  const requestClose = suggestionIOS ? suggestionIOS.close : onClose;
 
   const resetAttemptAfterEdit = () => {
     setError("");
@@ -73,7 +83,7 @@ export default function SuggestionBoxScreen({ onClose, initialSurface = null }) 
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Make PIT better" onClose={onClose} leadDisabled={busy} leadHint={busy ? "Wait for the current suggestion to finish sending" : undefined} />
+      <SheetHeader title="Make PIT better" onClose={requestClose} leadDisabled={busy} leadHint={busy ? "Wait for the current suggestion to finish sending" : undefined} />
       <ScrollView
         automaticallyAdjustKeyboardInsets
         contentContainerStyle={styles.content}
@@ -93,7 +103,7 @@ export default function SuggestionBoxScreen({ onClose, initialSurface = null }) 
               <Text style={styles.referenceLabel}>REFERENCE</Text>
               <Text selectable style={styles.reference}>{confirmation.reference}</Text>
             </View>
-            <Button title="Done" icon="check" onPress={onClose} style={styles.doneButton} />
+            <Button title="Done" icon="check" onPress={requestClose} style={styles.doneButton} />
           </View>
         ) : (
           <>
@@ -119,7 +129,7 @@ export default function SuggestionBoxScreen({ onClose, initialSurface = null }) 
                 return (
                   <Pressable
                     key={option.key}
-                    onPress={() => chooseCategory(option.key)}
+                    onPress={() => suggestionIOS ? suggestionIOS.chooseCategory(option.key) : chooseCategory(option.key)}
                     disabled={busy}
                     accessibilityRole="radio"
                     accessibilityState={{ checked: selected, selected, disabled: busy }}
@@ -145,7 +155,7 @@ export default function SuggestionBoxScreen({ onClose, initialSurface = null }) 
             </View>
             <TextInput
               value={body}
-              onChangeText={changeBody}
+              onChangeText={suggestionIOS ? suggestionIOS.changeBody : changeBody}
               editable={!busy}
               multiline
               maxLength={SUGGESTION_BODY_LIMIT}
@@ -161,7 +171,7 @@ export default function SuggestionBoxScreen({ onClose, initialSurface = null }) 
 
             {safeInitialSurface ? (
               <Pressable
-                onPress={toggleSurface}
+                onPress={suggestionIOS ? suggestionIOS.toggleSurface : toggleSurface}
                 disabled={busy}
                 accessibilityRole="checkbox"
                 accessibilityState={{ checked: includeSurface, disabled: busy }}
@@ -186,7 +196,7 @@ export default function SuggestionBoxScreen({ onClose, initialSurface = null }) 
             <Button
               title={busy ? "Sending suggestion..." : "Send suggestion"}
               icon="share"
-              onPress={send}
+              onPress={suggestionIOS ? suggestionIOS.send : send}
               loading={busy}
               disabled={!valid}
               accessibilityHint="Sends an anonymous product suggestion to Mshpit administrators"

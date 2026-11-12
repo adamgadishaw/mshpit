@@ -1,4 +1,5 @@
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import BrandMark from "../components/BrandMark";
 import Button from "../components/Button";

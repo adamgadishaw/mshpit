@@ -58,8 +58,8 @@ test("receipt requires supported server, exact canonical value, and explicit cle
   assert.equal(profileBadgesSaveConfirmed({ profileBadgeSelectionSupported: true, profileBadges: null }, []), false);
 });
 
-test("the shared web/Android profile renderer apply the preference without changing global badge eligibility", () => {
-  for (const path of ["../screens/ProfileScreen.jsx"]) {
+test("both profile renderers apply the preference without changing global badge eligibility", () => {
+  for (const path of ["../screens/ProfileScreen.jsx", "../screens/ProfileScreen.ios.jsx"]) {
     assert.match(readFileSync(new URL(path, import.meta.url), "utf8"), /badges=\{displayedProfileBadges\(userBadges\(user\), user.profileBadges\)\}/u);
   }
   const store = readFileSync(new URL("../store.js", import.meta.url), "utf8");

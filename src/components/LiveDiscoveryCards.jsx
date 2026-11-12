@@ -3,13 +3,13 @@ import { colors, displayFont, focusRing, mono, radius } from "../theme";
 import { LIVE_EVENT_SCOPE } from "../domain/liveDiscovery.mjs";
 import Icon from "./Icon";
 
-export function EventScopeToggle({ scope, onChange, localLabel = "Near you", worldLabel = "Worldwide", compact = false }) {
+export function EventScopeToggle({ scope, onChange, localLabel = "Near you", worldLabel = "Worldwide", compact = false, stacked = false }) {
   const options = [
     { value: LIVE_EVENT_SCOPE.LOCAL, label: localLabel },
     { value: LIVE_EVENT_SCOPE.WORLDWIDE, label: worldLabel },
   ];
   return (
-    <View style={[styles.scopeToggle, compact && styles.scopeToggleCompact]} accessibilityRole="tablist" accessibilityLabel="Upcoming concert area">
+    <View style={[styles.scopeToggle, compact && styles.scopeToggleCompact, stacked && styles.scopeToggleStacked]} accessibilityRole="tablist" accessibilityLabel="Upcoming concert area">
       {options.map((option) => {
         const selected = scope === option.value;
         return (
@@ -18,6 +18,7 @@ export function EventScopeToggle({ scope, onChange, localLabel = "Near you", wor
             style={({ pressed, focused }) => [
               styles.scopeOption,
               compact && styles.scopeOptionCompact,
+              stacked && styles.scopeOptionStacked,
               selected && styles.scopeOptionSelected,
               pressed && styles.pressed,
               focused && focusRing,
@@ -25,10 +26,11 @@ export function EventScopeToggle({ scope, onChange, localLabel = "Near you", wor
             onPress={() => onChange?.(option.value)}
             accessibilityRole="tab"
             accessibilityState={{ selected }}
+            aria-selected={selected}
             accessibilityLabel={"Show upcoming concerts " + option.label.toLocaleLowerCase()}
           >
             <Icon name={option.value === LIVE_EVENT_SCOPE.WORLDWIDE ? "globe" : "pin"} size={13} color={selected ? colors.amber : colors.textDim} />
-            <Text style={[styles.scopeText, selected && styles.scopeTextSelected]} numberOfLines={1}>{option.label}</Text>
+            <Text style={[styles.scopeText, selected && styles.scopeTextSelected]} numberOfLines={Platform.OS === "ios" ? undefined : 1}>{option.label}</Text>
           </Pressable>
         );
       })}
@@ -80,8 +82,10 @@ export function PopularLoungeCard({ lounge, onPress, compact = false }) {
 const styles = StyleSheet.create({
   scopeToggle: { flexDirection: "row", alignItems: "center", gap: 4, padding: 3, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
   scopeToggleCompact: { width: "100%" },
-  scopeOption: { minHeight: 40, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 12, borderRadius: radius.pill, flexShrink: 1, ...Platform.select({ web: { cursor: "pointer" } }) },
+  scopeToggleStacked: { flexDirection: "column", alignItems: "stretch", borderRadius: radius.md },
+  scopeOption: { minHeight: Platform.OS === "ios" ? 44 : 40, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 12, ...(Platform.OS === "ios" ? { paddingVertical: 8, minWidth: 0 } : {}), borderRadius: radius.pill, flexShrink: 1, ...Platform.select({ web: { cursor: "pointer" } }) },
   scopeOptionCompact: { flex: 1, paddingHorizontal: 8 },
+  scopeOptionStacked: { flex: 0, flexShrink: 0, borderRadius: radius.sm },
   scopeOptionSelected: { backgroundColor: colors.surfaceAlt, ...Platform.select({ web: { boxShadow: "inset 0 1px 0 rgba(255,255,255,0.06), 0 1px 2px rgba(0,0,0,0.3)" }, default: {} }) },
   scopeText: { color: colors.textDim, fontSize: 11.5, fontWeight: "800", flexShrink: 1 },
   scopeTextSelected: { color: colors.text, fontWeight: "800" },

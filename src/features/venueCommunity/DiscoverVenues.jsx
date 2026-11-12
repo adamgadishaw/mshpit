@@ -1,5 +1,6 @@
+import { TextInput } from "../../components/NativeTabScroll";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Platform, Pressable, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, space } from "../../theme";
 import { countryForCity } from "../../geo";
 import { buildDiscoverVenueCities } from "../../domain/discoverVenues.mjs";
@@ -17,26 +18,29 @@ import VenueCover from "./VenueCover";
 const EMPTY = [];
 const feedback = ({ pressed, hovered, focused }) => [hovered && styles.hover, pressed && styles.pressed, focused && focusRing];
 
-export default function DiscoverVenues({ region = "Worldwide", homeCity = "", venueDirectoryIndex = EMPTY, tourDates = EMPTY, session, privacyRevision = 0, onOpenVenue, onOpenEvent, onOpenVenues }) {
+export default function DiscoverVenues({ region = "Worldwide", homeCity = "", venueDirectoryIndex = EMPTY, tourDates = EMPTY, session, privacyRevision = 0, onOpenVenue, onOpenEvent, onOpenVenues, viewStateRef, persistView = true }) {
   const { width: windowWidth, fontScale } = useWindowDimensions();
   const [gridWidth, setGridWidth] = useState(0);
   const available = gridWidth || Math.min(windowWidth - 60, 900);
   const columns = fontScale > 1.25 ? 1 : Math.max(2, Math.min(4, Math.floor(available / 190) || 2));
   const tileWidth = Math.floor((available - 12 * (columns - 1)) / columns);
-  const [query, setQuery] = useState("");
-  const [cityQuery, setCityQuery] = useState("");
-  const [cityPickerOpen, setCityPickerOpen] = useState(false);
+  const accountId = session?.id || null;
+  const viewScopeKey = JSON.stringify([accountId, region]);
+  const restoredView = useRef(viewStateRef?.current?.scopeKey === viewScopeKey ? viewStateRef.current : null).current;
+  const viewScopeRef = useRef(viewScopeKey);
+  const [query, setQuery] = useState(() => restoredView?.query || "");
+  const [cityQuery, setCityQuery] = useState(() => restoredView?.cityQuery || "");
+  const [cityPickerOpen, setCityPickerOpen] = useState(() => restoredView?.cityPickerOpen === true);
   // The map is a primary discovery feature. Hiding it is the viewer's choice,
   // never a prerequisite step before they can explore venues geographically.
-  const [mapOpen, setMapOpen] = useState(true);
-  const [chosenCity, setChosenCity] = useState(null);
-  const [chosenVenue, setChosenVenue] = useState(null);
+  const [mapOpen, setMapOpen] = useState(() => restoredView?.mapOpen !== false);
+  const [chosenCity, setChosenCity] = useState(() => restoredView?.chosenCity || null);
+  const [chosenVenue, setChosenVenue] = useState(() => restoredView?.chosenVenue || null);
   const [mapLocationIds, setMapLocationIds] = useState(null);
-  const [expandedShowsFor, setExpandedShowsFor] = useState(null);
-
-  const [cityLimit, setCityLimit] = useState(6);
-  const [allVenuesOpen, setAllVenuesOpen] = useState(false);
-  const [page, setPage] = useState(0);
+  const [expandedShowsFor, setExpandedShowsFor] = useState(() => restoredView?.expandedShowsFor || null);
+  const [cityLimit, setCityLimit] = useState(() => restoredView?.cityLimit || 6);
+  const [allVenuesOpen, setAllVenuesOpen] = useState(() => restoredView?.allVenuesOpen === true);
+  const [page, setPage] = useState(() => restoredView?.page || 0);
   const venueRows = useRef(new Map());
   const pendingReveal = useRef(null);
   const chosenSnapshot = useRef(null);
@@ -86,11 +90,19 @@ export default function DiscoverVenues({ region = "Worldwide", homeCity = "", ve
     setPage(Math.max(0, Math.floor(venues.findIndex(row => row.id === nextId) / 12)));
   }, [venues, chosenVenue, catalogueEnabled]);
   useEffect(() => {
+    // Only choices survive a detail page or programme change; rows and map data reload.
+    // A changed scope is reset by the next effect before it can become a saved view.
+    if (!persistView || !viewStateRef || viewScopeRef.current !== viewScopeKey) return;
+    viewStateRef.current = { scopeKey: viewScopeKey, query, cityQuery, cityPickerOpen, mapOpen, chosenCity, chosenVenue, expandedShowsFor, cityLimit, allVenuesOpen, page };
+  }, [persistView, viewStateRef, viewScopeKey, query, cityQuery, cityPickerOpen, mapOpen, chosenCity, chosenVenue, expandedShowsFor, cityLimit, allVenuesOpen, page]);
+  useEffect(() => {
+    if (viewScopeRef.current === viewScopeKey) return;
+    viewScopeRef.current = viewScopeKey;
     setChosenCity(null); setChosenVenue(null); setExpandedShowsFor(null); setQuery("");
     setCityQuery(""); setPage(0); setAllVenuesOpen(false); setCityLimit(6); setCityPickerOpen(false); setMapOpen(true);
     pendingReveal.current = null;
     chosenSnapshot.current = null;
-  }, [region]);
+  }, [viewScopeKey]);
 
   return <View style={styles.root}>
     <View style={styles.heading}>

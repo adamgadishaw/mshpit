@@ -1,5 +1,26 @@
 # Mobile development dependency advisory ledger
 
+## Current status checked November 8, 2026
+
+The original October 15 snapshot below is retained as dated evidence, not a
+current count. GitHub withdrew GHSA-vfj7-8cjw-p6xm on October 23 because it was
+not practically exploitable:
+https://github.com/advisories/GHSA-vfj7-8cjw-p6xm
+
+Do not repeat the historical 19 package-level entries or two unresolved
+advisories as today's result. GHSA-86w9-cpqp-85rv still lists node-forge through
+1.4.0 with no patched version:
+https://github.com/advisories/GHSA-86w9-cpqp-85rv
+
+The historical runtime graph evidence remains historical, not a newly regenerated
+mobile security clearance. npm audit --omit=dev covers the server graph in this
+repository because Expo/React Native/mobile dependencies are devDependencies.
+See IOS_NATIVE_DECODER_REVIEW_2026-11-08.md for the separate native decoder
+inventory and narrowly scoped source-level mitigation analysis. No dependency
+override, upgrade, bulk audit submission or production change was made.
+
+## Historical October 15 snapshot
+
 Snapshot: 2026-10-15. The reviewed lockfile uses Expo 57.0.29 and nested Expo CLI 57.0.30. The full audit lists **19 affected package-level entries inherited from two distinct advisories**, not 19 separate vulnerabilities. Neither advisory currently has a published patched version. Registry latest remains braces 3.0.3 and node-forge 1.4.0. No dependency override, forced fix or Expo 44 downgrade was applied.
 
 ## 1. braces 3.0.3 — stack exhaustion

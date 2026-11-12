@@ -48,7 +48,7 @@ function renderNearby(center, store, props = {}) {
       Text: "Text", View: "View", StyleSheet: { create: value => value } },
     "../theme": { colors: {}, radius: {}, displayFont: "font", focusRing: {} },
     "../store": { useStore: () => ({ session: null, tourDates: [], ...store }) },
-    "../geo": { GEO }, "../data": { cityCoords: {} },
+    "../geo": { GEO }, "../domain/cityCoordinates.mjs": { cityCoords: {} },
     "../components/LocationPicker": "LocationPicker", "../components/DatePicker": "DatePicker",
     "../components/ScreenHeader": "ScreenHeader", "../components/VinylRefreshBoundary": "VinylRefreshBoundary",
     "../components/NearbyFinderRows": { NearbyShowRow: "NearbyShowRow", NearbyVenueRow: "NearbyVenueRow" },

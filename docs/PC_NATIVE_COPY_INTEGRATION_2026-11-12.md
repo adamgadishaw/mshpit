@@ -36,11 +36,57 @@ combined native compatibility; final combined gates remain required.
 
 ## Native input and boundaries
 
-Expected exact Build 8 source:
-`31860b2d080805bfef1da3e29d38400cbd85b5d7`. The native owner reports that
-PR #98 was integrated onto the existing Mac lineage rather than retained as a
-direct ancestor. Import and compare the verified portable source before
-selecting merge resolutions; a Mac/cloud path does not establish PC receipt.
+Verified exact Build 8 source:
+`31860b2d080805bfef1da3e29d38400cbd85b5d7`, tree
+`dd30b8185664e4acfb2c4e94af11e507e04e6a47`. The source-only ZIP was retrieved
+read-only from the existing private handoff and verified on this PC: 24,097,391
+bytes, SHA-256
+`f039f6ef0cca4848a414e6114b77f67479f31be40bf318614c9289006b63c45c`.
+The included package verifier passed, and an independent local clone of its
+standalone bundle matched all 3,053 tracked files against the supplied source
+manifest. No signing credentials, user data, or Mac caches were imported.
+
+PR #98 is not an ancestor of Build 8. Git confirms the real merge base is
+`6a51cb7a79605625602beb91dd7e55e26d3b1455`. Compared with the PR #98 content
+checkpoint, the native input changes 755 paths and the PC/copy input changes
+248, with 52 overlapping paths. The merge uses the real histories. PR #98
+content comparisons help identify duplicated work, not invent ancestry.
+
+The 39 initial Git conflicts are resolved. Sixteen were exact-content cases
+where one side still matched PR #98; both-changed files were reconciled
+explicitly. In particular, preserve PC database upgrade/venue history and
+creator/calendar/private-withdrawal transactions alongside native database,
+badge, notification and message recovery. The renamed Discover venue component
+keeps city search, stable input identity, canonical venue identities and native
+view-state restoration.
+
+Platform-specific files require implementation beyond shared-file merging.
+The iOS Show, Post, Artist, Festival, TicketStub and after-show implementations
+now carry the reviewed feature contracts while preserving native typography,
+retained detail admission, privacy projection, keyboard/comment ownership and
+recovery. The native calendar and feed structures remain intact; native Feed
+continues to consume shared FeedContent. Show event controls still require the
+server-readable canonical event ID; archive IDs are never claim targets.
+Creator/follow controls and disclosure triggers retire native callbacks when
+covered and after Back, without clearing authored request text.
+
+The Root review modal wraps the retained native detail composition. Its actual
+origin and comment draft survive a gallery child, while account changes clear
+the previous presentation. Background content is hidden from accessibility.
+The independent author score and profile aggregate semantics remain separate.
+
+The first combined export exceeded the 524,288-byte web startup cap by 4,306
+bytes. Web attendance-ticket presentation now has one deferred entry shared by
+the feed and ticket composer; native keeps its synchronous component. Small
+web layout/ticket-opener adapters avoid shipping unused native typography and
+speech/lifecycle logic. Actual Metro iOS/Android/web resolution tests verify
+these adapters and the original startup repair. No budget is raised and no
+native startup ordering is changed.
+
+Initial reconciliation evidence: 130 focused native integration checks,
+1,021-file Node syntax check and architecture checks pass. These are preliminary
+source checks; final immutable-source aggregate, browser, budget, platform
+exports and independent review receipts belong in the external handoff.
 
 Preserve Build 8's themes, native UI, recovery and navigation, including its
 distinct pure startup-helper filename and actual Metro iOS/Android/web

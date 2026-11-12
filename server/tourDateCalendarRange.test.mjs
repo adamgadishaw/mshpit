@@ -6,6 +6,8 @@ import { join } from "node:path";
 import {
   encodeTourDateCalendarCursor, tourDateCalendarRequest, tourDateCalendarSummary,
 } from "./tourDateCalendarRange.mjs";
+import { calendarShowsFromResponse, calendarShowsQuery, calendarShowsRequest } from "../src/features/calendarShows/calendarShowsRequest.mjs";
+import { memberCalendarModel } from "../src/domain/calendarShows.mjs";
 
 const directory = mkdtempSync(join(tmpdir(), "pit-calendar-month-"));
 process.env.PIT_DATA_DIR = directory;
@@ -63,6 +65,14 @@ function assertDayVisibility({ city, id }, viewer, expected, label = "viewer") {
   assert.equal(result.tourDates.some((row) => row.id === id), expected, `${label}: selected rows`);
   assert.equal(result.monthSummary.dayPresence[day(15)], expected, `${label}: month presence`);
   assert.equal(result.monthSummary.complete, true);
+}
+
+function clientPage(query, { after = null, limit = 100 } = {}) {
+  const request = calendarShowsRequest(query, { after, limit });
+  const payload = route({ query: Object.fromEntries(new URL(request.path, "https://example.test").searchParams) });
+  const parsed = calendarShowsFromResponse(payload, query, { limit });
+  const model = memberCalendarModel({ today: query.from, upcoming: parsed.events });
+  return { payload, parsed, model };
 }
 
 test("month pagination and presence cover later days beyond a full first page", () => {
@@ -300,23 +310,24 @@ test("a shared summary budget never turns unqueried dates into empty dates", () 
   assert.deepEqual(summary, { dayPresence: { [day(1)]: true, [day(2)]: true }, complete: false });
 });
 
-test("month API retains later and local events beyond 500 worldwide rows", () => {
+test("real month API, strict client parser and calendar model retain later and local events beyond 500 worldwide rows", () => {
   db.exec("BEGIN");
   for (let index = 0; index < 500; index += 1) event({ id: `calendar_integration_a_${String(index).padStart(4, "0")}`, date: day(20), city: "Distant City", countryCode: "US", country: "United States" });
   const homeId = event({ id: "calendar_integration_z_home", date: day(20), city: "Home City", countryCode: "CA", country: "Canada" });
   db.exec("COMMIT");
-  const query = { month, date: day(20), limit: "500" };
-  const initial = route({ query });
-  assert.equal(initial.tourDates.length, 500);
-  assert.equal(initial.complete, false);
-  assert.equal(initial.monthSummary.dayPresence[day(20)], true);
-  const continued = route({ query: { ...query, after: initial.nextCursor } });
-  assert.deepEqual(continued.tourDates.map(({ id }) => id), [homeId]);
-  assert.equal(continued.complete, true);
-  const local = route({ query: { ...query, limit: "100", city: "Home City", country: "CA" } });
-  assert.deepEqual(local.tourDates.map(({ id }) => id), [homeId]);
-  assert.equal(local.monthSummary.dayPresence[day(20)], true);
-  assert.equal(local.complete, true);
+  const query = calendarShowsQuery({ cursor: { y: first.getUTCFullYear(), m: first.getUTCMonth() }, selected: day(20), scope: "all" });
+  const initial = clientPage(query, { limit: 500 });
+  assert.equal(initial.model.upcoming.length, 500);
+  assert.equal(initial.parsed.complete, false);
+  assert.equal(initial.parsed.monthSummary.dayPresence[day(20)], true);
+  const continued = clientPage(query, { after: initial.parsed.nextCursor, limit: 500 });
+  assert.deepEqual(continued.model.upcoming.map(({ id }) => id), [homeId]);
+  assert.equal(continued.parsed.complete, true);
+  const localQuery = calendarShowsQuery({ cursor: { y: first.getUTCFullYear(), m: first.getUTCMonth() }, selected: day(20), scope: "local", homeCity: "Home City", homeCountry: "CA" });
+  const local = clientPage(localQuery);
+  assert.deepEqual(local.model.byDay.upcoming[day(20)].map(({ id }) => id), [homeId]);
+  assert.equal(local.parsed.monthSummary.dayPresence[day(20)], true);
+  assert.equal(local.parsed.complete, true);
 });
 
 test("summary and selected rows share canonical, renderable calendar eligibility", () => {
@@ -326,16 +337,18 @@ test("summary and selected rows share canonical, renderable calendar eligibility
   event({ city, date: day(23), venue: "   " });
   event({ city, date: day(24), artist: "\u0000" });
   event({ city, date: day(25), venue: "\u0000\t" });
-  const result = page({ city, date: day(21) });
-  assert.equal(result.tourDates[0].date, day(21));
-  assert.deepEqual(result.tourDates.map(({ id }) => id), [legacyId]);
-  assert.equal(result.monthSummary.dayPresence[day(21)], true);
-  for (const number of [22, 23, 24, 25]) {
-    assert.equal(result.monthSummary.dayPresence[day(number)], false);
-    assert.deepEqual(page({ city, date: day(number) }).tourDates, []);
-  }
+  const query = calendarShowsQuery({ cursor: { y: first.getUTCFullYear(), m: first.getUTCMonth() }, selected: day(21), scope: "local", homeCity: city, homeCountry: "ZZ" });
+  const result = clientPage(query);
+  assert.equal(result.payload.tourDates[0].date, day(21));
+  assert.deepEqual(result.model.byDay.upcoming[day(21)].map(({ id }) => id), [legacyId]);
+  assert.equal(result.parsed.monthSummary.dayPresence[day(21)], true);
+  assert.equal(result.parsed.monthSummary.dayPresence[day(22)], false);
+  assert.equal(result.parsed.monthSummary.dayPresence[day(23)], false);
+  assert.equal(result.parsed.monthSummary.dayPresence[day(24)], false);
+  assert.equal(result.parsed.monthSummary.dayPresence[day(25)], false);
   const distantId = event({ city, date: "2100-02-15" });
-  const distant = page({ city, month: "2100-02", date: "2100-02-15" });
-  assert.deepEqual(distant.tourDates.map(({ id }) => id), [distantId]);
-  assert.equal(distant.monthSummary.dayPresence["2100-02-15"], true);
+  const distantQuery = calendarShowsQuery({ cursor: { y: 2100, m: 1 }, selected: "2100-02-15", scope: "local", homeCity: city, homeCountry: "ZZ" });
+  const distant = clientPage(distantQuery);
+  assert.deepEqual(distant.model.byDay.upcoming["2100-02-15"].map(({ id }) => id), [distantId]);
+  assert.equal(distant.parsed.monthSummary.dayPresence["2100-02-15"], true);
 });

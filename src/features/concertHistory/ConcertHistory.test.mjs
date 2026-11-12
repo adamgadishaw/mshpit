@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import test from "node:test";
 import { transformSync } from "@babel/core";
 import * as model from "./concertHistoryModel.mjs";
+import * as geometry from "./concertMapGeometry.mjs";
 import * as dates from "../../domain/dates.mjs";
 
 const require = createRequire(import.meta.url);
@@ -32,6 +33,7 @@ function fixture({ component = "history", ...initial } = {}) {
     if (name === "../../components/SmartImage") return { __esModule: true, default: "SmartImage" };
     if (name === "../../domain/dates.mjs") return dates;
     if (name === "./concertHistoryModel.mjs") return model;
+    if (name === "./concertMapGeometry.mjs") return geometry;
     if (name === "./worldGeography.json") return geography;
     return require(name);
   };

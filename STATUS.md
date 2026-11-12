@@ -142,6 +142,172 @@
   interaction/privacy checks. The two baseline festival failures remain separate.
 
 
+## 2026-11-11 Recovered combined validation candidate
+
+- Complete PC, Mac iOS/calendar, messaging and native-harness histories are
+  integrated locally. The first full suite completed 9,642 pass /46 fail /2 skip;
+  all assigned failures are corrected and their focused groups pass. Final
+  aggregate rerun and fresh source-matched exports are next.
+- Five user changes are wired through actual iOS overrides. Durable DM consent
+  now agrees with unread counts; optional startup code fits the unchanged budget.
+- [Combined audit](docs/PC_RECOVERED_COMBINED_2026-11-11.md) records provenance,
+  behavior, measurements and the separate Mac in-place-update boundary.
+
+
+## 2026-11-11 Combined restoration integration checkpoint
+
+- Preserves PC266a25de and full recovered iOS/calendar history through the
+  byte-verified4fa645b snapshot, with56e98a calendar corrections applied.
+- Native refresh/badge and feed/notification architecture overlaps are reconciled.
+  Focused workers passed340 navigation,342 feed/notification and107 native badge
+  composition checks; syntax and architecture pass. Full integration gate is
+  pending. Preliminary web export is521.4KiB against unchanged512KiB budget.
+- This local checkpoint is not a release. Messaging07ce622 and iPhone handoff
+  histories are next; no device, production or remote-write action.
+
+## 2026-11-11 iPhone build input handoff (local preparation)
+
+- Isolated `codex/iphone-build-handoff` starts at combined PC `266a25de`;
+  original iOS `9857d67` is preserved. Runtime/config/dependencies are unchanged.
+- Retained iOS export matches 698 project modules; 21 focused checks pass.
+  Offline verifier checks actual Expo template migration, config, 27 Expo
+  modules/28 pods, 9 RN iOS modules and no native duplicates.
+- [Build handoff](docs/IPHONE_BUILD_HANDOFF_2026-11-11.md) records scheme/signing
+  prerequisites, Mac/cloud commands, costs and native acceptance. Preview is
+  Release and uses the production API; dev read-only flags do not protect it.
+- Parent reports the recovery ZIP is verified on PC; calendar/messaging owners
+  are integrating it. This build handoff remains provisional for that combined
+  source. Xcode generation/compilation, signing and device
+  acceptance remain pending. No Mac, phone, cloud submission or deployment used.
+
+## 2026-11-10 Combined PC reliability candidate (local review)
+
+- `fix/pc-integrated-reliability-20261110` integrates preserved privacy commit
+  `7afa14e81ac97ce02192a86d43a5ea6c2549288c` with iOS source commit
+  `9857d67c429e70526f91200d83df5b7cd6ccd20a`, both descending from `ac6a837`.
+- Runtime hunks apply without conflict; both STATUS entries below are retained.
+  Combined validation and remaining native/Mac limits are recorded in
+  [the integration audit](docs/PC_COMBINED_RELIABILITY_2026-11-10.md).
+
+## 2026-11-10 PC privacy and reliability follow-up (local review)
+
+- Branch `fix/pc-privacy-reliability-20261110` descends from preserved candidate
+  `ac6a8374165e27c527c3f3cb23e8ea85bb2dc49e`. Parallel Astra review reproduced
+  delayed profile/badge and notification-history races, premature recommendation
+  cursor eviction, and interrupted/expired feed recovery failures.
+- Fixes keep newer confirmed authority, account boundaries and current privacy
+  choices authoritative. Expired pages offer explicit refresh; issued snapshots
+  remain valid until normal TTL/capacity eviction.
+- Evidence and integration limits are in
+  [the follow-up audit](docs/PC_PRIVACY_RELIABILITY_2026-11-10.md).
+  Native/export validation is a separate frozen-copy workstream. No production,
+  phone, Mac, recovery-transfer, dirty-checkout or publication operation.
+
+## 2026-11-10 Windows iOS source follow-up (local review)
+
+- Isolated `codex/ios-source-reliability` starts at frozen PC candidate
+  `ac6a8374165e27c527c3f3cb23e8ea85bb2dc49e`.
+- Fixed the missing native Find a Show export, country-scoped city prompt
+  dismissal, and disabled native refresh controls/capability announcements.
+- iOS Metro/Hermes export, 697-module source verification, config introspection,
+  72 focused checks and the 7,137-test full suite passed. The restricted npm
+  audit initially failed to connect; its separate read-only retry passed.
+- See [the iOS source audit](docs/PC_IOS_SOURCE_REVIEW_2026-11-10.md) for exact
+  evidence, shared-file overlaps and remaining checks. UIKit/device acceptance
+  and missing Mac source integration remain unverified. Nothing is published.
+
+## 2026-11-10 Large feed traversal follow-up (local review)
+
+- Follow-up to local candidate `20975b1ead3fc1f447522dfe433d24a9fb945829`.
+  The interrupted large traversal exposed repeated history scans in the rich
+  seen-ordinal projection, independent of candidate ranking or card rendering.
+- Matching opener sightings now materialize before same-night deduplication.
+  A retained synthetic harness verifies all three feeds across 2,505 eligible
+  posts, including single-author histories and explicit-refresh isolation.
+- Measurements, checks and limits are in [the follow-up audit](docs/PC_LARGE_FEED_VALIDATION_2026-11-10.md).
+  Original candidate artifacts remain preserved; no production/device operation.
+
+## 2026-11-10 PC feature follow-up (local review)
+
+- Isolated branch `fix/pc-feature-followup-20261110` starts at verified remote
+  master `6a51cb7a79605625602beb91dd7e55e26d3b1455`.
+- Existing post badges use current server authority and confirmed-profile
+  reconciliation; title/tab gestures return to top and refresh data pages.
+  Activity uses one history list with confirmed ID-scoped acknowledgement.
+- For You, Local and Following load eligible older pages automatically. Find a
+  Show opens the saved home city with a dismissible Discover Cities prompt.
+- Preservation, validation, integration instructions and remaining native/Mac
+  limits are recorded in [the local review](docs/PC_FEATURE_FOLLOWUP_2026-11-10.md).
+  No push, merge, deployment, production write or phone interaction occurred.
+## 2026-11-11 Recovered calendar review candidate
+
+- Exact archive, Git, index/status and all 2,914 source files verified; immutable
+  snapshot preserved separately at c45b153, with recovered changes checkpointed
+  in 4fa645b before fixes. Full shared Mac history retained.
+- Clock/paging/accessibility/localization/menu and attendance schedule regressions
+  corrected. Final focus:133 pass,0 fail,1 Windows file-link skip; independent
+  review clear. Aggregate combined integration/export gates remain pending.
+- See [the recovery audit](docs/PC_CALENDAR_RECOVERY_2026-11-11.md).
+
+
+## 2026-11-09 completed clean iOS navigation and card build
+
+- Validated runtime source `cc04472` combines retained Feed/detail Back and iOS-only content-aware post cards on `8060121`, excluding the held notification feature. Navigation-only `867e38c`, original candidates and main `942e1f3` are preserved.
+- Complete unchanged suite: **8,947/8,947 tests**, all 1,041 discovered files, zero failures/skips/cancellations, in 27 source-frozen resumable serial batches. Earlier interrupted monolithic runs are not passes. Correct actual-iOS composition is covered by the 104-case final review matrix; 60 Yoga cases also pass.
+- Production dependency audit, syntax (927 Node files), architecture, Blueprint, web budget (523,877/524,288), iOS/Android exports and exact source/platform isolation pass. Native Release build, strict signature and native source-map matching pass. Main source/native inputs remain unchanged.
+- The exact signed `cc04472` artifact was **installed in place and launched on the physical iPhone** around 23:43 UTC after renewed availability. The new Feed card renders. Device Hub coordinate input fails with `noWindowsAvailable`, so gestures, cancellation/reversal, full native layout, VoiceOver and performance remain unverified. No reset/uninstall or public account/content mutation occurred. The existing profile expires November 14 at 23:50 UTC. No backend, provisioning, push or deployment action occurred.
+- Current receipt: `docs/IOS_NAVIGATION_WITHOUT_NOTIFICATIONS_2026-11-09.md`. The next two sections are historical original-candidate records; their notification backend-first hold does not describe this clean build.
+
+## 2026-11-09 iOS nested detail Back (isolated local candidate)
+
+- Extends verified Feed candidate `48d3bd8` with up to six actual retained
+  Artist/Profile/Show/Post occurrences and cancellable previous-page reveal.
+  Other destinations remain fallback/barriers; this is not all-route completion.
+- Explicit lifecycle, command, privacy and inner-Suspense ownership preserve
+  state while retiring hidden actions. Current private denials revoke older
+  retained data; explicit retry recovers without automatic denial loops.
+- Independent review clears the four-family scope. All 9,033 tests pass in the
+  complete serial check chain, with dependency/syntax/architecture, web budget,
+  Blueprint and whitespace checks. Final iOS/Android Hermes exports and exact
+  source-map isolation/matching also pass.
+- No phone, install, push, backend, dependency or native-project change. Main
+  remains `942e1f3`; prior `48d3bd8` and Discover-only `8060121` are preserved.
+  The notification backend-first hold and physical-device acceptance remain.
+- Details: `docs/IOS_RETAINED_DETAIL_BACK_2026-11-09.md`.
+
+## 2026-11-09 iOS retained Feed Back reveal (isolated local candidate)
+
+- A signed-in Feed now remains beneath readable details for a cancellable,
+  real-page Back reveal. The exact list is retained. Nested detail-to-detail
+  reveals remain out of scope; protected editors and account boundaries keep
+  their existing unmount protection.
+- Hidden resource reads, timers, animated images and queued actions are fenced.
+  Fresh initial/Back controls, privacy changes, Following invalidation and
+  Suspense reconnects are covered through actual Feed/Ticket/News composition.
+- Independent review clears the final source. The complete check chain passes
+  with all 8,782 tests run serially, plus dependency/syntax/architecture checks,
+  native exports, web budget, Blueprint and source isolation. Two unchanged
+  default-parallel fixture failures are disclosed rather than hidden.
+- No push, backend deployment, phone operation, dependency or native-project
+  change. Main remains at `942e1f3`. The combined notification client's
+  backend-first rollout hold remains in place; `8060121` is preserved.
+- Scope, implementation, validation and remaining physical-device acceptance
+  are recorded in `docs/IOS_RETAINED_FEED_BACK_2026-11-09.md`.
+
+## 2026-11-08 iOS festival presentation (isolated local review)
+
+- New iOS-only festival variants replace spotlight artwork with credited,
+  uncropped existing images and truthful missing/error/retry states. Explicit
+  refresh, cached-read errors, calendar-day expiry, separate official
+  announcements and account-scoped plan controls have 24 new passing tests.
+- Shared loaders, APIs, server ingestion, Android/web and native dependencies
+  are unchanged. This is not a production content refresh or street-map fix.
+  Current production content could not be independently read (HTTP 403).
+- Scope, test limits and physical verification still needed are in
+  `docs/IOS_FESTIVAL_POLISH_2026-11-08.md`. Independent source review cleared
+  the final UTC-day correction; no push, deployment or device work is included.
+
+
 ## 2026-10-27 Event-only catalog text and Ontario festival identity (local review)
 
 - Local branch `fix/catalog-event-festival-20261027` uses a source snapshot of

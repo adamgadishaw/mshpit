@@ -83,6 +83,8 @@ function fixture(platform = "android") {
     "../components/Icon": "Icon",
     "../components/Avatar": "Avatar",
     "../components/ClipPoster": "ClipPoster",
+    "../components/PageReturnContext": { PageTitle: "PageTitle" },
+    "../components/PageScrollView": "ScrollView",
     "../components/VinylRefreshBoundary": "Refresh",
     "../hooks/useScopedRefresh": () => ({}),
     "../lib/useAppActive": () => true,

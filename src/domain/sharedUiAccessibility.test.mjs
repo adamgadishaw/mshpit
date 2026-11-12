@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { createRequire } from "node:module";
+import vm from "node:vm";
 
 const source = (name) => readFileSync(new URL(`../components/${name}.jsx`, import.meta.url), "utf8");
 
@@ -87,7 +89,53 @@ test("theme and rating controls expose checked, focus, and bounded values", () =
   assert.match(theme, /checked: !!active/);
   assert.doesNotMatch(theme, /disabled=\{active\}/);
   assert.match(rating, /const rating = Math\.max\(0, Math\.min\(5/);
-  assert.match(rating, /accessibilityHint="Swipe up or down to change the rating by half a star"/);
+  // Execute the actual component: the default hint is unchanged, while an
+  // explicitly disabled control announces why adjustment is unavailable.
+  const require = createRequire(import.meta.url);
+  const compiled = require("@babel/core").transformSync(rating, { babelrc: false, configFile: false, plugins: [
+    [require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }],
+    require("@babel/plugin-transform-modules-commonjs"),
+  ] }).code;
+  const jsx = (type, props) => ({ type, props });
+  const focusRing = { borderColor: "focus" };
+  const deps = {
+    "react/jsx-runtime": { jsx, jsxs: jsx },
+    "react-native": { View: "View", Pressable: "Pressable" },
+    "react-native-svg": { __esModule: true, default: "Svg", Polygon: "Polygon" },
+    "../theme": { colors: {}, focusRing },
+  };
+  const module = { exports: {} };
+  new vm.Script(compiled).runInNewContext({ module, exports: module.exports, require(name) {
+    assert.ok(Object.hasOwn(deps, name), name); return deps[name];
+  } });
+  const changes = [];
+  const enabled = module.exports.default({ value: 3, onChange: value => changes.push(value) });
+  assert.equal(enabled.props.accessibilityLabel, "Rating");
+  assert.equal(enabled.props.accessibilityRole, "adjustable");
+  assert.equal(enabled.props.accessibilityHint, "Swipe up or down to change the rating by half a star");
+  assert.equal(enabled.props.accessibilityState, undefined);
+  assert.equal(enabled.props.accessibilityActions.length, 2);
+  assert.equal(enabled.props.accessibilityValue.now, 3);
+  assert.ok(enabled.props.style({ focused: true }).includes(focusRing));
+  assert.ok(!enabled.props.style({ focused: false }).includes(focusRing));
+  enabled.props.onKeyDown({ key: "Home" }); enabled.props.onKeyDown({ key: "End" });
+  assert.deepEqual(changes, [0, 5]);
+  for (const [input, expected] of [[-10, 0], [99, 5], [NaN, 0]]) {
+    const bounded = module.exports.default({ value: input });
+    assert.equal(bounded.props.accessibilityValue.min, 0);
+    assert.equal(bounded.props.accessibilityValue.max, 5);
+    assert.equal(bounded.props.accessibilityValue.now, expected);
+  }
+  const disabledChanges = [];
+  const disabled = module.exports.default({ value: 3, disabled: true, onChange: value => disabledChanges.push(value) });
+  assert.equal(disabled.props.disabled, true);
+  assert.equal(disabled.props.accessibilityState.disabled, true);
+  assert.equal(disabled.props.accessibilityHint, "Rating cannot be changed right now");
+  assert.equal(disabled.props.accessibilityActions.length, 0);
+  disabled.props.onPress({ nativeEvent: { locationX: 1 } });
+  disabled.props.onKeyDown({ key: "Home" }); disabled.props.onKeyDown({ key: "End" });
+  disabled.props.onAccessibilityAction({ nativeEvent: { actionName: "increment" } });
+  assert.deepEqual(disabledChanges, []);
   assert.match(rating, /now: rating/);
   assert.match(rating, /key === "Home"/);
   assert.match(rating, /key === "End"/);

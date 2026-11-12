@@ -29,6 +29,7 @@ test("Store's actual timer wiring backs off, resets after authoritative recovery
   let sequence = 0, locks = 0, authoritative = false;
   const make = new Function("createSessionValidationRetry", "createSessionValidationCoordinator", "setTimeout", "clearTimeout", "runValidation", "lockIdentity", `
     let stopped = false, retryTimer = null, coordinator;
+    const authReadyRef = { current: true }, validationStatus = null;
     const validationRetry = createSessionValidationRetry({ random: () => 0 });
     ${schedule}
     ${wiring}

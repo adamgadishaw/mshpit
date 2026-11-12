@@ -5,8 +5,10 @@ import { colors } from "../../theme";
 import { createLoadState, projectLoadState, resolveLoadState, rejectLoadState, isLoadCancellation } from "../../domain/loadState.mjs";
 import { toAppError } from "../../lib/diagnostics";
 import { fetchCreatorPreference, setCreatorUpdatePreference } from "./creatorPostsApi.mjs";
+import useIOSDetailPresentation from "../../hooks/useIOSDetailPresentation";
 
 export default function CreatorUpdatePreference({ entityType, entityKey, accountId }) {
+  const { guard, canAct } = useIOSDetailPresentation();
   const scope = `${accountId}:${entityType}:${entityKey}:updates`;
   const [resource, setResource] = useState(() => createLoadState({ scope, status: "loading" }));
   const [attempt, setAttempt] = useState(0);
@@ -22,7 +24,7 @@ export default function CreatorUpdatePreference({ entityType, entityKey, account
     return () => { controller.abort(); operation.current?.abort(); operation.current = null; };
   }, [scope, entityType, entityKey, accountId, attempt]);
   const save = async () => {
-    if (!current.data || operation.current) return;
+    if (!canAct() || !current.data || operation.current) return;
     const controller = new AbortController(); operation.current = controller; setPendingScope(scope);
     try {
       const data = await setCreatorUpdatePreference({ entityType, entityKey, accountId, notifyUpdates: !current.data.notifyUpdates, signal: controller.signal });
@@ -37,7 +39,7 @@ export default function CreatorUpdatePreference({ entityType, entityKey, account
   if (current.data && !current.data.following && !current.error) return null;
   return <View style={{ gap: 8 }}>
     {!!current.error && <Text selectable accessibilityRole="alert" style={{ color: colors.danger }}>Update preferences couldn’t be saved or loaded. Try again.</Text>}
-    {current.data ? <Button title={current.data.notifyUpdates ? "Turn off update alerts" : "Turn on update alerts"} onPress={() => void save()} loading={pendingScope === scope} small />
-      : <Button title="Retry update preferences" onPress={() => setAttempt(n => n + 1)} small />}
+    {current.data ? <Button title={current.data.notifyUpdates ? "Turn off update alerts" : "Turn on update alerts"} onPress={guard(() => void save())} loading={pendingScope === scope} small />
+      : <Button title="Retry update preferences" onPress={guard(() => setAttempt(n => n + 1))} small />}
   </View>;
 }

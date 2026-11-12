@@ -1,8 +1,10 @@
+import SessionValidationPending from "./src/components/SessionValidationPending";
 import NativeAccountLinks from "./src/screens/NativeAccountLinks";
-import { nativeNewsLinkFrame } from "./src/domain/nativeNewsLink.mjs";
+import { startupLinkingFor } from "./src/lib/nativeStartupLinks";
+const nativeNewsLinkFrame = Platform.OS === "web" ? null : require("./src/domain/nativeNewsLink.mjs").nativeNewsLinkFrame;
 import { publicDiscoveryRailAllowed } from "./src/domain/publicPlacementPolicy.mjs";
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, Suspense } from "react";
-import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler, Linking } from "react-native";
+import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
@@ -13,10 +15,16 @@ import { reloadTheme } from "./src/lib/themeRuntime";
 import { StoreProvider, useStore, isMod, isStaff } from "./src/store";
 import { NewsInteractionContext } from "./src/components/news/NewsInteractionContext";
 import { PostNavigationContext } from "./src/components/PostNavigationContext";
+import { PageReturnProvider } from "./src/components/PageReturnContext";
+import { createPageReturnController } from "./src/domain/pageReturn.mjs";
 import { newsFeedSurfaceVisible } from "./src/domain/newsReaderState.mjs";
 import Icon from "./src/components/Icon";
 import NativeGestureRoot from "./src/components/NativeGestureRoot";
 import NativeTabRail from "./src/components/NativeTabRail";
+import IosTabBar from "./src/components/IosTabBar";
+import IosMenuDrawer from "./src/components/IosMenuDrawer";
+import IosDetailNavigation from "./src/components/IosDetailNavigation";
+const iosBackGestureAllowed = Platform.OS === "ios" ? require("./src/domain/iosNavigationPolicy.mjs").iosBackGestureAllowed : null;
 import ErrorBoundary from "./src/components/ErrorBoundary";
 import RuntimeErrorMonitor from "./src/components/RuntimeErrorMonitor";
 import useAppActive from "./src/lib/useAppActive";
@@ -42,7 +50,8 @@ const FanClubScreen = lazyWithRetry(() => import("./src/screens/FanClubScreen"),
 const AccountGate = lazyWithRetry(() => import("./src/screens/AccountGate"), "AccountGate");
 const MenuScreen = lazyWithRetry(() => import("./src/screens/MenuScreen"), "MenuScreen");
 import NativeFeedMediaLayer from "./src/components/NativeFeedMediaLayer";
-import { retainNativeFeedForMedia } from "./src/domain/nativeFeedMediaRetention.mjs";
+const NativeDetailStack = Platform.OS === "ios" ? require("./src/components/NativeDetailStack").default : null;
+import { retainNativeFeedForMedia } from "./src/domain/nativeFeedRetention";
 
 const PhotoViewer = lazyWithRetry(() => import("./src/components/PhotoViewer"), "PhotoViewer");
 const LogScreen = lazyWithRetry(() => import("./src/screens/LogScreen"), "LogScreen");
@@ -75,8 +84,8 @@ const SettingsScreen = lazyWithRetry(() => import("./src/screens/SettingsScreen"
 const SuggestionBoxScreen = lazyWithRetry(() => import("./src/screens/SuggestionBoxScreen"), "SuggestionBoxScreen");
 const DeleteAccountScreen = lazyWithRetry(() => import("./src/screens/DeleteAccountScreen"), "DeleteAccountScreen");
 const DiagnosticsScreen = lazyWithRetry(() => import("./src/screens/DiagnosticsScreen"), "DiagnosticsScreen");
-const PrivacyScreen = lazyWithRetry(() => import("./src/screens/PrivacyScreen"), "PrivacyScreen");
-const TermsScreen = lazyWithRetry(() => import("./src/screens/TermsScreen"), "TermsScreen");
+const PrivacyScreen = lazyWithRetry(() => import("./src/screens/PolicyEntry").then(module => ({ default: module.PrivacyScreen })), "PrivacyScreen");
+const TermsScreen = lazyWithRetry(() => import("./src/screens/PolicyEntry").then(module => ({ default: module.TermsScreen })), "TermsScreen");
 const AccountMenu = lazyWithRetry(() => import("./src/components/AccountMenu"), "AccountMenu");
 const PlayerBar = lazyWithRetry(() => import("./src/components/PlayerBar"), "PlayerBar");
 const PlaylistPickerScreen = lazyWithRetry(() => import("./src/screens/PlaylistPickerScreen"), "PlaylistPickerScreen");
@@ -104,7 +113,7 @@ import { lazyWithRetry } from "./src/lib/lazyWithRetry";
 import { recordFeedImpressionForSession } from "./src/features/feedImpressions/feedImpressionService";
 import useFeedImpressionSession from "./src/features/feedImpressions/useFeedImpressionSession";
 import { artistPath, eventPath, parsePublicCollectionPath } from "./src/domain/urls.mjs";
-import { cityIdentityForLocation } from "./src/cityIdentity.js";
+import { cityIdentityForLocation, findShowFrame } from "./src/cityIdentity.js";
 import { CityNavigationContext } from "./src/components/cities/CityNavigationContext";
 import { shouldRestorePersistedStack, MAIN_TAB_PATHS, mainTabForPath, serverDocumentNavigationPath } from "./src/domain/browserNavigation.mjs";
 import { createBrowserHistory, publicPresentationHintFromHistory } from "./src/domain/browserHistory.mjs";
@@ -145,6 +154,13 @@ import {
   sanitizeDisabledMusicPlayerNavigationFrame,
 } from "./src/domain/musicPlayerAvailability.mjs";
 import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
+import { createFeedReturnOwner } from "./src/lib/feedReturnOwner";
+const { createIOSArtistReturnStore } = Platform.OS === "ios" ? require("./src/domain/iosArtistReturn.mjs") : {};
+const { createBrowseReturnStore } = Platform.OS === "ios" ? require("./src/domain/iosBrowseReturn.mjs") : {};
+import { createCommentDraftOwner } from "./src/domain/commentDraftOwner";
+import { createIOSMessageDrafts } from "./src/domain/messageDraftOwner";
+const { createCalendarBrowseMemory } = Platform.OS === "ios" ? require("./src/domain/calendarBrowseMemory.mjs") : {};
+import { createLinkedNavigationOwner } from "./src/domain/linkedNavigationOwner";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
 import { profileManagementAction, publicIdentityTarget } from "./src/domain/artistAccountIdentity.mjs";
@@ -166,6 +182,7 @@ import { accountThemeNavigationReady } from "./src/domain/accountThemeNavigation
 import { screenTransitionDirection, screenTransitionKey } from "./src/domain/screenTransition.mjs";
 import ScreenTransition from "./src/components/ScreenTransition";
 import ReviewPresentation from "./src/components/ReviewPresentation";
+import useIOSFeedSelection from "./src/hooks/useIOSFeedSelection";
 import NativeAppHeader from "./src/components/NativeAppHeader";
 import {
   PLAYER_POSITION_STORAGE_KEY,
@@ -228,12 +245,13 @@ export default function App() {
 }
 
 function ThemeAccessBoundary() {
-  const { authReady, session } = useStore();
+  const { authReady, session, sessionValidationStatus } = useStore();
   const allowed = canAccessTheme(themeKey, authReady ? session : null);
   useEffect(() => {
     if (authReady && !allowed) reloadTheme();
   }, [authReady, allowed]);
   if (allowed) return <Root />;
+  if (!authReady && Platform.OS === "ios") return <SessionValidationPending status={sessionValidationStatus} neutral />;
   // Conceal restricted static styles synchronously while identity is pending
   // or a role/account transition requires a freshly authorized app instance.
   return <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
@@ -249,9 +267,9 @@ const loadPublicRecovery = () => publicRecoveryModule ||= import("./src/features
 function Root() {
   const safeAreaInsets = useSafeAreaInsets();
   const {
-    session, authReady, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
-    feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
-    searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, isFollowing, follow, isBlocked,
+    session, chatAuthEpoch, authReady, sessionValidationStatus, concertKey, addLog, editLog, userById, loadUser, visibleFeed, followingFeed, localFeed, refreshFeed, loadMoreFeed,
+    feedHeadStatus, feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
+    searchPeople, inboxUnread, accountStatus, track, unreadNotifications, refreshNotifications, recordPlay, playHistory, isFollowing, follow, isBlocked,
     loadPlayHistory, saveQueueAsPlaylist, autoplayQueue, followingCount, resendEmailVerification, completeSignupOnboarding,
     topArtists, artistsAlphabetical, upcomingEvents, discoverySidebar, discoverySidebarStatus, refreshDiscoverySidebar, refreshTourDates, tourDates, goingFor, myAttendance, refreshMyAttendance,
     remoteArtistMeta,
@@ -302,10 +320,71 @@ function Root() {
   // Restore the last tab on reload so a refresh doesn't dump you back on the feed.
   const [tab, setTab] = useState(() => (web && mainTabForPath(window.location.pathname)) || restoredMainTab(web ? load("pit.tab", "feed") : "feed"));
   const activeTab = visibleMainTab(tab, session?.id);
-  // Detail overlays unmount Discover. Keep only its public destination here,
+  const [, refreshDraftCapacity] = useState(0);
+  const messageDraftsRef = useRef(null);
+  const messageDraftsMountedRef = useRef(false);
+  // An already-running send may retain this isolated owner until settlement.
+  // Block Root refreshes after unmount without invalidating leases during a
+  // StrictMode effect cleanup/setup cycle. Auth transitions invalidate above
+  // the screen synchronously through account(), not through effect cleanup.
+  useLayoutEffect(() => {
+    messageDraftsMountedRef.current = true;
+    return () => { messageDraftsMountedRef.current = false; };
+  }, []);
+  if (Platform.OS === "ios") {
+    if (!messageDraftsRef.current) messageDraftsRef.current = createIOSMessageDrafts({
+      onAvailable: () => {
+        if (messageDraftsMountedRef.current) refreshDraftCapacity((value) => value + 1);
+      },
+    });
+    messageDraftsRef.current.account(session?.id || null, chatAuthEpoch);
+  }
+  const communityDraftsRef = useRef(null);
+  if (Platform.OS === "ios") {
+    if (!communityDraftsRef.current) communityDraftsRef.current = createIOSMessageDrafts({
+      onAvailable: () => { if (messageDraftsMountedRef.current) refreshDraftCapacity(value => value + 1); },
+    });
+    communityDraftsRef.current.account(session?.id || null, chatAuthEpoch);
+  }
+  const commentDraftsRef = useRef(null);
+  if (Platform.OS === "ios") {
+    if (!commentDraftsRef.current) commentDraftsRef.current = createCommentDraftOwner({
+      onAvailable: () => { if (messageDraftsMountedRef.current) refreshDraftCapacity(value => value + 1); },
+    });
+    commentDraftsRef.current.account(session?.id || null, chatAuthEpoch);
+  }
+  const calendarBrowseMemoryRef = useRef(null);
+  if (Platform.OS === "ios") {
+    if (!calendarBrowseMemoryRef.current) calendarBrowseMemoryRef.current = createCalendarBrowseMemory();
+    calendarBrowseMemoryRef.current.account(session?.id || null, chatAuthEpoch);
+  }
+  const linkedNavigationRef = useRef(null);
+  if (Platform.OS === "ios" && !linkedNavigationRef.current) linkedNavigationRef.current = createLinkedNavigationOwner();
+  // Fence old completions/captured callbacks during render, including A -> B -> A
+  // and reauthentication as the same account, before any effect can run.
+  const linkedNavigationScope = Platform.OS === "ios"
+    ? linkedNavigationRef.current.account(session?.id || null, chatAuthEpoch) : null;
+  useLayoutEffect(() => {
+    const owner = linkedNavigationRef.current;
+    owner?.mount();
+    return () => owner?.unmount();
+  }, []);
+  const browseReturnRef = useRef(null);
+  if (Platform.OS === "ios" && !browseReturnRef.current) browseReturnRef.current = createBrowseReturnStore();
+  // Change ownership during render: an old screen's effect/scroll callback cannot write for the new viewer.
+  if (Platform.OS === "ios") browseReturnRef.current.account(session?.id || null);
+  const searchReturn = Platform.OS === "ios" ? browseReturnRef.current.lease("search") : null;
+  const discoverReturn = Platform.OS === "ios" ? browseReturnRef.current.lease("discover") : null;
+  // Detail overlays unmount Discover. Keep its destination and filter choices here,
   // scoped to this viewer, so Back does not unexpectedly switch to Shows.
   const [discoverDestination, setDiscoverDestination] = useState(() => ({ accountId: session?.id || null, programme: Platform.OS === "web" ? "shows" : "artists" }));
-  const rememberedDiscoverProgramme = discoverDestination.accountId === (session?.id || null) ? discoverDestination.programme : "shows";
+  const rememberedDiscoverProgramme = discoverDestination.accountId === (session?.id || null) ? discoverDestination.programme : Platform.OS === "web" ? "shows" : "artists";
+  const discoverViewOwnerRef = useRef(null);
+  const discoverViewIdentity = JSON.stringify([session?.id || null, chatAuthEpoch]);
+  if (discoverViewOwnerRef.current?.identity !== discoverViewIdentity) {
+    discoverViewOwnerRef.current = { identity: discoverViewIdentity, view: { current: null }, venues: { current: null } };
+  }
+  const { view: discoverViewStateRef, venues: discoverVenueViewStateRef } = discoverViewOwnerRef.current;
   // Navigation is a STACK of frames. Each frame is one overlay screen, e.g.
   // { artistName } or { profileId }; the top frame is what's showing. An empty
   // base frame ({}) means "just the tab screens." Opening a screen PUSHES a
@@ -339,6 +418,26 @@ function Root() {
     return top && Object.keys(top).length ? [{}, top] : [{}];
   });
   const nav = stack[stack.length - 1];
+  const feedReturnRef = useRef(null);
+  if (!feedReturnRef.current) feedReturnRef.current = createFeedReturnOwner();
+  const feedReturn = feedReturnRef.current?.reconcile(
+    session?.id || null, chatAuthEpoch,
+    activeTab === "feed" && stack[0] && !Object.keys(stack[0]).length ? stack[0] : null,
+  ) || null;
+  const artistReturnRef = useRef(null);
+  if (Platform.OS === "ios" && !artistReturnRef.current) artistReturnRef.current = createIOSArtistReturnStore();
+  if (Platform.OS === "ios") artistReturnRef.current.reconcile(session?.id || null, chatAuthEpoch, stack);
+  const artistReturn = Platform.OS === "ios" ? artistReturnRef.current.lease(nav, nav.artistPreview || nav.artistName) : null;
+  const [iosMenuOpen, setIOSMenuOpenState] = useState(false);
+  const iosTabSwipeRevisionRef = useRef(0);
+  const [iosTabSwipeRevision, setIOSTabSwipeRevision] = useState(0);
+  const setIosMenuOpen = visible => {
+    if (visible) setIOSTabSwipeRevision(++iosTabSwipeRevisionRef.current);
+    setIOSMenuOpenState(visible);
+  };
+  const iosMenuOpener = useRef(null);
+  useEffect(() => { setIosMenuOpen(false); }, [activeTab, stack, session?.id]);
+  const openMainMenu = () => Platform.OS === "ios" ? setIosMenuOpen(true) : go({ menu: true });
   const stackRef = useRef(stack);
   const nearbySelectionRef = useRef(null);
   stackRef.current = stack;
@@ -622,6 +721,8 @@ function Root() {
     readPersisted: load,
   }));
   const navigationRef = useRef({ stack, tab, landing, accountId: session?.id || null });
+  const pageReturnRef = useRef(null);
+  if (!pageReturnRef.current) pageReturnRef.current = createPageReturnController();
   navigationRef.current = { stack, tab, landing, accountId: session?.id || null };
   const browserHistoryRef = useRef(null);
   const browserEntryPresentationRef = useRef(web ? publicPresentationHintFromHistory(window.history.state, window.location.pathname) : null);
@@ -640,15 +741,31 @@ function Root() {
   // A news story opens only for the latest tap, and any navigation cancels a
   // pending one; a story that cannot load says so with a retry.
   const newsOpenRef = useRef(0);
-  const [newsStoryNotice, setNewsStoryNotice] = useState(null);
+  const newsLinkedClaimRef = useRef(null);
+  const [newsStoryNoticeState, setNewsStoryNotice] = useState(null);
+  // Same-account reauthentication invalidates reads during render too. An old
+  // loading/retry notice must not keep the new session's navigation pending.
+  const newsStoryNotice = Platform.OS === "ios" && newsStoryNoticeState?.scope !== linkedNavigationScope
+    ? null : newsStoryNoticeState;
   const cancelNewsStory = () => {
+    if (Platform.OS === "ios") {
+      linkedNavigationRef.current.release(newsLinkedClaimRef.current);
+      newsLinkedClaimRef.current = null;
+    }
     newsOpenRef.current += 1;
     setNewsStoryNotice(null);
   };
+  const newsStoryNoticeCurrent = () => Platform.OS !== "ios" || (
+    linkedNavigationRef.current.ownsScope(newsStoryNotice?.scope)
+    && newsStoryNotice?.ticket === newsOpenRef.current
+  );
+  const cancelNewsStoryNotice = () => { if (newsStoryNoticeCurrent()) cancelNewsStory(); };
+  const retryNewsStoryNotice = () => { if (newsStoryNoticeCurrent()) openNewsStory(newsStoryNotice.story); };
   // The Android listener stays mounted; read the current notice on each Back.
   const newsStoryBackRef = useRef(null);
   newsStoryBackRef.current = newsStoryNotice ? cancelNewsStory : null;
   const cancelPublicRoute = () => {
+    if (Platform.OS === "ios") linkedNavigationRef.current.invalidate();
     publicLookup.lookup?.cancel();
     publicNavigationPendingRef.current = null;
     publicRouteRequestRef.current?.abort();
@@ -701,8 +818,8 @@ function Root() {
   // Push a fresh screen onto the stack. On web we mirror it into browser history
   // so the hardware/browser Back button pops the same stack the in-app back
   // buttons do (both funnel through popstate below).
-  const runAfterComposerClose = (action, cancel = () => {}) => {
-    const proceed = () => { authNavigationAbortRef.current?.(); action(); };
+  const runAfterComposerClose = (action, cancel = () => {}, current = () => true) => {
+    const proceed = () => { if (!current()) return; authNavigationAbortRef.current?.(); action(); };
     const guard = composerCloseGuardRef.current;
     if (guard) { guard({ proceed, cancel }); return; }
     proceed();
@@ -710,6 +827,7 @@ function Root() {
   const commitGo = (candidate) => {
     let frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id, Platform.OS);
     if (!frame) return;
+    if (Platform.OS === "ios" && frame.directory) browseReturnRef.current.reset("discover");
     if (frame.auth && stackRef.current[stackRef.current.length - 1]?.auth) {
       // A newer read-only News intent updates the destination without adding
       // another sign-in screen or resetting the form already being filled in.
@@ -733,6 +851,7 @@ function Root() {
   const commitReplace = (candidate) => {
     const frame = navigationFrameForAccount(prepareAvailableNavigationFrame(candidate), session?.id, Platform.OS);
     if (!frame) return;
+    if (Platform.OS === "ios" && frame.directory) browseReturnRef.current.reset("discover");
     const previous = stackRef.current;
     const next = replaceNavigationFrame(previous, frame);
     const path = pathForFrame(frame);
@@ -773,17 +892,30 @@ function Root() {
       if (publicRouteRequestRef.current === controller) publicNavigationPendingRef.current = null;
     }
   };
-  const go = (candidate) => {
+  const go = (candidate, iosLinkedClaim = null) => {
+    if (iosLinkedClaim && !linkedNavigationRef.current.current(iosLinkedClaim)) return;
     const current = stackRef.current[stackRef.current.length - 1];
     if (isComposerFrame(current) && isComposerFrame(candidate)) return;
     const transition = composerNavigationTransition(current);
-    runAfterComposerClose(() => navigateCandidate(candidate, transition));
+    runAfterComposerClose(() => {
+      // A discard prompt may outlive the lookup or its route/account. Consume
+      // only after the existing dirty/busy guard permits this navigation.
+      if (iosLinkedClaim && !linkedNavigationRef.current.consume(iosLinkedClaim)) return;
+      navigateCandidate(candidate, transition);
+    }, () => { if (iosLinkedClaim) linkedNavigationRef.current.release(iosLinkedClaim); },
+    () => !iosLinkedClaim || linkedNavigationRef.current.current(iosLinkedClaim));
   };
   const replace = (frame) => runAfterComposerClose(() => navigateCandidate(frame, "replace"));
   // Keep the current public screen under sign-in; repeated taps must not stack
   // duplicate auth frames. Signing in never replays a guest's attempted action.
-  const openSignIn = () => {
-    if (!stackRef.current[stackRef.current.length - 1]?.auth) go({ auth: true });
+  const openSignIn = (options) => {
+    const iosLinkedClaim = options?.iosLinkedClaim || null;
+    if (iosLinkedClaim && !linkedNavigationRef.current.current(iosLinkedClaim)) return;
+    if (stackRef.current[stackRef.current.length - 1]?.auth) {
+      if (iosLinkedClaim) linkedNavigationRef.current.release(iosLinkedClaim);
+      return;
+    }
+    go({ auth: true }, iosLinkedClaim);
   };
   const requireAuth = (fn) => (session ? fn() : openSignIn());
   // This is an affordance, not the security boundary: the server independently
@@ -796,6 +928,7 @@ function Root() {
     if (decision === "verify") { setVerificationPrompt(intent || "default"); return false; }
     return fn();
   };
+  const openProfileDetails = () => requireVerifiedMutation("profile", () => go({ editProfile: true }));
   const profileAction = profileManagementAction(session);
   const profileDestination = profileAction.destination;
   const profileManagementFrame = () => (profileDestination === "artistHub" ? { artistHub: true } : { editProfile: true });
@@ -827,10 +960,14 @@ function Root() {
   };
   // Back one screen. On web, route through history.back() so the browser Back
   // button and in-app back share one code path (the popstate handler pops).
-  const back = () => {
+  const back = (_event, isCurrentIOSGesture) => {
     if (web) {
       if (!browserHistoryRef.current?.canGoBack()) { runAfterComposerClose(() => restoreBrowserPathRef.current?.("/", { replace: true })); return; }
       window.history.back();
+      return;
+    }
+    if (Platform.OS === "ios" && isCurrentIOSGesture) {
+      if (isCurrentIOSGesture()) runAfterComposerClose(popStack, () => {}, isCurrentIOSGesture);
       return;
     }
     requestComposerPop();
@@ -886,8 +1023,13 @@ function Root() {
     writeNavigation({ ...navigationRef.current, stack: [{}], tab: nextTab, landing: false }, MAIN_TAB_PATHS[nextTab], "replace");
   };
   const clear = () => runAfterComposerClose(commitClear);
-  const switchTab = (key) => runAfterComposerClose(() => {
+  const switchTab = (key, isCurrentIOSSwipe) => runAfterComposerClose(() => {
     if (!session && memberTabRequiresAccount(key)) { openSignIn(); return; }
+    const current = navigationRef.current;
+    if (current.tab === key && current.stack.length === 1 && !current.landing) {
+      pageReturnRef.current.request(`${session?.id || "guest"}|tab:${key}`);
+      return;
+    }
     // Discover is a secondary, comparatively rich surface. Keep it out of the
     // first-load bundle, but start its guarded chunk request in the same user
     // gesture that selects the tab so the suspense state is as short as the
@@ -895,8 +1037,12 @@ function Root() {
     if (key === "search") SearchScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
     if (key === "discover") DiscoverScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
     if (key === "you") YouScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Tab intent warming is optional; Suspense owns visible loading and retry. */ });
+    if (Platform.OS === "ios") {
+      browseReturnRef.current.reset("search");
+      browseReturnRef.current.reset("discover");
+    }
     writeNavigation({ ...navigationRef.current, stack: [{}], tab: key, landing: false }, MAIN_TAB_PATHS[key]);
-  });
+  }, undefined, Platform.OS === "ios" && typeof isCurrentIOSSwipe === "function" ? isCurrentIOSSwipe : undefined);
   const openPublicDirectory = (directory, { region } = {}) => {
     if (directory !== "artists" && directory !== "events") return;
     runAfterComposerClose(() => {
@@ -1043,9 +1189,10 @@ function Root() {
   };
   useEffect(() => {
     if (web) return undefined;
+    const linking = startupLinkingFor("news", nativeNewsIngressRef.current);
     const ingress = nativeNewsIngressRef.current;
     ingress.active = true;
-    const subscription = Linking.addEventListener("url", ({ url }) => {
+    const subscription = linking.addEventListener("url", ({ url }) => {
       // Any newer native intent supersedes a launch News link, including an
       // account link handled by the separate account gateway.
       ingress.warmSeen = true;
@@ -1054,7 +1201,7 @@ function Root() {
     });
     if (!ingress.initialRequested) {
       ingress.initialRequested = true;
-      Linking.getInitialURL().then((url) => {
+      linking.getInitialURL().then((url) => {
         if (ingress.warmSeen) return;
         ingress.pending = nativeNewsLinkFrame(url);
         flushNativeNews();
@@ -1241,8 +1388,31 @@ function Root() {
     return result;
   };
 
-  const openProfile = (id, authoritativeUser = null) => go(publicIdentityFrame(id, authoritativeUser));
+  // Optional linked reads use the same navigation/close guards as direct taps.
+  // Missing/rejected reads leave the route intact; another deliberate tap retries.
+  const openIOSLinkedDestination = async (read, open) => {
+    const owner = linkedNavigationRef.current;
+    const claim = owner.begin(linkedNavigationScope);
+    if (!claim) return;
+    cancelNewsStory();
+    try {
+      const value = await read(claim.signal);
+      if (!owner.current(claim)) return;
+      if (value) open(value, claim);
+      else owner.release(claim);
+    } catch {
+      // architecture: allow-ambiguous-result -- Optional linked reads retain the current route, matching Store's missing-result policy.
+      owner.release(claim);
+    }
+  };
+  const openProfile = (id, authoritativeUser = null, iosLinkedClaim = null) => go(publicIdentityFrame(id, authoritativeUser), iosLinkedClaim);
   const openProfileByHandle = async (h) => {
+    if (Platform.OS === "ios") return openIOSLinkedDestination(async (signal) => {
+      const cached = userByHandle(h);
+      if (cached) return cached;
+      const found = await searchPeople(h, { signal });
+      return (found || []).find((x) => x.handle === h);
+    }, (user, claim) => openProfile(user.id, user, claim));
     const u = userByHandle(h);
     if (u) return openProfile(u.id, u);
     // Unknown handle (an @mention of someone this device never cached): look them
@@ -1252,19 +1422,32 @@ function Root() {
     if (hit) openProfile(hit.id, hit);
   };
   const postOpenSequence = useRef(0);
-  const openPost = (log, analytics = {}) => {
+  const openPost = (log, analytics = {}, iosLinkedClaim = null) => {
     postOpenSequence.current++;
     if (!log) return;
-    if (Platform.OS !== "web" && !session && (log.news || String(log.id || "").startsWith("news_"))) { openSignIn(); return; }
+    if (Platform.OS !== "web" && !session && (log.news || String(log.id || "").startsWith("news_"))) {
+      if (iosLinkedClaim) openSignIn({ iosLinkedClaim });
+      else openSignIn();
+      return;
+    }
     track("content_open", {
       postId: log.id,
       surface: analytics.surface || "direct",
       ...(Number.isSafeInteger(analytics.position) ? { position: analytics.position } : {}),
     });
-    go({ post: log });
+    go({ post: log }, iosLinkedClaim);
   };
   // An opener's review linked from the main review: load it, then open it.
   const openPostById = async (postId) => {
+    if (Platform.OS === "ios") {
+      if (!session && String(postId || "").startsWith("news_")) {
+        const claim = linkedNavigationRef.current.begin(linkedNavigationScope);
+        if (claim) { cancelNewsStory(); openSignIn({ iosLinkedClaim: claim }); }
+        return;
+      }
+      return openIOSLinkedDestination((signal) => postId ? loadPostForView(postId, { signal }) : null,
+        (post, claim) => openPost(post, { surface: "linked-review" }, claim));
+    }
     if (Platform.OS !== "web" && !session && String(postId || "").startsWith("news_")) { openSignIn(); return; }
     const ticket = ++postOpenSequence.current;
     const accountId = sessionRef.current?.id;
@@ -1275,15 +1458,34 @@ function Root() {
   };
   // A story from the news panel, strip or News tab opens its post and comments.
   const openNewsStory = async (story) => {
+    if (Platform.OS === "ios" && !session) {
+      const claim = linkedNavigationRef.current.begin(linkedNavigationScope);
+      if (claim) { cancelNewsStory(); openSignIn({ iosLinkedClaim: claim }); }
+      return;
+    }
     if (Platform.OS !== "web" && !session) { openSignIn(); return; }
     if (!story?.postId) return;
+    // News and linked reviews/mentions are competing destination taps on iOS.
+    // Keep the existing news notice/retry policy, sharing only lookup ownership.
+    const iosLinkedClaim = Platform.OS === "ios" ? linkedNavigationRef.current.begin(linkedNavigationScope) : null;
+    if (Platform.OS === "ios" && !iosLinkedClaim) return;
+    if (iosLinkedClaim) newsLinkedClaimRef.current = iosLinkedClaim;
     const ticket = ++newsOpenRef.current;
-    setNewsStoryNotice({ loading: true, story });
-    const post = await loadPostForView(story.postId);
-    if (ticket !== newsOpenRef.current) return;
-    if (!post) { setNewsStoryNotice({ loading: false, story }); return; }
+    const notice = { story, ...(iosLinkedClaim ? { scope: linkedNavigationScope, ticket } : {}) };
+    setNewsStoryNotice({ loading: true, ...notice });
+    const post = iosLinkedClaim
+      ? await loadPostForView(story.postId, { signal: iosLinkedClaim.signal }).catch(() => {
+        // architecture: allow-ambiguous-result -- Optional News failures use the existing visible Retry notice and retain the route.
+        return null;
+      })
+      : await loadPostForView(story.postId);
+    if (ticket !== newsOpenRef.current || (iosLinkedClaim && !linkedNavigationRef.current.current(iosLinkedClaim))) return;
+    if (!post) {
+      if (iosLinkedClaim) linkedNavigationRef.current.release(iosLinkedClaim);
+      setNewsStoryNotice({ loading: false, ...notice }); return;
+    }
     setNewsStoryNotice(null);
-    openPost(post, { surface: "news" });
+    openPost(post, { surface: "news" }, iosLinkedClaim);
   };
   // Ordinary statuses open their discussion. A Going ticket can instead pass
   // the exact performance projection produced by calendarShowFromPost.
@@ -1327,6 +1529,9 @@ function Root() {
     if (!name || !tour?.key) return;
     track("view_artist_tour");
     go({ artistTour: { name, artistKey: artistKey || null, tourKey: tour.key, tourName: tour.name || "Live tour" } });
+  };
+  const openFindShow = () => {
+    go(findShowFrame(session?.home));
   };
   const openCity = (value) => {
     const identity = cityIdentityForLocation(value);
@@ -1456,16 +1661,18 @@ function Root() {
   const openVenueReview = (name) => requireVerifiedMutation("review", () => go({ venueReview: name }));
   const removePostTag = (postId) => requireVerifiedMutation("interact", () => removeMyPostTag(postId));
 
-  // Only the currently exposed thread may earn a read target. The ref also
-  // fences measurements and completions queued before an overlay or navigation.
+  // A read receipt belongs to the exposed conversation, including overlays
+  // that cover it without replacing the navigation frame. The ref also fences
+  // already queued native measurement and network completion callbacks.
   const threadReadVisibleRef = useRef(false);
   threadReadVisibleRef.current = appActive && authReady && !!session
-    && accountStatus(session) === "ok" && !acctOpen && !welcome
+    && accountStatus(session) === "ok" && !iosMenuOpen && !acctOpen && !welcome
     && !nativeAccountLinkActive && !nativeAccountLinkActiveRef.current && !authLinkError
     && !resetToken && !unsubToken && !verifyToken && !ownerApprovalToken
     && !verificationPrompt && !publicNavigationNotice && !newsStoryNotice;
   const isCurrentMessageThread = () => threadReadVisibleRef.current
-    && navigationRef.current.stack.at(-1) === nav;
+    && navigationRef.current.stack.at(-1) === nav
+    && (Platform.OS !== "ios" || linkedNavigationRef.current.ownsScope(linkedNavigationScope));
 
   const renderEventAccount = props => <Suspense fallback={null}><EventAccountPanel {...props}
     onCompose={entity => requireVerifiedMutation("post", () => go({ logging: true, postMode: "creator", prefill: { creatorEntity: entity } }))} /></Suspense>;
@@ -1481,48 +1688,48 @@ function Root() {
   ) : null;
   // Auth is a modal that must win over any page overlay — requireAuth() can fire
   // from inside a venue/show/profile page, and the login sheet has to surface.
-  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} session={session} mediaReactions={mediaReactions} loadMediaReactions={loadMediaReactions} toggleMediaReaction={toggleMediaReaction} track={track} onReport={openReport} onClose={back} onRememberIndex={rememberPhotoIndex} onRequireAuth={openSignIn} />;
+  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} session={session} mediaReactions={mediaReactions} loadMediaReactions={loadMediaReactions} toggleMediaReaction={toggleMediaReaction} track={track} onReport={openReport} onClose={Platform.OS === "ios" ? () => { if (linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav) back(); } : back} iosGestureScope={Platform.OS === "ios" ? linkedNavigationScope : undefined} isCurrentIOSRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} onRememberIndex={rememberPhotoIndex} onRequireAuth={openSignIn} />;
   else if (MUSIC_PLAYER_ENABLED && nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
   else if (nav.auth) overlay = <AuthScreen navigationAbortRef={authNavigationAbortRef} initialMode={nav.authMode} onModeChange={(mode) => { const frame = updatedAuthFrame(stackRef.current[stackRef.current.length - 1], mode); if (frame) commitReplace(frame); }} onDone={finishAuthentication} onCancel={back} onOpenCity={(city) => replace({ cityGuide: city })} />;
   else if (nav.signupSetup && session) overlay = <SignupOnboardingScreen key={session.id} session={session} onComplete={(options) => finishSignupOnboarding(options)} onClose={back} closeGuardRef={composerCloseGuardRef} />;
-  else if (nav.welcomeGuide && session) overlay = <WelcomeScreen onClose={back} onOpenFanClubs={() => replace({ fanClubs: true })} onOpenNearby={() => replace({ nearby: true, nearbyTab: "shows" })} onOpenArtists={() => replace({ pickArtists: true })} onReview={() => requireVerifiedMutation("review", () => replace({ logging: true }))} />;
+  else if (nav.welcomeGuide && session) overlay = <WelcomeScreen onClose={back} onOpenFanClubs={() => replace({ fanClubs: true })} onOpenNearby={() => replace(findShowFrame(session?.home))} onOpenArtists={() => replace({ pickArtists: true })} onReview={() => requireVerifiedMutation("review", () => replace({ logging: true }))} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} onRequireVerification={() => setVerificationPrompt("artistPicks")} />;
   else if (nav.editingPost) overlay = <LogScreen user={session} editing={nav.editingPost} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onEditLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "status"} legacyArtistProfile={nav.legacyArtistProfile === true} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onAddLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
-  else if (nav.reporting) overlay = <ReportScreen target={nav.reporting} onClose={back} />;
-  else if (nav.editProfile) overlay = <EditProfileScreen onClose={back} />;
-  else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
-  else if (nav.thread) overlay = <ThreadScreen isCurrentRoute={isCurrentMessageThread} otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
+  else if (nav.reporting) overlay = <ReportScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.reporting.targetType || "post", nav.reporting.targetId || nav.reporting.id, nav.reporting.mediaUri || null, nav.reporting.ownerId || null]) : undefined} target={nav.reporting} onClose={back} closeGuardRef={Platform.OS === "ios" ? composerCloseGuardRef : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} />;
+  else if (nav.editProfile) overlay = <EditProfileScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch]) : undefined} onClose={back} closeGuardRef={Platform.OS === "ios" ? composerCloseGuardRef : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} />;
+  else if (nav.venueReview) overlay = <VenueReviewScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.venueReview]) : undefined} venueName={nav.venueReview} onClose={back} closeGuardRef={Platform.OS === "ios" ? composerCloseGuardRef : null} />;
+  else if (nav.thread) overlay = <ThreadScreen isCurrentIOSRoute={isCurrentMessageThread} otherId={nav.thread} draftLease={Platform.OS === "ios" ? messageDraftsRef.current.lease(nav.thread) : null} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (MUSIC_PLAYER_ENABLED && nav.listeningHistory) overlay = <ListeningHistoryScreen onClose={back} onPlay={musicPlayerAction} />;
-  else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} onOpenPlans={ENABLE_CREW ? () => go({ crew: { tab: "plans" } }) : undefined} onOpenArtist={openArtist} />;
-  else if (nav.calendar) overlay = <CalendarScreen initialDate={nav.calendarDate} initialView={nav.calendarView} onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
+  else if (nav.notifications) overlay = <NotificationsScreen isCurrentIOSRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} onOpenPlans={ENABLE_CREW ? () => go({ crew: { tab: "plans" } }) : undefined} onOpenArtist={openArtist} />;
+  else if (nav.calendar) overlay = <CalendarScreen initialDate={nav.calendarDate} initialView={nav.calendarView} onClose={back} onOpen={openShow} onOpenArtist={openArtist} browseMemory={Platform.OS === "ios" ? calendarBrowseMemoryRef.current : undefined} browseOccurrence={Platform.OS === "ios" ? nav : undefined} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={openSignIn} />;
-  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} initialSection={nav.profileSection} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} onRequireAuth={openSignIn} />;
-  else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} onRequireAuth={openSignIn} />;
+  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} initialSection={nav.profileSection} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onEditProfileDetails={openProfileDetails} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} onRequireAuth={openSignIn} />;
+  else if (nav.fanClub) overlay = <FanClubScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.fanClub]) : undefined} draftOwner={Platform.OS === "ios" ? communityDraftsRef.current : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.artistHub) overlay = <ArtistHubScreen onOpenPost={openPost} onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onMediaPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "creator" }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onRequestVerification={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} onPlay={musicPlayerAction} />;
   else if (nav.artistGallery) overlay = <ArtistGalleryScreen artistName={nav.artistGallery.name} artistKey={nav.artistGallery.artistKey} legacyMode={nav.artistGallery.legacyMode === true} onClose={back} onOpenPhotos={openPhotos} />;
-  else if (nav.artistPreview) overlay = <ArtistScreen artistName={nav.artistPreview} previewAsFan onClose={back} onOpenPost={openPost} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onRequireAuth={openSignIn} />;
+  else if (nav.artistPreview) overlay = <ArtistScreen key={artistReturn?.key} artistReturn={artistReturn} artistName={nav.artistPreview} previewAsFan onClose={back} onOpenPost={openPost} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onRequireAuth={openSignIn} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
   else if (nav.artistArchive) overlay = <ArtistArchiveScreen artistName={nav.artistArchive.name} artistKey={nav.artistArchive.artistKey} onClose={back} onOpenShow={openShow} onOpenTour={(tour, resolvedArtistKey) => openArtistTour(nav.artistArchive.name, resolvedArtistKey || nav.artistArchive.artistKey, tour)} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
   else if (nav.artistTour) overlay = <TourArchiveScreen artistName={nav.artistTour.name} artistKey={nav.artistTour.artistKey} tourKey={nav.artistTour.tourKey} tourName={nav.artistTour.tourName} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
-  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenArtist={openArtist} onOpenPost={openPost} onOpenNewsStory={openNewsStory} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onShareMemory={(name, artistKey, options = {}) => requireVerifiedMutation("post", () => go({ logging: true, postMode: "memory", legacyArtistProfile: options.legacyProfile === true, prefill: { artist: name, artistKey } }))} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onReport={openReport} onRequireAuth={openSignIn} />;
+  else if (nav.artistName) overlay = <ArtistScreen key={artistReturn?.key} artistReturn={artistReturn} artistName={nav.artistName} onClose={back} onOpenArtist={openArtist} onOpenPost={openPost} onOpenNewsStory={openNewsStory} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onShareMemory={(name, artistKey, options = {}) => requireVerifiedMutation("post", () => go({ logging: true, postMode: "memory", legacyArtistProfile: options.legacyProfile === true, prefill: { artist: name, artistKey } }))} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.venueName) overlay = <VenueScreen onOpenPost={openPost} onCompose={(creatorEntity) => requireVerifiedMutation("post", () => go({ logging: true, postMode: "creator", prefill: { creatorEntity } }))} venueName={nav.venueName} venueIdentity={nav.venue || null} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.nearby) overlay = <NearbyScreen key={session?.id || "guest"} onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenEvent={openShow} initialTab={nav.nearbyTab} initialSelection={nearbySelectionRef.current?.accountId === (session?.id || null) ? nearbySelectionRef.current.value : null} onSelectionChange={value => { nearbySelectionRef.current = { accountId: session?.id || null, value }; }} />;
-  else if (nav.cityGuide) overlay = <CityScreen city={nav.cityGuide} accountId={session?.id || null} onClose={back} onOpenCity={openCity} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenShow={openShow} onOpenPhotos={openPhotos} />;
+  else if (nav.cityGuide) overlay = <CityScreen city={nav.cityGuide} onChooseCity={() => { setDiscoverDestination({ accountId: session?.id || null, programme: "cities", requestId: Date.now() }); switchTab("discover"); }} accountId={session?.id || null} onClose={back} onOpenCity={openCity} onOpenVenue={openVenue} onOpenArtist={openArtist} onOpenShow={openShow} onOpenPhotos={openPhotos} />;
   else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
-  else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
+  else if (nav.suggestion) overlay = <SuggestionBoxScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.suggestion.surface]) : undefined} onClose={back} initialSurface={nav.suggestion.surface} accountId={Platform.OS === "ios" ? session?.id || null : undefined} authEpoch={Platform.OS === "ios" ? chatAuthEpoch : undefined} closeGuardRef={Platform.OS === "ios" ? composerCloseGuardRef : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} />;
   else if (nav.administration) overlay = <AdministrationScreen session={session} onClose={back} />;
     else if (nav.settings) overlay = <SettingsScreen initialAccountAction={nav.accountAction === "switch" ? "switch" : null} onClose={back} onFinishSetup={needsSignupOnboarding(session) ? () => go({ signupSetup: true }) : undefined} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} onOpenCatalogEditor={() => go({ catalogEditor: true })} onOpenNewsroom={() => go({ newsroom: true })} onOpenAdministration={() => go({ administration: true })} onOpenModeration={() => go({ admin: true })} onRequestArtist={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))} />;
   else if (nav.deleteAccount) overlay = <DeleteAccountScreen onClose={back} onDeleted={onAccountDeleted} />;
   else if (nav.diagnostics && canViewDiagnostics) overlay = <DiagnosticsScreen onClose={back} />;
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
-  else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onOpenFanClub={openFanClub} onReport={openReport} onRequireAuth={openSignIn} />;
+  else if (nav.lounge) overlay = <LoungeScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, concertKey(nav.lounge)]) : undefined} draftOwner={Platform.OS === "ios" ? communityDraftsRef.current : null} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined} log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onOpenFanClub={openFanClub} onReport={openReport} onRequireAuth={openSignIn} />;
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={openSignIn} renderEventAccount={renderEventAccount} />;
-  else if (nav.post) overlay = <PostScreen key={`${session?.id || "guest"}:${nav.post.id}`} log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openPostEvent} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
+  else if (nav.post) overlay = <PostScreen key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch, nav.post.id]) : `${session?.id || "guest"}:${nav.post.id}`} log={nav.post} commentDraft={Platform.OS === "ios" ? commentDraftsRef.current.lease(nav.post.id) : null} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArtistArchive={openArtistArchive} onOpenVenue={openVenue} onOpenShow={openPostEvent} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onRequireAuth={openSignIn} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
   else if (nav.festival?.slug) overlay = <FestivalScreen key={`${session?.id || "guest"}:${nav.festival.slug}`} slug={nav.festival.slug} editionId={nav.festival.editionId || null}
     signedIn={!!session} accountId={session?.id || null} author={session ? { name: session.name } : null} onClose={back} onOpenArtist={openArtist} onRequireAuth={openSignIn}
@@ -1573,6 +1780,15 @@ function Root() {
   // only changes when a different page shows, so a page never re-animates
   // while it updates in place.
   const screenKey = screenTransitionKey(overlay ? nav : null, activeTab);
+  const tabReturnScope = `${session?.id || "guest"}|tab:${activeTab}`;
+  const pageReturnScope = overlay ? (Platform.OS === "ios" ? nav : `${session?.id || "guest"}|${screenKey}|${JSON.stringify(nav)}`) : tabReturnScope;
+  // Only committed navigation owns gestures. A suspended or abandoned render
+  // must leave the currently displayed page's title/tab handler active.
+  useLayoutEffect(() => {
+    pageReturnRef.current.setBeforeRequest(cancelPublicRoute);
+    pageReturnRef.current.activate(pageReturnScope);
+  }, [pageReturnScope, cancelPublicRoute]);
+  const pageOverlay = overlay ? <PageReturnProvider controller={pageReturnRef.current} scope={pageReturnScope}>{overlay}</PageReturnProvider> : null;
   if (screenMotionRef.current.key !== screenKey) {
     screenMotionRef.current = {
       key: screenKey,
@@ -1620,18 +1836,42 @@ function Root() {
   const status = session ? accountStatus(session) : "ok";
   const feedSurfaceVisible = newsFeedSurfaceVisible({
     tab: activeTab, hasOverlay: !!overlay, landing,
-    obscured: nativeAccountLinkActive || status !== "ok" || !!acctOpen || !!welcome || !!resetToken || !!unsubToken || !!verifyToken || !!ownerApprovalToken,
+    obscured: iosMenuOpen || nativeAccountLinkActive || status !== "ok" || !!acctOpen || !!welcome || !!resetToken || !!unsubToken || !!verifyToken || !!ownerApprovalToken,
     pendingNavigation: !!publicNavigationNotice || !!newsStoryNotice,
     web, pathname: web ? window.location.pathname : null,
   });
 
+  // A retained Feed remains mounted under media. A queued rail swipe belongs
+  // to its visible route/presentation, not whichever route is current later.
+  const iosTabSwipeEnabled = Platform.OS === "ios" && !overlay && !landing && !iosMenuOpen
+    && !nativeAccountLinkActive && status === "ok" && !acctOpen && !welcome
+    && !resetToken && !unsubToken && !verifyToken && !ownerApprovalToken;
+  const iosFeedSelection = useIOSFeedSelection(session?.id || null);
+  const iosTabSwipeScope = useMemo(() => ({ navigation: linkedNavigationScope, revision: iosTabSwipeRevision, enabled: iosTabSwipeEnabled }),
+    [linkedNavigationScope, iosTabSwipeRevision, iosTabSwipeEnabled]);
+  const isCurrentIOSTabSwipe = () => iosTabSwipeEnabled
+    && iosTabSwipeRevisionRef.current === iosTabSwipeRevision
+    && linkedNavigationRef.current.ownsScope(linkedNavigationScope)
+    && navigationRef.current.stack === stack && navigationRef.current.tab === tab
+    && navigationRef.current.landing === landing;
+
+  const feedPresentation = useMemo(() => Platform.OS === "ios" ? {
+    current: () => feedSurfaceVisible && linkedNavigationRef.current.ownsScope(linkedNavigationScope)
+      && navigationRef.current.stack === stack && navigationRef.current.tab === tab
+      && navigationRef.current.landing === landing,
+  } : null, [feedSurfaceVisible, linkedNavigationScope, stack, tab, landing]);
   const retainNativeFeed = retainNativeFeedForMedia({ platform: Platform.OS, wide, accountId: session?.id, tab: activeTab, frames: stack, hasOverlay: !!overlay });
 
-  const tabScreens = (
+  const renderTabScreen = (pageTab = activeTab, preview = false, pager = false) => (
+            <PageReturnProvider controller={pageReturnRef.current} scope={tabReturnScope}>
             <View style={styles.screen}>
-              {activeTab === "feed" && !!session && (
+              {pageTab === "feed" && !!session && (
                 <FeedScreen
-                  visible={feedSurfaceVisible}
+                  visible={!preview && feedSurfaceVisible}
+                  key={pager ? undefined : feedReturn?.key}
+                  feedReturn={feedReturn}
+                  feedPresentation={feedPresentation}
+                  {...(Platform.OS === "ios" ? { feedSelection: iosFeedSelection, swipeScope: iosTabSwipeScope, swipeEnabled: iosTabSwipeEnabled, isCurrentSwipeRoute: isCurrentIOSTabSwipe } : {})}
                   onRequireAuth={openSignIn}
                   onOpenNewsStory={openNewsStory}
                   onOpenNews={() => go({ news: true })}
@@ -1647,7 +1887,9 @@ function Root() {
                   hideHeaderActions={wide}
                   newUser={!!session && feed.filter((l) => l.userId === session.id).length === 0}
                   onRefresh={refreshHomeFeedData}
+                  onRefreshCounts={Platform.OS === "ios" && session ? refreshNotifications : undefined}
                   onLoadMore={loadMoreFeed}
+                  headStatusOwner={feedHeadStatus}
                   hasMore={feedHasMore}
                   loadingMore={feedLoadingMore}
                   countdownPlan={homeCountdown}
@@ -1661,7 +1903,7 @@ function Root() {
                   onOpenCountdown={openShow}
                   onViewAllCountdown={() => go({ calendar: true })}
                   onLogShow={() => requireVerifiedMutation("review", () => go({ logging: true, postMode: "show" }))}
-                  onOpenDiscover={() => switchTab("discover")}
+                  onOpenDiscover={openFindShow}
                   onOpenInbox={openInbox}
                   onOpenNotifications={openNotifications}
                   onOpen={openShow}
@@ -1693,7 +1935,7 @@ function Root() {
                   onOpenArtistArchive={openArtistArchive}
                   onOpenVenue={openVenue}
                   onOpenNearby={() => go({ nearby: true })}
-                  onOpenMenu={() => go({ menu: true })}
+                  onOpenMenu={openMainMenu}
                   onOpenClips={ENABLE_CLIPS ? () => go({ clips: true }) : undefined}
                   onReport={openReport}
                   onEdit={openPostEditor}
@@ -1702,9 +1944,9 @@ function Root() {
                   onRemoveMyPostTag={removePostTag}
                 />
               )}
-              {activeTab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {activeTab === "discover" && <DiscoverScreen key={session?.id || "guest"} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
-              {activeTab === "you" && !!session && (
+              {pageTab === "search" && <SearchScreen key={pager ? undefined : searchReturn?.key} browseReturn={searchReturn} onOpen={openShow} onOpenArtist={openArtist} onOpenCity={openCity} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
+              {pageTab === "discover" && <DiscoverScreen key={pager ? undefined : discoverReturn?.key || `${session?.id || "guest"}:${discoverDestination.requestId || 0}`} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={Platform.OS === "ios" ? iosTabSwipeEnabled : undefined} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} browseReturn={discoverReturn} viewStateRef={discoverViewStateRef} venueViewStateRef={discoverVenueViewStateRef} initialProgramme={publicDirectoryProgramme(nav)} rememberedProgramme={rememberedDiscoverProgramme} onProgrammeChange={(programme) => setDiscoverDestination({ accountId: session?.id || null, programme, requestId: discoverDestination.requestId })} onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenCrew={ENABLE_CREW ? () => go({ crew: true }) : undefined} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} onManageTaste={openProfileManagement} onOpenFestival={openFestival} />}
+              {pageTab === "you" && !!session && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}
                   onManageProfile={openProfileManagement}
@@ -1715,6 +1957,7 @@ function Root() {
                   onInbox={openInbox}
                   onCalendar={() => go({ calendar: true })}
                   profile={{
+                    onEditProfileDetails: openProfileDetails,
                     onOpenShow: openShow, onOpenPost: openPost, onOpenProfile: openProfile, onOpenArtist: openArtist,
                     onOpenArtistArchive: openArtistArchive, onOpenVenue: openVenue, onPreview: musicPreviewAction,
                     onMessage: openThread, onReport: openReport, onEditPost: openPostEditor, onOpenPhotos: openPhotos,
@@ -1724,9 +1967,13 @@ function Root() {
                 />
               )}
             </View>
+            </PageReturnProvider>
   );
 
-  const mobileTabBar = (
+  const tabScreens = renderTabScreen();
+  const nativeTabPage = tabScreens;
+
+  const mobileTabBar = Platform.OS === "ios" ? <IosTabBar active={activeTab} onChange={switchTab} swipeScope={iosTabSwipeScope} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={isCurrentIOSTabSwipe} /> : (
                       <NativeTabRail key={activeTab} active={activeTab} onChange={switchTab}>
 <View style={styles.tabbar}>
                         {LEFT.map((t) => <TabButton key={t.key} tab={t} active={activeTab} onPress={switchTab} />)}
@@ -1750,6 +1997,13 @@ function Root() {
 
   const presentScreen = (content) => <ReviewPresentation key={session?.id || "guest"} depth={stack.length} review={isReviewDetail(nav.post)} onClose={back} fallback={<ScreenLoading />}>
     <ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}>{content}</ScreenTransition>
+  </ReviewPresentation>;
+
+  // Preserve the native retained detail stack inside the review presentation.
+  // The underlying feed remains mounted by NativeFeedMediaLayer; the modal
+  // owns the review and its gallery/auth children without replacing that feed.
+  const presentNativeScreen = (content) => <ReviewPresentation key={session?.id || "guest"} depth={stack.length} review={isReviewDetail(nav.post)} onClose={back} fallback={<ScreenLoading />}>
+    <View key={screenKey} style={styles.appContent}>{content}</View>
   </ReviewPresentation>;
 
   // Keep the web route mounted across the desktop breakpoint. Resizing changes
@@ -1787,10 +2041,10 @@ function Root() {
             onOpenArtist={openArtist}
             onOpenEvent={openShow}
           />
-          {presentScreen(overlay || tabScreens)}
+          {presentScreen(pageOverlay || tabScreens)}
           {!wide && !overlay ? mobileTabBar : null}
         </View>
-        {wide && showRightRail && <Suspense fallback={null}><RightRail showSponsorPlaceholder={showSponsorPlaceholders} showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} /></Suspense>}
+        {wide && showRightRail && <Suspense fallback={null}><RightRail showSponsorPlaceholder={showSponsorPlaceholders} showNewsStories={!!nav.news} railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} countdownPlan={homeCountdown} onOpenCountdown={openShow} onViewAllCountdown={() => go({ calendar: true })} onOpenArtist={openArtist} onOpenProfile={openProfile} onFollowUser={follow} isFollowing={isFollowing} isBlocked={isBlocked} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={openFindShow} onOpenEvent={openShow} onOpenNewsStory={openNewsStory} onOpenNews={() => go({ news: true })} /></Suspense>}
       </View>
     </View>
   );
@@ -1819,7 +2073,7 @@ function Root() {
     if (result?.ok && expectedAccountId === sessionRef.current?.id && !signal?.aborted) {
       if (destination === "artistPage") commitReplace({ reqArtist: true });
       else if (openArtistPicker || destination === "artists") commitReplace({ pickArtists: true });
-      else if (destination === "shows") commitReplace({ nearby: true, nearbyTab: "shows" });
+      else if (destination === "shows") commitReplace(findShowFrame(sessionRef.current?.home));
       else if (destination === "review") {
         if (!requireVerifiedMutation("review", () => { commitReplace({ logging: true, postMode: "show" }); return true; })) finishComposerBack();
       } else finishComposerBack();
@@ -1828,6 +2082,21 @@ function Root() {
   };
   const playerObscured = nativeAccountLinkActive || !!resetToken || !!ownerApprovalToken || !!welcome || signupOnboardingVisible || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
   const landingSurface = landingRenderSurface({ authReady, session, landing });
+  const singleNativeOverlay = <Suspense fallback={<ScreenLoading />}><ScreenTransition key={screenKey} performanceKey={screenKey} direction={screenDirection}><IosDetailNavigation enabled={Platform.OS === "ios" && iosBackGestureAllowed(nav)} onBack={back} presentationKey={Platform.OS === "ios" ? nav : undefined} presentationScope={linkedNavigationScope} isCurrentRoute={Platform.OS === "ios" ? () => linkedNavigationRef.current.ownsScope(linkedNavigationScope) && navigationRef.current.stack.at(-1) === nav : undefined}>{pageOverlay}</IosDetailNavigation></ScreenTransition></Suspense>;
+  const nativeDetailOverlay = Platform.OS === "ios" ? (
+    <NativeDetailStack frames={stack} element={overlay}
+      scope={JSON.stringify([session?.id || null, chatAuthEpoch])}
+      enabled={authReady && !landing && status === "ok" && !nativeAccountLinkActive && !resetToken && !ownerApprovalToken}
+      admitted={appActive && !iosMenuOpen && !acctOpen && !welcome && !resetToken && !unsubToken && !verifyToken && !ownerApprovalToken && !publicNavigationNotice && !newsStoryNotice}
+      isCurrentRoute={(frame, index) => !nativeAccountLinkActiveRef.current && linkedNavigationRef.current.ownsScope(linkedNavigationScope)
+        && navigationRef.current.stack === stack && navigationRef.current.stack.at(-1) === frame && index === stack.length - 1}
+      wrap={({ frame, entry, active, current, gestureScope, children }) => (
+        <Suspense fallback={<ScreenLoading />}><ScreenTransition key={`retained-detail-${entry.occurrence.id}`} performanceKey={screenTransitionKey(frame, activeTab)} direction={screenDirection}>
+          <IosDetailNavigation enabled={active && iosBackGestureAllowed(frame)} onBack={back}
+            presentationKey={entry.occurrence} presentationScope={gestureScope} isCurrentRoute={current}><PageReturnProvider controller={pageReturnRef.current} scope={frame}>{children}</PageReturnProvider></IosDetailNavigation>
+        </ScreenTransition></Suspense>
+      )}>{singleNativeOverlay}</NativeDetailStack>
+  ) : singleNativeOverlay;
 
   return (
     <CityNavigationContext.Provider value={openCity}>
@@ -1851,8 +2120,8 @@ function Root() {
         {newsStoryNotice && (
           <View accessibilityLiveRegion="polite" style={{ padding: 12, backgroundColor: colors.bgElev, flexDirection: "row", alignItems: "center", gap: 12 }}>
             <Text style={{ flex: 1, color: colors.text }}>{newsStoryNotice.loading ? "Opening story…" : "This story could not be opened."}</Text>
-            {!newsStoryNotice.loading && <Pressable accessibilityRole="button" onPress={() => openNewsStory(newsStoryNotice.story)} style={{ padding: 10 }}><Text style={{ color: colors.amber }}>Try again</Text></Pressable>}
-            <Pressable accessibilityRole="button" onPress={cancelNewsStory} style={{ padding: 10 }}><Text style={{ color: colors.text }}>Cancel</Text></Pressable>
+            {!newsStoryNotice.loading && <Pressable accessibilityRole="button" onPress={retryNewsStoryNotice} style={{ padding: 10 }}><Text style={{ color: colors.amber }}>Try again</Text></Pressable>}
+            <Pressable accessibilityRole="button" onPress={cancelNewsStoryNotice} style={{ padding: 10 }}><Text style={{ color: colors.text }}>Cancel</Text></Pressable>
           </View>
         )}
 
@@ -1868,7 +2137,7 @@ function Root() {
         )}
 
         {landingSurface === "pending" ? (
-          <ScreenLoading />
+          <SessionValidationPending status={sessionValidationStatus} fallback={<ScreenLoading />} />
         ) : landingSurface === "landing" ? (
           <LandingScreen
             session={session}
@@ -1921,7 +2190,7 @@ function Root() {
               </View>
             )}
             <View style={styles.appContent}>
-              {Platform.OS !== "web" && !overlay && !retainNativeFeed && <NativeAppHeader onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
+              {Platform.OS !== "web" && !overlay && !retainNativeFeed && Platform.OS !== "ios" && <NativeAppHeader active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
               {web ? responsiveWeb : (
                 <>
                   {showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
@@ -1933,22 +2202,44 @@ function Root() {
                     onOpenArtist={openArtist}
                     onOpenEvent={openShow}
                   />
-                  {retainNativeFeed ? <NativeFeedMediaLayer key={session.id} obscured={!!overlay}
-                    header={<NativeAppHeader onHome={() => switchTab("discover")} loggedIn onAccount={() => openProfileManagement()} />}
+                  {(retainNativeFeed || (Platform.OS === "ios" && !overlay)) ? <NativeFeedMediaLayer key={Platform.OS === "ios" ? `${session?.id || "guest"}:${chatAuthEpoch}` : session.id} obscured={!!overlay} frames={activeTab === "feed" ? stack : undefined} chromeScope={iosTabSwipeScope} chromePage={activeTab} chromeEnabled={iosTabSwipeEnabled}
+                    header={<NativeAppHeader feedSelection={Platform.OS === "ios" ? iosFeedSelection : undefined} unread={session ? inboxUnread() : 0} notifications={session ? unreadNotifications() : 0} onOpenInbox={openInbox} onOpenNotifications={openNotifications} active={activeTab} onChange={switchTab} swipeScope={Platform.OS === "ios" ? iosTabSwipeScope : undefined} swipeEnabled={iosTabSwipeEnabled} isCurrentSwipeRoute={Platform.OS === "ios" ? isCurrentIOSTabSwipe : undefined} onMenu={openMainMenu} menuRef={iosMenuOpener} onPost={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} onHome={() => switchTab("discover")} loggedIn={!!session} onAccount={() => session ? openProfileManagement() : openSignIn()} />}
                     tabBar={mobileTabBar}
-                    media={presentScreen(overlay)}>
-                    <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey="main:feed">{tabScreens}</ScreenTransition></Suspense>
-                  </NativeFeedMediaLayer> : <>
-                    {presentScreen(overlay || tabScreens)}
-                    {!overlay ? mobileTabBar : null}
-                  </>}
+                    media={presentNativeScreen(nativeDetailOverlay)}>
+                    <Suspense fallback={<ScreenLoading />}><ScreenTransition performanceKey={Platform.OS === "ios" ? screenKey : "main:feed"}>{nativeTabPage}</ScreenTransition></Suspense>
+                  </NativeFeedMediaLayer> : overlay ? presentNativeScreen(nativeDetailOverlay) : (
+                    <>
+                      <Suspense fallback={<ScreenLoading />}><ScreenTransition key={Platform.OS === "ios" ? "main-tabs" : screenKey} performanceKey={screenKey} direction={screenDirection}>{nativeTabPage}</ScreenTransition></Suspense>
+                      {mobileTabBar}
+                    </>
+                  )}
                 </>
               )}
             </View>
           </View>
         )}
 
-        <FeedbackHost canViewDiagnostics={canViewDiagnostics} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} />
+        {Platform.OS === "ios" && <IosMenuDrawer visible={iosMenuOpen} onClose={() => setIosMenuOpen(false)} openerRef={iosMenuOpener}
+          session={session} unread={session ? inboxUnread() : 0} activity={session ? unreadNotifications() : 0}
+          feedFilter={iosFeedSelection?.filter} onSelectFeedFilter={value => {
+            if (!iosFeedSelection?.select(value)) return;
+            const route = navigationRef.current;
+            if (route.tab !== "feed" || route.stack.length !== 1 || Object.keys(route.stack[0] || {}).length > 0 || route.landing) switchTab("feed");
+          }}
+          onProfile={() => session && openProfile(session.id)} onLogin={openSignIn} onLogout={signOut}
+          actions={{
+            near: () => go({ nearby: true }), venues: () => go({ venues: true }), fanClubs: () => go({ fanClubs: true }),
+            topRated: () => go({ topRated: true }), news: () => go({ news: true }),
+            crew: ENABLE_CREW ? () => go({ crew: true }) : undefined,
+            activity: openNotifications, inbox: openInbox, suggestion: () => go({ suggestion: { surface: "menu" } }),
+            manageProfile: openProfileManagement, settings: () => go({ settings: true }), admin: () => go({ admin: true }),
+            newsroom: () => go({ newsroom: true }), tourDates: () => requireVerifiedMutation("artist", () => go({ bulk: true })),
+            requestArtist: () => requireVerifiedMutation("artist", () => go({ reqArtist: true })),
+            howItWorks: () => go({ welcomeGuide: true }), clips: ENABLE_CLIPS ? () => go({ clips: true }) : undefined,
+            calendar: () => requireAuth(() => go({ calendar: true })),
+          }} />}
+
+        <FeedbackHost canViewDiagnostics={canViewDiagnostics} key={Platform.OS === "ios" ? JSON.stringify([session?.id || null, chatAuthEpoch]) : undefined} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} />
 
         {MUSIC_PLAYER_ENABLED && status === "ok" && preview && (
           <Animated.View style={[styles.preview, { opacity: fade }]}>

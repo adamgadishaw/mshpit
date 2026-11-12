@@ -10,7 +10,12 @@ const accountIdOf = (value) => {
 export function sessionValidationOutcome({ confirmed, accountId, user, error } = {}) {
   const departingAccountId = accountIdOf(accountId);
   if (error) {
-    return error?.status === 401
+    // A response can carry 401 headers before its body fails to arrive, or be
+    // an unreadable proxy response. The transport already distinguishes these
+    // from an authentication denial. Preserve that classification so a dropped
+    // connection cannot purge a confirmed account or unlock a cold/strict check.
+    const unreadable = ["PIT-NET-001", "PIT-NET-002", "PIT-API-001"].includes(error.code);
+    return error?.status === 401 && !unreadable
       ? { kind: "authoritative-guest", departingAccountId }
       : { kind: "transient-failure", preserveConfirmedUi: !!confirmed };
   }

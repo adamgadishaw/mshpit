@@ -104,6 +104,7 @@ jobs:
       - run: npm run verify:festivals-browser
       - run: npm run verify:discover-events-browser
       - run: npm run verify:media-upload-browser
+      - run: npm run verify:profile-edit-browser
       - run: npm run verify:player-browser
       - run: npm run verify:connections-browser
       - run: npm run verify:social-browser

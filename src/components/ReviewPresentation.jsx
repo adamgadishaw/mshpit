@@ -19,7 +19,8 @@ export default function ReviewPresentation({ children, depth, review, onClose, f
   const modal = pages.slice(base ? 1 : 0);
   return <>
     {base ? <View key={base.key} style={fill} pointerEvents={modal.length ? "none" : "auto"}
-      aria-hidden={!!modal.length}>
+      aria-hidden={!!modal.length} accessibilityElementsHidden={!!modal.length}
+      importantForAccessibility={modal.length ? "no-hide-descendants" : "auto"}>
       <Suspense fallback={fallback}>{base.content}</Suspense>
     </View> : null}
     {modal.length ? <Suspense fallback={fallback}><ReviewDialog review={review} onClose={onClose} pages={modal} fallback={fallback} /></Suspense> : null}

@@ -14,31 +14,34 @@ const reconciler = require("react-reconciler");
 const { parse } = require("@babel/parser");
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const domain = (path) => import(pathToFileURL(resolve(root, "src/domain", path)).href);
-const [area, live, range, scene, geo] = await Promise.all([
+const [area, live, range, scene, geo, view] = await Promise.all([
   domain("discoverArea.mjs"), domain("liveDiscovery.mjs"), domain("discoverEventRange.mjs"),
-  domain("discoverScene.mjs"), domain("geo.mjs"),
+  domain("discoverScene.mjs"), domain("geo.mjs"), domain("discoverViewState.mjs"),
 ]);
 
+const { createBrowseReturnStore } = await domain("iosBrowseReturn.mjs");
 const source = readFileSync(resolve(root, "src/screens/DiscoverScreen.jsx"), "utf8");
 const tree = parse(source, { sourceType: "module", plugins: ["jsx"] });
 const component = tree.program.body.find((node) => node.type === "ExportDefaultDeclaration").declaration;
 const selected = new Set([
-  "accountId", "homeCity", "homeCountry", "homeCoordinates", "areaContext", "areaChoice",
+  "initialBrowse", "restoredRangeScope", "accountId", "homeCity", "homeCountry", "homeCoordinates", "areaContext", "areaChoice",
   "resolvedArea", "region", "liveScope", "rangeScopeKey", "eventRange", "eventWeek",
   "requestedCursorRef", "rangeLoaderRef", "eventRangeRef", "rangeRequestRef",
-  "rangeMatchesScene", "requestEventRange",
+  "rangeMatchesScene", "requestEventRange", "selectEventRange", "selectedRangeDays",
+  "restoredView", "query", "selectedGenre", "eventView", "programme", "previewRef",
 ]);
 const statements = component.body.body.filter((node) => {
   if (node.type === "VariableDeclaration") {
     return node.declarations.some(({ id }) => selected.has(id.name || id.elements?.[0]?.name));
   }
   const code = source.slice(node.start, node.end);
-  if (/^(rangeLoaderRef|eventRangeRef)\.current =/.test(code)) return true;
+  if (/^(rangeLoaderRef|eventRangeRef|previewRef)\.current =/.test(code)) return true;
   if (node.type !== "ExpressionStatement" || node.expression.callee?.name !== "useEffect") return false;
   const effect = source.slice(node.expression.arguments[0].start, node.expression.arguments[0].end);
-  return effect.includes("requestEventRange(DISCOVER_RANGE_DAYS[0])") || effect.includes("syncDiscoverAreaChoice(current,");
+  return (node.expression.arguments[1]?.elements?.some((arg) => arg.name === "rangeScopeKey") && effect.includes("rangeRequestRef.current.sequence += 1")) || effect.includes("syncDiscoverAreaChoice(current,")
+    || effect.includes("viewStateRef.current =") || effect.includes("requestedCursorRef.current.has") || effect.includes("browseReturn?.save({ query");
 }).map((node) => source.slice(node.start, node.end)).join("\n");
-assert.match(statements, /requestEventRange\(DISCOVER_RANGE_DAYS\[0\]\)/);
+assert.match(statements, /requestEventRange\(/);
 assert.match(statements, /rangeRequestRef.current.sequence \+= 1/);
 const initialRange = tree.program.body.find((node) => node.type === "VariableDeclaration"
   && node.declarations.some(({ id }) => id.name === "EMPTY_EVENT_RANGE"));
@@ -47,13 +50,17 @@ assert.ok(initialRange, "Use the actual initial range state");
 // Match the real App key: an account switch must remount Discover, including
 // when both accounts have the same saved city and coordinates.
 const app = readFileSync(resolve(root, "App.js"), "utf8");
-let keyExpression;
+let keyExpression, shellKeyExpression;
 function visit(node) {
   if (!node || typeof node !== "object") return;
   if (node.type === "JSXOpeningElement" && node.name.name === "DiscoverScreen") {
     const key = node.attributes.find((attribute) => attribute.name?.name === "key")?.value?.expression;
     assert.ok(key, "App must provide Discover's real account key");
     keyExpression = app.slice(key.start, key.end);
+  }
+  if (node.type === "JSXOpeningElement" && node.name.name === "NativeFeedMediaLayer") {
+    const key = node.attributes.find(a => a.name?.name === "key").value.expression;
+    shellKeyExpression = app.slice(key.start, key.end);
   }
   for (const value of Object.values(node)) {
     if (Array.isArray(value)) value.forEach(visit);
@@ -62,8 +69,10 @@ function visit(node) {
 }
 visit(parse(app, { sourceType: "module", plugins: ["jsx"] }));
 assert.ok(keyExpression);
-const discoverKey = new Function("session", `return (${keyExpression});`);
+const discoverKey = new Function("session", "discoverReturn", "pager = false", "discoverDestination = {}", `return (${keyExpression});`);
 
+assert.ok(shellKeyExpression, "Use the actual current native shell lifetime, not the removed main pager");
+const shellKey = new Function("session", "chatAuthEpoch", "Platform", `return (${shellKeyExpression});`);
 const noop = () => {};
 const context = {};
 let priority = 0;
@@ -88,17 +97,19 @@ const renderer = reconciler({
   bindToConsole: (method, args) => console[method].bind(console, ...args),
 });
 
-function fixture() {
+function fixture({ pager = false, shell = false } = {}) {
   let snapshot;
   const calls = [];
-  const bindings = { ...React, ...area, ...live, ...range, ...scene, ...geo,
+  const browseStore = createBrowseReturnStore();
+  const bindings = { Platform: { OS: "ios" }, ...React, ...area, ...live, ...range, ...scene, ...geo, ...view, rememberedEventView: "list", restoredDiscoverProgramme: () => "shows",
     expose: (value) => { snapshot = value; },
   };
   const Probe = new Function(...Object.keys(bindings), `
     ${source.slice(initialRange.start, initialRange.end)}
-    return function Probe({session, discoverySidebar, loadDiscoverTourDateRange}) {
+    return function Probe({session, discoverySidebar, loadDiscoverTourDateRange, browseReturn, isTabPreview = false, viewStateRef, initialProgramme, rememberedProgramme}) {
+      const identity = useRef({}).current;
       ${statements}
-      expose({rangeScopeKey, eventRange, rangeMatchesScene, setAreaChoice});
+      expose({identity, initialBrowse, rangeScopeKey, eventRange, eventWeek, rangeMatchesScene, setAreaChoice, selectedRangeDays, selectEventRange, setQuery, query, setSelectedGenre, selectedGenre, setEventWeek, setEventViewState});
       return null;
     };`)(...Object.values(bindings));
   const fail = (error) => { throw error; };
@@ -110,17 +121,24 @@ function fixture() {
   });
   return {
     calls,
-    render(session, discoverySidebar = null) {
-      flush(React.createElement(Probe, { key: discoverKey(session), session, discoverySidebar, loadDiscoverTourDateRange: load }));
+    render(session, discoverySidebar = null, initialSnapshot = null, { preview = false, authEpoch = 1 } = {}) {
+      browseStore.account(session?.id || null);
+      const browseReturn = browseStore.lease("discover");
+      if (initialSnapshot) browseReturn.save(initialSnapshot);
+      flush(React.createElement(React.Fragment, { key: pager || shell ? shellKey(session, authEpoch, { OS: "ios" }) : "legacy" },
+        React.createElement(Probe, { key: discoverKey(session, browseReturn, pager), isTabPreview: preview, session, discoverySidebar, browseReturn, loadDiscoverTourDateRange: load })));
     },
     snapshot: () => snapshot,
+    chooseView(value) { React.act(() => snapshot.setEventViewState(value)); },
+    chooseDays(days) { React.act(() => snapshot.selectEventRange(days)); },
+    chooseFilters() { React.act(() => { snapshot.setQuery("punk"); snapshot.setSelectedGenre("Punk"); snapshot.setEventWeek("2026-11-09"); }); },
     chooseCountry(country) {
       React.act(() => snapshot.setAreaChoice((current) => area.selectDiscoverCountryArea(current, country)));
     },
-    async settle(index, ids) {
+    async settle(index, ids, nextCursor = null) {
       await React.act(async () => calls[index].resolve({
         tourDates: ids.map((id) => ({ id, local: true, date: "2026-11-01", releaseAt: 0 })),
-        nextCursor: null, through: "2026-11-15",
+        nextCursor, through: "2026-11-15",
       }));
     },
     close() { flush(null); },
@@ -128,6 +146,24 @@ function fixture() {
 }
 
 const account = (lat = null, lng = null, { id = "member", city = "Toronto" } = {}) => ({ id, home: { city, lat, lng } });
+
+test("actual App view owners isolate account changes, reauthentication and outgoing callbacks", () => {
+  const start = app.indexOf("  const discoverViewOwnerRef = useRef(null);");
+  const end = app.indexOf(" = discoverViewOwnerRef.current;", start) + " = discoverViewOwnerRef.current;".length;
+  assert.ok(start >= 0 && end > start);
+  const held = { current: null };
+  const render = new Function("useRef", "session", "chatAuthEpoch", `${app.slice(start, end)}; return { view: discoverViewStateRef, venues: discoverVenueViewStateRef };`);
+  const a = render(() => held, { id: "A" }, 1);
+  a.view.current = { query: "private choice" }; a.venues.current = { query: "private venue" };
+  assert.equal(render(() => held, { id: "A" }, 1).venues, a.venues);
+  const b = render(() => held, { id: "B" }, 1);
+  assert.equal(b.view.current, null); assert.equal(b.venues.current, null);
+  const again = render(() => held, { id: "A" }, 1);
+  assert.equal(again.view.current, null); assert.notEqual(again.venues, a.venues);
+  const renewed = render(() => held, { id: "A" }, 2);
+  again.venues.current = { query: "late callback" };
+  assert.equal(renewed.venues.current, null);
+});
 
 test("Discover cancels a pending nearby range when coordinates hydrate without changing the city", async () => {
   const f = fixture();
@@ -225,5 +261,107 @@ test("changing country cancels the old local range, and unmount cancels its repl
     await f.settle(0, ["old-local"]); assert.deepEqual(f.snapshot().eventRange.rows, []);
     f.close(); assert.equal(f.calls[1].options.signal.aborted, true);
     await f.settle(1, ["after-unmount"]);
+  } finally { f.close(); }
+});
+
+test("return requests the saved range and week once, then a new area preserves days and resets the week", async () => {
+  const f = fixture();
+  try {
+    f.render(account(43.6532, -79.3832), null, {
+      region: "Canada", scope: "country", touched: true, days: 90, eventWeek: "2026-11-09",
+    });
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].options.days, 90);
+    assert.equal(f.calls[0].options.local, false);
+    assert.equal(f.snapshot().eventWeek, "2026-11-09");
+    await f.settle(0, ["restored-range"]);
+    f.render(account(43.6532, -79.3832));
+    assert.equal(f.calls.length, 1, "ordinary rerenders do not repeat restoration");
+    f.chooseCountry("United States");
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.calls[1].options.days, 90);
+    assert.equal(f.snapshot().eventWeek, null);
+    f.render(account(43.6532, -79.3832, { id: "other-member" }));
+    assert.equal(f.calls.length, 3);
+    assert.equal(f.calls[2].options.days, 30);
+    assert.equal(f.snapshot().eventWeek, null);
+  } finally { f.close(); }
+});
+
+test("pager preview ignores old browse state and promotes the same scoped request and instance", async () => {
+  const f = fixture({ pager: true });
+  try {
+    const viewer = account(43.6532, -79.3832);
+    f.render(viewer, null, { region: "United States", scope: "country", touched: true, days: 90 }, { preview: true });
+    const identity = f.snapshot().identity;
+    assert.equal(f.snapshot().initialBrowse, null);
+    assert.equal(f.calls.length, 1); assert.equal(f.calls[0].options.local, true);
+    f.render(viewer, null, null, { preview: false });
+    assert.equal(f.snapshot().identity, identity, "promotion does not remount the candidate");
+    assert.equal(f.calls.length, 1, "promotion reuses the intent-triggered read");
+    await f.settle(0, ["prepared"]);
+    assert.deepEqual(f.snapshot().eventRange.rows.map(row => row.id), ["prepared"]);
+  } finally { f.close(); }
+});
+test("actual native shell parent key retires pending coordinate reads across account and authentication boundaries", async () => {
+  const f = fixture({ shell: true });
+  try {
+    const a = account(43.6532, -79.3832, { id: "A" });
+    f.render(a, null, null, { authEpoch: 1 }); const first = f.snapshot().identity;
+    f.render(account(43.6532, -79.3832, { id: "B" }), null, null, { authEpoch: 1 });
+    assert.notEqual(f.snapshot().identity, first); assert.equal(f.calls[0].options.signal.aborted, true);
+    const second = f.snapshot().identity;
+    f.render(account(43.6532, -79.3832, { id: "B" }), null, null, { authEpoch: 2 });
+    assert.notEqual(f.snapshot().identity, second); assert.equal(f.calls[1].options.signal.aborted, true);
+    await f.settle(0, ["old-A"]); await f.settle(1, ["old-B-auth"]);
+    assert.deepEqual(f.snapshot().eventRange.rows, []);
+    await f.settle(2, ["current-B"]);
+    assert.deepEqual(f.snapshot().eventRange.rows.map(row => row.id), ["current-B"]);
+  } finally { f.close(); }
+});
+
+test("area changes and detail remount preserve the selected range and filters, scoped to the viewer", async () => {
+  const f = fixture();
+  try {
+    f.render(account());
+    f.chooseDays(90);
+    assert.equal(f.calls.at(-1).options.days, 90);
+    f.chooseCountry("United States");
+    assert.equal(f.calls.at(-1).options.days, 90, "changing area must keep the selected time window");
+    f.chooseFilters();
+    f.close();
+    f.render(account());
+    assert.equal(f.calls.at(-1).options.country, "United States");
+    assert.equal(f.calls.at(-1).options.days, 90);
+    assert.equal(f.snapshot().query, "punk");
+    assert.equal(f.snapshot().selectedGenre, "Punk");
+    assert.equal(f.snapshot().eventWeek, "2026-11-09");
+    f.render(account(null, null, { id: "someone-else" }));
+    assert.equal(f.calls.at(-1).options.local, true);
+    assert.equal(f.calls.at(-1).options.days, 30);
+    assert.equal(f.snapshot().query, "");
+    assert.equal(f.snapshot().selectedGenre, null);
+  } finally { f.close(); }
+});
+
+test("automatic list pagination stops an alternating cursor cycle and retry starts a fresh attempt", async () => {
+  const f = fixture();
+  try {
+    f.render(account());
+    f.chooseView("list");
+    await f.settle(0, ["one"], "A");
+    assert.equal(f.calls.at(-1).options.after, "A");
+    await f.settle(1, ["one"], "B");
+    assert.equal(f.calls.at(-1).options.after, "B");
+    await f.settle(2, ["one"], "A");
+    assert.equal(f.calls.length, 3, "A must not be requested a second time in the same traversal");
+    assert.equal(f.snapshot().eventRange.status, "error");
+    assert.deepEqual(f.snapshot().eventRange.rows.map(row => row.id), ["one"]);
+    f.chooseDays(30);
+    await f.settle(3, ["one"], "A");
+    assert.equal(f.calls.length, 5, "explicit retry can try A again");
+    await f.settle(4, ["two"]);
+    assert.equal(f.snapshot().eventRange.status, "ready");
+    assert.deepEqual(f.snapshot().eventRange.rows.map(row => row.id), ["one", "two"]);
   } finally { f.close(); }
 });

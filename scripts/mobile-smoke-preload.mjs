@@ -3,16 +3,32 @@ import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
 import { syncBuiltinESMExports } from 'node:module';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const appRoot = resolve(fileURLToPath(new URL('../', import.meta.url)));
 if (resolve(process.cwd()) !== appRoot) throw new Error('Mobile smoke must run from its own checkout');
+// Explicit local preview mode retains only synthetic test data across restarts.
+// Capture before stripping inherited settings; never accept a caller-selected path.
+const persistent = process.env.MSHPIT_LOCAL_PERSISTENT_TEST_DATA === '1';
 const keep = new Set(['PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP']);
 for (const key of Object.keys(process.env)) if (!keep.has(key.toUpperCase())) delete process.env[key];
-mkdirSync(join(appRoot, '.tmp'), { recursive: true });
-process.env.PIT_DATA_DIR = mkdtempSync(join(appRoot, '.tmp', 'mobile-data-'));
+const scratch = join(appRoot, '.tmp');
+mkdirSync(scratch, { recursive: true });
+if (realpathSync(scratch) !== join(realpathSync(appRoot), '.tmp')) {
+  throw new Error('Mobile test storage must stay inside its checkout');
+}
+if (persistent) {
+  const data = join(scratch, 'mobile-preview-data');
+  mkdirSync(data, { recursive: true });
+  if (realpathSync(data) !== join(realpathSync(scratch), 'mobile-preview-data')) {
+    throw new Error('Mobile preview storage must not redirect outside its test directory');
+  }
+  process.env.PIT_DATA_DIR = data;
+} else {
+  process.env.PIT_DATA_DIR = mkdtempSync(join(scratch, 'mobile-data-'));
+}
 process.env.NODE_ENV = 'test';
 process.env.PIT_ENV = 'staging';
 process.env.PIT_ALLOW_EMPTY_DB_BOOTSTRAP = 'true';
@@ -35,4 +51,4 @@ net.Server.prototype.listen = function (...args) {
   return listen.call(this, { port: 3000, host: '127.0.0.1' }, ...args.slice(1));
 };
 syncBuiltinESMExports();
-console.log('Disposable mobile backend: localhost:3000; outbound requests disabled; no service credentials inherited.');
+console.log(`${persistent ? 'Persistent local test' : 'Disposable mobile'} backend: localhost:3000; outbound requests disabled; no service credentials inherited.`);

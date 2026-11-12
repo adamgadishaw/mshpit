@@ -9,6 +9,10 @@ export const readFollowingFeed = ({ accountId, cursor = null, signal }) => api(
   `/api/feed?mode=following&limit=30${cursor ? `&before=${encodeURIComponent(cursor)}` : ""}`,
   { expectedAccountId: accountId, signal, silent: true, context: "Loading posts and reposts from people you follow" },
 );
+export const readLocalFeed = ({ accountId, cursor = null, signal }) => api(
+  `/api/feed?mode=local&limit=30${cursor ? `&before=${encodeURIComponent(cursor)}` : ""}`,
+  { expectedAccountId: accountId, signal, silent: true, context: "Loading posts from your home city" },
+);
 
 const listeners = new Set();
 export function notifySocialReactionChange(accountId) { for (const listener of listeners) listener(accountId); }

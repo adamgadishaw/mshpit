@@ -1,3 +1,4 @@
+import useNativeTabContentReady from "../../hooks/useNativeTabContentReady";
 import { useCallback, useEffect } from "react";
 import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import CityDirectoryTiles from "../../components/cities/CityDirectoryTiles";
@@ -14,6 +15,7 @@ export default function CityDiscoveryTiles({ country = "", query = "", limit = 8
     registerRefresh?.(resource.refresh);
     return () => registerRefresh?.(null);
   }, [registerRefresh, resource.refresh]);
+  useNativeTabContentReady(!!resource.data || !!resource.error);
   const copy = resource.data?.copy || {};
   const cities = Array.isArray(resource.data?.cities) ? resource.data.cities : [];
   const Directory = layout === "rail" ? CityDirectoryRail : CityDirectoryTiles;

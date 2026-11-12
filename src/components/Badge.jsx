@@ -2,7 +2,7 @@ import { useState } from "react";
 import Svg, { Path, Polyline, Polygon, G, Defs, RadialGradient, Stop, Text as SvgText } from "react-native-svg";
 import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
 import { colors, mono, radius } from "../theme";
-import { STATUS_BADGES } from "../domain/badges.mjs";
+import { STATUS_BADGES } from "../domain/statusBadges.mjs";
 import { badgeArt } from "../domain/badgeArt.mjs";
 
 const web = Platform.OS === "web";

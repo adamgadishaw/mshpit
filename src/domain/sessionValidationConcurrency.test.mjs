@@ -5,6 +5,7 @@ import { parse } from "@babel/parser";
 import { createSessionValidationCoordinator, sessionValidationOutcome } from "./sessionValidation.mjs";
 import { createSessionValidationRetry } from "./sessionValidationRetry.mjs";
 import { createAuthTransitions } from "./authTransitions.mjs";
+import { createFeedHeadStatus } from "./feedHeadStatus.mjs";
 import { apiIdentityBarrierDecision } from "./apiIdentityState.mjs";
 import { createRequestControl } from "../lib/requestControl.mjs";
 import { retryAfterDelayMs } from "../lib/retryAfter.mjs";
@@ -55,7 +56,9 @@ function fixture({ confirmed = true, account = confirmed ? member : null, intent
   const transport = new Function(...Object.keys(transportBindings), `${apiBody}\nreturn { api, configureApiIdentity };`)(...Object.values(transportBindings));
   transport.configureApiIdentity(account?.id, { ready: confirmed });
   const dependencies = {
+    invalidateIOSDetailPrivacy: () => 0,
     ...transport, sessionRef, authReadyRef, authValidationSequenceRef, authTransitions,
+    sessionValidationStatus: null,
     sessionValidationOutcome, createSessionValidationRetry: () => createSessionValidationRetry({ random: () => 0 }),
     createSessionValidationCoordinator: (options) => {
       coordinator = createSessionValidationCoordinator(options);
@@ -78,8 +81,12 @@ function fixture({ confirmed = true, account = confirmed ? member : null, intent
     Platform: { OS: "test" }, AppState: { addEventListener: () => ({ remove() {} }) },
   };
   const cleanup = new Function(...Object.keys(dependencies), `return (${validationEffect})();`)(...Object.values(dependencies));
+  // Logout synchronously retires the iOS presentation receipt as well as auth.
+  // Use the real observer so this extracted runtime declaration keeps its boundary.
+  const feedHeadStatus = createFeedHeadStatus();
   const authDependencies = {
-    ...dependencies, accountMutationEpochRef: { current: 0 },
+    ...dependencies, accountMutationEpochRef: { current: 0 }, profileReadAuthority: new Map(),
+    feedRefreshRef: { current: { headStatus: feedHeadStatus } },
     switchLinkedAccountRequest: async (_actor, target) => ({ user: { id: target } }),
     localCommandError: () => ({ ok: false }), captureAppError() {}, AppError,
     broadcastAuthEpoch() {}, playHistoryRequestRef: { current: { sequence: 0 } }, playlistRequestRef: { current: { sequence: 0 } },
@@ -105,7 +112,7 @@ function fixture({ confirmed = true, account = confirmed ? member : null, intent
     return coordinator.validate({ force: true });
   };
   return { state, requests, retired, adoptions, timers, coordinator, respond, finish, fireRetry, cleanup, authTransitions,
-    ...auth, sessionRef, authReadyRef, authValidationSequenceRef, adopt: dependencies.absorbServerUser,
+    ...auth, feedHeadStatus, sessionRef, authReadyRef, authValidationSequenceRef, adopt: dependencies.absorbServerUser,
     get revoked() { return revoked; } };
 }
 
@@ -128,7 +135,16 @@ for (const reply of [
   test('pending /api/me ' + reply.label + ' cannot resurrect after logout', async (t) => {
     const f = fixture(); t.after(f.cleanup);
     const pending = f.coordinator.validate({ force: true }); await tick();
-    await f.logout();
+    const feedTicket = f.feedHeadStatus.begin();
+    const oldFeedScope = f.feedHeadStatus.getSnapshot().scope;
+    const logout = f.logout();
+    const clearedFeed = f.feedHeadStatus.getSnapshot();
+    assert.equal(clearedFeed.status, "idle", "logout synchronously clears pending Feed status");
+    assert.equal(clearedFeed.verified, false);
+    assert.notEqual(clearedFeed.scope, oldFeedScope);
+    await logout;
+    f.feedHeadStatus.settle(feedTicket, "ready");
+    assert.equal(f.feedHeadStatus.getSnapshot(), clearedFeed, "departing Feed completion cannot restore its receipt");
     f.respond(0, reply.text, reply.status); await pending;
     assert.equal(f.state.session, null); assert.equal(f.state.ready, true);
     assert.deepEqual(f.adoptions, []); assert.equal(f.timers.size, 0);

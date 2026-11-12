@@ -11,13 +11,15 @@ import { startPeriodicJob } from "./periodicJobScheduler.js";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
 import { canAccessTheme, isThemeKey } from "../src/domain/themeAccess.mjs";
 import { calendarEventTiming } from "../src/domain/calendarEventTiming.mjs";
+import { postAuthorBadgeProjection } from "./postAuthorBadgeProjection.js";
+import { postBadgeBundle } from "../src/domain/postBadgeBundle.mjs";
+import { mapLibreServerEnabled } from "./mapLibreConfiguration.mjs";
+import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
+import { createVenueMapCatalogueResponse } from "./venueMapCatalogueResponse.mjs";
 import {
   encodeTourDateCalendarCursor, tourDateCalendarPublicRange,
   tourDateCalendarRequest, tourDateCalendarSummary,
 } from "./tourDateCalendarRange.mjs";
-import { mapLibreServerEnabled } from "./mapLibreConfiguration.mjs";
-import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
-import { createVenueMapCatalogueResponse } from "./venueMapCatalogueResponse.mjs";
 import { LEGACY_ARTIST_DEATH_DATE_CUTOFF, isLegacyArtistMemorial } from "../src/domain/artistLegacy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
 import { reparentRepliesForAccountErasure } from "./features/accountPrivacy/commentErasure.js";
@@ -3143,7 +3145,8 @@ function postJson(p, viewerId) {
     id: p.id,
     userId: p.user_id,
     kind: p.kind || "review",
-    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0, membershipBadge: memberBadgeFor(db, { id: p.user_id }) },
+    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0,
+      ...postAuthorBadgeProjection({ user: q.userById.get(p.user_id), viewerId, projectUser: publicUser }) },
     artist: p.artist,
     venue: online.experienceType === "online" ? "" : p.venue,
     city: online.experienceType === "online" ? "" : p.city,
@@ -3239,12 +3242,8 @@ const COMMENT_AUTHOR_IDENTITY_SQL = `u.email_verified_at,
     WHERE a.owner_id=u.id AND a.artist_key=lower(trim(u.artist_name))
       AND a.identity_review_status IN ('pending','rejected')) THEN 1 ELSE 0 END AS artist_identity_held`;
 
-function commentAuthorStatus(comment) {
-  return {
-    role: comment.artist_identity_held ? "fan" : comment.role,
-    verified: !comment.artist_identity_held && !!comment.verified,
-    membershipBadge: memberBadgeFor(db, { id: comment.user_id, email_verified_at: comment.email_verified_at }),
-  };
+function commentAuthorStatus(comment, viewerId) {
+  return postAuthorBadgeProjection({ user: q.userById.get(comment.user_id), viewerId, projectUser: publicUser });
 }
 
 function withCommentPreviews(posts, viewerId) {
@@ -3278,7 +3277,7 @@ function withCommentPreviews(posts, viewerId) {
       avatarUri: safePublicProfileImage(comment.user_id, comment.avatar_uri),
       avatarColor: comment.avatar_color,
       profileUpdatedAt: Number(comment.profile_updated_at) || 0,
-      ...commentAuthorStatus(comment),
+      ...commentAuthorStatus(comment, viewerId),
       text: comment.text,
       deleted: false,
       parentId: comment.parent_id || null,
@@ -3683,7 +3682,7 @@ function safePublicProfileImage(ownerId, value) {
 function publicUser(row, options = {}) {
   const projected = storedPublicUser(row, options);
   if (!projected) return projected;
-  if (options.self) return { ...projected, owner: isOwnerId(db, row.id) };
+  if (options.self) return { ...projected, owner: isOwnerId(db, row.id), postBadgeSnapshot: postBadgeBundle(storedPublicUser(row)) };
   return {
     ...projected,
     avatarUri: safePublicProfileImage(row.id, projected.avatarUri),
@@ -6532,6 +6531,9 @@ export const routes = {
     if (profileErrors.length) {
       throw new ApiError(400, profileErrors[0], "VALIDATION_FAILED");
     }
+    // Clearing a bio is an explicit edit. The shared optional-field parser
+    // skips empty strings, so retain this one without changing other routes.
+    if (ctx.body?.bio === "") v.bio = "";
     // `shape` leaves null values alone for ordinary optional fields. These two
     // media slots additionally accept explicit null as removal; an omitted
     // slot still means retain it. The existing transaction owns reference
@@ -6995,10 +6997,14 @@ export const routes = {
     const blockSql = viewer ? `AND NOT EXISTS (
       SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
     ) AND NOT EXISTS (SELECT 1 FROM account_mutes mute WHERE mute.muter_id=? AND mute.muted_id=p.user_id)` : "";
+    const local = ctx.query?.mode === "local";
+    const homeCity = local ? String(user.home_city || "").trim() : "";
+    const localSql = local ? "AND trim(lower(u.home_city))=trim(lower(?)) AND length(trim(u.home_city))>0" : "";
     const cursorSql = cursor ? "AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))" : "";
     const args = [];
     if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
     if (viewer) args.push(viewer, viewer, viewer);
+    if (local) args.push(homeCity);
     args.push(lim + 1);
     if (!cursor) args.push(off);
     // Moderators see which cards carry open reports right on the feed, so
@@ -7014,7 +7020,7 @@ export const routes = {
           WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
         ${SEEN_ORDINAL_SQL}${flagSql}
       FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE p.removed=0 AND substr(p.id,1,5)<>'news_' AND ${activeAccountSql("u")} ${cursorSql} ${blockSql}
+      WHERE p.removed=0 AND substr(p.id,1,5)<>'news_' AND ${activeAccountSql("u")} ${cursorSql} ${blockSql} ${localSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
     const projectedRows = attachPostImpressionStats(db, attachViewerLikes(
@@ -8060,7 +8066,7 @@ export const routes = {
         parentId: c.parent_id || null, createdAt: c.created_at,
       } : {
         id: c.id, userId: c.user_id, name: c.name, initials: c.initials,
-        avatarUri: safePublicProfileImage(c.user_id, c.avatar_uri), avatarColor: c.avatar_color, ...commentAuthorStatus(c),
+        avatarUri: safePublicProfileImage(c.user_id, c.avatar_uri), avatarColor: c.avatar_color, ...commentAuthorStatus(c, viewerId),
         profileUpdatedAt: Number(c.profile_updated_at) || 0, text: c.text, deleted: false,
         parentId: c.parent_id || null, createdAt: c.created_at,
         ...commentLikeInfo(db, c.id, viewerId),
@@ -8268,11 +8274,11 @@ export const routes = {
     assertSafeAuthoredText(text, { field: "message" });
     const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId
-      ? db.prepare("SELECT id,to_id,text,removed FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      ? db.prepare("SELECT id,to_id,text,removed,created_at FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
       : null;
     if (existing) {
       assertChatRetryMatches(existing, { to_id: other, text });
-      return { id: existing.id, duplicate: true };
+      return { id: existing.id, createdAt: existing.created_at, duplicate: true };
     }
     const priorConversation = !!db.prepare(`SELECT 1 FROM dms
       WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) LIMIT 1`).get(u.id, other, other, u.id);
@@ -8298,21 +8304,22 @@ export const routes = {
     }
     limit(ctx, "dm", 120, 10 * 60 * 1000);
     const id = uid("dm");
+    const createdAt = now();
     if (mutationId) {
       const inserted = db.prepare("INSERT OR IGNORE INTO dms (id,from_id,to_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
-        .run(id, u.id, other, text, mutationId, now());
+        .run(id, u.id, other, text, mutationId, createdAt);
       if (!inserted.changes) {
-        const raced = db.prepare("SELECT id,to_id,text,removed FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1")
+        const raced = db.prepare("SELECT id,to_id,text,removed,created_at FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1")
           .get(u.id, mutationId);
         assertChatRetryMatches(raced, { to_id: other, text });
-        if (raced) return { id: raced.id, duplicate: true };
+        if (raced) return { id: raced.id, createdAt: raced.created_at, duplicate: true };
         throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
       }
     } else {
-      db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run(id, u.id, other, text, now());
+      db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run(id, u.id, other, text, createdAt);
     }
     addNotif(other, u.id, "dm", { postId: id, text: text.slice(0, 80) });
-    return { id };
+    return { id, createdAt };
   }),
 
   ...notificationRoutes({ database: db, requireUser, ApiError, pageRequest, finishPage, safePublicProfileImage }),
@@ -8488,28 +8495,29 @@ export const routes = {
     if (!artist) throw new ApiError(403, "Join this fan club before jumping into the conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
     const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId
-      ? db.prepare("SELECT id,artist,text,removed FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      ? db.prepare("SELECT id,artist,text,removed,created_at FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
       : null;
     if (existing) {
       assertChatRetryMatches(existing, { artist, text });
-      return { id: existing.id, duplicate: true };
+      return { id: existing.id, createdAt: existing.created_at, duplicate: true };
     }
     limit(ctx, "fanmsg", 60, 60 * 60 * 1000);
     const id = uid("fc");
+    const createdAt = now();
     if (mutationId) {
       const inserted = db.prepare("INSERT OR IGNORE INTO fan_club_messages (id,artist,user_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
-        .run(id, artist, u.id, text, mutationId, now());
+        .run(id, artist, u.id, text, mutationId, createdAt);
       if (!inserted.changes) {
-        const raced = db.prepare("SELECT id,artist,text,removed FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
+        const raced = db.prepare("SELECT id,artist,text,removed,created_at FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
           .get(u.id, mutationId);
         assertChatRetryMatches(raced, { artist, text });
-        if (raced) return { id: raced.id, duplicate: true };
+        if (raced) return { id: raced.id, createdAt: raced.created_at, duplicate: true };
         throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
       }
     } else {
-      db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, artist, u.id, text, now());
+      db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, artist, u.id, text, createdAt);
     }
-    return { id };
+    return { id, createdAt };
   },
 
   // ---- concert lounge (shared attendee chat, keyed by concertKey) ----
@@ -8608,12 +8616,12 @@ export const routes = {
     if (!attendee) throw new ApiError(403, "Join this show's Going list before posting in the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
     const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId
-      ? db.prepare("SELECT id,lounge_id,text,removed FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      ? db.prepare("SELECT id,lounge_id,text,removed,created_at FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
       : null;
     if (existing) {
       assertChatRetryMatches(existing, { lounge_id: key, text });
       legacySafeLoungeSnapshot(key, now(), { register: true });
-      return { id: existing.id, duplicate: true };
+      return { id: existing.id, createdAt: existing.created_at, duplicate: true };
     }
     const lifecycle = legacySafeLoungeSnapshot(key, now(), { register: true });
     if (lifecycle.status === "closed") {
@@ -8621,20 +8629,21 @@ export const routes = {
     }
     limit(ctx, "loungemsg", 90, 60 * 60 * 1000);
     const id = uid("lm");
+    const createdAt = now();
     if (mutationId) {
       const inserted = db.prepare("INSERT OR IGNORE INTO lounge_messages (id,lounge_id,user_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
-        .run(id, key, u.id, text, mutationId, now());
+        .run(id, key, u.id, text, mutationId, createdAt);
       if (!inserted.changes) {
-        const raced = db.prepare("SELECT id,lounge_id,text,removed FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
+        const raced = db.prepare("SELECT id,lounge_id,text,removed,created_at FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
           .get(u.id, mutationId);
         assertChatRetryMatches(raced, { lounge_id: key, text });
-        if (raced) return { id: raced.id, duplicate: true };
+        if (raced) return { id: raced.id, createdAt: raced.created_at, duplicate: true };
         throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
       }
     } else {
-      db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, now());
+      db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, createdAt);
     }
-    return { id };
+    return { id, createdAt };
   },
 
   // ---- consented first-party product analytics ----

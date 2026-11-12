@@ -16,6 +16,8 @@ const concertMemory = read("../components/ConcertMemoryModal.jsx");
 const errorBoundary = read("../components/ErrorBoundary.jsx");
 const errorCatalog = read("../lib/errorCatalog.mjs");
 const feed = read("../screens/FeedScreen.jsx");
+const feedIOS = read("../screens/FeedScreen.ios.jsx");
+const iosHeader = read("../components/NativeAppHeader.ios.jsx");
 const landing = read("../screens/LandingScreen.jsx");
 const log = read("../screens/LogScreen.jsx");
 const menu = read("../screens/MenuScreen.jsx");
@@ -32,10 +34,16 @@ const venues = read("../screens/VenuesScreen.jsx");
 const serverApi = read("../../server/api.js");
 
 test("the product cleanup screens remain parseable", () => {
-  for (const [name, source] of Object.entries({ app, auth, artistCarousel, artistMemorialConsole, artistMemorialTribute, artistScreen, clips, concertMemory, errorBoundary, errorCatalog, feed, landing, log, menu, nearby, pickArtists, rails, resetPassword, search, settings, show, venue, venues })) {
+  for (const [name, source] of Object.entries({ app, auth, artistCarousel, artistMemorialConsole, artistMemorialTribute, artistScreen, clips, concertMemory, errorBoundary, errorCatalog, feed, feedIOS, iosHeader, landing, log, menu, nearby, pickArtists, rails, resetPassword, search, settings, show, venue, venues })) {
     assert.doesNotThrow(() => parse(source, { sourceType: "module", plugins: ["jsx"] }), `${name} must parse`);
   }
 });
+
+function assertFeedBranding() {
+  assert.ok(feed.includes('Platform.OS === "web" ? "MSHPIT" : "Your feed"'));
+  assert.match(feedIOS, /<NativeLargeTitle[^>]*><Text[^>]*accessibilityRole="header">Feed<\/Text><\/NativeLargeTitle>/);
+  assert.match(iosHeader, />MSHPIT<\/Text>/);
+}
 
 test("high-frequency fallback and provenance copy stays literal", () => {
   const touched = {
@@ -111,7 +119,7 @@ test("high-frequency fallback and provenance copy stays literal", () => {
 });
 
 test("the feed uses the Mshpit brand and separates For You from Discover", () => {
-  assert.ok(feed.includes('Platform.OS === "web" ? "MSHPIT" : "Your feed"'));
+  assertFeedBranding();
   assert.match(app, /<NativeAppHeader/);
   assert.match(nativeHeader, /MSHPIT/);
   assert.match(feed, /<Seg label="For You"/);
@@ -119,7 +127,7 @@ test("the feed uses the Mshpit brand and separates For You from Discover", () =>
   assert.match(feed, /homeGuideStorageKey\(accountId\)/);
   assert.match(feed, /label="Find a show" onPress=\{onOpenDiscover\}/);
   assert.match(feed, /label="Log a show" onPress=\{onLogShow\}/);
-  assert.match(app, /onOpenDiscover=\{\(\) => switchTab\("discover"\)\}/);
+  assert.match(app, /onOpenDiscover=\{openFindShow\}/);
 });
 
 test("universal search offers typed result filters without member-count marketing", () => {
@@ -140,7 +148,7 @@ test("universal search offers typed result filters without member-count marketin
 test("primary branding is Mshpit across entry, navigation, and recovery surfaces", () => {
   assert.match(landing, />MSHPIT<\/Text>/);
   assert.match(landing, /accessibilityLabel="Mshpit, live music remembered"/);
-  assert.ok(feed.includes('Platform.OS === "web" ? "MSHPIT" : "Your feed"'));
+  assertFeedBranding();
   assert.match(nativeHeader, /MSHPIT/);
   for (const [name, source] of Object.entries({ auth, errorBoundary, rails, resetPassword })) {
     assert.match(source, />MSHPIT<\/Text>/, `${name} carries the Mshpit wordmark`);

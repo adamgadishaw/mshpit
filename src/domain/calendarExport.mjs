@@ -1,5 +1,7 @@
-import { toIsoDate } from "./dates.mjs";
+import { calendarReadDate } from "./calendarDates.mjs";
 import { ticketUrlDecision } from "./ticketLinks.mjs";
+import { calendarEventTiming, nextCalendarDay } from "./calendarEventTiming.mjs";
+import { calendarPerformanceKey } from "./calendarPerformanceIdentity.mjs";
 
 const CRLF = "\r\n";
 const MAX_TEXT = 240;
@@ -52,12 +54,6 @@ export function foldCalendarLine(line) {
   return parts.join(CRLF);
 }
 
-function nextIsoDay(iso) {
-  const [year, month, day] = iso.split("-").map(Number);
-  const next = new Date(Date.UTC(year, month - 1, day + 1));
-  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, "0")}-${String(next.getUTCDate()).padStart(2, "0")}`;
-}
-
 const compactDate = (iso) => iso.replace(/-/g, "");
 
 function stamp(value) {
@@ -85,7 +81,7 @@ function confirmedTicketUrlSet(values) {
 }
 
 export function normalizeCalendarEvent(event, { confirmedTicketUrls = [] } = {}) {
-  const date = toIsoDate(event?.date);
+  const date = calendarReadDate(event?.date);
   const artist = cleanText(event?.artist, 120);
   if (!date || !artist) return null;
   const venue = cleanText(event?.venue || event?.place, 140);
@@ -96,14 +92,17 @@ export function normalizeCalendarEvent(event, { confirmedTicketUrls = [] } = {})
     && (!ticketDecision.requiresConfirmation || confirmed.has(ticketDecision.url))
     ? ticketDecision.url
     : "";
-  const identity = [artist.toLocaleLowerCase(), venue.toLocaleLowerCase(), date].join("|");
+  const identity = calendarPerformanceKey(event);
+  const timing = calendarEventTiming(event);
   return {
     date,
     artist,
     venue,
     city,
     ticketUrl,
-    uid: `pit-${stableHash(identity)}-${compactDate(date)}@mshpit.com`,
+    timing,
+    eventStatus: cleanText(event?.eventStatus || event?.lifecycle, 40).toLowerCase(),
+    uid: `pit-${stableHash(identity)}${stableHash([...identity].reverse().join(""))}@mshpit.com`,
   };
 }
 
@@ -131,19 +130,36 @@ export function buildCalendarDocument(events, {
   for (const event of unique.values()) {
     const location = [event.venue, event.city].filter(Boolean).join(", ");
     const summary = event.venue ? `${event.artist} at ${event.venue}` : event.artist;
-    const description = event.ticketUrl
-      ? `Concert saved from PIT. Tickets: ${event.ticketUrl}`
-      : "Concert saved from PIT.";
-    lines.push(
-      "BEGIN:VEVENT",
-      `UID:${event.uid}`,
-      `DTSTAMP:${created}`,
-      `DTSTART;VALUE=DATE:${compactDate(event.date)}`,
-      `DTEND;VALUE=DATE:${compactDate(nextIsoDay(event.date))}`,
-      `SUMMARY:${escapeText(summary)}`,
-    );
+    const { timing } = event;
+    // Without a known final time, a festival remains a truthful whole-date
+    // span. Single shows with a known start omit DTEND rather than inventing
+    // a duration. UTC avoids floating-time shifts and incomplete TZID output.
+    const timed = !!timing.startAt && (timing.endDate === timing.date || !!timing.endAt);
+    const notes = ["Concert saved from PIT."];
+    if (!timed) {
+      if (timing.startAt) notes.push(`Starts: ${timing.startAt}${timing.timeZone ? ` (${timing.timeZone})` : ""}. End time unconfirmed.`);
+      else if (timing.status === "unresolved") notes.push(`Start time unconfirmed${timing.startLocalTime ? `: ${timing.startLocalTime}${timing.timeZone ? ` (${timing.timeZone})` : " (venue local time)"}` : ""}.`);
+      else notes.push("Start time not announced.");
+    }
+    if (event.eventStatus === "postponed") notes.push("Postponed; confirm the new date with the event organizer.");
+    if (event.eventStatus === "rescheduled") notes.push("Rescheduled; check the latest event details.");
+    if (event.ticketUrl) notes.push(`Tickets: ${event.ticketUrl}`);
+    lines.push("BEGIN:VEVENT", `UID:${event.uid}`, `DTSTAMP:${created}`);
+    if (timed) {
+      lines.push(`DTSTART:${stamp(timing.startAt)}`);
+      if (timing.endAt) lines.push(`DTEND:${stamp(timing.endAt)}`);
+    } else {
+      lines.push(
+        `DTSTART;VALUE=DATE:${compactDate(event.date)}`,
+        `DTEND;VALUE=DATE:${compactDate(nextCalendarDay(timing.endDate))}`,
+        "TRANSP:TRANSPARENT",
+      );
+    }
+    if (["cancelled", "canceled"].includes(event.eventStatus)) lines.push("STATUS:CANCELLED");
+    else if (event.eventStatus === "postponed") lines.push("STATUS:TENTATIVE");
+    lines.push(`SUMMARY:${escapeText(summary)}`);
     if (location) lines.push(`LOCATION:${escapeText(location)}`);
-    lines.push(`DESCRIPTION:${escapeText(description)}`);
+    lines.push(`DESCRIPTION:${escapeText(notes.join(" "))}`);
     if (event.ticketUrl) lines.push(`URL:${event.ticketUrl}`);
     lines.push("END:VEVENT");
   }
@@ -152,7 +168,7 @@ export function buildCalendarDocument(events, {
 }
 
 export function calendarExportFileName(events) {
-  const normalized = (Array.isArray(events) ? events : [events]).map(normalizeCalendarEvent).filter(Boolean);
+  const normalized = (Array.isArray(events) ? events : [events]).map((event) => normalizeCalendarEvent(event)).filter(Boolean);
   if (normalized.length === 1) {
     const event = normalized[0];
     const slug = event.artist.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 42) || "concert";

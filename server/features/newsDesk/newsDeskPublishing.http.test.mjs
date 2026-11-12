@@ -86,7 +86,7 @@ if (process.env.PIT_NEWS_MINIMUM_FIXTURE === "1") {
   test("real isolated HTTP saves and publishes concise articles with relevant citations without word or publisher quotas", { timeout: 45000 }, async t => {
     const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
     const directory = mkdtempSync(join(tmpdir(), "pit-news-minimum-http-"));
-    const env = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LOCALAPPDATA"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
+    const env = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "LOCALAPPDATA"].filter(k => process.env[k]).map(k => [k, process.env[k]]));
     Object.assign(env, { NODE_ENV: "test", RENDER: "true", PORT: "3000", PUBLIC_ORIGIN: "http://127.0.0.1",
       PIT_DATA_DIR: directory, PIT_NEWS_MINIMUM_FIXTURE: "1", PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "true",
       NEWS_DESK_ACCOUNT_ID: "workspace_publisher", MEDIA_PUBLIC_BASE_URL: "https://media.example.test", ADMIN_EMAIL: "workspace_admin@example.test",

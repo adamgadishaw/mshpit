@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
+import { View, Text, StyleSheet, TextInput, Pressable, Image } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { colors, mono, radius, THEMES, themeKey } from "../theme";
 import ThemeSwatch from "../components/ThemeSwatch";
 import { useStore } from "../store";

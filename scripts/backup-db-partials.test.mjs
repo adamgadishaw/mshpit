@@ -20,8 +20,12 @@ function fixture(run) {
 function age(owned, now, changes = {}) {
   const old = now - BACKUP_PARTIAL_MIN_AGE_MS - 10_000;
   const record = JSON.parse(readFileSync(owned.ownerPath, "utf8"));
-  writeFileSync(owned.ownerPath, JSON.stringify({ ...record, createdAt: old, ...changes }));
   utimesSync(owned.path, old / 1000, old / 1000);
+  // APFS also moves birthtime when a fixture is backdated. Bind this synthetic
+  // owner to the aged file; deliberate invalid-identity overrides still win.
+  const aged = statSync(owned.path, { bigint: true });
+  const fileIdentity = [aged.dev, aged.ino, aged.birthtimeNs].map(String).join(":");
+  writeFileSync(owned.ownerPath, JSON.stringify({ ...record, createdAt: old, fileIdentity, ...changes }));
   utimesSync(owned.ownerPath, old / 1000, old / 1000);
 }
 

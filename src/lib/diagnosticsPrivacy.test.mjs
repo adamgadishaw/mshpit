@@ -108,3 +108,14 @@ test("legacy device-global diagnostic history is retired instead of adopted", ()
   purgeLegacyDiagnosticsStorage();
   assert.equal(load(LEGACY_DIAGNOSTICS_STORAGE_KEY, null), null);
 });
+
+test("local photo preparation diagnostics keep device paths and native exception text private", () => {
+  configureDiagnosticsIdentity("synthetic-photo-account"); clearDiagnostics();
+  const error = captureAppError(new Error("file:///private/photo.heic?token=secret could not be read"), {
+    code: "PIT-UPLOAD-008", context: "Reading the selected media", source: "media", toast: true,
+  });
+  assert.equal(error.code, "PIT-UPLOAD-008");
+  assert.match(error.userMessage, /downloaded/);
+  assert.doesNotMatch(JSON.stringify(getDiagnostics()), /file:|photo.heic|token=secret/);
+  clearDiagnostics(); configureDiagnosticsIdentity(null);
+});

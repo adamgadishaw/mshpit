@@ -38,6 +38,8 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
   const accountMutationEpochRef = { current: 1 }, feedMutationRevisionRef = { current: 0 };
   const update = (key) => (value) => { writes.push(key); state[key] = typeof value === "function" ? value(state[key]) : value; };
   const dependencies = {
+    Platform: { OS: "ios" },
+    invalidateIOSDetailPrivacy: () => 0,
     session: actor, sessionRef, authReadyRef, accountMutationEpochRef, feedMutationRevisionRef,
     captureAccountMutation, accountMutationIsCurrent,
     clean, clampRating, LIMITS, cleanArtistKey, normalizeArtistCampaign,

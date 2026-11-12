@@ -77,12 +77,8 @@ test("ticket share uses the retry-safe post delivery path and owns one safe erro
 test("exact Going attendance survives account hydration even without an ambiguous legacy alias", () => {
   const store = source("../store.js");
 
-  assert.match(store, /const exactGoingRows = canonicalAttendance\.filter/);
-  assert.match(store, /const exactDisplayKeys = new Set/);
-  assert.match(store, /rows\.filter\(\(entry\) => goingTourDateId\(entry\)/,
-    "an exact row replaces its same-key legacy calendar projection instead of duplicating it");
-  assert.match(store, /goingEntryIdentity\(candidate\) === identity/,
-    "the private canonical attendance projection restores exact Going identity after reload");
+  assert.match(store, /const hydratedGoingRows = hydrateAttendanceGoingRows\(rows, canonicalAttendance, goingRef\.current\[accountId\]\)/,
+    "hydration uses the behavior-tested exact identity merge and retains ambiguous legacy plans");
 });
 
 test("a legacy display key never impersonates one of two exact catalogue events", () => {
@@ -114,6 +110,8 @@ test("the shared post renderer owns ticket presentation and disables generic edi
   assert.doesNotMatch(card, /onPress=\{\(\) => onOpen\?\.\(log\)\}\s*accessibilityHint="Open this Going post and its comments"/);
   assert.match(feed, /const openShow = useCallback\(\(show\) => actionsRef\.current\.onOpen\?\.\(show, \{ surface, position: itemIndex \}\)/);
   assert.match(feed, /onOpenShow=\{openShow\}/);
+  assert.match(card, /if \(Platform\.OS === "ios"\) \{[\s\S]*?onOpenShow = guard\(onOpenShow\);/,
+    "the iOS card fences exact-show callbacks without changing shared row routing");
   assert.match(post, /onOpenShow=\{detail \|\| isOnlineReview \? undefined : onOpenShow\}/);
   assert.match(profile, /onOpenShow=\{capabilities\.openShow \? openShow : undefined\}/);
   assert.match(app, /log\.kind === "status" && log\.performanceEvent !== true/);

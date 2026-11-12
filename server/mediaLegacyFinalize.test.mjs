@@ -451,9 +451,9 @@ test("expired and malformed legacy descriptors fail closed and retire private st
     "delete_queued");
 });
 
-test("legacy API route stages privately, finalizes, and gates profile association on the sanitized result", async () => {
+test("an admin with no genres can stage, finalize and save a profile photo without changing other fields", async () => {
   const unverifiedOwner = addUser("legacy_finalize_route_owner");
-  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), unverifiedOwner.id);
+  db.prepare("UPDATE users SET role='admin',genres='[]',bio='Existing bio',email_verified_at=? WHERE id=?").run(Date.now(), unverifiedOwner.id);
   const owner = q.userById.get(unverifiedOwner.id);
   const storage = memoryObjectStorage();
   const source = await sharp({
@@ -493,6 +493,10 @@ test("legacy API route stages privately, finalizes, and gates profile associatio
       body: { avatarUri: finalized.publicUrl },
     });
     assert.equal(patched.user.avatarUri, finalized.publicUrl);
+    assert.deepEqual(patched.user.genres, []);
+    assert.equal(patched.user.bio, "Existing bio");
+    const reloaded = routes["GET /api/me"]({ user: q.userById.get(owner.id) });
+    assert.equal(reloaded.user.avatarUri, finalized.publicUrl);
     assert.equal(db.prepare("SELECT consumed_at FROM legacy_media_finalize_descriptors WHERE id=?")
       .get(ticket.descriptorId).consumed_at > 0, true);
   } finally {

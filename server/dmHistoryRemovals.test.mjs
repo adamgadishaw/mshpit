@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { createDirectMessageHistory } from "../src/domain/directMessageHistory.mjs";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-dm-history-removals-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -17,12 +18,14 @@ function addUser(id) {
 const me = addUser("history_me"), peer = addUser("history_peer"), outsider = addUser("history_outsider");
 const insert = db.prepare("INSERT INTO dms(id,from_id,to_id,text,removed,created_at) VALUES (?,?,?,?,?,?)");
 const get = (query = {}, user = me, otherId = peer.id) => routes["GET /api/dms/:otherId"]({ user, params: { otherId }, query: { context: "0", ...query } });
+const normalize = (result) => ({ ...result, messages: result.messages.map((row) => ({ ...row, at: row.createdAt, server: true })) });
 
-test("single-conversation sync reports an old fetched message behind more than750 newer tombstones", () => {
+test("single-conversation sync removes an old loaded message behind more than750 newer tombstones", () => {
   insert.run("history_old", peer.id, me.id, "old private text", 0, 1);
   insert.run("history_live", peer.id, me.id, "recent", 0, 1000);
-  const initial = get();
-  assert.ok(initial.messages.some((row) => row.id === "history_old"));
+  const history = createDirectMessageHistory();
+  const initial = get(); history.receive(normalize(initial));
+  assert.ok(history.display([]).some((row) => row.id === "history_old"));
   db.exec("BEGIN");
   for (let index = 0; index < 800; index++) insert.run(`history_removed_${index}`, peer.id, me.id, "removed", 1, 10 + index);
   insert.run("unrelated_removed", outsider.id, me.id, "other conversation", 1, 1100);
@@ -32,8 +35,8 @@ test("single-conversation sync reports an old fetched message behind more than75
   assert.equal(update.removedIds.length, 801);
   assert.ok(update.removedIds.includes("history_old"));
   assert.ok(!update.removedIds.includes("unrelated_removed"));
-  assert.deepEqual(update.messages, [], "the removal arrives without needing a new message");
-  assert.deepEqual(get().messages.map((row) => row.id), ["history_live"]);
+  history.receive(normalize(update), { after: initial.syncCursor });
+  assert.deepEqual(history.display([]).map((row) => row.id), ["history_live"]);
   assert.equal(routes["GET /api/me/threads"]({ user: me, query: { summary: "1" } }).removedIds.length, 750,
     "the account-wide inbox still has its existing bounded tombstone response");
   assert.deepEqual(get({}, outsider).removedIds, [], "an outsider cannot retrieve this pair's tombstones");

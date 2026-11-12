@@ -29,6 +29,7 @@ function fixture({ web = false, ready = false } = {}) {
       }
     },
   };
+  context.startupLinkingFor = () => context.Linking;
   const render = (readyValue = context.authReady) => {
     context.authReady = readyValue; refIndex = 0; effectIndex = 0;
     runInNewContext(actualIngress, context);

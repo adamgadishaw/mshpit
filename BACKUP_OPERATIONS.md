@@ -151,10 +151,17 @@ into the offline recovery copy and retain the operator's privacy and credential
 review references. Do not interpret a reference accepted by
 `scripts/prepare-db-restore.mjs` as proof that reconciliation happened:
 `server/databaseRecovery.js` explicitly relies on the operator's review.
-It invalidates restored sessions, outstanding tokens and queued mail, but does
+It invalidates restored sessions, outstanding tokens, independent editorial API
+grants, pending editorial pairing codes and queued mail, but does
 not reconstruct newer password hashes or access roles. If the required evidence
 is unavailable, keep the copy isolated and resolve the recovery decision before
 serving it. A synthetic restore test cannot establish this operational coverage.
+
+Editorial grants retain their IDs and audit/idempotency history, but require fresh
+explicit pairing after a restore. Terminal pairing/grant history is preserved.
+Recovery copies prepared with older code must be prepared again using the current
+helper before cutover; deploying this change does not sanitize an already-prepared
+offline copy or rewrite any live database.
 
 ### Chain coverage and legacy restores
 

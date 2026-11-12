@@ -1,4 +1,5 @@
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { ScrollView } from "../../components/NativeTabScroll";
+import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import Avatar from "../../components/Avatar";
 import Icon from "../../components/Icon";
 import SmartImage from "../../components/SmartImage";

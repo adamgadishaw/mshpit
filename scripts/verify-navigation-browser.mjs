@@ -763,6 +763,16 @@ async function runCase(browser, origin, item) {
       await page.reload({ waitUntil: "networkidle" }); await visiblePage(page, "/discover"); await assertPath(page, "/discover");
     } else if (item.kind === "member-tabs") {
       await visiblePage(page, "/feed"); await assertPath(page, "/feed");
+      await page.waitForLoadState("networkidle");
+      const feedReads = () => state.calls.filter(call => call.path === "/api/feed/for-you").length;
+      let reads = feedReads();
+      await page.getByRole("button", { name: "Your feed, return to top and refresh", exact: true }).click();
+      await waitFor(() => feedReads() > reads, "Feed title did not refresh the visible feed.");
+      await page.waitForLoadState("networkidle");
+      reads = feedReads();
+      await openTab("Feed");
+      await waitFor(() => feedReads() > reads, "Reselecting Feed did not refresh the visible feed.");
+      await assertPath(page, "/feed");
       for (const [tab, path] of [["Search", "/search"], ["Discover", "/discover"], ["You", "/you"]]) {
         await openTab(tab); await visiblePage(page, path); await assertPath(page, path);
       }

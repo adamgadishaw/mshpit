@@ -4,7 +4,7 @@ import Svg, { G, Line, Path } from "react-native-svg";
 import { colors, focusRing, mono, radius, space } from "../../theme";
 import Icon from "../../components/Icon";
 import geography from "./worldGeography.json";
-import { clusterConcertMapPins, concertHistoryFrame, concertMapViewport } from "./concertHistoryModel.mjs";
+import { clusterConcertMapPins, concertHistoryFrame, concertMapViewport } from "./concertMapGeometry.mjs";
 
 const Geography = memo(function Geography({ box, highlightedCodes }) {
   const shifts = [0, ...(box.x < 0 ? [-360] : []), ...(box.x + box.width > 360 ? [360] : [])];

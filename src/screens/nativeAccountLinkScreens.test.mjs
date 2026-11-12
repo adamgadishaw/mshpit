@@ -26,6 +26,7 @@ function fixture(file,store,props={},extra={}){
   if(name==='../theme')return{colors:{},space:n=>n*4,radius:{}};
   if(name==='../domain/validation.mjs')return validation;
   if(name==='../domain/nativeAccountLink.mjs')return accountLinks;
+  if(name==='../lib/nativeStartupLinks')return{startupLinkingFor:()=>seams('react-native').Linking};
   if(name==='../domain/apiOrigin.mjs')return origins;
   if(name==='../components/credential-form')return{__esModule:true,default:'CredentialForm',CredentialInput:'CredentialInput',CredentialLabel:'CredentialLabel',CredentialSubmit:'CredentialSubmit'};
   if(name.startsWith('../components/')||name.startsWith('./'))return{__esModule:true,default:name};

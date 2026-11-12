@@ -9,8 +9,9 @@ export const PROFILE_LOAD_ERROR = "This profile could not be loaded. Check your 
 
 // HTTP access denials can arrive after logout just like successful reads.
 // Neither may publish or quarantine data in a different viewer's cache.
-export function assertCurrentProfileRead(read, accountId, epoch, { signal, error } = {}) {
+export function assertCurrentProfileRead(read, accountId, epoch, { signal, error, authorityIsCurrent = true } = {}) {
   if (!isLoadCancellation(error, signal)
+    && authorityIsCurrent
     && error?.serverCode !== "IDENTITY_CHANGED"
     && accountMutationIsCurrent(read, accountId, epoch)) return;
   const cancellation = new Error("This profile request is no longer current.");

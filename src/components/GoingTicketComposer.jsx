@@ -7,7 +7,7 @@ import {
 } from "../domain/attendanceTicket.mjs";
 import { colors, displayFont, mono, radius, shadow } from "../theme";
 import Button from "./Button";
-import ConcertTicketCard from "./ConcertTicketCard";
+import ConcertTicketCard from "./DeferredConcertTicketCard";
 import Icon from "./Icon";
 
 const cleanSeatPart = (value, max = 40) => String(value || "").trim().slice(0, max);

@@ -3,7 +3,7 @@ import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from "
 import { colors, displayFont, focusRing, radius } from "../theme";
 import { useStore } from "../store";
 import { GEO } from "../geo";
-import { cityCoords } from "../data";
+import { cityCoords } from "../domain/cityCoordinates.mjs";
 import LocationPicker from "../components/LocationPicker";
 import DatePicker from "../components/DatePicker";
 import ScreenHeader from "../components/ScreenHeader";

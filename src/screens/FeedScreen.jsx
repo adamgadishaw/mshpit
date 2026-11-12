@@ -1,25 +1,34 @@
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
+import useNativeTabContentReady from "../hooks/useNativeTabContentReady";
+import { FlatList, ScrollView } from "../components/NativeTabScroll";
+import useIOSFeedReturn, { FeedReturnProvider } from "../hooks/useIOSFeedReturn";
+import { useFeedHeadStatus } from "../hooks/feedHeadStatus";
 import { nativeFeedCanWork } from "../domain/nativeFeedMediaRetention.mjs";
 import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, FlatList, Platform, Pressable, ScrollView, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, Platform, Pressable, useWindowDimensions } from "react-native";
 import { colors, mono, radius, shadow, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { load, save } from "../lib/persist";
 import TicketStub from "../components/TicketStub";
 import Icon from "../components/Icon";
-import { filteredFeedNextAction } from "../domain/feedPagination.mjs";
 import { feedFilterStorageKey, feedFooterState, normalizeFeedFilter } from "../domain/feedExperience.mjs";
+import { feedDiscoveryPlacement, feedPostPosition, IOS_FEED_DISCOVERY_SLOT } from "../domain/feedDiscoveryPlacement.mjs";
 import { nextVisibleMediaPostIds } from "../domain/posterVisibility.mjs";
 import { JOURNEY_TAGLINE } from "../domain/menuJourney.mjs";
 import { HOME_JOURNEY_LINE, homeGuideStorageKey } from "../domain/homeJourney.mjs";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
+import { FeedImageRetryProvider, useFeedImageRetry } from "../hooks/feedImageRetry";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import SuggestedPittersRail from "../components/SuggestedPittersRail";
 import useAppActive from "../lib/useAppActive";
+import useFeedPresentation from "../hooks/useFeedPresentation";
+import useEndlessFeed from "../hooks/useEndlessFeed";
 import NewsStoryCard from "../components/news/NewsStoryCard";
 import useNewsDeskStories from "../components/news/useNewsDeskStories";
 import useNewsIntroduction from "../components/news/useNewsIntroduction";
 import { newsAwareFeed } from "../domain/newsReaderState.mjs";
 import { useNewsInteractions } from "../components/news/NewsInteractionContext";
 import useFollowingFeed from "../features/socialReactions/useFollowingFeed";
+import { PageTitle } from "../components/PageReturnContext";
 
 // Optional panels load inside their own boundary so opening News or a countdown
 // cannot make the primary feed disappear while its module loads.
@@ -31,13 +40,13 @@ const REFRESH_RETRY_HINT = Platform.OS === "web"
   ? "Reload this page to try again."
   : "Pull down to try again.";
 
-const feedKeyExtractor = (item) => String(item.id);
+const feedKeyExtractor = (item) => item === IOS_FEED_DISCOVERY_SLOT ? "slot:ios-people-discovery" : String(item.id);
 
 // Keep mounted feed cards insulated from viewport bookkeeping and unrelated
 // header state. The ref-backed handlers always call the latest screen props,
 // while stable row callbacks let React skip cards whose post and visibility did
 // not change.
-const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewable, surface, actionsRef, capabilities, accountId = null }) {
+const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewable, contextPresentation, surface, actionsRef, capabilities, accountId = null }) {
   const open = useCallback((_unused) => actionsRef.current.onOpen?.(item, { surface, position: itemIndex }), [actionsRef, item, itemIndex, surface]);
   const openShow = useCallback((show) => actionsRef.current.onOpen?.(show, { surface, position: itemIndex }), [actionsRef, itemIndex, surface]);
   const comment = useCallback((...args) => actionsRef.current.onComment?.(...args), [actionsRef]);
@@ -56,15 +65,16 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
 
   // A Mshpit News story posted from @news_mod.
   if (item.news) {
-    return <NewsStoryCard story={item.news} post={item} accountId={accountId} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onEdit={capabilities.edit ? edit : undefined} onRequireAuth={requireAuth} />;
+    return <NewsStoryCard {...(Platform.OS === "ios" ? { contextPresentation } : {})} story={item.news} post={item} accountId={accountId} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onEdit={capabilities.edit ? edit : undefined} onRequireAuth={requireAuth} />;
   }
 
   return (
     <TicketStub
       log={item}
-      swipeActions={Platform.OS !== "web"}
+      swipeActions={Platform.OS !== "web" && Platform.OS !== "ios"}
       compactContent
       mediaViewable={mediaViewable}
+      {...(Platform.OS === "ios" ? { contextPresentation } : {})}
       onOpen={open}
       onOpenShow={openShow}
       onOpenPost={capabilities.comment ? comment : undefined}
@@ -85,70 +95,143 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
   );
 });
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onLoadMore, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews }) {
-  const { width } = useWindowDimensions();
+export function useFeedSelection(accountId, loggedIn) {
+  const scope = feedFilterStorageKey(accountId);
+  const [state, setState] = useState(() => ({ scope, value: normalizeFeedFilter(load(scope, "everyone"), { loggedIn }) }));
+  const filter = state.scope === scope ? state.value : normalizeFeedFilter(load(scope, "everyone"), { loggedIn });
+  useEffect(() => {
+    setState(current => current.scope === scope ? current : { scope, value: normalizeFeedFilter(load(scope, "everyone"), { loggedIn }) });
+  }, [scope, loggedIn]);
+  return { filter, select: value => { setState({ scope, value }); save(scope, value); } };
+}
+
+export default function FeedScreen(props) {
+  const selection = useFeedSelection(props.accountId, props.loggedIn);
+  return <FeedContent {...props} filter={selection.filter} onSelectFilter={selection.select} />;
+}
+
+export function FeedNavigation({ filter, onSelect, loggedIn, hideTitle = false }) {
+  const { fontScale } = useWindowDimensions();
+  return <View style={[styles.head, { marginBottom: 0 }]}>
+    {!hideTitle && <View style={[styles.wordmarkRow, styles.nativeHeaderRow]}><Text style={styles.nativeFeedTitle}>Feed</Text></View>}
+    {loggedIn && <View style={[styles.segment, fontScale > 1.25 && { flexWrap: "wrap" }]} accessibilityRole="tablist" accessibilityLabel="Feed filters">
+      <Seg label="Following" on={filter === "following"} onPress={() => onSelect("following")} />
+      <Seg label="Local" on={filter === "local"} onPress={() => onSelect("local")} />
+      <Seg label="For You" on={filter === "everyone"} onPress={() => onSelect("everyone")} />
+      <Seg label="News" on={filter === "news"} onPress={() => onSelect("news")} />
+    </View>}
+  </View>;
+}
+
+export function FeedContent({  feed, followingFeed, localFeed, loggedIn, visible = false, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onFinishSetup, onRefresh, onRefreshCounts, onLoadMore, headStatusOwner = null, feedReturn = null, feedPresentation = null, hasMore = false, loadingMore = false, countdownPlan = null, showHomeCountdown = false, suggestedUsers = [], suggestedUsersLoading = false, showSuggestedPitters = false, onFollowUser, isFollowing, isBlocked, onOpenCountdown, onViewAllCountdown, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onOpenDiscover, onOpenNewsStory, onOpenNews , filter, onSelectFilter, localNavigation = false, readEnabled = true, feedContext = null }) {
+  const { width, fontScale } = useWindowDimensions();
+  const tabPreview = useNativeTabPreview();
   const appActive = useAppActive();
   const feedActive = nativeFeedCanWork({ platform: Platform.OS, appActive, visible });
+  const refreshAdmission = useMemo(() => ({ feedActive, readEnabled, tabPreview, feedPresentation }), [feedActive, readEnabled, tabPreview, feedPresentation]);
+  const refreshAdmissionRef = useRef(refreshAdmission);
+  refreshAdmissionRef.current = refreshAdmission;
   const phone = width < 700;
   const filterScope = feedFilterStorageKey(accountId);
-  const [filterState, setFilterState] = useState(() => ({
-    scope: filterScope,
-    value: normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }),
-  }));
-  // Account props change before passive effects run. Project the new account's
-  // persisted choice during that transition so A's preference never flashes for B.
-  const filter = filterState.scope === filterScope
-    ? filterState.value
-    : normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }); // following | local | everyone
-  const [count, setCount] = useState(PAGE);
+  const [count, setCount] = useState(() => feedReturn?.read(filter)?.count || PAGE);
   const [undoItem, setUndoItem] = useState(null);
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoError, setUndoError] = useState(null);
   const [visibleMediaPostIds, setVisibleMediaPostIds] = useState(() => new Set());
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState(false);
+  const [pageError, setPageError] = useState(false);
+  const pageRequestRef = useRef(null);
+  const pageScopeRef = useRef(null);
   const refreshControllerRef = useRef(null);
+  const { followedArtists = [], blockedIds = [], mutedIds = [], removedIds = [] } = useNewsInteractions();
   const rowActionsRef = useRef({});
   const guideScope = homeGuideStorageKey(accountId);
   const [guideState, setGuideState] = useState(() => ({ scope: guideScope, dismissed: load(guideScope, false) }));
   const guideDismissed = guideState.scope === guideScope ? guideState.dismissed : load(guideScope, false);
   const visibleSince = useRef(new Map());
+  const flushDwell = (at = Date.now(), allowed = true) => {
+    for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
+      if (allowed) analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
+    }
+    visibleSince.current.clear();
+  };
+  const { current: actionCurrent, currentRef: actionCurrentRef } = useFeedPresentation({
+    active: feedActive && !tabPreview && readEnabled, presentation: feedPresentation,
+    scope: JSON.stringify([accountId, loggedIn, filter, blockedIds, mutedIds, removedIds, followedArtists]), refreshControllerRef,
+    onRetire: flushDwell,
+    onPause: () => { setRefreshing(false); setUndoBusy(false); },
+  });
+  const cardPresentation = useMemo(() => Platform.OS === "ios" ? { current: actionCurrent } : feedPresentation,
+    [actionCurrent, feedPresentation]);
   const seenImpressions = useRef(new Set());
   const activityRef = useRef(feedActive);
   const dismissGuide = () => {
+    if (!actionCurrent()) return;
     setGuideState({ scope: guideScope, dismissed: true });
     save(guideScope, true);
   };
+  const headStatus = useFeedHeadStatus(headStatusOwner);
+  const primaryHead = headStatus && filter === "everyone" ? headStatus : null;
   const newsTab = filter === "news";
-  const { followedArtists = [], blockedIds = [], mutedIds = [], removedIds = [] } = useNewsInteractions();
-  const following = useFollowingFeed({ accountId, enabled: filter === "following" && loggedIn && visible && appActive,
+  const following = useFollowingFeed({ accountId, presentation: feedPresentation, enabled: readEnabled && filter === "following" && loggedIn && (visible || tabPreview) && appActive,
     privacyScope: JSON.stringify([blockedIds,mutedIds,removedIds]) });
-  const news = useNewsDeskStories({ limit: 20, enabled: newsTab });
+  const local = useFollowingFeed({ accountId, mode: "local", homeCity, presentation: feedPresentation, enabled: readEnabled && filter === "local" && loggedIn && (visible || tabPreview) && appActive,
+    privacyScope: JSON.stringify([blockedIds,mutedIds,removedIds]) });
+  const sectionFeed = filter === "following" ? following : filter === "local" ? local : null;
+  const pageScope = JSON.stringify([accountId, filter, homeCity, blockedIds, mutedIds, removedIds]);
+  pageScopeRef.current = pageScope;
+  const news = useNewsDeskStories({ limit: 20, enabled: newsTab && readEnabled });
   // The phone strip shows top stories; the News tab lists the newest.
-  const topNews = useNewsDeskStories({ limit: 6, sort: "top", enabled: phone && newsTab });
+  const topNews = useNewsDeskStories({ limit: 6, sort: "top", enabled: phone && newsTab && readEnabled });
   const introduction = useNewsIntroduction(visible && filter === "everyone" && loggedIn && appActive);
-  const full = useMemo(() => newsAwareFeed(filter === "following" ? following.posts : filter === "local" ? localFeed : feed,
-    { filter, accountId, followedArtists, introduction: introduction.post }), [filter, accountId, followedArtists, feed, following.posts, localFeed, introduction.post]);
+  const full = useMemo(() => newsAwareFeed(filter === "following" ? following.posts : filter === "local" ? local.posts : feed,
+    { filter, accountId, followedArtists, introduction: introduction.post }), [filter, accountId, followedArtists, feed, following.posts, local.posts, introduction.post]);
   const data = useMemo(() => full.slice(0, count), [count, full]);
-  const listData = newsTab ? news.stories : data;
+  const baseListData = newsTab ? news.stories : data;
+  // Only this selected filter's primary result matters. Intent may start its
+  // normal read, while visible=false still denies media, impressions and dwell.
+  useNativeTabContentReady(Platform.OS === "ios" && (newsTab
+    ? news.stories.length > 0 || news.status === "ready" || news.status === "error"
+    : sectionFeed
+      ? sectionFeed.posts.length > 0 || sectionFeed.loaded || sectionFeed.status === "ready" || sectionFeed.status === "error"
+      : full.length > 0 || primaryHead?.verified || primaryHead?.status === "ready" || primaryHead?.status === "error" || (!primaryHead && !loadingMore)));
+  const discovery = useMemo(() => feedDiscoveryPlacement(baseListData, {
+    platform: Platform.OS, enabled: loggedIn && showSuggestedPitters, newsTab,
+  }), [baseListData, loggedIn, showSuggestedPitters, newsTab]);
+  const listData = discovery.rows;
+  const returnUI = useIOSFeedReturn({ lease: feedReturn, presentation: feedPresentation, filter, count, rows: listData,
+    keyExtractor: feedKeyExtractor, width, fontScale, active: feedActive });
+  const listRef = useRef(null);
+  const returnListRef = returnUI?.props?.ref;
+  const bindList = useCallback(node => {
+    listRef.current = node;
+    if (typeof returnListRef === "function") returnListRef(node);
+    else if (returnListRef) returnListRef.current = node;
+  }, [returnListRef]);
   const openAllNews = () => (loggedIn ? pick("news") : onOpenNews?.());
-  const effectiveHasMore = filter === "following" ? !!following.nextCursor : hasMore;
-  const effectiveLoading = filter === "following" ? following.status === "loading" : loadingMore;
+  const effectiveHasMore = sectionFeed ? !!sectionFeed.nextCursor : hasMore;
+  const effectiveLoading = sectionFeed ? sectionFeed.status === "loading" : loadingMore;
   const filteredPageLoading = effectiveLoading && count >= full.length;
   const surface = filter === "following" ? "following" : filter === "local" ? "local" : filter === "news" ? "news" : "everyone";
   const analyticsRef = useRef({ surface, onImpression, onDwell });
-  analyticsRef.current = { surface, onImpression, onDwell };
+  analyticsRef.current = { surface, onImpression, onDwell, discoveryIndex: discovery.index };
   activityRef.current = feedActive;
+  useEffect(() => {
+    refreshControllerRef.current?.abort();
+    refreshControllerRef.current = null;
+    setRefreshing(false);
+    setRefreshError(false);
+    setPageError(false);
+    pageRequestRef.current = null;
+  }, [pageScope]);
 
   useEffect(() => {
     refreshControllerRef.current?.abort();
     refreshControllerRef.current = null;
     setRefreshing(false);
     setRefreshError(false);
-    setFilterState((current) => current.scope === filterScope
-      ? current
-      : { scope: filterScope, value: normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }) });
-    setCount(PAGE);
+    setCount(feedReturn?.read(filter)?.count || PAGE);
     setUndoItem(null);
     setUndoError(null);
     setVisibleMediaPostIds(new Set());
@@ -159,12 +242,12 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
   }, [filterScope, guideScope, loggedIn]);
 
   const onMediaViewableItemsChanged = useRef(({ changed }) => {
-    if (!activityRef.current) return;
+    if (!activityRef.current || !actionCurrentRef.current()) return;
     setVisibleMediaPostIds((current) => nextVisibleMediaPostIds(current, changed));
   }).current;
 
   const onQualifiedViewableItemsChanged = useRef(({ changed }) => {
-    if (!activityRef.current) return;
+    if (!activityRef.current || !actionCurrentRef.current()) return;
     const at = Date.now();
     for (const token of changed || []) {
       // News tab rows are stories; their view belongs to the story's post.
@@ -176,7 +259,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
         const impressionKey = String(item.id);
         if (!seenImpressions.current.has(impressionKey)) {
           seenImpressions.current.add(impressionKey);
-          analyticsRef.current.onImpression?.(item, Number.isSafeInteger(token.index) ? token.index : 0, viewedSurface);
+          analyticsRef.current.onImpression?.(item, feedPostPosition(token.index, analyticsRef.current.discoveryIndex), viewedSurface);
         }
       } else {
         const visible = visibleSince.current.get(item.id);
@@ -189,125 +272,156 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     {
       // Media may warm as soon as a real slice is visible. This remains
       // separate from the stricter post-view qualification below.
-      viewabilityConfig: { itemVisiblePercentThreshold: 10 },
+      viewabilityConfig: { itemVisiblePercentThreshold: 10, ...(localNavigation ? { waitForInteraction: true } : {}) },
       onViewableItemsChanged: onMediaViewableItemsChanged,
     },
     {
       // Viewport coverage works for tall concert cards that can never be 60%
       // visible as an item. React Native enforces the continuous one-second
       // dwell before this callback qualifies the post.
-      viewabilityConfig: { viewAreaCoveragePercentThreshold: 50, minimumViewTime: 1_000 },
+      viewabilityConfig: { viewAreaCoveragePercentThreshold: 50, minimumViewTime: 1_000, ...(localNavigation ? { waitForInteraction: true } : {}) },
       onViewableItemsChanged: onQualifiedViewableItemsChanged,
     },
   ]).current;
 
   useEffect(() => {
     if (feedActive) return;
-    const at = Date.now();
-    for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
-      analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
-    }
-    visibleSince.current.clear();
+    flushDwell();
     setVisibleMediaPostIds(new Set());
   }, [feedActive]);
 
+  useEffect(() => {
+    // Preview lists never start viewability timers. Promotion starts a fresh
+    // qualified interval on the same list, rather than counting hidden time or
+    // relying on RN to repeat unchanged viewable tokens after promotion.
+    if (localNavigation && feedActive) listRef.current?.recordInteraction();
+  }, [localNavigation, feedActive]);
+
   useEffect(() => () => {
-    const at = Date.now();
-    for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
-      analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
-    }
-    visibleSince.current.clear();
+    flushDwell();
   }, []);
 
   const pick = (f) => {
+    if (!actionCurrent()) return;
+    if (localNavigation) { onSelectFilter(f); return; }
     if (f === filter) return;
-    const at = Date.now();
-    for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
-      analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
-    }
-    visibleSince.current.clear();
+    returnUI?.cancel();
+    flushDwell();
     setVisibleMediaPostIds(new Set());
-    setFilterState({ scope: filterScope, value: f });
-    save(filterScope, f);
+    onSelectFilter(f);
     setCount(PAGE);
   };
-  const loadMore = async () => {
-    if (count < full.length) setCount((c) => c + PAGE);
-    // Following/Local are projections of the pages already loaded. Letting an
-    // empty projection paginate the global feed can cascade through every page
-    // without a user scroll, especially on a slow phone connection.
-    else if (filter === "everyone" && hasMore && !loadingMore) {
-      const loaded = await onLoadMore?.();
-      if (loaded) setCount((c) => c + PAGE);
+  const advanceFeed = async ({ retry = false } = {}) => {
+    if (!actionCurrent() || !readEnabled || tabPreview || !feedActive || newsTab || refreshing || effectiveLoading || pageRequestRef.current || pageError === "refresh" || (pageError && !retry)) return;
+    if (!sectionFeed && !full.length) return; // wait for the authoritative first page
+    if (count < full.length) { setCount(c => c + PAGE); return; }
+    if (!effectiveHasMore && !(sectionFeed && !sectionFeed.loaded)) return;
+    const token = { scope: pageScope };
+    pageRequestRef.current = token;
+    setPageError(false);
+    try {
+      const loaded = sectionFeed ? await (sectionFeed.loaded ? sectionFeed.loadMore() : sectionFeed.reload()) : await onLoadMore?.();
+      if (pageScopeRef.current !== token.scope || pageRequestRef.current !== token) return;
+      if (!actionCurrent()) return;
+      if (loaded === true) setCount(c => c + PAGE);
+      else setPageError(loaded?.refreshRequired ? "refresh" : true);
+    } catch {
+      if (pageScopeRef.current === token.scope && pageRequestRef.current === token) setPageError(true);
+    } finally {
+      if (pageRequestRef.current === token) pageRequestRef.current = null;
     }
-  };
-  const loadOlderFiltered = async () => {
-    if (filter === "following") {
-      if (count < full.length) setCount(current => current + PAGE);
-      else if (following.status !== "loading" && following.nextCursor && await following.loadMore()) setCount(current => current + PAGE);
-      return;
-    }
-    const action = filteredFeedNextAction({
-      filter,
-      visibleCount: count,
-      loadedMatchCount: full.length,
-      hasMore,
-      loadingMore,
-    });
-    // Following and Local are projections of every global page already in
-    // memory. Reveal those matches before spending another request (and before
-    // showing a spinner on a slow phone). The old path always fetched first,
-    // even when dozens of matching posts were sitting just beyond `count`.
-    if (action === "reveal") {
-      setCount((c) => c + PAGE);
-      return;
-    }
-    if (action !== "fetch") return;
-    const loaded = await onLoadMore?.();
-    if (loaded) setCount((c) => c + PAGE);
   };
   const footer = feedFooterState({ visibleCount: count, loadedCount: full.length, hasMore: effectiveHasMore, loading: filteredPageLoading });
-  const advanceFeed = filter === "everyone" ? loadMore : loadOlderFiltered;
+  const endless = useEndlessFeed({
+    scope: pageScope,
+    listProps: returnUI?.props,
+    current: actionCurrent,
+    head: primaryHead,
+    enabled: feedActive && readEnabled && !tabPreview && !refreshing && pageError !== "refresh",
+    ready: newsTab ? news.status !== "idle" && news.status !== "loading"
+      : sectionFeed ? sectionFeed.loaded || sectionFeed.status === "error" : true,
+    loading: newsTab ? news.status === "loading" : effectiveLoading,
+    sourceError: newsTab ? news.status === "error" : !!pageError || sectionFeed?.status === "error",
+    hasMore: newsTab ? !!news.nextCursor : effectiveHasMore,
+    visibleCount: newsTab ? news.stories.length : count,
+    loadedCount: newsTab ? news.stories.length : full.length,
+    rowsCount: baseListData.length,
+    reveal: () => setCount(current => current + PAGE),
+    load: async () => {
+      const token = { scope: pageScope };
+      pageRequestRef.current = token;
+      setPageError(false);
+      try {
+        const loaded = newsTab ? await (news.status === "error" ? news.retry() : news.loadMore())
+          : sectionFeed ? await (sectionFeed.status === "error" ? sectionFeed.retry() : sectionFeed.loadMore())
+          : await onLoadMore?.({ requireProgress: true });
+        if (!actionCurrent() || pageScopeRef.current !== token.scope || pageRequestRef.current !== token) return false;
+        if (loaded !== true) { setPageError(loaded?.refreshRequired ? "refresh" : true); return false; }
+        if (!newsTab) setCount(current => current + PAGE);
+        return true;
+      } finally {
+        if (pageRequestRef.current === token) pageRequestRef.current = null;
+      }
+    },
+  });
   const hideRecommendation = async (log) => {
-    if (!log?.id || !onNotInterested) return;
+    if (!actionCurrent() || !log?.id || !onNotInterested) return;
     setUndoItem(log);
     setUndoError(null);
     try {
       await onNotInterested(log);
     } catch {
-      setUndoItem((current) => (current?.id === log.id ? null : current));
+      if (actionCurrent()) setUndoItem((current) => (current?.id === log.id ? null : current));
     }
   };
   const undoRecommendation = async () => {
-    if (!undoItem?.id || !onUndoNotInterested || undoBusy) return;
+    if (!actionCurrent() || !undoItem?.id || !onUndoNotInterested || undoBusy) return;
     const restoring = undoItem;
     setUndoBusy(true);
     setUndoError(null);
     try {
       await onUndoNotInterested(restoring);
-      setUndoItem((current) => (current?.id === restoring.id ? null : current));
+      if (actionCurrent()) setUndoItem((current) => (current?.id === restoring.id ? null : current));
     } catch {
-      setUndoError({ postId: restoring.id, message: "Couldn't restore this yet. Try again." });
+      if (actionCurrent()) setUndoError({ postId: restoring.id, message: "Couldn't restore this yet. Try again." });
     } finally {
-      setUndoBusy(false);
+      if (actionCurrent()) setUndoBusy(false);
     }
   };
+  const imageRetry = useFeedImageRetry(JSON.stringify([accountId, loggedIn, filter]));
   const refresh = async () => {
+    if (!actionCurrent() || !imageRetry.isCurrent()) return false;
+    if (Platform.OS === "ios" && (refreshAdmissionRef.current !== refreshAdmission || !activityRef.current || !readEnabled || tabPreview
+      || (feedPresentation && !feedPresentation.current()))) return false;
     if (refreshControllerRef.current || !onRefresh) return false;
+    returnUI?.cancel();
+    endless?.reset();
     if (filter === "everyone") introduction.dismiss();
     const controller = new AbortController();
+    const scope = pageScope;
+    const needsFreshHead = pageError === "refresh";
     refreshControllerRef.current = controller;
+    pageRequestRef.current = null;
+    imageRetry.accept(controller.signal);
+    setPageError(false);
     setRefreshing(true);
     setRefreshError(false);
     try {
-      const result = newsTab ? await news.reload() : filter === "following" ? await following.reload() : await onRefresh({ signal: controller.signal });
-      if (controller.signal.aborted || refreshControllerRef.current !== controller) return false;
-      const failed = result === false || result == null;
+      const requests = [newsTab ? news.reload() : sectionFeed ? sectionFeed.reload() : onRefresh({ signal: controller.signal })];
+      if (Platform.OS === "ios" && newsTab && phone) requests.push(topNews.reload());
+      if (typeof onRefreshCounts === "function") requests.push(onRefreshCounts({ signal: controller.signal }));
+      const results = await Promise.allSettled(requests);
+      if (!actionCurrent() || controller.signal.aborted || refreshControllerRef.current !== controller || pageScopeRef.current !== scope) return false;
+      const failed = results.some(result => result.status === "rejected" || result.value === false || result.value == null);
+      if (failed && needsFreshHead) setPageError("refresh");
       setRefreshError(failed);
       return !failed;
     } catch {
       // architecture: allow-ambiguous-result -- this UI refresh keeps the current feed visible and reports its optional revalidation failure in place
-      if (!controller.signal.aborted && refreshControllerRef.current === controller) setRefreshError(true);
+      if (actionCurrent() && !controller.signal.aborted && refreshControllerRef.current === controller && pageScopeRef.current === scope) {
+        if (needsFreshHead) setPageError("refresh");
+        setRefreshError(true);
+      }
       return false;
     } finally {
       if (refreshControllerRef.current === controller) {
@@ -315,6 +429,11 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
         setRefreshing(false);
       }
     }
+  };
+
+  const retryHead = () => {
+    if (!headStatus?.isCurrent() || !imageRetry.isCurrent() || headStatusOwner.getSnapshot().status === "loading") return;
+    return refresh();
   };
 
   rowActionsRef.current = {
@@ -361,31 +480,49 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
     report: canReport,
     requireAuth: canRequireAuth,
   }), [canComment, canEdit, canHideRecommendation, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenProfile, canOpenVenue, canPlay, canPreview, canRemoveMyPostTag, canReport, canRequireAuth]);
-  const renderFeedItem = useCallback(({ item, index: itemIndex }) => (newsTab ? (
-    <NewsStoryCard story={item} accountId={accountId} onOpen={onOpenNewsStory} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onEdit={onEdit} onRequireAuth={onRequireAuth} />
+  const suggestions = useMemo(() => <SuggestedPittersRail
+    accountId={accountId}
+    homeCity={homeCity}
+    suggestions={suggestedUsers}
+    loading={suggestedUsersLoading}
+    isFollowing={isFollowing}
+    isBlocked={isBlocked}
+    onFollow={onFollowUser}
+    onOpenProfile={onOpenProfile}
+  />, [accountId, homeCity, suggestedUsers, suggestedUsersLoading, isFollowing, isBlocked, onFollowUser, onOpenProfile]);
+  const renderFeedItem = useCallback(({ item, index: itemIndex }) => item === IOS_FEED_DISCOVERY_SLOT ? suggestions : (newsTab ? (
+    <NewsStoryCard {...(Platform.OS === "ios" ? { contextPresentation: cardPresentation } : {})} story={item} accountId={accountId} onOpen={onOpenNewsStory} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onEdit={onEdit} onRequireAuth={onRequireAuth} />
   ) : (
     <FeedTicketRow
       item={item}
-      itemIndex={itemIndex}
+      itemIndex={feedPostPosition(itemIndex, discovery.index)}
+      {...(Platform.OS === "ios" ? { contextPresentation: cardPresentation } : {})}
       mediaViewable={feedActive ? (visibleMediaPostIds.has(String(item.id)) ? true : null) : false}
       surface={surface}
       actionsRef={rowActionsRef}
       capabilities={rowCapabilities}
       accountId={accountId}
     />
-  )), [accountId, feedActive, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
+  )), [cardPresentation, accountId, discovery.index, suggestions, feedActive, feedPresentation, newsTab, onOpenArtist, onOpenNewsStory, onOpenProfile, onReport, onEdit, onRequireAuth, rowCapabilities, surface, visibleMediaPostIds]);
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
   return (
+    <FeedImageRetryProvider value={imageRetry.value}>
+    <FeedReturnProvider value={returnUI?.provider}>
     <VinylRefreshBoundary
       refreshing={refreshing}
       onRefresh={refresh}
+      enabled={Platform.OS !== "ios" || (feedActive && readEnabled && !tabPreview)}
       accessibilityLabel="Refresh your feed"
       testID="feed-refresh"
     >
     <FlatList
+      {...returnUI?.props}
+      {...endless?.props}
+      {...(localNavigation ? { ref: bindList } : {})}
       data={listData}
+      {...(!endless ? { onEndReached: () => { void advanceFeed(); }, onEndReachedThreshold: 0.7 } : {})}
       extraData={visibleMediaPostIds}
       keyExtractor={feedKeyExtractor}
       contentContainerStyle={styles.content}
@@ -399,10 +536,11 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       viewabilityConfigCallbackPairs={viewabilityConfigCallbackPairs}
       ListHeaderComponent={
         <View style={styles.head}>
-          <View style={[styles.wordmarkRow, Platform.OS !== "web" && styles.nativeHeaderRow]}>
+          {feedContext}
+          {!localNavigation && <View style={[styles.wordmarkRow, Platform.OS !== "web" && styles.nativeHeaderRow]}>
             {/* The native shell already owns the brand; this title identifies the page. */}
-            <Text style={Platform.OS === "web" ? styles.wordmark : styles.nativeFeedTitle}>{Platform.OS === "web" ? "MSHPIT" : "Your feed"}</Text>
-            {!hideHeaderActions && <View style={styles.headerBtns}>
+            <PageTitle label="Your feed"><Text style={Platform.OS === "web" ? styles.wordmark : styles.nativeFeedTitle}>{Platform.OS === "web" ? "MSHPIT" : "Your feed"}</Text></PageTitle>
+            {!hideHeaderActions && Platform.OS !== "ios" && <View style={styles.headerBtns}>
               {onOpenClips && (
                 <Pressable style={styles.clipsBtn} onPress={onOpenClips} hitSlop={8} accessibilityRole="button" accessibilityLabel="Clips">
                   <Icon name="play" size={15} color={colors.amber} />
@@ -421,7 +559,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
                 <Icon name="menu" size={22} color={colors.text} />
               </Pressable>
             </View>}
-          </View>
+          </View>}
           {Platform.OS === "web" && <Text style={styles.tag}>{JOURNEY_TAGLINE}</Text>}
 
           {(Platform.OS === "web" && refreshing) || refreshError ? (
@@ -434,13 +572,20 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             </Text>
           ) : null}
 
-          {loggedIn && showHomeCountdown && countdownPlan ? (
-            <View style={styles.countdownTop}>
-              <Suspense fallback={<Text style={styles.tag}>Loading your next show…</Text>}><HomeShowCountdown plan={countdownPlan} onOpen={onOpenCountdown} onViewAll={onViewAllCountdown} /></Suspense>
+          {primaryHead && full.length > 0 && primaryHead.status !== "ready" ? (
+            <View style={styles.refreshStatus} accessibilityLiveRegion="polite">
+              <Text style={primaryHead.status === "error" ? styles.refreshStatusError : styles.emptySub}>{primaryHead.status === "loading" ? "Refreshing your feed…" : primaryHead.status === "error" ? "The feed could not refresh. Your posts are kept." : "Refresh to check for new posts."}</Text>
+              {primaryHead.status !== "loading" ? <HomeAction icon="feed" label="Refresh feed" onPress={retryHead} /> : null}
             </View>
           ) : null}
 
-          {loggedIn && (
+          {loggedIn && showHomeCountdown && countdownPlan ? (
+            <View style={styles.countdownTop}>
+              <Suspense fallback={<Text style={styles.tag}>Loading your next show…</Text>}><HomeShowCountdown active={Platform.OS !== "ios" || feedActive} plan={countdownPlan} onOpen={onOpenCountdown} onViewAll={onViewAllCountdown} /></Suspense>
+            </View>
+          ) : null}
+
+          {loggedIn && Platform.OS !== "ios" && (
             <Pressable style={styles.nearBtn} onPress={onOpenNearby}>
               <Icon name="pin" size={16} color={colors.amber} />
               <Text style={styles.nearTxt}>
@@ -456,11 +601,11 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
               <View style={styles.gsHead}>
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={styles.gsTitle}>{onFinishSetup ? homeCity ? `Welcome to Mshpit, ${homeCity.split(",")[0]}.` : "You’re in. Welcome to Mshpit." : "Your first night on Mshpit"}</Text>
-                  <Text style={styles.gsJourney}>{HOME_JOURNEY_LINE}</Text>
+                  {Platform.OS !== "ios" && <Text style={styles.gsJourney}>{HOME_JOURNEY_LINE}</Text>}
                 </View>
-                <Pressable onPress={dismissGuide} hitSlop={10} accessibilityRole="button" accessibilityLabel="Dismiss getting started guide"><Icon name="x" size={16} color={colors.textDim} /></Pressable>
+                <Pressable onPress={dismissGuide} style={Platform.OS === "ios" ? { minWidth: 44, minHeight: 44, justifyContent: "center", alignItems: "center" } : undefined} hitSlop={10} accessibilityRole="button" accessibilityLabel="Dismiss getting started guide"><Icon name="x" size={16} color={colors.textDim} /></Pressable>
               </View>
-              <Text style={styles.gsSub}>{onFinishSetup ? "You can add a profile photo and banner or read your city guide later in Settings." : "Find a show, add it to your plans, then share a review and photos after you go."}</Text>
+              <Text style={styles.gsSub}>{Platform.OS === "ios" ? "Find your next show or start your concert collection." : onFinishSetup ? "You can add a profile photo and banner or read your city guide later in Settings." : "Find a show, add it to your plans, then share a review and photos after you go."}</Text>
               <View style={styles.gsActions}>
                 <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />
                 {onFinishSetup ? <HomeAction icon="you" label="Finish profile setup" onPress={onFinishSetup} /> : <HomeAction icon="plus" label="Log a show" onPress={onLogShow} primary />}
@@ -468,8 +613,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             </View>
           )}
 
-          {loggedIn && (
-            <View style={styles.segment}>
+          {loggedIn && !localNavigation && (
+            <View style={[styles.segment, Platform.OS === "ios" && fontScale > 1.25 && { flexWrap: "wrap" }]}>
               <Seg label="Following" on={filter === "following"} onPress={() => pick("following")} />
               <Seg label="Local" on={filter === "local"} onPress={() => pick("local")} />
               <Seg label="For You" on={filter === "everyone"} onPress={() => pick("everyone")} />
@@ -477,8 +622,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             </View>
           )}
 
-          {introduction.error ? <Pressable onPress={introduction.retry} accessibilityRole="button" style={{ padding: 12 }}><Text style={{ color: colors.textDim }}>News from your artists couldn't load. Try again.</Text></Pressable> : null}
-          {newsTab ? <View style={styles.liveCoverage}><Suspense fallback={<Text style={styles.tag}>Loading live coverage…</Text>}><LiveCoverageCard /></Suspense></View> : null}
+          {introduction.error ? <Pressable onPress={() => actionCurrent() && introduction.retry()} accessibilityRole="button" style={{ padding: 12 }}><Text style={{ color: colors.textDim }}>News from your artists couldn't load. Try again.</Text></Pressable> : null}
+          {newsTab ? <View style={styles.liveCoverage}><Suspense fallback={<Text style={styles.tag}>Loading live coverage…</Text>}><LiveCoverageCard enabled={readEnabled} {...(Platform.OS === "ios" ? { presentation: feedPresentation } : {})} /></Suspense></View> : null}
           {phone && newsTab && topNews.stories.length ? (
             <View style={styles.newsStrip} accessibilityLabel="Music news">
               <View style={styles.newsStripHead}>
@@ -490,25 +635,14 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.newsStripRow}>
                 {topNews.stories.slice(0, 6).map((story) => (
                   <View key={story.id} style={styles.newsStripItem}>
-                    <NewsStoryCard compact story={story} onOpen={onOpenNewsStory} />
+                    <NewsStoryCard {...(Platform.OS === "ios" ? { contextPresentation: cardPresentation } : {})} compact story={story} onOpen={onOpenNewsStory} />
                   </View>
                 ))}
               </ScrollView>
             </View>
           ) : null}
 
-          {loggedIn && showSuggestedPitters ? (
-            <SuggestedPittersRail
-              accountId={accountId}
-              homeCity={homeCity}
-              suggestions={suggestedUsers}
-              loading={suggestedUsersLoading}
-              isFollowing={isFollowing}
-              isBlocked={isBlocked}
-              onFollow={onFollowUser}
-              onOpenProfile={onOpenProfile}
-            />
-          ) : null}
+          {discovery.placement === "header" ? suggestions : null}
 
           {!!undoItem && (
             <View style={styles.undoBar} accessibilityRole="alert">
@@ -538,6 +672,12 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             ? REFRESH_RETRY_HINT
             : "No music news is available here yet. Check back later."}</Text>
         </View>
+      ) : primaryHead && primaryHead.status !== "ready" ? (
+        <View style={styles.emptyBox} accessibilityLiveRegion="polite">
+          <Text style={styles.emptyTitle}>{primaryHead.status === "loading" ? "Loading your feed…" : primaryHead.status === "error" ? "Your feed could not load" : "Refresh your feed"}</Text>
+          <Text style={styles.emptySub}>{primaryHead.status === "loading" ? "Getting the latest concert posts." : "Try refreshing to load concert posts."}</Text>
+          {primaryHead.status !== "loading" ? <HomeAction icon="feed" label="Refresh feed" onPress={retryHead} primary /> : null}
+        </View>
       ) : (
         <View style={styles.emptyBox}>
           <View style={styles.emptyIcon}>
@@ -547,15 +687,15 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
             {filter === "following"
               ? (following.status === "error" ? "Following couldn't load" : !following.loaded ? "Loading your Following feed..." : effectiveHasMore ? "More followed posts are available" : "Your Following feed is quiet")
               : filter === "local"
-              ? (hasMore ? `No recent posts from ${homeCity || "your city"}` : `Nothing in ${homeCity || "your city"} yet`)
-              : "No shows logged yet"}
+              ? (local.status === "error" ? "Local couldn't load" : !local.loaded ? "Loading your city's posts..." : `Nothing in ${homeCity || "your city"} yet`)
+              : primaryHead ? "No posts to show yet" : "No shows logged yet"}
           </Text>
           <Text style={styles.emptySub}>
             {filter === "following"
               ? (following.status === "error" ? "Refresh to try again. Your existing posts are kept." : "Posts and reposts from people you follow appear here, always credited to their original authors.")
               : filter === "local"
-              ? (hasMore ? "Load one older page at a time to look for nearby concert posts." : "No concert posts from your city yet. Tap + to log a show.")
-              : "Tap + to log a show and rate the artist and venue."}
+              ? (local.status === "error" ? "Try again below or refresh the feed. Your existing posts are kept." : "Concert posts from people based in your home city appear here.")
+              : primaryHead ? "New concert posts will appear here. Tap the + to log a show." : "Tap + to log a show and rate the artist and venue."}
           </Text>
           <View style={styles.emptyActions}>
             <HomeAction icon="discover" label="Find a show" onPress={onOpenDiscover} />
@@ -563,19 +703,52 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
           </View>
         </View>
       )}
-      ListFooterComponent={newsTab ? (news.nextCursor ? (
-        <Pressable style={[styles.olderBtn, news.status === "loading" && styles.olderBtnOff]} onPress={news.loadMore}
+      ListFooterComponent={Platform.OS === "ios" ? (
+        <View>
+          {pageError === "refresh" ? (
+            <Pressable style={styles.olderBtn} onPress={refresh} accessibilityRole="button" accessibilityLabel="Refresh feed">
+              <Text style={styles.olderTxt}>This feed page expired. Refresh to continue.</Text>
+            </Pressable>
+          ) : endless?.error ? (
+            <Pressable style={styles.olderBtn} onPress={endless.retry}
+              accessibilityRole="button" accessibilityLabel="Retry loading feed">
+              <Text style={styles.olderTxt}>Couldn't load more. Try again</Text>
+            </Pressable>
+          ) : endless?.loading ? (
+            <View style={styles.olderBtn} accessibilityLiveRegion="polite"><Text style={styles.olderTxt}>Loading…</Text></View>
+          ) : (newsTab ? news.status === "ready" && !news.nextCursor && news.stories.length > 0
+            : footer.kind === "caught-up" && (sectionFeed ? sectionFeed.loaded : !primaryHead || primaryHead.verified && primaryHead.status === "ready")) ? (
+            <View style={styles.caughtUp} accessibilityRole="summary">
+              <Icon name="check" size={17} color={colors.good} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.caughtTitle}>You're caught up</Text>
+                <Text style={styles.caughtSub}>Pit will keep your place. Come back when the community has something new.</Text>
+              </View>
+            </View>
+          ) : null}
+          {!newsTab && loggedIn && showHomeCountdown && !countdownPlan ? (
+            <View style={styles.countdownBottom}>
+              <Suspense fallback={<Text style={styles.tag}>Loading show suggestions…</Text>}><HomeShowCountdown active={feedActive} compact onFindShow={onOpenDiscover} /></Suspense>
+            </View>
+          ) : null}
+        </View>
+      ) : newsTab ? (news.nextCursor ? (
+        <Pressable style={[styles.olderBtn, news.status === "loading" && styles.olderBtnOff]} onPress={() => actionCurrent() && news.loadMore()}
           disabled={news.status === "loading"} accessibilityRole="button" accessibilityLabel="Load older stories">
           <Text style={styles.olderTxt}>{news.status === "loading" ? "Loading..." : "Load older stories"}</Text>
         </Pressable>
-      ) : null) : (
+      ) : null) : primaryHead && count >= full.length && (!primaryHead.verified || primaryHead.status === "loading") ? null : (
         <View>
-          {following.status === "error" && filter === "following" ? (
-            <Pressable style={styles.olderBtn} onPress={following.reload} accessibilityRole="button" accessibilityLabel="Retry Following feed"><Text style={styles.olderTxt}>Try again</Text></Pressable>
+          {pageError === "refresh" ? (
+            <Pressable style={styles.olderBtn} onPress={refresh} accessibilityRole="button" accessibilityLabel="Refresh feed">
+              <Text style={styles.olderTxt}>This feed page expired. Refresh to continue.</Text>
+            </Pressable>
+          ) : pageError || sectionFeed?.status === "error" ? (
+            <Pressable style={styles.olderBtn} onPress={() => advanceFeed({ retry: true })} accessibilityRole="button" accessibilityLabel="Retry loading posts"><Text style={styles.olderTxt}>Couldn't load more posts. Try again or refresh the feed.</Text></Pressable>
           ) : footer.kind === "reveal" || footer.kind === "fetch" || footer.kind === "loading" ? (
             <Pressable
               style={[styles.olderBtn, filteredPageLoading && styles.olderBtnOff]}
-              onPress={advanceFeed}
+              onPress={() => advanceFeed({ retry: true })}
               disabled={filteredPageLoading}
               accessibilityRole="button"
               accessibilityLabel={footer.label}
@@ -594,7 +767,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
           ) : null}
           {loggedIn && showHomeCountdown && !countdownPlan ? (
             <View style={styles.countdownBottom}>
-              <Suspense fallback={<Text style={styles.tag}>Loading show suggestions…</Text>}><HomeShowCountdown compact onFindShow={onOpenDiscover} /></Suspense>
+              <Suspense fallback={<Text style={styles.tag}>Loading show suggestions…</Text>}><HomeShowCountdown active={Platform.OS !== "ios" || feedActive} compact onFindShow={onOpenDiscover} /></Suspense>
             </View>
           ) : null}
         </View>
@@ -602,13 +775,16 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, v
       renderItem={renderFeedItem}
     />
     </VinylRefreshBoundary>
+    </FeedReturnProvider>
+    </FeedImageRetryProvider>
   );
 }
 
 function Seg({ label, on, onPress }) {
+  const { fontScale } = useWindowDimensions();
   return (
     <Pressable
-      style={[styles.seg, on && styles.segOn]}
+      style={[styles.seg, Platform.OS === "ios" && fontScale > 1.25 && { flexBasis: "45%", flexGrow: 1, paddingHorizontal: 12 }, on && styles.segOn]}
       onPress={onPress}
       accessibilityRole="tab"
       accessibilityLabel={`${label} feed`}
@@ -688,7 +864,7 @@ const styles = StyleSheet.create({
   undoBar: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 10, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.good, backgroundColor: colors.bgElev },
   undoTitle: { color: colors.text, fontSize: 13, fontWeight: "800" },
   undoSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
-  undoBtn: { minHeight: 36, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.good },
+  undoBtn: { minHeight: Platform.OS === "ios" ? 44 : 36, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.good },
   undoBtnTxt: { color: colors.bg, fontSize: 12.5, fontWeight: "900" },
   empty: { color: colors.textDim, fontSize: 14, lineHeight: 21, fontStyle: "italic", paddingHorizontal: 4 },
   liveCoverage: { paddingTop: 10 },
@@ -698,4 +874,26 @@ const styles = StyleSheet.create({
   newsStripAll: { color: colors.amber, fontSize: 13, fontWeight: "800" },
   newsStripRow: { gap: 10, paddingRight: 4 },
   newsStripItem: { width: 270 },
+  ...(Platform.OS === "ios" ? {
+    content: { paddingHorizontal: 12, paddingTop: 4, paddingBottom: 36 },
+    head: { marginBottom: 22, marginTop: 0 },
+    nativeHeaderRow: { minHeight: 50 },
+    nativeFeedTitle: { color: colors.text, fontSize: 34, lineHeight: 41, fontWeight: "700", letterSpacing: -1 },
+    segment: { flexDirection: "row", marginTop: 16, padding: 3, borderRadius: 13, backgroundColor: colors.surfaceAlt },
+    seg: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", paddingVertical: 8, paddingHorizontal: 3, borderRadius: 10 },
+    segOn: { backgroundColor: colors.bgElev },
+    segTxt: { color: colors.textDim, fontSize: 13, fontWeight: "500", textAlign: "center" },
+    segTxtOn: { color: colors.text, fontWeight: "600" },
+    gs: { marginTop: 14, padding: 16, borderRadius: 20, backgroundColor: colors.surface, gap: 8 },
+    gsTitle: { color: colors.text, fontSize: 18, fontWeight: "600", lineHeight: 24 },
+    gsSub: { color: colors.textDim, fontSize: 15, lineHeight: 21 },
+    homeAction: { maxWidth: "100%", flexShrink: 1, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: colors.surfaceAlt },
+    homeActionText: { color: colors.text, fontSize: 13, lineHeight: 18, fontWeight: "800", flexShrink: 1, textAlign: "center" },
+    newsStripTitle: { color: colors.text, fontSize: 20, fontWeight: "700", letterSpacing: -0.4 },
+    newsStripAll: { color: colors.amber, fontSize: 15, fontWeight: "500", paddingVertical: 12 },
+    caughtUp: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 24, padding: 16, borderRadius: 18, backgroundColor: colors.surface },
+    emptyBox: { alignItems: "center", paddingTop: 32, paddingHorizontal: 20, gap: 8 },
+    emptyTitle: { color: colors.text, fontSize: 22, fontWeight: "700", textAlign: "center" },
+    emptySub: { color: colors.textDim, fontSize: 16, lineHeight: 23, textAlign: "center" },
+  } : {}),
 });

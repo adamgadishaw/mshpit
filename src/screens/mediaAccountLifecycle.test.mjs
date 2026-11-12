@@ -6,6 +6,7 @@ import { createAccountTaskScope } from "../domain/accountTaskScope.mjs";
 import { shouldContinueMediaBatch } from "../domain/mediaBatchPolicy.mjs";
 import { createMediaTransferProgressPublisher } from "../domain/mediaTransferProgress.mjs";
 import { retireMediaAssetDrafts } from "../lib/mediaAssetDraftCleanup.mjs";
+import { createEditProfileCloseGuard } from "./editProfileCloseGuard.mjs";
 import {
   mediaProjectPublishedMedia, mediaProjectRequiresLegacyUpload,
   originalMediaProjectAsset, reconcileMediaProjectSelection, normalizeMediaProjectAsset, removeMediaProjectAsset, normalizeMediaProject, mediaProjectFromPost, mediaProjectSubmissionAssetIds,
@@ -69,8 +70,12 @@ function crossBoundary(tasks, boundary) {
 
 const pickerResult = { canceled: false, assets: [{ id: "local-a", uri: "file:///camera.jpg", kind: "image" }] };
 const photoCases = [
-  ["EditProfileScreen.jsx", "EditProfileScreen", "pickPhoto", "setAvatarUri"],
-  ["EditProfileScreen.jsx", "EditProfileScreen", "pickBanner", "setBanner"],
+  ["EditProfileScreen.jsx", "EditProfileScreen", "pickPhotoTask", "setAvatarUri"],
+  ["EditProfileScreen.jsx", "EditProfileScreen", "pickBannerTask", "setBanner"],
+  ...["ios", "android", "web"].flatMap((platform) => [
+    ["EditProfileScreen.jsx", "EditProfileScreen", "pickPhoto", "setAvatarUri", platform],
+    ["EditProfileScreen.jsx", "EditProfileScreen", "pickBanner", "setBanner", platform],
+  ]),
   ["EditArtistProfileScreen.jsx", "ConfirmedArtistProfileEditor", "pickPhoto", "setAvatarUri"],
   ["EditArtistProfileScreen.jsx", "ConfirmedArtistProfileEditor", "pickBanner", "setBanner"],
   ["VenueReviewScreen.jsx", "VenueReviewScreen", "addPhoto", "setPhotos"],
@@ -79,10 +84,10 @@ const photoCases = [
 function photoFixture(compile, compileSelected, { cancelCrop = false } = {}) {
   const accountTasks = scope(), picker = deferred(), upload = deferred(), uploadStarted = deferred();
   const events = [], uploads = [];
-  const setters = Object.fromEntries(["setAvatarUri", "setAvatarChanged", "setBanner", "setBannerChanged", "setPhotos", "setUploadingAvatar", "setUploadingBanner", "setUploadingPhotos", "setSaveError"]
+  const setters = Object.fromEntries(["setAvatarUri", "setAvatarChanged", "setBanner", "setBannerChanged", "setPhotos", "setUploadingAvatar", "setUploadingBanner", "setUploadingPhotos", "setSaveError", "setMediaError"]
     .map((name) => [name, (value) => events.push({ name, value })]));
   const bindings = {
-    accountTasks, session: { id: "a" }, accountId: "a", uploadingAvatar: false, uploadingBanner: false,
+    reviewIOS: null, accountTasks, session: { id: "a" }, accountId: "a", uploadingAvatar: false, uploadingBanner: false,
     uploadingPhotos: false, posting: false, saving: false, photos: [], MEDIA_POST_MAX_ATTACHMENTS: 8,
     ImagePicker: { launchImageLibraryAsync: () => picker.promise }, Platform: { OS: "web" },
     profileImagePickerOptions: () => ({}), postMediaPickerOptions: () => ({}),
@@ -99,10 +104,20 @@ function photoFixture(compile, compileSelected, { cancelCrop = false } = {}) {
   return { accountTasks, picker, upload, uploadStarted, events, uploads, run };
 }
 
-for (const [file, component, name, resultSetter] of photoCases) {
-  const compile = callback(file, component, name);
+for (const [file, component, name, resultSetter, platform] of photoCases) {
+  const compileCallback = callback(file, component, name);
+  // Test both the original account-scoped tasks and their public entry points.
+  // The iOS wrapper gets its real close guard rather than a no-op busy stub.
+  const compileTask = platform ? callback(file, component, `${name}Task`) : null;
+  const compile = platform ? (bindings) => compileCallback({
+    iosEditor: platform === "ios" ? { run: action => action({ isCurrent: () => true }) } : null,
+    [`${name}Task`]: compileTask({ ...bindings, Platform: { OS: platform } }),
+    editorClose: platform === "ios" ? createEditProfileCloseGuard({
+      accountId: "a", draft: {}, alert: () => assert.fail("Uploads alone must not show a close dialog"),
+    }) : null,
+  }) : compileCallback;
   const compileSelected = component === "VenueReviewScreen" ? null : callback(file, component, "uploadSelectedImage");
-  const label = `${component}.${name}`;
+  const label = `${component}.${name}${platform ? ` (${platform})` : ""}`;
   test(`${label} rejects picker results after logout, switch, round trip or unmount`, {timeout:3000}, async () => {
     for (const boundary of ["logout", "switch", "round-trip", "unmount"]) {
       const f = photoFixture(compile, compileSelected), run = f.run();

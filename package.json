@@ -60,6 +60,7 @@
     "verify:event-page-accounts-browser": "node scripts/verify-event-page-accounts-browser.mjs",
     "verify:festivals-browser": "node scripts/verify-festivals-browser.mjs",
     "verify:discover-events-browser": "node scripts/verify-discover-events-browser.mjs",
+    "verify:profile-edit-browser": "node scripts/verify-profile-edit-browser.mjs",
     "verify:media-upload-browser": "node scripts/verify-media-upload-browser.mjs",
     "verify:player-browser": "node scripts/verify-player-browser.mjs",
     "verify:connections-browser": "node scripts/verify-connections-browser.mjs",
@@ -75,6 +76,7 @@
     "mobile:prebuild": "node scripts/mobile-dev.mjs prebuild",
     "mobile:start": "node scripts/mobile-dev.mjs start",
     "mobile:go": "node scripts/mobile-dev.mjs go",
+    "mobile:backend:persistent": "node scripts/mobile-persistent-backend.mjs",
     "mobile:backend": "node --import ./scripts/mobile-smoke-preload.mjs server/index.js"
   },
   "devDependencies": {

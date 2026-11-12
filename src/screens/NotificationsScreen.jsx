@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { ScrollView } from "../components/NativeTabScroll";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, View, Text, StyleSheet, Pressable } from "react-native";
 import { colors, mono, radius, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
@@ -8,11 +9,12 @@ import Icon from "../components/Icon";
 import { api } from "../lib/api";
 import { isCurrentNotificationPostRequest, normalizeFetchedNotificationPost, notificationPostFailureNotice, resolveNotificationPost } from "../domain/notificationDeepLink.mjs";
 import { bundleNotifications } from "../domain/notification-bundles.mjs";
-import { accountTargetScope } from "../domain/screenScope.mjs";
+import { createIOSLinkedNavigation } from "../domain/iosLinkedNavigation.mjs";
 import { postTagNotificationCopy, postTagNotificationPhrase } from "../domain/postTagNotification.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import useIOSActivityNavigation from "../hooks/useIOSActivityNavigation";
 
 const ago = (ts) => {
   const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
@@ -57,81 +59,86 @@ function notificationCopy(notification, actorName) {
   return `${actorName || "Someone"} ${["like", "comment"].includes(notification.type) ? reactionPhrase(notification) : meta.verb}${reference}`;
 }
 
+// Share the existing transport operation with the iOS intent owner. The hook
+// owns lifetime/cancellation, while this screen keeps its established API call.
+const fetchNotificationPost = (destination, controller) => api(`/api/posts/${encodeURIComponent(destination.postId)}`, {
+  signal: controller.signal,
+  silent: true,
+  context: "Opening this activity post",
+});
+
 // The activity feed, the social heartbeat that connects follows, likes, comments
 // and DMs into one place instead of leaving them scattered across the app.
-export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen, onOpenPost, onOpenPlans, onOpenArtist }) {
-  const { myNotifications, refreshNotifications, markNotificationsRead, feed, session } = useStore();
+export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen, onOpenPost, onOpenPlans, onOpenArtist, isCurrentIOSRoute }) {
+  const { myNotifications, notificationActivity, refreshNotifications, loadMoreNotifications, markNotificationsRead, feed, session, chatAuthEpoch } = useStore();
   const items = myNotifications();
   const accountId = session?.id || null;
   const accountIdRef = useRef(accountId);
   accountIdRef.current = accountId;
   const postRequestRef = useRef({ sequence: 0, accountId, postId: null, controller: null });
-  const [openingNotificationId, setOpeningNotificationId] = useState(null);
-  const [unavailableNotice, setUnavailableNotice] = useState(null);
+  const [legacyOpeningNotificationId, setOpeningNotificationId] = useState(null);
+  const [legacyUnavailableNotice, setUnavailableNotice] = useState(null);
+  const departedRef = useRef({ accountId, authEpoch: chatAuthEpoch, departed: false });
+  if (departedRef.current.accountId !== accountId || departedRef.current.authEpoch !== chatAuthEpoch) {
+    departedRef.current = { accountId, authEpoch: chatAuthEpoch, departed: false };
+  }
+  const readOwnerRef = useRef(null);
+  if (!readOwnerRef.current) readOwnerRef.current = createIOSLinkedNavigation();
+  const readOwner = readOwnerRef.current;
+  const notificationReadScope = readOwner.account(accountId, chatAuthEpoch);
+  const ownsReadScope = () => !departedRef.current.departed && !!accountId && readOwner.ownsScope(notificationReadScope)
+    && (!isCurrentIOSRoute || isCurrentIOSRoute());
+  const leaveActivity = (callback, ...args) => {
+    departedRef.current.departed = true;
+    readOwner.invalidate();
+    callback?.(...args);
+  };
+  const iosNavigation = useIOSActivityNavigation({
+    accountId, authEpoch: chatAuthEpoch, feed, fetchPost: fetchNotificationPost, isCurrentRoute: isCurrentIOSRoute,
+    onClose: () => leaveActivity(onClose),
+    onOpenProfile: value => leaveActivity(onOpenProfile, value),
+    onOpenThread: value => leaveActivity(onOpenThread, value),
+    onOpenPost: value => leaveActivity(onOpenPost, value),
+    onOpenPlans: () => leaveActivity(onOpenPlans),
+    onOpenArtist: value => leaveActivity(onOpenArtist, value),
+  });
+  const openingNotificationId = iosNavigation ? iosNavigation.openingNotificationId : legacyOpeningNotificationId;
+  const unavailableNotice = iosNavigation ? iosNavigation.unavailableNotice : legacyUnavailableNotice;
+  const [notificationReadState, setNotificationReadState] = useState(null);
+  const scopedNotificationReadState = notificationReadState?.scope === notificationReadScope
+    ? notificationReadState : {};
+  const activityStatus = notificationActivity?.status || "idle";
+  const activityError = notificationActivity?.error;
+  const nextCursor = notificationActivity?.data?.nextCursor;
   const [viewMode, setViewMode] = useState("recent");
-  const notificationReadScope = accountTargetScope(accountId, "notifications:read");
-  const notificationReadRequestRef = useRef({ sequence: 0, scope: notificationReadScope, controller: null });
-  const [notificationReadState, setNotificationReadState] = useState({ scope: notificationReadScope, status: "idle", error: null });
-  const scopedNotificationReadState = notificationReadState.scope === notificationReadScope
-    ? notificationReadState
-    : { scope: notificationReadScope, status: "idle", error: null };
   const bundles = useMemo(() => bundleNotifications(items), [items]);
   const activityRows = viewMode === "digest"
-    ? bundles.map((bundle) => ({ key: bundle.id, notification: bundle.primary, bundle }))
-    : items.filter(notification => viewMode !== "updates" || ["creator_update", "artist_update"].includes(notification.type)).map((notification) => ({ key: notification.id, notification, bundle: null }));
-
-  const readCurrentNotifications = async ({ signal: externalSignal, replace = false } = {}) => {
-    if (!accountIdRef.current) return null;
-    if (notificationReadRequestRef.current.controller) {
-      if (!replace) return null;
-      notificationReadRequestRef.current.controller.abort();
-    }
-    const scope = accountTargetScope(accountIdRef.current, "notifications:read");
-    const controller = new AbortController();
-    const abortFromParent = () => controller.abort(externalSignal?.reason);
-    if (externalSignal?.aborted) abortFromParent();
-    else externalSignal?.addEventListener("abort", abortFromParent, { once: true });
-    const operation = {
-      sequence: notificationReadRequestRef.current.sequence + 1,
-      scope,
-      controller,
-    };
-    notificationReadRequestRef.current = operation;
-    setNotificationReadState({ scope, status: "pending", error: null });
+    ? bundles.map(bundle => ({ key: bundle.id, notification: bundle.primary, bundle }))
+    : items.filter(notification => viewMode !== "updates" || ["creator_update", "artist_update"].includes(notification.type)).map(notification => ({ key: notification.id, notification, bundle: null }));
+  const readCurrentNotifications = async (rows, externalSignal) => {
+    if (!ownsReadScope() || externalSignal?.aborted) return;
+    const operation = readOwner.begin(notificationReadScope);
+    if (!operation) return;
+    const current = () => readOwner.current(operation) && ownsReadScope();
+    const abort = () => readOwner.invalidate();
+    externalSignal?.addEventListener("abort", abort, { once: true });
+    setNotificationReadState({ scope: notificationReadScope, status: "pending", rows });
     try {
-      const result = await markNotificationsRead({ signal: controller.signal });
-      if (notificationReadRequestRef.current !== operation
-        || accountTargetScope(accountIdRef.current, "notifications:read") !== scope) return null;
-      setNotificationReadState(result.ok
-        ? { scope, status: "ready", error: null }
-        : { scope, status: "error", error: result.error });
-      return result;
+      const result = await markNotificationsRead({ rows, signal: operation.signal });
+      if (!current()) return;
+      setNotificationReadState({ scope: notificationReadScope, rows,
+        status: result.ok ? "ready" : "error", error: result.ok ? null : result.error });
     } catch (error) {
-      if (!controller.signal.aborted && notificationReadRequestRef.current === operation
-        && accountTargetScope(accountIdRef.current, "notifications:read") === scope) {
-        setNotificationReadState({ scope, status: "error", error });
-      }
-      return controller.signal.aborted ? null : false;
+      if (current()) setNotificationReadState({ scope: notificationReadScope, status: "error", error, rows });
     } finally {
-      externalSignal?.removeEventListener("abort", abortFromParent);
-      if (notificationReadRequestRef.current === operation) {
-        notificationReadRequestRef.current = { ...operation, controller: null };
-      }
+      externalSignal?.removeEventListener("abort", abort);
+      readOwner.release(operation);
     }
   };
-  // Marking read is a server-first command. Account changes and unmounts abort
-  // the old scope so its completion cannot clear the next account's badge.
-  useEffect(() => {
-    const active = notificationReadRequestRef.current;
-    active.controller?.abort();
-    notificationReadRequestRef.current = { sequence: active.sequence + 1, scope: notificationReadScope, controller: null };
-    setNotificationReadState({ scope: notificationReadScope, status: "idle", error: null });
-    if (accountId) void readCurrentNotifications();
-    return () => notificationReadRequestRef.current.controller?.abort();
-    // The Store command is intentionally omitted: Context recreates its facade
-    // after reconciliation, but account scope alone owns this one-shot effect.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, notificationReadScope]);
+  useLayoutEffect(() => {
+    readOwner.mount();
+    return () => readOwner.unmount();
+  }, [readOwner]);
   useEffect(() => () => postRequestRef.current.controller?.abort(), []);
   useEffect(() => {
     const active = postRequestRef.current;
@@ -142,22 +149,38 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
     setUnavailableNotice(null);
   }, [accountId]);
 
-  const activityRefreshScope = refreshScope(accountId, "activity");
-  const { refresh: refreshActivity, refreshing: activityRefreshing } = useScopedRefresh({
+  const activityRefreshScope = refreshScope(accountId, `activity:${chatAuthEpoch}`);
+  const { refresh: refreshScopedActivity, refreshing: activityRefreshing } = useScopedRefresh({
     scope: activityRefreshScope,
     enabled: !!accountId,
+    onError: error => { if (ownsReadScope()) setNotificationReadState({ scope: notificationReadScope, status: "error", error }); },
     task: async ({ signal }) => {
-      const rows = await refreshNotifications({ signal, accountId });
-      if (rows === false) throw new Error("Activity could not be refreshed.");
-      if (signal.aborted || rows == null) return { stale: true };
-      const readResult = await readCurrentNotifications({ signal, replace: true });
-      return { rows, readResult };
+      if (!ownsReadScope()) return;
+      const rows = await refreshNotifications({ signal, accountId, allHistory: true });
+      if (signal.aborted || !ownsReadScope() || !rows) return;
+      await readCurrentNotifications(rows, signal);
+      return rows;
     },
   });
+  const { refresh: loadOlderScoped, refreshing: loadingOlder } = useScopedRefresh({
+    scope: activityRefreshScope,
+    enabled: !!accountId && !!nextCursor,
+    task: ({ signal }) => ownsReadScope() ? loadMoreNotifications({ signal }) : undefined,
+  });
+  const refreshActivity = () => ownsReadScope() ? refreshScopedActivity() : undefined;
+  const loadOlder = () => ownsReadScope() ? loadOlderScoped() : undefined;
+  useEffect(() => {
+    if (!accountId) return;
+    void refreshActivity();
+    // The account controller refreshes on foreground without acknowledging new arrivals.
+    // Commands are Store facades; account/epoch, not reconciliation, owns entry.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, chatAuthEpoch]);
 
   // Tapping the ROW goes to the thing the notification is about; tapping the
   // AVATAR always goes to the person who did it.
   const open = async (n) => {
+    if (iosNavigation) return iosNavigation.open(n);
     const destination = resolveNotificationPost(n, feed);
     if (destination.kind !== "fetch-post") {
       const active = postRequestRef.current;
@@ -166,11 +189,11 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
       setOpeningNotificationId(null);
     }
     if (destination.kind === "none") return;
-    if (destination.kind === "profile") return onOpenProfile?.(destination.actorId);
-    if (destination.kind === "thread") return onOpenThread?.(destination.actorId);
-    if (destination.kind === "plans") return onOpenPlans?.();
-    if (destination.kind === "artist") return onOpenArtist?.({ name: destination.artist });
-    if (destination.kind === "local-post") return onOpenPost?.(destination.post);
+    if (destination.kind === "profile") return leaveActivity(onOpenProfile, destination.actorId);
+    if (destination.kind === "thread") return leaveActivity(onOpenThread, destination.actorId);
+    if (destination.kind === "plans") return leaveActivity(onOpenPlans);
+    if (destination.kind === "artist") return leaveActivity(onOpenArtist, { name: destination.artist });
+    if (destination.kind === "local-post") return leaveActivity(onOpenPost, destination.post);
     if (destination.kind === "unavailable") {
       setUnavailableNotice("This post is no longer available.");
       return;
@@ -188,11 +211,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
     setUnavailableNotice(null);
     setOpeningNotificationId(n.id);
     try {
-      const payload = await api(`/api/posts/${encodeURIComponent(destination.postId)}`, {
-        signal: controller.signal,
-        silent: true,
-        context: "Opening this activity post",
-      });
+      const payload = await fetchNotificationPost(destination, controller);
       if (!isCurrentNotificationPostRequest(postRequestRef.current, { sequence, accountId: accountIdRef.current, postId: destination.postId })) return;
       const post = normalizeFetchedNotificationPost(payload, destination.postId);
       if (!post) {
@@ -200,7 +219,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
         return;
       }
       setOpeningNotificationId(null);
-      onOpenPost?.(post);
+      leaveActivity(onOpenPost, post);
     } catch (error) {
       if (isCurrentNotificationPostRequest(postRequestRef.current, { sequence, accountId: accountIdRef.current, postId: destination.postId })) {
         setUnavailableNotice(notificationPostFailureNotice(error));
@@ -214,7 +233,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader title="Activity" onBack={onClose} />
+      <ScreenHeader title="Activity" onBack={iosNavigation ? iosNavigation.close : () => leaveActivity(onClose)} />
       <VinylRefreshBoundary
         refreshing={activityRefreshing}
         onRefresh={refreshActivity}
@@ -226,10 +245,10 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
           <View style={styles.readNotice} accessibilityRole="alert" accessibilityLiveRegion="assertive">
             <Icon name="shield" size={16} color={colors.danger} />
             <Text selectable style={styles.readNoticeText}>
-              Activity could not be marked read, so the unread badge is unchanged. {scopedNotificationReadState.error?.userMessage || scopedNotificationReadState.error?.message || "Try again."}
+              Some activity could not be loaded or marked read. Unconfirmed notifications remain new. {scopedNotificationReadState.error?.userMessage || scopedNotificationReadState.error?.message || "Try again."}
             </Text>
-            {scopedNotificationReadState.error?.retryable ? (
-              <Pressable style={styles.readRetry} onPress={() => void readCurrentNotifications()} accessibilityRole="button" accessibilityLabel="Retry marking activity read">
+            {scopedNotificationReadState.error?.retryable !== false ? (
+              <Pressable style={styles.readRetry} onPress={() => void (scopedNotificationReadState.rows ? readCurrentNotifications(scopedNotificationReadState.rows) : refreshActivity())} accessibilityRole="button" accessibilityLabel="Retry marking activity read">
                 <Text style={styles.readRetryText}>Try again</Text>
               </Pressable>
             ) : null}
@@ -239,7 +258,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
           <View style={styles.notice} accessibilityRole="alert" accessibilityLiveRegion="polite">
             <Icon name="lock" size={16} color={colors.amber} />
             <Text style={styles.noticeText}>{unavailableNotice}</Text>
-            <Pressable onPress={() => setUnavailableNotice(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Dismiss unavailable post message">
+            <Pressable onPress={iosNavigation ? iosNavigation.dismissNotice : () => setUnavailableNotice(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Dismiss unavailable post message">
               <Icon name="x" size={14} color={colors.textDim} />
             </Pressable>
           </View>
@@ -272,7 +291,19 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
               : viewMode === "updates" ? "News from the artists, venues and events you follow." : "Recent shows each loaded activity item separately."}
           </Text>
         </View>
-        {activityRows.length === 0 && (
+        {(activityStatus === "loading" || activityStatus === "idle") && items.length === 0 && (
+          <View style={styles.empty}><ActivityIndicator color={colors.amber} /><Text style={styles.emptySub}>Loading activity…</Text></View>
+        )}
+        {activityStatus === "refreshing" && items.length > 0 && <Text style={styles.modeScope}>Updating activity…</Text>}
+        {activityError && (
+          <View style={styles.readNotice} accessibilityRole="alert">
+            <Text style={styles.readNoticeText}>{items.length ? "Couldn't update activity. Showing previously loaded activity. " : "Couldn't load activity. "}{activityError.userMessage || "Check your connection and try again."}</Text>
+            <Pressable style={styles.readRetry} accessibilityRole="button" accessibilityLabel="Retry loading activity" onPress={refreshActivity}>
+              <Text style={styles.readRetryText}>Try again</Text>
+            </Pressable>
+          </View>
+        )}
+        {activityRows.length === 0 && activityStatus === "ready" && (
           <View style={styles.empty}>
             <Icon name="heart" size={28} color={colors.textFaint} />
             <Text style={styles.emptyTitle}>{viewMode === "updates" ? "No updates yet" : "No activity yet"}</Text>
@@ -298,7 +329,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
                 {["artist_update", "creator_update"].includes(n.type) ? (
                   <View style={styles.newsMark}><Icon name="music" size={18} color={colors.amber} /></View>
                 ) : (
-                  <Avatar user={{ name: n.actorName, initials: n.actorInitials, avatarUri: n.actorUri, avatarColor: n.actorColor }} size={40} onPress={n.actorId ? () => onOpenProfile?.(n.actorId) : undefined} />
+                  <Avatar user={{ name: n.actorName, initials: n.actorInitials, avatarUri: n.actorUri, avatarColor: n.actorColor }} size={40} onPress={n.actorId ? () => iosNavigation ? iosNavigation.openProfile(n.actorId) : leaveActivity(onOpenProfile, n.actorId) : undefined} />
                 )}
                 <View style={[styles.badge, { backgroundColor: meta.tint }]}>
                   <Icon name={meta.icon} size={11} color="#0B0E16" filled />
@@ -329,6 +360,13 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
             </Pressable>
           );
         })}
+        {notificationActivity?.data?.historyLimited && <Text style={styles.modeScope}>Showing the latest 1,000 activities. Refresh to see newer activity.</Text>}
+        {!!nextCursor && (
+          <Pressable style={styles.readRetry} accessibilityRole="button" accessibilityLabel="Load older activity"
+            disabled={loadingOlder || activityRefreshing} accessibilityState={{ disabled: loadingOlder || activityRefreshing }} onPress={loadOlder}>
+            <Text style={styles.readRetryText}>{loadingOlder ? "Loading older activity…" : "Load older"}</Text>
+          </Pressable>
+        )}
       </ScrollView>
       </VinylRefreshBoundary>
     </View>

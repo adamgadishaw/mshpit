@@ -3,7 +3,7 @@
 export const AUTH_INTENT_KEY = "pit.auth.intent.v1";
 export const staleAuthentication = () => ({ kind: "cancelled", stale: true });
 
-export function createAuthTransitions({ read, write, revoke, exclusive = (work) => work(), nonce = () => `${Date.now()}-${Math.random()}` }) {
+export function createAuthTransitions({ read, write, revoke, confirmIntent = () => {}, exclusive = (work) => work(), nonce = () => `${Date.now()}-${Math.random()}` }) {
   let tail = Promise.resolve();
   let active = null;
   const retryListeners = new Set();
@@ -73,11 +73,26 @@ export function createAuthTransitions({ read, write, revoke, exclusive = (work) 
     return enqueue(async () => {
       if (!current(ticket) || signal?.aborted) return staleAuthentication();
       try {
+        // Native must persist the crash/restart barrier before any request can
+        // issue a cookie. Memory fallback is not a durable acknowledgment.
+        confirmIntent(snapshot(), "pending");
+      } catch (error) {
+        if (!current(ticket) || signal?.aborted) return staleAuthentication();
+        // Nothing reached the server: keep an existing account/switch origin
+        // intact. Rotate the revision but restore its prior permission phase.
+        write({ revision: ticket.revision, phase: previous?.phase || "signed-in" });
+        throw error;
+      }
+      if (!current(ticket) || signal?.aborted) return staleAuthentication();
+      try {
         const data = await request();
         if (!current(ticket) || signal?.aborted) return discardStaleCompletion();
         // Account-choice responses do not issue a session. Preserve prior intent
         // while rotating its revision to supersede older validation reads.
         write({ revision: ticket.revision, phase: data?.user?.id ? "signed-in" : previous?.phase || "signed-in" });
+        if (!current(ticket) || signal?.aborted) return discardStaleCompletion();
+        if (data?.user?.id) confirmIntent(snapshot(), "signed-in");
+        if (!current(ticket) || signal?.aborted) return discardStaleCompletion();
         return accept(data);
       } catch (error) {
         if (!current(ticket) || signal?.aborted) return discardStaleCompletion();

@@ -2,10 +2,12 @@ import { useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import Icon from "../../components/Icon";
 import { colors, focusRing, radius } from "../../theme";
+import useIOSDetailPresentation from "../../hooks/useIOSDetailPresentation";
 
 // Keep the trigger mounted so keyboard focus survives repeated toggles.
 // The parent keys each section by show/account to avoid leaking disclosure state.
 export default function ShowSection({ title, summary, initiallyOpen = false, keepMounted = false, children }) {
+  const { guard } = useIOSDetailPresentation();
   const [open, setOpen] = useState(initiallyOpen);
   const [hasOpened, setHasOpened] = useState(initiallyOpen);
   return <View style={styles.section}>
@@ -15,7 +17,7 @@ export default function ShowSection({ title, summary, initiallyOpen = false, kee
       accessibilityState={{ expanded: open }}
       aria-expanded={open}
       accessibilityHint={open ? "Collapse section" : "Expand section"}
-      onPress={() => { setHasOpened(true); setOpen(value => !value); }}
+      onPress={guard(() => { setHasOpened(true); setOpen(value => !value); })}
       style={({ pressed, focused }) => [styles.trigger, pressed && styles.pressed, focused && focusRing]}
     >
       <View style={styles.copy}>

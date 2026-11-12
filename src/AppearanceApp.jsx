@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { prepareSavedTheme } from "./lib/appearanceStartup";
+import { startNativeStartupLinkCapture } from "./lib/nativeStartupLinks";
+
+startNativeStartupLinkCapture();
 
 // Register the native root immediately, but do not evaluate static theme styles
 // until any restricted saved appearance has been checked against live authority.

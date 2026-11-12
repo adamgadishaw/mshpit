@@ -1,6 +1,7 @@
 import { ActivityIndicator, View, Text, StyleSheet, Pressable } from "react-native";
 import { colors, displayFont, focusRing, radius, shadow, space } from "../theme";
 import Icon from "./Icon";
+import { PageTitle } from "./PageReturnContext";
 
 // One consistent modal/detail header with REAL buttons instead of stray text.
 // - leading round button: chevron (onBack) or × (onClose)
@@ -25,7 +26,7 @@ export default function SheetHeader({ title, onClose, onBack, action, leadDisabl
         <Icon name={onBack ? "chevron-left" : "x"} size={20} color={colors.text} strokeWidth={2.4} />
       </Pressable>
 
-      <Text style={styles.title} numberOfLines={1} accessibilityRole="header">{title}</Text>
+      <PageTitle label={title} style={{ flex: 1 }}><Text style={styles.title} numberOfLines={1} accessibilityRole="header">{title}</Text></PageTitle>
 
       {action ? (
         <Pressable

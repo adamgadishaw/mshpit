@@ -15,8 +15,8 @@ export function fetchNewsDeskStories({ cursor = null, limit = 20, artist = null,
 }
 
 // One post by id, for opening a story's post and comments.
-export function fetchPostById(id, { signal } = {}) {
-  return api(`/api/posts/${encodeURIComponent(id)}`, { silent: true, signal, context: "Opening a news story" });
+export function fetchPostById(id, { signal, expectedAccountId } = {}) {
+  return api(`/api/posts/${encodeURIComponent(id)}`, { silent: true, signal, expectedAccountId, context: "Opening a news story" });
 }
 
 export function requestNewsIntroduction({ accountId, requestId, signal }) {

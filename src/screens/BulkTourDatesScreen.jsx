@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, TextInput, Pressable, ActivityIndicator } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { colors, mono, radius } from "../theme";
 import { useStore, isArtist } from "../store";
 import Icon from "../components/Icon";

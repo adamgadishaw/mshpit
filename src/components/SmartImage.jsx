@@ -1,3 +1,4 @@
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
 import { useMemo } from "react";
 import { View, StyleSheet, Pressable, Text } from "react-native";
 import { Image as ExpoImage } from "expo-image";
@@ -7,6 +8,7 @@ import ClipPoster from "./ClipPoster";
 import { proxied, previewSrc, isHttp, displaySrc, isVideoUrl } from "../lib/img";
 import { imageLoadPolicy } from "../domain/imageLoadPolicy.mjs";
 import useImageAttempt from "../hooks/useImageAttempt";
+import { useFeedImageRetryPulse } from "../hooks/feedImageRetry";
 
 // Fits any image (portrait or landscape) without ugly cropping: a blurred,
 // zoomed copy fills the frame behind the real image shown in full. Apple/Spotify
@@ -17,17 +19,18 @@ import useImageAttempt from "../hooks/useImageAttempt";
 // tile instead of a broken image in every grid/wall/strip; tapping still opens
 // the viewer, which actually plays them.
 export default function SmartImage({ uri, posterUri = null, mediaKind = null, viewable = null, style, contain = true, onPress, previewWidth = 0, cachePolicy = "memory-disk", priority = "normal", loading = null, accessibilityLabel = "Open image", accessible = true }) {
+  const tabPreview = useNativeTabPreview();
   const original = displaySrc(uri);
   const preview = previewWidth > 0 ? previewSrc(uri, previewWidth) : original;
   const fallback = preview === original && isHttp(uri) ? proxied(uri) : original;
   const requestScope = JSON.stringify([uri, previewWidth, mediaKind]);
-  const { uri: src, onError, onDisplay } = useImageAttempt(requestScope, [preview, fallback]);
+  const { uri: src, onError, onDisplay, nativeAttemptKey } = useImageAttempt(requestScope, [preview, fallback], useFeedImageRetryPulse());
   const policy = imageLoadPolicy({ priority, loading, viewable });
   // ExpoImage is a PureComponent. A stable source object avoids asking it to
   // reconcile the same cached image whenever a feed card updates its counters.
   const source = useMemo(() => ({ uri: src, cacheKey: src }), [src]);
   if (mediaKind === "video" || (!mediaKind && isVideoUrl(uri))) {
-    const clip = <ClipPoster uri={uri} posterUri={posterUri} viewable={viewable} style={StyleSheet.absoluteFill} contain={contain} compact={!previewWidth} priority={policy.priority} loading={policy.loading} accessible={accessible} />;
+    const clip = <ClipPoster uri={uri} posterUri={posterUri} viewable={viewable} style={StyleSheet.absoluteFill} contain={contain} compact={!previewWidth} priority={policy.priority} loading={policy.loading} cachePolicy={cachePolicy} accessible={accessible} />;
     if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel === "Open image" ? "Play video clip" : accessibilityLabel}>{clip}</Pressable>;
     return <View style={[styles.base, style]}>{clip}</View>;
   }
@@ -48,14 +51,14 @@ export default function SmartImage({ uri, posterUri = null, mediaKind = null, vi
       {contain && <View style={[StyleSheet.absoluteFill, styles.containBackdrop]} />}
       {contain && <View style={[StyleSheet.absoluteFill, styles.scrim]} />}
       <ExpoImage
-        key={src}
+        key={nativeAttemptKey == null ? src : `${src}:${nativeAttemptKey}`}
         source={source}
         style={StyleSheet.absoluteFill}
         contentFit={contain ? "contain" : "cover"}
         cachePolicy={cachePolicy}
         priority={policy.priority}
         loading={policy.loading}
-        autoplay={policy.autoplay}
+        autoplay={!tabPreview && policy.autoplay}
         allowDownscaling
         enforceEarlyResizing
         recyclingKey={`smart-image:${src}`}

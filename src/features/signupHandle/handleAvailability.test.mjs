@@ -85,7 +85,7 @@ test("render-time presentation refuses availability for a previous input", () =>
   const old = { scope: "first", status: "ready", data: { handle: "first", available: true } };
   assert.notEqual(signupHandlePresentation(old, "second").tone, "good");
   assert.notEqual(signupHandlePresentation(old, "a").tone, "good");
-  const invalid = { scope: "first", status: "error", error: { status: 400, message: "Choose another username." } };
+  const invalid = { scope: "first", status: "error", error: { source: "api", status: 400, message: "Choose another username.", userMessage: "Check your request." } };
   assert.deepEqual(signupHandlePresentation(invalid, "first"), { tone: "error", message: "Choose another username." });
 });
 
