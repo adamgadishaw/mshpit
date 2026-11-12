@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 const directory = mkdtempSync(join(tmpdir(), "pit-calendar-posts-"));
 process.env.PIT_DATA_DIR = directory;
 Object.assign(process.env, { MEDIA_ENDPOINT: "https://objects.example.com/s3", MEDIA_BUCKET: "pit-media", MEDIA_SOURCE_BUCKET: "pit-media-private", MEDIA_REGION: "auto", MEDIA_ACCESS_KEY_ID: "fixture", MEDIA_SECRET_ACCESS_KEY: "fixture", MEDIA_PUBLIC_BASE_URL: "https://media.example.com/cdn" });
@@ -132,20 +133,22 @@ test("unclaimed canonical event/festival follows preserve preference and never g
   }
 });
 
-async function publicationWorker(admin, body, name) {
+async function publicationWorker(admin, body, name, { due = false } = {}) {
   const { spawn } = await import("node:child_process"); const { fileURLToPath } = await import("node:url");
   const { existsSync, readFileSync, writeFileSync } = await import("node:fs");
   writeFileSync(join(directory,name+"-body.json"),JSON.stringify(body));
-  const child = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/calendarPublicationWorker.mjs", import.meta.url)), directory, admin.id, name], {
+  const fixture = due ? "./fixtures/calendarDueWorker.mjs" : "./fixtures/calendarPublicationWorker.mjs";
+  const child = spawn(process.execPath, [fileURLToPath(new URL(fixture, import.meta.url)), directory, admin.id, name], {
     windowsHide: true, stdio: ["ignore", "pipe", "pipe"], env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !["NODE_TEST_CONTEXT", "RESEND_API_KEY", "MAIL_FROM"].includes(key))),
   });
   let output = ""; for(const stream of [child.stdout, child.stderr]) stream.on("data", part => { output += part; });
-  const ended = new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(Error(`Event approval worker exited ${code}: ${output}`))); });
-  void ended.catch(() => {});
+  let workerFailure;
+  const ended = new Promise((resolve, reject) => { child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(Error(`Calendar worker exited ${code}: ${output}`))); });
+  void ended.catch(error => { workerFailure = error; });
   const timer = setTimeout(() => child.kill(), 35000);
   const wait = async suffix => {
     const deadline = Date.now() + 20000;
-    while (!existsSync(join(directory, name + suffix))) { if(Date.now() > deadline) throw Error(`Event approval coordination timed out: ${name}${suffix}`); await new Promise(resolve => setTimeout(resolve, 10)); }
+    while (!existsSync(join(directory, name + suffix))) { if(workerFailure) throw workerFailure; if(Date.now() > deadline) throw Error(`Calendar coordination timed out: ${name}${suffix}`); await new Promise(resolve => setTimeout(resolve, 10)); }
   };
   return { wait, go: () => writeFileSync(join(directory, name + "-go"), "go"), result: async () => { await ended; return JSON.parse(readFileSync(join(directory, name + "-result.json"), "utf8")); },
     stop: async () => { clearTimeout(timer); if(child.exitCode === null && child.signalCode === null) child.kill(); await ended.catch(() => {}); } };
@@ -157,8 +160,9 @@ test("independent connections serialize duplicate creates and conflicting edits 
   const race=async (bodies,label)=>{
     const workers=[];
     try {
-      for(let i=0;i<bodies.length;i++)workers.push(await publicationWorker(artist,bodies[i],label+i));
-      await Promise.all(workers.map(worker=>worker.wait("-ready")));
+      // Establish authenticated workers before racing publication. Concurrent
+      // session creation/database bootstrap is outside this transaction test.
+      for(let i=0;i<bodies.length;i++) { const worker=await publicationWorker(artist,bodies[i],label+i);workers.push(worker);await worker.wait("-ready"); }
       db.exec("BEGIN IMMEDIATE");workers.forEach(worker=>worker.go());
       await Promise.all(workers.map(worker=>worker.wait("-waiting")));db.exec("COMMIT");
       return await Promise.all(workers.map(worker=>worker.result()));
@@ -261,4 +265,83 @@ test("scheduled submissions remain bounded while exact retries do not consume an
   fail(()=>submit(artist,draft(artist,{releaseAt:Date.now()+86400000,venue:"Excess Hall"})),429);
   assert.equal(submit(artist,first).calendarReceipt.id,saved.calendarReceipt.id);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM creator_calendar_publications WHERE account_id=?").get(artist.id).n,20);
+});
+
+
+function memorial(artist, { status = 'published', matching = true } = {}) {
+  const at = Date.now(), key = artist.artist_name.toLowerCase(), mbid = randomUUID();
+  db.prepare('INSERT INTO artists(norm,name,mbid,created_at,updated_at) VALUES(?,?,?,?,?)').run(key,artist.artist_name,mbid,at,at);
+  db.prepare(`INSERT INTO artist_memorials(artist_key,artist_name,artist_mbid,status,death_date,summary,thank_you,accomplishments,
+    source_url,published_at,spotlight_started_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(key,artist.artist_name,matching ? mbid : randomUUID(),status,new Date(at).toISOString().slice(0,10),
+      'A verified memorial used to test current calendar publication eligibility.','Thank you for the music.',JSON.stringify(['A lasting musical legacy']),
+      'https://example.com/verified-memorial',status === 'published' ? at : null,status === 'published' ? at : null,at,at);
+}
+
+function assertPrivateBlocked(artist, saved, originalPayload) {
+  const row = db.prepare('SELECT * FROM creator_calendar_publications WHERE id=?').get(saved.calendarReceipt.id);
+  assert.equal(row.state,'blocked'); assert.equal(row.post_id,null); assert.equal(row.payload,originalPayload);
+  assert.equal(db.prepare('SELECT release_at FROM tour_dates WHERE id=?').get(row.event_id).release_at,Number.MAX_SAFE_INTEGER);
+  assert.equal(db.prepare('SELECT count(*) n FROM posts WHERE user_id=?').get(artist.id).n,0);
+  assert.equal(db.prepare("SELECT count(*) n FROM notifications WHERE actor_id=? AND type='creator_update'").get(artist.id).n,0);
+  assert.equal(routes['GET /api/tourdates']({query:{}}).tourDates.some(event=>event.id===row.event_id),false);
+}
+
+test('memorialization after scheduling blocks release and keeps private receipt, text and media until an authorized revision', async () => {
+  const {enqueueExpiredMediaTickets}=await import('../../mediaDeletion.js');
+  const {cancelMediaAsset}=await import('../../mediaAssets.js');
+  const {exportCreatorCalendar}=await import('./creatorCalendarSchema.js');
+  const artist=account('artist'), fan=account(), image=addReadyPostImage(artist.id,'memorial-hold');
+  db.prepare('UPDATE users SET favorite_artists=? WHERE id=?').run(JSON.stringify([artist.artist_name]),fan.id);
+  const releaseAt=Date.now()+3600000, body=draft(artist,{releaseAt}); body.photos=[image.renderUrl];body.mediaAssetIds=[image.assetId];
+  const saved=submit(artist,body), payload=db.prepare('SELECT payload FROM creator_calendar_publications WHERE id=?').get(saved.calendarReceipt.id).payload;
+  memorial(artist);
+  assert.throws(()=>submit(artist,draft(artist,{venue:'New Hall'})),error=>error.code==='ARTIST_MEMORIALIZED');
+  assert.deepEqual(creatorCalendarService.runDue({at:releaseAt+1}),{published:0,blocked:1});
+  assertPrivateBlocked(artist,saved,payload);
+  assert.deepEqual(exportCreatorCalendar(db,artist.id).find(row=>row.id===saved.calendarReceipt.id).payload,JSON.parse(payload));
+  assert.equal(submit(artist,body).calendarReceipt.state,'blocked');
+  for(const key of [image.sourceKey,image.renderKey]) assert.equal(db.prepare('SELECT status FROM media_objects WHERE object_key=?').get(key).status,'associated');
+  fail(()=>cancelMediaAsset(db,{ownerId:artist.id,assetId:image.assetId}),409);
+  enqueueExpiredMediaTickets(db,{at:Date.now()+10*86400000});
+  assert.equal(db.prepare('SELECT status FROM media_objects WHERE object_key=?').get(image.sourceKey).status,'associated');
+  assert.deepEqual(creatorCalendarService.runDue({at:releaseAt+2}),{published:0,blocked:0});
+  // Clearing an erroneous fixture memorial cannot silently publish the old
+  // held receipt. An explicit authorized revision is required to supersede it.
+  db.prepare('DELETE FROM artist_memorials WHERE artist_key=?').run(artist.artist_name.toLowerCase());
+  assert.deepEqual(creatorCalendarService.runDue({at:releaseAt+3}),{published:0,blocked:0});
+  const cancel=draft(artist,{action:'cancel',eventId:saved.calendarReceipt.eventId,expectedRevision:1});
+  assert.equal(submit(artist,cancel).calendarReceipt.state,'cancelled');
+  assert.equal(submit(artist,body).calendarReceipt.state,'cancelled');
+  assert.equal(db.prepare('SELECT payload FROM creator_calendar_publications WHERE id=?').get(saved.calendarReceipt.id).payload,payload);
+  assert.equal(cancelMediaAsset(db,{ownerId:artist.id,assetId:image.assetId}).removed,true);
+});
+
+test('due releases revalidate with the current clock without treating their elapsed schedule as a new schedule; unrelated memorials do not block', () => {
+  for(const options of [{status:'draft'},{matching:false}]) {
+    const artist=account('artist'), body=draft(artist,{releaseAt:Date.now()+3600000}), saved=submit(artist,body);
+    memorial(artist,options);
+    const actualNow=Date.now, at=body.creatorUpdate.calendar.releaseAt+1;
+    try { Date.now=()=>at; assert.equal(creatorCalendarService.runDue().published,1); }
+    finally { Date.now=actualNow; }
+    const replay=submit(artist,body);assert.ok(replay.id);assert.equal(replay.calendarReceipt.eventId,saved.calendarReceipt.eventId);
+  }
+});
+
+for (const change of ['memorial','ownership','account']) test('due release rechecks '+change+' committed while waiting on the writer lock', {timeout:45000}, async () => {
+  const artist=account('artist'), fan=account(), releaseAt=Date.now()+3600000;
+  db.prepare('UPDATE users SET favorite_artists=? WHERE id=?').run(JSON.stringify([artist.artist_name]),fan.id);
+  const body=draft(artist,{releaseAt}), image=addReadyPostImage(artist.id,'due-lock-'+change);
+  body.photos=[image.renderUrl];body.mediaAssetIds=[image.assetId];
+  const saved=submit(artist,body), payload=db.prepare('SELECT payload FROM creator_calendar_publications WHERE id=?').get(saved.calendarReceipt.id).payload;
+  const worker=await publicationWorker(artist,{at:releaseAt+1},'due-'+change,{due:true});
+  try {
+    await worker.wait('-ready');db.exec('BEGIN IMMEDIATE');worker.go();await worker.wait('-waiting');
+    if(change==='memorial') memorial(artist);
+    if(change==='ownership') db.prepare('UPDATE artist_profiles SET owner_id=NULL WHERE artist_key=?').run(artist.artist_name.toLowerCase());
+    if(change==='account') db.prepare('UPDATE users SET is_banned=1 WHERE id=?').run(artist.id);
+    db.exec('COMMIT');assert.deepEqual(await worker.result(),{published:0,blocked:1});
+    assertPrivateBlocked(artist,saved,payload);
+    for(const key of [image.sourceKey,image.renderKey]) assert.equal(db.prepare('SELECT status FROM media_objects WHERE object_key=?').get(key).status,'associated');
+  } finally { if(db.isTransaction)db.exec('ROLLBACK');await worker.stop(); }
 });

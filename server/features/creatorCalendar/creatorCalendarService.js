@@ -88,8 +88,8 @@ export function createCreatorCalendarService({ database: db, requireUser, author
           event = prior;
           // Revisions supersede pending announcements, never existing public
           // posts. Old request receipts remain tombstones for safe retries.
-          const superseded = db.prepare("SELECT payload FROM creator_calendar_publications WHERE event_id=? AND state='scheduled'").all(event.id);
-          db.prepare("UPDATE creator_calendar_publications SET state='cancelled' WHERE event_id=? AND state='scheduled'").run(event.id);
+          const superseded = db.prepare("SELECT payload FROM creator_calendar_publications WHERE event_id=? AND state IN ('scheduled','blocked')").all(event.id);
+          db.prepare("UPDATE creator_calendar_publications SET state='cancelled' WHERE event_id=? AND state IN ('scheduled','blocked')").run(event.id);
           for (const old of superseded) releaseMedia?.(user.id, JSON.parse(old.payload));
         }
         event = eventById(event.id);
@@ -126,10 +126,18 @@ export function createCreatorCalendarService({ database: db, requireUser, author
             currentArtist(ctx);
             if (!event || event.creator_revision !== row.revision || event.owner_id !== user.id || event.event_status === "cancelled") fail("The scheduled show changed.", 409);
             validatePost(user, JSON.parse(row.payload));
+            // Scheduling is not continuing permission to publish. Recheck the
+            // current calendar facts and eligibility (including memorials)
+            // after the writer lock, before releasing the row or announcing it.
+            // This is a release now, not a request to schedule again in the past.
+            validateBatch({ ...ctx, body: { artist: user.artist_name, releaseAt: 0,
+              dates: [{ venue: event.venue, place: event.place, date: event.date, ticketUrl: event.ticket_url || "" }] } }, user);
           } catch (error) {
             if (![400,401,403,404,409].includes(error.status)) throw error;
             db.prepare("UPDATE creator_calendar_publications SET state='blocked' WHERE id=?").run(row.id);
-            releaseMedia?.(row.account_id, JSON.parse(row.payload)); blocked++;
+            // Keep the private authored payload and media on hold. Only an
+            // explicit authorized revision/cancellation supersedes this receipt.
+            blocked++;
             return;
           }
           publish(ctx, row); published++;
