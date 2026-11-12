@@ -4,7 +4,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { colors } from "../theme";
 
 export default function ReviewDialog({ pages, review, onClose, fallback }) {
-  return <Modal transparent visible animationType="none" presentationStyle="overFullScreen" onRequestClose={onClose} statusBarTranslucent>
+  return <Modal accessibilityLabel={review ? "Concert review" : "Review navigation"} transparent visible animationType="none" presentationStyle="overFullScreen" onRequestClose={onClose} statusBarTranslucent>
     <SafeAreaView edges={["top", "bottom", "left", "right"]} style={[styles.backdrop, !review && styles.fullscreen]}>
       {review ? <Pressable testID="review-backdrop" accessibilityRole="button" accessibilityLabel="Dismiss review" onPress={onClose} style={StyleSheet.absoluteFill} /> : null}
       <View testID="review-dialog" accessibilityViewIsModal onAccessibilityEscape={onClose} style={[styles.sheet, !review && styles.fullscreenSheet]}>

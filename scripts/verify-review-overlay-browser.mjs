@@ -103,6 +103,7 @@ async function scenario(browser, origin, width, theme, mode = "visit") {
   const full = page.getByText(/FULL REVIEW START[\s\S]*FULL REVIEW END\./);
   const assertReview = async () => {
     await close.waitFor(); await full.waitFor();
+    assert.equal(await page.getByRole("dialog", { name: "Concert review", exact: true }).count(), 1, "The active review dialog has a computed accessible name");
     assert.equal(new URL(page.url()).pathname, `/post/${review.id}`);
     assert.equal(await full.textContent(), review.review);
     assert.equal(await page.getByRole("link", { name: "View event page", exact: true }).getAttribute("href"), path);
