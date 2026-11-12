@@ -244,4 +244,3 @@ try {
   for (const width of [390, 1280]) for (const theme of ["stage", "daylight"]) if (`visit-${theme}-${width}`.includes(filter)) await scenario(browser, origin, width, theme);
   for (const width of [390, 1280]) for (const mode of ["direct", "unavailable", "retry", "late", "account", "feed", "standalone"]) if (`${mode}-stage-${width}`.includes(filter)) await scenario(browser, origin, width, "stage", mode);
 } finally { await browser?.close(); await new Promise(done => server.close(done)); }
-
