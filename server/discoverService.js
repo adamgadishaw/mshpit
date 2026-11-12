@@ -58,13 +58,19 @@ function projectedGenre(artist, data = artistData(artist)) {
   return canonicalGenre(projected.genre);
 }
 
-function chartRow(name, artist, rank, extra = {}) {
+export function discoverArtistPhotoFields(artist) {
   const data = artistData(artist);
-  const firstTrack = Array.isArray(data.topTracks) ? data.topTracks[0] : null;
   const photo = (artist?.photo && !spotifyCdnHostedUrl(artist.photo) ? artist.photo : null) || artistDiscoverPhotoUri(data);
   // Reuse the profile's validated provenance, including legacy stored Spotify
   // identity. Select only display fields; never spread the metadata blob here.
   const original = !photo ? spotifyArtistPhotoModel(publicArtist(artist)) : null;
+  return { photo, ...(original ? { spotifyPhoto: original.uri, spotifyArtistUrl: original.sourceUrl,
+    photoSource: "spotify", photoCredit: original.credit, photoDisplayPolicy: "original" } : {}) };
+}
+
+function chartRow(name, artist, rank, extra = {}) {
+  const data = artistData(artist);
+  const firstTrack = Array.isArray(data.topTracks) ? data.topTracks[0] : null;
   return {
     rank,
     key: artist?.norm || null,
@@ -76,9 +82,7 @@ function chartRow(name, artist, rank, extra = {}) {
     // Same rule as db.publicArtist: Spotify artwork never takes the generic,
     // cropped photo path. An artist whose page shows a Spotify photo offers its
     // Discover-only Deezer image instead.
-    photo,
-    ...(original ? { spotifyPhoto: original.uri, spotifyArtistUrl: original.sourceUrl,
-      photoSource: "spotify", photoCredit: original.credit, photoDisplayPolicy: "original" } : {}),
+    ...discoverArtistPhotoFields(artist),
     topTrack: firstTrack?.title ? { title: firstTrack.title, url: firstTrack.url || null } : null,
     ...extra,
   };

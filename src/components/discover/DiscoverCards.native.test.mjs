@@ -16,6 +16,9 @@ function component(relative,{fontScale=1,extra=""}={}){
     "../domain/venueDiscovery.mjs":{eventDateMeta:()=>({month:"Nov",day:"2",timing:"Upcoming"}),optionalDistanceKm:()=>null,splitVenuePlace:p=>({city:p||"Toronto",region:""})},"../domain/liveDiscovery.mjs":{liveEventTitle:e=>e.title||e.artist,liveEventLineupLabel:()=>""},"../domain/eventLifecycle.mjs":{LIVE_EVENT_PHASE:{ACTIVE:"active"},liveEventPhase:()=>"upcoming"},"../domain/urls.mjs":{eventPath:()=>"/event/test"},
     "./festivalFormat.mjs":{festivalAccent:()=>["#111","#333"],festivalCountdown:()=>null,festivalDateRange:()=>"Nov 2–3",festivalLength:()=>"2 days",festivalPlace:e=>e.place||"Toronto",goingLine:()=>null,lineupIsNew:()=>false}};
   Object.assign(mocks, { "../../domain/discoverArtistArtwork.mjs": artwork, "./DiscoverArtistPhotoCredit": "PhotoCredit", "../../../assets/spotify-full-logo.svg": "SpotifyLogo" });
+  Object.assign(mocks, { "../../components/NativeTabScroll": { ScrollView: 'ScrollView' }, "../../components/Avatar": 'Avatar',
+    "../../components/SmartImage": 'SmartImage', "../../components/discover/DiscoverArtistPhotoCredit": 'PhotoCredit',
+    "../../domain/dates.mjs": { formatDate: value => value } });
   const code=transformSync(readFileSync(new URL(relative,import.meta.url),"utf8")+extra,{filename:relative,babelrc:false,configFile:false,plugins:[[require("@babel/plugin-transform-react-jsx"),{runtime:"automatic"}],require("@babel/plugin-transform-modules-commonjs")]}).code;
   const module={exports:{}};new Function("require","module","exports",code)(name=>{if(name in deps)return deps[name];if(name in mocks)return mocks[name];throw Error("Unmocked "+name);},module,module.exports);
   return{exports:module.exports,dimensions,linked,render:(fn,props)=>{cursor=0;return fn(props);}};
@@ -79,6 +82,21 @@ test("Discover renders the existing original-only artist image without proxying 
   }
   assert.deepEqual(artwork.discoverArtistArtwork({ ...row, photo: "https://cdn-images.dzcdn.net/images/artist/known.jpg" }),
     { uri: "https://cdn-images.dzcdn.net/images/artist/known.jpg", original: false });
+});
+
+test("personalized recommendation artwork uses a contained original and recovers when its URL changes", () => {
+  const c = component('../../features/artistRecommendations/ArtistRecommendationsRail.jsx', { extra: '\nexport { ArtistPhoto };' });
+  const row = { name: 'Drake', spotifyPhoto: 'https://i.scdn.co/image/fixtureDrake',
+    spotifyArtistUrl: 'https://open.spotify.com/artist/3TVXtAsR1Inumwj472S9r4', photoSource: 'spotify', photoCredit: 'Spotify', photoDisplayPolicy: 'original' };
+  let tree = c.render(c.exports.ArtistPhoto, { artist: row });
+  const image = nodes(tree).find(node => node.type === 'Image');
+  assert.equal(image.props.source.uri, row.spotifyPhoto); assert.equal(image.props.contentFit, 'contain');
+  assert.equal(Object.assign({}, ...image.props.style).borderRadius, 4, 'the original is not placed in the round avatar crop');
+  image.props.onError(); tree = c.render(c.exports.ArtistPhoto, { artist: row });
+  assert.equal(nodes(tree).some(node => node.type === 'Image'), false);
+  assert.ok(nodes(tree).some(node => node.type === 'Icon'));
+  tree = c.render(c.exports.ArtistPhoto, { artist: { ...row, spotifyPhoto: 'https://i.scdn.co/image/replacement' } });
+  assert.equal(nodes(tree).find(node => node.type === 'Image').props.source.uri, 'https://i.scdn.co/image/replacement');
 });
 test("festival artwork failure preserves backdrop, long title and the original edition destination",()=>{
   const c=component("../../features/festivals/FestivalCard.jsx",{fontScale:1.5}),edition={id:"f1",name:title,startDate:"2026-11-02",endDate:"2026-11-03",imageUrl:"file://one",headliners:["One","Two"]};let selected;const props={edition,onOpen:e=>selected=e};let tree=c.render(c.exports.default,props);assert.ok(nodes(tree).some(n=>n.type==="FestivalBackdrop"));assert.equal(nodes(tree).find(n=>n.type==="Text"&&n.props.children===title).props.numberOfLines,undefined);tree.props.onPress();assert.equal(selected,edition);nodes(tree).find(n=>n.type==="Image").props.onError();tree=c.render(c.exports.default,props);assert.equal(nodes(tree).some(n=>n.type==="Image"),false);assert.ok(nodes(tree).some(n=>n.type==="FestivalBackdrop"));

@@ -36,6 +36,8 @@ try {
         if (url.pathname === '/api/client-errors') { errors.push('Client error report'); return json({ ok: true }); }
         assert.equal(request.method(), 'GET');
         if (url.pathname === '/api/me') return json({ user: member ? navigationUser : null });
+        if (url.pathname === '/api/me/artist-recommendations') return json({ personalized: true, signalCount: 1,
+          recommendations: [{ artist: row, reason: { code: 'genre', label: 'Based on your saved Hip-Hop taste.' }, socialProof: { count: 0, people: [] } }] });
         if (url.pathname === '/api/discover/overview') return json({ chart: { rows: [row], source: 'popularity' },
           genres: [{ genre: 'Hip-Hop', count: 1 }], countries: [{ country: 'Canada', count: 1 }], catalogTotal: 1 });
         if (url.pathname === '/api/discover/chart') return json({ rows: [row], source: 'popularity' });
@@ -64,6 +66,12 @@ try {
         const fit = await card.locator('img').evaluate(img => getComputedStyle(img).objectFit);
         assert.equal(fit, 'contain');
       }
+      if (member) {
+        const recommended = page.getByRole('button', { name: 'Open Drake. Based on your saved Hip-Hop taste.', exact: true });
+        await recommended.waitFor();
+        assert.equal(await recommended.locator('img').getAttribute('src'), original.spotifyPhoto);
+        assert.equal(await recommended.locator('img').evaluate(img => getComputedStyle(img).objectFit), 'contain');
+      }
       await cards().first().scrollIntoViewIfNeeded();
       await page.screenshot({ path: resolve(out, `${name}-discover.png`) });
       await cards().first().click(); await page.waitForURL('**/artist/drake');
@@ -91,7 +99,7 @@ try {
       }
       assert.deepEqual(errors, []);
       console.log(JSON.stringify({ name, passed: true, profileAndDiscoverSameOriginal: true, popularAndGenre: true,
-        invalidMissingBrokenReplacementGeneric: true, remoteResolverCalls: apiRequests.filter(path => path === '/api/artists/resolve').length }));
+        personalizedRecommendation: member, invalidMissingBrokenReplacementGeneric: true, remoteResolverCalls: apiRequests.filter(path => path === '/api/artists/resolve').length }));
     } catch (error) {
       await page.screenshot({ path: resolve(out, `${name}-failed.png`) });
       console.error(JSON.stringify({ name, errors, body: (await page.locator('body').innerText()).slice(-2500) })); throw error;
