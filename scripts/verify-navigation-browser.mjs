@@ -473,7 +473,10 @@ async function runCase(browser, origin, item) {
       };
       await assertReview(); await snapshot("archive review direct entry");
       await page.reload({ waitUntil: "networkidle" }); await assertReview();
-      await page.getByRole("link", { name: item.width >= 620 ? "Pit home" : "Home", exact: true }).first().click();
+      // The review dialog deliberately blocks its background Home control.
+      // Navigate a real document for this permalink history/reload regression;
+      // the overlay verifier separately covers every interactive dismissal.
+      await page.goto(origin + "/", { waitUntil: "networkidle" });
       await landing(page); await assertPath(page, "/");
       await page.goBack({ waitUntil: "networkidle" }); await assertReview();
       await page.goForward({ waitUntil: "networkidle" }); await landing(page); await assertPath(page, "/");
