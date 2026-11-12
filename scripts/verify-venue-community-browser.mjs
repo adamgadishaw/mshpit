@@ -63,9 +63,11 @@ try {
       await page.getByText('Community-run page', { exact: true }).waitFor();
       if (!precise) await page.getByText('No venue ratings yet', { exact: true }).waitFor();
       if (member) {
-        await page.getByRole('button', { name: 'Rate this venue', exact: true }).click();
-        await page.getByLabel('Your venue rating', { exact: true }).press('End');
-        await page.getByLabel('Your venue rating', { exact: true }).press('ArrowLeft');
+        await page.getByRole('button', { name: precise ? 'Edit your venue rating' : 'Rate this venue', exact: true }).click();
+        if (!precise) {
+          await page.getByLabel('Your venue rating', { exact: true }).press('End');
+          await page.getByLabel('Your venue rating', { exact: true }).press('ArrowLeft');
+        } else assert.equal(await page.getByRole('textbox', { name: 'Your venue review', exact: true }).inputValue(), 'Historical authored note.');
         const draft = page.getByRole('textbox', { name: 'Your venue review', exact: true });
         await draft.fill('Clear sound with good views from the balcony.');
         await page.getByRole('button', { name: 'Save venue rating', exact: true }).click();
