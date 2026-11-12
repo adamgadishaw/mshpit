@@ -16,6 +16,8 @@ import { liveEventTitle } from "../../domain/liveDiscovery.mjs";
 import { calendarDateKey } from "../../domain/dataPolicy.mjs";
 import { artistInitials } from "../../domain/artistInitials.mjs";
 import { isHttp, proxied } from "../../lib/img";
+import { discoverArtistArtwork } from "../../domain/discoverArtistArtwork.mjs";
+import DiscoverArtistPhotoCredit from "./DiscoverArtistPhotoCredit";
 
 const GUTTER = 20;
 const GAP = 12;
@@ -83,13 +85,16 @@ export function ArtistRail({ rows = [], title = "Popular artists", onOpen, actio
   return <View style={styles.section}>
     <SectionHeader title={title} action={action} onPress={onAction} detail={detail} />
     <BrowseRail label={title} cardWidth={cardWidth}>
-      {rows.map((artist, index) => <Pressable key={artist.key || artist.artistKey || `${artist.name}:${index}`}
+      {rows.map((artist, index) => {
+        const photo = discoverArtistArtwork(artist);
+        return <View key={artist.key || artist.artistKey || `${artist.name}:${index}`} style={{ width: cardWidth }}><Pressable
         onPress={() => onOpen?.(artist)} accessibilityRole="button" accessibilityLabel={`Open ${artist.name}`}
         style={({ pressed }) => [styles.artistCard, { width: cardWidth }, pressed && styles.pressed]}>
-        <BrowseArtwork uri={artist.photo} name={artist.name} size={cardWidth} proxy style={styles.artistArt} />
+        <BrowseArtwork uri={photo?.uri} name={artist.name} size={cardWidth} proxy={!photo?.original} contain={photo?.original}
+          style={[styles.artistArt, photo?.original && styles.originalArtwork]} />
         <Text style={styles.artistName}>{artist.name}</Text>
         {artist.genre ? <Text style={styles.artistDetail}>{discoverGenreLabel(artist.genre)}</Text> : null}
-      </Pressable>)}
+      </Pressable><DiscoverArtistPhotoCredit artist={artist} /></View>; })}
     </BrowseRail>
   </View>;
 }
@@ -105,14 +110,16 @@ export function FeaturedRail({ slides = [], artists = [], width, onOpen, onOpenA
   return <View style={styles.section}>
     <SectionHeader title={eventSlides.length ? "Coming to the stage" : "In the spotlight"} />
     <BrowseRail label={eventSlides.length ? "Featured upcoming shows" : "Featured artists"} cardWidth={cardWidth} railKey={`${region}:${eventSlides.length ? "events" : "artists"}`}>
-      {entries.map((entry, index) => <Pressable key={entry.id} accessibilityRole="button"
+      {entries.map((entry, index) => {
+        const photo = entry.artist ? discoverArtistArtwork(entry.artist) : null;
+        return <View key={entry.id} style={[styles.feature, { width: cardWidth }, photo?.original && styles.originalArtwork]}><Pressable accessibilityRole="button"
         accessibilityLabel={`Open ${entry.title}${entry.artist ? "" : `. ${browseDate(entry.date)}. ${entry.venue || ""}`}. ${index + 1} of ${entries.length}`}
         onPress={() => entry.artist ? onOpenArtist?.(entry.artist) : onOpen?.(eventFromBrowseSlide(entry))}
-        style={({ pressed }) => [styles.feature, { width: cardWidth }, pressed && styles.pressed]}>
+        style={({ pressed }) => [pressed && styles.pressed]}>
         <View style={styles.featureArtwork}>
-          <BrowseArtwork uri={entry.media?.uri} name={entry.title} size={cardWidth} style={StyleSheet.absoluteFill}
-            proxy={!!entry.artist} contain={entry.media?.source === "catalog"} />
-          <View style={styles.featureTop}><View style={styles.featureBadge}><Text style={styles.featureBadgeText}>{entry.artist ? "ARTIST SPOTLIGHT" : "LIVE MUSIC"}</Text></View></View>
+          <BrowseArtwork uri={entry.artist ? photo?.uri : entry.media?.uri} name={entry.title} size={cardWidth} style={StyleSheet.absoluteFill}
+            proxy={!!entry.artist && !photo?.original} contain={photo?.original || entry.media?.source === "catalog"} />
+          {!photo?.original && <View style={styles.featureTop}><View style={styles.featureBadge}><Text style={styles.featureBadgeText}>{entry.artist ? "ARTIST SPOTLIGHT" : "LIVE MUSIC"}</Text></View></View>}
         </View>
         <View style={styles.featureCopy}>
           <Text style={styles.featureTitle}>{entry.title}</Text>
@@ -123,7 +130,7 @@ export function FeaturedRail({ slides = [], artists = [], width, onOpen, onOpenA
             <View style={styles.featureArrow}><Icon name="chevron-right" color={colors.textDim} size={17} /></View>
           </View>
         </View>
-      </Pressable>)}
+      </Pressable>{entry.artist && <DiscoverArtistPhotoCredit artist={entry.artist} />}</View>; })}
     </BrowseRail>
   </View>;
 }
@@ -398,6 +405,7 @@ const styles = StyleSheet.create({
   textAction: { minHeight: 44, paddingVertical: 10, flexDirection: "row", alignItems: "center", justifyContent: "flex-start", gap: 3, flexShrink: 1 },
   actionText: { color: colors.amber, fontFamily: "System", fontSize: 15, fontWeight: "600", flexShrink: 1 },
   selectedText: { color: colors.amber }, rail: { flexGrow: 0 }, railContent: { paddingHorizontal: GUTTER, gap: GAP, alignItems: "flex-start" },
+  originalArtwork: { borderRadius: 4 },
   artwork: { overflow: "hidden" }, artworkFallback: { ...StyleSheet.absoluteFill, alignItems: "center", justifyContent: "center" },
   initials: { color: "rgba(255,255,255,0.55)", fontFamily: "System", fontSize: 46, fontWeight: "700", letterSpacing: -1 },
   feature: { borderRadius: 18, borderCurve: "continuous", overflow: "hidden", backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.line },
