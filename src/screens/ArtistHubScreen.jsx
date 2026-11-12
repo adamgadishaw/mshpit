@@ -1,4 +1,5 @@
 import CreatorPostsSection from "./CreatorPostsPanel";
+import PrivateCalendarCleanup from "../features/creatorPosts/PrivateCalendarCleanup";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -379,6 +380,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
           </View>
 
           <ArtistIdentityStatus accountId={session?.id} loadArtistAccount={loadArtistAccount} onRequestVerification={onRequestVerification} />
+          <PrivateCalendarCleanup key={session?.id} accountId={session?.id} />
 
           <View style={[styles.columns, !wide && styles.columnsStack]}>
             {hasConfirmedArtistPage ? <View style={[styles.panel, styles.readinessPanel]}>

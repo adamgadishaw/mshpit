@@ -3,6 +3,7 @@ import { ApiError } from "../../errors.js";
 import { withImmediateWrite } from "../../databaseTransaction.js";
 import { writeTourDateBatch } from "./tourDateWriter.js";
 import { creatorUpdateError } from "../../../src/domain/creatorUpdate.mjs";
+import { scheduledCalendarMediaReference } from "../../creatorCalendarMedia.js";
 
 const fail = (message, status = 400) => {
   if (status === 409) throw new ApiError(409, message, "CONFLICT");
@@ -21,7 +22,25 @@ export function createCreatorCalendarService({ database: db, requireUser, author
   createPost, readPost, holdMedia, releaseMedia, submissionLimit, uid, now = Date.now }) {
   const eventById = id => db.prepare("SELECT * FROM tour_dates WHERE id=?").get(id);
   const receipt = (accountId, mutationId) => db.prepare("SELECT * FROM creator_calendar_publications WHERE account_id=? AND mutation_id=?").get(accountId, mutationId);
-  const projectEvent = row => ({ id: row.id, revision: row.creator_revision, venue: row.venue, place: row.place,
+  const neverPublished = row => row?.release_at === Number.MAX_SAFE_INTEGER
+    && !db.prepare("SELECT 1 FROM creator_calendar_publications WHERE event_id=? AND (state='published' OR post_id IS NOT NULL)").get(row.id);
+  const canWithdraw = (row, user) => row?.owner_id === user.id && row.source === "artist-submitted"
+    && (row.artist_key || row.artist.trim().toLowerCase()) === String(user.artist_name || "").trim().toLowerCase()
+    && row.event_status !== "cancelled" && neverPublished(row)
+    && !!db.prepare("SELECT 1 FROM creator_calendar_publications WHERE event_id=? AND account_id=? AND revision=? AND state IN ('scheduled','blocked') AND post_id IS NULL")
+      .get(row.id, user.id, row.creator_revision);
+  const cleanupMedia = (row, user) => {
+    if (row.event_status !== "cancelled" || !neverPublished(row)) return [];
+    return db.prepare(`SELECT DISTINCT asset.id FROM creator_calendar_publications cp
+      JOIN json_each(cp.payload,'$.mediaAssetIds') held JOIN media_assets asset ON asset.id=held.value
+      WHERE cp.event_id=? AND cp.account_id=? AND cp.state='cancelled' AND asset.owner_id=?
+        AND NOT EXISTS(SELECT 1 FROM post_media pm WHERE pm.asset_id=asset.id) ORDER BY asset.id`)
+      .all(row.id,user.id,user.id).map(asset=>asset.id)
+      .filter(assetId=>!scheduledCalendarMediaReference(db,{ownerId:user.id,assetId}));
+  };
+  const projectEvent = (row, user) => ({ id: row.id, revision: row.creator_revision, venue: row.venue, place: row.place,
+    withdrawal: canWithdraw(row,user) ? { entityKey: String(user.artist_name).trim().toLowerCase() } : null,
+    cleanupMediaAssetIds: cleanupMedia(row,user),
     date: row.date, ticketUrl: row.ticket_url || "", releaseAt: row.publication_state === "scheduled" || row.publication_state === "blocked" ? row.publication_release_at : row.release_at, status: row.event_status || "scheduled", publicationState: row.publication_state || null });
   const response = (ctx, row) => row.post_id && row.state === "published"
     ? { ...readPost(ctx, row.post_id), calendarReceipt: { id: row.id, eventId: row.event_id, revision: row.revision, state: row.state, mutationId: row.mutation_id } }
@@ -75,10 +94,7 @@ export function createCreatorCalendarService({ database: db, requireUser, author
         // Withdrawal is cleanup, not a new publication. Prove this identity is
         // still private and has never published before bypassing eligibility.
         // Current owner/session and revision checks above remain mandatory.
-        const privateWithdrawal = cancellation && prior.release_at === Number.MAX_SAFE_INTEGER
-          && !!db.prepare("SELECT 1 FROM creator_calendar_publications WHERE event_id=? AND account_id=? AND revision=? AND state IN ('scheduled','blocked') AND post_id IS NULL")
-            .get(prior.id, user.id, prior.creator_revision)
-          && !db.prepare("SELECT 1 FROM creator_calendar_publications WHERE event_id=? AND (state='published' OR post_id IS NOT NULL)").get(prior.id);
+        const privateWithdrawal = cancellation && canWithdraw(prior,user);
         if (privateWithdrawal) {
           const error = creatorUpdateError(update); if (error) fail(error);
           if (update.url !== (prior.ticket_url || "")) fail("Refresh the show before cancelling it.", 409);
@@ -133,7 +149,7 @@ export function createCreatorCalendarService({ database: db, requireUser, author
       if (after.length > 180) fail("Choose a valid calendar page.");
       const rows = db.prepare(`SELECT tour_dates.*,(SELECT state FROM creator_calendar_publications cp WHERE cp.event_id=tour_dates.id ORDER BY cp.revision DESC,cp.created_at DESC LIMIT 1) AS publication_state,(SELECT release_at FROM creator_calendar_publications cp WHERE cp.event_id=tour_dates.id ORDER BY cp.revision DESC,cp.created_at DESC LIMIT 1) AS publication_release_at FROM tour_dates WHERE owner_id=? AND source='artist-submitted'
         AND lower(trim(artist))=lower(trim(?)) AND id>? ORDER BY id LIMIT 31`).all(user.id, user.artist_name, after);
-      return { events: rows.slice(0,30).map(projectEvent), nextCursor: rows.length > 30 ? rows[29].id : null };
+      return { events: rows.slice(0,30).map(row=>projectEvent(row,user)), nextCursor: rows.length > 30 ? rows[29].id : null };
     },
     runDue({ at = now(), limit = 30 } = {}) {
       const rows = db.prepare("SELECT id FROM creator_calendar_publications WHERE state='scheduled' AND release_at<=? ORDER BY release_at,id LIMIT ?").all(at, Math.max(1, Math.min(100, limit)));

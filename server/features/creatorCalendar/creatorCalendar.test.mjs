@@ -357,6 +357,9 @@ for (const reason of ['memorial','identity-hold']) test('an owned never-publishe
   else db.prepare("UPDATE artist_profiles SET identity_review_status='pending' WHERE artist_key=?").run(artist.artist_name.toLowerCase());
   assert.deepEqual(creatorCalendarService.runDue({at:releaseAt+1}),{published:0,blocked:1});
   assertPrivateBlocked(artist,saved,originalPayload);
+  const listed=creatorCalendarService.list(ctx(artist)).events.find(row=>row.id===before.id);
+  assert.deepEqual(listed.withdrawal,{entityKey:artist.artist_name.toLowerCase()});
+  assert.deepEqual(listed.cleanupMediaAssetIds,[]);
   fail(()=>cancelMediaAsset(db,{ownerId:artist.id,assetId:image.assetId}),409);
   const cancel=draft(artist,{action:'cancel',eventId:before.id,expectedRevision:1,releaseAt});
   // The chooser carries the old schedule time; withdrawal never uses it to
@@ -368,6 +371,8 @@ for (const reason of ['memorial','identity-hold']) test('an owned never-publishe
   fail(()=>submit(artist,draft(artist,{action:'cancel',eventId:before.id,expectedRevision:0})),409);
   fail(()=>submit(artist,draft(artist,{action:'edit',eventId:before.id,expectedRevision:1})),409);
   const withdrawn=submit(artist,cancel);assert.equal(withdrawn.calendarReceipt.state,'cancelled');assert.equal(withdrawn.post,undefined);
+  const cleanup=creatorCalendarService.list(ctx(artist)).events.find(row=>row.id===before.id);
+  assert.equal(cleanup.withdrawal,null);assert.deepEqual(cleanup.cleanupMediaAssetIds,[image.assetId]);
   const after=db.prepare('SELECT * FROM tour_dates WHERE id=?').get(before.id);
   assert.equal(after.creator_revision,2);assert.equal(after.event_status,'cancelled');
   for(const key of ['artist','artist_key','owner_id','source','venue','place','date','ticket_url','release_at','music_evidence'])assert.equal(after[key],before[key],key);
@@ -383,6 +388,7 @@ for (const reason of ['memorial','identity-hold']) test('an owned never-publishe
     for(const key of [image.sourceKey,image.renderKey])assert.ok(db.prepare('SELECT 1 FROM media_deletion_queue WHERE object_key=?').get(key));
   }
   assert.deepEqual(submit(artist,structuredClone(cancel)),withdrawn,'lost response retry survives media cleanup and the same eligibility restriction');
+  assert.deepEqual(creatorCalendarService.list(ctx(artist)).events.find(row=>row.id===before.id).cleanupMediaAssetIds,[]);
   const mutated=structuredClone(cancel);mutated.review+=' changed';fail(()=>submit(artist,mutated),409);
   assert.deepEqual(creatorCalendarService.runDue({at:releaseAt+2}),{published:0,blocked:0});
   assert.ok(db.prepare('SELECT 1 FROM artist_profiles WHERE artist_key=?').get(artist.artist_name.toLowerCase()));
@@ -452,10 +458,25 @@ for(const attached of [false,true])test('withdrawal preserves media referenced b
   memorial(artist);assert.deepEqual(creatorCalendarService.runDue({at:releaseAt+1}),{published:0,blocked:2});
   for(let i=0;i<saved.length;i++){
     const {venue,result}=saved[i];submit(artist,draft(artist,{action:'cancel',eventId:result.calendarReceipt.eventId,expectedRevision:1,venue}));
+    assert.deepEqual(creatorCalendarService.list(ctx(artist)).events.find(row=>row.id===result.calendarReceipt.eventId).cleanupMediaAssetIds,i===0||attached?[]:[image.assetId]);
     for(const key of [image.sourceKey,image.renderKey])assert.equal(db.prepare('SELECT status FROM media_objects WHERE object_key=?').get(key).status,i===0||attached?'associated':'issued');
     if(i===0||attached)fail(()=>cancelMediaAsset(db,{ownerId:artist.id,assetId:image.assetId}),409);
   }
   if(!attached)assert.equal(cancelMediaAsset(db,{ownerId:artist.id,assetId:image.assetId}).removed,true);
+});
+
+test('private calendar cleanup metadata is current-owner-only and cannot turn published rows into withdrawal targets',()=>{
+  const artist=account('artist'),foreign=account('artist');
+  const published=submit(artist,draft(artist));
+  const pending=submit(artist,draft(artist,{venue:'Private Hall',releaseAt:Date.now()+3600000}));
+  let list=creatorCalendarService.list(ctx(artist)).events;
+  assert.equal(list.find(row=>row.id===published.calendarReceipt.eventId).withdrawal,null);
+  assert.deepEqual(list.find(row=>row.id===pending.calendarReceipt.eventId).withdrawal,{entityKey:artist.artist_name.toLowerCase()});
+  assert.deepEqual(creatorCalendarService.list(ctx(foreign)).events,[]);
+  fail(()=>creatorCalendarService.list(ctx(null)),401);
+  submit(artist,draft(artist,{action:'cancel',eventId:pending.calendarReceipt.eventId,expectedRevision:1,venue:'Private Hall'}));
+  db.prepare('UPDATE artist_profiles SET owner_id=? WHERE artist_key=?').run(foreign.id,artist.artist_name.toLowerCase());
+  fail(()=>creatorCalendarService.list(ctx(artist)),403);
 });
 
 for(const first of ['withdrawal','due'])test('private withdrawal and due worker serialize safely when '+first+' obtains the lock first',{timeout:45000},async()=>{
