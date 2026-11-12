@@ -1,3 +1,4 @@
+import CreatorCalendarFields, { newCalendarDate } from "./CreatorCalendarFields";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, View, Text, TextInput, Pressable } from "react-native";
 import { colors, radius } from "../../theme";
@@ -31,10 +32,10 @@ export default function CreatorUpdateFields({ value, accountId, onChange, onAuth
   if (current.status === "loading") return <ActivityIndicator accessibilityLabel="Checking page ownership" color={colors.amber} />;
   if (current.status === "error") return <View style={{ gap: 12 }}><Text selectable accessibilityRole="alert" style={{ color: colors.danger }}>{current.error.userMessage || current.error.message}</Text><Button title="Retry loading pages" onPress={() => setAttempt(n => n + 1)} /></View>;
   if (!entity) return <Text selectable accessibilityRole="alert" style={{ color: colors.danger }}>This account does not manage this page. Your draft is saved; reopen it with the page’s account.</Text>;
-  const change = (key, next) => onChange({ ...value, [key]: next });
+  const change = (key, next) => onChange({ ...value, [key]: next, ...(key === "kind" ? { calendar: next === "show" && value.entityType === "artist" ? value.calendar || newCalendarDate() : undefined } : {}) });
   const field = (key, label, maxLength, placeholder = "") => <View style={{ gap: 6 }} key={key}>
     <Text style={{ color: colors.text, fontWeight: "700" }}>{label}</Text>
-    <TextInput value={value[key]} onChangeText={next => change(key, next)} editable={!disabled && !readOnly} maxLength={maxLength} placeholder={placeholder} placeholderTextColor={colors.textFaint}
+    <TextInput value={value[key] || ""} onChangeText={next => change(key, next)} editable={!disabled && !readOnly && !(value.calendar?.action === "cancel" && key === "url")} maxLength={maxLength} placeholder={placeholder} placeholderTextColor={colors.textFaint}
       accessibilityLabel={label} autoCapitalize={key === "url" ? "none" : "sentences"} keyboardType={key === "url" ? "url" : "default"}
       style={{ color: colors.text, backgroundColor: colors.bgElev, borderColor: colors.line, borderWidth: 1, borderRadius: radius.md, padding: 12, minHeight: 46 }} />
   </View>;
@@ -43,10 +44,11 @@ export default function CreatorUpdateFields({ value, accountId, onChange, onAuth
     <Text style={{ color: colors.textDim }}>Share news, a show date or a release. Followers with updates enabled will hear about it in Activity.</Text>
     {!readOnly && <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>{Object.entries(CREATOR_UPDATE_KINDS).map(([kind, label]) => <Pressable key={kind} disabled={disabled} onPress={() => change("kind", kind)} accessibilityRole="button" accessibilityState={{ selected: value.kind === kind, disabled }} style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.md, backgroundColor: value.kind === kind ? colors.amber : colors.bgElev }}><Text style={{ color: value.kind === kind ? colors.bg : colors.text, fontWeight: "700" }}>{label}</Text></Pressable>)}</View>}
     {field("title", "Title", 160, "What’s new?")}
-    {(value.kind !== "update" || value.date) && <View style={{ gap: 6 }}><Text style={{ color: colors.text }}>Date{value.kind === "release" ? " (optional)" : ""}</Text>{readOnly ? <Text style={{ color: colors.text }}>{value.date || "No date"}</Text> : <View pointerEvents={disabled ? "none" : "auto"}><DatePicker value={value.date} onChange={date => change("date", date)} accessibilityLabel="Update date" /></View>}</View>}
-    {value.kind === "show" && field("location", "Venue or location", 200, "Venue, city")}
+    {(value.kind !== "update" || value.date) && <View style={{ gap: 6 }}><Text style={{ color: colors.text }}>Date{value.kind === "release" ? " (optional)" : ""}</Text>{readOnly || value.calendar?.action === "cancel" ? <Text style={{ color: colors.text }}>{value.date || "No date"}</Text> : <View pointerEvents={disabled ? "none" : "auto"}><DatePicker value={value.date} onChange={date => change("date", date)} accessibilityLabel="Update date" /></View>}</View>}
+    {value.kind === "show" && value.entityType === "artist" && !readOnly && <>{value.calendar ? <CreatorCalendarFields value={value} onChange={onChange} accountId={accountId} disabled={disabled} /> : <Button title="Add this date to your calendar" onPress={() => change("calendar", newCalendarDate())} />}</>}
+    {value.kind === "show" && (!value.calendar || readOnly) && field("location", "Venue or location", 200, "Venue, city")}
     {field("url", value.kind === "show" ? "Ticket link (optional)" : "Release or information link (optional)", 2000, "https://")}
     {!!creatorUpdateError(value) && !readOnly && <Text selectable style={{ color: colors.textDim }}>{creatorUpdateError(value)}</Text>}
-    {readOnly && <Text style={{ color: colors.textDim }}>Dates and release details stay attached to this update. Publish a new update to announce a change.</Text>}
+    {readOnly && <Text style={{ color: colors.textDim }}>This post keeps its original announcement. To change or cancel a calendar date, start a Show dates update and choose the existing show.</Text>}
   </View>;
 }

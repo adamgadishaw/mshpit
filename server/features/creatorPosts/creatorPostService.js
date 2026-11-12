@@ -33,7 +33,11 @@ export function projectedCreatorUpdate(db, post) {
   let value;
   try { value = JSON.parse(post.creator_update); } catch { return null; }
   const entity = managedCreatorEntity(db, post.user_id, value.entityType, value.entityKey);
-  return entity && !creatorUpdateError(value) ? { ...value, entityName: entity.name } : null;
+  if (!entity || creatorUpdateError(value)) return null;
+  const linked = value.calendar ? db.prepare(`SELECT td.id,td.date,td.venue,td.place,td.ticket_url,td.event_status,td.creator_revision
+    FROM creator_calendar_publications cp JOIN tour_dates td ON td.id=cp.event_id WHERE cp.post_id=?`).get(post.id) : null;
+  return { ...value, entityName: entity.name, ...(linked ? { calendarEvent: { id: linked.id, date: linked.date, venue: linked.venue,
+    place: linked.place, ticketUrl: linked.ticket_url || "", status: linked.event_status || "scheduled", revision: linked.creator_revision } } : {}) };
 }
 
 // Inbox delivery is part of the post transaction. A lost response cannot create

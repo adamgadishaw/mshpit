@@ -1,3 +1,4 @@
+import { ensureCreatorCalendarSchema } from "./features/creatorCalendar/creatorCalendarSchema.js";
 // SQLite database layer, Node's built-in node:sqlite, zero dependencies.
 // WAL mode + foreign keys + busy timeout: safe under concurrent requests and
 // survives crashes mid-write (the WAL journal replays).
@@ -2197,6 +2198,7 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_i
 ensureCommentMutationSchema(db);
 ensureSocialReactionSchema(db);
 ensureCreatorPostSchema(db);
+ensureCreatorCalendarSchema(db);
 ensureEventAccountSchema(db);
 ensureJobSchema(db);
 ensureArtistAccessRetentionSchema(db);

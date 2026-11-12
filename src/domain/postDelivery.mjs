@@ -40,10 +40,14 @@ export async function deliverPostCreate({
         // attempts remain in Diagnostics but never produce duplicate toasts.
         silent: true,
       });
+      if (body.creatorUpdate?.calendar && response?.calendarReceipt && !response.post) {
+        if (response.calendarReceipt.mutationId !== body.clientMutationId || !["scheduled", "cancelled", "blocked"].includes(response.calendarReceipt.state)) throw new Error("The calendar save could not be confirmed. Retry your saved draft.");
+        return response;
+      }
       if (body.creatorUpdate) {
         const expected = creatorUpdateDraft(body.creatorUpdate);
         if (!response?.post?.id || response.id !== response.post.id || !expected
-          || Object.entries(expected).some(([key, value]) => response.post.creatorUpdate?.[key] !== value)) {
+          || Object.entries(expected).some(([key, value]) => JSON.stringify(response.post.creatorUpdate?.[key]) !== JSON.stringify(value))) {
           throw new Error("The page update could not be confirmed. Your draft is saved; retry before starting another post.");
         }
       }

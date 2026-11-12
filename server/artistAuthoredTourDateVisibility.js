@@ -9,7 +9,10 @@ export function artistAuthoredTourDateVisibleSql(alias = "td", viewerSql = "NULL
     throw new TypeError("Invalid artist-authored tour-date SQL scope");
   }
   const identity = `COALESCE(${alias}.artist_key,LOWER(TRIM(${alias}.artist)))`;
-  return `(${withheldArtistTourDateSql(alias)} AND (${alias}.owner_id IS NULL OR (NOT EXISTS (
+  return `((${alias}.owner_id IS NULL OR EXISTS (SELECT 1 FROM users visibility_owner WHERE visibility_owner.id=${alias}.owner_id
+    AND (COALESCE(visibility_owner.profile_audience,'everyone')='everyone' OR visibility_owner.id=${viewerSql}
+      OR (${viewerSql} IS NOT NULL AND visibility_owner.profile_audience='members'))))
+    AND ${withheldArtistTourDateSql(alias)} AND (${alias}.owner_id IS NULL OR (NOT EXISTS (
     SELECT 1 FROM artist_profiles held_profile
     WHERE held_profile.artist_key=${identity} AND held_profile.owner_id=${alias}.owner_id
       AND held_profile.identity_review_status IN ('pending','rejected')

@@ -76,7 +76,7 @@ export function eventAccountRoutes({ database: db, requireUser, requireAdmin, ra
       const entity = targetFor(ctx.query?.kind, ctx.query?.id), page = registry(entity.entityKey);
       const member = ctx.user ? current(ctx) : null;
       const following = member && db.prepare("SELECT following,notify_updates FROM creator_follows WHERE account_id=? AND entity_type='event' AND entity_key=?").get(member.id, entity.entityKey);
-      return { entity, claimed: !!page?.owner_id && page.status === "active", canManage: !!member && !!managedCreatorEntity(db, member.id, "event", entity.entityKey),
+      return { entity, canFollow: !page || page.status === "active", claimed: !!page?.owner_id && page.status === "active", canManage: !!member && !!managedCreatorEntity(db, member.id, "event", entity.entityKey),
         canRequest: !!member && ["fan", "event"].includes(member.role) && (!page || (!page.owner_id && page.status === "active")),
         following: !!following?.following, notifyUpdates: following?.notify_updates !== 0, claim: member ? ownClaim(member.id, entity.entityKey) : null };
     },

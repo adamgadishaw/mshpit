@@ -252,8 +252,8 @@
   ],
   "unexplainedEmptyCatchSignaturesByFile": {
     "server/api.js": {
-      "count": 10,
-      "fingerprint": "0eeadf6b7593a1b82d1e"
+      "count": 9,
+      "fingerprint": "12697a1994f18e1889d7"
     },
     "server/cacheWarmer.js": {
       "count": 1,

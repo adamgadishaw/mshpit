@@ -14,6 +14,13 @@ export function creatorUpdateError(value) {
   if (!value.title.trim()) return "Add a title for your followers.";
   if ((value.kind === "show" && !value.date) || (value.date && (toIsoDate(value.date) !== value.date))) return "Choose a valid date (YYYY-MM-DD).";
   if (value.kind === "show" && !value.location.trim()) return "Add the venue or location for this show.";
+  if (value.calendar) {
+    const c = value.calendar;
+    if (value.entityType !== "artist" || value.kind !== "show" || !["create", "edit", "cancel"].includes(c.action)) return "Choose an artist calendar action.";
+    if (typeof c.venue !== "string" || !c.venue.trim() || typeof c.place !== "string" || !c.place.trim()) return "Add a venue, city and country.";
+    if (c.action !== "create" && (!c.eventId || !Number.isSafeInteger(c.expectedRevision))) return "Choose one of your calendar shows.";
+    if (!Number.isSafeInteger(c.releaseAt) || c.releaseAt < 0) return "Choose a valid publication date.";
+  }
   if (value.url) {
     try {
       const url = new URL(value.url);

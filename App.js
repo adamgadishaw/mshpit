@@ -1204,8 +1204,10 @@ function Root() {
 
   const onAddLog = async (log) => {
     const composerId = nav.composerId;
+    const confirmCalendar = log.creatorUpdate?.calendar ? (await import("./src/features/creatorPosts/confirmCalendarReceipt.js")).confirmCalendarReceipt : null;
     const result = await addLog(log);
     if (result?.ok === false) return result;
+    if (result?.calendarReceipt && isActiveComposer(stackRef.current, composerId)) { confirmCalendar?.(result.calendarReceipt); finishComposerBack(); return result; }
     // A response can arrive after the user has left or another composer has
     // opened. Publish still succeeded, but that stale operation no longer owns
     // navigation and must not pull the user away from their current screen.

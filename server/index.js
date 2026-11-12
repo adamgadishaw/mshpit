@@ -12,7 +12,7 @@ import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser, pruneMissingArtists, DATABASE_DIRECTORY, DATABASE_PATH } from "./db.js";
-import { artistDeathWatchService, eraseAccountForInactivity, replayPrivacyJournalOnRestore, routes, startArtistNews, startArtistPhotos, startCatalogResearch, startFestivals, startNewsDesk, startPrivacyJournal, startVideoProcessingRetries, startWebProfiles, startSearchGrowth } from "./api.js";
+import { artistDeathWatchService, eraseAccountForInactivity, replayPrivacyJournalOnRestore, routes, startCreatorCalendar, startArtistNews, startArtistPhotos, startCatalogResearch, startFestivals, startNewsDesk, startPrivacyJournal, startVideoProcessingRetries, startWebProfiles, startSearchGrowth } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { stopVideoFinalizeJobs } from "./videoFinalizeJobs.js";
 import { readAuthorizedRequest } from "./requestAuthorization.js";
@@ -1128,6 +1128,7 @@ async function startServer() {
     additionalSchedulers.set("video-processing", startBackgroundRuntime("/startup/video-processing", () => startVideoProcessingRetries())); // resumes clip conversions after a restart and retries failed attempts
     additionalSchedulers.set("catalog-research", startBackgroundRuntime("/startup/catalog-research", () => startCatalogResearch())); // Claude web research for empty artist/venue pages; needs ANTHROPIC_API_KEY
     additionalSchedulers.set("web-profiles", startBackgroundRuntime("/startup/web-profiles", () => startWebProfiles())); // Ticketmaster performer/venue records + Wikidata ID check; uses TICKETMASTER_KEY
+    additionalSchedulers.set("creator-calendar", startBackgroundRuntime("/startup/creator-calendar", () => startCreatorCalendar()));
     additionalSchedulers.set("artist-news", startBackgroundRuntime("/startup/artist-news", () => startArtistNews())); // new releases (Deezer, keyless) + new tour dates for followers
     additionalSchedulers.set("news-desk", startBackgroundRuntime("/startup/news-desk", () => startNewsDesk())); // confirmed music news from @news_mod; existing news/Claude caps remain authoritative
     additionalSchedulers.set("festivals", startBackgroundRuntime("/startup/festivals", () => startFestivals())); // festival editions and lineups (Ticketmaster), histories (Wikipedia); needs TICKETMASTER_KEY

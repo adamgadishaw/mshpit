@@ -64,8 +64,9 @@ try {
       await page.getByLabel("Title", { exact: true }).fill("New dates for the autumn tour");
       await page.getByRole("button", { name: "Show dates", exact: true }).click();
       assert.equal(await postButton.isDisabled(), true);
-      await page.getByRole("radio", { name: "Day 20", exact: true }).click();
-      await page.getByLabel("Venue or location", { exact: true }).fill("The Phoenix, Toronto");
+      await page.getByRole("radio", { name: "Day 20", exact: true }).first().click();
+      await page.getByLabel("Venue", { exact: true }).fill("The Phoenix");
+      await page.getByLabel("City and country", { exact: true }).fill("Toronto, Canada");
       await page.getByLabel("Ticket link (optional)", { exact: true }).fill("javascript:alert(1)");
       assert.equal(await postButton.isDisabled(), true);
       await page.getByLabel("Ticket link (optional)", { exact: true }).fill("https://example.test/tour");
@@ -81,7 +82,7 @@ try {
       await page.getByRole("button", { name: "Post to followers", exact: true }).first().click();
       await page.getByRole("button", { name: "Resume New dates for the autumn tour", exact: true }).click();
       assert.equal(await page.getByLabel("Title", { exact: true }).inputValue(), "New dates for the autumn tour");
-      assert.equal(await page.getByLabel("Venue or location", { exact: true }).inputValue(), "The Phoenix, Toronto");
+      assert.equal(await page.getByLabel("Venue", { exact: true }).inputValue(), "The Phoenix");
       await page.getByRole("button", { name: "Photo / video", exact: true }).click();
       const choosing = page.waitForEvent("filechooser");
       await page.getByRole("button", { name: "Add media", exact: true }).click();

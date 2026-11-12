@@ -1,5 +1,13 @@
 import { createPublicVenueReviewService } from "./features/seo/publicVenueReviews.js";
 import { venueReviewVisibilitySql } from "./features/seo/venueReviewVisibility.js";
+import { scheduledCalendarMediaReference } from "./creatorCalendarMedia.js";
+import { resolvedOwnedMediaKey } from "./mediaDeletion.js";
+import { withImmediateWrite } from "./databaseTransaction.js";
+import { creatorCalendarRoutes } from "./features/creatorCalendar/creatorCalendarRoutes.js";
+import { resolveCanonicalEventEntity } from "./features/eventAccounts/eventAccountTargets.js";
+import { writeTourDateBatch } from "./features/creatorCalendar/tourDateWriter.js";
+import { createCreatorCalendarService } from "./features/creatorCalendar/creatorCalendarService.js";
+import { startPeriodicJob } from "./periodicJobScheduler.js";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
 import { canAccessTheme, isThemeKey } from "../src/domain/themeAccess.mjs";
 import { calendarEventTiming } from "../src/domain/calendarEventTiming.mjs";
@@ -128,7 +136,7 @@ import { startFestivalScheduler } from "./features/festivals/festivalScan.js";
 import { newsLiveRoutes } from "./features/newsDesk/newsLiveRoutes.js";
 import { providerProfileRoutes } from "./features/providerProfiles/providerProfileRoutes.js";
 import { crewRoutes } from "./features/crew/crewRoutes.js";
-import { assertCreatorUpdate, persistCreatorUpdate, projectedCreatorUpdate } from "./features/creatorPosts/creatorPostService.js";
+import { assertCreatorUpdate, persistCreatorUpdate, projectedCreatorUpdate, managedCreatorEntity } from "./features/creatorPosts/creatorPostService.js";
 import { eventAccountRoutes } from "./features/eventAccounts/eventAccountRoutes.js";
 import { creatorPostRoutes } from "./features/creatorPosts/creatorPostRoutes.js";
 import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoutes.js";
@@ -743,17 +751,7 @@ function analyticsEventsRoute(ctx, { requireIds = false } = {}) {
   return ingestAnalyticsBatch({ user: ctx.user, events, requireIds, at: now() });
 }
 
-function atomicWrite(work) {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const result = work();
-    db.exec("COMMIT");
-    return result;
-  } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
-    throw error;
-  }
-}
+function atomicWrite(work) { return withImmediateWrite(db, work); }
 
 function artistIdentityMatches(user, key) {
   return user?.role === "artist" && normName(user.artist_name) === normName(key);
@@ -1311,6 +1309,28 @@ function cleanTourDateBatch(ctx, user) {
     throw new ApiError(400, "Release the dates before the first show and within three years.", "VALIDATION_FAILED");
   }
   return { artist, dates, releaseAt };
+}
+
+function validatedTourDateBatch(ctx, user) {
+    const batch = cleanTourDateBatch(ctx, user);
+    if (user.role === "artist") assertArtistManagementCandidate(user, normName(batch.artist));
+    if (user.role !== "admin" && isLegacyArtistProfile(normName(batch.artist), batch.artist)) {
+      throw legacyArtistReadOnlyError(
+        "Legacy artist pages do not accept artist-submitted tour or concert dates.",
+      );
+    }
+    const includesCurrentOrFutureDate = batch.dates.some((entry) => isCurrentOrUpcomingLiveEvent({
+      date: entry.date,
+      eventEndDate: entry.eventEndDate,
+    }, now()));
+    if (includesCurrentOrFutureDate && artistHasPublishedMemorial(db, {
+      artistKey: normName(batch.artist),
+      artist: batch.artist,
+    })) {
+      throw new ApiError(409, "Future dates cannot be published for a memorialized artist.", "ARTIST_MEMORIALIZED");
+    }
+
+  return batch;
 }
 
 // Ensure a unique handle derived from a public-safe base string.
@@ -4767,6 +4787,41 @@ const projectManagedUser = createRelationshipManagementProjection({
   visibleProfileOrNull, blockedEitherWay, projectUser: publicUser,
 });
 
+const CALENDAR_PUBLISH = Symbol("calendar-publish");
+export const creatorCalendarService = createCreatorCalendarService({ database: db, requireUser, uid, now,
+  authorize: user => {
+    assertArtistPublicationAllowed(user);
+    if (!managedCreatorEntity(db, user.id, "artist", normName(user.artist_name))) throw new ApiError(403, "This account no longer manages its artist page.", "FORBIDDEN");
+  },
+  validatePost: (user, body) => canonicalCreateRequest(user, body),
+  validateBatch: validatedTourDateBatch,
+  submissionLimit: ctx => limit(ctx, "creator-calendar", 20, 60 * 60 * 1000),
+  createPost: (ctx, body) => routes["POST /api/posts"]({ ...ctx, body, [CALENDAR_PUBLISH]: true }),
+  readPost: (ctx, id) => ({ id, ...routes["GET /api/posts/:id"]({ ...ctx, params: { id } }) }),
+  holdMedia: (user, body) => {
+    const request = canonicalCreateRequest(user, body);
+    markOwnedMediaAssociated(db, { ownerId: user.id, urls: request.values.photos, at: now() });
+    for (const record of assetObjectRecords(db, request.values.mediaSelection?.ids || [])) {
+      if (record.ownerId !== user.id) throw new ApiError(403, "Choose your own uploaded media.", "FORBIDDEN");
+      db.prepare("UPDATE media_objects SET status='associated',associated_at=COALESCE(associated_at,?),updated_at=? WHERE owner_id=? AND object_key=? AND status IN ('issued','associated')")
+        .run(now(),now(),user.id,record.objectKey);
+    }
+  },
+  releaseMedia: (accountId, body) => {
+    const ids = (body.mediaAssetIds || []).filter(id => !scheduledCalendarMediaReference(db, { ownerId: accountId, assetId: id })
+      && !db.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(id));
+    const keys = assetObjectRecords(db, ids).filter(row => row.ownerId === accountId).map(row => row.objectKey);
+    for (const url of unreferencedOwnedMediaUrls(db, { ownerId: accountId, urls: body.photos || [] })) {
+      const key = resolvedOwnedMediaKey(db, url, { ownerId: accountId }).key; if (key) keys.push(key);
+    }
+    for (const key of new Set(keys)) db.prepare("UPDATE media_objects SET status='issued',updated_at=? WHERE owner_id=? AND object_key=? AND status='associated'").run(now(),accountId,key);
+  },
+});
+export function startCreatorCalendar() {
+  return startPeriodicJob({ initialDelayMs: 1000, intervalMs: 60000,
+    run: () => creatorCalendarService.runDue(), report: error => console.error("[creator-calendar]", error.code || "publication failed") });
+}
+
 export const routes = {
   ...jobRoutes({ database: db, ApiError, assertSafeAuthoredText, requireAdmin, rateLimit: limit, now }),
   ...socialReactionRoutes({ database: db, ApiError, requireUser, rateLimit: limit, atomicWrite, addNotif, now }),
@@ -6903,56 +6958,13 @@ export const routes = {
     const user = requireUser(ctx);
     assertArtistPublicationAllowed(user);
     limit(ctx, "tour-date-batch", 20, 60 * 60 * 1000);
-    const batch = cleanTourDateBatch(ctx, user);
-    if (user.role === "artist") assertArtistManagementCandidate(user, normName(batch.artist));
-    if (user.role !== "admin" && isLegacyArtistProfile(normName(batch.artist), batch.artist)) {
-      throw legacyArtistReadOnlyError(
-        "Legacy artist pages do not accept artist-submitted tour or concert dates.",
-      );
-    }
-    const includesCurrentOrFutureDate = batch.dates.some((entry) => isCurrentOrUpcomingLiveEvent({
-      date: entry.date,
-      eventEndDate: entry.eventEndDate,
-    }, now()));
-    if (includesCurrentOrFutureDate && artistHasPublishedMemorial(db, {
-      artistKey: normName(batch.artist),
-      artist: batch.artist,
-    })) {
-      throw new ApiError(409, "Future dates cannot be published for a memorialized artist.", "ARTIST_MEMORIALIZED");
-    }
+    const batch = validatedTourDateBatch(ctx, user);
     const writtenAt = now();
-    const source = user.role === "artist" ? "artist-submitted" : "admin-submitted";
     const rows = atomicWrite(() => {
       ctx.assertCurrentSession?.();
       if (user.role === "artist") claimArtistManagement(q.userById.get(user.id), normName(batch.artist));
       assertArtistPublicationAllowed(user);
-      return batch.dates.map((entry) => {
-        const existing = db.prepare(`SELECT id FROM tour_dates
-          WHERE owner_id=? AND lower(artist)=lower(?) AND lower(venue)=lower(?)
-            AND lower(place)=lower(?) AND date=? LIMIT 1`)
-          .get(user.id, batch.artist, entry.venue, entry.place, entry.date);
-        const updatedAt = Math.max(writtenAt, Date.parse(`${entry.date}T00:00:00.000Z`) || writtenAt);
-        const id = existing?.id || uid("td");
-        if (existing) {
-          db.prepare(`UPDATE tour_dates SET artist=?,venue=?,place=?,lat=NULL,lng=NULL,ticket_url=?,sold_out=0,
-            source=?,updated_at=?,release_at=?,event_name=?,event_kind=?,event_end_date=?,billed_artists=?,
-            music_evidence=?,music_qualified=1,event_source_url=? WHERE id=? AND owner_id=?`)
-            .run(batch.artist, entry.venue, entry.place, entry.ticketUrl, source, updatedAt, batch.releaseAt,
-              entry.eventName || null, entry.eventKind || "concert", entry.eventEndDate || null,
-              JSON.stringify(entry.billedArtists || []), entry.eventName ? "staff:verified-official-source" : null,
-              entry.eventSourceUrl || null, id, user.id);
-        } else {
-          db.prepare(`INSERT INTO tour_dates
-            (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,owner_id,release_at,
-              event_name,event_kind,event_end_date,billed_artists,music_evidence,music_qualified,event_source_url)
-            VALUES (?,?,?,?,NULL,NULL,?,?,0,?,?,?,?,?,?,?,?,?,1,?)`)
-            .run(id, batch.artist, entry.venue, entry.place, entry.date, entry.ticketUrl, source, updatedAt, user.id, batch.releaseAt,
-              entry.eventName || null, entry.eventKind || "concert", entry.eventEndDate || null,
-              JSON.stringify(entry.billedArtists || []), entry.eventName ? "staff:verified-official-source" : null,
-              entry.eventSourceUrl || null);
-        }
-        return db.prepare("SELECT * FROM tour_dates WHERE id=?").get(id);
-      });
+      return writeTourDateBatch(db, { batch, user, uid, at: writtenAt });
     });
     return { tourDates: rows.map(tourDateJson) };
   },
@@ -7249,7 +7261,10 @@ export const routes = {
     };
   },
 
+  ...creatorCalendarRoutes(creatorCalendarService),
+
   "POST /api/posts": (ctx) => {
+    if (ctx.body?.creatorUpdate?.calendar && !ctx[CALENDAR_PUBLISH]) return creatorCalendarService.submit(ctx);
     const u = requireUser(ctx);
     assertArtistPublicationAllowed(u);
     const mutationId = clientMutationId(ctx.body?.clientMutationId);
@@ -10181,7 +10196,7 @@ export const routes = {
   }),
   ...eventAccountRoutes({ database: db, requireUser, requireAdmin, rateLimit: limit, moderationRecord, uid, pageRequest, finishPage, now }),
   ...creatorPostRoutes({ database: db, requireUser, rateLimit: limit, artistIdentity: fanClubArtistIdentity,
-    resolveUnclaimedEntity: (type, key) => type === 'venue' ? canonicalVenueCreatorTarget(publicVenueSnapshotForPath, key) : null,
+    resolveUnclaimedEntity: (type, key) => type === 'venue' ? canonicalVenueCreatorTarget(publicVenueSnapshotForPath, key) : resolveCanonicalEventEntity(db, type, key),
     readPost: (ctx, id) => routes["GET /api/posts/:id"]({ ...ctx, params: { id } }) }),
   ...artistUpdatesRoutes({
     ApiError,

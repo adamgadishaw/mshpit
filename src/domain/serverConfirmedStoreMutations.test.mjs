@@ -65,7 +65,7 @@ test("notification read is server-first and never clears uncaptured rows", () =>
 
 test("a post response cannot enter a different account's local feed", () => {
   const source = mutationSlice("const addLog =", "const reconcileEditedPost =");
-  const success = source.slice(source.indexOf(".then(({ id, post })"), source.indexOf(".catch((error)"));
+  const success = source.slice(source.indexOf(".then(({ id, post, calendarReceipt })"), source.indexOf(".catch((error)"));
   const failure = source.slice(source.indexOf(".catch((error)"));
 
   assert.match(source, /const postingMutation = postingActor[\s\S]*captureAccountMutation\(postingActor\.id, accountMutationEpochRef\.current\)/);

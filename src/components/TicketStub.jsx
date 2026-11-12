@@ -1,4 +1,5 @@
-import { useContext, useMemo, useState } from "react";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+import { Suspense, useContext, useMemo, useState } from "react";
 import SupportingActsLine from "./SupportingActsLine";
 import { View, Text, StyleSheet, Pressable, Alert, Linking, Platform } from "react-native";
 import { Image as ExpoImage } from "expo-image";
@@ -44,6 +45,8 @@ import {
 } from "../domain/onlineReview.mjs";
 import { buildPostShareModel } from "../domain/socialShareCard.mjs";
 import { reviewRatingSummary } from "../domain/reviewRatingSummary.mjs";
+
+const CreatorUpdateCard = lazyWithRetry(() => import("./CreatorUpdateCard"), "CreatorUpdateCard");
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -419,12 +422,7 @@ export default function TicketStub({ log, mediaViewable = null, compactContent =
           </>
         ) : null}
 
-        {!!log.creatorUpdate && <View style={{ gap: 8, paddingVertical: 12 }}>
-          <Text style={{ color: colors.amber, fontWeight: "700" }}>{log.creatorUpdate.entityName} · {log.creatorUpdate.kind === "show" ? "Show date" : log.creatorUpdate.kind === "release" ? "Release" : "Update"}</Text>
-          <Text selectable style={{ color: colors.text, fontWeight: "800", fontSize: 20 }}>{log.creatorUpdate.title}</Text>
-          {!!log.creatorUpdate.date && <Text selectable style={{ color: colors.textDim }}>{formatDate(log.creatorUpdate.date)}{log.creatorUpdate.location ? ` · ${log.creatorUpdate.location}` : ""}</Text>}
-          {!!log.creatorUpdate.url && <PublicTextLink href={log.creatorUpdate.url} onNavigate={() => { void Linking.openURL(log.creatorUpdate.url).catch(() => Alert.alert("Link unavailable", "This link could not be opened. Try again.")); }} style={{ color: colors.amber }}>{log.creatorUpdate.kind === "show" ? "Tickets and details" : "Find out more"}</PublicTextLink>}
-        </View>}
+        {!!log.creatorUpdate && <Suspense fallback={<Text style={{ color: colors.textDim }}>Loading update…</Text>}><CreatorUpdateCard update={log.creatorUpdate} /></Suspense>}
         {!!log.review && (
           <ExpandableText
             key={`status-copy:${log.id}`}

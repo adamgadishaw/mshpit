@@ -1,3 +1,4 @@
+import { exportCreatorCalendar } from "../creatorCalendar/creatorCalendarSchema.js";
 import { exportEventClaims } from "../eventAccounts/eventAccountSchema.js";
 import { exportCreatorRelationships } from "../creatorPosts/creatorEntityOwnership.js";
 import { exportArtistVerification } from "../artistAccounts/artistVerificationExport.js";
@@ -221,7 +222,7 @@ export function accountPrivacyRoutes({
           .map((row) => ({ from: accountReference(row.from_id), text: row.text, removed: !!row.removed, createdAt: row.created_at })),
         messageAcceptances: database.prepare("SELECT other_id,accepted_at,source FROM dm_acceptances WHERE user_id=? ORDER BY accepted_at DESC,other_id").all(user.id)
           .map((row) => ({ other: accountReference(row.other_id), acceptedAt: row.accepted_at, source: row.source })),
-        creatorAccount: { ...exportCreatorRelationships(database, user.id), eventClaims: exportEventClaims(database, user.id) },
+        creatorAccount: { ...exportCreatorRelationships(database, user.id), eventClaims: exportEventClaims(database, user.id), calendar: exportCreatorCalendar(database, user.id) },
         artistAccount: {
           ...exportArtistVerification(database, user.id),
           requests: database.prepare("SELECT id,artist_name,note,status,created_at FROM artist_requests WHERE user_id=? ORDER BY created_at DESC").all(user.id)

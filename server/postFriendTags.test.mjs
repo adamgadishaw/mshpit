@@ -367,5 +367,5 @@ test("feed and profile pages batch project normalized friend tags", () => {
   assert.doesNotMatch(projector, /for \(const id of/,
     "page projection must not issue one user/block query per tagged account");
   assert.match(source.slice(source.indexOf('"GET \/api\/feed"'), source.indexOf('"GET \/api\/feed\/for-you"')), /withTaggedPeople/);
-  assert.match(source.slice(source.indexOf('"GET \/api\/users\/:id\/posts"'), source.indexOf('"POST \/api\/posts"')), /withTaggedPeople/);
+  assert.match(source.slice(source.indexOf('"GET \/api\/users\/:id\/posts"'), source.indexOf('"POST \/api\/posts"', source.indexOf('"GET \/api\/users\/:id\/posts"'))), /withTaggedPeople/);
 });

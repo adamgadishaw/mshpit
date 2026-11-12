@@ -7,5 +7,5 @@ export function creatorUpdateDraft(value) {
   if (!value || !["artist", "venue", "event"].includes(value.entityType) || !text(value.entityKey)) return null;
   return { version: 1, entityType: value.entityType, entityKey: text(value.entityKey),
     kind: Object.hasOwn(CREATOR_UPDATE_KINDS, value.kind) ? value.kind : "update",
-    title: text(value.title), date: text(value.date), location: text(value.location), url: text(value.url) };
+    title: text(value.title), date: text(value.date), location: text(value.location), url: text(value.url), ...(value.calendar ? { calendar: value.calendar } : {}) };
 }

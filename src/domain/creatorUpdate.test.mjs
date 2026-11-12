@@ -33,3 +33,11 @@ test("creator updates open the exact existing post, separately from artist news"
   assert.deepEqual(notificationDestination({ type: "creator_update", postId: "p_creator" }), { kind: "post", postId: "p_creator" });
   assert.deepEqual(notificationDestination({ type: "creator_update" }), { kind: "unavailable" });
 });
+
+test("calendar drafts preserve exact revision, schedule, media and submission identity",()=>{
+  const update=creatorUpdateDraft({...base,calendar:{action:"edit",eventId:"td_abc",expectedRevision:3,venue:"Hall",place:"Toronto, Canada",releaseAt:2000000000000}});
+  const draft=normalizeComposerDraft({postType:"status",submissionId:"calendar_retry_123",creatorUpdate:update,photos:["https://media.example.com/photo.jpg"]});
+  const restored=normalizeComposerDraft(JSON.parse(JSON.stringify(draft)));assert.deepEqual(restored,draft);
+  assert.equal(creatorUpdateError(update),null);assert.ok(creatorUpdateError({...update,entityType:"venue"}));
+  assert.deepEqual(buildStatusCreateBody({...restored,id:restored.submissionId}).creatorUpdate.calendar,update.calendar);
+});

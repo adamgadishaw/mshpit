@@ -80,7 +80,6 @@ import { buildMemoryCreateBody, buildMemoryEditBody, buildReviewCreateBody, buil
 import { isInPersonConcertReview } from "./domain/onlineReview.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
-import { deliverPostCreate } from "./domain/postDelivery.mjs";
 import { activeYouTubeLookupStatus, classifyResolve, requestYouTubeTrackOnce, shouldUseYouTubeLookupCache, CACHE_MS } from "./domain/playback.mjs";
 import { recommendTracks as recommendFromCandidates } from "./domain/recommend.mjs";
 import { trackKey, trackMetadataKey, trackTupleKey, youtubeLookupCacheKey } from "./domain/trackIdentity.mjs";
@@ -3589,7 +3588,7 @@ export function StoreProvider({ children }) {
     // Ticket cards carry a server-owned event snapshot. Do not flash the client
     // preview in Feed/Profile before the server confirms the exact Show identity;
     // ordinary posts keep their existing optimistic publishing experience.
-    if (!safe.attendanceTicket) {
+    if (!safe.attendanceTicket && !safe.creatorUpdate?.calendar) {
       setFeed((f) => [safe, ...f]);
       if (postingActor?.id) upsertProfileHistoryPost(postingActor.id, postingActor.id, safe);
     }
@@ -3616,18 +3615,19 @@ export function StoreProvider({ children }) {
           }
           : buildStatusCreateBody(safe)
         : buildReviewCreateBody(safe);
-      return deliverPostCreate({
+      return import("./domain/postDelivery.mjs").then(({ deliverPostCreate }) => deliverPostCreate({
         apiCall: api,
         context: memorialMemory ? "Sharing your fan memory" : kind === "status" ? "Posting your update" : "Posting your concert review",
         body,
         expectedAccountId: postingActor.id,
-      })
-        .then(({ id, post }) => {
+      }))
+        .then(({ id, post, calendarReceipt }) => {
           if (!accountMutationIsCurrent(
             postingMutation,
             sessionRef.current?.id,
             accountMutationEpochRef.current,
           )) return { ok: true, id: id || localId, post: null, stale: true };
+          if (calendarReceipt && !post) return { ok: true, calendarReceipt, post: null };
           feedMutationRevisionRef.current += 1;
           let canonicalPost = null;
           if (post) {

@@ -19,7 +19,8 @@ function account(role = "fan", name = "") {
 function owner(type = "artist") {
   const name = `Fixture Page ${sequence + 1}`;
   const actor = account(type, type === "artist" ? name : "");
-  const key = name.toLowerCase();
+  const key = type === "event" ? `festival:fixture-event-${sequence}` : name.toLowerCase();
+  if (type === "event") db.prepare("INSERT INTO festivals(slug,name,updated_at) VALUES (?,?,?)").run(key.slice(9), name, Date.now());
   if (type === "artist") db.prepare("INSERT INTO artist_profiles(artist_key,owner_id,feed_enabled,updated_at) VALUES (?,?,1,?)").run(key, actor.id, Date.now());
   else db.prepare("INSERT INTO creator_entities(entity_type,entity_key,name,owner_id) VALUES (?,?,?,?)").run(type, key, name, actor.id);
   return { actor, update: { version: 1, entityType: type, entityKey: key, kind: "update", title: "A new chapter", date: "", location: "", url: "" } };

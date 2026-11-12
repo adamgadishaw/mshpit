@@ -1,3 +1,4 @@
+import { scheduledCalendarMediaReference } from "./creatorCalendarMedia.js";
 import { getMediaConfig, mediaBucketForScope, mediaConfigured, presignS3Request } from "./media.js";
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
@@ -376,7 +377,7 @@ export function unreferencedOwnedMediaUrls(database, {
     ) WHERE value=? LIMIT 1`);
   const result = [];
   for (const value of candidates.values()) {
-    if (retainedArtistMedia(database, { ownerId: owner, url: value })) continue;
+    if (retainedArtistMedia(database, { ownerId: owner, url: value }) || scheduledCalendarMediaReference(database, { ownerId: owner, url: value })) continue;
     if (!stillUsed.get(owner, owner, owner, owner, owner, owner, owner, value)) result.push(value);
   }
   return result;
@@ -520,7 +521,7 @@ export function enqueueExpiredMediaTickets(database, {
         WHERE mo.owner_id=?`).all(asset.id, asset.id, row.owner_id);
       const keys = objectRows.map((entry) => entry.object_key)
         .filter((key) => trustedMediaQueueKey(key, row.owner_id));
-      if (asset.attached) {
+      if (asset.attached || scheduledCalendarMediaReference(database, { ownerId: row.owner_id, assetId: asset.id })) {
         if (keys.length) {
           const placeholders = keys.map(() => "?").join(",");
           database.prepare(`UPDATE media_objects SET status='associated',associated_at=COALESCE(associated_at,?),updated_at=?

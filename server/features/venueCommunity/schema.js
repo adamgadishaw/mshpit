@@ -25,9 +25,13 @@ export function ensureVenueCommunitySchema(db) {
     CREATE INDEX IF NOT EXISTS idx_venue_claim_user ON venue_claims(user_id,venue_path,created_at DESC,id DESC);
     CREATE INDEX IF NOT EXISTS idx_venue_claim_all ON venue_claims(created_at DESC,id DESC);
     CREATE INDEX IF NOT EXISTS idx_venue_claim_account ON venue_claims(user_id,created_at DESC,id DESC);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_venue_canonical_rating ON venue_reviews(venue_key,user_id)
-      WHERE venue_key LIKE '/venue/%' AND removed=0;
+    DROP INDEX IF EXISTS idx_venue_canonical_rating;
+    CREATE INDEX IF NOT EXISTS idx_venue_member_history ON venue_reviews(venue_key,user_id)
+      WHERE removed=0;
     `);
+    // The legacy POST endpoint accepted repeated canonical keys. Keep every
+    // historical review and its media/report references; uniqueness belongs to
+    // the canonical writer's serialized select/update, not to historical rows.
     const columns = new Set(db.prepare('PRAGMA table_info(venue_claims)').all().map(row => row.name));
     for (const [name, type] of [['conversion_consent', 'TEXT'], ['conversion_consent_at', 'INTEGER'], ['account_role_at_request', 'TEXT']]) {
       if (!columns.has(name)) db.exec(`ALTER TABLE venue_claims ADD COLUMN ${name} ${type}`);

@@ -13,8 +13,9 @@ const { server, origin } = await localServer();
 const browser = await chromium.launch({ headless: true, executablePath: process.env.PIT_BROWSER_EXECUTABLE || undefined });
 const results = [];
 try {
-  for (const width of [375, 1280]) for (const kind of ['ordinary', 'creator']) for (const entry of ['ordinary', 'creator']) {
+  for (const width of [375, 1280]) for (const kind of ['ordinary', 'creator', 'calendar']) for (const entry of ['ordinary', 'creator']) {
     const name = `${kind}-via-${entry}-${width}`;
+    const creator = kind !== 'ordinary';
     const context = await browser.newContext({ viewport: { width, height: 900 }, serviceWorkers: 'block' });
     const page = await context.newPage(); page.setDefaultTimeout(15_000);
     const actor = { ...navigationUser, role: 'artist', artistName: navigationArtist.name };
@@ -53,24 +54,36 @@ try {
         await page.getByRole('button', { name: 'Post to followers', exact: true }).first().click();
       } else await page.getByLabel('Make a post', { exact: true }).last().click();
     };
-    const input = () => page.getByPlaceholder(kind === 'creator' ? 'Add details for your followers (optional)...' : 'Write about music, a show, or what you plan to see next...', { exact: true });
+    const input = () => page.getByPlaceholder(creator ? 'Add details for your followers (optional)...' : 'Write about music, a show, or what you plan to see next...', { exact: true });
     const post = page.getByRole('button', { name: 'Post', exact: true }).first();
     try {
-      await enter(kind);
+      await enter(creator ? 'creator' : 'ordinary');
       await input().waitFor(); assert.equal(await post.isDisabled(), true);
-      if (kind === 'creator') await page.getByLabel('Title', { exact: true }).fill(title);
+      if (creator) await page.getByLabel('Title', { exact: true }).fill(title);
+      if (kind === 'calendar') {
+        await page.getByRole('button', { name: 'Show dates', exact: true }).click();
+        await page.getByRole('radio', { name: 'Day 20', exact: true }).first().click();
+        await page.getByLabel('Venue', { exact: true }).fill('Draft Calendar Hall');
+        await page.getByLabel('City and country', { exact: true }).fill('Toronto, Canada');
+      }
       await input().fill(text);
       await post.waitFor();
       await page.waitForFunction(() => JSON.parse(localStorage.getItem('pit.drafts') || '[]').some(d => d.review.includes('the journey home')));
       const saved = await page.evaluate(expected => JSON.parse(localStorage.getItem('pit.drafts')).find(d => d.review === expected), text);
-      assert.equal(saved.postType, 'status'); assert.equal(!!saved.creatorUpdate, kind === 'creator');
+      assert.equal(saved.postType, 'status'); assert.equal(!!saved.creatorUpdate, creator);
       assert.ok(saved.id); assert.ok(saved.submissionId);
+      if (kind === 'calendar') assert.equal(saved.creatorUpdate.calendar.venue, 'Draft Calendar Hall');
       await enter(entry);
-      await page.getByRole('button', { name: `Resume ${kind === 'creator' ? title : text}`, exact: true }).click();
+      await page.getByRole('button', { name: `Resume ${creator ? title : text}`, exact: true }).click();
       assert.equal(await input().inputValue(), text);
-      if (kind === 'creator') await page.getByLabel('Title', { exact: true }).waitFor();
-      assert.equal(await page.getByLabel('Title', { exact: true }).count(), kind === 'creator' ? 1 : 0);
-      if (kind === 'creator') await page.waitForFunction(() => [...document.querySelectorAll('[role=button]')].some(b => b.textContent === 'Post' && b.getAttribute('aria-disabled') !== 'true'));
+      if (creator) await page.getByLabel('Title', { exact: true }).waitFor();
+      if (kind === 'calendar') {
+        await page.getByLabel('Venue', { exact: true }).waitFor();
+        assert.equal(await page.getByLabel('Venue', { exact: true }).inputValue(), saved.creatorUpdate.calendar.venue);
+        assert.equal(await page.getByLabel('City and country', { exact: true }).inputValue(), saved.creatorUpdate.calendar.place);
+      }
+      assert.equal(await page.getByLabel('Title', { exact: true }).count(), creator ? 1 : 0);
+      if (creator) await page.waitForFunction(() => [...document.querySelectorAll('[role=button]')].some(b => b.textContent === 'Post' && b.getAttribute('aria-disabled') !== 'true'));
       await input().fill(text + ' Still intact.');
       if (baseline && kind === 'ordinary' && entry === 'creator') {
         assert.equal(await post.isDisabled(), true, 'Reproduce immutable entry-mode validation after ordinary draft restore');
@@ -84,8 +97,8 @@ try {
         assert.equal(state.writes.length, 2);
         for (const body of state.writes) {
           assert.equal(body.kind, 'status'); assert.equal(body.review, text + ' Still intact.');
-          assert.equal(!!body.creatorUpdate, kind === 'creator'); assert.equal(body.clientMutationId, saved.submissionId);
-          if (kind === 'creator') assert.deepEqual(body.creatorUpdate, saved.creatorUpdate);
+          assert.equal(!!body.creatorUpdate, creator); assert.equal(body.clientMutationId, saved.submissionId);
+          if (creator) assert.deepEqual(body.creatorUpdate, saved.creatorUpdate);
         }
         results.push({ name, passed: true, retainedSubmission: true });
       }

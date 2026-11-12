@@ -84,6 +84,7 @@ test("resumed ordinary and creator drafts own validation independently of the en
   for (const draft of [
     { postType: "status", review: "An ordinary saved draft" },
     { postType: "status", review: "A creator draft", creatorUpdate: entity },
+    { postType: "status", review: "Calendar details survive", creatorUpdate: { ...entity, kind: "show", date: "2027-01-20", location: "Draft Hall, Toronto", calendar: { action: "create", eventId: "", expectedRevision: 0, venue: "Draft Hall", place: "Toronto, Canada", releaseAt: 0 } } },
     { postType: "status", review: "Unfinished creator draft", creatorIntent: true },
   ]) {
     const values = {};
@@ -99,6 +100,7 @@ test("resumed ordinary and creator drafts own validation independently of the en
     };
     callback("resume", bindings)({ ...draft, id: "saved", submissionId: "same-attempt" });
     assert.equal(values.Review, draft.review);
+    assert.deepEqual(values.CreatorUpdate, normalizeComposerDraft(draft).creatorUpdate);
     assert.equal(bindings.submissionIdRef.current, "same-attempt");
     const isCreator = !!values.CreatorUpdate;
     const creatorProblem = callback("creatorProblem", { isCreator, creatorUpdate: values.CreatorUpdate, creatorIntent: values.CreatorIntent, creatorUpdateError });

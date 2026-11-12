@@ -30,6 +30,12 @@ const nextCursor = (rows, scope) => rows.length > 20 ? Buffer.from(JSON.stringif
 
 export function venueCommunityRoutes({ db, readSnapshot, resolveReviewKeys = null, requireUser, requireAdmin, limit, atomicWrite, uid, now, clean, assertSafeAuthoredText, moderationRecord }) {
   const scores = createPublicVenueReviewService(db, { resolveReviewKeys });
+  // Match score ordering without rewriting history. Keep a reported latest
+  // valid row as the edit target so moderation cannot be bypassed by editing an
+  // older duplicate. If all historical scores are invalid, repair the newest.
+  const ownReview = db.prepare(`SELECT id,rating,text FROM venue_reviews WHERE venue_key=? AND user_id=? AND removed=0
+    ORDER BY CASE WHEN rating BETWEEN 0.5 AND 5 THEN 0 ELSE 1 END,
+      coalesce(updated_at,created_at) DESC,id DESC LIMIT 1`);
   const resolve = path => {
     if (typeof path !== 'string' || !/^\/venue\/[a-z0-9-]{1,240}$/.test(path)) throw invalid('Choose a venue page.');
     const snapshot = readSnapshot(path);
@@ -82,7 +88,7 @@ export function venueCommunityRoutes({ db, readSnapshot, resolveReviewKeys = nul
     const owner = verifiedVenueOperator(db, path, now());
     const claim = viewer ? db.prepare('SELECT id,status,conversion_consent,website,note FROM venue_claims WHERE venue_path=? AND user_id=? ORDER BY created_at DESC,id DESC LIMIT 1').get(path, viewer) : null;
     const creator = canonicalVenueCreatorTarget(readSnapshot, path), registered = entity(path);
-    const mine = viewer ? db.prepare('SELECT id,rating,text FROM venue_reviews WHERE venue_key=? AND user_id=? AND removed=0').get(path, viewer) : null;
+    const mine = viewer ? ownReview.get(path, viewer) : null;
     return { path, ownership: owner ? 'verified' : 'community', isOperator: !!viewer && owner?.user_id === viewer,
       creatorEntity: creator && (!registered || registered.status === 'active') ? creator : null,
       claim: claim || null, myReview: mine || null, rating, stats, nextCursor: nextCursor(rows, path),
@@ -113,7 +119,7 @@ export function venueCommunityRoutes({ db, readSnapshot, resolveReviewKeys = nul
       assertSafeAuthoredText(text, { field: 'venue review' });
       atomicWrite(() => {
         ctx.assertCurrentSession?.();
-        const prior = db.prepare('SELECT id FROM venue_reviews WHERE venue_key=? AND user_id=? AND removed=0').get(snapshot.path, user.id);
+        const prior = ownReview.get(snapshot.path, user.id);
         if (prior && db.prepare("SELECT 1 FROM reports WHERE target_type='venue_review' AND target_id=? AND status='open'").get(prior.id)) throw conflict();
         if (prior) db.prepare('UPDATE venue_reviews SET rating=?,text=?,updated_at=? WHERE id=?').run(rating, text, now(), prior.id);
         else db.prepare("INSERT INTO venue_reviews(id,venue_key,user_id,rating,text,created_at) VALUES(?,?,?,?,?,?)").run(uid('vr'), snapshot.path, user.id, rating, text, now());

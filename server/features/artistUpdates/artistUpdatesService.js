@@ -108,7 +108,7 @@ export function scanNewTourDates(database, { now = Date.now(), newId, visibility
   const baselineDone = !!stateGet(database, "tour_baseline_at");
   const rows = database.prepare(`SELECT ${TOUR_COLUMNS} FROM tour_dates td
     LEFT JOIN artist_update_tour_seen seen ON seen.tour_date_id=td.id
-    WHERE seen.tour_date_id IS NULL AND ${visibilitySql}
+    WHERE seen.tour_date_id IS NULL AND COALESCE(td.music_evidence,'')<>'mshpit:creator-calendar' AND ${visibilitySql}
     ORDER BY td.date ASC, td.id ASC LIMIT @limit`).all({ at: now, today: today(now), limit });
   const priorCount = database.prepare("SELECT COUNT(*) c FROM artist_update_tour_seen WHERE artist_key=?");
   const known = new Map();

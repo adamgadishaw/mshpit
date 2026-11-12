@@ -20,3 +20,9 @@ export async function fetchCreatorPreference({ entityType, entityKey, accountId,
 export async function setCreatorUpdatePreference({ entityType, entityKey, accountId, notifyUpdates, signal }) {
   return api(`/api/creators/${entityType}/${encodeURIComponent(entityKey)}/notifications`, { method: "PUT", body: { notifyUpdates }, expectedAccountId: accountId, signal, silent: true, context: "Saving update preferences" });
 }
+
+export async function fetchArtistCalendar({ accountId, after = "", signal }) {
+  const result = await api(`/api/me/artist-calendar?after=${encodeURIComponent(after)}`, { expectedAccountId: accountId, signal, silent: true, context: "Loading your calendar" });
+  if (!Array.isArray(result?.events)) throw new AppError("Your calendar could not be confirmed.");
+  return result;
+}

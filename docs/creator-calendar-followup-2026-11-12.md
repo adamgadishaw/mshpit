@@ -1,0 +1,47 @@
+# Creator calendar and unclaimed event follow contract
+
+Required base: de773dfc64589f03aa7613ce48acf3b20c72e87a. This is a local follow-up to the frozen creator package. No production work, push transport, remote publication or phone work is included.
+
+## Shared composer and authority
+
+The existing POST /api/posts accepts a status post with creatorUpdate.kind=show and an optional creatorUpdate.calendar object. Only the current artist account owning that artist profile may use calendar actions. Ordinary posts keep their existing upload, receipt and feed behavior. Venue/event show-date posts remain announcements; page ownership does not authorize overwriting provider calendar facts.
+
+Calendar shape: {action: create|edit|cancel, eventId: string, expectedRevision: integer, venue: string, place: string, releaseAt: epoch milliseconds}. Create uses empty eventId and revision 0. The existing update date (YYYY-MM-DD), HTTPS url, title, review, photos and mediaAssetIds remain shared composer fields. City/country is stored in place separately from venue. This form publishes one show per submission; it is not a bulk tour importer.
+
+The existing artist management, identity moderation, memorial, legacy, text, media ownership, ticket URL and date validators all apply. Authority/session is rechecked after acquiring the SQLite writer lock. Updates require the exact artist-submitted row owned by this account and its current revision. Provider rows, foreign artists and ordinary fan/venue/event/admin roles cannot use this path. Legacy POST /api/tourdates shares the extracted writer for its original records; composer-managed rows return 409 there so that batch edits cannot bypass their publication state.
+
+GET /api/me/artist-calendar?after=<id> returns only the authenticated artist's own authored records, 30 at a time, and nextCursor. Fields: id, revision, date, venue, place, ticketUrl, releaseAt, status and publicationState. No public read exposes pending publication payloads.
+
+## Transactions, revisions and retry receipts
+
+Calendar records retain tour_dates.id across edits/cancellation. creator_revision starts at 1 for composer creates and increments for each mutation. Use expectedRevision to reject stale edits; reload before starting a new submission. Each exact clientMutationId is bound to account_id and a stable request hash. Same request replays its original receipt; different content with that key returns 409. A different key for the same natural show identity returns 409 and asks the artist to use Change a show. Independent SQLite writer tests exercise duplicate creates, competing revisions and authority revocation while waiting on the lock.
+
+Immediate publication writes the calendar row, ordinary post/media/receipt and eligible creator_update Activity notices in one IMMEDIATE transaction. Response retains the ordinary id/post and adds calendarReceipt. Published post projection adds creatorUpdate.calendarEvent with stable id, current date/venue/place/ticketUrl/status/revision; older announcement copy remains historical while current calendar details and ticket link are accurate. Cancellation removes the record from upcoming lists and retains its public history and cancellation post. It cannot reopen a cancelled identity; a replacement requires a new show.
+
+Scheduled responses contain only calendarReceipt with id, eventId, revision, state, releaseAt, mutationId and creatorUpdate. The store does not add a fake feed post. The durable creator_calendar_publications row holds the validated shared payload and desired release time. The calendar row's release_at stays Number.MAX_SAFE_INTEGER until the worker can atomically expose it and publish the post/notices. A worker failure after the intended release cannot expose the calendar early. Scheduled media remains referenced through cleanup and cannot be directly cancelled until the schedule is withdrawn. Superseded, withdrawn and blocked references are released through the ordinary media cleanup lifecycle.
+
+Edits supersede pending receipts without deleting retry tombstones. Withdrawing an unpublished schedule produces no public post or notice and its calendar record remains private after the old deadline. A public event cannot be made private by scheduling an edit. Already published changes/cancellations publish immediately. Removing an announcement post is not cancellation of its calendar record; use Cancel a show.
+
+## Worker and notification limits
+
+startCreatorCalendar is registered with the existing server scheduler lifecycle: first check after 1 second, then every 60 seconds, default 30 due records per pass (hard maximum 100). It rechecks current artist authority, payload/media validation, exact revision and follower eligibility. Permanent authorization/validation conflicts become blocked and remain private; owner UI shows Publication needs attention. Transient database/media/post-limit errors roll back and retry on a later pass. New calendar submissions are capped at 20/hour per account; exact receipt retries do not consume another slot. Existing per-account post limits still apply (currently 20/hour); a failing earliest publication can delay later due rows until the next successful pass. There is no exact-second publication promise. UI chooses the device's local midnight, stored as an absolute epoch.
+
+The existing creator_update inbox delivery remains the only transport. Favorite artists and canonical/alias fan clubs, creator follows, page preference, mutes, blocks, audience and active recipient/author rules remain enforced. Deep links open the actual post. Scanner excludes music_evidence=mshpit:creator-calendar so the same calendar publication cannot also generate artist_update notices. No email/device push is wired or dispatched. No high-fanout performance benchmark was run for this increment.
+
+## Canonical unclaimed event/festival follows
+
+Event type still covers event:<public tour_dates.id> and festival:<festivals.slug>. resolveCanonicalEventEntity uses the existing public event repository or current festival row, never an archive aggregation key. Every event follow/read target is revalidated against current canonical visibility even when a creator registry row already exists. Deleted/private/unreleased/held targets cannot be newly followed. Unfollow and notification opt-out may remove one's own subscription even after a target becomes unavailable.
+
+PUT /api/creators/:type/:key/follow is desired-state {following:boolean, notifyUpdates?:boolean}; omission preserves the saved page preference. A visible unclaimed target may create a trusted active creator_entities row with owner_id NULL inside the follow transaction only. GET does not provision. This does not grant ownership, change account roles or imply a verified representative. EventAccountPanel now consumes canFollow from GET target and shows follows for visible unclaimed pages. Approved ownership/claim review contracts are unchanged.
+
+## Integration overlaps
+
+Preserve the venue completion callback contract resolveUnclaimedEntity(type,key) in creatorPostRoutes. In api.js compose the venue resolver and resolveCanonicalEventEntity(db,type,key); do not replace the venue resolver with the event-only callback in this branch. creatorPostRoutes includes the venue desired-state follow/preference semantics and adds canonical event visibility plus own-removal handling. Merge the EventAccountPanel canFollow behavior into the actual event/festival caller without inventing archive identities.
+
+Shared-file touches: api.js (composition, post hook, shared tour writer, nested-safe transaction), db.js (migration), index.js (scheduler), accountPrivacyRoutes.js and backup-db-verification.mjs (private export/table coverage), artistUpdatesService.js (scanner exclusion), artistAuthoredTourDateVisibility.js (audience; existing calendar lifecycle filters retain cancellation handling), mediaAssets.js and mediaDeletion.js (pending media references), creatorPostService.js (current linked calendar), creatorPostRoutes.js and eventAccountTargets/Routes.js (canonical follows).
+
+Frontend overlaps: App.js (lazy receipt confirmation before success navigation), store.js (no optimistic pending calendar post; lazy postDelivery), confirmCalendarReceipt.js (scheduled/withdrawn/blocked confirmation), creatorUpdateDraft/creatorUpdate/postDelivery domains, TicketStub.jsx (lazy creator card), CreatorUpdateFields.jsx and creatorPostsApi.mjs, EventAccountPanel.jsx. Do not overwrite the integration owner's separate ordinary-draft restoration repair. This branch does not modify ShowScreen, venue layouts, admin claim UI or shared creator registry schema.
+
+New schema: tour_dates.creator_revision INTEGER NOT NULL DEFAULT 0; creator_calendar_publications with PK id, unique(account_id,mutation_id), foreign keys account_id->users CASCADE, event_id->tour_dates CASCADE and post_id->posts SET NULL. Durable rows are included in database backup verification and the owner's creatorAccount.calendar privacy export. Authenticated erasure removes records by existing account/event cascades. Migration is repeatable and tested with foreign-key checking. SQL defaults and indexes are in creatorCalendarSchema.js.
+
+Use the exact changed-file manifest and checks accompanying the final Git artifact. The combined venue/after-show candidate must rerun its own architecture and bundle gates; this branch's web result alone is not a combined-candidate result.

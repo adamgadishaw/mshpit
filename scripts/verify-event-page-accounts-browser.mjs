@@ -54,7 +54,7 @@ try {
         if (url.pathname === "/api/event-accounts/target") {
           const id = url.searchParams.get("id"), accountId = state.user?.id || null;
           assert.equal(url.searchParams.get("kind"), "event"); assert.ok([firstId, secondId].includes(id), "Only canonical tour-date IDs can reach the access endpoint");
-          const response = { entity: entity(id), claimed: ["owner", "event-switch", "account-switch"].includes(mode), canManage: mode === "owner" || (["event-switch", "account-switch"].includes(mode) && id === firstId && accountId === userA.id),
+          const response = { entity: entity(id), canFollow: true, claimed: ["owner", "event-switch", "account-switch"].includes(mode), canManage: mode === "owner" || (["event-switch", "account-switch"].includes(mode) && id === firstId && accountId === userA.id),
             canRequest: !!accountId && mode !== "restricted", following: false, notifyUpdates: true, claim: state.pending ? { status: "pending" } : null };
           state.reads.push({ id, accountId, expected: request.headers()["x-pit-expected-account"] });
           assert.equal(request.headers()["x-pit-expected-account"], accountId || "guest");

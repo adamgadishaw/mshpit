@@ -1,3 +1,4 @@
+import { scheduledCalendarMediaReference } from "./creatorCalendarMedia.js";
 import { createHash, randomUUID } from "node:crypto";
 
 import {
@@ -3323,6 +3324,8 @@ export function deleteMediaAssets(database, assetIds) {
   const remove = database.prepare("DELETE FROM media_assets WHERE id=?");
   let changed = 0;
   for (const id of assetIds || []) {
+    const scheduledOwner = database.prepare("SELECT owner_id FROM media_assets WHERE id=?").get(id);
+    if (scheduledOwner && scheduledCalendarMediaReference(database, { ownerId: scheduledOwner.owner_id, assetId: id })) continue;
     if (assetObjectRecords(database, [id]).some(item => retainedArtistMedia(database, { ownerId: item.ownerId, key: item.objectKey }))) continue;
     changed += Number(remove.run(id).changes || 0);
   }
@@ -3348,6 +3351,7 @@ export function cancelMediaAsset(database, {
     const asset = database.prepare("SELECT id,source_key FROM media_assets WHERE id=? AND owner_id=?")
       .get(id, owner);
     if (!asset) return { removed: false, queuedObjects: 0 };
+    if (scheduledCalendarMediaReference(database, { ownerId: owner, assetId: asset.id })) throw new ApiError(409, "Withdraw the scheduled show before removing its media.", "CONFLICT");
     if (database.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(asset.id)) {
       throw new ApiError(409, "Published media must be removed from its post first.", "CONFLICT");
     }

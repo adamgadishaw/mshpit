@@ -14,10 +14,10 @@ const entity = { entityType: "event", entityKey: "festival:lollapalooza", name: 
 const claim = { id: "ec_fixture", accountId: "event-team-fixture", accountName: "Festival team", entityKey: entity.entityKey, targetKind: "festival", targetId: "lollapalooza", note: "I manage this festival. Check the official event office.", currentOwnerId: null, status: "pending" };
 const reason = "Checked the official festival office and this account's authority.";
 try {
-  for(const width of [375, 1280]) for(const mode of ["claim", "owner", "admin"]) {
+  for(const width of [375, 1280]) for(const mode of ["claim", "owner", "admin", "follow"]) {
     const context = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: "block" });
     const user = { ...navigationUser, role: mode === "admin" ? "admin" : mode === "owner" ? "event" : "fan" };
-    const state = { fail: true, pending: false, claims: [claim], writes: [], errors: [] };
+    const state = { fail: true, pending: false, claims: [claim], writes: [], errors: [], following: false, notifyUpdates: false };
     const page = await context.newPage(); page.setDefaultTimeout(15000); page.on("pageerror", error => state.errors.push(error.message));
     await page.addInitScript(value => { localStorage.setItem("pit_theme", "stage"); localStorage.setItem("pit.session", JSON.stringify(value)); localStorage.setItem("pit.users", JSON.stringify([value])); }, user);
     await context.route("**/*", async route => {
@@ -28,7 +28,15 @@ try {
       if(url.pathname === "/api/health" || url.pathname === "/api/admin/health") return json({ ok: true });
       if(url.pathname === "/api/me") return json({ user });
       if(url.pathname === "/api/festivals/lollapalooza") return json({ festival: { slug: "lollapalooza", name: "Lollapalooza", city: "Chicago", country: "US", about: "An annual music festival in Grant Park." }, upcoming: [], past: [], expected: null, reviews: [], reviewStats: { reviews: 0, average: null } });
-      if(url.pathname === "/api/event-accounts/target") return json({ entity, canManage: mode === "owner", claimed: mode === "owner", canRequest: mode === "claim", claim: state.pending ? { id: claim.id, status: "pending" } : null, following: false, notifyUpdates: true });
+      if(url.pathname === "/api/event-accounts/target") return json({ entity, canFollow: true, canManage: mode === "owner", claimed: mode === "owner", canRequest: mode === "claim", claim: state.pending ? { id: claim.id, status: "pending" } : null, following: state.following, notifyUpdates: state.notifyUpdates });
+      if(url.pathname.startsWith("/api/creators/") && url.pathname.endsWith("/follow")) {
+        if(method === "PUT") {
+          const body=request.postDataJSON();state.writes.push(body);assert.equal(body.notifyUpdates,false);
+          if(state.fail)return json({error:"Synthetic follow failure",code:"VALIDATION_FAILED"},400);
+          state.following=body.following;
+        }
+        return json({following:state.following,notifyUpdates:state.notifyUpdates});
+      }
       if(url.pathname === "/api/event-accounts/claims") {
         const body = request.postDataJSON(); state.writes.push(body); assert.equal(request.headers()["x-pit-expected-account"], user.id);
         assert.equal(body.kind, "festival"); assert.equal(body.id, "lollapalooza");
@@ -77,7 +85,13 @@ try {
         assert.equal(state.writes.length, 2);
       } else {
         await page.goto(origin + "/festival/lollapalooza", { waitUntil: "domcontentloaded" });
-        if(mode === "claim") {
+        if(mode === "follow") {
+          const follow=page.getByRole("button",{name:"Follow event updates",exact:true});await follow.click();
+          await page.getByRole("alert").waitFor();assert.equal(state.following,false);state.fail=false;await follow.click();
+          await page.getByRole("button",{name:"Unfollow event updates",exact:true}).waitFor();
+          await page.screenshot({path:join(shots,mode+"-"+width+".png")});
+          assert.equal(user.role,"fan");assert.equal(state.writes.length,2);
+        } else if(mode === "claim") {
           const open = page.getByRole("button", { name: "Represent this event or festival?", exact: true }); await open.click();
           await page.getByRole("button", { name: "Cancel", exact: true }).click(); assert.equal(state.writes.length, 0); await open.click();
           const submit = page.getByRole("button", { name: "Send access request", exact: true }); assert.equal(await submit.isDisabled(), true);

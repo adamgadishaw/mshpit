@@ -53,7 +53,7 @@ test("a lost-response retry reuses the same per-event ticket mutation id", () =>
   assert.match(composer, /id:\s*clientMutationId/);
   assert.match(store, /const localId = log\.id \|\| "p_local_" \+ Date\.now\(\)/);
   assert.match(store, /clientMutationId:\s*localId/);
-  assert.match(store, /if \(!safe\.attendanceTicket\) \{[\s\S]*?setFeed[\s\S]*?upsertProfileHistoryPost/,
+  assert.match(store, /if \(!safe\.attendanceTicket && !safe\.creatorUpdate\?\.calendar\) \{[\s\S]*?setFeed[\s\S]*?upsertProfileHistoryPost/,
     "a server-owned ticket cannot briefly appear published before exact-event authorization succeeds");
 });
 
@@ -62,8 +62,8 @@ test("ticket share uses the retry-safe post delivery path and owns one safe erro
   const store = source("../store.js");
   const composer = source("../components/GoingTicketComposer.jsx");
 
-  assert.match(store, /import \{ deliverPostCreate \} from "\.\/domain\/postDelivery\.mjs"/);
-  assert.match(store, /return deliverPostCreate\(\{[\s\S]*?apiCall: api,[\s\S]*?body,[\s\S]*?expectedAccountId: postingActor\.id,[\s\S]*?\}\)/,
+  assert.match(store, /import\("\.\/domain\/postDelivery\.mjs"\)\.then/);
+  assert.match(store, /=> deliverPostCreate\(\{[\s\S]*?apiCall: api,[\s\S]*?body,[\s\S]*?expectedAccountId: postingActor\.id,[\s\S]*?\}\)/,
     "all post types reuse the same immutable body and account binding when a response is lost");
   assert.match(show, /onPost=\{\(post\) => addLog\(post, \{ silent: true \}\)\}/,
     "the ticket composer suppresses only the duplicate global toast");

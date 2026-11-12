@@ -17,3 +17,15 @@ export function createEventAccountTargetReader(db) {
       targetKind: kind, targetId: kind === "festival" ? row.slug : row.id };
   };
 }
+
+const eventReaders = new WeakMap();
+export function resolveCanonicalEventEntity(db, type, key) {
+  if (type !== "event" || typeof key !== "string") return null;
+  const split = key.indexOf(":");
+  if (split < 0) return null;
+  try {
+    if (!eventReaders.has(db)) eventReaders.set(db, createEventAccountTargetReader(db));
+    return eventReaders.get(db)(key.slice(0, split), key.slice(split + 1));
+  }
+  catch (error) { if ([400,404].includes(error.status)) return null; throw error; }
+}

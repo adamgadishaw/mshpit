@@ -36,10 +36,11 @@ export default function EventAccountPanel({ targetKind, targetId, accountId = nu
   const page = current.data;
   if (!page) return null;
   return <View style={{ gap: 12, marginVertical: 16 }}>
-    {page.claimed && renderUpdates?.({ entityType: "event", entityKey: page.entity.entityKey, accountId, onOpenPost,
+    {page.canFollow && renderUpdates?.({ entityType: "event", entityKey: page.entity.entityKey, accountId, onOpenPost,
       onCompose: page.canManage && onCompose ? () => onCompose(page.entity) : undefined, following: page.following })}
-    {!page.canManage && page.claimed && <Button small title={page.following ? "Unfollow event updates" : "Follow event updates"} loading={state.busy}
+    {!page.canManage && page.canFollow && <Button small title={page.following ? "Unfollow event updates" : "Follow event updates"} loading={state.busy}
       onPress={() => accountId ? void run(signal => setEventFollowing({ entityKey: page.entity.entityKey, following: !page.following, notifyUpdates: page.notifyUpdates, accountId, signal })) : onRequireAuth?.()} />}
+    {!page.claimed && page.canFollow && <Text style={{ color: colors.textDim }}>Follow now for updates when an approved representative starts posting.</Text>}
     {!page.claimed && !form && <>
       {page.claim?.status === "pending" ? <Text style={{ color: colors.textDim }}>Your access request is awaiting staff review. It has not changed your account.</Text>
         : <Button small variant="secondary" title="Represent this event or festival?" onPress={() => accountId ? setForm(true) : onRequireAuth?.()} />}
