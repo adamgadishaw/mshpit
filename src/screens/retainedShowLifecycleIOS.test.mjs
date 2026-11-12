@@ -55,15 +55,17 @@ function createRenderer() {
 }
 const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
 const text = node => node.text ?? (node.children || []).map(text).join(" ");
+const flattenedStyle = node => Object.assign({}, ...[node.props.style].flat(Infinity).filter(Boolean));
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const privateReview = { id: "private-review", userId: "reviewer", user: { id: "reviewer", name: "Private reviewer" }, review: "Private concert receipt", overall: 5, date: "2026-01-01" };
 
 // Production Show, attendance, public-event/memorial/archive hooks, composer,
 // countdown, sourced context, maps and ticket actions. Only native hosts,
 // transport and account Store are synthetic. No network or account is touched.
-function fixture({ strict = false, publicEvent = false, deferredLinks = false, nativeTickets = false, nativeStack = false, logOverrides = {}, savedAttendance = null } = {}) {
+function fixture({ strict = false, publicEvent = false, deferredLinks = false, nativeTickets = false, nativeStack = false, logOverrides = {}, savedAttendance = null, width = 393, fontScale = 1, lounge = { messageCount: 3 } } = {}) {
   const renderer = createRenderer(), reads = [], writes = [], receipts = [], opens = [], speech = [], timers = new Map();
   const rsvpTimers = new Map();
+  const dimensions = { width, height: 852, fontScale };
   const modules = new Map(), context = require("./src/components/iosDetailPresentationContext.mjs");
   const privacy = require("./src/domain/iosDetailPrivacyEpoch.mjs").createIOSDetailPrivacyEpoch();
   let active = true, authority = {}, account = "A", epoch = 1, suspended = false;
@@ -96,7 +98,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
   };
   const native = { Animated, Easing: { linear: value => value }, AppState: { currentState: "active", addEventListener: () => ({ remove: noop }) }, Platform: { OS: "ios", select: choices => choices.ios || choices.default },
     View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", RefreshControl: "RefreshControl",
-    StyleSheet: { create: value => value, absoluteFill: {} }, useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1 }),
+    StyleSheet: { create: value => value, absoluteFill: {} }, useWindowDimensions: () => dimensions,
     Linking: { openURL: url => { const request = { kind: "link", url, ...deferred() }; opens.push(request);
       if (!deferredLinks) request.resolve(); return request.promise; } }, Alert: { alert: (...args) => opens.push({ kind: "alert", args }) },
     AccessibilityInfo: { announceForAccessibilityWithOptions: message => speech.push(message) } };
@@ -199,6 +201,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
     latestPresentation = value;
     return React.createElement(context.IOSDetailPresentationContext.Provider, { value }, React.createElement(Screen, {
       log, onClose: () => opens.push({ kind: "back" }), onOpenVenue: () => opens.push({ kind: "venue" }), onOpenProfile: id => opens.push({ kind: "profile", id }),
+      onOpenLounge: show => opens.push({ kind: "lounge", show }), onReview: show => opens.push({ kind: "review", show }),
     }));
   }
   function Gate() {
@@ -232,7 +235,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
         const defaults = {
           document, public: { ...log, name: log.artist, artistIdentityPending: false }, memorial: null, photos: [],
           crowd: { viewerAttendance: savedAttendance, scope: request.options.scope, attendees: [{ id: "fan", name: "Fixture fan", state: "going" }], total: 1 },
-          lounge: { messageCount: 3 }, reviews: { reviews: [], total: 0 }, catalog: { text: { summary: "Verified context", sources: [{ label: "Event source", url: "https://fixture.test/source" }] } },
+          lounge, reviews: { reviews: [], total: 0 }, catalog: { text: { summary: "Verified context", sources: [{ label: "Event source", url: "https://fixture.test/source" }] } },
         };
         request.resolve(defaults[request.kind]);
       }
@@ -241,6 +244,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
   };
   const f = { reads, writes, receipts, opens, speech, timers, rsvpTimers, log, document, render, flush, all, label, layers, resolveReads,
     text: () => text(activeTree()), act: renderer.act,
+    resize(next) { Object.assign(dimensions, next); render(); },
     pushDuplicate() { frames = [...frames, { openLog: { ...log } }]; render(); },
     popDuplicate() { frames = frames.slice(0, -1); render(); },
     privacyRevision: privacy.getSnapshot,
@@ -261,6 +265,55 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
   };
   return f;
 }
+
+for (const width of [320, 393]) for (const closed of [false, true]) test(`Lounge keeps accessibility text in a full-width action at ${width}px (closed ${closed})`, async t => {
+  const f = fixture({ width, fontScale: 1.786, lounge: { messageCount: 123456, status: closed ? "closed" : "open" },
+    logOverrides: { date: "2020-01-01", startDateTime: "2020-01-01T20:00:00Z" } });
+  f.document.lifecycle = "completed";
+  t.after(f.close); await f.ready();
+  const label = closed ? "Open this show's closed Lounge details" : "Open this show's Lounge, 123456 messages";
+  const button = f.label(label);
+  assert.ok(button, label);
+  assert.equal(flattenedStyle(button).flexBasis, "100%", "scaled label is not squeezed beside Rate & review");
+  assert.equal(flattenedStyle(button).flexWrap, "wrap", "a large message count can move without splitting the label");
+  assert.equal(flattenedStyle(button).height, undefined, "wrapped content has no fixed-height clipping");
+  const labelNode = nodes(button).find(node => node.type === "Text" && text(node) === (closed ? "Lounge closed" : "Lounge"));
+  assert.equal(flattenedStyle(labelNode).flexShrink, 0);
+  assert.equal(flattenedStyle(labelNode).maxWidth, "100%");
+  assert.notEqual(labelNode.props.allowFontScaling, false);
+  assert.equal(labelNode.props.maxFontSizeMultiplier, undefined);
+  assert.equal(labelNode.props.numberOfLines, undefined);
+  const row = f.all().find(node => node.children?.includes(button));
+  assert.equal(flattenedStyle(row).flexWrap, "wrap");
+  const review = row.children.find(node => node.type === "Pressable" && text(node).includes("Rate & review"));
+  assert.ok(review, "review remains alongside Lounge in the same action group");
+  assert.equal(flattenedStyle(review).flex, 1, "review fills the previous wrapped row");
+  f.act(review.props.onPress); f.press(label);
+  assert.deepEqual(f.opens.map(open => open.kind), ["review", "lounge"]);
+  assert.equal(f.opens[1].show.artist, "Fixture artist");
+  assert.equal(f.writes.length, 0);
+});
+
+test("Lounge responds to live Dynamic Type changes without reviving covered or account-switched actions", async t => {
+  const f = fixture(); t.after(f.close); await f.ready();
+  const label = "Open this show's Lounge, 3 messages";
+  const original = f.label(label), oldPress = original.props.onPress;
+  assert.equal(flattenedStyle(original).flexBasis, 140);
+  for (const fontScale of [1.4, 1.786, 3.1]) {
+    f.resize({ fontScale });
+    assert.equal(f.label(label), original, "font changes preserve the mounted action");
+    assert.equal(flattenedStyle(original).flexBasis, "100%");
+  }
+  f.cover(); f.act(oldPress); assert.equal(f.opens.length, 0);
+  f.back(); await f.resolveReads(); f.act(oldPress); assert.equal(f.opens.length, 0);
+  f.press(label); assert.equal(f.opens.length, 1);
+  const beforeAccountSwitch = f.label(label).props.onPress;
+  f.account("B"); f.act(beforeAccountSwitch); assert.equal(f.opens.length, 1);
+  await f.resolveReads(); f.press(label); assert.equal(f.opens.length, 2);
+  f.resize({ fontScale: 1 });
+  assert.equal(flattenedStyle(f.label(label)).flexBasis, 140, "normal text returns to the compact layout");
+  assert.equal(f.writes.length, 0);
+});
 
 for (const strict of [false, true]) test(`real Show preserves scroll, crowd and disclosure through preview and Back (StrictMode ${strict})`, async t => {
   const f = fixture({ strict }); t.after(f.close); await f.ready();

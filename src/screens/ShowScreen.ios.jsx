@@ -230,6 +230,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         if (getIOSDetailPrivacySnapshot() === privacyRevision) return callback(...args);
       }));
   const { width, fontScale } = useWindowDimensions();
+  const largeActionText = fontScale >= 1.4;
   const tabletLayout = concertDetailWide(width, fontScale, Platform.OS, 720);
   const archiveReviewTileStyle = styles.archiveReviewCardFull;
   const appActive = useAppActive();
@@ -924,9 +925,9 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           </Pressable>
           ) : null}
           {!presentation.showPostEvent && legacyGoingButton}
-          <Pressable style={[styles.loungeBtn, loungeClosed && styles.loungeBtnClosed]} onPress={() => onOpenLounge?.(norm)} accessibilityRole="button" accessibilityLabel={loungeClosed ? "Open this show's closed Lounge details" : `Open this show's Lounge, ${social.messageCount} messages`}>
+          <Pressable style={[styles.loungeBtn, largeActionText && styles.loungeBtnLargeText, loungeClosed && styles.loungeBtnClosed]} onPress={() => onOpenLounge?.(norm)} accessibilityRole="button" accessibilityLabel={loungeClosed ? "Open this show's closed Lounge details" : `Open this show's Lounge, ${social.messageCount} messages`}>
             <Icon name={loungeClosed ? "lock" : "comment"} size={16} color={colors.amber} />
-            <Text style={styles.loungeTxt}>{loungeClosed ? "Lounge closed" : "Lounge"}</Text>
+            <Text style={[styles.loungeTxt, largeActionText && styles.loungeTxtLargeText]}>{loungeClosed ? "Lounge closed" : "Lounge"}</Text>
             {!loungeClosed ? <View style={styles.loungeCount}><Text style={styles.loungeCountTxt}>{social.messageCount}</Text></View> : null}
           </Pressable>
         </View> : null}
@@ -1233,7 +1234,9 @@ const baseStyles = {
   goingTxt: { color: colors.amber, fontSize: 14, fontWeight: "800" },
   loungeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingVertical: 14 },
   loungeBtnClosed: { opacity: 0.78, borderStyle: "dashed" },
+  loungeBtnLargeText: { flexBasis: "100%", flexWrap: "wrap" },
   loungeTxt: { color: colors.text, fontSize: 14, fontWeight: "700" },
+  loungeTxtLargeText: { flexShrink: 0, maxWidth: "100%" },
   loungeCount: { backgroundColor: colors.amber, borderRadius: 999, minWidth: 20, paddingHorizontal: 6, paddingVertical: 1, alignItems: "center" },
   loungeCountTxt: { color: "#1A1206", fontSize: 11, fontWeight: "800", fontFamily: mono },
   loungeHint: { color: colors.textFaint, fontSize: 11.5, lineHeight: 17, marginTop: 7 },
