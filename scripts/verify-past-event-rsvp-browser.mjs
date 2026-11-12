@@ -16,11 +16,18 @@ async function scenario(browser,origin,width,mode) {
   const page=await context.newPage();page.setDefaultTimeout(12000);
   const state={writes:[],errors:[],requests:[],attendance:mode==='saved'?{showId:id,state:'going',visibility:'private'}:null};
   await context.addInitScript(user=>{localStorage.setItem('pit.session',JSON.stringify(user));localStorage.setItem('pit.users',JSON.stringify([user]));localStorage.setItem('pit_theme','stage');},navigationUser);
-  await page.clock.install({time:now});
+  const range = ['multi-day','crowd-range-end'].includes(mode);
+  const dateOnly = mode==='crowd-date-only';
+  const crowdBoundary = mode.startsWith('crowd-');
+  const endAt = mode==='crowd-range-end' ? Date.parse('2026-11-16T05:00:00Z')
+    : dateOnly ? Date.parse('2026-11-13T05:00:00Z') : Date.parse('2026-11-12T23:00:00Z');
+  const scenarioNow = crowdBoundary ? endAt-30000 : now;
+  await page.clock.install({time:scenarioNow});
   const past=['top-rated','ended','saved'].includes(mode);
-  const date=past?'2020-01-01':mode==='multi-day'?'2026-11-10':'2026-11-12';
-  const entity={id:'rsvp-fixture',kind:'event',path:'/event/rsvp-fixture',publicEventSnapshot:true,name:'Fixture Artist',artist:'Fixture Artist',artistKey:'fixture-artist',venue:'Fixture Venue',city:'Toronto',date,eventTimezone:'America/Toronto',eventStatus:'active',source:'ticketmaster',startDateTime:date+'T18:00:00-05:00',...(mode==='multi-day'?{eventEndDate:'2026-11-15'}:{})};
-  const show={...entity,id,canonicalKey:'ticketmaster:rsvp-fixture',lifecycle:past||mode==='multi-day'?'completed':'upcoming',startsAt:mode==='expiry'?now-3600000:Date.parse(entity.startDateTime),timezone:entity.eventTimezone,endsAt:mode==='expiry'?now+30000:null,provider:{name:'ticketmaster',eventId:'rsvp-fixture',backed:true}};
+  const date=past?'2020-01-01':range?'2026-11-10':'2026-11-12';
+  const entity={id:'rsvp-fixture',kind:'event',path:'/event/rsvp-fixture',publicEventSnapshot:true,name:'Fixture Artist',artist:'Fixture Artist',artistKey:'fixture-artist',venue:'Fixture Venue',city:'Toronto',date,eventTimezone:'America/Toronto',eventStatus:'active',source:'ticketmaster',startDateTime:dateOnly?null:date+(crowdBoundary?'T16:00:00-05:00':'T18:00:00-05:00'),...(range?{eventEndDate:'2026-11-15'}:{})};
+  const show={...entity,id,canonicalKey:'ticketmaster:rsvp-fixture',lifecycle:past||range?'completed':'upcoming',startsAt:mode==='expiry'?now-3600000:dateOnly?null:Date.parse(entity.startDateTime),timezone:entity.eventTimezone,endsAt:mode==='expiry'?now+30000:mode==='crowd-explicit-end'?endAt:null,provider:{name:'ticketmaster',eventId:'rsvp-fixture',backed:true}};
+  const crowdAttendees=range||crowdBoundary?[{id:'crowd-fan',name:'Fixture fan',state:'going'}]:[];
   const archiveKey=archiveShowKey({artistIdentity:'fixture-artist',venueIdentity:'Fixture Venue',date});
   const archiveShow={key:archiveKey,artist:entity.artist,artistKey:entity.artistKey,venue:entity.venue,city:entity.city,date,avgRating:4.7,ratingCount:17,reviewCount:1};
   page.on('pageerror',error=>state.errors.push(error.message));
@@ -46,7 +53,7 @@ async function scenario(browser,origin,width,mode) {
       if(path==='/api/discover/overview')return await json({...fixtureApiResponse(path,{member:true}),topRatedShows:[{key:'fixture-rated',artist:'Fixture Artist',artistKey:'fixture-artist',venue:'Fixture Venue',city:'Toronto',date,avgRating:4.7,ratingCount:17,reviewCount:1}]});
       if(path==='/api/resolve'&&url.searchParams.get('path')===entity.path)return await json({entity});
       if(path.startsWith('/api/shows/'))return await json({show:mode==='top-rated'?null:{...show,viewerAttendance:state.attendance}});
-      if(path.startsWith('/api/going/')&&path.endsWith('/attendees'))return await json({showId:id,attendees:[],total:0,scope:'everyone',viewerAttendance:state.attendance});
+      if(path.startsWith('/api/going/')&&path.endsWith('/attendees'))return await json({showId:id,attendees:crowdAttendees,total:crowdAttendees.length,scope:'everyone',viewerAttendance:state.attendance});
       if(path==='/api/artists/archive')return await json({archive:{artist:navigationArtist,shows:[archiveShow],topShows:[archiveShow],tours:[],upcoming:[],totals:{},truncated:false}});
       if(path==='/api/artists/archive/reviews'){
         if(mode==='top-rated')assert.equal(decodeArchiveShowKey(url.searchParams.get('showKey'))?.date,date);
@@ -64,7 +71,33 @@ async function scenario(browser,origin,width,mode) {
     }
     await page.getByRole('button',{name:'Event details',exact:true}).waitFor();
     const going=page.getByRole('radio',{name:'Going',exact:true}), interested=page.getByRole('radio',{name:'Interested',exact:true});
-    if(past){
+    const crowdFan=page.getByRole('button',{name:"Open Fixture fan's profile",exact:true});
+    const assertCrowd=async expected=>{
+      await crowdFan.waitFor();
+      assert.match(await crowdFan.innerText(),new RegExp(`Fixture fan\\s+${expected}$`));
+    };
+    if(range||crowdBoundary){
+      await page.getByRole('button',{name:'Crowd & Lounge',exact:true}).click();
+      await assertCrowd('Going');
+    }
+    if(crowdBoundary){
+      await going.waitFor();
+      await page.clock.fastForward(30001);
+      await page.getByRole('radio',{name:'Attended',exact:true}).waitFor();
+      assert.equal(await going.count(),0); assert.equal(await interested.count(),0);
+      await assertCrowd(range?'Attended':'Going');
+      if(!range){
+        const cutoff=dateOnly?Date.parse('2026-11-13T23:59:59.999Z'):endAt+86400000;
+        for(const [at,expected] of [[cutoff-1,'Going'],[cutoff,'Attended']]){
+          await page.clock.setFixedTime(at);
+          await page.reload({waitUntil:'networkidle'});
+          await page.getByRole('button',{name:'Crowd & Lounge',exact:true}).click();
+          await assertCrowd(expected);
+          assert.equal(await going.count(),0); assert.equal(await interested.count(),0);
+        }
+      }
+      assert.deepEqual(state.writes,[]); assert.equal(crowdAttendees[0].state,'going');
+    }else if(past){
       assert.equal(await going.count(),0);assert.equal(await interested.count(),0);
       assert.equal(await page.getByRole('button',{name:'Add this show to Going',exact:true}).count(),0);
       if(mode==='saved'){
@@ -93,5 +126,5 @@ async function scenario(browser,origin,width,mode) {
 const {server,origin}=await localServer();
 const browser=await chromium.launch({headless:true,...(process.env.PIT_BROWSER_EXECUTABLE?{executablePath:process.env.PIT_BROWSER_EXECUTABLE}:{})});
 const results=[];
-try{for(const width of [375,1280])for(const mode of ['top-rated','ended','saved','future','multi-day','expiry']){results.push(await scenario(browser,origin,width,mode));console.log('PASS',width,mode);}writeFileSync(resolve(output,'results.json'),JSON.stringify(results,null,2));}
+try{for(const width of [375,1280])for(const mode of ['top-rated','ended','saved','future','multi-day','expiry','crowd-range-end','crowd-explicit-end','crowd-date-only']){if(!`${mode}-${width}`.includes(process.argv[2]||''))continue;results.push(await scenario(browser,origin,width,mode));console.log('PASS',width,mode);}writeFileSync(resolve(output,'results.json'),JSON.stringify(results,null,2));}
 finally{await browser.close();await new Promise(done=>server.close(done));}

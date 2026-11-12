@@ -1051,8 +1051,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
                     <Avatar user={attendee} size={30} />
                     <View style={styles.attendeeCopy}>
                       <Text style={styles.attendeeName} numberOfLines={1}>{attendee.name}</Text>
-                      {attendanceStateDisplayLabel(attendee.state, { cutoffAt: attendanceCutoffAt, now: countdownNowMs }) ? (
-                        <Text style={styles.attendeeState}>{attendanceStateDisplayLabel(attendee.state, { cutoffAt: attendanceCutoffAt, now: countdownNowMs })}{attendee.verifiedAttendance ? " · Verified" : ""}</Text>
+                      {attendanceStateDisplayLabel(attendee.state, { show: rsvpShow, cutoffAt: attendanceCutoffAt, now: countdownNowMs }) ? (
+                        <Text style={styles.attendeeState}>{attendanceStateDisplayLabel(attendee.state, { show: rsvpShow, cutoffAt: attendanceCutoffAt, now: countdownNowMs })}{attendee.verifiedAttendance ? " · Verified" : ""}</Text>
                       ) : null}
                     </View>
                   </Pressable>

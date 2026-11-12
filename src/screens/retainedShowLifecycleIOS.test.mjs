@@ -643,3 +643,48 @@ test("an ongoing native multi-day range permits planning despite stale completed
   f.press("Going");
   assert.equal(f.writes.length, 1);
 });
+
+for (const canonicalRange of [false, true]) test(`Crowd keeps ongoing ranged attendance aligned with planning (canonical range ${canonicalRange})`, async t => {
+  let now = Date.parse("2026-11-14T12:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const savedAttendance = { state: "going", visibility: "members" };
+  const f = fixture({ savedAttendance, logOverrides: { date: "2026-11-10", startDateTime: "2026-11-10T20:00:00Z",
+    eventEndDate: canonicalRange ? "2026-11-11" : "2026-11-15", eventTimezone: "America/Toronto" } });
+  if (canonicalRange) Object.assign(f.document, { eventEndDate: "2026-11-15", timezone: "America/Toronto" });
+  f.document.lifecycle = "completed";
+  t.after(f.close); await f.ready();
+  const crowd = () => text(f.label("Open Fixture fan's profile"));
+  assert.match(crowd(), /Fixture fan Going/);
+  assert.ok(f.label("Going")); assert.ok(f.label("Remove Going from this show"));
+  now = Date.parse("2026-11-16T04:59:59.999Z"); f.render(); await f.flush();
+  assert.match(crowd(), /Fixture fan Going/); assert.ok(f.label("Going"));
+  now += 1;
+  f.act(() => { for (const tick of [...f.rsvpTimers.values()]) tick(); }); await f.flush();
+  assert.equal(f.label("Going"), undefined);
+  assert.match(crowd(), /Fixture fan Attended/);
+  assert.ok(f.label("Remove Attended from this show"));
+  assert.deepEqual(savedAttendance, { state: "going", visibility: "members" });
+  assert.equal(f.writes.length, 0, "display transitions do not rewrite attendance");
+});
+
+for (const dateOnly of [false, true]) test(`Crowd preserves existing post-event display grace (date only ${dateOnly})`, async t => {
+  const end = Date.parse(dateOnly ? "2026-11-13T05:00:00Z" : "2026-11-12T23:00:00Z");
+  const cutoff = Date.parse(dateOnly ? "2026-11-13T23:59:59.999Z" : "2026-11-13T23:00:00Z");
+  let now = end - 1;
+  t.mock.method(Date, "now", () => now);
+  const savedAttendance = { state: "going", visibility: "members" };
+  const f = fixture({ savedAttendance, logOverrides: { date: "2026-11-12", eventTimezone: "America/Toronto",
+    startDateTime: dateOnly ? null : "2026-11-12T21:00:00Z", ...(dateOnly ? {} : { endAt: "2026-11-12T23:00:00Z" }) } });
+  t.after(f.close); await f.ready();
+  const crowd = () => text(f.label("Open Fixture fan's profile"));
+  assert.match(crowd(), /Fixture fan Going/); assert.ok(f.label("Going"));
+  now = end; f.act(() => { for (const tick of [...f.rsvpTimers.values()]) tick(); }); await f.flush();
+  assert.equal(f.label("Going"), undefined); assert.match(crowd(), /Fixture fan Going/);
+  for (const [at, expected] of [[cutoff - 1, "Going"], [cutoff, "Attended"]]) {
+    now = at; f.render(); await f.flush();
+    assert.match(crowd(), new RegExp(`Fixture fan ${expected}`));
+    assert.ok(f.label(`Remove ${expected} from this show`));
+    assert.equal(f.label("Going"), undefined);
+  }
+  assert.deepEqual(savedAttendance, { state: "going", visibility: "members" }); assert.equal(f.writes.length, 0);
+});
