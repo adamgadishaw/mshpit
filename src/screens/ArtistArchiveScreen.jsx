@@ -393,7 +393,7 @@ const styles = StyleSheet.create({
 
   coverWrap: { overflow: "hidden", position: "relative", backgroundColor: colors.bgElev },
   cover: { overflow: "hidden", backgroundColor: colors.bgElev },
-  coverImage: { ...StyleSheet.absoluteFillObject },
+  coverImage: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
   coverFallback: { alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.lineSoft },
   credit: { position: "absolute", left: 7, right: 7, bottom: 7, minHeight: 25, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 7, borderRadius: radius.pill, backgroundColor: "rgba(0,0,0,0.68)" },
   creditText: { flex: 1, color: "#FFFFFF", fontSize: 9.5, fontWeight: "800" },

@@ -19,6 +19,33 @@ const deferred = () => { let resolve, reject; const promise = new Promise((a, b)
 const walk = node => [node, ...(node.children || []).flatMap(walk)];
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+// Execute the installed RN StyleSheet implementation. Inventing exports here
+// previously hid absoluteFillObject's removal in RN 0.86 and a zero-height cover.
+// Only its non-rendering dependencies are supplied; its public API is real.
+const nativeStyleSheet = (() => {
+  const filename = require.resolve("react-native/Libraries/StyleSheet/StyleSheetExports");
+  const code = transformSync(readFileSync(filename, "utf8"), { filename, babelrc: false, configFile: false,
+    plugins: [require("@babel/plugin-transform-flow-strip-types"), require("@babel/plugin-transform-modules-commonjs")] }).code;
+  const flatten = value => Array.isArray(value) ? Object.assign({}, ...value.map(flatten)) : value || undefined;
+  const dependencies = {
+    "../../src/private/styles/composeStyles": (left, right) => !left ? right : !right ? left : [left, right],
+    "../Components/View/ReactNativeStyleAttributes": {},
+    "./flattenStyle": flatten,
+    "../Utilities/PixelRatio": { default: { roundToNearestPixel: () => 1, get: () => 2 } },
+  };
+  const module = { exports: {} };
+  new Function("require", "module", "exports", "__DEV__", code)(name => {
+    assert.ok(Object.hasOwn(dependencies, name), `Unexpected StyleSheet dependency: ${name}`);
+    return dependencies[name];
+  }, module, module.exports, false);
+  return module.exports.default;
+})();
+
+test("native host fixture preserves the installed RN StyleSheet API", () => {
+  assert.equal(nativeStyleSheet.absoluteFillObject, undefined);
+  assert.deepEqual(nativeStyleSheet.absoluteFill, { position: "absolute", left: 0, right: 0, top: 0, bottom: 0 });
+});
+
 function createRenderer(calls) {
   const context = {}, container = { children: [] };
   let priority = 0, serial = 0;
@@ -103,7 +130,7 @@ function fixture({ strict = false, managed = true, initialSection, returnState =
     FlatList: props => React.createElement("FlatList", props, props.data.map(item => React.createElement(React.Fragment, { key: item.key }, props.renderItem({ item }))), props.ListFooterComponent),
     RefreshControl: "RefreshControl", ActivityIndicator: "ActivityIndicator", KeyboardAvoidingView: "KeyboardAvoidingView",
     Platform: { OS: "ios", select: value => value.ios ?? value.native ?? value.default }, PixelRatio: { get: () => 2 },
-    StyleSheet: { create: value => value, flatten: value => value, absoluteFill: {}, absoluteFillObject: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }, hairlineWidth: 1 },
+    StyleSheet: nativeStyleSheet,
     Dimensions: { get: () => ({ width, height: 852 }) }, useWindowDimensions: () => ({ width, height: 852, fontScale }),
     Animated: { Value: NativeValue, View: "AnimatedView", timing: animation, spring: animation, sequence: animation, parallel: animation, loop: animation, createAnimatedComponent: component => component },
     Easing: { linear: noop, out: value => value, quad: noop, cubic: noop },
@@ -1007,6 +1034,14 @@ for (const shape of ["portrait", "landscape", "missing", "hidden"]) {
         assert.equal(style.position, "absolute");
         assert.equal(style.height, undefined, "no percentage height against an indefinite FlatList row");
         assert.equal(style.top, 0); assert.equal(style.bottom, 0);
+        assert.equal(style.left, 0); assert.equal(style.right, 0);
+        const frame = f.all().find(node => node.children?.includes(media));
+        const frameStyle = flatStyle(frame.props.style);
+        assert.equal(frameStyle.width, 124);
+        assert.ok(frameStyle.minHeight >= 164, "the filled cover has a positive native frame height");
+        const image = walk(media).find(node => node.type === "ExpoImage");
+        assert.equal(flatStyle(image.props.style).position, "absolute");
+        assert.equal(image.props.contentFit, "cover");
         f.act(media.props.onPress);
         assert.equal(f.calls.actions.at(-1)[0], "onOpenPhotos");
         assert.equal(f.calls.actions.at(-1)[1][0].uri, cover.uri);
