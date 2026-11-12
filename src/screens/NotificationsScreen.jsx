@@ -1,6 +1,6 @@
 import { ScrollView } from "../components/NativeTabScroll";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, Pressable } from "react-native";
+import { ActivityIndicator, Platform, View, Text, StyleSheet, Pressable } from "react-native";
 import { colors, mono, radius, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
@@ -112,7 +112,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
   const nextCursor = notificationActivity?.data?.nextCursor;
   const [viewMode, setViewMode] = useState("recent");
   const bundles = useMemo(() => bundleNotifications(items), [items]);
-  const activityRows = viewMode === "digest"
+  const activityRows = Platform.OS === "ios" ? items.map(notification => ({ key: notification.id, notification, bundle: null })) : viewMode === "digest"
     ? bundles.map(bundle => ({ key: bundle.id, notification: bundle.primary, bundle }))
     : items.filter(notification => viewMode !== "updates" || ["creator_update", "artist_update"].includes(notification.type)).map(notification => ({ key: notification.id, notification, bundle: null }));
   const readCurrentNotifications = async (rows, externalSignal) => {
@@ -263,7 +263,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
             </Pressable>
           </View>
         )}
-        <View style={styles.modePanel}>
+        {Platform.OS !== "ios" && <View style={styles.modePanel}>
           <View style={styles.modeTabs} accessibilityRole="tablist">
             {[
               ["recent", "Recent"],
@@ -290,7 +290,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
               ? "Digest groups only the activity currently loaded here. It does not schedule or send push or email updates."
               : viewMode === "updates" ? "News from the artists, venues and events you follow." : "Recent shows each loaded activity item separately."}
           </Text>
-        </View>
+        </View>}
         {(activityStatus === "loading" || activityStatus === "idle") && items.length === 0 && (
           <View style={styles.empty}><ActivityIndicator color={colors.amber} /><Text style={styles.emptySub}>Loading activity…</Text></View>
         )}

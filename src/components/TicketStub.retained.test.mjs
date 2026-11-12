@@ -100,7 +100,7 @@ function fixture({ strict = false, own = false, guest = false, detail = false, c
     "../store": { useStore: () => store }, "../config/runtime.mjs": { ENABLE_MUSIC_PLAYER: false },
     "../hooks/useReducedMotion": () => reducedMotion, "../hooks/useNativeTabPreview": () => React.useContext(Preview),
     "../lib/useAppActive": () => true,
-    "../lib/lazyWithRetry": { loadChunk: (_, options) => { shareLoads.push(options); return new Promise(noop); } },
+    "../lib/lazyWithRetry": { lazyWithRetry: (_load, name) => name, loadChunk: (_, options) => { shareLoads.push(options); return new Promise(noop); } },
     "../lib/convertingClipsApi": { checkConvertingClip: (...args) => pending(checks, args), retryConvertingClip: (...args) => pending(retries, args) },
     "../components/showIOSPostActions": (options, choose) => sheets.push({ options, choose }),
     "./PublicWebLinks": { PublicPressableLink: "PublicPressableLink", PublicTextLink: "PublicTextLink" },

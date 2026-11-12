@@ -137,7 +137,7 @@ function PublicEventSnapshotPanel({
       </Pressable> : null}
       {ticketAction.error ? <Text style={styles.ticketError} accessibilityRole="alert">{ticketAction.error}</Text> : null}
       {eventAccountSection}
-      {!cancelled && <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
+      <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
         <View style={styles.reviewUnavailableCopy}>
           <Text style={styles.reviewUnavailableTitle}>{artistIdentityPending || artistMissing
             ? "Artist profile not linked yet"
@@ -157,7 +157,7 @@ function PublicEventSnapshotPanel({
             <Text style={styles.reviewUnavailableRetryText}>{loading ? "Refreshing…" : "Refresh details"}</Text>
           </Pressable>
         </View>
-      </View>}
+      </View>
       <Pressable style={styles.seeBtn} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
         <Icon name="pin" size={16} color={colors.amber} />
         <Text style={styles.seeTxt}>See this venue</Text>

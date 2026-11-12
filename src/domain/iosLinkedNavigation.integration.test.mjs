@@ -47,6 +47,7 @@ function fixture({ platform = "ios", session = { id: "A" }, epoch = 1, initialSt
     Platform: { OS: platform }, web: false, createLinkedNavigationOwner: createIOSLinkedNavigation,
     useRef: () => ownerRef, useLayoutEffect: fn => layouts.push(fn),
     stackRef, navigationRef, composerCloseGuardRef: guardRef,
+    postOpenSequence: { current: 0 }, sessionRef: { get current() { return session; } },
     authNavigationAbortRef: { current: () => { aborts += 1; } },
     publicLookup: { lookup: null }, publicRouteRequestRef: { current: null }, publicNavigationPendingRef: { current: null },
     setPublicNavigationNotice() {}, newsOpenRef: { current: 0 }, newsLinkedClaimRef: { current: null }, setNewsStoryNotice(value) { notices.push(value); },
@@ -259,14 +260,15 @@ test("Root a resolved guest news post keeps its auth destination claim through t
 });
 
 for (const platform of ["android", "web"]) {
-  test(`Root ${platform} keeps existing unowned Store calls and handler behavior`, async () => {
+  test(`Root ${platform} keeps unowned Store calls while the newest review-open intent wins`, async () => {
     const f = fixture({ platform });
     const first = f.app.openPostById("first"), second = f.app.openPostById("second");
     assert.equal(f.ownerRef.current, null);
     assert.equal(f.reads[0].options, undefined); assert.equal(f.reads[1].options, undefined);
     f.reads[1].resolve({ id: "second" }); await second;
     f.reads[0].resolve({ id: "first" }); await first;
-    assert.equal(f.stack.at(-1).post.id, "first", "do not silently change another platform's race policy");
+    assert.equal(f.stack.at(-1).post.id, "second", "a delayed older review must not replace the newer selected review");
+    assert.equal(f.navigations.length, 1);
     const profile = f.app.openProfileByHandle("handle");
     assert.equal(f.reads[2].options, undefined);
     f.reads[2].resolve([{ id: "user", handle: "handle" }]); await profile;

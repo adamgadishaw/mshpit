@@ -156,7 +156,7 @@ for (const intent of ["avatar", "back", "follow", "dm", "plans", "artist", "cach
     const retained = f.row("one").props.onPress;
     f.press("one");
     const callback = intent === "avatar" ? f.avatar("two").props.onPress : intent === "back" ? f.back
-      : intent === "none" ? f.find(n => n.type === "Pressable" && n.props.accessibilityLabel?.startsWith("Welcome to Pit!")).props.onPress
+      : intent === "none" ? f.find(n => n.type === "Pressable" && n.props.accessibilityLabel?.startsWith("Welcome to Mshpit.")).props.onPress
       : intent === "artist" ? f.find(n => n.type === "Pressable" && n.props.accessibilityLabel?.startsWith("Fixture Artist:")).props.onPress
       : f.row(intent).props.onPress;
     callback();

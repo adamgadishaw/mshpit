@@ -132,7 +132,7 @@ async function scenario(browser, origin, width) {
       assert.equal(await page.getByLabel("Public event address, optional", { exact: true }).isVisible(), true);
     };
     const assertRatings = async () => {
-      const ratings = page.getByLabel(/^(Overall concert rating|Rating)$/);
+      const ratings = page.getByLabel(/^(Overall concert rating|Detailed .+ rating)$/);
       assert.equal(await ratings.count(), 6, "Overall, band, room and crowd ratings must all appear without an expansion tap.");
       for (const rating of await ratings.all()) assert.equal(await rating.isVisible(), true);
     };
@@ -155,7 +155,7 @@ async function scenario(browser, origin, width) {
     assert.equal(await headerPost.isEnabled(), true, "A city-only show with an unknown date and one rating must be publishable from any step.");
     const overall = page.getByLabel("Overall concert rating", { exact: true });
     await overall.press("ArrowLeft");
-    await page.getByLabel("Rating", { exact: true }).first().press("End");
+    await page.getByLabel("Detailed Performance rating", { exact: true }).press("End");
     assert.equal((await overall.locator("..").innerText()).trim(), "4.5", "Five-star performance cannot change overall.");
     await overall.press("End");
     await page.getByRole("button", { name: "Leave performance unrated", exact: true }).click();
@@ -374,7 +374,7 @@ async function restoredScoringScenario(browser, origin, width, cleared = false) 
     assert.equal((await overall.locator("..").innerText()).trim(), cleared ? "—" : "4.0", "Only a missing overall receives the old draft's computed score.");
     const post = page.getByRole("button", { name: "Post", exact: true });
     assert.equal(await post.isEnabled(), !cleared);
-    await page.getByLabel("Rating", { exact: true }).first().press("End");
+    await page.getByLabel("Detailed Performance rating", { exact: true }).press("End");
     assert.equal((await overall.locator("..").innerText()).trim(), cleared ? "—" : "4.0", "Detailed ratings stay independent after restore.");
     if (cleared) assert.equal(await post.isDisabled(), true, "Detailed scores cannot repopulate a cleared overall.");
     else {

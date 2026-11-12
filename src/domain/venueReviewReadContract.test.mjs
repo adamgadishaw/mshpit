@@ -31,8 +31,9 @@ test("existing Store reviews read preserves cache on failure and confirms author
   assert.equal(f.calls[0].options.signal, signal);
   f.calls[0].reject(new Error("synthetic offline")); assert.equal((await failed).ok, false);
   assert.equal(f.cache().hall[0].id, "saved");
-  const empty = f.load("Hall"); f.calls[1].resolve({ reviews: [] });
-  assert.deepEqual(await empty, { ok: true, reviews: [] }); assert.deepEqual(f.cache().hall, []);
+  const stats = { average: null, ratings: 0 };
+  const empty = f.load("Hall"); f.calls[1].resolve({ reviews: [], stats });
+  assert.deepEqual(await empty, { ok: true, reviews: [], stats }); assert.deepEqual(f.cache().hall, []);
 });
 test("existing Store result exposes filtered snapshot and rejects ambiguous/account/privacy changes", async () => {
   const f = fixture(); const read = f.load("Hall");

@@ -94,6 +94,7 @@ function fixture({ initialDraft = "", commentReadResult = null, logFields = {}, 
   };
   let preference, announcement;
   const imports = (name, local) => {
+    if (name === "../features/publicNavigation/publicNavigationService") return { readPublicPost: async () => ({ id: post, review: "Post", ...logFields }), resolvePublicEntity: async () => null };
     if (name.endsWith("/useIOSDetailPresentation")) return execute("../hooks/useIOSDetailPresentation.ios.js", imports);
     if (name === "../components/iosDetailPresentationContext.mjs") return detailContext;
     if (name === "react") return React;
@@ -407,7 +408,7 @@ for (const reason of ['removed post', 'blocked author']) test(`active Post hides
   f.commitPrivacy(); await f.settle();
   assert.equal(f.presentation.canAct(), true, 'fresh command token cannot resurrect the source');
   assert.equal(f.all().some(n => n.type === 'TicketStub' || n.type === 'TextInput' || n.type === 'CommentLikeButton'), false);
-  assert.match(f.all().map(n => n.text || '').join(' '), /This post is no longer available/);
+  assert.match(f.all().map(n => n.text || '').join(' '), /This review is unavailable\. It may be private or removed\./);
   assert.doesNotMatch(f.all().map(n => n.text || '').join(' '), /Private removed review|Private parent text/);
   f.act(() => oldOpen(['https://media.test/withdrawn.jpg'])); assert.deepEqual(f.opened, []);
   await f.complete(); assert.equal(f.lease.read().text, 'Keep this newer draft'); assert.equal(f.lease.read().sending, false);
@@ -424,7 +425,7 @@ for (const descriptorsOnly of [false, true]) test(`withdrawn Post photo cannot s
   const card = f.find(n => n.type === 'TicketStub');
   assert.equal(JSON.stringify(card.props.log).includes(withdrawn), false); assert.deepEqual(card.props.log.photos, [kept]);
   assert.deepEqual(card.props.log.media.map(item => item.uri), [kept]); assert.equal(f.input, input);
-  f.act(() => { oldOpen([{ uri: withdrawn }]); card.props.onOpen(); });
+  f.act(() => { oldOpen([{ uri: withdrawn }]); card.props.onOpenPhotos([{ uri: kept }]); });
   assert.equal(f.opened.length, 1); assert.equal(JSON.stringify(f.opened).includes(withdrawn), false);
   f.privacyState.removedPhotos.add(kept); f.invalidatePrivacy(); f.commitPrivacy(); await f.settle();
   const emptyCard = f.find(n => n.type === 'TicketStub'); assert.deepEqual(emptyCard.props.log.photos, []); assert.deepEqual(emptyCard.props.log.media, []);

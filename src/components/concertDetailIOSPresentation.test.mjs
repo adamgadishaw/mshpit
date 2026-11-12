@@ -33,7 +33,8 @@ test("iOS show uses readable full-width date/venue context and real 44pt control
   assert.equal(s.stubRow.flexDirection, "column");
   assert.equal(s.stubDateColumn.maxWidth, "100%");
   assert.equal(s.artist.fontFamily, "System");
-  assert.equal(s.notch.display, "none");
+  assert.equal(baseStyles.notch, undefined, "the compact show no longer renders decorative ticket notches");
+  assert.equal(s.notch, undefined);
   for (const name of ["reviewUnavailableRetry", "ticketsBtn", "goingBtn", "loungeBtn"]) assert.ok(s[name].minHeight >= 44, name);
   for (const name of ["reviewMediaArrow", "previewBtn"]) assert.ok(s[name].width >= 44 && s[name].height >= 44, name);
   assert.equal(baseStyles.previewBtn.width, 26, "base styles are not mutated");

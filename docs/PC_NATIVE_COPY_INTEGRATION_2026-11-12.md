@@ -88,6 +88,23 @@ Initial reconciliation evidence: 130 focused native integration checks,
 source checks; final immutable-source aggregate, browser, budget, platform
 exports and independent review receipts belong in the external handoff.
 
+The first aggregate on merge checkpoint `e49232e8` exposed two native
+presentation regressions: the creator Activity merge restored the retired iOS
+mode tabs, and a cancelled public event hid independent artist recovery. Restore
+the chronological iOS Activity list (including creator notices) and keep artist
+recovery reachable without enabling cancelled-event tickets. The relevant real
+component tests cover both corrections.
+
+Update integration harness imports and bindings to the current lazy components,
+review presentation, consent helpers and renamed venue component. Venue return
+tests now exercise the actual 12-row pagination while preserving selected city,
+search, selected venue, expanded shows and account/preview isolation. Preserve
+the original complete non-iOS card snapshots with only the intentional review
+permalink wording exempted and explicitly asserted. Browser fixtures follow the
+canonical profile route, account-target reads and independent rating labels.
+Normalize this isolated checkout to Git's LF blobs for exact-source native
+snapshot checks; this does not change tracked source contents.
+
 Preserve Build 8's themes, native UI, recovery and navigation, including its
 distinct pure startup-helper filename and actual Metro iOS/Android/web
 resolution regression. Do not reconstruct or substitute the startup repair.

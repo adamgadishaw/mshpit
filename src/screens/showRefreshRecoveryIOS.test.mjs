@@ -106,6 +106,10 @@ function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "act
     writeShowAttendance: () => assert.fail("No attendance write"),
   };
   const imports = (name, local) => {
+    if (name.endsWith("/concertDetailLayout")) return require("./src/components/concertDetailLayout" + (platform === "web" ? ".web" : "") + ".js");
+    if (name.endsWith("/ShowSection")) return execute("src/features/showDetails/ShowSection.jsx", imports);
+    if (name.endsWith("/lazyWithRetry")) return { lazyWithRetry: (_read, label) => { assert.equal(label, "AfterShowSection"); return execute("src/screens/AfterShowSection.jsx", imports).default; } };
+    if (name.endsWith("/usePublicVenueSnapshot")) return () => ({ resource: { status: "ready", data: null } });
     if (name.endsWith("/useIOSDetailPresentation")) return require("./src/hooks/useIOSDetailPresentation.js");
     if (name === "react" || name === "react/jsx-runtime") return require(name);
     if (name === "react-native") return native;

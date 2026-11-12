@@ -12,6 +12,7 @@ import { chatOutboxFor } from '../src/domain/chatDelivery.mjs';
 import { mergeChatMessages, reconcileRemovedDirectMessages } from '../src/domain/chatMessages.mjs';
 import { directMessageUnreadCount, mergeDirectMessageReadSummary, normalizeDirectMessageReadCursor } from '../src/domain/directMessageRead.mjs';
 import { normalizeMessageRelationshipContext } from '../src/domain/messageRelationshipContext.mjs';
+import { applyDMRequestState, dmInboxBucket, dmRequestState, normalizeDMRequestState } from '../src/features/chat/directMessageConsent.mjs';
 
 
 assert.equal(process.env.NODE_ENV, 'test');
@@ -48,6 +49,7 @@ function addUser(id) {
   return q.userById.get(id);
 }
 function pair(prefix) {
+  prefix = `web-accept-${prefix}`;
   const viewer = addUser(`${prefix}v`), peer = addUser(`${prefix}p`);
   db.prepare("INSERT INTO dm_acceptances VALUES(?,?,?,'explicit')").run(viewer.id, peer.id, 1);
   let serial = 0;
@@ -98,6 +100,7 @@ function client(p) {
       ENABLE_DEMO_DATA: false, mergeChatMessages, reconcileRemovedDirectMessages, chatOutboxFor,
       normalizeMessageRelationshipContext,
       directMessageUnreadCount, mergeDirectMessageReadSummary, normalizeDirectMessageReadCursor,
+      applyDMRequestState, dmInboxBucket, dmRequestState, normalizeDMRequestState,
       captureAccountMutation, accountMutationIsCurrent, notificationActivity,
       setDms: setter('dms'), setDmRead: setter('dmRead'), setUsers: setter('users'),
       absorbUsers() {}, publicProfileCacheEntry: user => user, ago: String,

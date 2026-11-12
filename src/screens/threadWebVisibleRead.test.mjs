@@ -114,7 +114,7 @@ function fixture({ platform = "web", strict = false, rows = [incoming("old", 1),
   };
   hook = execute("../hooks/useVisibleDirectMessageRead.js", imports, clock);
   const Thread = execute("./ThreadScreen.jsx", imports, clock);
-  const props = { otherId: "recipient", isCurrentRoute: () => route, onClose: noop };
+  const props = { otherId: "recipient", isCurrentIOSRoute: () => route, onClose: noop };
   const f = {
     writes, measurements, scrollCalls, listenerHistory, listeners,
     capturedTimer: () => [...timers.values()][0],

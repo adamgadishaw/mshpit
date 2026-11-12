@@ -48,6 +48,8 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
     "../cityIdentity.js": { cityIdentityForLocation: () => null },
     "./cities/CityNavigationContext": { CityNavigationContext: null },
     "../domain/contentPreview.mjs": require("../domain/contentPreview.mjs"),
+    "../lib/lazyWithRetry": { lazyWithRetry: (_load, name) => name },
+    "./DeferredConcertTicketCard": "ConcertTicketCard",
   };
   for (const name of ["SupportingActsLine", "Stars", "Icon", "Avatar", "RatingBars", "SpinStar", "AfterpartyPreview", "ExpandableText", "PostMediaGrid", "ConvertingClipNotice", "SongAttachment", "PostSwipeActions", "ConcertTicketCard"]) modules[`./${name}`] = name;
   const hookSource = readFileSync(new URL(`../hooks/useTicketPresentation${platform === "ios" ? ".ios" : ""}.js`, import.meta.url), "utf8");
@@ -212,9 +214,20 @@ export function treeHash(tree) {
   };
   return createHash("sha256").update(JSON.stringify(clean(tree))).digest("hex");
 }
-test("Android and web retain their exact original card, action and copy trees", () => {
+test("Android and web review cards retain their original trees apart from the explicit review permalink label", () => {
   const expected = { android: "d872da43b6278e1354d8f4ac673397639f37ca9a2e8d11f93b4e691f226d6f40", web: "a15a5cd6874e6d7f7881048096704fdf980799539a16fb2f33be23cd3e8640ae" };
-  for (const platform of ["android", "web"]) assert.equal(treeHash(fixture({ platform }).render()), expected[platform]);
+  assert.equal((defaultSource.match(/            reviewOnly\n/g) || []).length, 1);
+  const originalRailLabel = defaultSource.replace("            reviewOnly\n", "            reviewOnly={cityOnlyReview}\n");
+  for (const platform of ["android", "web"]) {
+    const f = fixture({ platform }), tree = f.render();
+    const link = label(tree, "Open Main artist review");
+    assert.equal(link.props.href, "/post/p_review");
+    assert.equal(label(tree, "View Main artist show"), undefined);
+    link.props.onNavigate(); assert.deepEqual(f.calls, [["onOpenShow", review]]);
+    // Keep the original whole-tree guard: only the independently reviewed
+    // permalink wording is exempt, not styles, controls or their callbacks.
+    assert.equal(treeHash(fixture({ platform, inputSource: originalRailLabel }).render()), expected[platform]);
+  }
 });
 
 test("Android and web status, campaign and online cards also match their original host trees", () => {

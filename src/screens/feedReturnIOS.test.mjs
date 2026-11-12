@@ -71,7 +71,7 @@ assert.match(app.slice(branch.test.start, branch.test.end), /retainNativeFeed \|
 // Root now names its shared detail subtree before choosing the Feed retention
 // branch. Evaluate those exact declarations too; a fabricated overlay value
 // would stop this fixture from checking the checked-in Root composition.
-const overlayDeclarations = ["pageOverlay", "singleNativeOverlay", "nativeDetailOverlay"].map(name => {
+const overlayDeclarations = ["pageOverlay", "singleNativeOverlay", "nativeDetailOverlay", "presentNativeScreen"].map(name => {
   const declarations = find(ast, node => node.type === "VariableDeclarator" && node.id?.name === name);
   assert.equal(declarations.length, 1, `Expected one Root ${name} declaration`);
   const initializer = declarations[0].init;
@@ -79,7 +79,7 @@ const overlayDeclarations = ["pageOverlay", "singleNativeOverlay", "nativeDetail
 }).join("\n");
 const names = "PageReturnProvider,pageReturnRef,pageReturnScope,iosFeedSelection,stack,chatAuthEpoch,openSignIn,retainNativeFeed,session,overlay,NativeFeedMediaLayer,NativeAppHeader,activeTab,switchTab,Platform,iosTabSwipeScope,iosTabSwipeEnabled,isCurrentIOSTabSwipe,openMainMenu,iosMenuOpener,requireVerifiedMutation,go,openProfileManagement,mobileTabBar,Suspense,ScreenLoading,ScreenTransition,screenKey,screenDirection,IosDetailNavigation,iosBackGestureAllowed,nav,linkedNavigationScope,linkedNavigationRef,navigationRef,back,tabScreens,NativeDetailStack,authReady,landing,status,nativeAccountLinkActive,nativeAccountLinkActiveRef,resetToken,ownerApprovalToken,appActive,iosMenuOpen,acctOpen,welcome,unsubToken,verifyToken,publicNavigationNotice,newsStoryNotice,screenTransitionKey,inboxUnread,unreadNotifications,openInbox,openNotifications";
 const module = { exports: {} };
-const code = transformSync(`export default function RootSlice(p) { const {${names}} = p; const nativeTabPage = tabScreens; ${overlayDeclarations} return (${app.slice(branch.start, branch.end)}); }`, {
+const code = transformSync(`export default function RootSlice(p) { const {${names}} = p; const ReviewPresentation = p => p.children; const View = 'View', styles = { appContent: {} }, isReviewDetail = () => false; const nativeTabPage = tabScreens; ${overlayDeclarations} return (${app.slice(branch.start, branch.end)}); }`, {
   babelrc: false, configFile: false, plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
 }).code;
 new Function("require", "module", "exports", code)(require, module, module.exports);

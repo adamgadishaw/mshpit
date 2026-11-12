@@ -76,6 +76,7 @@ function fixture(overrides = {}) {
       createAttendanceTicketClientMutationId: () => `p_local_ticket_fixture_${++nextMutation}`,
     };
     if (name === "../theme") return { colors: {}, radius: {}, shadow: {} };
+    if (name === "./DeferredConcertTicketCard") return "ConcertTicketCard";
     if (["./Button", "./ConcertTicketCard", "./Icon"].includes(name)) return name.slice(2);
     return require(name);
   };

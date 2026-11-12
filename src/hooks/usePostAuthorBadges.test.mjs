@@ -53,6 +53,6 @@ test("badge events isolate viewers and authors and yield to a replacement post s
 
 test("PostScreen reconciles its navigation fallback before applying local post edits", () => {
   const screen = readFileSync(new URL("../screens/PostScreen.jsx", import.meta.url), "utf8");
-  assert.match(screen, /usePostAuthorBadges\(feed\.find\([\s\S]*?\|\| log, session\?\.id \|\| null\)/);
+  assert.match(screen, /usePostAuthorBadges\(detail \? currentReview\(log, feed\.find\([\s\S]*?\|\| log, session\?\.id \|\| null\)/);
   assert.match(screen, /applyPostLocalOverride\(\s*authorReconciledLog,/);
 });
