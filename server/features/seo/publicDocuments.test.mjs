@@ -320,6 +320,25 @@ function importedBiography(bio = "Alpha is a Canadian band formed in Toronto.") 
       mbid: ARTIST_MBID, wikidataId: "Q123", retrievedAt: NOW } } };
 }
 
+test("a biography leads the search description when no shows or reviews are listed", () => {
+  const database = createDatabase();
+  try {
+    const bio = "Mohombi Nzasi Moupondo (born 17 October 1986) is a Congolese-Swedish singer, songwriter and dancer.";
+    addArtist(database, { key: "mohombi", name: "Mohombi", bio });
+    const documents = service(database);
+    const document = documents.artistDocument({ artistKey: "mohombi", at: NOW });
+    assert.equal(document.description, bio);
+    assert.equal(document.stats.upcomingTotal, 0);
+    assert.match(documents.render(document), /name="description" content="Mohombi Nzasi Moupondo/);
+    database.prepare("UPDATE artists SET bio=? WHERE norm='mohombi'").run("A singer and songwriter with a public biography.");
+    assert.equal(documents.artistDocument({ artistKey: "mohombi", at: NOW }).description,
+      "Mohombi artist profile on Mshpit. A singer and songwriter with a public biography.");
+    addArtist(database, { key: "the", name: "The", bio: "They are a singer and songwriter." });
+    assert.equal(documents.artistDocument({ artistKey: "the", at: NOW }).description,
+      "The artist profile on Mshpit. They are a singer and songwriter.");
+  } finally { database.close(); }
+});
+
 test("ordinary and legacy artist documents attribute imported biographies without exposing provider records", () => {
   const database = createDatabase();
   try {
