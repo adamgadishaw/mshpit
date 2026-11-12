@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import Button from '../../components/Button';
 import { colors, radius } from '../../theme';
-import { api } from '../../lib/api';
 import { fetchArtistCalendar } from './creatorPostsApi.mjs';
+import { withdrawPrivateCalendar, removeUnusedCalendarUpload } from './privateCalendarCleanupApi.mjs';
 import { confirmedPrivateWithdrawal, privateCalendarWithdrawal } from './privateCalendarCleanup.mjs';
 
 export default function PrivateCalendarCleanup({ accountId }) {
@@ -40,13 +40,13 @@ export default function PrivateCalendarCleanup({ accountId }) {
         const key=`${event.id}:${event.revision}`;
         if(!attempts.current.has(key))attempts.current.set(key,privateCalendarWithdrawal(event,`withdraw_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`));
         const body=attempts.current.get(key);
-        const result=await api('/api/posts',{method:'POST',body,expectedAccountId:accountId,signal:controller.signal,silent:true,context:'Withdrawing your private scheduled show'});
+        const result=await withdrawPrivateCalendar({body,accountId,signal:controller.signal});
         if(!active())return;
         if(!confirmedPrivateWithdrawal(result,body))throw new Error('Withdrawal could not be confirmed. Retry this same request or refresh your calendar.');
       }else{
         for(const assetId of event.cleanupMediaAssetIds||[]){
           if(!active())return;
-          await api(`/api/media/assets/${encodeURIComponent(assetId)}`,{method:'DELETE',expectedAccountId:accountId,signal:controller.signal,silent:true,context:'Removing an unused scheduled-show upload'});
+          await removeUnusedCalendarUpload({assetId,accountId,signal:controller.signal});
         }
       }
       if(active()){
