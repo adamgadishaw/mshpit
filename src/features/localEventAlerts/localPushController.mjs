@@ -9,13 +9,13 @@ import { createLoadState, beginLoadState, resolveLoadState, rejectLoadState, isL
 // account/auth-epoch changes synchronously abort and discard all private state.
 export function createLocalPushController({ api, notifications, installationStorage, platform, projectId, toAppError, onChange = () => {}, onOpenEvent }) {
   let scope = "guest", accountId = null, epoch = 0, abort = new AbortController();
-  let state = createLoadState({ scope }), enabling = null, lastResponse = null;
+  let state = createLoadState({ scope }), enabling = null, lastResponse = null, changingAccount = false;
   const publish = next => { state = next; onChange(state); };
   function setAccount(nextAccountId, authEpoch = 0) {
     const nextScope = `${nextAccountId || "guest"}:${authEpoch}`;
     if (scope === nextScope) return;
     abort.abort(); abort = new AbortController(); epoch++; accountId = nextAccountId || null; scope = nextScope;
-    enabling = null; lastResponse = null;
+    enabling = null; lastResponse = null; changingAccount = false;
     publish(createLoadState({ scope }));
   }
   const captured = () => {
@@ -41,10 +41,11 @@ export function createLocalPushController({ api, notifications, installationStor
       if (permission.status !== "granted" && requestPermission) { permission = await notifications.requestPermissionsAsync(); context.assertCurrent(); }
       if (permission.status !== "granted") {
         const installation = await installationStorage.getOrCreate(); context.assertCurrent();
-        if (installation.binding?.accountId === context.accountId) {
-          await api.revoke({ ...context, body: { installationId: installation.installationId, secret: installation.secret } }); context.assertCurrent();
-          await installationStorage.saveBinding(null, context); context.assertCurrent();
-        }
+        const proof = { installationId: installation.installationId, secret: installation.secret };
+        const binding = await api.binding({ ...context, body: proof }); context.assertCurrent();
+        const revoked = await api.revoke({ ...context, body: { ...proof, expectedGeneration: binding.generation } }); context.assertCurrent();
+        if (revoked?.enabled !== false || !Number.isSafeInteger(revoked.generation) || revoked.generation < 1) throw new TypeError("Device revocation could not be confirmed.");
+        await installationStorage.saveBinding(null, context); context.assertCurrent();
         const result = { enabled: false, reason: "permission-denied" };
         publish(resolveLoadState({ scope: context.scope, data: result }));
         return commandSuccess(result);
@@ -69,6 +70,7 @@ export function createLocalPushController({ api, notifications, installationStor
     }
   }
   function enableDevice(options) {
+    if (changingAccount) return Promise.resolve(commandFailure(toAppError(new TypeError("Finish or cancel the account change before enabling notifications."))));
     if (enabling) return enabling;
     abort.abort(); abort = new AbortController(); epoch++;
     const task = enable(options);
@@ -85,7 +87,10 @@ export function createLocalPushController({ api, notifications, installationStor
     const context = captured();
     try {
       const installation = await installationStorage.getOrCreate(); context.assertCurrent();
-      await api.revoke({ ...context, body: { installationId: installation.installationId, secret: installation.secret } }); context.assertCurrent();
+      const proof = { installationId: installation.installationId, secret: installation.secret };
+      const binding = await api.binding({ ...context, body: proof }); context.assertCurrent();
+      const revoked = await api.revoke({ ...context, body: { ...proof, expectedGeneration: binding.generation } }); context.assertCurrent();
+      if (revoked?.enabled !== false || !Number.isSafeInteger(revoked.generation) || revoked.generation < 1) throw new TypeError("Device revocation could not be confirmed.");
       await installationStorage.saveBinding(null, context); context.assertCurrent();
       const value = { enabled: false };
       publish(resolveLoadState({ scope: context.scope, data: value }));
@@ -96,6 +101,14 @@ export function createLocalPushController({ api, notifications, installationStor
       publish(rejectLoadState(state, { scope: context.scope, error: appError, retainData: false }));
       return commandFailure(appError);
     }
+  }
+  // Await success BEFORE the auth transport replaces the current credentials.
+  // setAccount remains a synchronous projection reset, never a revocation claim.
+  // The server's generation fence rejects an aborted registration arriving late.
+  function prepareAccountChange() {
+    changingAccount = true;
+    publish(createLoadState({ scope }));
+    return disableDevice();
   }
   async function openResponse(response) {
     if (!accountId) return commandSuccess({ opened: false });
@@ -117,5 +130,5 @@ export function createLocalPushController({ api, notifications, installationStor
       return commandFailure(toAppError(error));
     }
   }
-  return { setAccount, enableDevice, disableDevice, openResponse, getState: () => state, dispose: () => { setAccount(null, epoch + 1); } };
+  return { setAccount, prepareAccountChange, cancelAccountChange: () => { changingAccount = false; }, enableDevice, disableDevice, openResponse, getState: () => state, dispose: () => { setAccount(null, epoch + 1); } };
 }

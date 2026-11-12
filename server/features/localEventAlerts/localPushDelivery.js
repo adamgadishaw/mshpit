@@ -26,7 +26,9 @@ export function createLocalPushDelivery({ db, alerts, transport, enabled = false
     const at = now();
     // Crash after dispatch is uncertain, not a licence to send the same alert
     // again. Exactly-once remote delivery cannot be promised by Expo's API.
-    db.prepare("UPDATE local_push_outbox SET state='unknown',error_code='INTERRUPTED',lease_key=NULL WHERE state='sending' AND lease_until<=?").run(at);
+    db.prepare(`UPDATE local_push_outbox SET state='unknown',error_code='INTERRUPTED',lease_key=NULL WHERE id IN (
+      SELECT id FROM local_push_outbox WHERE state='sending' AND lease_until<=? ORDER BY lease_until,id LIMIT ?)`)
+      .run(at, bounded(limit));
     const candidates = db.prepare("SELECT id FROM local_push_outbox WHERE state='ready' AND next_at<=? ORDER BY next_at,id LIMIT ?").all(at, bounded(limit));
     const counts = { accepted: 0, cancelled: 0, retrying: 0, failed: 0, unknown: 0 };
     for (const candidate of candidates) {

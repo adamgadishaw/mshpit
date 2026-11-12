@@ -3,7 +3,9 @@ import { withImmediateWrite } from "../../databaseTransaction.js";
 // Called explicitly by the database migration boundary. Importing this feature
 // never opens a database, starts a worker, registers a device or sends a push.
 export function ensureLocalAlertSchema(db) {
+  if (!db.prepare("PRAGMA foreign_keys").get().foreign_keys) throw new Error("Local alerts require SQLite foreign-key enforcement");
   return withImmediateWrite(db, () => {
+  const hadReceipts = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_push_installation_receipts'").get();
   db.exec(`
     CREATE TABLE IF NOT EXISTS local_alert_preferences (
       account_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -25,7 +27,8 @@ export function ensureLocalAlertSchema(db) {
       event_id TEXT PRIMARY KEY REFERENCES tour_dates(id) ON DELETE CASCADE,
       fingerprint TEXT NOT NULL, first_seen_at INTEGER NOT NULL,
       announce_until INTEGER NOT NULL, scan_cursor TEXT NOT NULL DEFAULT '',
-      scan_complete INTEGER NOT NULL DEFAULT 0
+      scan_complete INTEGER NOT NULL DEFAULT 0,
+      reconcile_cursor TEXT NOT NULL DEFAULT '', reconcile_complete INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS local_event_alerts (
       id TEXT PRIMARY KEY,
@@ -43,6 +46,7 @@ export function ensureLocalAlertSchema(db) {
     );
     CREATE INDEX IF NOT EXISTS local_event_alerts_due ON local_event_alerts(state,due_at,id);
     CREATE INDEX IF NOT EXISTS local_event_alerts_event ON local_event_alerts(event_id);
+    CREATE INDEX IF NOT EXISTS local_event_alerts_event_page ON local_event_alerts(event_id,id);
     CREATE TABLE IF NOT EXISTS local_push_installations (
       installation_id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL,
       account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -54,6 +58,15 @@ export function ensureLocalAlertSchema(db) {
       updated_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS local_push_installations_account ON local_push_installations(account_id);
+    CREATE INDEX IF NOT EXISTS local_push_installations_session ON local_push_installations(session_hash);
+    CREATE TABLE IF NOT EXISTS local_push_installation_receipts (
+      installation_id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL,
+      account_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+      generation INTEGER NOT NULL CHECK(generation>0), revoked_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS local_push_installation_receipts_account ON local_push_installation_receipts(account_id);
+    CREATE TRIGGER IF NOT EXISTS local_push_receipt_remove_account BEFORE DELETE ON users
+      BEGIN UPDATE local_push_installation_receipts SET account_id=NULL,revoked_at=NULL WHERE account_id=OLD.id; END;
     CREATE TABLE IF NOT EXISTS local_push_outbox (
       id TEXT PRIMARY KEY,
       alert_id TEXT NOT NULL REFERENCES local_event_alerts(id) ON DELETE CASCADE,
@@ -65,10 +78,18 @@ export function ensureLocalAlertSchema(db) {
       UNIQUE(alert_id,installation_id,generation)
     );
     CREATE INDEX IF NOT EXISTS local_push_outbox_due ON local_push_outbox(state,next_at,id);
+    CREATE INDEX IF NOT EXISTS local_push_outbox_installation ON local_push_outbox(installation_id,generation);
+    CREATE INDEX IF NOT EXISTS local_push_outbox_alert_page ON local_push_outbox(alert_id,id);
     CREATE TRIGGER IF NOT EXISTS local_alert_remove_owned_notice BEFORE DELETE ON local_event_alerts
       WHEN OLD.owns_notice=1 AND OLD.notification_id IS NOT NULL
       BEGIN DELETE FROM notifications WHERE id=OLD.notification_id; END;
   `);
+    if (!hadReceipts) db.exec(`INSERT INTO local_push_installation_receipts(installation_id,secret_hash,account_id,generation,revoked_at)
+      SELECT installation_id,secret_hash,account_id,generation,NULL FROM local_push_installations`);
+    const observationColumns = db.prepare("PRAGMA table_info(local_event_observations)").all();
+    if (!observationColumns.some(column => column.name === "reconcile_cursor")) db.exec("ALTER TABLE local_event_observations ADD COLUMN reconcile_cursor TEXT NOT NULL DEFAULT ''");
+    if (!observationColumns.some(column => column.name === "reconcile_complete")) db.exec("ALTER TABLE local_event_observations ADD COLUMN reconcile_complete INTEGER NOT NULL DEFAULT 0");
+    db.exec("CREATE INDEX IF NOT EXISTS local_event_observations_reconcile ON local_event_observations(reconcile_complete,event_id)");
     if (!db.prepare("PRAGMA table_info(local_event_alerts)").all().some(column => column.name === "delivery_locked")) {
       db.exec(`ALTER TABLE local_event_alerts ADD COLUMN delivery_locked INTEGER NOT NULL DEFAULT 0 CHECK(delivery_locked IN (0,1));
         UPDATE local_event_alerts SET delivery_locked=1 WHERE state<>'queued' OR notification_id IS NOT NULL
@@ -78,6 +99,7 @@ export function ensureLocalAlertSchema(db) {
       // A missing snapshot is not evidence that a historical edit was harmless.
       // The service adopts it only while the full stored fingerprint still matches.
       db.exec("ALTER TABLE local_event_alerts ADD COLUMN delivery_fingerprint TEXT");
+      db.exec("UPDATE local_event_observations SET reconcile_cursor='',reconcile_complete=0");
     }
     // Old cancelled rows lost their original delivery state. Lock them rather
     // than guess that an inbox-only or uncertain push delivery never happened.
@@ -93,5 +115,5 @@ export function ensureLocalAlertSchema(db) {
 
 export const LOCAL_ALERT_TABLES = Object.freeze([
   "local_alert_preferences", "local_alert_account_scans", "local_event_sales", "local_event_observations",
-  "local_event_alerts", "local_push_installations", "local_push_outbox",
+  "local_event_alerts", "local_push_installations", "local_push_outbox", "local_push_installation_receipts",
 ]);

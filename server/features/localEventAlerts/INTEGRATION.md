@@ -6,6 +6,74 @@ tests are based on installed Build 12 commit
 changed. No production data, live device token, push delivery, credentials,
 deployment, phone installation, or remote Git publication was used.
 
+## Account transitions and bounded reconciliation after c678a501
+
+Before a signed-in account starts a credential-changing login/switch request,
+await `controller.prepareAccountChange()`. Continue only on `{ok:true}`. It aborts
+the previous enable locally, clears the controller projection, disables overlapping
+enables, reads the server generation, revokes it, and confirms the receipt before
+clearing the secure binding. On failure, keep the current auth identity and surface
+the error/retry. `cancelAccountChange()` permits new explicit enables if the switch
+is abandoned; it does not re-enable notifications. After confirmed auth adoption,
+call `setAccount(nextAccountId,authEpoch)` synchronously. That setter remains a
+projection reset, not a server-revocation claim. These methods are not yet mounted
+in the app's authentication coordinator.
+
+The existing linked-account switch already deletes its old session within its
+transaction; tests now exercise that actual route with notification registrations,
+including rollback. Logout also deletes the current session. Do not bypass the
+existing auth transition/retry mechanism or claim an offline sign-out has revoked
+remote delivery. Clear local identity immediately on sign-out and retain its durable
+pending server-revocation handling. The ordinary login route creates a new session
+without deleting the old full session, so the pre-transition preparation is needed
+when replacing an existing signed-in account via that route.
+
+`DELETE /api/me/local-alerts/devices` now requires `expectedGeneration` from the
+proof-authorized binding read and returns `{enabled:false,generation}`. A stale
+generation fails with 409; invalid proof or another active account's registration
+fails with 403. Retry reuses the original expected generation safely; a new command
+reads the current one. Schema and client must land together. Do not enable this
+protocol across mixed server versions whose older writers ignore the generation receipts.
+
+The eighth table, `local_push_installation_receipts`, persists the consumed generation
+even when no active registration exists. Its primary key is `installation_id`; it
+holds `secret_hash`, nullable `account_id`, `generation`, and nullable `revoked_at`.
+Registration and revocation advance it atomically with the active device row.
+Revoking a never-registered installation also advances the fence, so a late first
+registration cannot revive it. Repeated revocation with the same expected generation
+is idempotent; a fresh revocation against the current generation advances it again
+to fence an overlapping enable. Session deletion cannot reset consumed generations.
+
+This minimal installation security receipt is deliberately retained on account
+erasure: both the account link and revocation timestamp are cleared. It retains
+only installation ID, proof hash and generation, never a token or session hash.
+This prevents an older request from a different account on the same installation
+from reusing a consumed generation after deletion. Portable exports include only
+account-associated revocation timestamps. Backup/restore must include the eighth
+table; do not prune/reset its fences as ordinary notification history. Review this
+explicit retention behavior with the privacy/backup integration changes.
+
+`reconcileEvent(eventId,{baseline=false,limit=100})` now returns
+`{visible,changed?,processed,more}` and processes at most 500 alert rows per call.
+`local_event_observations.reconcile_cursor` and `reconcile_complete` persist progress.
+A new canonical fingerprint resets the cursor; cancelled rows count toward the
+page bound. Planning waits for reconciliation to finish. Migration initializes
+older observations for a scan. Each page and its owned-notice removal roll back
+together. Metadata-only refresh still preserves committed inbox/outbox records.
+
+Logical cancellation blocks sends/taps immediately, before cleanup completes.
+Per-alert push cancellation updates at most 20 rows. Preference or installation
+generation changes immediately cancel at most 100 rows; send authorization checks
+the latest policy regardless of physical cleanup. Drain
+`cancelPendingPushPage({limit:100})` (maximum 500) for remaining cancelled-alert,
+opt-out, expired-session or obsolete-generation outbox records. Interrupted-send
+recovery also obeys the dispatch batch limit. Device/session/account FK deletion
+still cascades dependent rows atomically and is not claimed to have a constant
+row bound. No production-volume performance claim is made.
+
+See [REMAINING_INTEGRATION.md](./REMAINING_INTEGRATION.md) for the concrete inbox,
+settings, scheduler, authentication and native composition work still required.
+
 ## Unsent-push correction after 9bf544e
 
 `delivery_locked` records the atomic inbox/outbox commit, not an attempted or
@@ -80,9 +148,9 @@ Global date announcements remain independent of home city and sale status.
 Ticketmaster documents event status separately from public-sale start/end and
 TBD information: https://developer.ticketmaster.com/products-and-docs/apis/discovery-api/v2/
 
-Still outside this correction: app/server mounting, generic-news deduplication,
-native capability/configuration, account-switch revocation composition, and
-bounding the existing per-event cancellation scan. No live transport was used.
+Still outside these corrections: app/server mounting, generic-news deduplication,
+native capability/configuration and account-switch revocation composition.
+Per-event reconciliation is now bounded as described above. No live transport was used.
 
 Shared-file edits were held because coordination with integration task
 `01a192c2-1da6-7237-8909-ab10556a40d5` was required before making them. The tool's
@@ -92,7 +160,7 @@ permission question is pending; no alternate channel was used to bypass it.
 
 ## Implemented independently
 
-- An additive seven-table schema, authenticated route factory, canonical-policy
+- An additive eight-table schema, authenticated route factory, canonical-policy
   audience adapter, durable account/event fan-out cursors, inbox delivery and
   push outbox. None starts work on import.
 - Tour-date alerts for a current followed/favourited artist are global: a remote,
@@ -112,8 +180,9 @@ permission question is pending; no alternate channel was used to bypass it.
 - Existing creator-calendar inbox notices are reused by exact post/event
   association. No second Activity system is introduced.
 - Push installation proof, unique token, session FK, compare-and-set generation,
-  account transfer and revocation. Logout/session deletion cascades device
-  registrations and queued deliveries. Secrets/tokens are not exported.
+  account transfer and revocation. Logout/session deletion cascades active device
+  registrations and queued deliveries; installation generation receipts survive.
+  Secrets/tokens are not exported.
 - A default-disabled, bounded Expo dispatcher, explicit receipt polling,
   single-flight shutdown, database send leases, bounded rate-limit retries and
   no blind resend after an ambiguous timeout/crash. Two worker instances cannot
@@ -131,7 +200,9 @@ permission question is pending; no alternate channel was used to bypass it.
    `LOCAL_ALERT_TABLES` in the existing schema/backup/restore coverage checks.
    The tables are `local_alert_preferences`, `local_alert_account_scans`,
    `local_event_sales`, `local_event_observations`, `local_event_alerts`,
-   `local_push_installations`, and `local_push_outbox`. Foreign keys must be on.
+   `local_push_installations`, `local_push_outbox`, and
+   `local_push_installation_receipts`. Foreign keys must be on; schema setup rejects
+   connections without enforcement.
 2. `server/api.js` composition only: construct `createLocalAlertAudience` with
    the existing `fanClubArtistIdentity` function. Its actual `artist` field is
    a string. The event's public slug disambiguates durable artist keys before
@@ -161,9 +232,11 @@ permission question is pending; no alternate channel was used to bypass it.
 7. Home-city, favourite, fan-club and per-artist notification preference commands:
    call `requestAccountScan(accountId)` in their existing transaction. The service's
    own notification preference write already queues this scan.
-8. Existing bounded background scheduler: drain unfinished event observations via
-   `planEventPage`, then `local_alert_account_scans` via `planAccountSalesPage`,
-   then `deliverDue`. Bound the outer event/account list as well as each page.
+8. Existing bounded background scheduler: drain observations with
+   `reconcile_complete=0` via `reconcileEvent`, then finished-reconciliation
+   observations via `planEventPage`, `local_alert_account_scans` via
+   `planAccountSalesPage`, `cancelPendingPushPage`, and `deliverDue`.
+   Bound the outer event/account list as well as each page.
    Persist rollout-baseline and periodic catalogue cursors using the existing
    scheduler contract. Reconcile authoritative event removals/visibility changes.
    This scheduler adapter is **not yet implemented**.

@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
+import { createLinkedAccounts } from "../accountOnboarding/linkedAccounts.js";
+import { withImmediateWrite } from "../../databaseTransaction.js";
+import { ApiError } from "../../errors.js";
 import { ensureLocalAlertSchema, LOCAL_ALERT_TABLES } from "./localAlertSchema.js";
 import { createLocalAlertService } from "./localAlertService.js";
 import { createLocalAlertAudience, creatorCalendarNoticeFor } from "./localAlertAudience.js";
@@ -36,7 +40,8 @@ function fixture(t) {
   const audience = createLocalAlertAudience({ db, resolveArtistIdentity: identity });
   const hidden = new Set();
   const readPublicEvent = (id, time) => hidden.has(id) ? null : db.prepare("SELECT * FROM tour_dates WHERE id=? AND release_at<=?").get(id, time);
-  const alerts = createLocalAlertService({ db, readPublicEvent, canNotifyArtist: audience, findRelatedNotice: (accountId, event) => creatorCalendarNoticeFor(db, accountId, event), now });
+  const restartAlerts = () => createLocalAlertService({ db, readPublicEvent, canNotifyArtist: audience, findRelatedNotice: (accountId, event) => creatorCalendarNoticeFor(db, accountId, event), now });
+  const alerts = restartAlerts();
   const devices = createLocalPushDevices({ db, now });
   const account = (id = "fan", city = "Toronto, Ontario, Canada", favourites = ["Fixture Artist"]) => {
     db.prepare("INSERT INTO users(id,home_city,favorite_artists) VALUES (?,?,?)").run(id, city, JSON.stringify(favourites));
@@ -56,7 +61,7 @@ function fixture(t) {
     alerts.setPreferences(accountId, { ...DEFAULT_LOCAL_ALERT_PREFERENCES, datesPush: true, salesPush: true }, authorize(accountId).assertCurrentSession);
     return devices.register(accountId, input(patch), authorize(accountId));
   };
-  return { db, alerts, devices, now, account, event, plan, sale, enable, authorize, hidden, advance: delta => { at += delta; } };
+  return { db, alerts, devices, now, account, event, plan, sale, enable, authorize, hidden, restartAlerts, advance: delta => { at += delta; } };
 }
 
 test("home-city identity rejects ambiguous and unstructured places", () => {
@@ -266,8 +271,9 @@ test("route guards, target ownership, GET read-only and export/delete privacy", 
   for (const value of [secret, "ExpoPushToken", "session_fan", "secret_hash", "city_path"]) assert.equal(exported.includes(value), false);
   eraseLocalAlerts(f.db, "fan");
   for (const table of ["local_event_alerts", "local_push_installations", "local_alert_preferences"]) assert.equal(f.db.prepare(`SELECT COUNT(*) n FROM ${table} WHERE account_id='fan'`).get().n, 0);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_installation_receipts WHERE account_id='fan'").get().n, 0);
   assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications WHERE user_id='fan'").get().n, 0);
-  ensureLocalAlertSchema(f.db); assert.equal(LOCAL_ALERT_TABLES.length, 7);
+  ensureLocalAlertSchema(f.db); assert.equal(LOCAL_ALERT_TABLES.length, 8);
 });
 
 test("a new follower gets future sale reminders without a historical date announcement", t => {
@@ -582,4 +588,209 @@ test("fresh source evidence resumes a repair that previously waited on stale tim
   assert.equal(f.alerts.planEventPage("tm_1").planned, 1);
   assert.equal(f.db.prepare("SELECT id FROM local_event_alerts").get().id, original);
   f.advance(86400000); assert.equal(f.alerts.deliverDue().delivered, 1);
+});
+
+test("revocation before first registration fences a late request and survives account transfer", t => {
+  const f = fixture(t); f.account(); f.account("other");
+  assert.deepEqual(f.devices.revoke("fan", input(), f.authorize("fan").assertCurrentSession), { enabled: false, generation: 1 });
+  assert.throws(() => f.devices.register("fan", input(), f.authorize("fan")), e => e.status === 409);
+  assert.equal(f.devices.binding("other", input(), f.authorize("other").assertCurrentSession).generation, 1);
+  // A subsequent account can acknowledge an already-disabled installation.
+  assert.equal(f.devices.revoke("other", input({ expectedGeneration: 1 }), f.authorize("other").assertCurrentSession).generation, 2);
+  assert.equal(f.devices.register("other", input({ expectedGeneration: 2 }), f.authorize("other")).generation, 3);
+  assert.throws(() => f.devices.revoke("fan", input(), f.authorize("fan").assertCurrentSession), e => e.status === 403);
+  f.db.exec("DELETE FROM sessions WHERE user_id='other'");
+  assert.throws(() => f.devices.register("fan", input(), f.authorize("fan")), e => e.status === 409);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_installations").get().n, 0);
+});
+
+test("revocation retries are idempotent and cannot disable a newer registration", t => {
+  const f = fixture(t); f.account(); f.enable();
+  const proof = input({ expectedGeneration: 1 });
+  assert.deepEqual(f.devices.revoke("fan", proof, f.authorize("fan").assertCurrentSession), { enabled: false, generation: 2 });
+  assert.equal(f.devices.revoke("fan", proof, f.authorize("fan").assertCurrentSession).generation, 2);
+  assert.throws(() => f.devices.register("fan", proof, f.authorize("fan")), e => e.status === 409);
+  assert.equal(f.devices.register("fan", input({ expectedGeneration: 2 }), f.authorize("fan")).generation, 3);
+  assert.throws(() => f.devices.revoke("fan", proof, f.authorize("fan").assertCurrentSession), e => e.status === 409);
+  assert.throws(() => f.devices.revoke("fan", input({ expectedGeneration: 3, secret: "b".repeat(43) }), f.authorize("fan").assertCurrentSession), e => e.status === 403);
+  assert.equal(f.db.prepare("SELECT generation FROM local_push_installations").get().generation, 3);
+});
+
+test("revocation fence and device removal roll back together", t => {
+  const f = fixture(t); f.account(); f.enable();
+  f.db.exec("CREATE TRIGGER reject_revoke BEFORE DELETE ON local_push_installations BEGIN SELECT RAISE(ABORT,'fixture revoke failure'); END");
+  assert.throws(() => f.devices.revoke("fan", input({ expectedGeneration: 1 }), f.authorize("fan").assertCurrentSession), /fixture revoke failure/);
+  assert.equal(f.db.prepare("SELECT generation FROM local_push_installation_receipts").get().generation, 1);
+  assert.equal(f.db.prepare("SELECT generation FROM local_push_installations").get().generation, 1);
+});
+
+test("revocation receipts have privacy erasure and never export installation proof", t => {
+  const f = fixture(t); f.account(); f.devices.revoke("fan", input(), f.authorize("fan").assertCurrentSession);
+  const exported = JSON.stringify(exportLocalAlerts(f.db, "fan"));
+  assert.equal(exportLocalAlerts(f.db, "fan").deviceRevocations.length, 1);
+  for (const privateValue of [secret, installationId, "secret_hash"]) assert.equal(exported.includes(privateValue), false);
+  eraseLocalAlerts(f.db, "fan"); assert.equal(f.db.prepare("SELECT account_id FROM local_push_installation_receipts").get().account_id, null);
+  assert.equal(f.db.prepare("SELECT revoked_at FROM local_push_installation_receipts").get().revoked_at, null);
+  assert.throws(() => f.devices.register("fan", input(), f.authorize("fan")), e => e.status === 409);
+  f.devices.revoke("fan", input({ expectedGeneration: 1 }), f.authorize("fan").assertCurrentSession);
+  f.db.exec("DELETE FROM users WHERE id='fan'"); assert.equal(f.db.prepare("SELECT account_id FROM local_push_installation_receipts").get().account_id, null);
+  assert.equal(f.db.prepare("SELECT revoked_at FROM local_push_installation_receipts").get().revoked_at, null);
+});
+
+test("each new revoke fences a pending enable even when the installation was already disabled", t => {
+  const f = fixture(t); f.account();
+  f.devices.revoke("fan", input(), f.authorize("fan").assertCurrentSession);
+  const delayed = input({ expectedGeneration: f.devices.binding("fan", input(), f.authorize("fan").assertCurrentSession).generation });
+  assert.equal(f.devices.revoke("fan", delayed, f.authorize("fan").assertCurrentSession).generation, 2);
+  assert.throws(() => f.devices.register("fan", delayed, f.authorize("fan")), e => e.status === 409);
+  assert.equal(f.devices.revoke("fan", delayed, f.authorize("fan").assertCurrentSession).generation, 2);
+});
+
+test("consumed generations survive session and later account deletion without an account link", t => {
+  const f = fixture(t); f.account(); f.account("other"); f.enable();
+  f.devices.register("other", input({ expectedGeneration: 1 }), f.authorize("other"));
+  f.db.exec("DELETE FROM sessions WHERE user_id='other'; DELETE FROM users WHERE id='other'");
+  const receipt = f.db.prepare("SELECT * FROM local_push_installation_receipts").get();
+  assert.equal(receipt.account_id, null); assert.equal(receipt.generation, 2);
+  assert.throws(() => f.devices.register("fan", input({ expectedGeneration: 1 }), f.authorize("fan")), e => e.status === 409);
+});
+
+test("deleted auth session prevents a delayed registration after switching or logout", t => {
+  const f = fixture(t); f.account(); f.account("other"); f.event(); f.enable(); f.plan(); f.alerts.deliverDue();
+  f.devices.register("other", input({ installationId: "other_installation_12345", token: "ExpoPushToken[otherfixture12345]" }), f.authorize("other"));
+  f.db.exec("DELETE FROM sessions WHERE user_id='fan'");
+  assert.throws(() => f.devices.register("fan", input(), f.authorize("fan")), e => e.status === 401);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_outbox").get().n, 0);
+  assert.equal(f.db.prepare("SELECT account_id FROM local_push_installations").get().account_id, "other");
+});
+
+test("schema refuses to promise revocation without foreign keys", () => {
+  const db = new DatabaseSync(":memory:");
+  try { db.exec("PRAGMA foreign_keys=OFF"); assert.throws(() => ensureLocalAlertSchema(db), /foreign-key enforcement/); }
+  finally { db.close(); }
+});
+
+test("schema upgrade records already-consumed installation generations before session deletion", t => {
+  const f = fixture(t); f.account(); f.enable();
+  f.db.exec("DROP TABLE local_push_installation_receipts");
+  ensureLocalAlertSchema(f.db); ensureLocalAlertSchema(f.db);
+  assert.equal(f.db.prepare("SELECT generation FROM local_push_installation_receipts").get().generation, 1);
+  f.db.exec("DELETE FROM sessions WHERE user_id='fan'");
+  f.db.prepare("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES ('new_session','fan',?)").run(START + 86400000);
+  assert.throws(() => f.devices.register("fan", input(), { sessionHash: "new_session", assertCurrentSession: f.authorize("fan").assertCurrentSession }), e => e.status === 409);
+});
+
+for (const rollback of [false, true]) test(`real linked-account switch atomically revokes the prior push session (rollback=${rollback})`, t => {
+  const f = fixture(t); f.account(); f.account("other"); f.event();
+  f.db.exec(`ALTER TABLE users ADD COLUMN email TEXT DEFAULT 'linked@example.test';
+    ALTER TABLE users ADD COLUMN pass_hash TEXT DEFAULT 'synthetic-proof';
+    ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'fan';
+    ALTER TABLE users ADD COLUMN email_verified_at INTEGER DEFAULT 1;
+    ALTER TABLE users ADD COLUMN created_at INTEGER DEFAULT 0;
+    ALTER TABLE sessions ADD COLUMN created_at INTEGER DEFAULT 0;`);
+  const tokenHash = token => createHash("sha256").update(token).digest("hex"); let sequence = 0;
+  const createSession = accountId => {
+    const token = `synthetic-session-${++sequence}`, expiresAt = START + 86400000;
+    f.db.prepare("INSERT INTO sessions(token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)").run(tokenHash(token), accountId, expiresAt, START);
+    return { token, expiresAt };
+  };
+  const original = createSession("fan"), sessionHash = tokenHash(original.token);
+  const linked = createLinkedAccounts({ database: f.db, ApiError, requireSessionUser: ctx => ctx.user, limit: () => {},
+    verifyPasswordForUser: async () => true, atomicWrite: work => withImmediateWrite(f.db, work), createSession,
+    sessionTtlForRole: () => 86400000, publicUser: account => ({ id: account.id }), now: f.now,
+    onAuthenticated: () => { if (rollback) throw Error("synthetic switch rollback"); } });
+  linked.grantVerifiedAccounts({ userId: "fan", users: f.db.prepare("SELECT * FROM users").all(), token: original.token });
+  f.alerts.setPreferences("fan", { ...DEFAULT_LOCAL_ALERT_PREFERENCES, datesPush: true }, f.authorize("fan").assertCurrentSession);
+  f.devices.register("fan", input(), { sessionHash, assertCurrentSession: f.authorize("fan").assertCurrentSession });
+  f.enable("other", { installationId: "other_installation_12345", token: "ExpoPushToken[otherfixture12345]" });
+  f.plan(); f.alerts.deliverDue(); let replacement = null;
+  const switchAccount = () => linked.routes["POST /api/me/accounts/switch"]({ user: { id: "fan" }, token: original.token,
+    body: { accountId: "other" }, setSession: value => { replacement = value; } });
+  if (rollback) assert.throws(switchAccount, /synthetic switch rollback/);
+  else assert.equal(switchAccount().user.id, "other");
+  assert.equal(!!f.db.prepare("SELECT 1 FROM sessions WHERE token_hash=?").get(sessionHash), rollback);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_installations WHERE account_id='fan'").get().n, +rollback);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_outbox").get().n, rollback ? 2 : 1);
+  assert.equal(!!replacement, !rollback);
+  if (!rollback) assert.throws(() => f.devices.register("fan", input(), { sessionHash, assertCurrentSession: f.authorize("fan").assertCurrentSession }), e => e.status === 401);
+});
+
+test("event reconciliation is paged, restartable and preserves unsent metadata refresh", t => {
+  const f = fixture(t); for (let i = 0; i < 7; i++) f.account(`fan${i}`); f.event(); f.plan(); f.alerts.deliverDue();
+  const notices = f.db.prepare("SELECT * FROM notifications ORDER BY id").all();
+  f.db.exec("UPDATE tour_dates SET venue='Edited Hall'");
+  const first = f.alerts.reconcileEvent("tm_1", { limit: 2 }); assert.equal(first.processed, 2); assert.equal(first.more, true);
+  assert.equal(f.alerts.planEventPage("tm_1").awaitingReconciliation, true);
+  const resumed = f.restartAlerts(); let total = first.processed, result;
+  do { result = resumed.reconcileEvent("tm_1", { limit: 2 }); assert.ok(result.processed <= 2); total += result.processed; } while (result.more);
+  assert.equal(total, 7); assert.deepEqual(f.db.prepare("SELECT * FROM notifications ORDER BY id").all(), notices);
+  assert.equal(resumed.deliverDue().delivered, 0);
+  f.hidden.add("tm_1"); assert.equal(resumed.reconcileEvent("tm_1", { limit: 2 }).processed, 2);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications").get().n, 5);
+  for (const alert of f.db.prepare("SELECT * FROM local_event_alerts").all()) assert.equal(resumed.readAlertTarget(alert.account_id, alert.id), null);
+  do { result = resumed.reconcileEvent("tm_1", { limit: 2 }); } while (result.more);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications").get().n, 0);
+});
+
+test("a newer event change resets a partially completed reconciliation cursor", t => {
+  const f = fixture(t); for (let i = 0; i < 5; i++) f.account(`fan${i}`); f.event(); f.plan(); f.alerts.deliverDue();
+  f.db.exec("UPDATE tour_dates SET venue='Edited Hall'"); f.alerts.reconcileEvent("tm_1", { limit: 2 });
+  const firstCursor = f.db.prepare("SELECT reconcile_cursor FROM local_event_observations").get().reconcile_cursor;
+  f.db.exec("UPDATE tour_dates SET date='2027-02-15'"); f.alerts.reconcileEvent("tm_1", { limit: 2 });
+  assert.equal(f.db.prepare("SELECT reconcile_cursor FROM local_event_observations").get().reconcile_cursor, firstCursor);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_event_alerts WHERE state='cancelled'").get().n, 2);
+  while (f.alerts.reconcileEvent("tm_1", { limit: 2 }).more) { /* bounded synthetic pages */ }
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications").get().n, 0);
+});
+
+test("logical cancellation immediately blocks all devices while physical cleanup is bounded", async t => {
+  const f = fixture(t); f.account(); f.event(); f.enable();
+  for (let i = 0; i < 24; i++) f.devices.register("fan", input({ installationId: `extra_installation_12345_${i}`, token: `ExpoPushToken[extrafixture12345_${i}]` }), f.authorize("fan"));
+  f.plan(); f.alerts.deliverDue(); f.hidden.add("tm_1"); f.alerts.reconcileEvent("tm_1", { limit: 1 });
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_outbox WHERE state='cancelled'").get().n, 20);
+  assert.equal(f.alerts.cancelPendingPushPage({ limit: 2 }).cancelled, 2);
+  const worker = createLocalPushDelivery({ db: f.db, alerts: f.alerts, enabled: true, now: f.now,
+    transport: { send: () => assert.fail("logical cancellation must reject sends before cleanup") } });
+  await worker.run(); assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_outbox WHERE state='ready'").get().n, 0);
+});
+
+test("reconciliation upgrade and each cancellation page preserve transaction rollback", t => {
+  const f = fixture(t); for (let i = 0; i < 5; i++) f.account(`fan${i}`); f.event(); f.plan(); f.alerts.deliverDue();
+  f.db.exec("DROP INDEX local_event_observations_reconcile; ALTER TABLE local_event_observations DROP COLUMN reconcile_cursor; ALTER TABLE local_event_observations DROP COLUMN reconcile_complete");
+  ensureLocalAlertSchema(f.db); ensureLocalAlertSchema(f.db);
+  assert.equal(f.db.prepare("SELECT reconcile_complete FROM local_event_observations").get().reconcile_complete, 0);
+  const before = f.db.prepare("SELECT * FROM local_event_observations").get();
+  f.hidden.add("tm_1");
+  f.db.exec("CREATE TRIGGER reject_notice_removal BEFORE DELETE ON notifications BEGIN SELECT RAISE(ABORT,'fixture cancellation failure'); END");
+  assert.throws(() => f.alerts.reconcileEvent("tm_1", { limit: 2 }), /fixture cancellation failure/);
+  assert.deepEqual(f.db.prepare("SELECT * FROM local_event_observations").get(), before);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications").get().n, 5);
+  f.db.exec("DROP TRIGGER reject_notice_removal");
+  assert.equal(f.alerts.reconcileEvent("tm_1", { limit: 2 }).processed, 2);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications").get().n, 3);
+});
+
+for (const change of ["preference", "generation"]) test(`${change} cancellation has bounded cleanup and no stale dispatch`, async t => {
+  const f = fixture(t); f.account(); f.enable();
+  for (let i = 0; i < 105; i++) { const id = f.event(`tm_${i + 10}`); f.plan(id); }
+  f.alerts.deliverDue({ limit: 500 });
+  if (change === "preference") f.alerts.setPreferences("fan", DEFAULT_LOCAL_ALERT_PREFERENCES, f.authorize("fan").assertCurrentSession);
+  else f.devices.register("fan", input({ expectedGeneration: 1, token: "ExpoPushToken[rotatedfixture12345]" }), f.authorize("fan"));
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_outbox WHERE state='cancelled'").get().n, 100);
+  assert.equal(f.alerts.cancelPendingPushPage({ limit: 2 }).cancelled, 2);
+  const worker = createLocalPushDelivery({ db: f.db, alerts: f.alerts, enabled: true, now: f.now,
+    transport: { send: () => assert.fail("ineligible remainder must never send") } });
+  await worker.run(); assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_outbox WHERE state='ready'").get().n, 0);
+});
+
+test("interrupted send recovery is bounded and never retries the remainder", async t => {
+  const f = fixture(t); f.account(); f.enable();
+  for (let i = 0; i < 5; i++) { const id = f.event(`tm_${i + 10}`); f.plan(id); }
+  f.alerts.deliverDue();
+  f.db.prepare("UPDATE local_push_outbox SET state='sending',attempts=1,lease_until=?").run(START);
+  const worker = createLocalPushDelivery({ db: f.db, alerts: f.alerts, enabled: true, now: f.now,
+    transport: { send: () => assert.fail("interrupted sends are uncertain") } });
+  await worker.run({ limit: 2 });
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_outbox WHERE state='unknown'").get().n, 2);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_outbox WHERE state='sending'").get().n, 3);
 });

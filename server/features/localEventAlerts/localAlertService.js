@@ -52,7 +52,8 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
   const cancelAlert = (row) => {
     if (row.owns_notice && row.notification_id) db.prepare("DELETE FROM notifications WHERE id=? AND user_id=?").run(row.notification_id, row.account_id);
     db.prepare("UPDATE local_event_alerts SET state='cancelled',notification_id=NULL,owns_notice=0 WHERE id=?").run(row.id);
-    db.prepare("UPDATE local_push_outbox SET state='cancelled',lease_key=NULL WHERE alert_id=? AND state IN ('ready','sending','accepted')").run(row.id);
+    db.prepare(`UPDATE local_push_outbox SET state='cancelled',lease_key=NULL WHERE id IN (
+      SELECT id FROM local_push_outbox WHERE alert_id=? AND state IN ('ready','sending','accepted') ORDER BY id LIMIT 20)`).run(row.id);
   };
   const sameDelivery = (alert, current) => !!current && (current.fingerprint === alert.fingerprint
     || (alert.state === "delivered" && !!alert.delivery_fingerprint && current.deliveryFingerprint === alert.delivery_fingerprint));
@@ -79,11 +80,27 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
         sale.starts_at, Math.min(sale.starts_at + SALE_DELIVERY_WINDOW_MS, sale.ends_at ?? Infinity), at).changes);
   };
 
-  function reconcileEvent(eventId, { baseline = false } = {}) {
+  function reconcileEvent(eventId, { baseline = false, limit = 100 } = {}) {
     return withImmediateWrite(db, () => {
       const at = now(), current = currentEvent(eventId, at);
       const previous = db.prepare("SELECT * FROM local_event_observations WHERE event_id=?").get(eventId);
-      for (const alert of db.prepare("SELECT * FROM local_event_alerts WHERE event_id=? AND state<>'cancelled'").all(eventId)) {
+      if (!previous && !current) return { visible: false, processed: 0, more: false };
+      const nextFingerprint = current?.fingerprint || "";
+      const changed = !previous || previous.fingerprint !== nextFingerprint;
+      if (!previous) db.prepare(`INSERT INTO local_event_observations(event_id,fingerprint,first_seen_at,announce_until)
+        VALUES (?,?,?,?)`).run(eventId, nextFingerprint, at, baseline ? 0 : at + DATE_DELIVERY_WINDOW_MS);
+      else if (changed) db.prepare(`UPDATE local_event_observations
+        SET fingerprint=?,announce_until=0,scan_cursor='',scan_complete=?,reconcile_cursor='',reconcile_complete=0 WHERE event_id=?`)
+        .run(nextFingerprint, Number(!current), eventId);
+      const progress = db.prepare("SELECT reconcile_cursor,reconcile_complete FROM local_event_observations WHERE event_id=?").get(eventId);
+      if (progress.reconcile_complete) return { visible: !!current, changed, processed: 0, more: false };
+      const size = bound(limit, 100, 500);
+      // Include cancelled rows in the page so the index cursor bounds scanning
+      // as well as returned work. A later edit resets this durable cursor.
+      const rows = db.prepare("SELECT * FROM local_event_alerts WHERE event_id=? AND id>? ORDER BY id LIMIT ?")
+        .all(eventId, progress.reconcile_cursor, size);
+      for (const alert of rows) {
+        if (alert.state === "cancelled") continue;
         if (current && alert.fingerprint === current.fingerprint) {
           if (!alert.delivery_fingerprint) db.prepare("UPDATE local_event_alerts SET delivery_fingerprint=? WHERE id=?")
             .run(current.deliveryFingerprint, alert.id);
@@ -95,15 +112,10 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
           db.prepare("UPDATE local_event_alerts SET fingerprint=? WHERE id=?").run(current.fingerprint, alert.id);
         } else cancelAlert(alert);
       }
-      if (!current) {
-        if (previous) db.prepare("UPDATE local_event_observations SET scan_complete=1 WHERE event_id=?").run(eventId);
-        return { visible: false };
-      }
-      if (!previous) db.prepare(`INSERT INTO local_event_observations(event_id,fingerprint,first_seen_at,announce_until)
-        VALUES (?,?,?,?)`).run(eventId, current.fingerprint, at, baseline ? 0 : at + DATE_DELIVERY_WINDOW_MS);
-      else if (previous.fingerprint !== current.fingerprint) db.prepare(`UPDATE local_event_observations
-        SET fingerprint=?,announce_until=0,scan_cursor='',scan_complete=0 WHERE event_id=?`).run(current.fingerprint, eventId);
-      return { visible: true, changed: !previous || previous.fingerprint !== current.fingerprint };
+      const more = rows.length === size;
+      db.prepare("UPDATE local_event_observations SET reconcile_cursor=?,reconcile_complete=? WHERE event_id=? AND fingerprint=?")
+        .run(rows.at(-1)?.id || progress.reconcile_cursor, Number(!more), eventId, nextFingerprint);
+      return { visible: !!current, changed, processed: rows.length, more };
     });
   }
 
@@ -140,6 +152,7 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
       const at = now(), current = currentEvent(eventId, at);
       const observation = db.prepare("SELECT * FROM local_event_observations WHERE event_id=?").get(eventId);
       if (!current || !observation || observation.scan_complete || current.fingerprint !== observation.fingerprint) return { planned: 0, more: false };
+      if (!observation.reconcile_complete) return { planned: 0, more: false, awaitingReconciliation: true };
       const rows = db.prepare("SELECT id FROM users WHERE id>? ORDER BY id LIMIT ?").all(observation.scan_cursor, bound(limit, 100, 500));
       const insert = db.prepare(`INSERT OR IGNORE INTO local_event_alerts
         (id,account_id,event_id,kind,trigger_key,fingerprint,delivery_fingerprint,city_path,due_at,expires_at,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
@@ -209,8 +222,10 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
       db.prepare(`INSERT INTO local_alert_preferences(account_id,dates_inbox,sales_inbox,dates_push,sales_push) VALUES (?,?,?,?,?)
         ON CONFLICT(account_id) DO UPDATE SET dates_inbox=excluded.dates_inbox,sales_inbox=excluded.sales_inbox,
           dates_push=excluded.dates_push,sales_push=excluded.sales_push`).run(accountId, +input.datesInbox, +input.salesInbox, +input.datesPush, +input.salesPush);
-      db.prepare(`UPDATE local_push_outbox SET state='cancelled',lease_key=NULL WHERE state IN ('ready','sending','accepted')
-        AND alert_id IN (SELECT id FROM local_event_alerts WHERE account_id=? AND ((kind='date' AND ?=0) OR (kind='sale' AND ?=0)))`)
+      db.prepare(`UPDATE local_push_outbox SET state='cancelled',lease_key=NULL WHERE id IN (
+        SELECT id FROM local_push_outbox WHERE state IN ('ready','sending','accepted')
+        AND alert_id IN (SELECT id FROM local_event_alerts WHERE account_id=? AND ((kind='date' AND ?=0) OR (kind='sale' AND ?=0)))
+        ORDER BY id LIMIT 100)`)
         .run(accountId, +input.datesPush, +input.salesPush);
       requestAccountScan(accountId);
       return preferences(accountId);
@@ -245,6 +260,22 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
     });
   }
 
+  // Bounded physical cleanup after logical cancellation. Every send/tap guard
+  // already rejects the cancelled alert, even before this page is drained.
+  function cancelPendingPushPage({ limit = 100 } = {}) {
+    return withImmediateWrite(db, () => ({ cancelled: Number(db.prepare(`UPDATE local_push_outbox
+      SET state='cancelled',lease_key=NULL WHERE id IN (
+        SELECT p.id FROM local_push_outbox p JOIN local_event_alerts a ON a.id=p.alert_id
+        JOIN local_push_installations i ON i.installation_id=p.installation_id
+        JOIN sessions s ON s.token_hash=i.session_hash
+        LEFT JOIN local_alert_preferences pref ON pref.account_id=a.account_id
+        WHERE p.state IN ('ready','sending','accepted') AND (a.state='cancelled'
+          OR i.account_id<>a.account_id OR i.generation<>p.generation OR i.enabled=0 OR i.permission<>'granted'
+          OR s.expires_at<=? OR (a.kind='date' AND COALESCE(pref.dates_push,0)=0)
+          OR (a.kind='sale' AND COALESCE(pref.sales_push,0)=0)) ORDER BY p.id LIMIT ?)`)
+      .run(now(), bound(limit, 100, 500)).changes) }));
+  }
+
   // Used immediately before send and on tap/read, not only during fan-out.
   function readAlertTarget(accountId, alertId, { forPush = false } = {}) {
     const at = now(), alert = db.prepare("SELECT * FROM local_event_alerts WHERE id=? AND account_id=? AND state='delivered'").get(alertId, accountId);
@@ -259,5 +290,5 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
     return { alertId: alert.id, eventId: alert.event_id, artist: current.event.artist, kind: alert.kind, path: `/event/${encodeURIComponent(alert.event_id)}` };
   }
 
-  return { preferences, setPreferences, reconcileEvent, recordTicketmasterSale, planEventPage, requestAccountScan, planAccountSalesPage, deliverDue, readAlertTarget };
+  return { preferences, setPreferences, reconcileEvent, recordTicketmasterSale, planEventPage, requestAccountScan, planAccountSalesPage, cancelPendingPushPage, deliverDue, readAlertTarget };
 }

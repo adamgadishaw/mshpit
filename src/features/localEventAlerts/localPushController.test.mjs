@@ -20,7 +20,7 @@ function fixture(options = {}) {
   const api = {
     binding: async args => { calls.push(["binding", args.accountId]); return { generation: 0 }; },
     register: async args => { calls.push(["register", args.accountId]); return { installationId: installation.installationId, generation: 1, enabled: true }; },
-    revoke: async args => { calls.push(["revoke", args.accountId]); return { enabled: false }; },
+    revoke: async args => { calls.push(["revoke", args.accountId]); return { enabled: false, generation: 1 }; },
     target: async args => { calls.push(["target", args.accountId]); return { target: { alertId: args.alertId, eventId: "tm_1" } }; },
     ...options.api,
   };
@@ -43,7 +43,7 @@ test("denied OS permission cannot register and revokes an old binding", async ()
   const f = fixture({ notifications: { getPermissionsAsync: async () => ({ status: "denied" }), requestPermissionsAsync: async () => ({ status: "denied" }) } });
   f.installation.binding = { accountId: "A", installationId: f.installation.installationId, generation: 1 };
   const result = await f.controller.enableDevice(); assert.equal(result.value.reason, "permission-denied");
-  assert.deepEqual(f.calls, [["revoke", "A"]]); assert.equal(f.installation.binding, null);
+  assert.deepEqual(f.calls, [["binding", "A"], ["revoke", "A"]]); assert.equal(f.installation.binding, null);
 });
 
 test("silent resume never prompts; web and missing project report unavailable", async () => {
@@ -116,4 +116,42 @@ test("secure storage serializes identity creation and does not persist push toke
   await storage.saveBinding({ accountId: "A", installationId: a.installationId, generation: 1 });
   assert.equal((await storage.getOrCreate()).binding.accountId, "A"); assert.equal(stored.includes("token"), false);
   const previous = stored; stored = "bad record"; await assert.rejects(storage.getOrCreate()); assert.equal(stored, "bad record"); stored = previous;
+});
+
+test("account-change preparation revokes before credentials change and prevents an overlapping enable", async () => {
+  const fence = deferred(); let body;
+  const f = fixture({ api: { binding: async () => ({ generation: 4 }), revoke: async args => { body = args; return fence.promise; } } });
+  f.installation.binding = { accountId: "A", installationId: f.installation.installationId, generation: 4 };
+  const preparing = f.controller.prepareAccountChange(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(body.accountId, "A"); assert.equal(body.body.expectedGeneration, 4);
+  assert.equal((await f.controller.enableDevice()).ok, false);
+  fence.resolve({ enabled: false, generation: 5 }); assert.equal((await preparing).ok, true);
+  assert.equal(f.installation.binding, null);
+  f.controller.setAccount("B", 2); assert.equal(f.controller.getState().data, null);
+  assert.equal(f.calls.some(call => Array.isArray(call) && call[0] === "register"), false);
+});
+
+test("revocation failure is visible and retry remains required before switching", async () => {
+  let attempts = 0;
+  const f = fixture({ api: { revoke: async () => { if (++attempts === 1) throw Error("offline"); return { enabled: false, generation: 1 }; } } });
+  assert.equal((await f.controller.prepareAccountChange()).ok, false);
+  assert.equal(f.controller.getState().status, "error");
+  assert.equal((await f.controller.enableDevice()).ok, false);
+  assert.equal((await f.controller.prepareAccountChange()).ok, true);
+  f.controller.cancelAccountChange(); assert.equal((await f.controller.enableDevice()).ok, true);
+});
+
+test("a registration response arriving after preparation cannot restore local binding", async () => {
+  const registration = deferred();
+  const f = fixture({ api: { register: () => registration.promise, binding: async () => ({ generation: 1 }), revoke: async () => ({ enabled: false, generation: 2 }) } });
+  const pending = f.controller.enableDevice(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await f.controller.prepareAccountChange()).ok, true);
+  registration.resolve({ installationId: f.installation.installationId, generation: 1, enabled: true });
+  await assert.rejects(pending, { name: "AbortError" }); assert.equal(f.installation.binding, null);
+});
+
+test("unconfirmed revocation cannot report a successful account-change preparation", async () => {
+  const f = fixture({ api: { revoke: async () => ({ enabled: true, generation: 1 }) } });
+  assert.equal((await f.controller.prepareAccountChange()).ok, false);
+  assert.equal(f.controller.getState().status, "error");
 });
