@@ -237,6 +237,9 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     modules["../Icon"] = "Icon"; modules["../../components/Icon"] = "Icon";
     modules["../NativeTabScroll"] = Scroll; modules["../../components/NativeTabScroll"] = Scroll;
     modules["expo-image"] = { Image: "Image" };
+    modules["../../../assets/spotify-full-logo.svg"] = "SpotifyLogo";
+    modules["react-native"].Linking = { openURL: url => { calls.push(["link", url]); return Promise.resolve(); } };
+    modules["./DiscoverArtistPhotoCredit"] = execute("./discover/DiscoverArtistPhotoCredit.jsx");
     modules["../VinylRefreshBoundary"] = p => React.createElement("RefreshBoundary", p, p.children);
     modules["./DiscoverEventList"] = "EventList";
     modules["../LiveDiscoveryCards"] = { PopularLoungeCard: "Lounge" };

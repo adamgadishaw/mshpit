@@ -8,6 +8,7 @@ import {
 } from "./artistTopReviews.mjs";
 
 const artistScreen = readFileSync(new URL("../screens/ArtistScreen.ios.jsx", import.meta.url), "utf8");
+const reviewEventLink = readFileSync(new URL("../screens/ReviewEventLink.jsx", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
 
 const review = (id, overrides = {}) => ({
@@ -78,16 +79,19 @@ test("artist page keeps fan posts and exact shows as separate explicit destinati
   assert.match(artistScreen, /onNavigate=\{guard\(\(\) => onOpenProfile\(review\.userId\)\)\}/);
   assert.match(artistScreen, /onNavigate=\{guard\(\(\) => onOpenPost\?\.\(review\)\)\}/);
   assert.match(artistScreen, />Read fan post<\/Text>/);
-  assert.match(artistScreen, /href=\{concertPath\(review\.archiveShowKey\)\}/);
-  assert.match(artistScreen, /onNavigate=\{guard\(\(\) => onOpenShow\?\.\(review\)\)\}/);
+  assert.match(artistScreen, /<ReviewEventLink\s+review=\{review\}\s+onOpenShow=\{onOpenShow\}/);
+  assert.match(reviewEventLink, /href=\{reviewEventPath\(review\)\} onNavigate=\{\(\) => open\(review\)\}/);
   assert.match(artistScreen, />View show<\/Text>/);
   assert.doesNotMatch(artistScreen, /Open comments|Comment on this fan post/);
   assert.match(artistScreen, /review\.photosPublic === true \|\| Number\(review\.photosPublic\) === 1/);
   assert.match(artistScreen, /onPress=\{guard\(\(\) => onOpenPhotos\?\.\(publicMedia, 0, review\.id\)\)\}/);
-  assert.match(artistScreen, /topReviewMain: \{ flex: 1, minHeight: 150/);
+  assert.match(artistScreen, /topReviewMain: \{ flex: 1, minWidth: 0, minHeight: 150/);
   assert.match(artistScreen, /topReviewAuthorAction: \{ flex: 1, minWidth: 0, minHeight: 44/);
   assert.match(artistScreen, /topReviewActions: \{ flexDirection: "row", flexWrap: "wrap"/);
-  assert.match(artistScreen, /topReviewMedia: \{ width: 108, minHeight: 150/);
+  const media = artistScreen.match(/topReviewMedia: \{ width: (\d+), height: (\d+), flexShrink: 0/);
+  assert.ok(media, "review previews have explicit bounded dimensions, not an image-driven row height");
+  assert.ok(Number(media[1]) > 0 && Number(media[1]) <= 128);
+  assert.ok(Number(media[2]) > 0 && Number(media[2]) <= 128);
   assert.equal((appSource.match(/<ArtistScreen[^;]+onOpenProfile=\{openProfile\}/g) || []).length, 2);
   assert.equal((appSource.match(/<ArtistScreen[^;]+onOpenPost=\{openPost\}/g) || []).length, 2);
 });

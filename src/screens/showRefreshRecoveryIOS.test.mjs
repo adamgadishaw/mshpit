@@ -11,15 +11,17 @@ const React = require("react"), reconciler = require("react-reconciler");
 const { transformSync } = require("@babel/core");
 const noop = () => {};
 const codes = new Map();
-function execute(file, imports) {
+function execute(file, imports, timers = null) {
   const absolute = path.join(root, file);
   if (!codes.has(file)) codes.set(file, transformSync(readFileSync(absolute, "utf8"), {
     filename: absolute, babelrc: false, configFile: false,
     plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
   }).code);
   const module = { exports: {} };
-  new Function("require", "module", "exports", codes.get(file))(
-    name => imports(name, createRequire(absolute)), module, module.exports);
+  new Function("require", "module", "exports", "setTimeout", "clearTimeout", codes.get(file))(
+    name => imports(name, createRequire(absolute)), module, module.exports,
+    timers ? fn => { const key = {}; timers.set(key, fn); return key; } : setTimeout,
+    timers ? key => timers.delete(key) : clearTimeout);
   return module.exports;
 }
 function createRenderer() {
@@ -65,6 +67,7 @@ const publicApi = require("./src/features/showSocial/publicEventSnapshotApi.mjs"
 // unrelated resources are synthetic. No mutation or external opener may run.
 function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "active", providerBacked = true, fontScale = 1 } = {}) {
   const renderer = createRenderer(), reads = [], memorialReads = [], publicReads = [], calls = [], empty = [];
+  const rsvpTimers = new Map();
   let refreshHook, snapshotHook, memorialHook, memorialApi, attendanceControls, recovery;
   let log = { ...(publicState !== "none" ? { id: "tm_fixture" } : {}), artist: "Fixture artist", venue: "Fixture venue",
     date: "2099-01-01", ticketUrl: "https://seller.example/ticket", source: "ticketmaster" };
@@ -88,7 +91,8 @@ function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "act
     if (url.endsWith("/meta")) { record("lounge", options); return { messageCount: 0, status: "open" }; }
     assert.fail("Unexpected synthetic transport: " + url);
   };
-  const native = { Platform: { OS: platform, select: value => value[platform] || value.default },
+  const native = { AppState: { currentState: "active", addEventListener: () => ({ remove: noop }) },
+    Platform: { OS: platform, select: value => value[platform] || value.default },
     View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator",
     StyleSheet: { create: value => value, absoluteFill: {} }, useWindowDimensions: () => ({ width: 393, height: 852, fontScale }) };
   const store = {
@@ -106,6 +110,7 @@ function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "act
     writeShowAttendance: () => assert.fail("No attendance write"),
   };
   const imports = (name, local) => {
+    if (name.endsWith("/useEventRsvp")) return execute("src/hooks/useEventRsvp.js", imports, rsvpTimers);
     if (name.endsWith("/concertDetailLayout")) return require("./src/components/concertDetailLayout" + (platform === "web" ? ".web" : "") + ".js");
     if (name.endsWith("/ShowSection")) return execute("src/features/showDetails/ShowSection.jsx", imports);
     if (name.endsWith("/lazyWithRetry")) return { lazyWithRetry: (_read, label) => { assert.equal(label, "AfterShowSection"); return execute("src/screens/AfterShowSection.jsx", imports).default; } };

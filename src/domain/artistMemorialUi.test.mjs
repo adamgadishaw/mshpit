@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("../screens/ArtistScreen.ios.jsx", import.meta.url), "utf8");
+const reviewEventLink = readFileSync(new URL("../screens/ReviewEventLink.jsx", import.meta.url), "utf8");
 const showSource = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
 const artistArchiveSource = readFileSync(new URL("../screens/ArtistArchiveScreen.jsx", import.meta.url), "utf8");
 const tourArchiveSource = readFileSync(new URL("../screens/TourArchiveScreen.jsx", import.meta.url), "utf8");
@@ -14,7 +15,10 @@ test("generic memorial memories never render a dead-end View show action", () =>
 
 test("artist review actions have distinct reload-safe post and concert URLs", () => {
   assert.match(source, /href=\{postPath\(review\.id\)\}[\s\S]*?onNavigate=\{guard\(\(\) => onOpenPost\?\.\(review\)\)\}/);
-  assert.match(source, /href=\{concertPath\(review\.archiveShowKey\)\}[\s\S]*?onNavigate=\{guard\(\(\) => onOpenShow\?\.\(review\)\)\}/);
+  // Exact-show actions now resolve authoritative concert data in the shared
+  // navigation child. The separate post permalink must stay on the card.
+  assert.match(source, /<ReviewEventLink\s+review=\{review\}\s+onOpenShow=\{onOpenShow\}/);
+  assert.match(reviewEventLink, /href=\{reviewEventPath\(review\)\} onNavigate=\{\(\) => open\(review\)\}/);
   assert.match(source, /href=\{concertPath\(show\.key\)\}/);
   assert.doesNotMatch(source, /href=\{eventPath\(show\)\}/);
 });

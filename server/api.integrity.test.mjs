@@ -3265,6 +3265,10 @@ test("capped social endpoints return the newest window in chronological order", 
 });
 
 test("group-chat writes require membership and attendance, then succeed on retry", () => {
+  // This tests admission to a future show's lounge, not the past-event RSVP
+  // boundary. Keep its date relative so the fixture cannot age into a denial.
+  const showDate = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+  const showKey = `artist|venue|${showDate}`;
   const user = verifiedUser("u_chat_integrity", "chat-integrity@example.com", "chatintegrity");
   const fanMessage = routes["POST /api/fanclubs/:artist/messages"];
   const fanContext = (text) => ({ user, ip: "chat-integrity", params: { artist: "The Band" }, body: { text } });
@@ -3282,7 +3286,7 @@ test("group-chat writes require membership and attendance, then succeed on retry
   assert.equal(db.prepare("SELECT COUNT(*) c FROM fan_club_messages WHERE user_id=?").get(user.id).c, 1);
 
   const loungeMessage = routes["POST /api/lounges/:key/messages"];
-  const loungeContext = (text) => ({ user, ip: "chat-integrity", params: { key: "Artist|Venue|2026-07-15" }, body: { text } });
+  const loungeContext = (text) => ({ user, ip: "chat-integrity", params: { key: `Artist|Venue|${showDate}` }, body: { text } });
   assert.throws(
     () => loungeMessage(loungeContext("not going")),
     (error) => error.code === "LOUNGE_ATTENDANCE_REQUIRED",
@@ -3290,10 +3294,10 @@ test("group-chat writes require membership and attendance, then succeed on retry
   assert.equal(db.prepare("SELECT COUNT(*) c FROM lounge_messages WHERE user_id=?").get(user.id).c, 0);
 
   const markGoing = routes["POST /api/going"];
-  const goingContext = { user, ip: "chat-integrity", body: { key: "artist|venue|2026-07-15", artist: "Artist", venue: "Venue", date: "2026-07-15", going: true } };
+  const goingContext = { user, ip: "chat-integrity", body: { key: showKey, artist: "Artist", venue: "Venue", date: showDate, going: true } };
   assert.equal(markGoing(goingContext).going, true);
   assert.equal(markGoing(goingContext).going, true);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM going WHERE user_id=? AND concert_key=?").get(user.id, "artist|venue|2026-07-15").c, 0,
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM going WHERE user_id=? AND concert_key=?").get(user.id, showKey).c, 0,
     "private-by-default attendance must not enter the visibility-blind legacy table");
   assert.equal(db.prepare("SELECT visibility FROM show_attendance WHERE user_id=?").get(user.id).visibility, "private");
   assert.ok(loungeMessage(loungeContext("in the room")).id);
