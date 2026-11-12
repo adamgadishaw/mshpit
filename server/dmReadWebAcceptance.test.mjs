@@ -2,7 +2,8 @@
 // Actual Store callbacks, server routes, ThreadScreen and visibility/scroll hooks.
 // No network, production data, native builds, or release-worktree mutation.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test, { after } from 'node:test';
 import { parse } from '@babel/parser';
@@ -17,6 +18,10 @@ import { applyDMRequestState, dmInboxBucket, dmRequestState, normalizeDMRequestS
 
 assert.equal(process.env.NODE_ENV, 'test');
 assert.match(process.env.PIT_DATA_DIR || '', /pit-tests-/);
+// This companion exercises the same acceptance data as the native suite. Keep
+// its real SQLite database in a runner-owned child directory so concurrent file
+// startup and seeded IDs cannot interfere. The runner removes the whole root.
+process.env.PIT_DATA_DIR = mkdtempSync(join(process.env.PIT_DATA_DIR, 'web-dm-'));
 const { db, q } = await import('./db.js');
 const { routes } = await import('./api.js');
 after(() => { db.close(); });
@@ -313,10 +318,10 @@ test('successful refresh retries the unchanged observed target after failure wit
 test('authoritative counts survive a deleted latest message omitted by 750 newer inbox tombstones', async () => {
   const p = pair('delete'); const all = p.incoming(3), c = client(p); c.hydrate();
   assert.equal(c.snapshot('before removal').rowUnread, 3);
-  const outsider = addUser('deleteother');
+  const outsider = addUser('web-accept-deleteother');
   db.exec('BEGIN');
   for (let index = 0; index < 800; index++) {
-    const id = `other-removed-${index}`;
+    const id = `web-accept-other-removed-${index}`;
     insertDm.run(id, outsider.id, p.viewer.id, 'Synthetic removed elsewhere', 200000 + index);
     db.prepare('UPDATE dms SET removed=1 WHERE id=?').run(id);
   }
