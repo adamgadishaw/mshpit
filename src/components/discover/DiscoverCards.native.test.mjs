@@ -3,6 +3,7 @@ import test from "node:test";
 import {readFileSync} from "node:fs";
 import {createRequire} from "node:module";
 import {transformSync} from "@babel/core";
+import * as artwork from "../../domain/discoverArtistArtwork.mjs";
 const require=createRequire(import.meta.url);
 function component(relative,{fontScale=1,extra=""}={}){
   const dimensions={width:360,fontScale},state=[],linked=[];let cursor=0;
@@ -14,6 +15,10 @@ function component(relative,{fontScale=1,extra=""}={}){
     "../../lib/img":{isHttp:x=>/^http/.test(x||""),proxied:x=>x},"../../domain/artistInitials.mjs":{artistInitials:()=>"AL"},"../../domain/discoverView.mjs":{discoverGenreLabel:x=>x},"../../domain/urls.mjs":{artistPath:r=>'/artist/'+r.name},"../PublicWebLinks":{PublicPressableLink:"Link"},"./PublicWebLinks":{PublicTextLink:"Link"},
     "../domain/venueDiscovery.mjs":{eventDateMeta:()=>({month:"Nov",day:"2",timing:"Upcoming"}),optionalDistanceKm:()=>null,splitVenuePlace:p=>({city:p||"Toronto",region:""})},"../domain/liveDiscovery.mjs":{liveEventTitle:e=>e.title||e.artist,liveEventLineupLabel:()=>""},"../domain/eventLifecycle.mjs":{LIVE_EVENT_PHASE:{ACTIVE:"active"},liveEventPhase:()=>"upcoming"},"../domain/urls.mjs":{eventPath:()=>"/event/test"},
     "./festivalFormat.mjs":{festivalAccent:()=>["#111","#333"],festivalCountdown:()=>null,festivalDateRange:()=>"Nov 2–3",festivalLength:()=>"2 days",festivalPlace:e=>e.place||"Toronto",goingLine:()=>null,lineupIsNew:()=>false}};
+  Object.assign(mocks, { "../../domain/discoverArtistArtwork.mjs": artwork, "./DiscoverArtistPhotoCredit": "PhotoCredit", "../../../assets/spotify-full-logo.svg": "SpotifyLogo" });
+  Object.assign(mocks, { "../../components/NativeTabScroll": { ScrollView: 'ScrollView' }, "../../components/Avatar": 'Avatar',
+    "../../components/SmartImage": 'SmartImage', "../../components/discover/DiscoverArtistPhotoCredit": 'PhotoCredit',
+    "../../domain/dates.mjs": { formatDate: value => value } });
   const code=transformSync(readFileSync(new URL(relative,import.meta.url),"utf8")+extra,{filename:relative,babelrc:false,configFile:false,plugins:[[require("@babel/plugin-transform-react-jsx"),{runtime:"automatic"}],require("@babel/plugin-transform-modules-commonjs")]}).code;
   const module={exports:{}};new Function("require","module","exports",code)(name=>{if(name in deps)return deps[name];if(name in mocks)return mocks[name];throw Error("Unmocked "+name);},module,module.exports);
   return{exports:module.exports,dimensions,linked,render:(fn,props)=>{cursor=0;return fn(props);}};
@@ -44,11 +49,54 @@ test("details preserve truthful source/license links and never invent a provider
 test("artist cards wrap native titles and use one column at larger text without changing their destinations",()=>{
   const c=component("./DiscoverArtistCard.jsx"),rows=[{name:title,genre:"Alternative"},{name:"Second artist"}],fn=c.exports.DiscoverArtistGrid;
   const normal=c.render(fn,{rows});const normalWidth=nodes(normal).find(n=>n.props.row)?.props.width;c.dimensions.fontScale=1.5;const large=c.render(fn,{rows});assert.ok(nodes(large).find(n=>n.props.row).props.width>normalWidth);
-  let selected;const card=c.render(c.exports.DiscoverArtistCard,{row:rows[0],width:300,onOpen:r=>selected=r});assert.equal(nodes(card).find(n=>n.type==="Text"&&n.props.children===title).props.numberOfLines,undefined);card.props.onNavigate();assert.equal(selected,rows[0]);
+  let selected;const card=c.render(c.exports.DiscoverArtistCard,{row:rows[0],width:300,onOpen:r=>selected=r});assert.equal(nodes(card).find(n=>n.type==="Text"&&n.props.children===title).props.numberOfLines,undefined);nodes(card).find(n=>n.type==="Link").props.onNavigate();assert.equal(selected,rows[0]);
 });
 test("artist image fallback is present while loading and an old image failure does not poison a replacement",()=>{
   const c=component("./DiscoverArtistCard.jsx",{extra:"\nexport { ArtistPhoto };"}),fn=c.exports.ArtistPhoto;let tree=c.render(fn,{row:{name:"A",photo:"file://one"},size:120});assert.match(text(tree),/AL/);const old=nodes(tree).find(n=>n.type==="Image").props.onError;old();tree=c.render(fn,{row:{name:"A",photo:"file://one"},size:120});assert.equal(nodes(tree).some(n=>n.type==="Image"),false);
   tree=c.render(fn,{row:{name:"B",photo:"file://two"},size:120});assert.equal(nodes(tree).find(n=>n.type==="Image").props.source.uri,"file://two");old();tree=c.render(fn,{row:{name:"B",photo:"file://two"},size:120});assert.equal(nodes(tree).find(n=>n.type==="Image").props.source.uri,"file://two");
+});
+
+test("Discover renders the existing original-only artist image without proxying or cropping", () => {
+  const row = { name: "Drake", photo: null, spotifyPhoto: "https://i.scdn.co/image/fixtureDrake",
+    spotifyArtistUrl: "https://open.spotify.com/artist/3TVXtAsR1Inumwj472S9r4", photoSource: "spotify", photoCredit: "Spotify", photoDisplayPolicy: "original" };
+  const c = component("./DiscoverArtistCard.jsx", { extra: "\nexport { ArtistPhoto };" });
+  const tree = c.render(c.exports.ArtistPhoto, { row, size: 150 });
+  const image = nodes(tree).find(node => node.type === "Image");
+  assert.equal(image?.props.source.uri, row.spotifyPhoto);
+  assert.equal(image.props.contentFit, "contain");
+  const credit = component("./DiscoverArtistPhotoCredit.jsx");
+  const link = credit.render(credit.exports.default, { artist: row });
+  link.props.onPress(); assert.deepEqual(credit.linked, [row.spotifyArtistUrl]);
+  const card = c.render(c.exports.DiscoverArtistCard, { row, rank: 1, width: 150 });
+  assert.equal(nodes(nodes(card).find(node => node.type === "Link")).some(node => node.type === "PhotoCredit"), false, "source link is not nested in artist navigation");
+  assert.equal(nodes(card).some(node => node.props.style?.position === "absolute" && node.type === "Text"), false);
+  const oldFailure = image.props.onError; oldFailure();
+  assert.equal(nodes(c.render(c.exports.ArtistPhoto, { row, size: 150 })).some(node => node.type === "Image"), false);
+  const replacement = { ...row, spotifyPhoto: "https://i.scdn.co/image/newFixture" };
+  oldFailure();
+  assert.equal(nodes(c.render(c.exports.ArtistPhoto, { row: replacement, size: 150 })).find(node => node.type === "Image").props.source.uri, replacement.spotifyPhoto);
+  for (const invalid of [{ name: "Missing" }, { ...row, spotifyPhoto: null }, { ...row, photoCredit: "Unverified" },
+    { ...row, spotifyArtistUrl: "https://attacker.example/artist/x" }, { name: "Legacy", photo: row.spotifyPhoto }]) {
+    assert.equal(artwork.discoverArtistArtwork(invalid), null);
+    assert.equal(credit.render(credit.exports.default, { artist: invalid }), null);
+  }
+  assert.deepEqual(artwork.discoverArtistArtwork({ ...row, photo: "https://cdn-images.dzcdn.net/images/artist/known.jpg" }),
+    { uri: "https://cdn-images.dzcdn.net/images/artist/known.jpg", original: false });
+});
+
+test("personalized recommendation artwork uses a contained original and recovers when its URL changes", () => {
+  const c = component('../../features/artistRecommendations/ArtistRecommendationsRail.jsx', { extra: '\nexport { ArtistPhoto };' });
+  const row = { name: 'Drake', spotifyPhoto: 'https://i.scdn.co/image/fixtureDrake',
+    spotifyArtistUrl: 'https://open.spotify.com/artist/3TVXtAsR1Inumwj472S9r4', photoSource: 'spotify', photoCredit: 'Spotify', photoDisplayPolicy: 'original' };
+  let tree = c.render(c.exports.ArtistPhoto, { artist: row });
+  const image = nodes(tree).find(node => node.type === 'Image');
+  assert.equal(image.props.source.uri, row.spotifyPhoto); assert.equal(image.props.contentFit, 'contain');
+  assert.equal(Object.assign({}, ...image.props.style).borderRadius, 4, 'the original is not placed in the round avatar crop');
+  image.props.onError(); tree = c.render(c.exports.ArtistPhoto, { artist: row });
+  assert.equal(nodes(tree).some(node => node.type === 'Image'), false);
+  assert.ok(nodes(tree).some(node => node.type === 'Icon'));
+  tree = c.render(c.exports.ArtistPhoto, { artist: { ...row, spotifyPhoto: 'https://i.scdn.co/image/replacement' } });
+  assert.equal(nodes(tree).find(node => node.type === 'Image').props.source.uri, 'https://i.scdn.co/image/replacement');
 });
 test("festival artwork failure preserves backdrop, long title and the original edition destination",()=>{
   const c=component("../../features/festivals/FestivalCard.jsx",{fontScale:1.5}),edition={id:"f1",name:title,startDate:"2026-11-02",endDate:"2026-11-03",imageUrl:"file://one",headliners:["One","Two"]};let selected;const props={edition,onOpen:e=>selected=e};let tree=c.render(c.exports.default,props);assert.ok(nodes(tree).some(n=>n.type==="FestivalBackdrop"));assert.equal(nodes(tree).find(n=>n.type==="Text"&&n.props.children===title).props.numberOfLines,undefined);tree.props.onPress();assert.equal(selected,edition);nodes(tree).find(n=>n.type==="Image").props.onError();tree=c.render(c.exports.default,props);assert.equal(nodes(tree).some(n=>n.type==="Image"),false);assert.ok(nodes(tree).some(n=>n.type==="FestivalBackdrop"));

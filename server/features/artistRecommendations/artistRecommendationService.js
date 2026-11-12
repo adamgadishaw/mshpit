@@ -7,6 +7,7 @@ import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateV
 import { inPersonReviewSql } from "../../onlineReviews.js";
 import { pitArtistIdentity } from "../../sqliteFunctions.js";
 import { currentOrUpcomingTourDateSql } from "../../tourDateLifecycle.js";
+import { discoverArtistPhotoFields } from "../../discoverService.js";
 
 const MAX_RESULTS = 8;
 const CANDIDATE_LIMIT = 360;
@@ -387,6 +388,10 @@ export function createArtistRecommendationService(database) {
         || a.candidate.name.localeCompare(b.candidate.name)
         || a.candidate.norm.localeCompare(b.candidate.norm));
       const selected = ranked.slice(0, take);
+      // Hydrate display metadata only for the final bounded recommendations,
+      // after owner visibility/block filters. Never load it for the candidate pool.
+      const photoRows = new Map(database.prepare("SELECT * FROM artists WHERE norm IN (SELECT value FROM json_each(?))")
+        .all(JSON.stringify(selected.map(entry => entry.candidate.norm))).map(row => [row.norm, row]));
       const proofs = socialProof(viewer, selected.map((entry) => entry.candidate.norm));
 
       return {
@@ -406,7 +411,7 @@ export function createArtistRecommendationService(database) {
               key: candidate.norm,
               name: candidate.name,
               publicSlug: cleanText(candidate.public_slug, 200),
-              photo: safeHttpsUrl(candidate.photo),
+              ...discoverArtistPhotoFields({ ...photoRows.get(candidate.norm), photo: safeHttpsUrl(candidate.photo) }),
               genre: candidate.genre || null,
               country: cleanText(candidate.country, 80),
             },

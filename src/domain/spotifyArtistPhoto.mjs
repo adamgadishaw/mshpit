@@ -1,32 +1,16 @@
-const SPOTIFY_IMAGE_PATH = /^\/image\/[A-Za-z0-9]+$/u;
-const SPOTIFY_ARTIST_PATH = /^\/artist\/[A-Za-z0-9]{22}\/?$/u;
-
-function fixedHttps(value, hostname, pathPattern) {
-  try {
-    const url = new URL(String(value || ""));
-    if (url.protocol !== "https:"
-      || url.username
-      || url.password
-      || url.port
-      || url.hostname !== hostname
-      || url.search
-      || url.hash
-      || !pathPattern.test(url.pathname)) return "";
-    return url.href;
-  } catch {
-    return "";
-  }
-}
-
-export const spotifyArtistImageUrl = (value) => fixedHttps(value, "i.scdn.co", SPOTIFY_IMAGE_PATH);
-export const spotifyArtistPageUrl = (value) => fixedHttps(value, "open.spotify.com", SPOTIFY_ARTIST_PATH);
-
 export function spotifyArtistPhotoModel(artist) {
   if (artist?.photoSource !== "spotify"
     || artist?.photoCredit !== "Spotify"
     || artist?.photoDisplayPolicy !== "original") return null;
-  const uri = spotifyArtistImageUrl(artist.spotifyPhoto);
-  const sourceUrl = spotifyArtistPageUrl(artist.spotifyArtistUrl || artist.photoSourceUrl);
-  if (!uri || !sourceUrl) return null;
-  return Object.freeze({ uri, sourceUrl, credit: "Spotify" });
+  try {
+    const uri = new URL(artist.spotifyPhoto).href;
+    const sourceUrl = new URL(artist.spotifyArtistUrl || artist.photoSourceUrl).href;
+    // Validate the complete pair together; neither field is useful alone.
+    // Canonical URLs exclude credentials, other hosts/ports and query/hash suffixes.
+    if (!/^https:\/\/i\.scdn\.co\/image\/[A-Za-z0-9]+$/u.test(uri)
+      || !/^https:\/\/open\.spotify\.com\/artist\/[A-Za-z0-9]{22}\/?$/u.test(sourceUrl)) return null;
+    return Object.freeze({ uri, sourceUrl, credit: "Spotify" });
+  } catch {
+    return null;
+  }
 }

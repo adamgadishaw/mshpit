@@ -11,6 +11,7 @@ import * as view from "../../domain/discoverView.mjs";
 import * as dates from "../../domain/dataPolicy.mjs";
 import * as live from "../../domain/liveDiscovery.mjs";
 import * as initials from "../../domain/artistInitials.mjs";
+import * as artwork from "../../domain/discoverArtistArtwork.mjs";
 
 const require = createRequire(import.meta.url);
 const source = readFileSync(new URL("./DiscoverBrowse.ios.jsx", import.meta.url), "utf8");
@@ -30,6 +31,7 @@ function fixture({ fontScale = 1, width = 393, preview = false } = {}) {
   };
   const fill = { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 };
   const modules = {
+    "../../domain/discoverArtistArtwork.mjs": artwork, "./DiscoverArtistPhotoCredit": "PhotoCredit",
     "../../hooks/useNativeTabPreview": () => preview,
     "../NativeTabScroll": { ScrollView: "ScrollView", TextInput: "TextInput" },
     "../NativeTabSwipeExclusion": "NativeTabSwipeExclusion",
@@ -63,6 +65,27 @@ function nodes(tree) {
 }
 const text = (tree) => nodes(tree).filter((node) => node.type === "Text").flatMap((node) => node.props.children).filter((value) => typeof value === "string").join(" ");
 const named = (tree, name) => nodes(tree).find((node) => node.type?.name === name);
+
+test("iOS artist and spotlight rails preserve original-only art, its credit and canonical navigation", () => {
+  const c = fixture(), artist = { name: "Drake", key: "drake", publicSlug: "drake", photo: null,
+    spotifyPhoto: "https://i.scdn.co/image/fixtureDrake", spotifyArtistUrl: "https://open.spotify.com/artist/3TVXtAsR1Inumwj472S9r4",
+    photoSource: "spotify", photoCredit: "Spotify", photoDisplayPolicy: "original" };
+  for (const kind of ['rail', 'spotlight']) {
+    let selected;
+    const tree = kind === 'rail' ? c.render(c.exports.ArtistRail, { rows: [artist], onOpen: row => { selected = row; } })
+      : c.render(c.exports.FeaturedRail, { artists: [artist], width: 393, onOpenArtist: row => { selected = row; } });
+    const image = named(tree, 'BrowseArtwork');
+    assert.equal(image.props.uri, artist.spotifyPhoto); assert.equal(image.props.contain, true); assert.equal(image.props.proxy, false);
+    const card = nodes(tree).find(node => node.props.accessibilityRole === 'button');
+    card.props.onPress(); assert.equal(selected, artist);
+    assert.equal(nodes(card).some(node => node.type === 'PhotoCredit'), false, 'source control is a sibling');
+    assert.equal(nodes(tree).find(node => node.type === 'PhotoCredit').props.artist, artist);
+    assert.doesNotMatch(text(tree), /ARTIST SPOTLIGHT/, 'no badge over original provider artwork');
+    const renderedImage = c.render(c.exports.BrowseArtwork, image.props);
+    assert.equal(nodes(renderedImage).find(node => node.type === 'Image').props.source.uri, artist.spotifyPhoto);
+    assert.equal(nodes(renderedImage).find(node => node.type === 'Image').props.contentFit, 'contain');
+  }
+});
 const props = (overrides = {}) => ({ programme: "shows", region: "Worldwide", countries: [{ country: "Worldwide" }, { country: "Canada" }],
   chart: { rows: [{ name: "Real Artist", genre: "rock", photo: "file://artist" }] }, overviewStatus: "ready", genres: [{ genre: "rock", count: 2 }],
   selectedGenre: "rock", genreRows: [], genreStatus: "ready", query: "", slides: [], events: [], rangeEvents: [],

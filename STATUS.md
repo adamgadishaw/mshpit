@@ -1,5 +1,20 @@
 # Pit current status
 
+## 2026-11-12 Discover artist images (Build 9 follow-up)
+
+- Isolated from installed source `646e482a`: Discover excluded Spotify imagery
+  from cropped photos but omitted the profile's separate original-image contract.
+  The same validated, attributed image can now appear in popular/genre cards,
+  iOS artist rails, the artist spotlight and personalized recommendations,
+  without proxying or cropping it.
+- Existing generic/Deezer images still lead. Missing, invalid and failed images
+  retain their fallback; canonical artist links, privacy filters and source links stay
+  intact. No imagery was sourced or replaced in production.
+- Focused failing-before/passing-after evidence and release dependencies are in
+  [the review record](docs/DISCOVER_ARTIST_IMAGES_2026-11-12.md).
+- Web startup passes at 524,281/524,288 gzip bytes, with only seven bytes remaining.
+  Re-run the combined budget gate after integration. No publication or phone work.
+
 ## 2026-11-12 Venue search focus and city results (isolated follow-up)
 
 - Reproduced the reported one-letter symptom on combined source `7be234d`:
