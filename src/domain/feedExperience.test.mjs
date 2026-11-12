@@ -32,7 +32,7 @@ test("post recommendation disclosures stay neutral while ranking signals remain 
     algorithm: "global-personal-v1",
   });
   assert.equal(disclosure.label, "Suggested post");
-  assert.equal(disclosure.detail, "Pit mixes recent posts from across the community to keep your feed fresh. Suggestions change over time.");
+  assert.equal(disclosure.detail, "Mshpit suggests recent posts from across the community. Suggestions change over time.");
   assert.doesNotMatch(`${disclosure.label} ${disclosure.detail}`, /popular near you|saved home city|follow|genre|artist activity|likes|discussion/i);
   assert.equal(disclosure.personalized, true);
 });

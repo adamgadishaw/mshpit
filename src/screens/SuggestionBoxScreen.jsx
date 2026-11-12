@@ -87,7 +87,7 @@ export default function SuggestionBoxScreen({ onClose, initialSurface = null }) 
             <View style={styles.doneIcon}><Icon name="check" size={30} color={colors.good} /></View>
             <Text selectable style={styles.doneTitle}>Suggestion received</Text>
             <Text selectable style={styles.doneText}>
-              Thanks for helping shape PIT. Your note was saved without automatically attaching your account or request details.
+              Thanks for the suggestion. Your note was saved without automatically attaching your account or request details.
             </Text>
             <View style={styles.referenceBox}>
               <Text style={styles.referenceLabel}>REFERENCE</Text>
@@ -149,7 +149,7 @@ export default function SuggestionBoxScreen({ onClose, initialSurface = null }) 
               editable={!busy}
               multiline
               maxLength={SUGGESTION_BODY_LIMIT}
-              placeholder="What should PIT change, and why would it matter to you?"
+              placeholder="What would you change about Mshpit, and why?"
               placeholderTextColor={colors.textFaint}
               style={styles.input}
               textAlignVertical="top"
@@ -189,7 +189,7 @@ export default function SuggestionBoxScreen({ onClose, initialSurface = null }) 
               onPress={send}
               loading={busy}
               disabled={!valid}
-              accessibilityHint="Sends an anonymous product suggestion to PIT administrators"
+              accessibilityHint="Sends an anonymous product suggestion to Mshpit administrators"
               style={styles.submit}
             />
           </>

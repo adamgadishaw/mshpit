@@ -206,19 +206,19 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
         <Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Back to browsing" style={({ focused }) => [styles.later, focused && focusRing]}><Icon name="chevron-left" size={16} color={colors.textDim} /><Text style={styles.laterText}>Explore</Text></Pressable>
       </View></View>
       <View style={styles.progress} accessible accessibilityRole="progressbar" accessibilityLabel="Profile setup progress" accessibilityValue={{ min: 1, max: TOTAL_STEPS, now: step }} aria-valuemin={1} aria-valuemax={TOTAL_STEPS} aria-valuenow={step}>
-        <Text style={styles.kicker}>STEP {step} OF {TOTAL_STEPS} · {step === 1 ? "YOUR PROFILE" : "YOUR FIRST NIGHT"}</Text>
+        <Text style={styles.kicker}>STEP {step} OF {TOTAL_STEPS} · {step === 1 ? "YOUR PROFILE" : "WHERE TO START"}</Text>
         <View style={styles.progressBars}>{[1, 2].map((value) => <View key={value} style={[styles.progressBar, value <= step && styles.progressOn]} />)}</View>
       </View>
       <ScrollView ref={scrollRef} style={styles.scroll} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"} automaticallyAdjustKeyboardInsets showsVerticalScrollIndicator={false}>
         {step === 1 ? <>
-          <Text style={styles.title} accessibilityRole="header">Make it yours, {firstName}.</Text>
-          <Text style={styles.subtitle}>A face for the crowd. A banner for your kind of night. Both are optional.</Text>
+          <Text style={styles.title} accessibilityRole="header">Set up your profile, {firstName}.</Text>
+          <Text style={styles.subtitle}>Add a profile photo and banner. Both are optional.</Text>
           {session.emailVerified !== true && <Text selectable style={styles.hint}>Confirm your email to claim your chosen @username and add photos. You can finish setup now and add photos later in Edit profile.</Text>}
           {session.emailVerified !== true && <Button title={operation === "verification" ? "Checking…" : "Confirm email to add photos"} variant="secondary" onPress={() => void confirmEmail()} disabled={busy} style={{ marginBottom: space(3) }} />}
           <View style={styles.profileCard}>
             <View style={styles.trim}><View style={styles.trimAmber} /><View style={styles.trimPink} /><View style={styles.trimBlue} /></View>
             <Pressable onPress={() => void pickPhoto("banner")} disabled={busy} accessibilityRole="button" accessibilityLabel={draft.banner ? "Change profile banner" : "Add profile banner"} style={({ focused }) => [styles.banner, focused && focusRing]}>
-              {draft.banner ? <Image source={{ uri: draft.banner }} style={StyleSheet.absoluteFillObject} resizeMode="cover" /> : <View style={styles.bannerArt}><BrandMark size={108} color={colors.line} /><Text style={styles.bannerSlogan}>YOUR NIGHTS. YOUR PEOPLE.</Text></View>}
+              {draft.banner ? <Image source={{ uri: draft.banner }} style={StyleSheet.absoluteFillObject} resizeMode="cover" /> : <View style={styles.bannerArt}><BrandMark size={108} color={colors.line} /><Text style={styles.bannerSlogan}>YOUR PROFILE BANNER</Text></View>}
               <View style={styles.bannerAction}>{operation === "banner" ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Icon name="camera" size={17} color="#FFFFFF" />}<Text style={styles.bannerActionText}>{operation === "banner" ? "Saving banner…" : draft.banner ? "Change banner" : "Add a banner"}</Text></View>
             </Pressable>
             <View style={styles.identity}>
@@ -236,11 +236,11 @@ export default function SignupOnboardingScreen({ session, initialStep = 1, onCom
           <Text style={styles.label}>YOUR @USERNAME</Text>
           <View style={[styles.handleRow, handleInvalid && styles.invalid]}><Text style={styles.at}>@</Text><TextInput value={draft.handle} onChangeText={(value) => { setDraft((current) => ({ ...current, handle: cleanHandle(value) })); setTouched(true); setError(""); setStatus(""); }} onBlur={() => setTouched(true)} onSubmitEditing={() => void continueProfile()} editable={!busy && !handleLocked && session.emailVerified === true} autoCapitalize="none" autoCorrect={false} spellCheck={false} maxLength={20} textContentType="username" accessibilityLabel="Username" aria-invalid={handleInvalid} placeholder="yourname" placeholderTextColor={colors.textFaint} style={styles.input} />{handleLocked && <Icon name="check" size={18} color={colors.good} />}</View>
           <Text style={styles.hint}>{handleLocked ? "Username saved. You can change it again later in Edit profile." : "This is how people find and tag you. If your signup choice was taken before confirmation, choose another here. Changes are checked when saved."}</Text>
-          {!handleLocked && dirty && draft.handle !== saved.handle && <Text style={styles.hint}>After this change, you’ll wait 10 business days before changing your @ again.</Text>}
+          {!handleLocked && dirty && draft.handle !== saved.handle && <Text style={styles.hint}>After this change, you'll need to wait 10 business days before changing your username again.</Text>}
           <View style={styles.privacy}><Icon name="shield" size={18} color={colors.textDim} /><Text style={styles.privacyText}>Your profile photo and banner follow your profile’s audience settings. Use photos you’re happy to share.</Text></View>
         </> : <>
-          <Text style={styles.title} accessibilityRole="header">You’re on the list.</Text>
-          <Text style={styles.subtitle}>{homeCity ? "Welcome to the music in " + homeCity + ". " : "Make yourself at home. "}Browse at your own pace. Everything below is optional.</Text>
+          <Text style={styles.title} accessibilityRole="header">Choose where to start.</Text>
+          <Text style={styles.subtitle}>{homeCity ? "Welcome to the music in " + homeCity + ". " : ""}Choose an option below, or keep browsing.</Text>
           {city && <View style={{ marginBottom: space(4) }}><CityWelcomeCard city={city} compact hideActions /></View>}
           <WelcomeGuide selected={destination} onChoose={setDestination} busy={busy} includeExplore includeArtistSetup={session.role === "fan"} />
           <Text style={styles.savedNote}>Finish setup marks your profile ready. Exploring now keeps your account and saved progress, subject to the inactivity policy. Confirm your email before posting, messaging or following anyone.</Text>

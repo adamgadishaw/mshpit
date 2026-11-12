@@ -15,7 +15,7 @@ test("journey menu keeps every public discovery and connection destination reach
     notifications: 2,
   });
 
-  assert.equal(JOURNEY_TAGLINE, "Your life's musical journey");
+  assert.equal(JOURNEY_TAGLINE, "Your shows. Your music.");
   assert.deepEqual(model.discover.map(({ key }) => key), ["near", "venues", "fanClubs", "topRated", "news"]);
   assert.deepEqual(model.connection.map(({ key }) => key), ["activity", "inbox", "suggestion"], "Crew stays hidden unless it is switched on");
   assert.equal(model.discover[0].detail, "Shows and scenes around Toronto");

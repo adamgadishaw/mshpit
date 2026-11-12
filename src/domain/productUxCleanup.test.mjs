@@ -146,7 +146,7 @@ test("primary branding is Mshpit across entry, navigation, and recovery surfaces
     assert.match(source, />MSHPIT<\/Text>/, `${name} carries the Mshpit wordmark`);
     assert.doesNotMatch(source, />PIT<\/Text>/, `${name} has no legacy standalone wordmark`);
   }
-  assert.match(menu, /MSHPIT · YOUR STORY IN SOUND/);
+  assert.match(menu, /MSHPIT · LIVE MUSIC, REMEMBERED/);
   assert.match(settings, /sub="Mshpit mobile"/);
 });
 

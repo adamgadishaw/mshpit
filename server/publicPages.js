@@ -795,7 +795,7 @@ export function renderPublicPage(pathname, env = process.env, pageOverride = nul
   </main>
   <footer>
     <div class="foot">
-      <p>Mshpit - Your life's musical journey</p>
+      <p>Mshpit - Your shows. Your music.</p>
       <div class="foot-links">
         <a href="/promotion-sources">Sources</a>
         <a href="/artists">Artists</a>

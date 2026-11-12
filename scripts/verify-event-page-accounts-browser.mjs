@@ -103,7 +103,7 @@ try {
             state.user = userB;
             await page.evaluate(() => window.dispatchEvent(new StorageEvent("storage", { key: "pit.auth.epoch.v1", newValue: JSON.stringify({ at: Date.now() }) })));
             await waitFor(() => state.meReads.includes(userB.id), "Account boundary should confirm the new user");
-            await page.getByText("Your life's musical journey", { exact: true }).waitFor();
+            await page.getByText("Your shows. Your music.", { exact: true }).waitFor();
             await navigate(page, eventPath);
           }
           await expand(); await page.getByText("No updates from this page yet.", { exact: true }).waitFor();

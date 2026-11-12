@@ -104,7 +104,7 @@ async function main() {
       assert.equal(entry.sameSite, "Lax");
       return `${entry.name}=${entry.value}`;
     };
-    const feed = () => page.getByText("Your life's musical journey", { exact: true }).waitFor();
+    const feed = () => page.getByText("Your shows. Your music.", { exact: true }).waitFor();
     const you = async user => { await page.getByRole("tab", { name: "You", exact: true }).click(); await page.getByText(user.name, { exact: true }).first().waitFor(); };
     let loginCookie, switchCookie;
     await check("real-browser-login-choice-and-reload", async () => {
@@ -124,7 +124,7 @@ async function main() {
       holdMenuChunk = true;
       await page.getByRole("button", { name: `Account menu for ${fixture.alice.name}`, exact: true }).click();
       await waitUntil(() => typeof releaseMenuChunk === "function", "Account menu chunk was not requested on intent.");
-      assert.equal(await page.getByText("Your life's musical journey", { exact: true }).isVisible(), true);
+      assert.equal(await page.getByText("Your shows. Your music.", { exact: true }).isVisible(), true);
       releaseMenuChunk(); releaseMenuChunk = null; holdMenuChunk = false;
       await page.getByRole("menu", { name: "Account menu", exact: true }).waitFor();
       if (output) await page.screenshot({ path: join(output, "account-menu.png") });
@@ -159,7 +159,7 @@ async function main() {
     await check("real-browser-logout-reload-and-old-cookie-replay", async () => {
       const mirror = await context.newPage(); mirror.setDefaultTimeout(timeoutMs);
       await mirror.goto(origin+"/feed", { waitUntil: "networkidle" });
-      await mirror.getByText("Your life's musical journey", { exact: true }).waitFor();
+      await mirror.getByText("Your shows. Your music.", { exact: true }).waitFor();
       await page.getByRole("button", { name: "Settings", exact: true }).click();
       await page.getByText("Log out", { exact: true }).click();
       await mirror.getByRole("link", { name: "Browse concerts", exact: true }).waitFor();
@@ -268,13 +268,13 @@ async function main() {
       await signupPage.getByRole("button",{name:"Have an account? Log in",exact:true}).click();
       await signupPage.getByLabel("Password",{exact:true}).fill("Signup-password1");
       await signupPage.getByRole("button",{name:"Log in",exact:true}).last().click();
-      await signupPage.getByText("Your life's musical journey",{exact:true}).waitFor();
+      await signupPage.getByText("Your shows. Your music.",{exact:true}).waitFor();
       const cookie=(await signupContext.cookies()).find(c=>c.name===fixture.cookieName);
       const current=(await request("/api/me",{cookie:fixture.cookieName+'='+cookie.value})).data.user;
       assert.equal(current.email,"real-new-recovery@example.test"); assert.equal(current.emailVerified,false);
       assert.equal(created,1);assert.equal(logins,1);
       await signupPage.reload({waitUntil:"networkidle"});
-      await signupPage.getByText("Your life's musical journey",{exact:true}).waitFor();
+      await signupPage.getByText("Your shows. Your music.",{exact:true}).waitFor();
       assert.equal((await request('/api/users/'+fixture.alice.id+'/follow',{cookie:fixture.cookieName+'='+cookie.value,expected:current.id,method:'POST',body:{following:true}})).data.code,'EMAIL_VERIFICATION_REQUIRED');
       await signupContext.close();
     });
@@ -306,7 +306,7 @@ async function main() {
       await recoveryPage.getByLabel("Email",{exact:true}).fill(fixture.lostReset.email);
       await recoveryPage.getByLabel("Password",{exact:true}).fill("Reset-password4");
       await recoveryPage.getByRole("button",{name:"Log in",exact:true}).last().click();
-      await recoveryPage.getByText("Your life's musical journey",{exact:true}).waitFor();
+      await recoveryPage.getByText("Your shows. Your music.",{exact:true}).waitFor();
       assert.equal(deliberateLogins,1); assert.equal(resetCommits,1);
       const sessionCookie = (await recoveryContext.cookies()).find(c => c.name === fixture.cookieName);
       assert.equal((await request("/api/me",{cookie:fixture.cookieName+'='+sessionCookie.value})).data.user.id,fixture.lostReset.id);
@@ -326,7 +326,7 @@ async function main() {
       await handoffPage.getByLabel("New password",{exact:true}).fill("Reset-password6");
       await handoffPage.getByLabel("Confirm new password",{exact:true}).fill("Reset-password6");
       await handoffPage.getByRole("button",{name:"Reset linked account and sign in",exact:true}).click();
-      await handoffPage.getByText("Your life's musical journey",{exact:true}).waitFor();
+      await handoffPage.getByText("Your shows. Your music.",{exact:true}).waitFor();
       const cookie = (await handoffContext.cookies()).find(c=>c.name===fixture.cookieName);
       assert.equal((await request("/api/me",{cookie:fixture.cookieName+'='+cookie.value})).data.user.id,fixture.otherReset.id);
       assert.equal((await request("/api/me",{cookie:fixture.otherReset.oldCookie})).data.user,null);
@@ -352,7 +352,7 @@ async function main() {
         recoveryPage.on("pageerror", error => pageErrors.push(error.message));
         await recoveryPage.goto(origin + "/feed", { waitUntil: "networkidle" });
         assert.equal((await recoveryPage.locator("body").innerText()).includes("Read Fixture 5"), false, "Failed cold validation must not publish private identity.");
-        await recoveryPage.getByText("Your life's musical journey", { exact: true }).waitFor();
+        await recoveryPage.getByText("Your shows. Your music.", { exact: true }).waitFor();
         await recoveryPage.getByRole("tab", { name: "You", exact: true }).click();
         await recoveryPage.getByText("Read Fixture 5", { exact: true }).first().waitFor();
         assert.equal(logins, 0, "The existing real HttpOnly cookie recovers without credential replay.");

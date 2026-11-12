@@ -478,7 +478,7 @@ export default function CalendarScreen({ initialDate = null, initialView = CALEN
                   : historyWindow.hasMore
                     ? "Load earlier shows above to keep looking through your history."
                   : "Shows you log or mark Went appear here on the night they happened."
-              : "Tour dates land here automatically as they're announced. Mark a show Interested or Going to pin your own plans."}</Text>
+              : "New tour dates appear here as they are announced. Mark a show Interested or Going to save your plans."}</Text>
           </View>
         ) : selectedEvents.length === 0 ? (
           <View style={styles.empty}>

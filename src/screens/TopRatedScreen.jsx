@@ -120,7 +120,7 @@ export default function TopRatedScreen({ initialRegion = "Worldwide", onClose, o
           ))}
         </View>
 
-        {invalidCity && <Text style={styles.cityError} accessibilityRole="alert" accessibilityLiveRegion="polite">Choose a listed city. Pit will not substitute a different location.</Text>}
+        {invalidCity && <Text style={styles.cityError} accessibilityRole="alert" accessibilityLiveRegion="polite">Choose a city from the list to see its shows.</Text>}
         {resource.status === "loading" && (
           <View style={styles.loading} accessibilityRole="progressbar" accessibilityLabel="Loading top-rated shows" accessibilityState={{ busy: true }}>
             <ActivityIndicator size="small" color={colors.amber} />
@@ -166,7 +166,7 @@ export default function TopRatedScreen({ initialRegion = "Worldwide", onClose, o
 
         {ranked.length > 0 && (
           <Text style={styles.note}>
-            Ranked from real public Mshpit ratings. Each account counts once per show, and rating confidence keeps one perfect score from overpowering a well-supported crowd result.
+            Rankings use public Mshpit ratings and consider both scores and the number of ratings. Each account counts once per show.
           </Text>
         )}
       </ScrollView>

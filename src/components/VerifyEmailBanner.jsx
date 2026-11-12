@@ -39,7 +39,7 @@ export default function VerifyEmailBanner({ email, onResend, blockedAction = nul
   const statusCopy = {
     idle: "Check your inbox for the confirmation link, or request a fresh one.",
     sending: "Requesting a fresh link. Waiting for the mail provider...",
-    sent: "Mail provider accepted the request; inbox delivery is not confirmed. Use the most recent email and check spam. Earlier links no longer work.",
+    sent: "The email service accepted the request, but delivery is not confirmed. Use the most recent email and check spam. Earlier links no longer work.",
     recent: "A link was sent recently. Check your inbox and spam folder.",
     confirmed: "Confirmed. Refreshing your account...",
     unavailable: "Delivery could not be confirmed. A new request may have replaced earlier links. Check the most recent email or try again later.",

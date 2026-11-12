@@ -330,7 +330,7 @@ async function visiblePage(page, path) {
   if (path === "/") return landing(page);
   if (path === "/search") return page.getByLabel("Search Mshpit", { exact: true }).waitFor();
   if (path === "/discover") return page.getByRole("heading", { name: "Discover", exact: true }).waitFor();
-  if (path === "/feed") return page.getByText("Your life's musical journey", { exact: true }).waitFor();
+  if (path === "/feed") return page.getByText("Your shows. Your music.", { exact: true }).waitFor();
   if (path === "/you") return page.getByText(navigationUser.name, { exact: true }).first().waitFor();
   if (path === "/artists") return page.getByText("Find the artists fans are talking about", { exact: true }).waitFor();
   if (path === "/events") return page.getByText("Upcoming concerts around the world", { exact: true }).waitFor();

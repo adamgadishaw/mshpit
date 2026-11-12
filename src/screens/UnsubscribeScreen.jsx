@@ -32,7 +32,7 @@ export default function UnsubscribeScreen({ token, onDone }) {
               <Text style={styles.btnTxtPrimary}>Unsubscribe</Text>
             </Pressable>
             <Pressable style={styles.btn} onPress={onDone}>
-              <Text style={styles.btnTxt}>Keep them coming</Text>
+              <Text style={styles.btnTxt}>Keep announcements</Text>
             </Pressable>
           </>
         )}
@@ -42,9 +42,9 @@ export default function UnsubscribeScreen({ token, onDone }) {
         {state === "done" && (
           <>
             <Text style={styles.h}>Done, you're unsubscribed.</Text>
-            <Text style={styles.p}>You won't get announcement email from Pit any more. To opt back in securely, sign in and use Email announcements in Settings.</Text>
+            <Text style={styles.p}>You won't get announcement emails from Mshpit anymore. To opt back in securely, sign in and use Email announcements in Settings.</Text>
             <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone}>
-              <Text style={styles.btnTxtPrimary}>Back to Pit</Text>
+              <Text style={styles.btnTxtPrimary}>Back to Mshpit</Text>
             </Pressable>
           </>
         )}
@@ -54,7 +54,7 @@ export default function UnsubscribeScreen({ token, onDone }) {
             <Text style={styles.h}>That didn't go through.</Text>
             <Text style={styles.p}>The link may have expired. Email preferences are in Settings once you're signed in.</Text>
             <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone}>
-              <Text style={styles.btnTxtPrimary}>Back to Pit</Text>
+              <Text style={styles.btnTxtPrimary}>Back to Mshpit</Text>
             </Pressable>
           </>
         )}

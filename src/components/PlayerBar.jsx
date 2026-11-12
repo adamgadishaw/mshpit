@@ -879,7 +879,7 @@ export default function PlayerBar({
           <View style={styles.emptyPlayer}>
             <View style={styles.emptyDisc}><Icon name="music" size={34} color={colors.amber} /></View>
             <Text style={styles.emptyTitle}>Nothing playing yet</Text>
-            <Text style={styles.emptyCopy}>Choose a song from an artist, playlist, or Discover. Your player and queue will stay here while you explore Pit.</Text>
+            <Text style={styles.emptyCopy}>Choose a song from an artist, playlist, or Discover. Your player and queue stay here while you browse Mshpit.</Text>
           </View>
         )}
       </View>

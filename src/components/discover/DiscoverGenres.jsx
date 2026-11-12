@@ -118,7 +118,7 @@ function DiscoverGenres({
           {reviewedRows.length ? (
             <GenreArtistGroup
               title="Top rated live"
-              detail="Ranked with real Mshpit ratings and sample size, so one perfect score does not automatically win."
+              detail="Rankings consider both fan scores and the number of ratings."
               rows={reviewedRows}
               ranked
               detailFor={liveRatingLine}
