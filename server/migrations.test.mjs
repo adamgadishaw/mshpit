@@ -322,6 +322,8 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
     DROP INDEX idx_tourdates_provider_visibility;
     DROP INDEX idx_posts_artist_reviews;
     DROP INDEX idx_posts_artist_name_reviews;
+    DROP INDEX idx_posts_public_artist_evidence;
+    DROP INDEX idx_posts_public_artist_name_evidence;
     DROP INDEX idx_posts_artist_archive;
     DROP INDEX idx_posts_artist_name_archive;
     DROP TRIGGER trg_posts_legacy_author_tombstone;

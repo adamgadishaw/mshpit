@@ -479,6 +479,18 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
     ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
 
+  // Keep the canonical and legacy-name evidence seeks separate. Combining
+  // them with OR inside a correlated subquery can make SQLite rescan every
+  // live post for each artist, even when only a twelve-item page is returned.
+  const directoryReviewEvidenceSql = (identity) => `EXISTS (
+        SELECT 1 FROM posts p JOIN users reviewer ON reviewer.id=p.user_id
+        WHERE p.removed=0 AND ${inPersonReviewSql("p")}
+          AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR (
+            p.photos_public=1 AND ${PUBLIC_READY_MEDIA_EVIDENCE_SQL}
+          ))
+          AND ${identity}
+          AND ${activeAccountSql("reviewer")}
+      )`;
   const directoryArtistsSql = (includeTotal) => `SELECT a.norm,a.name,a.public_slug,a.genre,a.data,a.bio,a.updated_at
       ${includeTotal ? ',COUNT(*) OVER () AS directory_total' : ''}
     FROM artists a
@@ -486,17 +498,10 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       LENGTH(TRIM(COALESCE(a.bio,'')))>=80 OR (a.source='artist-created' AND EXISTS (
         SELECT 1 FROM artist_profiles created_profile WHERE created_profile.artist_key=a.norm
           AND created_profile.removed=0 AND LENGTH(TRIM(COALESCE(created_profile.bio,'')))>=80
-      )) OR EXISTS (
-        SELECT 1 FROM posts p JOIN users reviewer ON reviewer.id=p.user_id
-        WHERE p.removed=0 AND ${inPersonReviewSql("p")}
-          AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR (
-            p.photos_public=1 AND ${PUBLIC_READY_MEDIA_EVIDENCE_SQL}
-          ))
-          AND (p.artist_key=a.norm OR (p.artist_key IS NULL AND LOWER(p.artist)=LOWER(a.name)
+      )) OR ${directoryReviewEvidenceSql("p.artist_key=a.norm")}
+      OR ${directoryReviewEvidenceSql(`p.artist_key IS NULL AND LOWER(p.artist)=LOWER(a.name)
             AND (SELECT COUNT(*) FROM artists directory_review_identity
-              WHERE directory_review_identity.name=p.artist COLLATE NOCASE)=1))
-          AND ${activeAccountSql("reviewer")}
-      ) OR EXISTS (
+              WHERE directory_review_identity.name=p.artist COLLATE NOCASE)=1`)} OR EXISTS (
         SELECT 1 FROM tour_dates td
         WHERE (td.artist_key=a.norm OR (td.artist_key IS NULL AND LOWER(TRIM(td.artist))=LOWER(TRIM(a.name))
           AND (SELECT COUNT(*) FROM artists directory_event_identity

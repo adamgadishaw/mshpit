@@ -9,7 +9,7 @@ process.env.PIT_DATA_DIR = dataDir;
 
 const { db } = await import("../../db.js");
 const { activeAccountSql } = await import("../../accountVisibility.js");
-const { PUBLIC_POST_COLUMNS } = await import("./publicDocumentRepository.js");
+const { PUBLIC_POST_COLUMNS, createPublicDocumentRepository } = await import("./publicDocumentRepository.js");
 
 after(() => {
   db.close();
@@ -52,4 +52,18 @@ test("sitemap tour keyset uses date/id ordering without a temporary sort", () =>
 
   assert.ok(tourPlan.some((detail) => detail.includes("idx_tourdates_sitemap_cursor")), tourPlan.join(" | "));
   assert.equal(tourPlan.some((detail) => /USE TEMP B-TREE FOR ORDER BY/i.test(detail)), false, tourPlan.join(" | "));
+});
+
+test("artist directory seeks canonical and legacy review evidence without scanning all live posts", () => {
+  let directorySql;
+  createPublicDocumentRepository({ function: db.function.bind(db), prepare(sql) {
+    if (sql.includes("SELECT a.norm,a.name,a.public_slug,a.genre,a.data,a.bio,a.updated_at")
+      && sql.includes("AS directory_total")) directorySql = sql;
+    return db.prepare(sql);
+  } });
+  assert.ok(directorySql);
+  const directoryPlan = plan(directorySql, Date.now(), "2026-11-12", 13, 0);
+  assert.ok(directoryPlan.some(d => /SEARCH p USING INDEX idx_posts_public_artist_evidence \(artist_key=\?\)/.test(d)), directoryPlan.join(" | "));
+  assert.ok(directoryPlan.some(d => /SEARCH p USING INDEX idx_posts_public_artist_name_evidence/.test(d)), directoryPlan.join(" | "));
+  assert.equal(directoryPlan.some(d => /SCAN p\b|SEARCH p USING INDEX idx_posts_recommendation_candidates/.test(d)), false, directoryPlan.join(" | "));
 });

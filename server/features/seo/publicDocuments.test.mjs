@@ -215,6 +215,79 @@ function addReadyImage(database, { assetId, ownerId, url, postId = null, purpose
   if (postId) database.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,10)").run(postId, assetId);
 }
 
+for (const binding of ["canonical", "legacy"]) {
+  test(`artist directory ${binding} review seeks retain full pages, media authority and fresh revocations`, () => {
+    const database = createDatabase();
+    try {
+      addUser(database, "active");
+      addUser(database, "banned", { banned: true });
+      addUser(database, "suspended", { suspended: true });
+      addUser(database, "dormant");
+      database.exec("UPDATE users SET dormant_at=1 WHERE id='dormant'");
+      addUser(database, "private-owner");
+      database.exec("UPDATE users SET profile_audience='private' WHERE id='private-owner'");
+      const expected = [];
+      const review = "A substantive account of the sound, performance and atmosphere at this concert.";
+      const create = (key, options = {}) => {
+        const name = options.name || `Directory ${key}`;
+        addArtist(database, { key, name, bio: "" });
+        addPost(database, { id: `post-${key}`, artist: name.toUpperCase(),
+          artistKey: binding === "canonical" ? key : null, review, date: "", ...options });
+      };
+      for (let i = 0; i < 30; i++) {
+        const key = String(i).padStart(2, "0"), rank = i % 3, popularity = i % 2;
+        create(key, { review: i % 3 ? review : "" });
+        database.prepare("UPDATE artists SET rank_score=?,popularity=? WHERE norm=?").run(rank, popularity, key);
+        if (i % 3 === 0) addReadyImage(database, { assetId: `image-${key}`, ownerId: "active",
+          url: `https://media.example/${key}.jpg`, postId: `post-${key}` });
+        expected.push({ key, rank, popularity });
+      }
+      for (const [key, options] of [
+        ["removed", { removed: true }], ["online", { experienceType: "online" }],
+        ["wrong-kind", { kind: "log" }], ["short", { review: "too short" }],
+        ["banned-author", { userId: "banned" }], ["suspended-author", { userId: "suspended" }],
+        ["dormant-author", { userId: "dormant" }], ["wrong-key", { artistKey: "absent" }],
+      ]) create(key, options);
+      create("wrong-media-owner", { review: "" });
+      addReadyImage(database, { assetId: "wrong-owner", ownerId: "banned",
+        url: "https://media.example/other.jpg", postId: "post-wrong-media-owner" });
+      create("pending-media", { review: "" });
+      addReadyImage(database, { assetId: "pending", ownerId: "active",
+        url: "https://media.example/pending.jpg", postId: "post-pending-media" });
+      database.exec("UPDATE media_assets SET status='pending' WHERE id='pending'");
+      create("private-photo", { review: "", photosPublic: false });
+      addReadyImage(database, { assetId: "private-photo", ownerId: "active",
+        url: "https://media.example/private.jpg", postId: "post-private-photo" });
+      create("private-catalog");
+      database.exec("UPDATE artists SET source='artist-created' WHERE norm='private-catalog'");
+      database.exec("INSERT INTO artist_profiles(artist_key,owner_id,removed) VALUES('private-catalog','private-owner',0)");
+      create("missing-slug");
+      database.exec("UPDATE artists SET public_slug=NULL WHERE norm='missing-slug'");
+      addArtist(database, { key: "duplicate-a", name: "Duplicate", bio: "" });
+      addArtist(database, { key: "duplicate-b", name: "Duplicate", bio: "" });
+      addPost(database, { id: "ambiguous", artist: "DUPLICATE", artistKey: null, review });
+
+      const repository = createPublicDocumentRepository(database);
+      const read = page => repository.readDirectory({ kind: "artists", at: NOW, page });
+      const order = expected.sort((a, b) => b.rank - a.rank || b.popularity - a.popularity || a.key.localeCompare(b.key)).map(x => x.key);
+      const pages = [read(1), read(2), read(3)];
+      assert.deepEqual(pages.map(p => p.total), [30, 30, 30]);
+      assert.deepEqual(pages.map(p => p.hasNext), [true, true, false]);
+      assert.deepEqual(pages.flatMap(p => p.artists.map(a => a.norm)), order);
+      assert.deepEqual(read(4).artists, []);
+      database.exec("UPDATE posts SET removed=1 WHERE id='post-00'");
+      assert.equal(read(1).total, 29);
+      database.exec("UPDATE posts SET removed=0 WHERE id='post-00'");
+      database.exec("UPDATE media_assets SET status='pending' WHERE id LIKE 'image-%'");
+      assert.equal(read(1).total, 20, "revoked media no longer qualifies artists");
+      database.exec("UPDATE users SET is_banned=1 WHERE id='active'");
+      assert.equal(read(1).total, 0, "both identity branches recheck the reviewer");
+      database.exec("UPDATE users SET is_banned=0 WHERE id='active'");
+      assert.equal(read(1).total, 20);
+    } finally { database.close(); }
+  });
+}
+
 function addVenueReview(database, {
   id,
   userId = "active",

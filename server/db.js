@@ -2275,6 +2275,15 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_reviews
 db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_name_reviews
   ON posts(lower(artist), created_at DESC, id)
   WHERE removed=0 AND COALESCE(kind,'review')='review' AND length(trim(review))>0`);
+// Directory evidence includes sanitized photo-only reviews and legacy dates.
+// Its keyed and unkeyed-name branches must seek within one artist without
+// relying on the narrower text-only or calendar-date archive predicates.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_public_artist_evidence
+  ON posts(artist_key) WHERE removed=0 AND COALESCE(kind,'review')='review'
+    AND COALESCE(experience_type,'in_person')='in_person'`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_public_artist_name_evidence
+  ON posts(lower(artist)) WHERE artist_key IS NULL AND removed=0
+    AND COALESCE(kind,'review')='review' AND COALESCE(experience_type,'in_person')='in_person'`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_archive
   ON posts(artist_key, date DESC, created_at DESC, id DESC)
   WHERE removed=0 AND COALESCE(kind,'review')='review'
