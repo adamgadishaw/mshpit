@@ -159,23 +159,28 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     const attempt = new AbortController();
     authAttempt.current = attempt;
     const announcementClaim = errorAnnouncement.begin(attempt.signal);
+    const complete = (result) => {
+      if (!mounted.current || attempt.signal.aborted || authAttempt.current !== attempt) return;
+      errorAnnouncement.cancel(announcementClaim);
+      setPassword(""); setShowPassword(false);
+      setAccounts(null); setCurrentPassword("");
+      // Completion navigates Back. Retire cancellation before Root can replace
+      // the account-keyed form, so accepted login cannot reset this visit.
+      authAttempt.current = null;
+      busyRef.current = false;
+      setBusyAction(null);
+      onDone?.(creating ? "signup" : "login", { artistSetup: creating && artistSignup, accountId: result.accountId });
+    };
     try {
       const result = creating
         ? await signup({ ...signupFormPayload({ ...accountValues(), city, genres, ageBand, agreed, analyticsConsent }), ...(addAccount ? { addAccount, currentPassword } : {}), createAdditional }, { signal: attempt.signal })
-        : await login(email.trim(), password, accountId, { signal: attempt.signal });
+        : await login(email.trim(), password, accountId, { signal: attempt.signal, onAccepted: complete });
       if (!mounted.current || attempt.signal.aborted || authAttempt.current !== attempt) return;
       if (result?.ok) {
         errorAnnouncement.cancel(announcementClaim);
         if (result.needsAccountChoice) { setSignupChoice(result); return; }
         if (result.chooseAccount) { setSignupChoice(null); setAccounts(result.accounts); return; }
-        setPassword(""); setShowPassword(false);
-        setAccounts(null); setCurrentPassword("");
-        // Completion itself navigates Back. It is no longer cancellation and
-        // must not revoke the session that the server has just confirmed.
-        authAttempt.current = null;
-        busyRef.current = false;
-        setBusyAction(null);
-        onDone?.(creating ? "signup" : "login", { artistSetup: creating && artistSignup, accountId: result.accountId });
+        complete(result);
       } else {
         const handleTaken = result?.error?.serverCode === "HANDLE_TAKEN" || result?.code === "HANDLE_TAKEN"
           || /username.*taken|handle.*taken/i.test(readableError(result?.error, ""));

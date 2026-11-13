@@ -46,6 +46,7 @@ const cases = [
   { name: "login-mobile", kind: "login", width: 390 },
   { name: "login-desktop", kind: "login", width: 1280 },
   { name: "login-wrong-password-retry", kind: "login-retry", width: 390 },
+  ...[375, 1280].map(width => ({ name: `login-autofill-repeated-retry-${width}`, kind: "login-autofill-retry", width })),
   { name: "login-two-profile-choice", kind: "login-choice", width: 390 },
   { name: "login-canceled-browser-back-mobile", kind: "login-canceled", width: 390 },
   { name: "login-canceled-browser-back-desktop", kind: "login-canceled", width: 1280 },
@@ -494,7 +495,7 @@ async function runCase(browser, origin, item) {
         return await json({ user: state.user });
       }
       if (url.pathname === "/api/login") {
-        if (["login-canceled", "forms-login"].includes(item.kind)) await new Promise(fulfill => { state.releaseLogin = fulfill; });
+        if (["login-canceled", "forms-login", "login-autofill-retry"].includes(item.kind)) await new Promise(fulfill => { state.releaseLogin = fulfill; });
         if (state.badPassword) return await json({ error: "Wrong email or password.", code: "INVALID_CREDENTIALS" }, 401);
         if (item.kind === "login-choice" && !body.accountId) return await json({ chooseAccount: true, accounts: [alice, bob] });
         // Model server-side success even when a browser aborts or discards the
@@ -928,6 +929,49 @@ async function runCase(browser, origin, item) {
       assert.deepEqual(guestCalls.filter(call => /\/api\/artists\//.test(call.path)), [], "Social controls must not navigate to or load the post's artist.");
     } else if (item.kind.startsWith("forms-")) {
       await semanticFormCase(page, origin, item, state, { landing, feed, you });
+    } else if (item.kind === "login-autofill-retry") {
+      await landing();
+      await page.getByRole("link", { name: "Log in", exact: true }).last().click();
+      const { form } = await credentialFields(page, [["Email", "username"], ["Password", "current-password"]]);
+      // Synthetic autofill events on the real controlled DOM fields. This is
+      // deliberately not a claim of Safari/Keychain Password AutoFill testing.
+      await form.evaluate((node, values) => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+        for (const [name, value] of Object.entries(values)) {
+          const input = node.elements.namedItem(name);
+          setter.call(input, value);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      }, { email: alice.email, password: fixturePassword });
+      const email = await page.getByLabel("Email", { exact: true }).elementHandle();
+      const password = await page.getByLabel("Password", { exact: true }).elementHandle();
+      const count = () => state.calls.filter(call => call.path === "/api/login").length;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        state.badPassword = attempt < 2;
+        const submit = form.locator('button[type="submit"]');
+        await submit.click();
+        await waitFor(() => typeof state.releaseLogin === "function", "Synthetic login response was not held.");
+        // Browser and keyboard repeats during a pending request cannot create
+        // another identity transition or replace the mounted credential owner.
+        await form.evaluate(node => { node.requestSubmit(); node.requestSubmit(); });
+        await page.keyboard.press("Enter");
+        assert.equal(count(), attempt + 1);
+        state.releaseLogin(); state.releaseLogin = null;
+        if (attempt < 2) {
+          await page.getByRole("alert").filter({ hasText: "Wrong email or password." }).waitFor();
+          await page.waitForFunction(() => !document.querySelector('button[type="submit"]')?.disabled);
+          assert.equal(await email.evaluate(node => node.isConnected), true);
+          assert.equal(await password.evaluate(node => node.isConnected), true);
+          assert.equal(await page.getByLabel("Email", { exact: true }).inputValue(), alice.email);
+          assert.equal(await page.getByLabel("Password", { exact: true }).inputValue(), fixturePassword);
+          assert.equal(state.user, null);
+        }
+      }
+      await feed();
+      assert.equal(await page.getByLabel("Password", { exact: true }).count(), 0);
+      assert.equal(count(), 3);
+      assert.equal(state.calls.some(call => call.path === "/api/logout"), false);
+      await you(alice);
     } else if (item.kind.startsWith("login")) {
       if (item.kind === "login-canceled") {
         await waitFor(() => typeof state.releaseDiscover === "function", "Discover must be suspended before opening login.");

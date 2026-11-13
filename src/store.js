@@ -3017,7 +3017,7 @@ export function StoreProvider({ children }) {
     } catch (error) { return { ok: false, error }; }
   };
 
-  const login = async (email, password, accountId, { signal } = {}) => {
+  const login = async (email, password, accountId, { signal, onAccepted } = {}) => {
     if (remoteIdentityValidationEnabled(LOCAL_AUTH_FALLBACK)) {
       try {
         return await performAuthentication(() => api("/api/login", { method: "POST", body: { email, password, ...(accountId ? { accountId } : {}) }, context: "Signing in", silent: true, skipIdentityCheck: true }), (response) => {
@@ -3026,9 +3026,13 @@ export function StoreProvider({ children }) {
           }
           const user = response?.user;
           if (!user?.id) { void logout(); return { ok: false, error: "Sign-in could not be confirmed. Try again." }; }
+          // Root's account-keyed presentation may remount the credential form
+          // as soon as this identity is published. Complete its accepted visit
+          // first, while it still owns navigation and its abort controller.
+          onAccepted?.({ accountId: user.id });
           absorbServerUser(user, { announce: true });
           track("login", { method: "password" });
-          return { ok: true };
+          return { ok: true, accountId: user.id };
         }, signal);
       } catch (e) {
         if (e.code === "PIT-STORE-004") return { ok: false, error: e.userMessage };
@@ -3043,6 +3047,7 @@ export function StoreProvider({ children }) {
     const u = users.find((x) => x.email.toLowerCase() === em);
     if (!u || !u.password || u.password !== pw) return { ok: false, error: "Wrong email or password." };
     if (u.isBanned) return { ok: false, error: "This account is banned." };
+    onAccepted?.({ accountId: u.id });
     configureApiIdentity(u.id, { ready: true });
     authReadyRef.current = true;
     setAuthReady(true);
@@ -3050,7 +3055,7 @@ export function StoreProvider({ children }) {
     adoptFeedAccount(u.id);
     configureProductAnalytics(u);
     setSession(u);
-    return { ok: true };
+    return { ok: true, accountId: u.id };
   };
 
   const adoptEmailVerifiedSession = (candidate) => {
