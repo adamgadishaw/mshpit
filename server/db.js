@@ -1,3 +1,5 @@
+import { ensureLocalAlertSchema } from "./features/localEventAlerts/localAlertSchema.js";
+import { ensureLocalAlertRuntimeSchema } from "./features/localEventAlerts/localAlertRuntime.js";
 import { ensureCreatorCalendarSchema } from "./features/creatorCalendar/creatorCalendarSchema.js";
 // SQLite database layer, Node's built-in node:sqlite, zero dependencies.
 // WAL mode + foreign keys + busy timeout: safe under concurrent requests and
@@ -2199,6 +2201,8 @@ ensureCommentMutationSchema(db);
 ensureSocialReactionSchema(db);
 ensureCreatorPostSchema(db);
 ensureCreatorCalendarSchema(db);
+ensureLocalAlertSchema(db);
+ensureLocalAlertRuntimeSchema(db);
 ensureEventAccountSchema(db);
 ensureJobSchema(db);
 ensureArtistAccessRetentionSchema(db);

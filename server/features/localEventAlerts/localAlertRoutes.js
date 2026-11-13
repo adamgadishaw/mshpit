@@ -12,7 +12,7 @@ export function localAlertRoutes({ requireUser, alerts, devices, sessionHashForR
   return {
     "GET /api/me/local-alerts/preferences": ctx => {
       const member = account(ctx);
-      return { preferences: alerts.preferences(member.id), homeCity: resolveAlertHomeCity(member.home_city) };
+      return { preferences: alerts.preferences(member.id), homeCity: resolveAlertHomeCity(member.home_city), deliveryEnabled: process.env.LOCAL_EVENT_ALERTS_ENABLED === "1" };
     },
     "PUT /api/me/local-alerts/preferences": ctx => {
       const member = account(ctx);

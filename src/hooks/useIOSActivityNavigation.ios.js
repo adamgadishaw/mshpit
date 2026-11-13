@@ -80,6 +80,7 @@ export default function useIOSActivityNavigation({
   const visible = feedback?.scope === scope ? feedback : null;
   return {
     open,
+    cancelPending: () => { const claim = owner.begin(scope); owner.release(claim); publish(null); },
     close: () => leave(onClose),
     openProfile: (actorId) => leave(onOpenProfile, actorId),
     openingNotificationId: visible?.openingNotificationId ?? null,

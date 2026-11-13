@@ -45,6 +45,7 @@ export function ensureLocalAlertSchema(db) {
       UNIQUE(account_id,event_id,kind,trigger_key)
     );
     CREATE INDEX IF NOT EXISTS local_event_alerts_due ON local_event_alerts(state,due_at,id);
+    CREATE INDEX IF NOT EXISTS local_event_alerts_notice ON local_event_alerts(notification_id,account_id,owns_notice,state);
     CREATE INDEX IF NOT EXISTS local_event_alerts_event ON local_event_alerts(event_id);
     CREATE INDEX IF NOT EXISTS local_event_alerts_event_page ON local_event_alerts(event_id,id);
     CREATE TABLE IF NOT EXISTS local_push_installations (

@@ -840,7 +840,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
       };
     },
 
-    readEvent({ id, relatedLimit = 6, at = Date.now(), today = null } = {}) {
+    readEvent({ id, relatedLimit = 6, at = Date.now(), today = null, eventOnly = false } = {}) {
       const eventId = typeof id === "string" ? id.trim() : "";
       if (!eventId) return null;
       const instant = Number.isFinite(Number(at)) ? Number(at) : Date.now();
@@ -848,6 +848,8 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         ? today : new Date(instant).toISOString().slice(0, 10);
       const event = eventById.get(eventId, instant, day, day) || null;
       if (!event) return null;
+      // Alert policy needs the same canonical row without loading related page content.
+      if (eventOnly) return { event };
       const identityPending = tourDateArtistIdentityPending(event);
       const showLimit = bounded(relatedLimit, 6, 12);
       // Related shows give the page real internal links: the artist's other

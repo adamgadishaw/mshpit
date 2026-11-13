@@ -197,7 +197,7 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
           if (!existing) {
             db.prepare(`INSERT INTO notifications(id,user_id,actor_id,type,artist,text,created_at) VALUES (?,?,NULL,?,?,?,?)`)
               .run(notificationId, alert.account_id, alert.kind === "date" ? "artist_tour_date" : "local_ticket_sale", current.event.artist,
-                alert.kind === "date" ? "New show date listed." : `Tickets are on sale in ${current.city.city}.`, at);
+                alert.kind === "date" ? `New show: ${current.event.date} at ${current.event.venue}.` : `Tickets are on sale in ${current.city.city}.`, at);
             ownsNotice = true;
           }
         }
@@ -287,7 +287,9 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
       if (!(alert.kind === "date" ? pref.datesPush : pref.salesPush) || alert.expires_at <= at
         || (alert.kind === "sale" && (!freshSale(current, at) || !alertSaleIsOpen(current.event, current.sale, at)))) return null;
     }
-    return { alertId: alert.id, eventId: alert.event_id, artist: current.event.artist, kind: alert.kind, path: `/event/${encodeURIComponent(alert.event_id)}` };
+    return { alertId: alert.id, eventId: alert.event_id, artist: current.event.artist, kind: alert.kind, path: `/event/${encodeURIComponent(alert.event_id)}`,
+      event: { id: alert.event_id, performanceEvent: true, artist: current.event.artist, artistKey: current.event.artist_key,
+        date: current.event.date, venue: current.event.venue, city: current.event.place, source: current.event.source } };
   }
 
   return { preferences, setPreferences, reconcileEvent, recordTicketmasterSale, planEventPage, requestAccountScan, planAccountSalesPage, cancelPendingPushPage, deliverDue, readAlertTarget };

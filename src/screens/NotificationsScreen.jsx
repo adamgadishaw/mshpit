@@ -14,6 +14,7 @@ import { postTagNotificationCopy, postTagNotificationPhrase } from "../domain/po
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
+import useLocalAlertNavigation from "../features/localEventAlerts/useLocalAlertNavigation";
 import useIOSActivityNavigation from "../hooks/useIOSActivityNavigation";
 
 const ago = (ts) => {
@@ -36,6 +37,8 @@ const META = {
   dm: { icon: "mail", tint: colors.good, verb: "sent you a message" },
   plan_join: { icon: "user-plus", tint: colors.good, verb: "joined your plan" },
   creator_update: { icon: "music", tint: colors.amber, verb: "shared an update" },
+  artist_tour_date: { icon: "calendar", tint: colors.amber, verb: "" },
+  local_ticket_sale: { icon: "music", tint: colors.amber, verb: "" },
   artist_update: { icon: "music", tint: colors.amber, verb: "" },
   welcome: { icon: "star", tint: colors.amber, verb: "" },
 };
@@ -51,7 +54,7 @@ function notificationCopy(notification, actorName) {
   if (notification.type === "post_tag") return postTagNotificationCopy(actorName, notification.artist);
   if (notification.type === "plan_join") return `${actorName || "Someone"} ${planJoinPhrase(notification.artist)}`;
   if (notification.type === "creator_update") return `${notification.artist || actorName || "A page you follow"}: ${notification.text || "new update"}`;
-  if (notification.type === "artist_update") return `${notification.artist || "An artist you follow"}: ${notification.text || "new music"}`;
+  if (["artist_tour_date", "local_ticket_sale", "artist_update"].includes(notification.type)) return `${notification.artist || "An artist you follow"}: ${notification.text || "new music"}`;
   const meta = META[notification.type] || META.like;
   const reference = (notification.type === "like" || notification.type === "comment") && reactionReference(notification)
     ? ` of ${notification.artist}`
@@ -102,8 +105,9 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
     onOpenPlans: () => leaveActivity(onOpenPlans),
     onOpenArtist: value => leaveActivity(onOpenArtist, value),
   });
-  const openingNotificationId = iosNavigation ? iosNavigation.openingNotificationId : legacyOpeningNotificationId;
-  const unavailableNotice = iosNavigation ? iosNavigation.unavailableNotice : legacyUnavailableNotice;
+  const alertNavigation = useLocalAlertNavigation({ accountId, authEpoch: chatAuthEpoch, isCurrent: ownsReadScope, onOpen: value => leaveActivity(onOpen, value) });
+  const openingNotificationId = alertNavigation.feedback?.id || (iosNavigation ? iosNavigation.openingNotificationId : legacyOpeningNotificationId);
+  const unavailableNotice = alertNavigation.feedback?.error || (iosNavigation ? iosNavigation.unavailableNotice : legacyUnavailableNotice);
   const [notificationReadState, setNotificationReadState] = useState(null);
   const scopedNotificationReadState = notificationReadState?.scope === notificationReadScope
     ? notificationReadState : {};
@@ -114,7 +118,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
   const bundles = useMemo(() => bundleNotifications(items), [items]);
   const activityRows = Platform.OS === "ios" ? items.map(notification => ({ key: notification.id, notification, bundle: null })) : viewMode === "digest"
     ? bundles.map(bundle => ({ key: bundle.id, notification: bundle.primary, bundle }))
-    : items.filter(notification => viewMode !== "updates" || ["creator_update", "artist_update"].includes(notification.type)).map(notification => ({ key: notification.id, notification, bundle: null }));
+    : items.filter(notification => viewMode !== "updates" || ["creator_update", "artist_update", "artist_tour_date", "local_ticket_sale"].includes(notification.type)).map(notification => ({ key: notification.id, notification, bundle: null }));
   const readCurrentNotifications = async (rows, externalSignal) => {
     if (!ownsReadScope() || externalSignal?.aborted) return;
     const operation = readOwner.begin(notificationReadScope);
@@ -180,6 +184,15 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
   // Tapping the ROW goes to the thing the notification is about; tapping the
   // AVATAR always goes to the person who did it.
   const open = async (n) => {
+    if (["artist_tour_date", "local_ticket_sale"].includes(n.type)) {
+      iosNavigation?.cancelPending();
+      setOpeningNotificationId(null); setUnavailableNotice(null);
+      const active = postRequestRef.current;
+      active.controller?.abort();
+      postRequestRef.current = { sequence: active.sequence + 1, accountId: accountIdRef.current, postId: null, controller: null };
+      return alertNavigation.open(n);
+    }
+    alertNavigation.cancel();
     if (iosNavigation) return iosNavigation.open(n);
     const destination = resolveNotificationPost(n, feed);
     if (destination.kind !== "fetch-post") {
@@ -258,7 +271,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
           <View style={styles.notice} accessibilityRole="alert" accessibilityLiveRegion="polite">
             <Icon name="lock" size={16} color={colors.amber} />
             <Text style={styles.noticeText}>{unavailableNotice}</Text>
-            <Pressable onPress={iosNavigation ? iosNavigation.dismissNotice : () => setUnavailableNotice(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Dismiss unavailable post message">
+            <Pressable onPress={() => { alertNavigation.cancel(); if (iosNavigation) iosNavigation.dismissNotice(); else setUnavailableNotice(null); }} hitSlop={8} accessibilityRole="button" accessibilityLabel="Dismiss unavailable post message">
               <Icon name="x" size={14} color={colors.textDim} />
             </Pressable>
           </View>
@@ -322,11 +335,11 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
               onPress={() => { void open(n); }}
               accessibilityRole="button"
               accessibilityLabel={groupedCopy}
-              accessibilityHint="Opens the related profile, conversation, or post"
+              accessibilityHint="Opens the related show, profile, conversation, or post"
               accessibilityState={{ busy: openingNotificationId === n.id }}
             >
               <View style={styles.avatarWrap}>
-                {["artist_update", "creator_update"].includes(n.type) ? (
+                {["artist_update", "creator_update", "artist_tour_date", "local_ticket_sale"].includes(n.type) ? (
                   <View style={styles.newsMark}><Icon name="music" size={18} color={colors.amber} /></View>
                 ) : (
                   <Avatar user={{ name: n.actorName, initials: n.actorInitials, avatarUri: n.actorUri, avatarColor: n.actorColor }} size={40} onPress={n.actorId ? () => iosNavigation ? iosNavigation.openProfile(n.actorId) : leaveActivity(onOpenProfile, n.actorId) : undefined} />
@@ -336,7 +349,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
                 </View>
               </View>
               <View style={{ flex: 1 }}>
-                {["artist_update", "creator_update"].includes(n.type) ? (
+                {["artist_update", "creator_update", "artist_tour_date", "local_ticket_sale"].includes(n.type) ? (
                   <Text style={styles.text}><Text style={styles.who}>{n.artist || "An artist you follow"}</Text> {n.text || "has news"}</Text>
                 ) : n.type === "welcome" ? (
                   <Text style={styles.text}>
