@@ -1,4 +1,5 @@
 import SessionValidationPending from "./src/components/SessionValidationPending";
+const useNativePush = Platform.OS === "web" ? () => {} : require("./src/features/localEventAlerts/useNativePush").useNativePush;
 import NativeAccountLinks from "./src/screens/NativeAccountLinks";
 import { startupLinkingFor } from "./src/lib/nativeStartupLinks";
 const nativeNewsLinkFrame = Platform.OS === "web" ? null : require("./src/domain/nativeNewsLink.mjs").nativeNewsLinkFrame;
@@ -282,6 +283,8 @@ function Root() {
   } = useStore();
   useFeedImpressionSession(session);
   const appActive = useAppActive();
+  useNativePush({ accountId: authReady ? session?.id || null : null, authEpoch: chatAuthEpoch,
+    onOpenEvent: event => openShow(event), onActivity: refreshNotifications });
   const staff = isStaff(session?.role);
   const canViewDiagnostics = isMod(session?.role);
   const feed = visibleFeed(staff);

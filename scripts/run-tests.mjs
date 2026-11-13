@@ -32,6 +32,10 @@ delete testEnvironment.RENDER;
 // opt into explicit test values and stub their own transport.
 delete testEnvironment.RESEND_API_KEY;
 delete testEnvironment.MAIL_FROM;
+// Native push fixtures supply their own mock transport and explicit test env.
+delete testEnvironment.EXPO_PUSH_ACCESS_TOKEN;
+delete testEnvironment.LOCAL_EVENT_PUSH_ENABLED;
+delete testEnvironment.LOCAL_EVENT_ALERTS_ENABLED;
 const result = spawnSync(process.execPath, ["--test", ...testArgs], {
   stdio: "inherit",
   // Render's build command deliberately carries production bootstrap approval

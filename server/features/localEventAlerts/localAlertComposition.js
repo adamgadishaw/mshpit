@@ -5,7 +5,8 @@ import { creatorCalendarNoticeFor } from "./localAlertAudience.js";
 import { createLocalAlertService } from "./localAlertService.js";
 import { createLocalPushDevices } from "./localPushDevices.js";
 import { localAlertRoutes } from "./localAlertRoutes.js";
-import { createLocalAlertRuntime, startLocalAlertRuntime } from "./localAlertRuntime.js";
+import { createLocalAlertRuntime } from "./localAlertRuntime.js";
+import { startLocalAlertDelivery } from "./localPushRuntime.js";
 
 export function createLocalAlertComposition({ db, requireUser, resolveArtistIdentity, now = Date.now }) {
   const repository = createPublicDocumentRepository(db);
@@ -22,7 +23,7 @@ export function createLocalAlertComposition({ db, requireUser, resolveArtistIden
   return { alerts, runtime,
     routes: localAlertRoutes({ requireUser, alerts, devices,
       sessionHashForRequest: ctx => typeof ctx.token === "string" ? createHash("sha256").update(ctx.token).digest("hex") : null }),
-    start: options => startLocalAlertRuntime(runtime, options),
+    start: options => startLocalAlertDelivery({ runtime, db, alerts, now, ...options }),
   };
 }
 

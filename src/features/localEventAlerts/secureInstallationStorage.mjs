@@ -15,13 +15,14 @@ export function createSecureInstallationStorage({ secureStore, createIdentity })
     pending = result.then(() => {}, error => { void error; });
     return result;
   };
-  const read = async () => {
+  const read = async (create = true) => {
     const raw = await secureStore.getItemAsync(STORAGE_KEY);
     if (raw != null) {
       const value = JSON.parse(raw);
       if (!valid(value)) throw new TypeError("Device notification identity is invalid.");
       return value;
     }
+    if (!create) return null;
     const value = await createIdentity();
     if (!valid(value)) throw new TypeError("Secure device identity could not be created.");
     const record = { installationId: value.installationId, secret: value.secret, binding: null };
@@ -29,6 +30,7 @@ export function createSecureInstallationStorage({ secureStore, createIdentity })
     return record;
   };
   return {
+    readExisting: () => serialize(() => read(false)),
     getOrCreate: () => serialize(read),
     saveBinding: (binding, context) => serialize(async () => {
       context?.assertCurrent();

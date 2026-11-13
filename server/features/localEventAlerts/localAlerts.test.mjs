@@ -11,6 +11,7 @@ import { createLocalAlertAudience, creatorCalendarNoticeFor } from "./localAlert
 import { createLocalPushDevices } from "./localPushDevices.js";
 import { createLocalPushDelivery } from "./localPushDelivery.js";
 import { createExpoPushTransport } from "./expoPushTransport.js";
+import { localPushConfigured, startLocalAlertDelivery } from "./localPushRuntime.js";
 import { localAlertRoutes } from "./localAlertRoutes.js";
 import { exportLocalAlerts, eraseLocalAlerts } from "./localAlertPrivacy.js";
 import { resolveAlertHomeCity, resolveAlertEventCity, exactSaleTimestamp, ticketmasterPublicSale, DEFAULT_LOCAL_ALERT_PREFERENCES } from "./localAlertPolicy.js";
@@ -63,6 +64,37 @@ function fixture(t) {
   };
   return { db, alerts, devices, now, account, event, plan, sale, enable, authorize, hidden, restartAlerts, advance: delta => { at += delta; } };
 }
+
+test("waiting sale evidence yields scheduler pages to ready global dates without duplicate delivery", t => {
+  const f = fixture(t); f.account();
+  for (let i = 0; i < 105; i++) {
+    const id = `tm_wait${i}`; f.event(id, { event_status: "offsale" }); f.sale(START + 60000, id); f.plan(id, { baseline: true });
+  }
+  f.advance(60001);
+  f.event("tm_ready", { venue_city: "Vancouver", venue_region: "BC", place: "Vancouver, Canada" }); f.plan("tm_ready");
+  const first = f.alerts.deliverDue({ limit: 100 }); assert.equal(first.awaitingEvidence, 100); assert.equal(first.delivered, 0);
+  const second = f.alerts.deliverDue({ limit: 100 }); assert.equal(second.delivered, 1); assert.equal(second.awaitingEvidence, 5);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications WHERE type='artist_tour_date'").get().n, 1);
+  assert.equal(f.alerts.deliverDue().delivered, 0);
+  f.advance(60000);
+  f.db.prepare("UPDATE tour_dates SET event_status='onsale' WHERE id='tm_wait0'").run();
+  f.sale(START + 60000, "tm_wait0"); f.plan("tm_wait0", { baseline: true });
+  for (let i = 0; i < 3; i++) f.alerts.deliverDue();
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications WHERE type='local_ticket_sale'").get().n, 1);
+});
+
+test("native delivery scheduler is gated, single flight, outside SQLite and drained on stop", async t => {
+  const f = fixture(t); f.account(); f.event(); f.enable(); f.plan();
+  let sends = 0;
+  const env = { LOCAL_EVENT_ALERTS_ENABLED: "1", LOCAL_EVENT_PUSH_ENABLED: "1", EXPO_PUSH_ACCESS_TOKEN: "mock-only" };
+  const transport = { send: async () => { assert.equal(f.db.isTransaction, false); sends++; return { status: "accepted", ticketId: "mock-ticket" }; }, receipt: async () => ({ status: "pending" }) };
+  const options = { db: f.db, alerts: f.alerts, now: f.now, runtime: { tick: () => f.alerts.deliverDue() }, transport,
+    coordinate: task => task(), setTimer: () => 1, clearTimer: () => {}, setRepeatingTimer: () => 2, clearRepeatingTimer: () => {} };
+  assert.equal(localPushConfigured({ ...env, EXPO_PUSH_ACCESS_TOKEN: "" }), false);
+  const disabled = startLocalAlertDelivery({ ...options, env: {} }); await disabled.trigger(); await disabled.stop(); assert.equal(sends, 0);
+  const job = startLocalAlertDelivery({ ...options, env }); assert.equal(sends, 0);
+  await Promise.all([job.trigger(), job.trigger()]); assert.equal(sends, 1); await job.stop(); await job.trigger(); assert.equal(sends, 1);
+});
 
 test("home-city identity rejects ambiguous and unstructured places", () => {
   assert.equal(resolveAlertHomeCity(" Toronto, Ontario, Canada ").path, "/city/ca/toronto");

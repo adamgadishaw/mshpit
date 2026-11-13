@@ -1,5 +1,6 @@
 import { ApiError } from "../../errors.js";
 import { resolveAlertHomeCity } from "./localAlertPolicy.js";
+import { localPushConfigured } from "./localPushRuntime.js";
 
 export function localAlertRoutes({ requireUser, alerts, devices, sessionHashForRequest }) {
   const account = ctx => { ctx.setHeader?.("Cache-Control", "private, no-store"); return requireUser(ctx); };
@@ -12,7 +13,7 @@ export function localAlertRoutes({ requireUser, alerts, devices, sessionHashForR
   return {
     "GET /api/me/local-alerts/preferences": ctx => {
       const member = account(ctx);
-      return { preferences: alerts.preferences(member.id), homeCity: resolveAlertHomeCity(member.home_city), deliveryEnabled: process.env.LOCAL_EVENT_ALERTS_ENABLED === "1" };
+      return { preferences: alerts.preferences(member.id), homeCity: resolveAlertHomeCity(member.home_city), deliveryEnabled: process.env.LOCAL_EVENT_ALERTS_ENABLED === "1", pushDeliveryEnabled: localPushConfigured() };
     },
     "PUT /api/me/local-alerts/preferences": ctx => {
       const member = account(ctx);

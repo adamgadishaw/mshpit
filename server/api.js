@@ -4791,7 +4791,7 @@ const projectManagedUser = createRelationshipManagementProjection({
 });
 
 export const localAlerts = createLocalAlertComposition({ db, requireUser, resolveArtistIdentity: fanClubArtistIdentity, now });
-export const startLocalAlerts = () => localAlerts.start({ enabled: process.env.LOCAL_EVENT_ALERTS_ENABLED === "1" });
+export const startLocalAlerts = () => localAlerts.start();
 
 const CALENDAR_PUBLISH = Symbol("calendar-publish");
 export const creatorCalendarService = createCreatorCalendarService({ database: db, requireUser, uid, now,

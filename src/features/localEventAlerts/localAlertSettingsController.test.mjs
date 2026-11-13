@@ -4,6 +4,22 @@ import { createLocalAlertSettingsController } from "./localAlertSettingsControll
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const toAppError = value => Object.assign(new Error(value.message), { name: "AppError", code: "PIT-NET-001", retryable: true });
 const data = { preferences: { datesInbox: true, salesInbox: true, datesPush: false, salesPush: false }, homeCity: { city: "Toronto" } };
+test("render-bound settings controls cannot write after A to B, epoch change, stop or A return", async () => {
+  const calls = [];
+  const controller = createLocalAlertSettingsController({ toAppError, api: { preferences: async () => data,
+    setPreferences: async value => { calls.push(value); return data; } } });
+  controller.setAccount("A", 1);
+  const a = controller.commands(); await a.load();
+  controller.setAccount("B", 2); assert.equal((await a.save(data.preferences)).ok, false);
+  const b = controller.commands(); controller.setAccount("B", 3);
+  assert.equal((await b.save(data.preferences)).ok, false);
+  const beforeStop = controller.commands(); controller.stop();
+  assert.equal((await beforeStop.save(data.preferences)).ok, false);
+  controller.setAccount("A", 4); assert.equal((await a.save(data.preferences)).ok, false);
+  assert.equal(calls.length, 0);
+  assert.equal((await controller.commands().save(data.preferences)).ok, true);
+  assert.equal(calls.length, 1); assert.equal(calls[0].accountId, "A");
+});
 test("A to B to A and auth epoch changes synchronously hide old preferences and reject late reads", async () => {
   const pending = deferred(); let signal;
   const controller = createLocalAlertSettingsController({ toAppError, api: { preferences: options => { signal = options.signal; return pending.promise; } } });

@@ -39,6 +39,12 @@ test("no permission prompt at construction; Android channel precedes explicit en
   assert.equal(f.calls.filter(call => Array.isArray(call) && call[0] === "register").length, 1);
 });
 
+test("iOS provisional permission registers quietly without a second prompt", async () => {
+  const f = fixture({ notifications: { IosAuthorizationStatus: { PROVISIONAL: 3 }, getPermissionsAsync: async () => ({ status: "undetermined", ios: { status: 3 } }) } });
+  assert.equal((await f.controller.enableDevice()).value.enabled, true);
+  assert.equal(f.calls.includes("request-permission"), false);
+});
+
 test("denied OS permission cannot register and revokes an old binding", async () => {
   const f = fixture({ notifications: { getPermissionsAsync: async () => ({ status: "denied" }), requestPermissionsAsync: async () => ({ status: "denied" }) } });
   f.installation.binding = { accountId: "A", installationId: f.installation.installationId, generation: 1 };

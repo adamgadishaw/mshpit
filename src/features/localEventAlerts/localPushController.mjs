@@ -23,7 +23,9 @@ export function createLocalPushController({ api, notifications, installationStor
     const generation = epoch, signal = abort.signal;
     return { accountId, signal, scope, assertCurrent() { signal.throwIfAborted(); if (epoch !== generation) throw new DOMException("Account changed", "AbortError"); } };
   };
-  const capable = () => ["ios", "android"].includes(platform) && typeof projectId === "string" && /^[0-9a-f-]{36}$/i.test(projectId) && !!notifications;
+  const capable = () => ["ios", "android"].includes(platform) && typeof projectId === "string" && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(projectId) && !!notifications;
+  const permitted = value => value?.granted === true || value?.status === "granted"
+    || (platform === "ios" && value?.ios?.status === notifications?.IosAuthorizationStatus?.PROVISIONAL && value?.ios?.status != null);
 
   async function enable({ requestPermission = true } = {}) {
     const context = captured();
@@ -38,8 +40,8 @@ export function createLocalPushController({ api, notifications, installationStor
       if (platform === "android") await notifications.setNotificationChannelAsync("local-shows", { name: "Show updates", importance: notifications.AndroidImportance.DEFAULT });
       context.assertCurrent();
       let permission = await notifications.getPermissionsAsync(); context.assertCurrent();
-      if (permission.status !== "granted" && requestPermission) { permission = await notifications.requestPermissionsAsync(); context.assertCurrent(); }
-      if (permission.status !== "granted") {
+      if (!permitted(permission) && requestPermission) { permission = await notifications.requestPermissionsAsync({ ios: { allowAlert: true, allowBadge: false, allowSound: false } }); context.assertCurrent(); }
+      if (!permitted(permission)) {
         const installation = await installationStorage.getOrCreate(); context.assertCurrent();
         const proof = { installationId: installation.installationId, secret: installation.secret };
         const binding = await api.binding({ ...context, body: proof }); context.assertCurrent();
@@ -123,7 +125,7 @@ export function createLocalPushController({ api, notifications, installationStor
       lastResponse = request.identifier;
       // Navigate by canonical tour-date identity, never provider payload URLs
       // or concert-archive keys, and never add attendance/calendar intent.
-      onOpenEvent(target.eventId);
+      onOpenEvent(target.eventId, target.event);
       return commandSuccess({ opened: true });
     } catch (error) {
       if (isLoadCancellation(error, context.signal)) throw error;

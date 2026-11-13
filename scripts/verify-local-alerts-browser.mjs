@@ -69,7 +69,7 @@ try {
       await page.getByText("Settings", { exact: true }).click();
       const dates = page.getByRole("switch", { name: /Tour dates in Activity/ });
       await dates.waitFor(); assert.equal(await dates.isChecked(), true);
-      await page.getByText("Device notifications are not available in this build. Activity alerts work separately.", { exact: true }).waitFor();
+      await page.getByText("Phone and tablet notifications are managed in the mobile app. Activity alerts work separately.", { exact: true }).waitFor();
       failedWrite = true; await dates.click(); await page.getByRole("button", { name: /Try notification settings again/ }).waitFor();
       assert.equal(await dates.isChecked(), true);
       failedWrite = false; await page.getByRole("button", { name: /Try notification settings again/ }).click();

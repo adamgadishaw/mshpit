@@ -134,6 +134,13 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
       db.prepare(`INSERT INTO local_event_sales(event_id,provider_event_id,starts_at,ends_at,observed_at) VALUES (?,?,?,?,?)
         ON CONFLICT(event_id) DO UPDATE SET provider_event_id=excluded.provider_event_id,starts_at=excluded.starts_at,
           ends_at=excluded.ends_at,observed_at=excluded.observed_at`).run(eventId, row.provider_event_id, sale?.startsAt ?? null, sale?.endsAt ?? null, observedAt);
+      if (sale && now() - observedAt <= SALE_FRESHNESS_MS) {
+        // Wake a bounded waiting page when trusted evidence arrives. Remaining
+        // recipients retain their at-most-one-minute retry instead of a scan.
+        db.prepare(`UPDATE local_event_alerts SET due_at=? WHERE id IN (SELECT id FROM local_event_alerts
+          WHERE event_id=? AND kind='sale' AND trigger_key=? AND state='queued' AND delivery_locked=0 AND due_at>?
+          ORDER BY id LIMIT 100)`).run(Math.max(now(), sale.startsAt), eventId, String(sale.startsAt), now());
+      }
       if (db.prepare("SELECT 1 FROM local_event_observations WHERE event_id=?").get(eventId)) {
         const reconciled = reconcileEvent(eventId), at = now();
         // A metadata repair may have completed its fan-out while timing was
@@ -188,7 +195,12 @@ export function createLocalAlertService({ db, readPublicEvent, canNotifyArtist, 
         const inbox = alert.kind === "date" ? pref.datesInbox : pref.salesInbox;
         const push = alert.kind === "date" ? pref.datesPush : pref.salesPush;
         if (alert.expires_at <= at || !stillValid(alert, current, at) || (!inbox && !push)) { cancelAlert(alert); cancelled++; continue; }
-        if (alert.kind === "sale" && (!freshSale(current, at) || !alertSaleIsOpen(current.event, current.sale, at))) { awaitingEvidence++; continue; }
+        if (alert.kind === "sale" && (!freshSale(current, at) || !alertSaleIsOpen(current.event, current.sale, at))) {
+          // due_at is the next attempt, not the immutable public-sale identity.
+          // Yield bounded pages to other ready rows while evidence refreshes.
+          db.prepare("UPDATE local_event_alerts SET due_at=? WHERE id=? AND state='queued'").run(Math.min(at + 60000, alert.expires_at), alert.id);
+          awaitingEvidence++; continue;
+        }
         let notificationId = null, ownsNotice = false;
         if (inbox) {
           const related = alert.kind === "date" ? findRelatedNotice(alert.account_id, current.event, at) : null;

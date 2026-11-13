@@ -30,5 +30,10 @@ export function createLocalAlertSettingsController({ api, toAppError, onChange =
     } finally { if (request === controller) request = null; }
   }
   return { setAccount, snapshot: () => state, load: () => run(), save: preferences => run(preferences),
+    commands: () => {
+      const owner = scope;
+      const scoped = body => owner === scope && accountId ? run(body) : Promise.resolve(commandFailure(toAppError(new Error("Notification settings request cancelled."))));
+      return { load: () => scoped(), save: preferences => scoped(preferences) };
+    },
     stop: () => { request?.abort(); request = null; scope = {}; } };
 }
