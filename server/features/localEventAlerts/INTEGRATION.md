@@ -1,0 +1,341 @@
+# Tour announcements and local ticket sales: isolated implementation
+
+Status: **not mounted; not launch complete**. These new modules and their synthetic
+tests are based on installed Build 12 commit
+`f37660aeba440b8112dc4c70a39a70ef80120bba`. Existing application files have not been
+changed. No production data, live device token, push delivery, credentials,
+deployment, phone installation, or remote Git publication was used.
+
+## Account transitions and bounded reconciliation after c678a501
+
+Before a signed-in account starts a credential-changing login/switch request,
+await `controller.prepareAccountChange()`. Continue only on `{ok:true}`. It aborts
+the previous enable locally, clears the controller projection, disables overlapping
+enables, reads the server generation, revokes it, and confirms the receipt before
+clearing the secure binding. On failure, keep the current auth identity and surface
+the error/retry. `cancelAccountChange()` permits new explicit enables if the switch
+is abandoned; it does not re-enable notifications. After confirmed auth adoption,
+call `setAccount(nextAccountId,authEpoch)` synchronously. That setter remains a
+projection reset, not a server-revocation claim. These methods are not yet mounted
+in the app's authentication coordinator.
+
+The existing linked-account switch already deletes its old session within its
+transaction; tests now exercise that actual route with notification registrations,
+including rollback. Logout also deletes the current session. Do not bypass the
+existing auth transition/retry mechanism or claim an offline sign-out has revoked
+remote delivery. Clear local identity immediately on sign-out and retain its durable
+pending server-revocation handling. The ordinary login route creates a new session
+without deleting the old full session, so the pre-transition preparation is needed
+when replacing an existing signed-in account via that route.
+
+`DELETE /api/me/local-alerts/devices` now requires `expectedGeneration` from the
+proof-authorized binding read and returns `{enabled:false,generation}`. A stale
+generation fails with 409; invalid proof or another active account's registration
+fails with 403. Retry reuses the original expected generation safely; a new command
+reads the current one. Schema and client must land together. Do not enable this
+protocol across mixed server versions whose older writers ignore the generation receipts.
+
+The eighth table, `local_push_installation_receipts`, persists the consumed generation
+even when no active registration exists. Its primary key is `installation_id`; it
+holds `secret_hash`, nullable `account_id`, `generation`, and nullable `revoked_at`.
+Registration and revocation advance it atomically with the active device row.
+Revoking a never-registered installation also advances the fence, so a late first
+registration cannot revive it. Repeated revocation with the same expected generation
+is idempotent; a fresh revocation against the current generation advances it again
+to fence an overlapping enable. Session deletion cannot reset consumed generations.
+
+This minimal installation security receipt is deliberately retained on account
+erasure: both the account link and revocation timestamp are cleared. It retains
+only installation ID, proof hash and generation, never a token or session hash.
+This prevents an older request from a different account on the same installation
+from reusing a consumed generation after deletion. Portable exports include only
+account-associated revocation timestamps. Backup/restore must include the eighth
+table; do not prune/reset its fences as ordinary notification history. Review this
+explicit retention behavior with the privacy/backup integration changes.
+
+`reconcileEvent(eventId,{baseline=false,limit=100})` now returns
+`{visible,changed?,processed,more}` and processes at most 500 alert rows per call.
+`local_event_observations.reconcile_cursor` and `reconcile_complete` persist progress.
+A new canonical fingerprint resets the cursor; cancelled rows count toward the
+page bound. Planning waits for reconciliation to finish. Migration initializes
+older observations for a scan. Each page and its owned-notice removal roll back
+together. Metadata-only refresh still preserves committed inbox/outbox records.
+
+Logical cancellation blocks sends/taps immediately, before cleanup completes.
+Per-alert push cancellation updates at most 20 rows. Preference or installation
+generation changes immediately cancel at most 100 rows; send authorization checks
+the latest policy regardless of physical cleanup. Drain
+`cancelPendingPushPage({limit:100})` (maximum 500) for remaining cancelled-alert,
+opt-out, expired-session or obsolete-generation outbox records. Interrupted-send
+recovery also obeys the dispatch batch limit. Device/session/account FK deletion
+still cascades dependent rows atomically and is not claimed to have a constant
+row bound. No production-volume performance claim is made.
+
+See [REMAINING_INTEGRATION.md](./REMAINING_INTEGRATION.md) for the concrete inbox,
+settings, scheduler, authentication and native composition work still required.
+
+## Unsent-push correction after 9bf544e
+
+`delivery_locked` records the atomic inbox/outbox commit, not an attempted or
+successful device send. The original outbox is the per-device delivery receipt:
+`ready` with zero attempts has never been dispatched; `sending`, `accepted` and
+`unknown` must not be reset to ready because a show was edited. A ready row after
+an explicit rate-limit rejection retains its existing bounded retry policy.
+
+The additive nullable `local_event_alerts.delivery_fingerprint` records the same
+event context as the full fingerprint, excluding only the display venue name and
+ticket URL. For an already committed alert, changes to only those fields retain
+the existing inbox notice and outbox rows in place. Reconciliation updates the
+full fingerprint without changing alert/notice/outbox IDs, timestamps, attempts,
+leases, ticket receipts, retry times, or the permanent lock. This lets a push-only
+recipient's never-attempted ready row send once while other devices' accepted or
+uncertain rows remain untouched. It never creates replacement deliveries or
+enrols newly registered devices in an already committed alert.
+
+The read-only target guard uses the same comparison if dispatch runs before the
+reconciliation hook. Current public visibility, account/follow permissions,
+home city for sales, channel preference, installation generation, sale timing,
+freshness, onsale status and expiry are still checked at their existing boundaries.
+Artist, event dates, city, owner, creator revision, status and sale evidence remain
+part of the comparison; those changes are not treated as display-only edits.
+Material invalidation still cancels pending delivery. Accepted remote pushes
+cannot be recalled, and uncertain sends are not retried automatically.
+
+Run `ensureLocalAlertSchema` before the updated service. Existing rows acquire
+the additional snapshot only while their full stored fingerprint still matches
+the current canonical event, or at their first delivery commit. If an old committed
+row was already edited before that snapshot existed, the service cannot prove
+the edit was harmless and keeps the prior fail-closed cancellation behavior.
+Previously cancelled rows are never revived by this correction. There has been
+no production deployment of these isolated modules. Backup/restore must include
+the new column; portable account exports still omit internal fingerprints, and
+existing account/event cascades and privacy erasure cover it.
+
+## Reminder lifecycle correction after e2f457d1
+
+The schema now includes `local_event_alerts.delivery_locked` (0/1). Delivery sets
+this permanent receipt in the same transaction as the inbox row and push outbox.
+Cancellation and removal of an owned inbox notice retain it. Database triggers
+also lock a legacy writer's transition through `delivered` and reject clearing
+an established lock. Run `ensureLocalAlertSchema` before using the updated
+service; schema creation and upgrade are atomic and nested-transaction safe.
+
+Both event and account sale planners upsert the existing stable alert ID for the
+same account/event/sale timestamp only while delivery remains unlocked. Thus a
+URL, venue or other fingerprint edit can repair an undelivered reminder instead
+of leaving it permanently cancelled. Every repair still requires current public
+visibility, artist eligibility, home city, channel preferences, fresh trusted
+timing and an unexpired delivery window. Once delivery commits, later edits
+cannot repeat it, including accepted, in-flight or uncertain device delivery.
+If a repair scan completed while timing was stale, a fresh trusted observation
+reopens that completed scan even when the public-sale timestamp is unchanged.
+It does not reset an in-progress recipient cursor.
+
+For an older schema, already delivered/cancelled rows and any row with surviving
+notification/outbox evidence are conservatively locked. Older cancelled rows
+lost the information needed to prove no inbox delivery occurred; migration does
+not guess that they are safe to replay. Previously queued rows without delivery
+evidence remain repairable. There is no production rollout of the old feature.
+
+`offsale` no longer hides an otherwise public upcoming concert or prevents
+planning from a reliable future `sales.public.startDateTime`. At delivery and
+before device dispatch, a sale notice additionally requires current `onsale`
+status. An offsale/unknown status waits within the existing two-hour window and
+then expires; a timestamp alone cannot assert tickets are currently on sale.
+Global date announcements remain independent of home city and sale status.
+`awaitingEvidence` includes waiting for this current sale-status confirmation.
+
+Ticketmaster documents event status separately from public-sale start/end and
+TBD information: https://developer.ticketmaster.com/products-and-docs/apis/discovery-api/v2/
+
+Still outside these corrections: app/server mounting, generic-news deduplication,
+native capability/configuration and account-switch revocation composition.
+Per-event reconciliation is now bounded as described above. No live transport was used.
+
+Shared-file edits were held because coordination with integration task
+`01a192c2-1da6-7237-8909-ab10556a40d5` was required before making them. The tool's
+automatic approval review rejected that message: explicit human authorization
+to message the separate task was missing. The message did not execute. A specific
+permission question is pending; no alternate channel was used to bypass it.
+
+## Implemented independently
+
+- An additive eight-table schema, authenticated route factory, canonical-policy
+  audience adapter, durable account/event fan-out cursors, inbox delivery and
+  push outbox. None starts work on import.
+- Tour-date alerts for a current followed/favourited artist are global: a remote,
+  unknown or missing home city does not mute them. Home-city filtering applies
+  to ticket-sale alerts only, preserving Adam's clarified distinction. Existing
+  artist-wide creator and generic tour announcements remain unchanged. Initial
+  catalogue scans are quiet. Copy says “New show date listed” because provider
+  first-seen time is not an announcement timestamp.
+- Ticketmaster public-sale evidence, explicit offsets and valid dates, no
+  presale/doors/status-derived times. Unknown/TBD, changed, removed, stale or
+  expired evidence stops delivery. Source/event association is rechecked.
+- Account changes queue a bounded scan of future sales without replaying old
+  date announcements. Follow/home-city hooks still require mounting.
+- Separate global tour-date/local ticket-sale inbox and push preferences. Inbox defaults on; device push
+  defaults off. Existing artist-level opt-out, favourites/fan clubs, blocks,
+  mutes and account visibility are evaluated through canonical identity.
+- Existing creator-calendar inbox notices are reused by exact post/event
+  association. No second Activity system is introduced.
+- Push installation proof, unique token, session FK, compare-and-set generation,
+  account transfer and revocation. Logout/session deletion cascades active device
+  registrations and queued deliveries; installation generation receipts survive.
+  Secrets/tokens are not exported.
+- A default-disabled, bounded Expo dispatcher, explicit receipt polling,
+  single-flight shutdown, database send leases, bounded rate-limit retries and
+  no blind resend after an ambiguous timeout/crash. Two worker instances cannot
+  claim the same ready record.
+- A native controller and secure-storage adapter with explicit OS permission
+  request, Android channel setup, synchronous account/auth-epoch reset, retry,
+  cancellation, registration confirmation and account-bound canonical event taps.
+  These take native SDK dependencies by injection; no new native package was
+  installed through the shared node_modules junction.
+
+## Exact server composition contract
+
+1. `server/db.js`: call `ensureLocalAlertSchema(db)` in the migration transaction
+   before constructing the service or route factory. Include every entry of
+   `LOCAL_ALERT_TABLES` in the existing schema/backup/restore coverage checks.
+   The tables are `local_alert_preferences`, `local_alert_account_scans`,
+   `local_event_sales`, `local_event_observations`, `local_event_alerts`,
+   `local_push_installations`, `local_push_outbox`, and
+   `local_push_installation_receipts`. Foreign keys must be on; schema setup rejects
+   connections without enforcement.
+2. `server/api.js` composition only: construct `createLocalAlertAudience` with
+   the existing `fanClubArtistIdentity` function. Its actual `artist` field is
+   a string. The event's public slug disambiguates durable artist keys before
+   resolving legacy favourite/fan-club strings.
+3. Construct `createLocalAlertService` with:
+   `readPublicEvent: (id,at) => publicDocumentRepository.readEvent({id,at})?.event || null`,
+   the audience function, and `findRelatedNotice: (accountId,event) =>
+   creatorCalendarNoticeFor(db,accountId,event)`. Do not use an unrestricted
+   `tour_dates` read or a cached public event snapshot in production.
+4. Mount `localAlertRoutes`. Commands require `ctx.assertCurrentSession` from
+   the existing authorized-request boundary. `sessionHashForRequest(ctx)` must
+   resolve the current **server-side full-session hash**; never accept it from
+   a request body or expose it in a response. Newsroom-scoped sessions do not
+   authorize device registration. All GET routes are read-only and no-store.
+5. Trusted Ticketmaster ingestion in `server/tourdates.js`: retain the raw
+   event's `sales.public` evidence. After the existing canonical provider row
+   write, call `recordTicketmasterSale(canonicalId,providerEvent,observedAt)`
+   inside that transaction, followed by `reconcileEvent`. Never create a public
+   client sale-time writer. Existing imported rows are baseline observations;
+   genuinely new canonical rows can create date alerts. Missing public-sale
+   evidence is a tombstone, not permission to retain an old sale time. Older
+   observedAt responses cannot replace newer evidence.
+6. Creator publication: call `reconcileEvent` only after real publication inside
+   the existing calendar/post transaction. Scheduled records remain invisible.
+   Edits/cancellation also reconcile; never grant event/venue owners permission
+   to overwrite provider dates. The prior calendar package remains unchanged.
+7. Home-city, favourite, fan-club and per-artist notification preference commands:
+   call `requestAccountScan(accountId)` in their existing transaction. The service's
+   own notification preference write already queues this scan.
+8. Existing bounded background scheduler: drain observations with
+   `reconcile_complete=0` via `reconcileEvent`, then finished-reconciliation
+   observations via `planEventPage`, `local_alert_account_scans` via
+   `planAccountSalesPage`, `cancelPendingPushPage`, and `deliverDue`.
+   Bound the outer event/account list as well as each page.
+   Persist rollout-baseline and periodic catalogue cursors using the existing
+   scheduler contract. Reconcile authoritative event removals/visibility changes.
+   This scheduler adapter is **not yet implemented**.
+9. Only after device capability, credentials and environment are verified,
+   explicitly construct `createLocalPushDelivery` with `enabled:true` and
+   `createExpoPushTransport({fetchImpl,...})`. Invoke bounded `run()` ticks and
+   await `stop()` before database shutdown. It is disabled by default.
+10. Export/delete: call `exportLocalAlerts` and `eraseLocalAlerts` in the existing
+    privacy transactions. Account deletion also cascades through FKs. Backup is
+    server-private: it necessarily contains delivery tokens/session hashes and
+    must retain the baseline's access/encryption controls. Restoration must keep
+    push disabled until environment/device eligibility has been reviewed.
+
+## Inbox and generic-news integration still required
+
+`deliverDue` writes existing `notifications` rows with type `artist_tour_date` or
+`local_ticket_sale`; reused creator notices retain their existing type. Join the
+owning `local_event_alerts` row to add alert/event target metadata. Extend
+`server/features/notifications/notificationRoutes.js` so current public event,
+follow and author visibility (plus home city for sales only) apply to rows, unread counts and scoped
+acknowledgements **before LIMIT**. Do not filter only the displayed page after
+pagination; that would leak counts and create empty pages. The current isolated
+`readAlertTarget` provides a fresh tap-time guard but is not a replacement for
+this inbox query policy. This shared SQL/read integration is not implemented.
+
+The old global artist-update scanner can also emit a generic `artist_update`
+for imported shows. Preserve these global announcements. It needs an exact
+event-aware recipient exclusion/association
+in `server/features/artistUpdates/artistUpdatesService.js`. Do not mount both paths
+unchanged and claim all generic/new date duplicates are solved. Never suppress
+an artist-wide tour announcement merely because some dates are outside home city.
+Creator-publication
+deduplication is implemented; generic-news suppression is not yet wired.
+
+## Native and UI composition still required
+
+- Keep new UI lazy. The frozen combined application had very little startup
+  budget; new unused modules do not measure the eventual wired bundle cost.
+- Add settings controls, using mshpit's existing layout/components: tour dates
+  (all locations) and ticket sales (home city), each with inbox and device channels. OS permission is a
+  separate explicit “Enable device notifications” action. Ambiguous/missing
+  home city should point to the existing location picker for ticket-sale alerts,
+  without blocking global tour announcements or guessing.
+- Add `artist_tour_date`/`local_ticket_sale` to Activity's updates filter and display
+  their concrete artist/show data. Extend the existing deep-link/navigation
+  contract to a canonical tour-date ID. No archive key, arbitrary push URL,
+  attendance, or ticket-purchase claim may be substituted.
+- Add the SDK 57-compatible `expo-notifications` and secure native storage
+  dependencies, config plugin, real EAS project ID and native entitlements in
+  the integration branch. Do not install through this checkout's node_modules
+  junction. Supply a CSPRNG identity generator and SecureStore implementation
+  to `createSecureInstallationStorage`. No insecure persistence fallback exists.
+- Mount one `createLocalPushController` at the account lifecycle boundary. Feed
+  account ID + auth epoch synchronously. Its enable command is single-flight;
+  disable supersedes an interrupted enable. Handle command results in existing
+  app feedback. Register response listeners and cold-start last response through
+  `openResponse` after account recovery; use the canonical event navigation.
+- Refresh an already enabled device on foreground/token rotation using
+  `enableDevice({requestPermission:false})`. Do not automatically opt a new
+  account into push or prompt at startup. Unregister before an explicit device
+  opt-out; logout also removes its server session. Surface offline revocation
+  failures and rely on server logout/session revocation, not a falsely confirmed
+  local-only opt-out.
+
+These UI/native composition, listener, startup and settings changes are **not
+implemented or visually/device tested** in this package.
+
+## Capability and delivery limits
+
+- Tracked Build 12 has no expo-notifications dependency/plugin or EAS project ID.
+  A new native binary is required; JavaScript alone cannot add that capability.
+  Remote APNs/FCM credentials and project configuration were not inspected or
+  changed, so their readiness is unknown. App config declares supportsTablet
+  false; tablet support needs an explicit product/native-build review. This does
+  not mean iPad compatibility-mode notification delivery is inherently impossible.
+- No real push, receipt, permission dialog, phone/tablet installation or remote
+  credential call was made. All delivery tests use explicit mock transports.
+- Expo send tickets and receipt success are provider acceptance evidence, not
+  proof the person saw the alert. Accepted pushes cannot be recalled when an
+  event changes. The outbox stops pending work and the tap guard rejects stale
+  targets; lock-screen text intentionally contains no home-city/follow/account
+  detail. Ambiguous delivery is terminal unknown, avoiding automatic duplicates
+  at the cost of a potentially missed push. Inbox delivery remains transactional.
+- Ticketmaster is the only retained sale-evidence source. Artist uploads and
+  other providers cannot invent sale times. Evidence must have been refreshed
+  within 24 hours when a sale is delivered, with a two-hour delivery window.
+  A missing refresh can therefore suppress a reminder rather than assert a stale
+  sale. Date announcements have a 24-hour delivery window.
+- Sale city matching is exact to the existing curated city identity. Ambiguous bare
+  names and unknown free text are ineligible for sale alerts; this is not metropolitan-radius
+  matching. Canonical/provider duplicate event merging remains the catalogue's
+  responsibility; delivery deduplication keys use its stable event ID.
+- Fan-out is bounded per page but has not been load-tested against production
+  account volumes. The audience resolver intentionally rechecks identity and
+  permissions; no performance claim is inherited from earlier baseline tests.
+
+## Primary references inspected
+
+- https://docs.expo.dev/versions/v57.0.0/
+- https://docs.expo.dev/versions/v57.0.0/sdk/notifications/
+- https://docs.expo.dev/push-notifications/sending-notifications/
+- https://developer.ticketmaster.com/products-and-docs/apis/discovery-api/v2/

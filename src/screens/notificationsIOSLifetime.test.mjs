@@ -57,6 +57,41 @@ const fetchNode = parse(screenSource, { sourceType: "module", plugins: ["jsx"] }
 const screenFetch = api => new Function("api", `return (${screenSource.slice(fetchNode.start, fetchNode.end)});`)(api);
 const row = (id, type = "comment", extra = {}) => ({ id, type, actorId: `actor-${id}`, actorName: `Actor ${id}`, postId: id, ts: 1, ...extra });
 
+for (const platform of ["ios", "web"]) {
+  test(`${platform} show-alert taps use authenticated canonical event targets and supersede post lookups`, async () => {
+    const alert = row("tour", "artist_tour_date", { alertId: "alert-tour", artist: "Fixture Artist", text: "New show date." });
+    const f = fixture({ platform, initialRows: [row("one"), alert] });
+    f.render(); f.press("one");
+    const postRequest = f.requests.at(-1);
+    f.act(f.button("Fixture Artist: New show date."));
+    assert.equal(postRequest.options.signal.aborted, true);
+    const request = f.requests.at(-1);
+    assert.equal(request.path, "/api/me/local-alerts/alert-tour/target");
+    assert.equal(request.options.expectedAccountId, "A");
+    request.resolve({ target: { event: { id: "tm_canonical", performanceEvent: true } } });
+    await f.settle();
+    assert.deepEqual(f.navigations, [{ kind: "Event", value: { id: "tm_canonical", performanceEvent: true } }]);
+    postRequest.resolve({ post: { id: "one" } }); await f.settle();
+    assert.equal(f.navigations.length, 1); f.close();
+  });
+  for (const change of ["account", "epoch", "round-trip", "back", "unmount"]) {
+    test(`${platform} pending show-alert navigation is fenced by ${change}`, async () => {
+      const alert = row("sale", "local_ticket_sale", { alertId: "alert-sale", artist: "Fixture Artist", text: "Tickets are on sale." });
+      const f = fixture({ platform, initialRows: [alert] }); f.render();
+      f.act(f.button("Fixture Artist: Tickets are on sale."));
+      const request = f.requests.at(-1);
+      if (change === "account") f.scope("B", 2);
+      if (change === "epoch") f.scope("A", 2);
+      if (change === "round-trip") { f.scope("B", 2); f.scope("A", 3); }
+      if (change === "back") f.act(f.back);
+      if (change === "unmount") f.unmountLayout();
+      request.resolve({ target: { event: { id: "tm_late", performanceEvent: true } } }); await f.settle();
+      assert.equal(f.navigations.filter(value => value.kind === "Event").length, 0);
+      f.close();
+    });
+  }
+}
+
 // Actual NotificationsScreen JSX/handlers + React lifecycle + iOS destination
 // hook and domain owners. Store/API/native boundaries are entirely synthetic:
 // all reads and explicit acknowledgement commands are mocked.
@@ -75,6 +110,9 @@ function fixture({ platform = "ios", strict = false, mountLookup = false, routeC
     if (name === "react") return React;
     if (name === "react/jsx-runtime") return require(name);
     if (name === "react-native" || name === "../components/NativeTabScroll") return native;
+    if (name === "../features/localEventAlerts/useLocalAlertNavigation") return execute("../features/localEventAlerts/useLocalAlertNavigation.js", imports);
+    if (name === "../../domain/iosLinkedNavigation.mjs") return { createIOSLinkedNavigation };
+    if (name === "./localAlertService") return { fetchLocalAlertEvent: async ({ accountId, alertId, signal }) => (await api(`/api/me/local-alerts/${alertId}/target`, { expectedAccountId: accountId, signal })).target.event };
     if (name === "../hooks/useIOSActivityNavigation") return navigation;
     if (name === "../hooks/useScopedRefresh") return execute("../hooks/useScopedRefresh.js", imports);
     if (name === "../lib/api") return { api };
@@ -96,6 +134,7 @@ function fixture({ platform = "ios", strict = false, mountLookup = false, routeC
   const Screen = execute("./NotificationsScreen.jsx", imports).default;
   const callbacks = Object.fromEntries(["Close", "Profile", "Thread", "Post", "Plans", "Artist"].map(kind =>
     [kind === "Close" ? "onClose" : `onOpen${kind}`, value => navigations.push({ kind, value })]));
+  callbacks.onOpen = value => navigations.push({ kind: "Event", value });
   callbacks.isCurrentIOSRoute = routeCurrent;
   let hook;
   function HookHarness() {
@@ -336,6 +375,7 @@ function rootNavigationFixture() {
   const nav = { notifications: true }, stack = [{}, nav], queued = [];
   const stackRef = { current: stack }, navigationRef = { current: { stack, tab: "feed", landing: false } };
   const bindings = {
+    cancelPushNavigation: noop,
     Platform: { OS: "ios" }, web: false, nav, linkedNavigationScope: scope,
     linkedNavigationRef: { current: owner }, navigationRef, stackRef,
     newsLinkedClaimRef: { current: null }, newsOpenRef: { current: 0 }, setNewsStoryNotice: noop,

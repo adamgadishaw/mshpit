@@ -24,6 +24,8 @@ export const CRITICAL_BACKUP_TABLES = Object.freeze([
 // schema-presence protection without being treated as durable member content.
 const MEMBER_ROW_FLOOR_TABLES = new Set([
   ...CRITICAL_BACKUP_TABLES,
+  "local_alert_preferences", "local_event_sales", "local_event_observations", "local_event_alerts",
+  "local_push_installation_receipts", "local_alert_runtime", "local_alert_event_queue", "local_alert_account_scans",
   "creator_entities", "creator_follows", "event_account_claims", "venue_claims", "creator_calendar_publications",
   "likes", "comments", "follows", "fan_club_members", "fan_club_messages",
   "dms", "dm_reads", "ratings", "going", "artist_requests", "artist_posts",

@@ -32,7 +32,7 @@ const deferred = () => {
 
 // Execute the real Root initialization, lifecycle and handlers. The Store
 // boundary is deferred, never replaced with a second navigation implementation.
-function fixture({ platform = "ios", session = { id: "A" }, epoch = 1, initialStack = [{}, { artistName: "Origin" }], cached = {} } = {}) {
+function fixture({ platform = "ios", session = { id: "A" }, epoch = 1, initialStack = [{}, { artistName: "Origin" }], cached = {}, cancelPushNavigation = () => {} } = {}) {
   const ownerRef = { current: null }, guardRef = { current: null };
   const stackRef = { current: initialStack };
   const navigationRef = { current: { stack: initialStack, tab: "feed", landing: false } };
@@ -44,6 +44,7 @@ function fixture({ platform = "ios", session = { id: "A" }, epoch = 1, initialSt
     return job.promise;
   };
   const shared = {
+    cancelPushNavigation,
     Platform: { OS: platform }, web: false, createLinkedNavigationOwner: createIOSLinkedNavigation,
     useRef: () => ownerRef, useLayoutEffect: fn => layouts.push(fn),
     stackRef, navigationRef, composerCloseGuardRef: guardRef,
@@ -79,6 +80,18 @@ function fixture({ platform = "ios", session = { id: "A" }, epoch = 1, initialSt
     strictRemount() { cleanup(); cleanup = layouts[0](); },
   };
 }
+
+test("actual Root cancels pending push navigation and fences a deferred composer confirmation", () => {
+  let valid = true, cancelled = 0;
+  const f = fixture({ cancelPushNavigation: () => { valid = false; cancelled++; } }), prompts = [];
+  f.guardRef.current = prompt => prompts.push(prompt);
+  f.app.go({ openLog: { id: "old-push" } }, null, () => valid);
+  assert.equal(prompts.length, 1); assert.equal(f.navigations.length, 0);
+  f.guardRef.current = null; f.app.go({ settings: true });
+  assert.equal(cancelled, 1); prompts[0].proceed();
+  assert.equal(f.navigations.length, 1); assert.equal(f.stack.at(-1).settings, true);
+  valid = true; f.app.back(); assert.equal(valid, false); assert.equal(cancelled, 2);
+});
 
 for (const pair of [["post", "post"], ["profile", "profile"], ["post", "profile"], ["profile", "post"]]) {
   test(`Root latest linked intent wins inverted ${pair.join(" -> ")} completions`, async () => {

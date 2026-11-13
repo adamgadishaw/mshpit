@@ -14,6 +14,7 @@ import { visibleThemeChoices } from "../domain/themeChoices.mjs";
 import { isStaff } from "../domain/staffRoles.mjs";
 import AccountPasswordForm from "../features/signupOnboarding/AccountPasswordForm";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
+const LocalAlertSettings = lazyWithRetry(() => import("../features/localEventAlerts/LocalAlertSettings"), "LocalAlertSettings");
 const AuthScreen = lazyWithRetry(() => import("./AuthScreen"), "AuthScreen");
 import AccountSwitcher from "../features/signupOnboarding/AccountSwitcher";
 import CredentialForm, { CredentialInput, CredentialLabel, CredentialSubmit } from "../components/credential-form";
@@ -45,6 +46,7 @@ function Row({ icon, label, sub, onPress, danger, right, disabled = false, acces
       onPress={onPress}
       disabled={disabled}
       accessibilityRole={accessibilityRole || "button"}
+      aria-checked={accessibilityRole === "switch" ? accessibilityState?.checked : undefined}
       accessibilityState={{ ...accessibilityState, disabled }}
     >
       {body}
@@ -65,7 +67,7 @@ function Toggle({ value, busy = false }) {
 }
 
 export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout, onOpenCatalogEditor, onOpenNewsroom, onOpenModeration, onOpenAdministration, onRequestArtist, initialAccountAction = null }) {
-  const { session, authReady, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, updateProfile } = useStore();
+  const { session, chatAuthEpoch, authReady, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, updateProfile } = useStore();
   const blocked = session ? blockedUsers() : [];
   const muted = session ? mutedUsers() : [];
   const [exporting, setExporting] = useState(false);
@@ -214,6 +216,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
     <View style={styles.wrap}>
       <SheetHeader title="Settings" onClose={onClose} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} contentInsetAdjustmentBehavior="automatic">
+        {authReady && session && <LocalAlertSettings accountId={session.id} authEpoch={chatAuthEpoch} Row={Row} Toggle={Toggle} styles={styles} onManageProfile={onManageProfile} />}
         <Text style={styles.section}>APPEARANCE</Text>
         <Text style={styles.hint}>{session ? "Pick a theme. It's saved to your account and follows you to any device." : "Pick a theme. It applies across the whole app."}</Text>
         <View style={styles.swatchGrid} accessibilityRole="radiogroup" accessibilityLabel="Appearance theme">

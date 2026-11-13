@@ -20,6 +20,7 @@ import {
   ticketmasterMarketCoverageKey,
 } from "./ticketmasterMarketCoverage.js";
 import { PROVIDER_JSON_LIMITS, readBoundedJsonResponse } from "./boundedJsonResponse.js";
+import { persistLocalAlertSale } from "./features/localEventAlerts/localAlertIngestion.js";
 import { startPeriodicJob } from "./periodicJobScheduler.js";
 import { artistBillingIdentity, ticketmasterAttractionMatchesArtist, ticketmasterBilledArtists } from "./artistBillingIdentity.js";
 import { ensureProviderArtistRegistrationSchema, registerProviderArtistRows, ticketmasterPrimaryArtistIdentity } from "./providerArtistRegistration.js";
@@ -701,6 +702,7 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
       sold_out: 0,
       source: "ticketmaster",
       provider_event_id: optionalText(event.id),
+      public_sale_evidence: event.sales?.public || null,
       provider_artist_id: artistIdentity?.id || null,
       provider_artist_name: artistIdentity?.name || null,
       artist_identity_status: artistIdentity?.status || null,
@@ -1345,6 +1347,7 @@ export function upsertProviderTourDateRows(database, rows, { seenAt = Date.now()
       }
       if (identity.status && !identity.providerArtistId) identity.providerArtistId = previous?.provider_artist_id || null;
       changed += Number(statement.run(providerTourDateWrite(row, timestamp, identity)).changes) || 0;
+      persistLocalAlertSale(database, row, timestamp);
     });
     database.exec("RELEASE provider_tourdate_upsert");
     return changed;

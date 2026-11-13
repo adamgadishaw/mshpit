@@ -73,7 +73,7 @@ const commands = rootAST.body.body.flatMap(statement => statement.type === "Vari
 const rootCommands = new Function("Platform", "navigationRef", "stackRef", "linkedNavigationRef", "session", `
   const noop = () => {}, web = false;
   const publicLookup = {}, publicNavigationPendingRef = {}, publicRouteRequestRef = {}, authNavigationAbortRef = {};
-  const setPublicNavigationNotice = noop, cancelNewsStory = noop, setStack = noop, setTab = noop, setLanding = noop;
+  const setPublicNavigationNotice = noop, cancelNewsStory = noop, cancelPushNavigation = noop, setStack = noop, setTab = noop, setLanding = noop;
   const prepareAvailableNavigationFrame = value => value, navigationFrameForAccount = value => value, pathForFrame = () => "/fixture";
   ${commands}
   return { go: commitGo, back: popStack };

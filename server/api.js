@@ -130,6 +130,8 @@ import { sourceRegistryRoutes } from "./features/newsDesk/sourceRegistry.js";
 import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
 import { createMediaApiService } from "./features/mediaApi/mediaApiService.js";
 import { mediaApiRoutes } from "./features/mediaApi/mediaApiRoutes.js";
+import { createLocalAlertComposition, LOCAL_ALERT_NOTICE_VISIBLE_SQL } from "./features/localEventAlerts/localAlertComposition.js";
+import { eraseLocalAlerts } from "./features/localEventAlerts/localAlertPrivacy.js";
 import { ensureNewsLiveSchema } from "./features/newsDesk/newsLive.js";
 import { ensureNewsCardPhotoSchema } from "./features/newsDesk/newsCardPhotos.js";
 import { festivalRoutes } from "./features/festivals/festivalRoutes.js";
@@ -4594,6 +4596,7 @@ function eraseAccountData(u, { at = now(), journal = true } = {}) {
   if (!db.isTransaction) throw new TypeError("Account erasure requires an active transaction");
   if (!u?.id) throw new TypeError("Account erasure requires a current account");
   if (isOwnerId(db, u.id)) throw new ApiError(403, "The permanent Owner account cannot be deleted.", "FORBIDDEN");
+  eraseLocalAlerts(db, u.id);
   const accountReportWhere = `reporter_id=?
     OR (target_type='user' AND target_id=?)
     OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
@@ -4787,6 +4790,9 @@ const projectManagedUser = createRelationshipManagementProjection({
   visibleProfileOrNull, blockedEitherWay, projectUser: publicUser,
 });
 
+export const localAlerts = createLocalAlertComposition({ db, requireUser, resolveArtistIdentity: fanClubArtistIdentity, now });
+export const startLocalAlerts = () => localAlerts.start();
+
 const CALENDAR_PUBLISH = Symbol("calendar-publish");
 export const creatorCalendarService = createCreatorCalendarService({ database: db, requireUser, uid, now,
   authorizeWithdrawal: user => assertArtistPostCleanupCandidate(user, normName(user.artist_name)),
@@ -4824,6 +4830,7 @@ export function startCreatorCalendar() {
 }
 
 export const routes = {
+  ...localAlerts.routes,
   ...jobRoutes({ database: db, ApiError, assertSafeAuthoredText, requireAdmin, rateLimit: limit, now }),
   ...socialReactionRoutes({ database: db, ApiError, requireUser, rateLimit: limit, atomicWrite, addNotif, now }),
   ...discoverPhotoRoutes({ database: db, rateLimit: limit, ApiError }),
@@ -6240,6 +6247,7 @@ export const routes = {
           db.prepare("UPDATE users SET signup_cancel_hash=? WHERE id=?").run(cancelHash, id);
           const created = q.userById.get(id);
           const verification = prepareVerification(created);
+          destroySession(ctx.token);
           const issued = createSession(id, ctx.ip, ctx.ua);
           linkedAccounts.grantVerifiedAccounts({ userId: id, users: [q.userById.get(id), ...matching], token: issued.token });
           return { session: issued, verification };
@@ -6295,6 +6303,9 @@ export const routes = {
       if (!current || current.pass_hash !== u.pass_hash || cleanEmail(current.email) !== v.email) {
         throw new ApiError(401, "Wrong email or password.", "AUTH_INVALID");
       }
+      // Replacing this browser/device identity revokes its old registrations in
+      // the same transaction; unrelated sessions and roles remain unchanged.
+      destroySession(ctx.token);
       const session = createSession(current.id, ctx.ip, ctx.ua);
       linkedAccounts.grantVerifiedAccounts({ userId: current.id, users: matching, token: session.token });
       return { session, user: q.userById.get(current.id) };
@@ -6393,6 +6404,7 @@ export const routes = {
       if (!consumed) throw new ApiError(400, "This reset link is invalid or has expired. Request a new one.");
       db.prepare("DELETE FROM sessions WHERE user_id=?").run(u.id);
       revokeNewsroomSessionsForUser(u.id); // sign out everywhere else
+      destroySession(ctx.token);
       const issued = createSession(u.id, ctx.ip, ctx.ua);
       const current = q.userById.get(u.id);
       linkedAccounts.grantVerifiedAccounts({ userId: u.id, users: [current, ...matching.filter((entry) => entry.id !== u.id)], token: issued.token });
@@ -8323,7 +8335,7 @@ export const routes = {
     return { id, createdAt };
   }),
 
-  ...notificationRoutes({ database: db, requireUser, ApiError, pageRequest, finishPage, safePublicProfileImage }),
+  ...notificationRoutes({ database: db, requireUser, ApiError, pageRequest, finishPage, safePublicProfileImage, localAlertVisibility: LOCAL_ALERT_NOTICE_VISIBLE_SQL }),
 
   // ---- fan clubs (SQLite migration slice 5) ----
   // The artists this account is a member of, lets the client hydrate membership

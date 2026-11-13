@@ -244,6 +244,12 @@ const FOLLOWERS_SQL = `SELECT f.user_id AS user_id FROM fan_club_members f WHERE
 
 // Followers hear about news at most once per artist every 12 hours each.
 export function notifyFollowers(database, update, { notify, now = Date.now(), cooldownMs = 12 * 60 * 60 * 1000 }) {
+  // The mounted event-aware path owns show notices, globally. Release news
+  // and public artist update cards keep their existing behavior.
+  if (update.kind === "shows" && process.env.LOCAL_EVENT_ALERTS_ENABLED === "1") {
+    database.prepare("UPDATE artist_updates SET notified_at=? WHERE id=?").run(now, update.id);
+    return 0;
+  }
   const recipients = database.prepare(`SELECT DISTINCT followers.user_id FROM (${FOLLOWERS_SQL}) followers
     JOIN users member ON member.id=followers.user_id AND COALESCE(member.is_banned,0)=0
     LEFT JOIN artist_update_notices n ON n.user_id=followers.user_id AND n.artist_key=@key
