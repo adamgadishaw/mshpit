@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { spawnSync } from "node:child_process";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const require = createRequire(new URL("../../package.json", import.meta.url));
@@ -310,6 +311,80 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
   return f;
 }
 
+function yogaActionFrame(f, width, rtl = false) {
+  const lounge = f.all().find(node => node.type === "Pressable" && node.props.accessibilityLabel?.startsWith("Open this show's"));
+  const row = f.all().find(node => node.children?.includes(lounge));
+  const review = row.children.find(node => node.type === "Pressable" && text(node).includes("Rate & review"));
+  assert.ok(review);
+  const scroll = f.all().find(node => node.type === "ScrollView" && nodes(node).includes(row));
+  const content = Object.assign({}, ...[scroll.props.contentContainerStyle].flat(Infinity));
+  const rowStyle = flattenedStyle(row);
+  assert.equal(rowStyle.flexDirection, "row");
+  return { width, padding: content.paddingHorizontal ?? content.padding ?? 0,
+    gap: rowStyle.gap, wrap: rowStyle.flexWrap === "wrap", rtl,
+    review: flattenedStyle(review), lounge: flattenedStyle(lounge) };
+}
+function nativeActionGeometry(frames) {
+  const input = frames.map(frame => [frame.width, frame.padding, frame.gap, +frame.wrap, +frame.rtl,
+    ...[frame.review, frame.lounge].flatMap(style => [style.flex, style.flexBasis, style.minWidth, style.minHeight])].join(" ")).join("\n") + "\n";
+  const result = spawnSync(process.env.PIT_YOGA_LAYOUT_PROBE, [], { input, encoding: "utf8", timeout: 10000 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const flagged = spawnSync(process.env.PIT_YOGA_LAYOUT_PROBE, ["--fit-content"], { input, encoding: "utf8", timeout: 10000 });
+  assert.ifError(flagged.error);
+  assert.equal(flagged.status, 0, flagged.stderr);
+  assert.equal(flagged.stdout, result.stdout, "RN's optional fit-content flag does not change this regression");
+  const geometry = result.stdout.trim().split(/\r?\n/).map(line => {
+    const [width, height, reviewX, reviewY, reviewWidth, reviewHeight, loungeX, loungeY, loungeWidth, loungeHeight] = line.split(" ").map(Number);
+    return { width, height, reviewX, reviewY, reviewWidth, reviewHeight, loungeX, loungeY, loungeWidth, loungeHeight };
+  });
+  assert.equal(geometry.length, frames.length);
+  return geometry;
+}
+const yogaGate = { skip: process.env.PIT_YOGA_LAYOUT_PROBE ? false : "Compile scripts/fixtures/show-action-yoga and set PIT_YOGA_LAYOUT_PROBE for the supplemental native-engine gate" };
+for (const width of [320, 402]) for (const closed of [false, true]) for (const rtl of [false, true]) {
+  test(`native Yoga keeps the mounted Lounge full-width across text/viewport changes (${width}, closed ${closed}, RTL ${rtl})`, yogaGate, async t => {
+    const f = fixture({ width, lounge: { messageCount: 123456, status: closed ? "closed" : "open" },
+      logOverrides: { date: "2020-01-01", startDateTime: "2020-01-01T20:00:00Z" } });
+    f.document.lifecycle = "completed"; t.after(f.close); await f.ready();
+    const frames = [], expectedLarge = [];
+    for (const [fontScale, nextWidth] of [[1, width], [1.4, width], [1.786, width], [3.1, width], [1, width], [1.786, 744], [1.786, 320], [1, width]]) {
+      f.resize({ fontScale, width: nextWidth });
+      frames.push(yogaActionFrame(f, nextWidth, rtl)); expectedLarge.push(fontScale >= 1.4);
+    }
+    const geometry = nativeActionGeometry(frames);
+    const near = (actual, expected, message) => assert.ok(Math.abs(actual - expected) <= 0.34, `${message}: ${actual} vs ${expected}`);
+    geometry.forEach((g, i) => {
+      const available = frames[i].width - 2 * frames[i].padding;
+      near(g.width, available, "row width");
+      assert.ok(g.loungeX >= 0 && g.loungeX + g.loungeWidth <= available + 0.34, "Lounge stays inside the row");
+      assert.ok(g.reviewX >= 0 && g.reviewX + g.reviewWidth <= available + 0.34, "review stays inside the row");
+      if (expectedLarge[i] || available < 2 * 140 + frames[i].gap) {
+        near(g.loungeWidth, available, `full width at commit ${i}`);
+        near(g.reviewWidth, available, "review uses its own full row");
+        assert.ok(g.loungeY >= g.reviewY + g.reviewHeight + frames[i].gap - 0.34, "actions do not overlap");
+      } else {
+        near(g.loungeWidth, (available - frames[i].gap) / 2, "compact width restored");
+        near(g.loungeY, g.reviewY, "normal text returns to one row");
+      }
+      assert.ok(g.height >= g.loungeY + g.loungeHeight - 0.34, "parent contains both actions");
+    });
+    assert.equal(f.writes.length, 0); assert.equal(f.opens.length, 0);
+  });
+}
+test("native Yoga negative control reproduces the former 176-point cached flex basis", yogaGate, async t => {
+  const f = fixture({ width: 402, logOverrides: { date: "2020-01-01", startDateTime: "2020-01-01T20:00:00Z" } });
+  f.document.lifecycle = "completed"; t.after(f.close); await f.ready();
+  const normal = yogaActionFrame(f, 402);
+  f.resize({ fontScale: 1.786 });
+  const large = yogaActionFrame(f, 402);
+  large.lounge = { ...large.lounge, minWidth: 140, flexBasis: "100%" };
+  const geometry = nativeActionGeometry([normal, large]);
+  assert.equal(geometry[0].loungeWidth, 176);
+  assert.equal(geometry[1].loungeWidth, 176, "the old JS style commits but cached native basis does not expand");
+  assert.equal(geometry[1].loungeY, 0);
+});
+
 for (const width of [320, 393]) for (const closed of [false, true]) test(`Lounge keeps accessibility text in a full-width action at ${width}px (closed ${closed})`, async t => {
   const f = fixture({ width, fontScale: 1.786, lounge: { messageCount: 123456, status: closed ? "closed" : "open" },
     logOverrides: { date: "2020-01-01", startDateTime: "2020-01-01T20:00:00Z" } });
@@ -318,7 +393,7 @@ for (const width of [320, 393]) for (const closed of [false, true]) test(`Lounge
   const label = closed ? "Open this show's closed Lounge details" : "Open this show's Lounge, 123456 messages";
   const button = f.label(label);
   assert.ok(button, label);
-  assert.equal(flattenedStyle(button).flexBasis, "100%", "scaled label is not squeezed beside Rate & review");
+  assert.equal(flattenedStyle(button).minWidth, "100%", "scaled label is not squeezed beside Rate & review");
   assert.equal(flattenedStyle(button).flexWrap, "wrap", "a large message count can move without splitting the label");
   assert.equal(flattenedStyle(button).height, undefined, "wrapped content has no fixed-height clipping");
   const labelNode = nodes(button).find(node => node.type === "Text" && text(node) === (closed ? "Lounge closed" : "Lounge"));
@@ -342,11 +417,11 @@ test("Lounge responds to live Dynamic Type changes without reviving covered or a
   const f = fixture(); t.after(f.close); await f.ready();
   const label = "Open this show's Lounge, 3 messages";
   const original = f.label(label), oldPress = original.props.onPress;
-  assert.equal(flattenedStyle(original).flexBasis, 140);
+  assert.equal(flattenedStyle(original).minWidth, 140);
   for (const fontScale of [1.4, 1.786, 3.1]) {
     f.resize({ fontScale });
     assert.equal(f.label(label), original, "font changes preserve the mounted action");
-    assert.equal(flattenedStyle(original).flexBasis, "100%");
+    assert.equal(flattenedStyle(original).minWidth, "100%");
   }
   f.cover(); f.act(oldPress); assert.equal(f.opens.length, 0);
   f.back(); await f.resolveReads(); f.act(oldPress); assert.equal(f.opens.length, 0);
@@ -355,13 +430,13 @@ test("Lounge responds to live Dynamic Type changes without reviving covered or a
   f.account("B"); f.act(beforeAccountSwitch); assert.equal(f.opens.length, 1);
   await f.resolveReads(); f.press(label); assert.equal(f.opens.length, 2);
   f.resize({ fontScale: 1 });
-  assert.equal(flattenedStyle(f.label(label)).flexBasis, 140, "normal text returns to the compact layout");
+  assert.equal(flattenedStyle(f.label(label)).minWidth, 140, "normal text returns to the compact layout");
   assert.equal(f.writes.length, 0);
 });
 
-// Model the observed native mismatch, not its unproven cause: Dimensions has
-// the new scale but this mounted hook has not received the change. Deliver the
-// native text-layout boundary separately, using RN's real PixelRatio getter.
+// Keep the earlier delayed-subscription recovery coverage as well as the
+// independently reproduced Fabric/Yoga cache failure above. Deliver the native
+// text-layout boundary separately, using RN's real PixelRatio getter.
 for (const width of [320, 402]) for (const closed of [false, true]) test(`Lounge recovers from native text layout with a stale window subscription at ${width}px (closed ${closed})`, async t => {
   const f = fixture({ width, lounge: { messageCount: 123456, status: closed ? "closed" : "open" } });
   t.after(f.close); await f.ready();
@@ -373,12 +448,12 @@ for (const width of [320, 402]) for (const closed of [false, true]) test(`Lounge
   f.press("Setlist");
   assert.equal(f.label("Setlist").props.accessibilityState.expanded, false);
   const reads = f.reads.length;
-  assert.equal(flattenedStyle(button).flexBasis, 140);
+  assert.equal(flattenedStyle(button).minWidth, 140);
   for (const fontScale of [1.4, 1.786, 3.1, 1, 1.786, 1]) {
     f.resize({ fontScale }, { notify: false });
     assert.equal(f.windowDimensions().fontScale, fontScale);
     f.act(() => caption().props.onTextLayout?.({ nativeEvent: { lines: [] } }));
-    assert.equal(flattenedStyle(f.label(label)).flexBasis, fontScale >= 1.4 ? "100%" : 140);
+    assert.equal(flattenedStyle(f.label(label)).minWidth, fontScale >= 1.4 ? "100%" : 140);
     assert.equal(f.label(label), button, "the action is not remounted");
     assert.equal(f.all().find(node => node === scroll), scroll);
     assert.equal(scroll.nativeOffset, 615);
@@ -403,22 +478,22 @@ test("late native text callbacks read the current scale and preserve retained ac
   const stalePress = button().props.onPress;
   f.resize({ fontScale: 1.786 }, { notify: false });
   f.act(() => nativeLayout?.({ nativeEvent: { lines: [] } }));
-  assert.equal(flattenedStyle(button()).flexBasis, "100%");
+  assert.equal(flattenedStyle(button()).minWidth, "100%");
   f.cover();
   f.resize({ fontScale: 1 }, { notify: false });
   f.act(() => { nativeLayout?.({ nativeEvent: { lines: [{ height: 99 }] } }); stalePress(); });
   assert.equal(f.opens.length, 0);
   f.back(); await f.resolveReads();
-  assert.equal(flattenedStyle(button()).flexBasis, 140, "old event dimensions cannot reapply an old scale");
+  assert.equal(flattenedStyle(button()).minWidth, 140, "old event dimensions cannot reapply an old scale");
   f.act(stalePress); assert.equal(f.opens.length, 0);
   f.account("B"); await f.resolveReads();
   f.resize({ fontScale: 1.786 }, { notify: false });
   f.act(() => { nativeLayout?.({ nativeEvent: { lines: [] } }); stalePress(); });
-  assert.equal(flattenedStyle(button()).flexBasis, "100%");
+  assert.equal(flattenedStyle(button()).minWidth, "100%");
   assert.equal(f.opens.length, 0); assert.equal(f.writes.length, 0);
   f.act(() => button().props.onPress()); assert.equal(f.opens.at(-1).kind, "lounge");
   f.resize({ fontScale: 1.2 });
-  assert.equal(flattenedStyle(button()).flexBasis, 140, "normal subscription delivery still works after recovery");
+  assert.equal(flattenedStyle(button()).minWidth, 140, "normal subscription delivery still works after recovery");
 });
 
 test("a mounted past-show action row reflows without retiring review or Lounge navigation", async t => {
@@ -432,7 +507,7 @@ test("a mounted past-show action row reflows without retiring review or Lounge n
   assert.ok(review);
   f.resize({ fontScale: 1.786 }, { notify: false });
   f.act(() => caption.props.onTextLayout?.({ nativeEvent: { lines: [] } }));
-  assert.equal(flattenedStyle(lounge).flexBasis, "100%");
+  assert.equal(flattenedStyle(lounge).minWidth, "100%");
   assert.equal(flattenedStyle(row).flexWrap, "wrap");
   assert.equal(flattenedStyle(lounge).flexWrap, "wrap");
   assert.equal(flattenedStyle(lounge).height, undefined);

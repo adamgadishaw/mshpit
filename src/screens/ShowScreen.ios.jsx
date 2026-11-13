@@ -1243,7 +1243,10 @@ const baseStyles = {
   goingTxt: { color: colors.amber, fontSize: 14, fontWeight: "800" },
   loungeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingVertical: 14 },
   loungeBtnClosed: { opacity: 0.78, borderStyle: "dashed" },
-  loungeBtnLargeText: { flexBasis: "100%", flexWrap: "wrap" },
+  // Fabric can retain a computed flex basis across style commits. A minimum
+  // width is resolved on each layout, so live text/viewport changes reflow the
+  // existing actions without remounting them or disturbing the retained page.
+  loungeBtnLargeText: { minWidth: "100%", flexWrap: "wrap" },
   loungeTxt: { color: colors.text, fontSize: 14, fontWeight: "700" },
   loungeTxtLargeText: { flexShrink: 0, maxWidth: "100%" },
   loungeCount: { backgroundColor: colors.amber, borderRadius: 999, minWidth: 20, paddingHorizontal: 6, paddingVertical: 1, alignItems: "center" },
