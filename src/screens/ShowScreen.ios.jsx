@@ -14,7 +14,7 @@ import { getIOSDetailPrivacySnapshot, subscribeIOSDetailPrivacy, invalidateIOSDe
 import LineupDetails from "../components/LineupDetails";
 import { postHeadline } from "../domain/lineup.mjs";
 import { ordinalWord } from "../domain/supportingActs.mjs";
-import { Platform, View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from "react-native";
+import { Platform, View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, PixelRatio, useWindowDimensions } from "react-native";
 import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
 import RatingSplit from "../components/RatingSplit";
@@ -230,7 +230,16 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         if (getIOSDetailPrivacySnapshot() === privacyRevision) return callback(...args);
       }));
   const { width, fontScale } = useWindowDimensions();
-  const largeActionText = fontScale >= 1.4;
+  const [actionFontScale, setActionFontScale] = useState(fontScale);
+  useLayoutEffect(() => setActionFontScale(fontScale), [fontScale]);
+  const syncActionFontScale = useCallback(() => {
+    // Native text can remeasure before a retained screen receives its window
+    // update. Read the current scale, not measurements from a queued event,
+    // so the action can reflow without remounting the page or capping text.
+    const next = PixelRatio.getFontScale();
+    if (Number.isFinite(next) && next > 0) setActionFontScale(next);
+  }, []);
+  const largeActionText = actionFontScale >= 1.4;
   const tabletLayout = concertDetailWide(width, fontScale, Platform.OS, 720);
   const archiveReviewTileStyle = styles.archiveReviewCardFull;
   const appActive = useAppActive();
@@ -927,7 +936,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           {!presentation.showPostEvent && legacyGoingButton}
           <Pressable style={[styles.loungeBtn, largeActionText && styles.loungeBtnLargeText, loungeClosed && styles.loungeBtnClosed]} onPress={() => onOpenLounge?.(norm)} accessibilityRole="button" accessibilityLabel={loungeClosed ? "Open this show's closed Lounge details" : `Open this show's Lounge, ${social.messageCount} messages`}>
             <Icon name={loungeClosed ? "lock" : "comment"} size={16} color={colors.amber} />
-            <Text style={[styles.loungeTxt, largeActionText && styles.loungeTxtLargeText]}>{loungeClosed ? "Lounge closed" : "Lounge"}</Text>
+            <Text onTextLayout={syncActionFontScale} style={[styles.loungeTxt, largeActionText && styles.loungeTxtLargeText]}>{loungeClosed ? "Lounge closed" : "Lounge"}</Text>
             {!loungeClosed ? <View style={styles.loungeCount}><Text style={styles.loungeCountTxt}>{social.messageCount}</Text></View> : null}
           </Pressable>
         </View> : null}

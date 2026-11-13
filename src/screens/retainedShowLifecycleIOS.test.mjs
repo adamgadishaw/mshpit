@@ -24,6 +24,49 @@ function execute(file, imports, timers = null) {
     timers ? key => timers.delete(key) : clearTimeout);
   return module.exports;
 }
+function nativeDimensionsFixture(initial) {
+  // Exercise the installed RN subscription and hook instead of forcing an
+  // owner render after mutating a fake useWindowDimensions return value.
+  let holdChange = false;
+  class Events {
+    listeners = new Map();
+    addListener(name, listener) {
+      if (!this.listeners.has(name)) this.listeners.set(name, new Set());
+      const listeners = this.listeners.get(name); listeners.add(listener);
+      return { remove: () => listeners.delete(listener) };
+    }
+    emit(name, value) { if (holdChange && name === "change") return; for (const listener of [...(this.listeners.get(name) || [])]) listener(value); }
+  }
+  const device = new Events();
+  const read = (name, dependencies) => {
+    const filename = require.resolve(`react-native/Libraries/Utilities/${name}`);
+    if (!codes.has(filename)) codes.set(filename, transformSync(readFileSync(filename, "utf8"), {
+      filename, babelrc: false, configFile: false,
+      plugins: [require("@babel/plugin-transform-flow-strip-types"), require("@babel/plugin-transform-modules-commonjs")],
+    }).code);
+    const module = { exports: {} };
+    new Function("require", "module", "exports", codes.get(filename))(dependency => {
+      assert.ok(Object.hasOwn(dependencies, dependency), `Unexpected RN dimension dependency: ${dependency}`);
+      return dependencies[dependency];
+    }, module, module.exports);
+    return module.exports.default;
+  };
+  const Dimensions = read("Dimensions", {
+    "../EventEmitter/RCTDeviceEventEmitter": device, "../vendor/emitter/EventEmitter": Events,
+    "./NativeDeviceInfo": { getConstants: () => ({ Dimensions: { window: { ...initial, scale: 3 } } }) },
+    invariant: require("invariant"),
+  });
+  return {
+    useWindowDimensions: read("useWindowDimensions", { "./Dimensions": Dimensions, react: React }),
+    PixelRatio: read("PixelRatio", { "./Dimensions": { default: Dimensions } }),
+    update(next, { notify = true } = {}) {
+      holdChange = !notify;
+      try { device.emit("didUpdateDimensions", { window: { ...Dimensions.get("window"), ...next } }); }
+      finally { holdChange = false; }
+    },
+    snapshot: () => Dimensions.get("window"),
+  };
+}
 function createRenderer() {
   const context = {}, container = { children: [] };
   let priority = 0;
@@ -65,7 +108,7 @@ const privateReview = { id: "private-review", userId: "reviewer", user: { id: "r
 function fixture({ strict = false, publicEvent = false, deferredLinks = false, nativeTickets = false, nativeStack = false, logOverrides = {}, savedAttendance = null, width = 393, fontScale = 1, lounge = { messageCount: 3 } } = {}) {
   const renderer = createRenderer(), reads = [], writes = [], receipts = [], opens = [], speech = [], timers = new Map();
   const rsvpTimers = new Map();
-  const dimensions = { width, height: 852, fontScale };
+  const dimensions = nativeDimensionsFixture({ width, height: 852, fontScale });
   const modules = new Map(), context = require("./src/components/iosDetailPresentationContext.mjs");
   const privacy = require("./src/domain/iosDetailPrivacyEpoch.mjs").createIOSDetailPrivacyEpoch();
   let active = true, authority = {}, account = "A", epoch = 1, suspended = false;
@@ -98,7 +141,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
   };
   const native = { Animated, Easing: { linear: value => value }, AppState: { currentState: "active", addEventListener: () => ({ remove: noop }) }, Platform: { OS: "ios", select: choices => choices.ios || choices.default },
     View: "View", Text: "Text", TextInput: "TextInput", ScrollView: "ScrollView", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", RefreshControl: "RefreshControl",
-    StyleSheet: { create: value => value, absoluteFill: {} }, useWindowDimensions: () => dimensions,
+    StyleSheet: { create: value => value, absoluteFill: {} }, useWindowDimensions: dimensions.useWindowDimensions, PixelRatio: dimensions.PixelRatio,
     Linking: { openURL: url => { const request = { kind: "link", url, ...deferred() }; opens.push(request);
       if (!deferredLinks) request.resolve(); return request.promise; } }, Alert: { alert: (...args) => opens.push({ kind: "alert", args }) },
     AccessibilityInfo: { announceForAccessibilityWithOptions: message => speech.push(message) } };
@@ -244,7 +287,8 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
   };
   const f = { reads, writes, receipts, opens, speech, timers, rsvpTimers, log, document, render, flush, all, label, layers, resolveReads,
     text: () => text(activeTree()), act: renderer.act,
-    resize(next) { Object.assign(dimensions, next); render(); },
+    resize(next, options) { renderer.act(() => dimensions.update(next, options)); },
+    windowDimensions: dimensions.snapshot,
     pushDuplicate() { frames = [...frames, { openLog: { ...log } }]; render(); },
     popDuplicate() { frames = frames.slice(0, -1); render(); },
     privacyRevision: privacy.getSnapshot,
@@ -312,6 +356,90 @@ test("Lounge responds to live Dynamic Type changes without reviving covered or a
   await f.resolveReads(); f.press(label); assert.equal(f.opens.length, 2);
   f.resize({ fontScale: 1 });
   assert.equal(flattenedStyle(f.label(label)).flexBasis, 140, "normal text returns to the compact layout");
+  assert.equal(f.writes.length, 0);
+});
+
+// Model the observed native mismatch, not its unproven cause: Dimensions has
+// the new scale but this mounted hook has not received the change. Deliver the
+// native text-layout boundary separately, using RN's real PixelRatio getter.
+for (const width of [320, 402]) for (const closed of [false, true]) test(`Lounge recovers from native text layout with a stale window subscription at ${width}px (closed ${closed})`, async t => {
+  const f = fixture({ width, lounge: { messageCount: 123456, status: closed ? "closed" : "open" } });
+  t.after(f.close); await f.ready();
+  const label = closed ? "Open this show's closed Lounge details" : "Open this show's Lounge, 123456 messages";
+  const button = f.label(label);
+  const caption = () => nodes(f.label(label)).find(node => node.type === "Text" && text(node) === (closed ? "Lounge closed" : "Lounge"));
+  const scroll = f.all().find(node => node.type === "ScrollView" && text(node).includes("Lounge"));
+  scroll.nativeOffset = 615;
+  f.press("Setlist");
+  assert.equal(f.label("Setlist").props.accessibilityState.expanded, false);
+  const reads = f.reads.length;
+  assert.equal(flattenedStyle(button).flexBasis, 140);
+  for (const fontScale of [1.4, 1.786, 3.1, 1, 1.786, 1]) {
+    f.resize({ fontScale }, { notify: false });
+    assert.equal(f.windowDimensions().fontScale, fontScale);
+    f.act(() => caption().props.onTextLayout?.({ nativeEvent: { lines: [] } }));
+    assert.equal(flattenedStyle(f.label(label)).flexBasis, fontScale >= 1.4 ? "100%" : 140);
+    assert.equal(f.label(label), button, "the action is not remounted");
+    assert.equal(f.all().find(node => node === scroll), scroll);
+    assert.equal(scroll.nativeOffset, 615);
+    assert.equal(f.label("Setlist").props.accessibilityState.expanded, false, "user disclosure state survives");
+    assert.equal(caption().props.allowFontScaling, undefined);
+    assert.equal(caption().props.maxFontSizeMultiplier, undefined);
+    assert.equal(caption().props.numberOfLines, undefined);
+    f.act(() => { for (let i = 0; i < 10; i++) caption().props.onTextLayout?.({ nativeEvent: { lines: [] } }); });
+    assert.equal(f.reads.length, reads, "repeated layout cannot start reads");
+    assert.equal(f.writes.length, 0); assert.equal(f.opens.length, 0);
+  }
+  f.act(() => f.label(label).props.onPress());
+  assert.equal(f.opens.at(-1).kind, "lounge");
+});
+
+test("late native text callbacks read the current scale and preserve retained action authority", async t => {
+  const f = fixture(); t.after(f.close); await f.ready();
+  const label = "Open this show's Lounge, 3 messages";
+  const button = () => f.label(label);
+  const caption = () => nodes(button()).find(node => node.type === "Text" && text(node) === "Lounge");
+  const nativeLayout = caption().props.onTextLayout;
+  const stalePress = button().props.onPress;
+  f.resize({ fontScale: 1.786 }, { notify: false });
+  f.act(() => nativeLayout?.({ nativeEvent: { lines: [] } }));
+  assert.equal(flattenedStyle(button()).flexBasis, "100%");
+  f.cover();
+  f.resize({ fontScale: 1 }, { notify: false });
+  f.act(() => { nativeLayout?.({ nativeEvent: { lines: [{ height: 99 }] } }); stalePress(); });
+  assert.equal(f.opens.length, 0);
+  f.back(); await f.resolveReads();
+  assert.equal(flattenedStyle(button()).flexBasis, 140, "old event dimensions cannot reapply an old scale");
+  f.act(stalePress); assert.equal(f.opens.length, 0);
+  f.account("B"); await f.resolveReads();
+  f.resize({ fontScale: 1.786 }, { notify: false });
+  f.act(() => { nativeLayout?.({ nativeEvent: { lines: [] } }); stalePress(); });
+  assert.equal(flattenedStyle(button()).flexBasis, "100%");
+  assert.equal(f.opens.length, 0); assert.equal(f.writes.length, 0);
+  f.act(() => button().props.onPress()); assert.equal(f.opens.at(-1).kind, "lounge");
+  f.resize({ fontScale: 1.2 });
+  assert.equal(flattenedStyle(button()).flexBasis, 140, "normal subscription delivery still works after recovery");
+});
+
+test("a mounted past-show action row reflows without retiring review or Lounge navigation", async t => {
+  const f = fixture({ width: 402, logOverrides: { date: "2020-01-01", startDateTime: "2020-01-01T20:00:00Z" } });
+  f.document.lifecycle = "completed";
+  t.after(f.close); await f.ready();
+  const lounge = f.label("Open this show's Lounge, 3 messages");
+  const row = f.all().find(node => node.children?.includes(lounge));
+  const review = row.children.find(node => node.type === "Pressable" && text(node).includes("Rate & review"));
+  const caption = nodes(lounge).find(node => node.type === "Text" && text(node) === "Lounge");
+  assert.ok(review);
+  f.resize({ fontScale: 1.786 }, { notify: false });
+  f.act(() => caption.props.onTextLayout?.({ nativeEvent: { lines: [] } }));
+  assert.equal(flattenedStyle(lounge).flexBasis, "100%");
+  assert.equal(flattenedStyle(row).flexWrap, "wrap");
+  assert.equal(flattenedStyle(lounge).flexWrap, "wrap");
+  assert.equal(flattenedStyle(lounge).height, undefined);
+  assert.equal(flattenedStyle(caption).flexShrink, 0);
+  assert.equal(flattenedStyle(review).flex, 1);
+  f.act(() => { review.props.onPress(); lounge.props.onPress(); });
+  assert.deepEqual(f.opens.map(open => open.kind), ["review", "lounge"]);
   assert.equal(f.writes.length, 0);
 });
 
