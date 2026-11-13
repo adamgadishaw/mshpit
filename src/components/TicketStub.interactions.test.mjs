@@ -167,6 +167,8 @@ for (const [path, variable, itemProp] of [
     let prompts = 0;
     actionsRef.current = { onRequireAuth: () => { prompts++; } };
     const ticket = nodes(row).find(node => node.type === "TicketStub");
+    assert.equal(ticket.props.showPostMeta, variable === "FeedTicketRow" ? false : undefined,
+      "For You opts out, profile retains the metadata-visible default");
     assert.equal(typeof ticket.props.onRequireAuth, "function");
     ticket.props.onRequireAuth();
     assert.equal(prompts, 1);

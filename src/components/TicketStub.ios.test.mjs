@@ -50,7 +50,14 @@ export function fixture({ platform = "ios", own = false, loggedIn = true, inputS
     "../domain/contentPreview.mjs": require("../domain/contentPreview.mjs"),
     "../lib/lazyWithRetry": { lazyWithRetry: (_load, name) => name },
     "./DeferredConcertTicketCard": "ConcertTicketCard",
+    "./BrandMark": "BrandMark",
   };
+  const brandModule = { exports: {} };
+  const brandCode = transformSync(readFileSync(new URL("./PostBrand.jsx", import.meta.url), "utf8"), {
+    babelrc: false, configFile: false, plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
+  }).code;
+  new Function("require", "module", "exports", brandCode)(name => { assert.ok(name in modules, name); return modules[name]; }, brandModule, brandModule.exports);
+  modules["./PostBrand"] = brandModule.exports;
   for (const name of ["SupportingActsLine", "Stars", "Icon", "Avatar", "RatingBars", "SpinStar", "AfterpartyPreview", "ExpandableText", "PostMediaGrid", "ConvertingClipNotice", "SongAttachment", "PostSwipeActions", "ConcertTicketCard"]) modules[`./${name}`] = name;
   const hookSource = readFileSync(new URL(`../hooks/useTicketPresentation${platform === "ios" ? ".ios" : ""}.js`, import.meta.url), "utf8");
   const hookCode = transformSync(hookSource, { babelrc: false, configFile: false, plugins: [require("@babel/plugin-transform-modules-commonjs")] }).code;
@@ -96,6 +103,33 @@ function strings(tree) {
   if (!tree || typeof tree !== "object") return [];
   if (typeof tree.type === "function") return strings(tree.type(tree.props));
   return strings(tree.props.children);
+}
+
+for (const platform of ["ios", "android", "web"]) for (const kind of ["review", "status", "online"]) {
+  test(`${platform} ${kind}: For You hides only posted time/views; profile restores them and keeps a bottom-right signature`, () => {
+    const f = fixture({ platform, width: 320, fontScale: 3.571 });
+    const log = { ...review, kind: kind === "status" ? "status" : "review", experienceType: kind === "online" ? "online" : "live", editedAt: 123 };
+    const before = structuredClone(log);
+    const feed = f.render({ log, showPostMeta: false });
+    assert.equal(label(feed, "9 member views"), undefined);
+    assert.ok(!strings(feed).join("").includes("2h"));
+    assert.ok(strings(feed).join("").includes("@reviewer · edited"));
+    assert.ok(label(feed, "Like, 3 likes"));
+    assert.ok(type(feed, "PostMediaGrid"));
+    const signature = nodes(feed).filter(node => node.props?.testID === "post-brand");
+    assert.equal(signature.length, 1);
+    assert.equal(style(signature[0].props.style).alignSelf, "flex-end");
+    assert.equal(style(signature[0].props.style).position, undefined, "signature must not overlay authored media or controls");
+    assert.equal(signature[0].props.pointerEvents, "none");
+    assert.equal(type(signature[0], "BrandMark").props.size, 18);
+    const wordmark = nodes(signature[0]).find(node => node.props?.children === "MSHPIT");
+    assert.notEqual(wordmark.props.allowFontScaling, false);
+    assert.equal(style(wordmark.props.style).color, "color:textFaint");
+    const profile = f.render({ log });
+    assert.ok(label(profile, "9 member views"));
+    assert.ok(strings(profile).join("").includes("@reviewer · 2h · edited"));
+    assert.deepEqual(log, before, "no stored metadata or scores are changed");
+  });
 }
 
 test("iOS cards have distinct surfaces and one venue/date while review and media precede secondary routes", () => {
@@ -217,7 +251,7 @@ export function treeHash(tree) {
 test("Android and web review cards retain their original trees apart from the explicit review permalink label", () => {
   const expected = { android: "d872da43b6278e1354d8f4ac673397639f37ca9a2e8d11f93b4e691f226d6f40", web: "a15a5cd6874e6d7f7881048096704fdf980799539a16fb2f33be23cd3e8640ae" };
   assert.equal((defaultSource.match(/            reviewOnly\n/g) || []).length, 1);
-  const originalRailLabel = defaultSource.replace("            reviewOnly\n", "            reviewOnly={cityOnlyReview}\n");
+  const originalRailLabel = defaultSource.replace(/\s*<PostBrand[^>]*\/>/gu, "").replace("            reviewOnly\n", "            reviewOnly={cityOnlyReview}\n");
   for (const platform of ["android", "web"]) {
     const f = fixture({ platform }), tree = f.render();
     const link = label(tree, "Open Main artist review");
@@ -230,13 +264,13 @@ test("Android and web review cards retain their original trees apart from the ex
   }
 });
 
-test("Android and web status, campaign and online cards also match their original host trees", () => {
+test("Android and web status, campaign and online cards preserve original host trees apart from the separately tested signature", () => {
   const expected = {
     android: { status: "2e7e27ad545e3587964b80b3c9c3e405f13dd09ec26d13f27342c78a90d4b39b", campaign: "4d68abf44aab566a795acc92171c63ca07cfd7f8d56b0176bd2c949527ba5e72", online: "601b55146439307eda4ede925806cdadbbe05147e138f94d4f0c7379047fe062" },
     web: { status: "954a49e101012ae496cdcffd52fe1445241bf3b76ad3590b5520a20080ad0f36", campaign: "6d16883e45961d749a1b44a1704e93d6a3fd6fc692b1ddf124ac3158566f9296", online: "5bf3d3c6dce2fffc148ca3c83286388bbee1044864f57ffbe5beb92c7df57b38" },
   };
   for (const platform of ["android", "web"]) {
-    const f = fixture({ platform });
+    const f = fixture({ platform, inputSource: defaultSource.replace(/\s*<PostBrand[^>]*\/>/gu, "") });
     for (const [kind, log] of Object.entries({ status: { ...review, kind: "status" },
       campaign: { ...review, kind: "status", campaign: { version: 1, treatment: "after-dark" } },
       online: { ...review, experienceType: "online", youtubeUrl: "https://www.youtube.com/watch?v=abcdefghijk" },

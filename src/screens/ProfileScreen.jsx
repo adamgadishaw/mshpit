@@ -36,7 +36,7 @@ import { useConcertHistory } from "../features/concertHistory/useConcertHistory"
 import { concertNightKey } from "../features/concertHistory/concertHistoryModel.mjs";
 import ConcertHistory from "../features/concertHistory/ConcertHistory";
 import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
-import NewsStoryCard from "../components/news/NewsStoryCard";
+import NewsStoryCard from "../components/news/DeferredNewsStoryCard";
 import { PostNavigationContext } from "../components/PostNavigationContext";
 import { profileAccentColor } from "../domain/profileAccents.mjs";
 import { ProfileSection, ProfileIdentityRow, ProfileOwnerActions, ProfileSectionTabs, hierarchyStyles } from "../features/profilePresentation/ProfileHierarchy";

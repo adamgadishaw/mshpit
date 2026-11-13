@@ -117,7 +117,7 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
       if (name === "expo-image") return { Image: "ExpoImage" };
       if (name.endsWith("/TicketStub")) return load("src/components/TicketStub.ios.jsx");
       if (name.endsWith("/usePostCardData.ios")) return load("src/hooks/usePostCardData.ios.js");
-      if (name.endsWith("/NewsStoryCard")) return load("src/components/news/NewsStoryCard.ios.jsx");
+      if (name.endsWith("/NewsStoryCard") || name.endsWith("/DeferredNewsStoryCard")) return load("src/components/news/NewsStoryCard.ios.jsx");
       if (name.endsWith("/NewsPostActions")) return load("src/components/news/NewsPostActions.ios.jsx");
       if (name.endsWith("/useTicketPresentation")) return load("src/hooks/useTicketPresentation.ios.js");
       if (name.endsWith("/SocialReactionButtons")) return load("src/components/SocialReactionButtons.ios.jsx");
@@ -143,6 +143,8 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
     if (name.endsWith("/useIOSFeedReturn")) return { __esModule: true, default: () => null, FeedReturnProvider: p => p.children };
     if (name.endsWith("/feedHeadStatus")) return { useFeedHeadStatus: () => null };
     if (name.endsWith("/feedImageRetry")) return { useFeedImageRetry: () => ({ value: null, isCurrent: () => true, accept: noop }), FeedImageRetryProvider: p => p.children };
+    if (name.endsWith("/PostBrand")) return load("src/components/PostBrand.jsx");
+    if (name.endsWith("/BrandMark")) return { __esModule: true, default: component("BrandMark") };
     if (name.endsWith("/theme")) return { colors: new Proxy({}, { get: (_, key) => String(key) }), radius: {}, shadow: {}, glow: {}, font: "", roleColor: () => null, space: value => value * 4 };
     if (name.endsWith("/persist")) return { load: (key, value) => persisted.get(key) ?? value, save: (key, value) => persisted.set(key, value) };
     if (name.endsWith("/useIOSFeedSelection")) return load("src/hooks/useIOSFeedSelection.ios.js");
@@ -219,6 +221,27 @@ function fixture({ filter = "everyone", platform = "ios", countdown = false, act
     close() { renderer.render(null); },
   };
 }
+
+for (const platform of ["ios", "android", "web"]) test(`${platform}: actual Feed caller hides For You metadata without mutating rows or other panes`, async () => {
+  const post = { id: "metadata-post", userId: "other", kind: "status", review: "An authored post", createdAt: 12345, viewCount: 17 };
+  const f = fixture({ platform, posts: [post] });
+  try {
+    const card = () => walk(f.list()).find(node => node.type === "TicketStub");
+    assert.equal(card().props.showPostMeta, false);
+    assert.equal(card().props.log, post);
+    const analytics = f.list().props.viewabilityConfigCallbackPairs[1].onViewableItemsChanged;
+    f.act(() => analytics({ changed: [{ item: post, index: 0, isViewable: true }] }));
+    assert.ok(f.calls.impressions.length, "views continue to be recorded");
+    f.selectFilter("local");
+    await f.resolve(f.calls.local.at(-1), { posts: [post], nextCursor: null });
+    assert.equal(card().props.showPostMeta, true);
+    f.selectFilter("everyone");
+    assert.equal(card().props.showPostMeta, false);
+    f.account("B");
+    assert.equal(card().props.showPostMeta, false);
+    assert.equal(post.createdAt, 12345); assert.equal(post.viewCount, 17);
+  } finally { f.close(); }
+});
 
 test("actual iOS Feed owner/pager retains expanded list and denies covered/precommit/retired actions", async () => {
   const f = fixture({ countdown: true });

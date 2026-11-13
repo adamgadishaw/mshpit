@@ -30,6 +30,17 @@ function resolvedImport(from, specifier, platform) {
 }
 
 for (const platform of ['ios', 'android', 'web']) {
+  test(`actual Expo ${platform} resolves the feed's news boundary without changing native card ownership`, () => {
+    const feed = parse(readFileSync(path.join(root, 'src/screens/FeedScreen.jsx'), 'utf8'), { sourceType: 'module', plugins: ['jsx'] });
+    const dependency = feed.program.body.find(node => node.type === 'ImportDeclaration' && node.specifiers.some(item => item.local.name === 'NewsStoryCard'));
+    const entry = resolvedImport('src/screens/FeedScreen.jsx', dependency.source.value, platform);
+    assert.equal(entry.filePath, path.join(root, `src/components/news/DeferredNewsStoryCard${platform === 'web' ? '.web' : ''}.jsx`));
+    if (platform !== 'web') {
+      assert.match(readFileSync(entry.filePath, 'utf8'), /export \{ default \} from "\.\/NewsStoryCard"/);
+      const card = resolvedImport(path.relative(root, entry.filePath), './NewsStoryCard', platform);
+      assert.equal(card.filePath, path.join(root, `src/components/news/NewsStoryCard${platform === 'ios' ? '.ios' : ''}.jsx`));
+    }
+  });
   test(`actual Expo ${platform} selects the intended deferred ticket and detail layout adapters`, () => {
     const ticket = resolvedImport('src/components/TicketStub.jsx', './DeferredConcertTicketCard', platform);
     assert.equal(ticket.filePath, path.join(root, `src/components/DeferredConcertTicketCard${platform === 'web' ? '.web' : ''}.jsx`));

@@ -1,3 +1,4 @@
+import PostBrand from "./PostBrand";
 // iOS post presentation. Shared action ownership and domain projections remain
 // canonical; Android/web keep TicketStub.jsx unchanged.
 import { lazyWithRetry } from "../lib/lazyWithRetry";
@@ -232,7 +233,7 @@ export default function TicketStub({
   onPlay,
   onRemoveMyPostTag,
   onSelfTagRemoved,
-  showComments = true
+  showPostMeta = true, showComments = true
 }) {
   const tabPreview = useNativeTabPreview();
   const {
@@ -505,7 +506,7 @@ export default function TicketStub({
               } : roleColor(author.role) ? {
                 color: roleColor(author.role),
                 fontWeight: "800"
-              } : null}>@{author.handle}</PublicTextLink> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
+              } : null}>@{author.handle}</PublicTextLink>{showPostMeta && " · "}{showPostMeta && timeLabel}{log.editedAt ? " · edited" : ""}</Text>
           </Pressable>
 
         </View>
@@ -538,7 +539,7 @@ export default function TicketStub({
 
         {<View style={styles.metadataRow}>
           <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={guard(() => toggleDisclosure("why"))} palette={campaignTreatment} />
-          <ViewTally count={viewCount} palette={campaignTreatment} />
+          {showPostMeta && <ViewTally count={viewCount} palette={campaignTreatment} />}
         </View>}
 
         <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} {...actionProps} enabled={swipeActions && cardVisible} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
@@ -571,6 +572,7 @@ export default function TicketStub({
 
         {showComments && <CommentPreview log={log} onOpen={openComments} palette={campaignTreatment} />}
         <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
+        <PostBrand color={campaignTreatment?.mutedTextColor} />
         </View>
       </CardSurface>;
   }
@@ -587,7 +589,7 @@ export default function TicketStub({
           <Text style={styles.sub}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={roleColor(author.role) ? {
             color: roleColor(author.role),
             fontWeight: "800"
-          } : null}>@{author.handle}</PublicTextLink> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
+          } : null}>@{author.handle}</PublicTextLink>{showPostMeta && " · "}{showPostMeta && timeLabel}{log.editedAt ? " · edited" : ""}</Text>
         </Pressable>
       </View>
 
@@ -679,7 +681,7 @@ export default function TicketStub({
           <Icon name={detailsOpen ? "chevron-down" : "chevron-right"} size={14} color={colors.textDim} />
         </Pressable>}
         <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={guard(() => toggleDisclosure("why"))} />
-        <ViewTally count={viewCount} />
+        {showPostMeta && <ViewTally count={viewCount} />}
         </View>
         {cardPresentation.hasDetails && detailsOpen && <View style={styles.expandedDetails}>
           <TicketActionRail showHref={canonicalPostHref} onOpenShow={cityOnlyReview ? openPostDetail : () => (onOpenShow || onOpen)?.(log)} reviewOnly={cityOnlyReview} compareHref={canCompareArtistShows ? postContext.artistConcertsHref : null} onCompare={openArtistShows} artist={postContext.artist} />
@@ -726,6 +728,7 @@ export default function TicketStub({
 </PostSwipeActions>
 
       {showComments && <CommentPreview log={log} onOpen={openComments} />}
+      <PostBrand />
     </CardSurface>;
 }
 

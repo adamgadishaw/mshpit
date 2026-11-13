@@ -54,7 +54,7 @@ function createRenderer(onCommit) {
 
 const code = new Map();
 const story = { id: "story-fixture", postId: "news_fixture", headline: "Fixture concert announcement", summary: "Fixture summary", body: "The full fixture story.",
-  category: "music", publishedAt: "2026-11-01T00:00:00Z", author: { id: "author", name: "News desk", handle: "desk" },
+  category: "music", publishedAt: Date.parse("2026-11-01T00:00:00Z"), author: { id: "author", name: "News desk", handle: "desk" },
   likes: 4, reposts: 2, commentCount: 3, sources: [{ kind: "article", name: "Fixture Source", url: "https://fixture.invalid/article" }],
   artists: [{ key: "fixture-artist", name: "Fixture Artist" }] };
 const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
@@ -73,14 +73,14 @@ function fixture({ own = false, guest = false, compact = false, full = false, st
     Alert: { alert: (...args) => alerts.push(args) }, Linking: { openURL: url => { calls.push(["external", url]); return Promise.resolve(); } } };
   const theme = { colors: new Proxy({}, { get: (_, key) => String(key) }), radius: {}, space: value => value };
   const modules = { react: React, "react/jsx-runtime": require("react/jsx-runtime"), "react-native": native, "expo-image": { Image: "ExpoImage" },
-    "../../theme": theme, "../theme": theme, "../Icon": "Icon", "./Icon": "Icon",
+    "../../theme": theme, "../theme": theme, "../Icon": "Icon", "./Icon": "Icon", "./BrandMark": "BrandMark",
     "./NewsInteractionContext": { useNewsInteractions: () => React.useContext(Context) },
     "../../hooks/useNativeTabPreview": () => React.useContext(Preview),
     "../components/showIOSPostActions": () => assert.fail("News does not open a ticket action sheet"),
     "../lib/lazyWithRetry": { loadChunk: () => new Promise(noop) } };
   const paths = { "../../hooks/useTicketPresentation": "../../hooks/useTicketPresentation.ios.js",
     "./NewsPostActions": "./NewsPostActions.ios.jsx", "../SocialReactionButtons": "../SocialReactionButtons.ios.jsx",
-    "../SocialShareStudio": "../SocialShareStudio.ios.jsx" };
+    "../SocialShareStudio": "../SocialShareStudio.ios.jsx", "../PostBrand": "../PostBrand.jsx" };
   const load = path => {
     const url = new URL(path, import.meta.url), localRequire = createRequire(url), module = { exports: {} };
     if (!code.has(path)) code.set(path, transformSync(readFileSync(url, "utf8"), { babelrc: false, configFile: false,
@@ -139,6 +139,18 @@ for (const strict of [false, true]) test(`actual News cards fence queued direct 
   assert.ok(!f.all().some(node => node.type === "Modal"));
   f.act(f.button("4 likes").props.onPress); f.act(f.button("Repost, 2").props.onPress); f.act(f.source().props.onPress);
   assert.equal(f.likes.length, 1); assert.equal(f.saves.length, 1); assert.deepEqual(f.calls, [["external", "https://fixture.invalid/article"]]);
+});
+
+test("News metadata follows the feed surface while sources, controls and signature remain", t => {
+  const f = fixture(); t.after(f.close);
+  const text = () => f.all().map(node => node.text || "").join("");
+  const original = text();
+  f.render({ showPostMeta: false });
+  assert.notEqual(text(), original, "For You omits the published age");
+  assert.ok(f.button("4 likes")); assert.ok(f.button("3 comments")); assert.ok(f.source());
+  assert.equal(f.all().filter(node => node.props?.testID === "post-brand").length, 1);
+  f.render({ showPostMeta: true });
+  assert.equal(text(), original, "profile and News surfaces retain publication metadata");
 });
 
 test("actual News reads dynamic presentation retirement before rerender", t => {

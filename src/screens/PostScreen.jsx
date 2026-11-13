@@ -19,7 +19,7 @@ import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
 import { usePostAuthorBadges } from "../hooks/usePostAuthorBadges";
-import NewsStoryCard from "../components/news/NewsStoryCard";
+import NewsStoryCard from "../components/news/DeferredNewsStoryCard";
 import { CommentLikeButton } from "../components/SocialReactionButtons";
 import { readPublicPost, resolvePublicEntity } from "../features/publicNavigation/publicNavigationService";
 import { isReviewDetail } from "../domain/showNavigation.mjs";

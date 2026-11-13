@@ -1,3 +1,4 @@
+import PostBrand from "./PostBrand";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
 import { Suspense, useContext, useMemo, useState } from "react";
 import useNativeTabPreview from "../hooks/useNativeTabPreview";
@@ -227,7 +228,7 @@ function PostOverflow({ expanded, onToggle, onClose, onEdit, onDelete, onReport,
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the post's comments. Lounge is reserved for the exact show's shared
 // conversation so the two spaces never look like duplicate features.
-export default function TicketStub({ log, renderReviewText, ratingDescription, mediaViewable = null, contextPresentation = null, compactContent = false, swipeActions = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+export default function TicketStub({ log, renderReviewText, ratingDescription, mediaViewable = null, contextPresentation = null, compactContent = false, swipeActions = false, onOpen, onOpenShow, onOpenPost, onNotInterested, onComment, onRequireAuth, onPreview, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showPostMeta = true, showComments = true }) {
   const tabPreview = useNativeTabPreview();
   let onOpenCity = useContext(CityNavigationContext);
   const cityIdentity = cityIdentityForLocation(log);
@@ -465,7 +466,7 @@ export default function TicketStub({ log, renderReviewText, ratingDescription, m
               <Text style={[styles.name, campaignPresentation && { color: campaignTreatment.textColor }]}>{author.name}</Text>
               <BadgeRow badges={displayedProfileBadges(userBadges(author), author.profileBadges)} size={14} />
             </View>
-            <Text style={[styles.sub, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={campaignPresentation ? { color: campaignTreatment.accentColor, fontWeight: "800" } : roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</PublicTextLink> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
+            <Text style={[styles.sub, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={campaignPresentation ? { color: campaignTreatment.accentColor, fontWeight: "800" } : roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</PublicTextLink>{showPostMeta && " · "}{showPostMeta && timeLabel}{log.editedAt ? " · edited" : ""}</Text>
           </Pressable>
           {Platform.OS !== "ios" && canEdit && (
             <Pressable style={[styles.iconBtn, campaignPresentation && styles.campaignTouchTarget]} hitSlop={Platform.OS === "web" ? 8 : 2} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
@@ -534,7 +535,7 @@ export default function TicketStub({ log, renderReviewText, ratingDescription, m
 
         {Platform.OS === "ios" ? <View style={styles.metadataRow}>
           <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />
-          <ViewTally count={viewCount} palette={campaignTreatment} />
+          {showPostMeta && <ViewTally count={viewCount} palette={campaignTreatment} />}
         </View> : <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />}
 
         <PostSwipeActions key={`${session?.id || "guest"}:${log.id}`} {...actionProps} enabled={swipeActions && cardVisible} post={log} accountId={session?.id} likeInfo={likeInfo} toggleLike={toggleLike} setPostRepost={setPostRepost} onRequireAuth={onRequireAuth} surfaceColor={campaignPresentation ? campaignTreatment.contentSurfaceColor : colors.surface}>
@@ -549,7 +550,7 @@ export default function TicketStub({ log, renderReviewText, ratingDescription, m
             <Icon name="comment" size={17} color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textDim} />
             <Text style={[styles.fCount, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}>{commentCount}</Text>
           </PublicPressableLink>
-          {Platform.OS !== "ios" && <ViewTally count={viewCount} palette={campaignTreatment} />}
+          {Platform.OS !== "ios" && showPostMeta && <ViewTally count={viewCount} palette={campaignTreatment} />}
           <SocialShareButton key={shareKey} {...actionProps}
             accountId={session?.id || null}
             color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textDim}
@@ -561,6 +562,7 @@ export default function TicketStub({ log, renderReviewText, ratingDescription, m
 
         {showComments && <CommentPreview log={log} onOpen={openComments} palette={campaignTreatment} />}
         <RepostAttribution post={log} accountId={session?.id} onOpenProfile={onOpenProfile} />
+        <PostBrand color={campaignTreatment?.mutedTextColor} />
         </View>
       </CardSurface>
     );
@@ -577,7 +579,7 @@ export default function TicketStub({ log, renderReviewText, ratingDescription, m
             <Text style={styles.name}>{author.name}</Text>
             <BadgeRow badges={displayedProfileBadges(userBadges(author), author.profileBadges)} size={14} />
           </View>
-          <Text style={styles.sub}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</PublicTextLink> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
+          <Text style={styles.sub}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</PublicTextLink>{showPostMeta && " · "}{showPostMeta && timeLabel}{log.editedAt ? " · edited" : ""}</Text>
         </Pressable>
         <Pressable
           style={[styles.scorePill, statsOpen && styles.scorePillOpen]}
@@ -743,7 +745,7 @@ export default function TicketStub({ log, renderReviewText, ratingDescription, m
           <Icon name={detailsOpen ? "chevron-down" : "chevron-right"} size={14} color={colors.textDim} />
         </Pressable>}
         <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
-        <ViewTally count={viewCount} />
+        {showPostMeta && <ViewTally count={viewCount} />}
         </View>
         {!isOnlineReview && detailsOpen && <View>
           <TicketActionRail
@@ -788,7 +790,7 @@ export default function TicketStub({ log, renderReviewText, ratingDescription, m
               {Platform.OS === "web" ? <Text style={styles.date}>{formatDate(log.date, log.date)}</Text> : (
                 <View style={{ alignItems: "flex-end", gap: 4 }}>
                   <Text style={styles.date}>{formatDate(log.date, log.date)}</Text>
-                  <ViewTally count={viewCount} />
+                  {showPostMeta && <ViewTally count={viewCount} />}
                 </View>
               )}
             </View>
@@ -825,7 +827,7 @@ export default function TicketStub({ log, renderReviewText, ratingDescription, m
           {Platform.OS === "web" && <Text style={styles.commentActionText}>Comments</Text>}
           <Text style={styles.fCount}>{commentCount}</Text>
         </PublicPressableLink>
-        {Platform.OS !== "ios" && (Platform.OS === "web" || isOnlineReview) && <ViewTally count={viewCount} />}
+        {Platform.OS !== "ios" && (Platform.OS === "web" || isOnlineReview) && showPostMeta && <ViewTally count={viewCount} />}
         <SocialShareButton key={shareKey} {...actionProps} accountId={session?.id || null} model={shareModel} style={Platform.OS !== "web" ? styles.nativeFooterButton : undefined} />
         <View style={{ flex: 1 }} />
         {overflow()}
@@ -848,6 +850,7 @@ export default function TicketStub({ log, renderReviewText, ratingDescription, m
 </PostSwipeActions>
 
       {showComments && <CommentPreview log={log} onOpen={openComments} />}
+      <PostBrand />
     </CardSurface>
   );
 }

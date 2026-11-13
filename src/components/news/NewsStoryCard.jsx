@@ -1,3 +1,4 @@
+import PostBrand from "../PostBrand";
 import { memo, useMemo } from "react";
 import { Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { Image } from "expo-image";
@@ -19,7 +20,7 @@ const openNews = () => { void Linking.openURL("https://www.mshpit.com/news").cat
 // A story from the Mshpit News desk. Cards sit in the feed and the News tab;
 // `full` is the story's own page (the whole write-up); compact cards fill the
 // phone strip, the desktop news panel and artist pages.
-function NewsStoryCard({ story, post, compact = false, full = false, accountId = null, onOpen, onOpenArtist, onOpenProfile, onReport, onDelete, onRequireAuth }) {
+function NewsStoryCard({ story, post, showPostMeta = true, compact = false, full = false, accountId = null, onOpen, onOpenArtist, onOpenProfile, onReport, onDelete, onRequireAuth }) {
   const shareModel = useMemo(() => (compact ? null : buildNewsShareModel(story)), [compact, story]);
   if (!story?.headline) return null;
   const photo = newsStoryPhoto(story);
@@ -30,7 +31,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
   const compactSourceLabel = manual
     ? articleSources.length ? `${articleSources.length} ${articleSources.length === 1 ? "source" : "sources"}` : ""
     : story.confirmedBy > 1 ? `${story.confirmedBy} outlets` : "";
-  const meta = `${newsCategoryLabel(story.category).toUpperCase()} · ${relativeTime(story.publishedAt)}`;
+  const meta = `${newsCategoryLabel(story.category).toUpperCase()}${showPostMeta ? ` · ${relativeTime(story.publishedAt)}` : ""}`;
   // The reader's own city is named in the story (set by the server per reader).
   const local = typeof story.localTo === "string" && story.localTo ? `In ${story.localTo}` : "";
   const paragraphs = full ? newsStoryParagraphs(story.body) : [];
@@ -45,6 +46,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
           <Text style={styles.kicker} numberOfLines={1}>{local ? `${local.toUpperCase()} · ${meta}` : meta}</Text>
           <Text style={styles.compactHeadline} numberOfLines={3}>{story.headline}</Text>
           {compactSourceLabel ? <Text style={styles.compactSources} numberOfLines={1}>{compactSourceLabel}</Text> : null}
+          <PostBrand />
         </View>
       </Pressable>
     );
@@ -130,6 +132,7 @@ function NewsStoryCard({ story, post, compact = false, full = false, accountId =
       {full ? <Text style={styles.musicNewsLink} onPress={Platform.OS === "web" ? undefined : openNews} accessibilityRole="link"
         {...(Platform.OS === "web" ? { href: "/news" } : {})}>Read more music news</Text> : null}
       {full ? <Text style={styles.musicNewsLink} accessibilityRole="link" onPress={Platform.OS === "web" ? undefined : () => openSource(CONTACT_URL)} {...(Platform.OS === "web" ? { href: "/contact" } : {})}>Contact us</Text> : null}
+      <PostBrand />
     </View>
   );
 }

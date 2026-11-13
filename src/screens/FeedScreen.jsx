@@ -22,7 +22,7 @@ import SuggestedPittersRail from "../components/SuggestedPittersRail";
 import useAppActive from "../lib/useAppActive";
 import useFeedPresentation from "../hooks/useFeedPresentation";
 import useEndlessFeed from "../hooks/useEndlessFeed";
-import NewsStoryCard from "../components/news/NewsStoryCard";
+import NewsStoryCard from "../components/news/DeferredNewsStoryCard";
 import useNewsDeskStories from "../components/news/useNewsDeskStories";
 import useNewsIntroduction from "../components/news/useNewsIntroduction";
 import { newsAwareFeed } from "../domain/newsReaderState.mjs";
@@ -65,12 +65,13 @@ const FeedTicketRow = memo(function FeedTicketRow({ item, itemIndex, mediaViewab
 
   // A Mshpit News story posted from @news_mod.
   if (item.news) {
-    return <NewsStoryCard {...(Platform.OS === "ios" ? { contextPresentation } : {})} story={item.news} post={item} accountId={accountId} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onEdit={capabilities.edit ? edit : undefined} onRequireAuth={requireAuth} />;
+    return <NewsStoryCard showPostMeta={surface !== "everyone"} {...(Platform.OS === "ios" ? { contextPresentation } : {})} story={item.news} post={item} accountId={accountId} onOpen={capabilities.comment ? () => comment(item) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onEdit={capabilities.edit ? edit : undefined} onRequireAuth={requireAuth} />;
   }
 
   return (
     <TicketStub
       log={item}
+      showPostMeta={surface !== "everyone"}
       swipeActions={Platform.OS !== "web" && Platform.OS !== "ios"}
       compactContent
       mediaViewable={mediaViewable}

@@ -203,7 +203,7 @@ function fixture({ component = "rail", strict = false, reader = false, reduced =
     modules["../../lib/newsDeskApi"] = { fetchNewsDeskStories: args => read("news", args) };
     modules["../components/news/useNewsDeskStories"] = execute("./news/useNewsDeskStories.ios.js");
     modules["../components/news/useNewsIntroduction"] = enabled => { introductions.push(enabled); return { post: null, dismiss: noop }; };
-    for (const name of ["TicketStub", "Icon", "SuggestedPittersRail", "news/NewsStoryCard"]) modules["../components/" + name] = name;
+    for (const name of ["TicketStub", "Icon", "SuggestedPittersRail", "news/DeferredNewsStoryCard"]) modules["../components/" + name] = name;
     modules["../components/VinylRefreshBoundary"] = p => p.children;
     modules["./FeedScreen.jsx"] = execute("../screens/FeedScreen.jsx");
     modules["../components/NativeFeedFilterPager.ios"] = modules["./NativeFeedFilterPager.ios"];

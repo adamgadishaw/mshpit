@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, focusRing, font, mono, radius } from "../../theme";
-import NewsStoryCard from "./NewsStoryCard";
+import NewsStoryCard from "./DeferredNewsStoryCard";
 import LiveCoverageCard from "./LiveCoverageCard";
 import useNewsDeskStories from "./useNewsDeskStories";
 
