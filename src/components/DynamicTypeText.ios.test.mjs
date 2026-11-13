@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import {snapshot, geometry, assertReadable} from "../../scripts/fixtures/show-text-yoga/geometry.mjs";
+import {RATING_DIMS} from "../data.js";
 
 const require = createRequire(import.meta.url);
 const React = require("react");
@@ -75,7 +77,7 @@ function fixture() {
     if (name.endsWith("/useIOSDetailPresentation")) return () => ({ current: () => true, canAct: () => true, guard: fn => fn, active: true, token: 1 });
     if (name.endsWith("/catalogTextApi")) return { readCatalogPageText: async () => ({ text: { summary: "Sourced context 🎵", sources: [] } }) };
     if (name.endsWith("/PublicWebLinks")) return { PublicPressableLink: "RCTView" };
-    if (name.endsWith("/data")) return { RATING_DIMS: [{ key: "performance", label: "Performance", group: "THE BAND" }, { key: "sound", label: "Sound", group: "THE ROOM" }] };
+    if (name.endsWith("/data")) return { RATING_DIMS };
     return require(name);
   }).default;
   const flush = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
@@ -146,8 +148,8 @@ test("non-iOS DynamicTypeText is the original native/web Text export", () => {
 
 for (const [file, props] of [
   ["./ScreenHeader.ios.jsx", { title: "Concert details", kicker: "Fixture", onBack: () => {} }],
-  ["./RatingSplit.jsx", { band: 4.2, room: 3.5 }],
-  ["./RatingBreakdown.jsx", { dims: { performance: 4.2, sound: 3.5 } }],
+  ["./RatingSplit.ios.jsx", { band: 4.2, room: 3.5 }],
+  ["./RatingBreakdown.ios.jsx", { dims: { performance: 4.2, sound: 3.5 } }],
   ["../features/showDetails/ShowSection.jsx", { title: "Event details", summary: "Long event information", initiallyOpen: true }],
   ["../features/catalogEditor/CatalogText.ios.jsx", { type: "artist", entityKey: "fixture" }],
 ]) test(`shared owner reaches the native paragraph invalidation boundary: ${file}`, async t => {
@@ -163,5 +165,44 @@ for (const [file, props] of [
       assert.ok(after); assert.equal(content(after), expected[index]);
       assert.ok(f.calls.some(call => call.tag === node.tag && call.kind === "children"), `remeasure ${expected[index]}`);
     });
+  }
+});
+
+const nativeTextGate = {skip: process.env.PIT_TEXT_YOGA_PROBE ? false : "Compile scripts/fixtures/show-text-yoga and set PIT_TEXT_YOGA_PROBE"};
+function geometryTree(node) {
+  if(node.type==='RCTText'||node.type==='RCTSelectableText') return {type:'Text',props:node.props,children:[{text:content(node)}]};
+  return {type:'View',props:node.props,children:node.children.map(geometryTree)};
+}
+for(const file of ['./RatingBreakdown.ios.jsx','./RatingSplit.ios.jsx']) for(const width of [140,280,335,1000]) {
+  test(`native rating geometry keeps full values through live scaling: ${file}, ${width}`,nativeTextGate,async t=>{
+    const f=fixture(); t.after(f.close);
+    const props={band:4.2,room:2.7,dims:{performance:5,setlist:4.2,sound:3.5,venue:4.5,crowd:2.7,experience:4.7}};
+    await f.render(React.createElement(f.loadOwner(file),props));
+    const first=f.all().filter(node=>node.type==='RCTText').map(node=>node.tag);
+    const frames=[];
+    for(const scale of [1,1.786,3.571,1,3.571,1]) {
+      await f.resize(scale,width+40);
+      const outer=f.all()[0];
+      frames.push(snapshot(geometryTree(outer),width,scale));
+      assert.deepEqual(f.all().filter(node=>node.type==='RCTText').map(node=>node.tag),first,'same paragraphs remain mounted');
+    }
+    for(const rtl of [false,true]) {
+      const directed=frames.map(frame=>({...frame,rtl})),bounds=geometry(directed);
+      directed.forEach((frame,i)=>assertReadable(frame,bounds[i]));
+      assert.ok(bounds[2].some(e=>e.label==='2.7'),'precise legacy value still displayed');
+    }
+    for(const e of f.all().filter(node=>node.type==='RCTText')) {
+      assert.equal(e.props.allowFontScaling,true); assert.equal(e.props.maxFontSizeMultiplier,undefined);
+    }
+  });
+}
+
+for(const file of ['RatingSplit','RatingBreakdown']) test(`iOS layout preserves ${file} score and missing-data semantics`,async t=>{
+  const f=fixture();t.after(f.close);
+  for(const props of [{},{band:0,room:null,dims:{}},{band:4.2,room:2.7,compact:true,dims:{performance:4.2,crowd:2.7,experience:4.7}}]) {
+    await f.render(React.createElement(f.loadOwner('./'+file+'.jsx'),props));
+    const expected=f.all().filter(node=>node.type==='RCTText').map(content);
+    await f.render(React.createElement(f.loadOwner('./'+file+'.ios.jsx'),props));
+    assert.deepEqual(f.all().filter(node=>node.type==='RCTText').map(content),expected);
   }
 });

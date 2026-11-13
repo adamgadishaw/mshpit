@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
+import {snapshot as textGeometrySnapshot, geometry as textGeometry, assertReadable} from "../../scripts/fixtures/show-text-yoga/geometry.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const require = createRequire(new URL("../../package.json", import.meta.url));
@@ -255,7 +256,8 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
     return React.createElement(Stack, { frames, scope: account + ":" + epoch, enabled: true, admitted: active,
       isCurrentRoute: (frame, index) => frames[index] === frame && index === frames.length - 1,
       element: React.createElement(Screen, { log: frames.at(-1).openLog,
-        onOpenLounge: show => opens.push({ kind: "lounge", show }), onReview: show => opens.push({ kind: "review", show }) }), wrap: ({ children }) => children });
+        onOpenLounge: show => opens.push({ kind: "lounge", show }), onReview: show => opens.push({ kind: "review", show }),
+        onOpenVenue: venue => opens.push({ kind: "venue", venue }) }), wrap: ({ children }) => children });
   }
   const render = () => renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null,
     React.createElement(React.Suspense, { fallback: null }, React.createElement(Gate))));
@@ -344,6 +346,33 @@ function nativeActionGeometry(frames) {
   return geometry;
 }
 const yogaGate = { skip: process.env.PIT_YOGA_LAYOUT_PROBE ? false : "Compile scripts/fixtures/show-action-yoga and set PIT_YOGA_LAYOUT_PROBE for the supplemental native-engine gate" };
+const textYogaGate = { skip: process.env.PIT_TEXT_YOGA_PROBE ? false : "Compile scripts/fixtures/show-text-yoga and set PIT_TEXT_YOGA_PROBE" };
+for (const width of [320,375,402,1158]) test(`native Show text geometry and action owners survive largest Dynamic Type at ${width}`,textYogaGate,async t=>{
+  const f=fixture({nativeStack:true,width,lounge:{messageCount:123456},logOverrides:{date:"2020-01-01",startDateTime:"2020-01-01T20:00:00Z",overall:4.7}});
+  f.document.lifecycle="completed"; t.after(f.close); await f.ready();
+  const score=f.label('4.7 out of 5'); assert.ok(score);
+  const overall=f.all().find(n=>n.children?.includes(score));
+  const venue=f.all().find(n=>n.type==='Pressable'&&text(n)==='See this venue'); assert.ok(venue);
+  const see=f.all().find(n=>n.children?.includes(venue));
+  const lounge=f.label("Open this show's Lounge, 123456 messages");
+  const actions=f.all().find(n=>n.children?.includes(lounge));
+  const scroll=f.all().find(n=>n.type==='ScrollView'&&nodes(n).includes(actions)); scroll.nativeOffset=610;
+  const frames=[[],[],[]],available=Math.min(width,1040)-40;
+  for(const scale of [1,1.2,1.4,1.786,3.571,1,3.571,1]) {
+    f.resize({fontScale:scale});
+    [overall,see,actions].forEach((node,i)=>{assert.ok(f.all().includes(node));frames[i].push(textGeometrySnapshot(node,available,scale));});
+    assert.ok(f.all().includes(venue)&&f.all().includes(lounge)); assert.equal(scroll.nativeOffset,610);
+    assert.equal(f.opens.length,0); assert.equal(f.writes.length,0);
+  }
+  const problems=[];
+  for(const rtl of [false,true]) frames.forEach((group,surface)=>{
+    const directed=group.map(frame=>({...frame,rtl})),bounds=textGeometry(directed);
+    directed.forEach((frame,i)=>{try{assertReadable(frame,bounds[i]);}catch(error){problems.push({surface:['overall','venue actions','review/Lounge'][surface],commit:i,rtl,error:error.message});}});
+  });
+  assert.deepEqual(problems,[],"all text surfaces fit through the same mounted changes");
+  f.act(venue.props.onPress); f.act(lounge.props.onPress);
+  assert.deepEqual(f.opens.map(o=>o.kind),['venue','lounge']);
+});
 test("mounted Show refreshes heading, venue/date, rating, section and count text without replacing page or controls", async t => {
   const f = fixture({ nativeStack: true, width: 402, lounge: { messageCount: 123456 },
     logOverrides: { date: "2020-01-01", startDateTime: "2020-01-01T20:00:00Z", overall: 4.7 } });
@@ -480,12 +509,13 @@ for (const width of [320, 402]) for (const closed of [false, true]) test(`Lounge
   f.press("Setlist");
   assert.equal(f.label("Setlist").props.accessibilityState.expanded, false);
   const reads = f.reads.length;
-  assert.equal(flattenedStyle(button).minWidth, 140);
+  const ordinaryMinimum = width < 400 ? "100%" : 140;
+  assert.equal(flattenedStyle(button).minWidth, ordinaryMinimum, "narrow six-digit/closed Lounge is readable even before scaling");
   for (const fontScale of [1.4, 1.786, 3.1, 1, 1.786, 1]) {
     f.resize({ fontScale }, { notify: false });
     assert.equal(f.windowDimensions().fontScale, fontScale);
     f.act(() => caption().props.onTextLayout?.({ nativeEvent: { lines: [] } }));
-    assert.equal(flattenedStyle(f.label(label)).minWidth, fontScale >= 1.4 ? "100%" : 140);
+    assert.equal(flattenedStyle(f.label(label)).minWidth, fontScale >= 1.4 ? "100%" : ordinaryMinimum);
     assert.equal(f.label(label), button, "the action is not remounted");
     assert.equal(f.all().find(node => node === scroll), scroll);
     assert.equal(scroll.nativeOffset, 615);

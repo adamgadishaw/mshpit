@@ -451,6 +451,9 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   });
   const verifiedAttendeeCount = readMatches ? scopedSocialRead.verifiedAttendeeCount || 0 : 0;
   const loungeClosed = social.loungeStatus === "closed";
+  // The native 17-point label plus a long count cannot share half a narrow
+  // action row even at ordinary text size. Preserve the same control owner.
+  const fullWidthLounge = largeActionText || (width / actionFontScale < 400 && (loungeClosed || social.messageCount >= 10000));
   const renderedAttendeeCount = Math.min(30, social.attendees.length);
   const hiddenAttendeeCount = Math.max(0, attendeeTotal - renderedAttendeeCount);
   useLayoutEffect(() => {
@@ -935,9 +938,9 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           </Pressable>
           ) : null}
           {!presentation.showPostEvent && legacyGoingButton}
-          <Pressable style={[styles.loungeBtn, largeActionText && styles.loungeBtnLargeText, loungeClosed && styles.loungeBtnClosed]} onPress={() => onOpenLounge?.(norm)} accessibilityRole="button" accessibilityLabel={loungeClosed ? "Open this show's closed Lounge details" : `Open this show's Lounge, ${social.messageCount} messages`}>
+          <Pressable style={[styles.loungeBtn, fullWidthLounge && styles.loungeBtnLargeText, loungeClosed && styles.loungeBtnClosed]} onPress={() => onOpenLounge?.(norm)} accessibilityRole="button" accessibilityLabel={loungeClosed ? "Open this show's closed Lounge details" : `Open this show's Lounge, ${social.messageCount} messages`}>
             <Icon name={loungeClosed ? "lock" : "comment"} size={16} color={colors.amber} />
-            <Text onTextLayout={syncActionFontScale} style={[styles.loungeTxt, largeActionText && styles.loungeTxtLargeText]}>{loungeClosed ? "Lounge closed" : "Lounge"}</Text>
+            <Text onTextLayout={syncActionFontScale} style={[styles.loungeTxt, fullWidthLounge && styles.loungeTxtLargeText]}>{loungeClosed ? "Lounge closed" : "Lounge"}</Text>
             {!loungeClosed ? <View style={styles.loungeCount}><Text style={styles.loungeCountTxt}>{social.messageCount}</Text></View> : null}
           </Pressable>
         </View> : null}
@@ -1232,9 +1235,9 @@ const baseStyles = {
   eventArtwork: { height: 232, borderRadius: radius.md },
   artworkCredit: { color: colors.textDim, fontSize: 11, lineHeight: 16, marginTop: 6 },
   photoEmpty: { color: colors.textDim, fontSize: 12, paddingVertical: 12 },
-  overallRow: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 14 },
-  overallValue: { color: colors.gold, fontFamily: mono, fontSize: 32, fontWeight: "800" },
-  overallCopy: { flex: 1, minWidth: 0, gap: 4 },
+  overallRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 14, paddingVertical: 14 },
+  overallValue: { flexShrink: 0, color: colors.gold, fontFamily: mono, fontSize: 32, fontWeight: "800" },
+  overallCopy: { flexGrow: 1, flexShrink: 1, minWidth: "60%", gap: 4 },
   overallLabel: { color: colors.text, fontSize: 13, fontWeight: "700" },
   content: { width: "100%", maxWidth: 1040, alignSelf: "center", padding: 16, paddingBottom: 48 },
   socialRow: { flexDirection: "row", gap: 10, marginTop: 16 },
@@ -1311,9 +1314,9 @@ const baseStyles = {
   seenLine: { color: colors.gold, fontSize: 12.5, fontWeight: "800", marginTop: 4 },
   eventLineup: { color: colors.textDim, fontFamily: mono, fontSize: 10, lineHeight: 16, letterSpacing: 0.7, marginTop: 6 },
   artistLink: { color: colors.amber, fontSize: 12, marginTop: 4, fontWeight: "600" },
-  seeRow: { flexDirection: "row", gap: 10, marginTop: 16 },
-  seeBtn: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 13 },
-  seeTxt: { flex: 1, color: colors.text, fontSize: 13, fontWeight: "700" },
+  seeRow: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 16 },
+  seeBtn: { flexGrow: 1, flexShrink: 1, minWidth: "45%", flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 13 },
+  seeTxt: { flexShrink: 1, color: colors.text, fontSize: 13, fontWeight: "700" },
   originalPostCard: { minHeight: 76, flexDirection: "row", alignItems: "center", gap: 11, backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginTop: 24 },
   originalPostCardPressed: { opacity: 0.8, backgroundColor: colors.surfaceAlt },
   originalPostIcon: { width: 38, height: 38, borderRadius: radius.sm, borderCurve: "continuous", alignItems: "center", justifyContent: "center", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
