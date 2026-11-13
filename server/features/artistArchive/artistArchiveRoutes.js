@@ -1,6 +1,9 @@
 import { createArtistArchiveRepository } from "./artistArchiveRepository.js";
 import { createArtistArchiveService } from "./artistArchiveService.js";
 
+import { artistCatalogVisibleTo } from "../../artistCatalogVisibility.js";
+import { confirmedArtistPath } from "../../../src/domain/urls.mjs";
+
 const TEN_MINUTES = 10 * 60 * 1000;
 
 export function artistArchiveRoutes({
@@ -46,7 +49,12 @@ export function artistArchiveRoutes({
   return {
     "GET /api/artists/archive": (ctx) => {
       rateLimit(ctx, "artist-archive", 30, TEN_MINUTES);
-      return { archive: service.readArchive({ ...identity(ctx), viewer: ctx.user || null }) };
+      const selected = identity(ctx);
+      const artist = database.prepare("SELECT norm,source,public_slug FROM artists WHERE norm=?").get(selected.artistKey);
+      const artistPublicSlug = confirmedArtistPath(artist) && artistCatalogVisibleTo(database, artist) ? artist.public_slug : null;
+      const archive = service.readArchive({ ...selected, viewer: ctx.user || null });
+      const withIdentity = (show) => ({ ...show, artistPublicSlug });
+      return { archive: { ...archive, shows: archive.shows.map(withIdentity), topShows: archive.topShows.map(withIdentity) } };
     },
     "GET /api/artists/archive/reviews": (ctx) => {
       rateLimit(ctx, "artist-archive-reviews", 120, TEN_MINUTES);
