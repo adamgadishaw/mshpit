@@ -317,7 +317,7 @@ async function main() {
     await check("real-browser-reset-warns-current-account-and-only-revokes-target-sessions", async () => {
       const handoffContext = await browser.newContext({ viewport: { width: 390, height: 844 }, serviceWorkers: "block" });
       const current = fixture.readers[4];
-      await handoffContext.addCookies([{ name:fixture.cookieName,value:current.cookie.slice(fixture.cookieName.length+1),url:origin,httpOnly:true,sameSite:"Lax" }]);
+      await handoffContext.addCookies([{ name:fixture.cookieName,value:fixture.resetCurrentCookie.slice(fixture.cookieName.length+1),url:origin,httpOnly:true,sameSite:"Lax" }]);
       await handoffContext.route("**/*",route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
       const handoffPage = await handoffContext.newPage(); handoffPage.setDefaultTimeout(timeoutMs);
       handoffPage.on("pageerror",error => pageErrors.push(error.message));
@@ -330,7 +330,8 @@ async function main() {
       const cookie = (await handoffContext.cookies()).find(c=>c.name===fixture.cookieName);
       assert.equal((await request("/api/me",{cookie:fixture.cookieName+'='+cookie.value})).data.user.id,fixture.otherReset.id);
       assert.equal((await request("/api/me",{cookie:fixture.otherReset.oldCookie})).data.user,null);
-      assert.equal((await request("/api/me",{cookie:current.cookie})).data.user.id,current.id,"An unrelated current account keeps its own session");
+      assert.equal((await request("/api/me",{cookie:fixture.resetCurrentCookie})).data.user,null,"The browser's departing cookie cannot be replayed after handoff");
+      assert.equal((await request("/api/me",{cookie:current.cookie})).data.user.id,current.id,"A separate session of the unrelated account remains valid");
       await handoffContext.close();
     });
     await check("real-cookie-cold-start-recovers-after-one-identity-503-without-login", async () => {

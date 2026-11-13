@@ -67,5 +67,8 @@ process.send({ kind: "fixture", password, cookieName: COOKIE, alice: members[0],
   reset: { ...members[2], token: resetToken, oldCookies: [cookie(members[2].id), cookie(members[2].id)] },
   change: { ...members[3], oldCookies: [cookie(members[3].id), cookie(members[3].id)] },
   lostReset: extraReset(members[4]), otherReset: extraReset(members[5]),
+  // The browser's departing cookie is deliberately retired during a reset
+  // handoff. Keep a distinct session to prove unrelated devices are preserved.
+  resetCurrentCookie: cookie(members.find(user => user.id === "real_read_4").id),
   readers: members.slice(6).map(user => ({ id: user.id, cookie: cookie(user.id) })),
 });
