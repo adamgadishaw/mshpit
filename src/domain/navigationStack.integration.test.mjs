@@ -78,7 +78,7 @@ function appNavigation(initialStack = [{}], { web = true, prepare = (frame) => f
     setStack: (update) => queued.push(update), setTab: () => {}, setLanding: () => {},
     window: { history, location }, browser, browserHistoryRef: { current: browser },
     publicLookup, publicNavigationPendingRef, publicRouteRequestRef,
-    setPublicNavigationNotice: () => {},
+    setPublicNavigationNotice: () => {}, cancelPushNavigation: () => {},
     newsOpenRef, setNewsStoryNotice: () => {},
     restoreBrowserPathRef: { current: onRestore },
     composerCloseGuardRef: guardRef, bypassNextPopRef: { current: null },

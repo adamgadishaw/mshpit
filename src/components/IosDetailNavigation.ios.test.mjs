@@ -93,6 +93,7 @@ function rootNavigationFixture(platform = "ios", frames) {
   let aborts = 0;
   const stackRef = { current: stack }, navigationRef = { current: { stack, tab: "feed", landing: false } };
   const bindings = {
+    cancelPushNavigation: noop,
     Platform: { OS: platform }, web: false, nav, stack, linkedNavigationScope: scope, nativeAccountLinkActiveRef: { current: false },
     linkedNavigationRef: { current: owner }, navigationRef, stackRef,
     newsLinkedClaimRef: { current: null }, newsOpenRef: { current: 0 }, setNewsStoryNotice: noop,

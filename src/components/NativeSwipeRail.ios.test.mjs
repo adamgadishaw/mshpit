@@ -487,7 +487,7 @@ function rootNavigationFixture({ platform = "ios" } = {}) {
     setIOSMenuOpenState: value => { iosMenuOpen = value; }, setIOSTabSwipeRevision: value => { iosTabSwipeRevision = value; },
     useMemo: (create, deps) => { if (!memo || !deps.every((value, i) => Object.is(value, memo.deps[i]))) memo = { value: create(), deps }; return memo.value; },
     newsLinkedClaimRef: { current: null }, newsOpenRef: { current: 0 }, setNewsStoryNotice: noop,
-    publicLookup: {}, publicNavigationPendingRef: { current: null }, publicRouteRequestRef: { current: null }, setPublicNavigationNotice: noop,
+    publicLookup: {}, publicNavigationPendingRef: { current: null }, publicRouteRequestRef: { current: null }, setPublicNavigationNotice: noop, cancelPushNavigation: noop,
     authNavigationAbortRef: { current: noop }, setStack: value => queued.push(value), setTab: noop, setLanding: noop,
     memberTabRequiresAccount: () => false, SearchScreen: {}, DiscoverScreen: {}, YouScreen: {}, browseReturnRef: { current: { reset: noop } },
     MAIN_TAB_PATHS: { feed: "/", search: "/search", discover: "/discover", you: "/you" },

@@ -13,4 +13,5 @@ export function useNativePush({ accountId, authEpoch, onOpenEvent, onActivity })
     return () => { subscription.remove(); nativePush.stop(); };
   }, []);
   useEffect(() => { nativePush.setAccount(accountId, authEpoch); void nativePush.activate(); }, [accountId, authEpoch]);
+  return nativePush.cancelNavigation;
 }

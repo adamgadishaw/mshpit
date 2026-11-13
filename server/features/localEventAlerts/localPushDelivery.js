@@ -4,6 +4,8 @@ import { withImmediateWrite } from "../../databaseTransaction.js";
 const LEASE_MS = 60_000;
 const RECEIPT_DELAY_MS = 15 * 60_000;
 const RECEIPT_MAX_MS = 24 * 60 * 60_000;
+const rateLimited = result => result?.status === "rejected" && ["RateLimited", "MessageRateExceeded"].includes(result.code);
+const retryAt = (at, attempts) => at + 60_000 * 2 ** attempts;
 const bounded = (limit) => Number.isInteger(limit) ? Math.max(1, Math.min(limit, 100)) : 20;
 
 // Explicit capability and injected transport: importing/constructing this
@@ -58,8 +60,8 @@ export function createLocalPushDelivery({ db, alerts, transport, enabled = false
         if (!authorized(claimed, now())) { finish(claimed, "cancelled"); counts.cancelled++; return; }
         if (result?.status === "accepted" && typeof result.ticketId === "string" && result.ticketId.length > 0 && result.ticketId.length <= 200) {
           finish(claimed, "accepted", null, result.ticketId, now() + RECEIPT_DELAY_MS); counts.accepted++;
-        } else if (result?.status === "rejected" && result.code === "RateLimited" && claimed.attempts < 4) {
-          finish(claimed, "ready", "RATE_LIMITED", null, now() + 60_000 * 2 ** claimed.attempts); counts.retrying++;
+        } else if (rateLimited(result) && claimed.attempts < 4) {
+          finish(claimed, "ready", "RATE_LIMITED", null, retryAt(now(), claimed.attempts)); counts.retrying++;
         } else if (result?.status === "rejected") {
           finish(claimed, "failed", result.code === "DeviceNotRegistered" ? "DEVICE_NOT_REGISTERED" : "PROVIDER_REJECTED"); counts.failed++;
           if (result.code === "DeviceNotRegistered") db.prepare("UPDATE local_push_installations SET enabled=0 WHERE installation_id=? AND generation=?")
@@ -75,13 +77,25 @@ export function createLocalPushDelivery({ db, alerts, transport, enabled = false
     let checked = 0;
     for (const row of rows) {
       if (stopping) break;
-      if (!authorized(row, now())) { db.prepare("UPDATE local_push_outbox SET state='cancelled' WHERE id=? AND state='accepted'").run(row.id); continue; }
-      if (now() - row.sent_at >= RECEIPT_MAX_MS) { db.prepare("UPDATE local_push_outbox SET state='unknown',error_code='RECEIPT_EXPIRED' WHERE id=? AND state='accepted'").run(row.id); continue; }
+      if (!authorized(row, now())) { db.prepare("UPDATE local_push_outbox SET state='cancelled' WHERE id=? AND state='accepted' AND ticket_id=? AND attempts=?").run(row.id, row.ticket_id, row.attempts); continue; }
+      if (now() - row.sent_at >= RECEIPT_MAX_MS) { db.prepare("UPDATE local_push_outbox SET state='unknown',error_code='RECEIPT_EXPIRED' WHERE id=? AND state='accepted' AND ticket_id=? AND attempts=?").run(row.id, row.ticket_id, row.attempts); continue; }
       let result;
       try { result = await transport.receipt(row.ticket_id); }
       catch (error) { void error; result = { status: "pending" }; }
       withImmediateWrite(db, () => {
+        // Another worker may already have consumed this receipt and sent a new
+        // attempt. A delayed result must never settle or rearm its newer ticket.
+        const current = db.prepare("SELECT 1 FROM local_push_outbox WHERE id=? AND state='accepted' AND ticket_id=? AND attempts=? AND sent_at=?")
+          .get(row.id, row.ticket_id, row.attempts, row.sent_at);
+        if (!current) return;
         if (!authorized(row, now())) { db.prepare("UPDATE local_push_outbox SET state='cancelled' WHERE id=? AND state='accepted'").run(row.id); return; }
+        // Explicit provider rejection proves this attempt was not delivered.
+        // Missing receipts, timeouts and unknown sends never take this branch.
+        if (result?.status === "rejected" && result.code === "MessageRateExceeded" && row.attempts < 4) {
+          db.prepare("UPDATE local_push_outbox SET state='ready',ticket_id=NULL,error_code='RATE_LIMITED',next_at=? WHERE id=?")
+            .run(retryAt(now(), row.attempts), row.id);
+          return;
+        }
         const state = result?.status === "delivered" ? "delivered" : result?.status === "rejected" ? "failed" : "accepted";
         db.prepare("UPDATE local_push_outbox SET state=?,next_at=?,error_code=? WHERE id=? AND state='accepted'")
           .run(state, now() + RECEIPT_DELAY_MS, state === "failed" ? "RECEIPT_REJECTED" : null, row.id);

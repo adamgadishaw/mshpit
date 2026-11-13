@@ -9,7 +9,7 @@ import { createLoadState, beginLoadState, resolveLoadState, rejectLoadState, isL
 // account/auth-epoch changes synchronously abort and discard all private state.
 export function createLocalPushController({ api, notifications, installationStorage, platform, projectId, toAppError, onChange = () => {}, onOpenEvent }) {
   let scope = "guest", accountId = null, epoch = 0, abort = new AbortController();
-  let state = createLoadState({ scope }), enabling = null, lastResponse = null, changingAccount = false;
+  let state = createLoadState({ scope }), enabling = null, lastResponse = null, changingAccount = false, responseSequence = 0;
   const publish = next => { state = next; onChange(state); };
   function setAccount(nextAccountId, authEpoch = 0) {
     const nextScope = `${nextAccountId || "guest"}:${authEpoch}`;
@@ -112,23 +112,28 @@ export function createLocalPushController({ api, notifications, installationStor
     publish(createLoadState({ scope }));
     return disableDevice();
   }
-  async function openResponse(response) {
+  async function openResponse(response, { isCurrent = () => true } = {}) {
     if (!accountId) return commandSuccess({ opened: false });
     const context = captured(), request = response?.notification?.request, data = request?.content?.data;
     if (!request?.identifier || lastResponse === request.identifier || data?.kind !== "local_event_alert" || typeof data.alertId !== "string" || data.alertId.length > 100) return commandSuccess({ opened: false });
+    const sequence = ++responseSequence;
+    const current = () => !context.signal.aborted && sequence === responseSequence && isCurrent();
     try {
       const installation = await installationStorage.getOrCreate(); context.assertCurrent();
+      if (!current()) return commandSuccess({ opened: false });
       if (installation.binding?.accountId !== context.accountId || installation.installationId !== data.installationId || installation.binding?.generation !== data.generation) return commandSuccess({ opened: false });
       const { target } = await api.target({ ...context, alertId: data.alertId }); context.assertCurrent();
+      if (!current()) return commandSuccess({ opened: false });
       if (!target || target.alertId !== data.alertId || typeof target.eventId !== "string" || !target.eventId.length) throw new TypeError("This show update is no longer available.");
       if (lastResponse === request.identifier) return commandSuccess({ opened: false });
       lastResponse = request.identifier;
       // Navigate by canonical tour-date identity, never provider payload URLs
       // or concert-archive keys, and never add attendance/calendar intent.
-      onOpenEvent(target.eventId, target.event);
+      onOpenEvent(target.eventId, target.event, current);
       return commandSuccess({ opened: true });
     } catch (error) {
       if (isLoadCancellation(error, context.signal)) throw error;
+      if (!current()) return commandSuccess({ opened: false });
       return commandFailure(toAppError(error));
     }
   }

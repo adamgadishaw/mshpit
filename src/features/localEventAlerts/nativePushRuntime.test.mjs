@@ -16,7 +16,7 @@ function fixture({ enabled = true, cold = null } = {}) {
     getLastNotificationResponseAsync: async () => cold };
   const api = { preferences: async () => { if (offline) throw Error("offline"); return { preferences: prefs }; },
     binding: async () => { if (offline) throw Error("offline"); return { generation }; },
-    register: async value => { calls.push(`register:${value.accountId}`); return { installationId: record.installationId, generation: ++generation, enabled: true }; },
+    register: async value => { calls.push(`register:${value.accountId}`); return { installationId: record.installationId, generation: record.binding?.accountId === value.accountId ? generation : ++generation, enabled: true }; },
     revoke: async value => { calls.push(`revoke:${value.accountId}`); return { generation: ++generation, enabled: false }; },
     target: async value => { calls.push(`target:${value.accountId}`); return { target: { alertId: value.alertId, eventId: "tm_real", event: { id: "tm_real", venue: "Actual Hall" } } }; } };
   const storage = { readExisting: async () => structuredClone(record), getOrCreate: async () => structuredClone(record),
@@ -87,4 +87,52 @@ test("cold response waits for authenticated scope even when SDK lookup crosses v
   f.runtime.stop(); f.notifications.getLastNotificationResponseAsync = () => cold.promise;
   f.runtime.start(); f.runtime.setAccount("A", 2); cold.resolve(response); await settle();
   assert.equal(f.opened.length, 1); assert.equal(f.opened[0].id, "tm_real");
+});
+
+const namedTap = (f, name) => { const value = f.tap(); value.notification.request.identifier = name; value.notification.request.content.data.alertId = name; return value; };
+const targetFor = id => ({ target: { alertId: id, eventId: id, event: { id } } });
+test("newer warm tap wins over a delayed older target and its error", async () => {
+  for (const failure of [false, true]) {
+    const f = fixture(), older = deferred(); f.runtime.setAccount("A", 1); f.runtime.start(); await f.runtime.enableDevice();
+    f.api.target = ({ alertId }) => alertId === "older" ? older.promise.then(() => { if (failure) throw Error("old failure"); return targetFor(alertId); }) : Promise.resolve(targetFor(alertId));
+    f.handlers.tap(namedTap(f, "older")); await settle(); f.handlers.tap(namedTap(f, "newer")); await settle();
+    older.resolve(); await settle();
+    assert.deepEqual(f.opened, [{ id: "newer" }]); assert.equal(f.runtime.snapshot().error, null);
+    f.handlers.tap(namedTap(f, "older")); await settle(); assert.deepEqual(f.opened, [{ id: "newer" }]);
+  }
+});
+test("cold SDK lookup cannot replace a newer warm response or manual navigation", async () => {
+  for (const manual of [false, true]) {
+    const f = fixture(), cold = deferred(); f.runtime.setAccount("A", 1); await f.runtime.enableDevice();
+    f.notifications.getLastNotificationResponseAsync = () => cold.promise; f.api.target = async ({ alertId }) => targetFor(alertId); f.runtime.start();
+    if (manual) f.runtime.cancelNavigation(); else { f.handlers.tap(namedTap(f, "warm")); await settle(); }
+    cold.resolve(namedTap(f, "cold")); await settle();
+    assert.deepEqual(f.opened, manual ? [] : [{ id: "warm" }]);
+  }
+});
+test("manual navigation and composer guards retire pending native destinations", async () => {
+  const f = fixture(), target = deferred(); f.runtime.setAccount("A", 1); f.runtime.start(); await f.runtime.enableDevice();
+  f.api.target = () => target.promise; f.handlers.tap(namedTap(f, "pending")); await settle(); f.runtime.cancelNavigation();
+  target.resolve(targetFor("pending")); await settle(); assert.deepEqual(f.opened, []);
+  const guards = []; f.runtime.updateCallbacks({ onOpenEvent: (_event, current) => guards.push(current), onActivity: () => {} });
+  f.api.target = async ({ alertId }) => targetFor(alertId);
+  f.handlers.tap(namedTap(f, "dialog1")); await settle(); assert.equal(guards[0](), true);
+  f.handlers.tap(namedTap(f, "dialog2")); await settle(); assert.equal(guards[0](), false); assert.equal(guards[1](), true);
+  f.runtime.cancelNavigation(); assert.equal(guards[1](), false);
+});
+test("guest warm response supersedes a pending cold lookup before authentication", async () => {
+  const f = fixture(), cold = deferred(); f.runtime.setAccount("A", 1); await f.runtime.enableDevice();
+  const warm = namedTap(f, "warm"), old = namedTap(f, "cold"); f.runtime.stop();
+  f.notifications.getLastNotificationResponseAsync = () => cold.promise; f.runtime.start(); f.handlers.tap(warm);
+  cold.resolve(old); await settle(); f.runtime.setAccount("A", 2);
+  f.api.target = async ({ alertId }) => targetFor(alertId);
+  await f.runtime.activate(); await settle();
+  assert.deepEqual(f.opened, [{ id: "warm" }]);
+});
+test("retained SDK listeners from an old mount cannot override the new mount", async () => {
+  const f = fixture(); f.runtime.setAccount("A", 1); await f.runtime.enableDevice(); f.runtime.start();
+  const oldTap = f.handlers.tap, oldToken = f.handlers.token, stale = namedTap(f, "old-mount");
+  f.runtime.stop(); f.runtime.setAccount("A", 2); f.runtime.start(); f.api.target = async ({ alertId }) => targetFor(alertId);
+  f.handlers.tap(namedTap(f, "new-mount")); await settle(); oldTap(stale); oldToken(); await settle();
+  assert.deepEqual(f.opened, [{ id: "new-mount" }]); assert.equal(f.calls.filter(value => value === "register:A").length, 1);
 });

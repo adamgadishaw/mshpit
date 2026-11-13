@@ -345,6 +345,73 @@ test("two worker instances claim one durable send, then honour receipt errors", 
   assert.equal(f.db.prepare("SELECT enabled FROM local_push_installations").get().enabled, 0);
 });
 
+test("Expo preserves explicit MessageRateExceeded and leaves missing/error receipt lookups pending", async () => {
+  const replies = [
+    { ok: true, data: { data: { ticket: { status: "error", details: { error: "MessageRateExceeded" } } } } },
+    { ok: false, status: 429 }, { ok: false, status: 503 }, { ok: true, data: { data: {} } },
+    { ok: true, data: { data: { status: "error", details: { error: "MessageRateExceeded" } } } },
+  ];
+  const adapter = createExpoPushTransport({ fetchImpl: async () => { const value = replies.shift(); return { ...value, json: async () => value.data }; } });
+  assert.deepEqual(await adapter.receipt("ticket"), { status: "rejected", code: "MessageRateExceeded" });
+  for (let i = 0; i < 3; i++) assert.deepEqual(await adapter.receipt("ticket"), { status: "pending" });
+  assert.deepEqual(await adapter.send({}), { status: "rejected", code: "MessageRateExceeded" });
+});
+
+test("accepted ticket with definite device rate rejection retries exponentially up to four sends", async t => {
+  const f = fixture(t); f.account(); f.event(); f.enable(); f.plan(); f.alerts.deliverDue();
+  let sends = 0;
+  const worker = createLocalPushDelivery({ db: f.db, alerts: f.alerts, enabled: true, now: f.now, transport: {
+    send: async () => ({ status: "accepted", ticketId: `attempt-${++sends}` }),
+    receipt: async () => ({ status: "rejected", code: "MessageRateExceeded" }),
+  } });
+  const row = () => f.db.prepare("SELECT * FROM local_push_outbox").get();
+  await worker.run();
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    assert.equal(sends, attempt); f.advance(15 * 60000); await worker.run();
+    if (attempt === 4) { assert.equal(row().state, "failed"); break; }
+    assert.equal(row().state, "ready"); assert.equal(row().ticket_id, null); assert.equal(row().attempts, attempt);
+    assert.equal(row().next_at - f.now(), 60000 * 2 ** attempt);
+    f.advance(60000 * 2 ** attempt - 1); await worker.run(); assert.equal(sends, attempt);
+    f.advance(1); await worker.run(); assert.equal(row().state, "accepted");
+  }
+  f.advance(86400000); await worker.run(); assert.equal(sends, 4);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM notifications").get().n, 1);
+});
+
+test("receipt retry rechecks opt-out and never rearms unknown sends", async t => {
+  const f = fixture(t); f.account(); f.event(); f.enable(); f.plan(); f.alerts.deliverDue();
+  let sends = 0, mode = "accepted";
+  const worker = createLocalPushDelivery({ db: f.db, alerts: f.alerts, enabled: true, now: f.now, transport: {
+    send: async () => { sends++; return mode === "accepted" ? { status: "accepted", ticketId: "ticket" } : { status: "unknown" }; },
+    receipt: async () => ({ status: "rejected", code: "MessageRateExceeded" }),
+  } });
+  await worker.run(); f.advance(15 * 60000); await worker.run();
+  mode = "unknown"; f.advance(120000); await worker.run(); assert.equal(sends, 2);
+  f.advance(15 * 60000); await worker.run(); assert.equal(sends, 2); assert.equal(f.db.prepare("SELECT state FROM local_push_outbox").get().state, "unknown");
+  // Independent second installation becomes ineligible while waiting to retry.
+  f.enable("fan", { installationId: "second_fixture_installation", token: "ExpoPushToken[fixturesecond12345]" });
+  f.event("tm_2"); f.plan("tm_2"); f.alerts.deliverDue(); mode = "accepted"; await worker.run();
+  f.advance(15 * 60000); await worker.run(); const before = sends;
+  f.alerts.setPreferences("fan", { ...DEFAULT_LOCAL_ALERT_PREFERENCES, datesPush: false, salesPush: false }, f.authorize("fan").assertCurrentSession);
+  f.advance(120000); await worker.run(); assert.equal(sends, before);
+  assert.equal(f.db.prepare("SELECT COUNT(*) n FROM local_push_outbox WHERE state='ready'").get().n, 0);
+});
+
+test("late receipt from an older attempt cannot alter a newer accepted ticket", async t => {
+  const f = fixture(t); f.account(); f.event(); f.enable(); f.plan(); f.alerts.deliverDue();
+  let resolveOld, receiptStarted, sends = 0;
+  const old = new Promise(resolve => { resolveOld = resolve; }), started = new Promise(resolve => { receiptStarted = resolve; });
+  const common = { db: f.db, alerts: f.alerts, enabled: true, now: f.now };
+  const sender = async () => ({ status: "accepted", ticketId: `ticket-${++sends}` });
+  const slow = createLocalPushDelivery({ ...common, transport: { send: sender, receipt: () => { receiptStarted(); return old; } } });
+  const fast = createLocalPushDelivery({ ...common, transport: { send: sender, receipt: async () => ({ status: "rejected", code: "MessageRateExceeded" }) } });
+  await slow.run(); f.advance(15 * 60000); const pending = slow.run(); await started;
+  await fast.run(); f.advance(120000); await fast.run(); assert.equal(sends, 2);
+  resolveOld({ status: "rejected", code: "MessageRateExceeded" }); await pending;
+  const row = f.db.prepare("SELECT state,ticket_id,attempts FROM local_push_outbox").get();
+  assert.equal(row.state, "accepted"); assert.equal(row.ticket_id, "ticket-2"); assert.equal(row.attempts, 2);
+});
+
 test("read and push targets reject an artist hold after inbox delivery", t => {
   const f = fixture(t); f.account(); f.event(); f.enable(); f.plan(); f.alerts.deliverDue();
   const id = f.db.prepare("SELECT id FROM local_event_alerts").get().id;

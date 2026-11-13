@@ -7,15 +7,16 @@ import { isLoadCancellation } from "../../domain/loadState.mjs";
 export function createNativePushRuntime({ api, notifications, installationStorage, platform, projectId, enabled, toAppError }) {
   let accountId = null, authEpoch = null, epoch = 0, request = new AbortController();
   let preparing = false, preparation = null, refresh = null, started = false, muted = false;
-  let onOpenEvent = () => {}, onActivity = () => {}, subscriptions = [], lastTap = null, lifetime = 0;
+  let onOpenEvent = () => {}, onActivity = () => {}, subscriptions = [], lastTap = null, lifetime = 0, tapRevision = 0;
+  const seenTaps = new Set();
   const listeners = new Set();
   const capable = !!enabled && ["ios", "android"].includes(platform) && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(projectId || "");
   let state;
   const publish = () => { state = { ...controller.getState(), capable }; if (!muted) for (const listener of listeners) listener(); };
   const controller = createLocalPushController({ api, notifications: capable ? notifications : null, installationStorage, platform, projectId,
-    toAppError, onChange: publish, onOpenEvent: (id, event) => {
+    toAppError, onChange: publish, onOpenEvent: (id, event, isCurrent) => {
       if (!event || event.id !== id) throw new TypeError("This show update is no longer available.");
-      onOpenEvent(event);
+      onOpenEvent(event, isCurrent);
     } });
   publish();
   const failure = error => commandFailure(toAppError(error));
@@ -26,8 +27,10 @@ export function createNativePushRuntime({ api, notifications, installationStorag
     } };
   };
   function invalidate() { request.abort(); request = new AbortController(); epoch++; refresh = null; }
+  function cancelNavigation() { tapRevision++; lastTap = null; }
   function setAccount(id, nextEpoch) {
     if (id === accountId && nextEpoch === authEpoch) return;
+    if (accountId) cancelNavigation();
     invalidate(); accountId = id || null; authEpoch = nextEpoch; preparing = false; preparation = null;
     muted = true; controller.setAccount(accountId, authEpoch); muted = false;
   }
@@ -63,15 +66,32 @@ export function createNativePushRuntime({ api, notifications, installationStorag
     invalidate();
     try { return await controller.disableDevice(); } catch (error) { return failure(error); }
   }
-  async function response(value) {
-    if (!accountId || preparing) return;
+  function response(tap) {
+    if (!tap || tap !== lastTap || tap.revision !== tapRevision || !accountId || preparing) return;
+    if (tap.task) return tap.task;
+    const task = openTap(tap); tap.task = task;
+    void task.finally(() => { if (tap.task === task) tap.task = null; });
+    return task;
+  }
+  function acceptTap(value) {
+    const notification = value?.notification?.request;
+    if (notification?.content?.data?.kind !== "local_event_alert" || !notification.identifier || seenTaps.has(notification.identifier)) return;
+    seenTaps.add(notification.identifier);
+    if (seenTaps.size > 100) seenTaps.delete(seenTaps.values().next().value);
+    lastTap = { value, revision: ++tapRevision, task: null };
+    void response(lastTap);
+  }
+  async function openTap(tap) {
     const context = capture();
+    const current = () => tap.revision === tapRevision && !context.signal.aborted;
     try {
       if (refresh) { await refresh; context.assertCurrent(); }
-      const result = await controller.openResponse(value); context.assertCurrent();
+      if (!current()) return;
+      const result = await controller.openResponse(tap.value, { isCurrent: current }); context.assertCurrent();
+      if (!current()) return;
       if (result.ok && result.value.opened) { lastTap = null; onActivity(); }
       else if (!result.ok) { state = { ...state, status: "error", error: result.error }; for (const listener of listeners) listener(); }
-    } catch (error) { if (!isLoadCancellation(error, context.signal)) { state = { ...state, status: "error", error: toAppError(error) }; for (const listener of listeners) listener(); } }
+    } catch (error) { if (current() && !isLoadCancellation(error, context.signal)) { state = { ...state, status: "error", error: toAppError(error) }; for (const listener of listeners) listener(); } }
   }
   async function receive(value) {
     const context = capture(), data = value?.request?.content?.data;
@@ -91,7 +111,7 @@ export function createNativePushRuntime({ api, notifications, installationStorag
     return preparation;
   }
   return {
-    setAccount, snapshot: () => state, subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
+    setAccount, cancelNavigation, snapshot: () => state, subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
     enableDevice, disableDevice, refreshDevice,
     commands() {
       const id = accountId, version = authEpoch, lifetime = epoch;
@@ -107,16 +127,18 @@ export function createNativePushRuntime({ api, notifications, installationStorag
     start() {
       if (started || !capable) return;
       started = true;
-      subscriptions = [notifications.addPushTokenListener(() => { void refreshDevice(); }),
-        notifications.addNotificationReceivedListener(value => { void receive(value); }),
-        notifications.addNotificationResponseReceivedListener(value => { lastTap = value; void response(value); })];
+      const startEpoch = ++lifetime;
+      const initialRevision = tapRevision;
+      const active = () => started && startEpoch === lifetime;
+      subscriptions = [notifications.addPushTokenListener(() => { if (active()) void refreshDevice(); }),
+        notifications.addNotificationReceivedListener(value => { if (active()) void receive(value); }),
+        notifications.addNotificationResponseReceivedListener(value => { if (active()) acceptTap(value); })];
       // Keep the platform's last response for crash recovery; the controller
       // deduplicates it for this scope and validates ownership on every restart.
-      const startEpoch = ++lifetime;
       void notifications.getLastNotificationResponseAsync().then(value => {
-        if (started && startEpoch === lifetime && value) { lastTap = value; void response(value); }
-      }, error => { if (started && startEpoch === lifetime) { state = { ...state, status: "error", error: toAppError(error) }; for (const listener of listeners) listener(); } });
+        if (started && startEpoch === lifetime && initialRevision === tapRevision && value) acceptTap(value);
+      }, error => { if (started && startEpoch === lifetime && initialRevision === tapRevision) { state = { ...state, status: "error", error: toAppError(error) }; for (const listener of listeners) listener(); } });
     },
-    stop() { started = false; lifetime++; for (const subscription of subscriptions) subscription.remove(); subscriptions = []; lastTap = null; setAccount(null, (authEpoch || 0) + 1); },
+    stop() { started = false; lifetime++; cancelNavigation(); seenTaps.clear(); for (const subscription of subscriptions) subscription.remove(); subscriptions = []; setAccount(null, (authEpoch || 0) + 1); },
   };
 }

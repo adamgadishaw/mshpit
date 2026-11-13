@@ -375,6 +375,7 @@ function rootNavigationFixture() {
   const nav = { notifications: true }, stack = [{}, nav], queued = [];
   const stackRef = { current: stack }, navigationRef = { current: { stack, tab: "feed", landing: false } };
   const bindings = {
+    cancelPushNavigation: noop,
     Platform: { OS: "ios" }, web: false, nav, linkedNavigationScope: scope,
     linkedNavigationRef: { current: owner }, navigationRef, stackRef,
     newsLinkedClaimRef: { current: null }, newsOpenRef: { current: 0 }, setNewsStoryNotice: noop,

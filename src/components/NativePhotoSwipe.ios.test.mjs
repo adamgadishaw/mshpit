@@ -60,7 +60,7 @@ walk(rootAST);
 assert.ok(galleryJSX);
 const rootCode = transformSync(`export default function root(bindings) {
   const { Platform, web, nav, linkedNavigationScope, linkedNavigationRef, navigationRef, stackRef, newsLinkedClaimRef, newsOpenRef,
-    setNewsStoryNotice, publicLookup, publicNavigationPendingRef, publicRouteRequestRef, setPublicNavigationNotice, authNavigationAbortRef,
+    setNewsStoryNotice, publicLookup, publicNavigationPendingRef, publicRouteRequestRef, setPublicNavigationNotice, authNavigationAbortRef, cancelPushNavigation,
     composerCloseGuardRef, setStack, setTab, setLanding, session, navigationFrameForAccount, prepareAvailableNavigationFrame,
     replaceNavigationFrame, pathForFrame, PhotoViewer, mediaViewerOpenerRef, mediaReactions, loadMediaReactions, toggleMediaReaction,
     track, openReport, openSignIn } = bindings;

@@ -283,8 +283,8 @@ function Root() {
   } = useStore();
   useFeedImpressionSession(session);
   const appActive = useAppActive();
-  useNativePush({ accountId: authReady ? session?.id || null : null, authEpoch: chatAuthEpoch,
-    onOpenEvent: event => openShow(event), onActivity: refreshNotifications });
+  const cancelPushNavigation = useNativePush({ accountId: authReady ? session?.id || null : null, authEpoch: chatAuthEpoch,
+    onOpenEvent: (event, current) => openShow(event, {}, current), onActivity: refreshNotifications });
   const staff = isStaff(session?.role);
   const canViewDiagnostics = isMod(session?.role);
   const feed = visibleFeed(staff);
@@ -768,6 +768,7 @@ function Root() {
   const newsStoryBackRef = useRef(null);
   newsStoryBackRef.current = newsStoryNotice ? cancelNewsStory : null;
   const cancelPublicRoute = () => {
+    cancelPushNavigation?.();
     if (Platform.OS === "ios") linkedNavigationRef.current.invalidate();
     publicLookup.lookup?.cancel();
     publicNavigationPendingRef.current = null;
@@ -895,18 +896,20 @@ function Root() {
       if (publicRouteRequestRef.current === controller) publicNavigationPendingRef.current = null;
     }
   };
-  const go = (candidate, iosLinkedClaim = null) => {
+  const go = (candidate, iosLinkedClaim = null, isCurrent = () => true) => {
+    if (!isCurrent()) return;
     if (iosLinkedClaim && !linkedNavigationRef.current.current(iosLinkedClaim)) return;
     const current = stackRef.current[stackRef.current.length - 1];
     if (isComposerFrame(current) && isComposerFrame(candidate)) return;
     const transition = composerNavigationTransition(current);
     runAfterComposerClose(() => {
+      if (!isCurrent()) return;
       // A discard prompt may outlive the lookup or its route/account. Consume
       // only after the existing dirty/busy guard permits this navigation.
       if (iosLinkedClaim && !linkedNavigationRef.current.consume(iosLinkedClaim)) return;
       navigateCandidate(candidate, transition);
     }, () => { if (iosLinkedClaim) linkedNavigationRef.current.release(iosLinkedClaim); },
-    () => !iosLinkedClaim || linkedNavigationRef.current.current(iosLinkedClaim));
+    () => isCurrent() && (!iosLinkedClaim || linkedNavigationRef.current.current(iosLinkedClaim)));
   };
   const replace = (frame) => runAfterComposerClose(() => navigateCandidate(frame, "replace"));
   // Keep the current public screen under sign-in; repeated taps must not stack
@@ -1492,7 +1495,7 @@ function Root() {
   };
   // Ordinary statuses open their discussion. A Going ticket can instead pass
   // the exact performance projection produced by calendarShowFromPost.
-  const openShow = (log, analytics = {}) => {
+  const openShow = (log, analytics = {}, isCurrent) => {
     if (!log) return;
     if (isReviewDetail(log)) return openPost(log, analytics);
     if ((log.kind === "status" && log.performanceEvent !== true) || isOnlineReview(log) || isCityOnlyReview(log)) return openPost(log, analytics);
@@ -1501,7 +1504,7 @@ function Root() {
     if (navigation.kind === "post") return openPost(log, analytics);
     // Provider ids and archive keys are performance identities, not post ids.
     track("view_performance");
-    go({ openLog: navigation.destination });
+    go({ openLog: navigation.destination }, null, isCurrent);
   };
   const openPostEvent = (log) => { if (sessionRef.current?.id === session?.id && stackRef.current.at(-1)?.post?.id === nav.post.id) openShow(log); };
   const openPostEditor = (log) => requireVerifiedMutation("post", () => { if (log?.id) go({ editingPost: log }); });
