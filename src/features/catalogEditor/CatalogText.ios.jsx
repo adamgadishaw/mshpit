@@ -1,6 +1,7 @@
 import { useLayoutEffect, useState } from "react";
 import useIOSDetailPresentation from "../../hooks/useIOSDetailPresentation";
-import { Alert, Linking, StyleSheet, Text, View } from "react-native";
+import { Alert, Linking, StyleSheet, View } from "react-native";
+import Text from "../../components/DynamicTypeText";
 import { readCatalogPageText } from "../../lib/catalogTextApi";
 import { colors, space } from "../../theme";
 import { PublicPressableLink } from "../../components/PublicWebLinks";

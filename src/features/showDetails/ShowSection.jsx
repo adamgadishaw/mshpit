@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
+import Text from "../../components/DynamicTypeText";
 import Icon from "../../components/Icon";
 import { colors, focusRing, radius } from "../../theme";
 import useIOSDetailPresentation from "../../hooks/useIOSDetailPresentation";

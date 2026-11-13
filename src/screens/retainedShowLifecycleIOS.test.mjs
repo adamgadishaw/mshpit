@@ -98,7 +98,7 @@ function createRenderer() {
     act(callback) { renderer.flushSyncFromReconciler(callback); flush(); } };
 }
 const nodes = node => [node, ...(node.children || []).flatMap(nodes)];
-const text = node => node.text ?? (node.children || []).map(text).join(" ");
+const text = node => node.text ?? (node.children || []).map(text).filter(value => value !== "").join(" ");
 const flattenedStyle = node => Object.assign({}, ...[node.props.style].flat(Infinity).filter(Boolean));
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const privateReview = { id: "private-review", userId: "reviewer", user: { id: "reviewer", name: "Private reviewer" }, review: "Private concert receipt", overall: 5, date: "2026-01-01" };
@@ -151,6 +151,7 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
     return modules.get(file);
   };
   const imports = (name, local) => {
+    if (name.endsWith("/DynamicTypeText")) return load("src/components/DynamicTypeText.ios.jsx");
     if (name.endsWith("/ShowSection")) return load("src/features/showDetails/ShowSection.jsx");
     if (name.endsWith("/lazyWithRetry")) return { lazyWithRetry: (_read, label) => {
       assert.equal(label, "AfterShowSection");
@@ -253,7 +254,8 @@ function fixture({ strict = false, publicEvent = false, deferredLinks = false, n
     if (!nativeStack) return React.createElement(Owner);
     return React.createElement(Stack, { frames, scope: account + ":" + epoch, enabled: true, admitted: active,
       isCurrentRoute: (frame, index) => frames[index] === frame && index === frames.length - 1,
-      element: React.createElement(Screen, { log: frames.at(-1).openLog }), wrap: ({ children }) => children });
+      element: React.createElement(Screen, { log: frames.at(-1).openLog,
+        onOpenLounge: show => opens.push({ kind: "lounge", show }), onReview: show => opens.push({ kind: "review", show }) }), wrap: ({ children }) => children });
   }
   const render = () => renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null,
     React.createElement(React.Suspense, { fallback: null }, React.createElement(Gate))));
@@ -342,6 +344,36 @@ function nativeActionGeometry(frames) {
   return geometry;
 }
 const yogaGate = { skip: process.env.PIT_YOGA_LAYOUT_PROBE ? false : "Compile scripts/fixtures/show-action-yoga and set PIT_YOGA_LAYOUT_PROBE for the supplemental native-engine gate" };
+test("mounted Show refreshes heading, venue/date, rating, section and count text without replacing page or controls", async t => {
+  const f = fixture({ nativeStack: true, width: 402, lounge: { messageCount: 123456 },
+    logOverrides: { date: "2020-01-01", startDateTime: "2020-01-01T20:00:00Z", overall: 4.7 } });
+  f.document.lifecycle = "completed"; t.after(f.close); await f.ready();
+  const scroll = f.all().find(node => node.type === "ScrollView" && text(node).includes("Lounge"));
+  scroll.nativeOffset = 610;
+  f.press("Setlist");
+  const controls = [f.label("Setlist"), f.label("Open this show's Lounge, 123456 messages")];
+  const paragraphs = f.all().filter(node => node.type === "Text" && node.children.some(child => child.type === "Text" && child.props.accessible === false && child.children.length === 0));
+  const labels = paragraphs.map(text);
+  for (const expected of ["Fixture artist", "Fixture hall", "4.7", "Setlist", "123456"]) assert.ok(labels.includes(expected), expected);
+  assert.ok(labels.some(label => /2020/.test(label)), "date is included");
+  const reads = f.reads.length;
+  for (const fontScale of [1.4, 1.786, 3.1, 1, 1.786, 1]) {
+    const previous = paragraphs.map(node => node.children.at(-1));
+    f.resize({ fontScale });
+    paragraphs.forEach((paragraph, index) => {
+      assert.ok(f.all().includes(paragraph), "existing outer text remains mounted");
+      assert.equal(text(paragraph), labels[index], "no invisible characters or modified content");
+      assert.notEqual(paragraph.children.at(-1), previous[index], "text measurement gets a new empty inline child");
+      assert.equal(paragraph.props.allowFontScaling, undefined);
+      assert.equal(paragraph.props.maxFontSizeMultiplier, undefined);
+    });
+    assert.ok(f.all().includes(scroll)); assert.equal(scroll.nativeOffset, 610);
+    controls.forEach(control => assert.ok(f.all().includes(control), "focused buttons are retained"));
+    assert.equal(f.label("Setlist").props.accessibilityState.expanded, false);
+    assert.equal(f.reads.length, reads); assert.equal(f.writes.length, 0); assert.equal(f.opens.length, 0);
+  }
+  f.press("Open this show's Lounge, 123456 messages"); assert.equal(f.opens.at(-1).kind, "lounge");
+});
 for (const width of [320, 402]) for (const closed of [false, true]) for (const rtl of [false, true]) {
   test(`native Yoga keeps the mounted Lounge full-width across text/viewport changes (${width}, closed ${closed}, RTL ${rtl})`, yogaGate, async t => {
     const f = fixture({ width, lounge: { messageCount: 123456, status: closed ? "closed" : "open" },

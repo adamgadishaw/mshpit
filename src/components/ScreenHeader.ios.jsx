@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, Pressable } from "react-native";
+import { View, StyleSheet, Pressable } from "react-native";
+import Text from "./DynamicTypeText";
 import { colors, font } from "../theme";
 import Icon from "./Icon";
 import { PageTitle } from "./PageReturnContext";

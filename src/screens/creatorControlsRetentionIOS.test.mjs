@@ -66,7 +66,8 @@ function fixture({ owner = false, preferenceOnly = false } = {}) {
   };
   const imports = (name, from) => {
     if (name === "react" || name === "react/jsx-runtime") return require(name);
-    if (name === "react-native") return { View: "View", Text: "Text", TextInput: "TextInput", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", StyleSheet: { create: x => x } };
+    if (name === "react-native") return { View: "View", Text: "Text", TextInput: "TextInput", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", StyleSheet: { create: x => x }, useWindowDimensions: () => ({ width: 393, height: 852, fontScale: 1 }) };
+    if (name.endsWith("/DynamicTypeText")) return load("src/components/DynamicTypeText.ios.jsx");
     if (name.endsWith("/theme")) return { colors: {}, radius: {}, focusRing: {} };
     if (name.endsWith("/Button")) return "Button";
     if (name.endsWith("/Icon")) return "Icon";

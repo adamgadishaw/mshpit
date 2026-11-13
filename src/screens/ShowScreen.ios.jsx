@@ -14,7 +14,8 @@ import { getIOSDetailPrivacySnapshot, subscribeIOSDetailPrivacy, invalidateIOSDe
 import LineupDetails from "../components/LineupDetails";
 import { postHeadline } from "../domain/lineup.mjs";
 import { ordinalWord } from "../domain/supportingActs.mjs";
-import { Platform, View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, PixelRatio, useWindowDimensions } from "react-native";
+import { Platform, View, StyleSheet, ScrollView, Pressable, ActivityIndicator, PixelRatio, useWindowDimensions } from "react-native";
+import Text from "../components/DynamicTypeText";
 import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
 import RatingSplit from "../components/RatingSplit";

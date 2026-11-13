@@ -16,6 +16,7 @@ function load(name, { reduced = false, reader = false, fontScale = 1, queued = f
   let refIndex = 0, memoIndex = 0, effectIndex = 0, sharedIndex = 0;
   const same = (a, b) => a && b && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const modules = {
+    './DynamicTypeText': 'Text',
     './PageReturnContext': { PageTitle: 'PageTitle' },
     react: {
       useContext: () => false,
