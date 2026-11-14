@@ -106,6 +106,7 @@ function createDatabase() {
       photos TEXT NOT NULL DEFAULT '[]',photos_public INTEGER NOT NULL DEFAULT 0,
       removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL
     );
+    CREATE TABLE reports (target_type TEXT,target_id TEXT,status TEXT);
   `);
   database.exec(`CREATE TABLE blocks(blocker_id TEXT,blocked_id TEXT);
     CREATE TABLE artist_tourdate_refresh_queue(artist_key TEXT PRIMARY KEY,status TEXT,attempted_at INTEGER,
@@ -212,6 +213,79 @@ function addReadyImage(database, { assetId, ownerId, url, postId = null, purpose
     "verified", "private_derivative_v1",
   );
   if (postId) database.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,10)").run(postId, assetId);
+}
+
+for (const binding of ["canonical", "legacy"]) {
+  test(`artist directory ${binding} review seeks retain full pages, media authority and fresh revocations`, () => {
+    const database = createDatabase();
+    try {
+      addUser(database, "active");
+      addUser(database, "banned", { banned: true });
+      addUser(database, "suspended", { suspended: true });
+      addUser(database, "dormant");
+      database.exec("UPDATE users SET dormant_at=1 WHERE id='dormant'");
+      addUser(database, "private-owner");
+      database.exec("UPDATE users SET profile_audience='private' WHERE id='private-owner'");
+      const expected = [];
+      const review = "A substantive account of the sound, performance and atmosphere at this concert.";
+      const create = (key, options = {}) => {
+        const name = options.name || `Directory ${key}`;
+        addArtist(database, { key, name, bio: "" });
+        addPost(database, { id: `post-${key}`, artist: name.toUpperCase(),
+          artistKey: binding === "canonical" ? key : null, review, date: "", ...options });
+      };
+      for (let i = 0; i < 30; i++) {
+        const key = String(i).padStart(2, "0"), rank = i % 3, popularity = i % 2;
+        create(key, { review: i % 3 ? review : "" });
+        database.prepare("UPDATE artists SET rank_score=?,popularity=? WHERE norm=?").run(rank, popularity, key);
+        if (i % 3 === 0) addReadyImage(database, { assetId: `image-${key}`, ownerId: "active",
+          url: `https://media.example/${key}.jpg`, postId: `post-${key}` });
+        expected.push({ key, rank, popularity });
+      }
+      for (const [key, options] of [
+        ["removed", { removed: true }], ["online", { experienceType: "online" }],
+        ["wrong-kind", { kind: "log" }], ["short", { review: "too short" }],
+        ["banned-author", { userId: "banned" }], ["suspended-author", { userId: "suspended" }],
+        ["dormant-author", { userId: "dormant" }], ["wrong-key", { artistKey: "absent" }],
+      ]) create(key, options);
+      create("wrong-media-owner", { review: "" });
+      addReadyImage(database, { assetId: "wrong-owner", ownerId: "banned",
+        url: "https://media.example/other.jpg", postId: "post-wrong-media-owner" });
+      create("pending-media", { review: "" });
+      addReadyImage(database, { assetId: "pending", ownerId: "active",
+        url: "https://media.example/pending.jpg", postId: "post-pending-media" });
+      database.exec("UPDATE media_assets SET status='pending' WHERE id='pending'");
+      create("private-photo", { review: "", photosPublic: false });
+      addReadyImage(database, { assetId: "private-photo", ownerId: "active",
+        url: "https://media.example/private.jpg", postId: "post-private-photo" });
+      create("private-catalog");
+      database.exec("UPDATE artists SET source='artist-created' WHERE norm='private-catalog'");
+      database.exec("INSERT INTO artist_profiles(artist_key,owner_id,removed) VALUES('private-catalog','private-owner',0)");
+      create("missing-slug");
+      database.exec("UPDATE artists SET public_slug=NULL WHERE norm='missing-slug'");
+      addArtist(database, { key: "duplicate-a", name: "Duplicate", bio: "" });
+      addArtist(database, { key: "duplicate-b", name: "Duplicate", bio: "" });
+      addPost(database, { id: "ambiguous", artist: "DUPLICATE", artistKey: null, review });
+
+      const repository = createPublicDocumentRepository(database);
+      const read = page => repository.readDirectory({ kind: "artists", at: NOW, page });
+      const order = expected.sort((a, b) => b.rank - a.rank || b.popularity - a.popularity || a.key.localeCompare(b.key)).map(x => x.key);
+      const pages = [read(1), read(2), read(3)];
+      assert.deepEqual(pages.map(p => p.total), [30, 30, 30]);
+      assert.deepEqual(pages.map(p => p.hasNext), [true, true, false]);
+      assert.deepEqual(pages.flatMap(p => p.artists.map(a => a.norm)), order);
+      assert.deepEqual(read(4).artists, []);
+      database.exec("UPDATE posts SET removed=1 WHERE id='post-00'");
+      assert.equal(read(1).total, 29);
+      database.exec("UPDATE posts SET removed=0 WHERE id='post-00'");
+      database.exec("UPDATE media_assets SET status='pending' WHERE id LIKE 'image-%'");
+      assert.equal(read(1).total, 20, "revoked media no longer qualifies artists");
+      database.exec("UPDATE users SET is_banned=1 WHERE id='active'");
+      assert.equal(read(1).total, 0, "both identity branches recheck the reviewer");
+      database.exec("UPDATE users SET is_banned=0 WHERE id='active'");
+      assert.equal(read(1).total, 20);
+    } finally { database.close(); }
+  });
 }
 
 function addVenueReview(database, {
@@ -408,11 +482,12 @@ test("artist SEO and the app share complete public calendar counts and eligible 
     for (let i = 0; i < 7; i += 1) event.run(`coheadline-${i}`, null, 0);
     database.exec("UPDATE tour_dates SET start_local_time='2027-05-01T20:00:00' WHERE id='coheadline-0'");
     event.run("scheduled", "active", NOW + 1000);
+    database.exec("UPDATE posts SET dims=json_object('performance',overall) WHERE id IN ('old','latest','second','private')");
     const summary = createArtistLiveSummaryService({ database, projectDate: (row) => row, clock: () => NOW })
       .read({ artist: database.prepare("SELECT * FROM artists WHERE norm='alpha'").get(), query: { publicPreview: 1, limit: 3 } });
     const documents = service(database);
     const document = documents.artistDocument({ artistKey: "alpha", at: NOW });
-    assert.equal(document.stats.averageRating, summary.reputation.avgRating);
+    assert.equal(document.stats.averageRating, summary.reputation.performanceRating);
     assert.equal(document.stats.averageRating, 3);
     assert.equal(document.stats.ratingCount, 2);
     assert.equal(document.stats.upcomingTotal, 7);
@@ -462,8 +537,7 @@ test("artist SEO omits ambiguous lifespan years and exposes typed facts only in 
 test("public city venue directories use the city repository's canonical guide and moderated label", () => {
   const database = createDatabase();
   try {
-    database.exec(`CREATE TABLE reports (target_id TEXT,status TEXT);
-      CREATE TABLE moderation_actions (id TEXT,actor_id TEXT,action TEXT,target_type TEXT,target_id TEXT,
+    database.exec(`CREATE TABLE moderation_actions (id TEXT,actor_id TEXT,action TEXT,target_type TEXT,target_id TEXT,
         reason TEXT,prior_state TEXT,next_state TEXT,request_id TEXT,created_at INTEGER);`);
     ensureCitySchema(database,{ venues:[],seeds:[],previousSeeds:[],geo:{},banner:null });
     addArtist(database);
@@ -585,11 +659,12 @@ test("artist metadata identifies ambiguous names without advertising absent modu
         artistKey: key,
         review: "A detailed concert review covering the performance, sound, crowd, and encore.",
       });
+      database.prepare("UPDATE posts SET dims=json_object('performance',overall) WHERE id=?").run(`${key}-review`);
       const document = documents.artistDocument({ artistKey: key, at: NOW });
       assert.equal(document.title, `${name} concert reviews & live ratings | Mshpit`);
       assert.equal(
         document.description,
-        `${name} on Mshpit: 4.5/5 live rating from 1 rating. Read firsthand concert reviews.`,
+        `${name} on Mshpit: 4.5/5 performance rating from 1 rating. Read firsthand concert reviews.`,
       );
       assert.equal(document.description.length <= 160, true);
       assert.doesNotMatch(document.title, new RegExp(`^${name.replace(".", "\\.")} live\\b`, "iu"));
@@ -616,6 +691,119 @@ test("artist metadata identifies ambiguous names without advertising absent modu
   } finally {
     database.close();
   }
+});
+
+function addMetadataStop(database, id, overrides = {}) {
+  const row = {
+    id, artist: "Alpha", artist_key: "alpha", venue: "Tour Hall", place: "Las Vegas, Nevada, US",
+    date: "2026-11-20", start_local_time: "19:00:00", event_timezone: "America/Los_Angeles",
+    ...overrides,
+  };
+  const columns = Object.keys(row);
+  database.prepare(`INSERT INTO tour_dates (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`)
+    .run(...Object.values(row));
+}
+
+function assertNextStopConsistency(documents, document, { id, date, label }) {
+  assert.equal(document.events[0].id, id);
+  assert.equal(document.events[0].date, date);
+  assert.ok(document.description.includes(`next in ${label}`), document.description);
+  const html = documents.render(document);
+  const escapedDescription = document.description.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
+  for (const attribute of ['name="description"', 'property="og:description"', 'name="twitter:description"']) {
+    assert.ok(html.includes(`<meta ${attribute} content="${escapedDescription}"`));
+  }
+  assert.equal(document.jsonLd[0].description, document.description);
+  const nextCard = html.match(/class="artist-next"[\s\S]*?<\/div>/u)?.[0];
+  assert.ok(nextCard?.includes(`/event/${id}`));
+  assert.ok(nextCard?.includes(`datetime="${document.events[0].startDateTime || date}"`));
+  const schedule = html.slice(html.indexOf('<h2>Upcoming shows</h2>'));
+  assert.ok(schedule.includes(`/event/${id}`));
+}
+
+test("artist metadata keeps the first city visit in schedule order, including case variants and bounded previews", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database, { bio: "" });
+    // Reverse insertion order and IDs must not determine which date represents a city.
+    for (const [id, date, place] of [
+      ["a-last", "2026-11-25", "Paris, France"],
+      ["b-rome", "2026-11-24", "Rome, Italy"],
+      ["c-repeat", "2026-11-23", "LAS VEGAS, Nevada, US"],
+      ["d-oslo", "2026-11-22", "Oslo, Norway"],
+      ["e-repeat", "2026-11-21", "las vegas, Nevada, US"],
+      ["z-first", "2026-11-20", "Las Vegas, Nevada, US"],
+    ]) addMetadataStop(database, id, { date, place });
+    const documents = service(database);
+    for (const eventLimit of [3, 6]) {
+      const document = documents.artistDocument({ artistKey: "alpha", at: Date.parse("2026-11-14T12:00:00Z"), eventLimit });
+      assertNextStopConsistency(documents, document, { id: "z-first", date: "2026-11-20", label: "Las Vegas (Nov 20), Oslo (Nov 22)" });
+      assert.equal(document.description.includes("Rome (Nov 24)"), eventLimit === 6);
+      assert.doesNotMatch(document.description, /Nov 21|Nov 23|Paris|LAS VEGAS|las vegas/u);
+    }
+  } finally { database.close(); }
+});
+
+test("artist next-stop metadata follows venue-local final-day boundaries across the DST offset change", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database, { bio: "" });
+    addMetadataStop(database, "la-final-day", { date: "2026-11-01", start_date_time: "2026-11-02T03:00:00Z" });
+    addMetadataStop(database, "tokyo-expired", { date: "2026-11-01", place: "Tokyo, Japan", event_timezone: "Asia/Tokyo" });
+    addMetadataStop(database, "la-next-day", { date: "2026-11-02" });
+    const documents = service(database);
+    for (const [at, id, date, label] of [
+      ["2026-11-02T07:59:59.999Z", "la-final-day", "2026-11-01", "Las Vegas (Nov 1)"],
+      ["2026-11-02T08:00:00.000Z", "la-next-day", "2026-11-02", "Las Vegas (Nov 2)"],
+    ]) {
+      const document = documents.artistDocument({ artistKey: "alpha", at: Date.parse(at) });
+      assertNextStopConsistency(documents, document, { id, date, label });
+      assert.ok(!document.events.some((event) => event.id === "tokyo-expired"));
+    }
+  } finally { database.close(); }
+});
+
+test("artist next-stop metadata rolls over the year using UTC when the venue timezone is unknown", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database, { bio: "" });
+    addMetadataStop(database, "year-end", { date: "2026-12-31", event_timezone: null });
+    addMetadataStop(database, "new-year", { date: "2027-01-01", event_timezone: "Invalid/Zone" });
+    const documents = service(database);
+    for (const [at, id, date, label] of [
+      ["2026-12-31T23:59:59.999Z", "year-end", "2026-12-31", "Las Vegas (Dec 31)"],
+      ["2027-01-01T00:00:00.000Z", "new-year", "2027-01-01", "Las Vegas (Jan 1)"],
+    ]) {
+      const document = documents.artistDocument({ artistKey: "alpha", at: Date.parse(at) });
+      assertNextStopConsistency(documents, document, { id, date, label });
+    }
+  } finally { database.close(); }
+});
+
+test("artist metadata skips cancelled, expired, invalid and unreleased stops and removes next-stop claims when empty", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database, { bio: "" });
+    const at = Date.parse("2026-11-14T12:00:00Z");
+    addMetadataStop(database, "expired", { date: "2026-11-12" });
+    addMetadataStop(database, "invalid", { date: "2026-11-31" });
+    addMetadataStop(database, "cancelled", { date: "2026-11-15", event_status: "cancelled" });
+    addMetadataStop(database, "canceled", { date: "2026-11-16", event_status: "canceled" });
+    addMetadataStop(database, "unreleased", { date: "2026-11-17", release_at: at + 1 });
+    addMetadataStop(database, "inactive", { date: "2026-11-18", provider_active: 0 });
+    addMetadataStop(database, "visible");
+    const documents = service(database);
+    const document = documents.artistDocument({ artistKey: "alpha", at });
+    assert.deepEqual(document.events.map((event) => event.id), ["visible"]);
+    assert.equal(document.stats.upcomingTotal, 1);
+    assertNextStopConsistency(documents, document, { id: "visible", date: "2026-11-20", label: "Las Vegas (Nov 20)" });
+    database.prepare("UPDATE tour_dates SET event_status='cancelled' WHERE id='visible'").run();
+    const empty = documents.artistDocument({ artistKey: "alpha", at });
+    assert.deepEqual(empty.events, []);
+    assert.equal(empty.stats.upcomingTotal, 0);
+    assert.doesNotMatch(empty.description, /next in|upcoming|tour 2026/u);
+    assert.doesNotMatch(documents.render(empty), /class="artist-next"/u);
+  } finally { database.close(); }
 });
 
 test("artist document uses only active UGC and references Event leaf pages without duplicating MusicEvent", () => {
@@ -655,6 +843,7 @@ test("artist document uses only active UGC and references Event leaf pages witho
       .run("event-hidden", "Alpha", "Secret Hall", "Nowhere", "2026-09-02", 0, "banned", 0);
     addArtist(database, { key: "bad-mbid", name: "Bad MBID", mbid: "not-a-musicbrainz-id" });
 
+    database.exec("UPDATE posts SET dims=json_object('performance',overall) WHERE id='visible'");
     const documents = service(database);
     const document = documents.artistDocument({ artistKey: "alpha", today: "2026-08-25", at: NOW });
     const html = documents.render(document);
@@ -663,7 +852,7 @@ test("artist document uses only active UGC and references Event leaf pages witho
 
     assert.equal(document.jsonLd[0]["@type"], "CollectionPage");
     assert.equal(document.title, "Alpha Tour 2026: Dates, Tickets & Concert Reviews | Mshpit", "tour searches name the artist and the year");
-    assert.match(document.description, /live rating from 1 rating and 1 upcoming show/u);
+    assert.match(document.description, /performance rating from 1 rating and 1 upcoming show/u);
     assert.match(document.description, /fan-shared photos/u);
     assert.equal(document.jsonLd[0].about["@type"], "Thing");
     assert.equal(document.jsonLd[0].about["@id"], "https://www.example.com/artist/alpha#artist");
@@ -2855,4 +3044,53 @@ test("public document service delegates artist collections and shows load more o
   } finally {
     database.close();
   }
+});
+
+test('overall-only historical feedback remains a review without a performance score', () => {
+ const database=createDatabase();
+ try {
+  addArtist(database); addUser(database,'active');
+  addPost(database,{id:'overall-history',overall:5,review:'A detailed historical concert review describing the night and the atmosphere.'});
+  const document=service(database).artistDocument({artistKey:'alpha',at:NOW});
+  assert.equal(document.stats.averageRating,null);
+  assert.equal(document.stats.ratingCount,0);
+  assert.equal(document.stats.reviewCount,1);
+  assert.doesNotMatch(document.description,/5\/5|performance rating/);
+ } finally {database.close();}
+});
+
+test('venue ratings without excerpts and half-star Review schema retain their separate counts and valid bounds', () => {
+ const database=createDatabase();
+ try {
+  addUser(database,'active'); addUser(database,'half-second');
+  addVenueReview(database,{id:'half-old',venueKey:'half hall',rating:5,text:'',createdAt:1});
+  addVenueReview(database,{id:'half-new',venueKey:'half hall',rating:0.5,text:'short',createdAt:2});
+  addVenueReview(database,{id:'half-b',venueKey:'half hall',userId:'half-second',rating:1,text:'',createdAt:1});
+  const documents=service(database);
+  let document=documents.venueDocument({name:'Half Hall',venueKey:'half hall',at:NOW});
+  assert.deepEqual(document.venueReviewStats,{reviewCount:0,ratingCount:2,averageRating:0.75});
+  assert.deepEqual(document.venueReviews,[]);
+  assert.equal(document.title,'Half Hall venue ratings | Mshpit');
+  let html=documents.render(document);
+  assert.match(html,/0.8<small>\/5<\/small><\/strong> from 2 ratings/);
+  assert.match(html,/0 public review excerpts/);
+  assert.doesNotMatch(JSON.stringify(document.jsonLd),/AggregateRating|reviewRating/);
+  addVenueReview(database,{id:'half-excerpt',venueKey:'half hall',rating:0.5,createdAt:3});
+  document=documents.venueDocument({name:'Half Hall',venueKey:'half hall',at:NOW});
+  const venueSchema=document.jsonLd.find(node=>node['@type']==='MusicVenue');
+  assert.equal(document.venueReviewStats.ratingCount,2);
+  assert.equal(document.venueReviewStats.reviewCount,1);
+  assert.deepEqual(venueSchema.review[0].reviewRating,{'@type':'Rating',ratingValue:0.5,bestRating:5,worstRating:0.5});
+ } finally {database.close();}
+});
+
+test('artist public profile preserves a half-star performance headline', () => {
+ const database=createDatabase();
+ try {
+  addArtist(database); addUser(database,'active'); addPost(database,{id:'half-artist',overall:0.5});
+  database.exec("UPDATE posts SET dims=json_object('performance',0.5) WHERE id='half-artist'");
+  const document=service(database).artistDocument({artistKey:'alpha',at:NOW});
+  assert.equal(document.stats.averageRating,0.5);
+  assert.equal(document.stats.ratingCount,1);
+ } finally {database.close();}
 });

@@ -2937,12 +2937,12 @@ test("PATCH /api/me schemas extras, filters public song text, and keeps trusted 
   assert.equal(publicUser(q.userById.get(user.id)).searchIndexingOptOut, undefined);
 
   const protectedPreference = handler({
-    user: q.userById.get(user.id), ip: "profile-test", body: { extras: { theme: "neon", searchIndexingOptOut: false } },
+    user: q.userById.get(user.id), ip: "profile-test", body: { extras: { theme: "daylight", searchIndexingOptOut: false } },
   });
   assert.equal(protectedPreference.user.searchIndexingOptOut, true,
     "generic extras writes cannot silently erase the dedicated privacy preference");
   assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), {
-    theme: "neon", nowPlaying: { title: "Safe Song", artist: "Safe Artist" }, searchIndexingOptOut: true,
+    theme: "daylight", nowPlaying: { title: "Safe Song", artist: "Safe Artist" }, searchIndexingOptOut: true,
   });
 
   const optedIn = handler({
@@ -2996,7 +2996,7 @@ test("PATCH /api/me extras keeps server-owned fields and dedicated overrides aut
       return user;
     },
     body: {
-      theme: "neon", searchIndexingOptOut: false, concertMapVisible: true,
+      theme: "daylight", searchIndexingOptOut: false, concertMapVisible: true,
       extras: {
         theme: "stage", bass: { title: "New song", artist: "New artist" },
         consentAt: 100, analyticsConsentAt: 200, termsAcceptedAt: 300, termsVersion: "forged",
@@ -3006,7 +3006,7 @@ test("PATCH /api/me extras keeps server-owned fields and dedicated overrides aut
   });
   assert.equal(checks, 2);
   assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), {
-    ...current, theme: "neon", searchIndexingOptOut: false, concertMapVisible: true,
+    ...current, theme: "daylight", searchIndexingOptOut: false, concertMapVisible: true,
     bass: { title: "New song", artist: "New artist" },
   });
 });
@@ -3020,12 +3020,12 @@ test("PATCH /api/me dedicated preference-only patches retain current nonmusic me
   };
   db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify(current), user.id);
   const patch = (body) => routes["PATCH /api/me"]({ user, ip: "extras-preferences-test", body });
-  patch({ theme: "neon" });
+  patch({ theme: "daylight" });
   patch({ concertMapVisible: true });
   patch({ searchIndexingOptOut: false });
   patch({ bio: "Unrelated profile edit", directMessagePolicy: "nobody", profileAudience: "only_me" });
   assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), {
-    ...current, theme: "neon", concertMapVisible: true, searchIndexingOptOut: false,
+    ...current, theme: "daylight", concertMapVisible: true, searchIndexingOptOut: false,
   });
   assert.equal(q.userById.get(user.id).dm_policy, "nobody");
   assert.equal(q.userById.get(user.id).profile_audience, "only_me");
@@ -3197,10 +3197,15 @@ test("capped social endpoints return the newest window in chronological order", 
   const threads = routes["GET /api/me/threads"]({ user: userA });
   assert.equal(threads.threads[0].messages[0].createdAt, 6);
   assert.equal(threads.threads[0].messages.at(-1).createdAt, 505);
-  assert.deepEqual(threads.threads[0].otherUser.home, { city: "Toronto" });
+  const participant = threads.threads[0].otherUser;
+  assert.equal(participant.id, "u_b");
+  assert.equal(participant.handle, "userb");
+  assert.deepEqual(Object.keys(participant).sort(),
+    ["id", "name", "handle", "initials", "avatarUri", "avatarColor", "profileUpdatedAt"].sort());
   const threadSummary = routes["GET /api/me/threads"]({ user: userA, query: { summary: "1" } });
   assert.equal(threadSummary.threads.length, 1);
   assert.deepEqual(threadSummary.threads[0].messages.map((message) => message.createdAt), [505]);
+  assert.deepEqual(threadSummary.threads[0].otherUser, participant);
 
   for (let i = 506; i <= 508; i++) insertDm.run(`dm_${String(i).padStart(4, "0")}`, "u_a", "u_b", `dm ${i}`, i);
   const newerDirect = routes["GET /api/dms/:otherId"]({ user: userA, params: { otherId: "u_b" }, query: { after: direct.syncCursor, limit: 2 } });
@@ -3260,6 +3265,10 @@ test("capped social endpoints return the newest window in chronological order", 
 });
 
 test("group-chat writes require membership and attendance, then succeed on retry", () => {
+  // This tests admission to a future show's lounge, not the past-event RSVP
+  // boundary. Keep its date relative so the fixture cannot age into a denial.
+  const showDate = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
+  const showKey = `artist|venue|${showDate}`;
   const user = verifiedUser("u_chat_integrity", "chat-integrity@example.com", "chatintegrity");
   const fanMessage = routes["POST /api/fanclubs/:artist/messages"];
   const fanContext = (text) => ({ user, ip: "chat-integrity", params: { artist: "The Band" }, body: { text } });
@@ -3277,7 +3286,7 @@ test("group-chat writes require membership and attendance, then succeed on retry
   assert.equal(db.prepare("SELECT COUNT(*) c FROM fan_club_messages WHERE user_id=?").get(user.id).c, 1);
 
   const loungeMessage = routes["POST /api/lounges/:key/messages"];
-  const loungeContext = (text) => ({ user, ip: "chat-integrity", params: { key: "Artist|Venue|2026-07-15" }, body: { text } });
+  const loungeContext = (text) => ({ user, ip: "chat-integrity", params: { key: `Artist|Venue|${showDate}` }, body: { text } });
   assert.throws(
     () => loungeMessage(loungeContext("not going")),
     (error) => error.code === "LOUNGE_ATTENDANCE_REQUIRED",
@@ -3285,10 +3294,10 @@ test("group-chat writes require membership and attendance, then succeed on retry
   assert.equal(db.prepare("SELECT COUNT(*) c FROM lounge_messages WHERE user_id=?").get(user.id).c, 0);
 
   const markGoing = routes["POST /api/going"];
-  const goingContext = { user, ip: "chat-integrity", body: { key: "artist|venue|2026-07-15", artist: "Artist", venue: "Venue", date: "2026-07-15", going: true } };
+  const goingContext = { user, ip: "chat-integrity", body: { key: showKey, artist: "Artist", venue: "Venue", date: showDate, going: true } };
   assert.equal(markGoing(goingContext).going, true);
   assert.equal(markGoing(goingContext).going, true);
-  assert.equal(db.prepare("SELECT COUNT(*) c FROM going WHERE user_id=? AND concert_key=?").get(user.id, "artist|venue|2026-07-15").c, 0,
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM going WHERE user_id=? AND concert_key=?").get(user.id, showKey).c, 0,
     "private-by-default attendance must not enter the visibility-blind legacy table");
   assert.equal(db.prepare("SELECT visibility FROM show_attendance WHERE user_id=?").get(user.id).visibility, "private");
   assert.ok(loungeMessage(loungeContext("in the room")).id);
@@ -5571,4 +5580,33 @@ test("playlist create defaults only omitted visibility and rejects invalid priva
 test("the show swipe and Lounge plans are on the back burner: none of their API routes exist", () => {
   assert.deepEqual(Object.keys(routes).filter((key) => /\/api\/crew|\/plans\b|\/api\/plans/u.test(key)), [],
     "Switch Crew on in src/domain/crewAvailability.mjs only when the owner decides to launch it.");
+});
+
+test('venue profile aggregate matches SEO independently of the review page', async () => {
+ const { createPublicVenueReviewService } = await import('./features/seo/publicVenueReviews.js');
+ const one=addUser('profile_parity_one','parity1@example.test','parity_one');
+ const two=addUser('profile_parity_two','parity2@example.test','parity_two');
+ const insert=db.prepare('INSERT INTO venue_reviews(id,venue_key,user_id,rating,text,created_at) VALUES(?,?,?,?,?,?)');
+ for(let i=0;i<205;i++) insert.run('profile_parity_'+i,'profile parity',one.id,5,'A substantive review describing this venue and the experience in detail.',i+10);
+ insert.run('profile_parity_old','profile parity',two.id,1,'A substantive review describing this venue and the experience in detail.',1);
+ const response=routes['GET /api/venues/:key/reviews']({params:{key:'profile parity'},query:{limit:'2'}});
+ assert.equal(response.reviews.length,2);
+ assert.ok(response.nextCursor);
+ assert.deepEqual(response.stats,createPublicVenueReviewService(db).read({venueKey:'profile parity'}).stats);
+ assert.equal(response.stats.averageRating,3);
+});
+
+test('unchanged venue submissions accept star-only half ratings and profile API matches public stats', async () => {
+ const {createPublicVenueReviewService}=await import('./features/seo/publicVenueReviews.js');
+ const one=verifiedUser('half_api_one','half-api-one@example.test','half_api_one');
+ const two=verifiedUser('half_api_two','half-api-two@example.test','half_api_two');
+ const submit=(user,rating,text='')=>routes['POST /api/venues/:key/reviews']({user,ip:'half-rating-'+user.id,params:{key:'half api hall'},body:{rating,text,photos:[]}});
+ submit(one,5); submit(one,0.5); submit(two,1);
+ // Fix fixture timestamps explicitly so the test never depends on clock ties.
+ db.prepare("UPDATE venue_reviews SET created_at=CASE WHEN rating=5 THEN 1 WHEN rating=0.5 THEN 2 ELSE 3 END WHERE venue_key='half api hall'").run();
+ const response=routes['GET /api/venues/:key/reviews']({params:{key:'half api hall'},query:{limit:'1'}});
+ assert.equal(response.reviews.length,1);
+ assert.deepEqual(response.stats,{reviewCount:0,ratingCount:2,averageRating:0.75});
+ assert.deepEqual(response.stats,createPublicVenueReviewService(db).read({venueKey:'half api hall'}).stats);
+ assert.equal(db.prepare("SELECT COUNT(*) count FROM venue_reviews WHERE venue_key='half api hall'").get().count,3);
 });

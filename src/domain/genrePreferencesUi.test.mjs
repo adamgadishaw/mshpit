@@ -8,14 +8,15 @@ const editProfile = read("../screens/EditProfileScreen.jsx");
 const pickArtists = read("../screens/PickArtistsScreen.jsx");
 const discoverGenres = read("../components/discover/DiscoverGenres.jsx");
 
-test("signup and Edit Profile expose the same required one-to-three genre contract", () => {
+test("signup and deliberate genre edits require one to three without blocking unrelated legacy profile edits", () => {
   assert.match(auth, /Choose 1–3 genres/);
   assert.match(auth, /signupMusicError\(\{ genres, ageBand, agreed \}\)/);
   assert.match(auth, /signupFormPayload\(/);
   assert.match(read("./signupForm.mjs"), /genres: profileGenreSelection\(genres\)\.genres/);
   assert.match(auth, /PROFILE_GENRE_MAX/);
   assert.match(editProfile, /profileGenreSelection\(genres\)/);
-  assert.match(editProfile, /disabled: mediaBusy \|\| saving \|\| !genreSelection\.valid/);
+  assert.match(editProfile, /const genresInvalid = Object\.hasOwn\(patch, "genres"\) && !genreSelection\.valid/);
+  assert.match(editProfile, /disabled: iosEditor\?\.confirmed \|\| locked \|\| mediaBusy \|\| saving \|\| genresInvalid \|\| handleInvalid/);
   assert.match(auth, /PROFILE_GENRE_OPTIONS\.map/);
   assert.match(editProfile, /profileGenreOptions\(genres\)/);
   assert.doesNotMatch(auth, /import \{ GENRES \} from "\.\.\/data"/);
@@ -32,5 +33,5 @@ test("Discover labels MSHpit live ratings separately from catalog popularity", (
   assert.match(discoverGenres, /title="Top rated live"/);
   assert.match(discoverGenres, /ratingCount/);
   assert.match(discoverGenres, /Popular catalog artists with a verified genre/);
-  assert.match(discoverGenres, /one perfect score does not automatically win/);
+  assert.match(discoverGenres, /Rankings consider both fan scores and the number of ratings/);
 });

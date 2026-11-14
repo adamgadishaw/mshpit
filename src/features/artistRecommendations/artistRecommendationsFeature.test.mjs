@@ -14,6 +14,17 @@ import {
 
 const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
 
+test("recommendation normalization retains only validated original-photo provenance", () => {
+  const artist = { key: 'drake', name: 'Drake', spotifyPhoto: 'https://i.scdn.co/image/fixtureDrake',
+    spotifyArtistUrl: 'https://open.spotify.com/artist/3TVXtAsR1Inumwj472S9r4', photoSource: 'spotify', photoCredit: 'Spotify', photoDisplayPolicy: 'original' };
+  const normalize = value => artistRecommendationsFromResponse({ recommendations: [{ artist: value, reason: { label: 'Saved taste fixture' } }] }).recommendations[0].artist;
+  assert.equal(normalize(artist).spotifyPhoto, artist.spotifyPhoto);
+  assert.equal(normalize(artist).spotifyArtistUrl, artist.spotifyArtistUrl);
+  for (const row of [{ ...artist, photoCredit: 'Unverified' }, { ...artist, spotifyPhoto: 'https://attacker.example/image' }, { key: 'drake', name: 'Drake' }]) {
+    assert.equal(normalize(row).spotifyPhoto, undefined);
+  }
+});
+
 test("artist recommendation requests are account bound and capped", () => {
   assert.deepEqual(artistRecommendationRequest({ accountId: "member-1", limit: 99 }), {
     path: "/api/me/artist-recommendations?limit=8",

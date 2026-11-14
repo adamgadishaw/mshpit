@@ -10,6 +10,19 @@ import {
   shouldScheduleComposerDraftPersistence,
 } from "./composerDraft.mjs";
 
+test("draft intent survives normalization without turning an incomplete creator update into an ordinary post", () => {
+  for (const value of [
+    { postType: "status", review: "ordinary", expected: false },
+    { postType: "status", review: "unfinished", creatorIntent: true, expected: true },
+    { postType: "status", review: "older creator draft", creatorUpdate: { entityType: "artist", entityKey: "artist", title: "Unfinished" }, expected: true },
+  ]) {
+    const draft = normalizeComposerDraft(value);
+    assert.equal(draft.creatorIntent, value.expected);
+    assert.equal(normalizeComposerDraft(draft).creatorIntent, value.expected);
+    assert.equal(draft.review, value.review);
+  }
+});
+
 test("status drafts preserve playlist, unresolved song input, media, and panel state", () => {
   const draft = normalizeComposerDraft({
     id: "draft_1",

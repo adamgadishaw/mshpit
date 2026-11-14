@@ -1,6 +1,10 @@
+import { moveComposerMedia } from "../domain/composerMediaOrder.mjs";
+import CreatorUpdateFields from "../features/creatorPosts/CreatorUpdateFields";
+import { creatorEntityForComposer, creatorUpdateDraft, creatorUpdateError } from "../domain/creatorUpdate.mjs";
 import MediaUploadProgress from "../components/MediaUploadProgress";
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Alert, AppState } from "react-native";
+import { View, Text, StyleSheet, TextInput, Pressable, KeyboardAvoidingView, Platform, Alert, AppState } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import * as ImagePicker from "expo-image-picker";
 import { colors, mono, radius, font, displayFont, shadow, space } from "../theme";
 import { useStore } from "../store";
@@ -8,6 +12,7 @@ import { useAccountTaskScope } from "../hooks/useAccountTaskScope";
 import { useWebRecoveryDraft } from "../hooks/useWebRecoveryDraft";
 import { verifyDurableJson } from "../lib/webRecovery.mjs";
 import { RATING_DIMS, computeReview } from "../data";
+import { clampRating, LIMITS, reviewTextLength } from "../domain/validation.mjs";
 
 // Tour presets: pick one to attach the show to the artist without an album/tour.
 const TOUR_PRESETS = ["One-off show", "Reunion tour", "Festival set", "Anniversary tour", "Surprise show"];
@@ -17,20 +22,21 @@ const LOG_STEPS_ONLINE = ["The show", "The video", "Your story"];
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
-import Stars from "../components/Stars";
 import TapStars from "../components/TapStars";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
+import useReducedMotion from "../hooks/useReducedMotion";
 import DatePicker from "../components/DatePicker";
 import ShowLineupFields from "../components/ShowLineupFields";
 import { fetchSeenCount } from "../lib/seenCountApi";
 import { adaptLineupToFormat, cleanShowFormat, festivalDays, lineupFromPost, SHOW_FORMAT_LABELS, SHOW_FORMATS } from "../domain/lineup.mjs";
 import { fetchLineupSuggestions } from "../lib/lineupApi";
 import ConcertLocationFields from "../components/ConcertLocationFields";
+import ConcertLookup from "../features/concertLookup/ConcertLookup";
 import { isDurableMediaUrl, reportMediaPickerError } from "../lib/mediaUpload";
 import { api } from "../lib/api";
 import { formatDate, initialComposerDate, todayIso } from "../domain/dates.mjs";
-import { composerLogRequirement, composerRatingDims, hasDetailedComposerRatings, restoredComposerDate } from "../domain/composerLogDetails.mjs";
+import { composerLogRequirement, composerRatingDims, composerReviewRatings, restoredComposerDate } from "../domain/composerLogDetails.mjs";
 import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import {
   composerDraftFingerprint,
@@ -243,6 +249,7 @@ function postErrorMessage(error) {
   const code = error?.serverCode || error?.body?.code || error?.code;
   const status = Number(error?.status || error?.body?.status);
   if (code === "POST_REMOVED") return "That post was removed on another device. Close this composer and start a new post.";
+  if (code === "POST_MUTATION_CONFLICT") return "An earlier version of this post was saved. Your full draft is still here. Check the saved post before applying your changes.";
   if (status === 409) return "That post changed on another device. Close this composer, reopen the latest version, and apply your changes again.";
   if (code === "ARTIST_CAMPAIGN_LIMIT") return "You've used today's two Featured posts. Turn off Featured to publish this as a regular post, or try Featured again after the daily quota resets.";
   if (code === "RATE_LIMITED" || status === 429) return "You're posting quickly. Wait a moment and try again. Your post is still here.";
@@ -271,6 +278,9 @@ export default function LogScreen({
 }) {
   const { session, searchArtistsApi, attachArtistSuggestionApi, searchVenues, searchPeople, drafts, saveDraft, deleteDraft } = useStore();
   const accountTasks = useAccountTaskScope(session?.id);
+  const reducedMotion = useReducedMotion();
+  const reducedMotionRef = useRef(reducedMotion);
+  reducedMotionRef.current = reducedMotion;
   const initialRecoveryDraftRef = useRef(!editing && initialDraftId
     ? drafts.find((draft) => draft?.id === initialDraftId) || null
     : null);
@@ -280,7 +290,7 @@ export default function LogScreen({
   const [postType, setPostType] = useState(
     editing ? (editing.kind === "memory" ? "memory" : editing.kind === "status" ? "status" : "show")
       : defaultMode === "memory" && prefill?.artist ? "memory"
-        : prefill?.artist ? "show" : defaultMode === "campaign" ? "status" : defaultMode
+        : defaultMode === "creator" ? "status" : prefill?.artist ? "show" : defaultMode === "campaign" ? "status" : defaultMode
   );
   const isMemorialMemory = postType === "memory";
   const memoryEditLocked = !!editing && isMemorialMemory;
@@ -302,6 +312,12 @@ export default function LogScreen({
     return null;
   });
   const isCampaign = isStatus && !!campaign;
+  const [creatorUpdate, setCreatorUpdate] = useState(() => editing?.creatorUpdate || (defaultMode === "creator" ? creatorUpdateDraft(creatorEntityForComposer(user, prefill?.creatorEntity)) : null));
+  // Entry points choose the initial intent; a resumed draft owns its intent.
+  // Keep an incomplete creator draft blocked rather than converting it to a post.
+  const [creatorIntent, setCreatorIntent] = useState(() => editing ? !!editing.creatorUpdate : defaultMode === "creator");
+  const [creatorAuthorizedAccount, setCreatorAuthorizedAccount] = useState(null);
+  const isCreator = isStatus && !!creatorUpdate;
   const [draftId, setDraftId] = useState(null);
   const [savedDraftFingerprint, setSavedDraftFingerprint] = useState(null);
   const [artist, setArtist] = useState(editing?.artist || prefill?.artist || "");
@@ -331,16 +347,17 @@ export default function LogScreen({
   const storyStep = logSteps.length;
   const goToLogStep = (step) => {
     setLogStep(Math.max(1, Math.min(step, logSteps.length)));
-    requestAnimationFrame(() => composerScrollRef.current?.scrollTo?.({ y: 0, animated: true }));
+    requestAnimationFrame(() => composerScrollRef.current?.scrollTo?.({ y: 0, animated: !reducedMotionRef.current }));
   };
   const isCoHeadline = effectiveFormat === "co_headline";
   const [timesSeen, setTimesSeen] = useState(null);
   const [automaticTimesSeen, setAutomaticTimesSeen] = useState(null);
   const [onlineTitle, setOnlineTitle] = useState(editing?.onlineTitle || editing?.online_title || prefill?.onlineTitle || prefill?.online_title || "");
   const [youtubeUrl, setYoutubeUrl] = useState(editing?.youtubeUrl || editing?.youtube_url || prefill?.youtubeUrl || prefill?.youtube_url || "");
-  const [onlineRating, setOnlineRating] = useState(() => normalizeOnlineRating(
-    initialExperienceType === ONLINE_REVIEW_EXPERIENCE ? editing?.overall ?? prefill?.overall : 0,
-  ));
+  const [onlineRating, setOnlineRating] = useState(() => initialExperienceType === ONLINE_REVIEW_EXPERIENCE
+    // Keep historical precision until the member actually changes the score.
+    ? editing ? Number(editing.overall) || 0 : normalizeOnlineRating(prefill?.overall)
+    : 0);
   const officialEventName = !editing && typeof prefill?.officialEventName === "string"
     ? prefill.officialEventName.trim()
     : "";
@@ -534,7 +551,7 @@ export default function LogScreen({
   const [dims, setDims] = useState(() => editing && initialExperienceType !== ONLINE_REVIEW_EXPERIENCE
     ? postDims(editing)
     : { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
-  const [ratingsDirty, setRatingsDirty] = useState(false);
+  const [overallRating, setOverallRating] = useState(() => Number(editing?.overall) || 0);
   const [review, setReview] = useState(editing?.review || "");
   const [song, setSong] = useState(editing?.song || null);
   const [songUrl, setSongUrl] = useState(editing?.song?.url || "");
@@ -616,6 +633,13 @@ export default function LogScreen({
   function setMediaProject(update) {
     const next = typeof update === "function" ? update(mediaProjectRef.current) : update;
     mediaProjectRef.current = next;
+    // Keep the chosen image through recovery and delivery-URL changes, but
+    // never leave a background pointing at a removed or replaced attachment.
+    // This is outside the project updater; the campaign updater stays pure.
+    setCampaign((current) => !current?.backgroundAssetId
+      || next.assets.some((asset) => asset.assetId === current.backgroundAssetId && asset.kind === "image")
+      ? current
+      : { ...current, backgroundAssetId: undefined });
     renderMediaProject(next);
   }
   const [pendingMediaAssets, renderPendingMediaAssets] = useState([]);
@@ -947,6 +971,7 @@ export default function LogScreen({
           // and stops immediately so we do not repeat doomed work.
           if (!operationIsActive() || !shouldContinueMediaBatch(error)) throw error;
           rejectedAssets.push({ asset, error });
+          setMediaProject((current) => removeMediaProjectAsset(current, asset.id));
           setPendingMediaAssets((current) => current.filter((item) => item.id !== asset.id));
           void retireRemoteDrafts([asset.id]);
           await releaseMediaDraftAsset(asset);
@@ -1145,6 +1170,15 @@ export default function LogScreen({
     // Remove still retires that source, and abandoned drafts age out normally.
   };
 
+  const moveAttachedMedia = (id, direction) => {
+    const result = moveComposerMedia(mediaProjectRef.current, id, direction,
+      submitBusy || pendingMediaAssetsRef.current.length > 0 || !!uploadOperationRef.current || !!submitOperationRef.current
+      || !!pickerOperationRef.current || !!mediaRetryOperationRef.current);
+    if (!result) return;
+    setMediaProject(result.project);
+    setPhotos(result.photos);
+  };
+
   const removeAttachedMedia = (index) => {
     const removedUrl = photos[index];
     const matching = mediaProject.assets.find((asset) => asset.sourceUrl === removedUrl);
@@ -1154,9 +1188,6 @@ export default function LogScreen({
       return next;
     });
     if (matching) {
-      if (campaign?.backgroundAssetId === matching.assetId) {
-        setCampaign((current) => current ? { ...current, backgroundAssetId: undefined } : current);
-      }
       setMediaProject((current) => removeMediaProjectAsset(current, matching.id));
     }
   };
@@ -1219,6 +1250,7 @@ export default function LogScreen({
     const target = pendingMediaAssetsRef.current.find((asset) => asset.id === id);
     if (!target) return;
     setPendingMediaAssets((current) => current.filter((asset) => asset.id !== id));
+    setMediaProject((current) => removeMediaProjectAsset(current, id));
     setMediaError("");
     void retireRemoteDrafts([id]);
     void releaseMediaDraftAsset(target);
@@ -1245,34 +1277,31 @@ export default function LogScreen({
     }
   };
 
-  const setDim = (k, v) => { setRatingsDirty(true); setDims((d) => ({ ...d, [k]: v })); };
+  const setDim = (k, v) => { setDims((d) => ({ ...d, [k]: v })); };
   const computed = computeReview(dims);
-  const submittedRatings = editing && !ratingsDirty
-    ? {
-        overall: Number(editing.overall) || computed.overall,
-        band: editing.band == null ? computed.band : Number(editing.band),
-        room: editing.room == null ? computed.room : Number(editing.room),
-      }
-    : computed;
+  const submittedRatings = composerReviewRatings({ overall: overallRating, dims, computed, editing });
+  const reviewLength = reviewTextLength(review);
+  const reviewTooLong = !isStatus && reviewLength > LIMITS.concertReview && !(editing && review === editing.review);
   const youtubeUrlValid = isValidYouTubeSourceUrl(youtubeUrl);
   const convertingClips = mediaProjectConvertingAssets(mediaProject);
   const canPostStatus = protectedLegacyMemory
     ? !!review.trim()
-    : !!(review.trim() || photos.filter(isDurableMediaUrl).length || convertingClips.length || song?.videoId);
+    : !!(isCreator || review.trim() || photos.filter(isDurableMediaUrl).length || convertingClips.length || song?.videoId);
   const canPostBase = isStatus
     ? canPostStatus
     : isOnlineReview
       ? artist.trim() && onlineRating > 0 && youtubeUrlValid
-      : artist.trim() && (venue.trim() || city.trim()) && (!eventAddress.trim() || city.trim()) && computed.overall > 0;
+      : artist.trim() && (venue.trim() || city.trim()) && (!eventAddress.trim() || city.trim()) && overallRating > 0;
   // The last day of a festival, and the second headliner of a co-headline show.
   const festivalSpanDays = isFestival && date && endDate ? Math.round((Date.parse(`${endDate}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`)) / 86_400_000) : 0;
   const lineupProblem = isStatus || isOnlineReview ? ""
     : isFestival && endDate && (!date || festivalSpanDays < 0 || festivalSpanDays >= 14) ? "Pick the festival's first day, then a last day up to two weeks later."
       : isCoHeadline && !lineup.some((act) => act.role === "co_headliner") ? "Add the other headliner, or switch to Concert."
         : "";
-  const canPost = !!canPostBase && !lineupProblem && pendingMediaAssets.length === 0;
+  const creatorProblem = isCreator ? creatorUpdateError(creatorUpdate) : creatorIntent ? "Choose a page account." : null;
+  const canPost = !!canPostBase && !lineupProblem && !reviewTooLong && !creatorProblem && (!isCreator || creatorAuthorizedAccount === user?.id) && pendingMediaAssets.length === 0;
   const submitBusy = pickingMedia || uploadingPhotos || resolvingSong || posting || artistAttaching;
-  const engagementPrompt = useMemo(() => protectedLegacyMemory || (!isStatus && !isOnlineReview) ? null : composerEngagementPrompt({
+  const engagementPrompt = useMemo(() => protectedLegacyMemory || isCreator || (!isStatus && !isOnlineReview) ? null : composerEngagementPrompt({
     kind: isStatus ? "status" : "review",
     experienceType,
     canPost: !!canPostBase,
@@ -1284,14 +1313,16 @@ export default function LogScreen({
     media: photos,
     song,
     taggedPeople: isStatus || isOnlineReview ? [] : taggedPeople,
-  }), [protectedLegacyMemory, isStatus, isOnlineReview, experienceType, canPostBase, artistPicked, city, tour, onlineTitle, review, photos, song, taggedPeople]);
+  }), [protectedLegacyMemory, isCreator, isStatus, isOnlineReview, experienceType, canPostBase, artistPicked, city, tour, onlineTitle, review, photos, song, taggedPeople]);
 
   const draftMediaProject = useMemo(() => normalizeMediaProject({
     assets: [
-      ...mediaProject.assets.filter((saved) => !pendingMediaAssets.some((staged) => staged.id === saved.id
+      ...mediaProject.assets.map((saved) => pendingMediaAssets.find((staged) => staged.id === saved.id
+        || (staged.assetId && staged.assetId === saved.assetId)
+        || (staged.sourceUrl && staged.sourceUrl === saved.sourceUrl)) || saved),
+      ...pendingMediaAssets.filter((staged) => !mediaProject.assets.some((saved) => saved.id === staged.id
         || (staged.assetId && staged.assetId === saved.assetId)
         || (staged.sourceUrl && staged.sourceUrl === saved.sourceUrl))),
-      ...pendingMediaAssets,
     ],
   }), [mediaProject, pendingMediaAssets]);
   useEffect(() => {
@@ -1325,6 +1356,8 @@ export default function LogScreen({
     id: draftId,
     submissionId: submissionIdRef.current,
     postType,
+    creatorUpdate: isCreator ? creatorUpdate : null,
+    creatorIntent,
     campaign: isStatus ? campaign : null,
     experienceType,
     artist,
@@ -1341,6 +1374,7 @@ export default function LogScreen({
     onlineTitle,
     youtubeUrl,
     onlineRating,
+    overallRating,
     dims,
     review,
     tags: [],
@@ -1354,7 +1388,7 @@ export default function LogScreen({
     photosPublic,
     landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatiblePhoto,
     panels: { song: showSong, photos: showPhotos, people: !isStatus && !isOnlineReview && showPeople },
-  }), [draftId, postType, isStatus, isOnlineReview, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, showFormat, endDate, lineup, timesSeen, date, onlineTitle, youtubeUrl, onlineRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
+  }), [draftId, postType, isStatus, isOnlineReview, isCreator, creatorUpdate, creatorIntent, campaign, experienceType, artist, artistPicked, artistKey, venue, city, eventAddress, tour, showFormat, endDate, lineup, timesSeen, date, onlineTitle, youtubeUrl, onlineRating, overallRating, dims, review, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasPendingMedia = pendingMediaAssets.length > 0;
@@ -1500,17 +1534,24 @@ export default function LogScreen({
     submissionIdRef.current = restored.submissionId || submissionIdRef.current;
     setPostType(restored.postType);
     setCampaign(restored.campaign);
+    setCreatorUpdate(restored.creatorUpdate);
+    setCreatorIntent(restored.creatorIntent);
     setExperienceType(restored.experienceType);
     setArtist(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey); setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
     setEventAddress(restored.eventAddress || "");
     const restoredPhotos = restored.photos.filter(isDurableMediaUrl);
-    const restoredProject = normalizeMediaProject(restored.mediaProject);
+    const restoredProject = restored.mediaProject?.assets?.length
+      ? normalizeMediaProject(restored.mediaProject)
+      : mediaProjectFromPost({ photos: restoredPhotos });
     const restoredPending = restoredProject.assets
       .filter((asset) => asset.status !== "ready" && (asset.durableLocalUri || asset.assetId))
-      .map((asset, index) => originalMediaProjectAsset(asset, index));
-    const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
+      .map((asset, index) => originalMediaProjectAsset(asset.status === "processing" ? { ...asset, status: "selected" } : asset, index));
+    // Keep recovered clips in their saved slots, but never publish cached processing identities.
+    const restoredReady = restoredProject.assets.filter((asset) => !!asset.assetId
+      || (!!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id)))
+      .map((asset) => restoredPending.find((pending) => pending.id === asset.id) || asset);
     setTour(restored.tour); setShowFormat(restored.showFormat); setEndDate(restored.endDate);
-    setLineup(lineupFromPost({ artist: restored.artist, showFormat: restored.showFormat, lineup: restored.lineup })); setTimesSeen(restored.timesSeen); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : restoredComposerDate(restored.date)); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    setLineup(lineupFromPost({ artist: restored.artist, showFormat: restored.showFormat, lineup: restored.lineup })); setTimesSeen(restored.timesSeen); setDate(restored.experienceType === ONLINE_REVIEW_EXPERIENCE ? "" : restoredComposerDate(restored.date)); setOnlineTitle(restored.onlineTitle); setYoutubeUrl(restored.youtubeUrl); setOnlineRating(restored.onlineRating); setOverallRating(restored.overallRating ?? clampRating(computeReview(restored.dims).overall)); setDims(restored.dims); setReview(restored.review); setTaggedPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE ? restored.taggedPeople : []); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setPendingMediaAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
     void recoverRestoredMedia(restoredPending, restored.id);
     setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.postType === "show" && restored.experienceType !== ONLINE_REVIEW_EXPERIENCE && (restored.panels.people || restored.taggedPeople.length > 0));
   };
@@ -1680,6 +1721,7 @@ export default function LogScreen({
         const result = await onPost?.({
           id: submissionIdRef.current,
           kind: isMemorialMemory ? "memory" : "status",
+          ...(!editing && isCreator ? { creatorUpdate } : {}),
           ...(isMemorialMemory && !memoryEditLocked ? { artist: artist.trim(), artistKey } : {}),
           ...(protectedLegacyMemory ? { legacyArtistProfile: true } : {}),
           user: editing?.user || (user
@@ -1738,7 +1780,7 @@ export default function LogScreen({
           overall: submittedRatings.overall,
           band: submittedRatings.band || null,
           room: submittedRatings.room || null,
-          dims,
+          dims: submittedRatings.dims,
           setlist: editing?.setlist || [],
           inTourWindow: editing?.inTourWindow || false,
         }),
@@ -1747,7 +1789,7 @@ export default function LogScreen({
         ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
         photosPublic,
         landingShowcase: !isOnlineReview && photosPublic && landingShowcase && hasLandingCompatibleImage(durablePhotos),
-        review: review.trim(),
+        review,
         taggedPeople: isOnlineReview ? [] : taggedPeople,
         song: isOnlineReview ? null : song,
         tags: [],
@@ -1775,13 +1817,13 @@ export default function LogScreen({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? (isMemorialMemory ? "Edit fan memory" : isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : protectedLegacyMemory ? "Share a written memory" : isMemorialMemory ? "Share a fan memory" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Review a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy || postCoolingDown || featuredPostingBlocked }} />
+      <SheetHeader title={editing ? (isMemorialMemory ? "Edit fan memory" : isCampaign ? "Edit featured post" : isOnlineReview ? "Edit online review" : "Edit post") : protectedLegacyMemory ? "Share a written memory" : isMemorialMemory ? "Share a fan memory" : isCreator ? "Post to followers" : isCampaign ? "New featured post" : isStatus ? "New post" : isOnlineReview ? "Review an online concert" : "Review a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, loading: submitBusy, disabled: !canPost || submitBusy || postCoolingDown || featuredPostingBlocked }} />
 
       <ScrollView ref={composerScrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        {!!postError && <View style={[styles.postErrorBox, postRetryReady && styles.postReadyBox]} accessibilityRole="alert" accessibilityLiveRegion="polite"><Icon name={postCoolingDown ? "clock" : postRetryReady ? "check" : "flag"} size={14} color={postRetryReady ? colors.good : colors.danger} /><Text style={[styles.postErrorTxt, postRetryReady && styles.postReadyTxt]}>{postCoolingDown ? postRetryCooldownMessage(postRetrySeconds) : postError}</Text></View>}
+        {!!postError && <View style={[styles.postErrorBox, postRetryReady && styles.postReadyBox]} accessibilityRole="alert" accessibilityLiveRegion="polite"><Icon name={postCoolingDown ? "clock" : postRetryReady ? "check" : "flag"} size={14} color={postRetryReady ? colors.good : colors.danger} /><Text style={[styles.postErrorTxt, postRetryReady && styles.postReadyTxt]}>{postCoolingDown ? postRetryCooldownMessage(postRetrySeconds) : isCreator ? postError.replace("Your review", "Your update") : postError}</Text></View>}
         {/* One way to post: the only choice before writing is an artist's
             optional featured treatment. A show is attached below the text. */}
-        {!editing && !isMemorialMemory && isStatus && artistCampaignAllowed && (
+        {!editing && !isMemorialMemory && !isCreator && isStatus && artistCampaignAllowed && (
           <View style={styles.modeRow}>
             <Pressable
               style={[styles.modeBtn, isCampaign && styles.modeBtnOn]}
@@ -1830,6 +1872,7 @@ export default function LogScreen({
               </View>
             </View>
           ) : null}
+          {isCreator && <CreatorUpdateFields value={creatorUpdate} accountId={user?.id} onChange={setCreatorUpdate} onAuthorization={setCreatorAuthorizedAccount} disabled={submitBusy} readOnly={!!editing} />}
           <View style={[styles.composerCard, isCampaign && styles.campaignComposerCard]}>
             <View style={styles.authorRow}>
               <Avatar user={user || { name: "You", initials: "YOU" }} size={44} />
@@ -1843,7 +1886,7 @@ export default function LogScreen({
             </View>
             <TextInput
               style={styles.statusBox}
-              placeholder={isMemorialMemory ? `What do you remember about ${artist}?` : "Write about music, a show, or what you plan to see next..."}
+              placeholder={isCreator ? "Add details for your followers (optional)..." : isMemorialMemory ? `What do you remember about ${artist}?` : "Write about music, a show, or what you plan to see next..."}
               placeholderTextColor={colors.textFaint}
               value={review}
               onChangeText={setReview}
@@ -1894,14 +1937,14 @@ export default function LogScreen({
               </View>
             </View>
           )}
-          {!editing && !isMemorialMemory && !isCampaign && (
+          {!editing && !isMemorialMemory && !isCampaign && !isCreator && (
             <Pressable
               style={({ pressed }) => [styles.addShow, pressed && styles.addShowPressed]}
               onPress={() => {
                 setPostType("show");
                 // The show fields open above the text that was just written, so
                 // bring them into view instead of leaving them off-screen.
-                requestAnimationFrame(() => composerScrollRef.current?.scrollTo?.({ y: 0, animated: true }));
+                requestAnimationFrame(() => composerScrollRef.current?.scrollTo?.({ y: 0, animated: !reducedMotionRef.current }));
               }}
               disabled={submitBusy}
               accessibilityRole="button"
@@ -2058,7 +2101,7 @@ export default function LogScreen({
             <View style={styles.onlineRatingCard}>
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={styles.onlineRatingLabel}>YOUR RATING</Text>
-                <TapStars value={onlineRating} onChange={(value) => { setRatingsDirty(true); setOnlineRating(normalizeOnlineRating(value)); }} size={28} gap={5} color={colors.amber} />
+                <TapStars accessibilityLabel="Online concert rating" value={onlineRating} onChange={(value) => { setOnlineRating(normalizeOnlineRating(value)); }} size={28} gap={5} color={colors.amber} />
               </View>
               <Text style={styles.onlineRatingValue}>{onlineRating ? onlineRating.toFixed(1) : "-"}</Text>
             </View>
@@ -2066,6 +2109,35 @@ export default function LogScreen({
         ) : (
           <>
         <View style={stepStyle(2)}>
+        <ConcertLocationFields city={city} eventAddress={eventAddress} onCityChange={setCity} onEventAddressChange={setEventAddress} readCities={readCityDirectory} />
+        <Text style={[styles.fieldLabel, { marginTop: 18 }]}>{isFestival ? "FIRST DAY" : "WHEN?"} <Text style={styles.optional}>optional</Text></Text>
+        <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)} accessibilityRole="button" accessibilityLabel="Choose concert date" accessibilityState={{ expanded: showDate }}>
+          <Icon name="calendar" size={16} color={colors.amber} />
+          <Text style={styles.dateTxt}>{!date ? "Date not remembered" : date === todayStr ? "Today" : formatDate(date, date)}</Text>
+          <Icon name={showDate ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
+        </Pressable>
+        <View style={styles.dateActions}>
+          <Pressable style={styles.optionalAction} onPress={() => { setDate(""); setShowDate(false); }} accessibilityRole="button" accessibilityLabel="I don't remember the concert date" accessibilityState={{ selected: !date }}>
+            <Text style={[styles.optionalActionText, !date && { color: colors.amber }]}>I don't remember the date</Text>
+          </Pressable>
+          {date !== todayStr && <Pressable style={styles.optionalAction} onPress={() => { setDate(todayStr); setShowDate(false); }} accessibilityRole="button" accessibilityLabel="Use today as the concert date"><Text style={styles.optionalActionText}>Use today</Text></Pressable>}
+        </View>
+        {!date && <Text style={styles.detailHint}>No date will be guessed. Add it later to place this show in dated concert history.</Text>}
+        {showDate && (
+          <View style={styles.datePickerWrap}>
+            <DatePicker value={date} years={PAST_YEARS} defaultYear={today.getFullYear()} newestFirst onChange={setDate} />
+          </View>
+        )}
+
+        {!isFestival ? <ConcertLookup artist={artist} artistKey={artistPicked ? artistKey : null} city={city} date={date}
+          accountId={session?.id} venue={venue} disabled={submitBusy}
+          onSelect={(match) => {
+            // Explicit selection fills the location; authored text, media,
+            // ratings, lineup and submission/draft identity stay untouched.
+            setVenue(match.venue); setVenuePicked(true); setCity(match.city);
+            setTour(current => current || (match.tour?.length <= 80 ? match.tour : ""));
+            setPostError("");
+          }} /> : null}
         <View>
           <Text style={styles.fieldLabel}>VENUE <Text style={styles.optional}>optional with a city</Text></Text>
           <View>
@@ -2098,7 +2170,6 @@ export default function LogScreen({
             )}
           </View>
         </View>
-        <ConcertLocationFields city={city} eventAddress={eventAddress} onCityChange={setCity} onEventAddressChange={setEventAddress} readCities={readCityDirectory} />
 
         {officialEventName ? (
           <View style={styles.officialEventCard} accessible accessibilityRole="text" accessibilityLabel={`Event listing name: ${officialEventName}`}>
@@ -2125,25 +2196,6 @@ export default function LogScreen({
           })}
         </ScrollView>
         </> : null}
-        <Text style={[styles.fieldLabel, { marginTop: 18 }]}>{isFestival ? "FIRST DAY" : "WHEN?"} <Text style={styles.optional}>optional</Text></Text>
-        <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)} accessibilityRole="button" accessibilityLabel="Choose concert date" accessibilityState={{ expanded: showDate }}>
-          <Icon name="calendar" size={16} color={colors.amber} />
-          <Text style={styles.dateTxt}>{!date ? "Date not remembered" : date === todayStr ? "Today" : formatDate(date, date)}</Text>
-          <Icon name={showDate ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
-        </Pressable>
-        <View style={styles.dateActions}>
-          <Pressable style={styles.optionalAction} onPress={() => { setDate(""); setShowDate(false); }} accessibilityRole="button" accessibilityLabel="I don't remember the concert date" accessibilityState={{ selected: !date }}>
-            <Text style={[styles.optionalActionText, !date && { color: colors.amber }]}>I don't remember the date</Text>
-          </Pressable>
-          {date !== todayStr && <Pressable style={styles.optionalAction} onPress={() => { setDate(todayStr); setShowDate(false); }} accessibilityRole="button" accessibilityLabel="Use today as the concert date"><Text style={styles.optionalActionText}>Use today</Text></Pressable>}
-        </View>
-        {!date && <Text style={styles.detailHint}>No date will be guessed. Add it later to place this show in dated concert history.</Text>}
-        {showDate && (
-          <View style={styles.datePickerWrap}>
-            <DatePicker value={date} years={PAST_YEARS} defaultYear={today.getFullYear()} newestFirst onChange={setDate} />
-          </View>
-        )}
-
         {isFestival && date ? <>
           <Text style={[styles.fieldLabel, { marginTop: 14 }]}>LAST DAY <Text style={styles.optional}>for a multi-day festival</Text></Text>
           <Pressable style={styles.dateBtn} onPress={() => setShowEndDate((open) => !open)} accessibilityRole="button" accessibilityLabel="Choose the festival's last day" accessibilityState={{ expanded: showEndDate }}>
@@ -2173,11 +2225,11 @@ export default function LogScreen({
         <View style={styles.quickRatingCard}>
           <Text style={styles.onlineRatingLabel}>{isFestival ? "HOW WAS THE FESTIVAL?" : "HOW WAS THE SHOW?"}</Text>
           <View style={styles.quickRatingRow}>
-            <TapStars value={dims.experience} onChange={(value) => setDim("experience", value)} size={32} gap={5} color={colors.amber} />
-            <Text style={styles.onlineRatingValue}>{dims.experience ? dims.experience.toFixed(1) : "—"}</Text>
+            <TapStars accessibilityLabel="Overall concert rating" value={overallRating} onChange={(value) => setOverallRating(clampRating(value))} size={32} gap={5} color={colors.amber} />
+            <Text style={styles.onlineRatingValue}>{overallRating ? overallRating.toFixed(1) : "—"}</Text>
           </View>
-          <Text style={styles.detailHint}>Your overall experience. Leave any detailed scores you don't remember unrated.</Text>
-          {!!dims.experience && <Pressable style={styles.optionalAction} onPress={() => setDim("experience", 0)} accessibilityRole="button" accessibilityLabel="Clear overall experience rating"><Text style={styles.optionalActionText}>Clear this rating</Text></Pressable>}
+          <Text style={styles.detailHint}>Choose your overall score independently. Detailed scores are optional and do not change it.</Text>
+          {!!overallRating && <Pressable style={styles.optionalAction} onPress={() => setOverallRating(0)} accessibilityRole="button" accessibilityLabel="Clear overall experience rating"><Text style={styles.optionalActionText}>Clear this rating</Text></Pressable>}
         </View>
 
         <Text style={[styles.fieldLabel, { marginTop: 18 }]}>BAND, ROOM & CROWD <Text style={styles.optional}>optional</Text></Text>
@@ -2192,12 +2244,11 @@ export default function LogScreen({
                   <Text style={styles.factorLabel}>{d.label}</Text>
                   {dims[d.key] > 0 && <Pressable style={styles.clearRating} onPress={() => setDim(d.key, 0)} accessibilityRole="button" accessibilityLabel={`Leave ${d.label.toLowerCase()} unrated`}><Text style={styles.optionalActionText}>Leave unrated</Text></Pressable>}
                 </View>
-                <TapStars value={dims[d.key]} onChange={(v) => setDim(d.key, v)} size={25} gap={4} color={GROUP_COLOR[g]} />
+                <TapStars accessibilityLabel={`Detailed ${d.label} rating`} value={dims[d.key]} onChange={(v) => setDim(d.key, v)} size={25} gap={4} color={GROUP_COLOR[g]} />
               </View>
             ))}
           </View>
         ))}
-        {hasDetailedComposerRatings(dims) && <View style={styles.overallCard}><Text style={styles.overallNum}>{computed.overall.toFixed(1)}</Text><View><Stars value={computed.overall} size={18} /><Text style={styles.overallSub}>Combined score · only the factors you rated</Text></View></View>}
         </View>
           </>
         )}
@@ -2212,6 +2263,10 @@ export default function LogScreen({
           onChangeText={setReview}
           multiline
         />
+        <Text style={[styles.detailHint, reviewTooLong && { color: colors.magenta }]} accessibilityLiveRegion="polite">
+          {reviewLength.toLocaleString()} / {LIMITS.concertReview.toLocaleString()} characters after formatting cleanup (emoji may count as two). Generous space for long reviews; this is a character ceiling, not a word limit.
+          {reviewTooLong ? " Shorten your review before posting. Your text has been kept." : editing && reviewLength > LIMITS.concertReview ? " Existing text is preserved unless you edit it." : ""}
+        </Text>
         </View>
 
           </>
@@ -2378,15 +2433,20 @@ export default function LogScreen({
           </View>
         ) : null}
         <View style={styles.photoRow}>
-          {photos.map((uri, i) => {
-            const descriptor = mediaProject.assets.find((asset) => asset.sourceUrl === uri);
+          {mediaProject.assets.filter((asset) => asset.status === "ready" || asset.status === "processing" || pendingMediaAssets.some((pending) => pending.id === asset.id)).map((descriptor, i, orderedAssets) => {
+            const uri = descriptor.sourceUrl;
+            const converting = descriptor.status === "processing";
+            const waiting = pendingMediaAssets.some((pending) => pending.id === descriptor.id);
             const backgroundAssetId = descriptor?.assetId || null;
-            const canBeCampaignBackground = isCampaign && !!backgroundAssetId && mediaDisplayKind(descriptor || uri) === "image";
+            const canBeCampaignBackground = isCampaign && !waiting && descriptor.status === "ready" && !!uri
+              && !!backgroundAssetId && mediaDisplayKind(descriptor || uri) === "image";
             const isCampaignBackground = canBeCampaignBackground && campaign?.backgroundAssetId === backgroundAssetId;
             return (
-            <View key={`${uri}:${i}`} style={[styles.thumb, isCampaignBackground && styles.campaignThumbSelected]}>
+            <View key={descriptor.id} style={[styles.thumb, isCampaignBackground && styles.campaignThumbSelected]}>
+              {converting || waiting ? <PendingMediaPreview asset={descriptor} accessibilityLabel={`Clip ${i + 1}, ${waiting ? "waiting for recovery" : "uploaded and converting"}`} /> : null}
+              {converting || waiting ? <View style={[styles.pendingThumbBadge, { bottom: 48 }]}><Text style={styles.pendingThumbBadgeText}>{waiting ? "WAITING" : "Converting"}</Text></View> : null}
               {/* SmartImage renders clips as a play tile and HEIC via transcode. */}
-              <SmartImage uri={uri} posterUri={mediaPosterUri(descriptor)} mediaKind={mediaDisplayKind(descriptor || uri)} style={StyleSheet.absoluteFill} contain={false} cachePolicy="memory" accessibilityLabel={descriptor?.altText || `Media ${i + 1}`} />
+              {!converting && !waiting && <SmartImage uri={uri} posterUri={mediaPosterUri(descriptor)} mediaKind={mediaDisplayKind(descriptor || uri)} style={StyleSheet.absoluteFill} contain={false} cachePolicy="memory" accessibilityLabel={descriptor?.altText || `Media ${i + 1}`} />}
               {canBeCampaignBackground && (
                 <Pressable
                   style={[styles.useBackground, isCampaignBackground && styles.useBackgroundSelected]}
@@ -2399,24 +2459,26 @@ export default function LogScreen({
                   <Text style={styles.useBackgroundText}>{isCampaignBackground ? "BACKGROUND" : "USE AS BACKGROUND"}</Text>
                 </Pressable>
               )}
-              <Pressable style={styles.removeThumb} onPress={() => removeAttachedMedia(i)} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove media ${i + 1}`}>
+              <Pressable style={styles.removeThumb} onPress={() => waiting ? removePendingMedia(descriptor.id) : converting ? removeConvertingClip(descriptor.id) : removeAttachedMedia(photosRef.current.indexOf(uri))} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove ${converting ? "clip" : "media"} ${i + 1}`}>
                 <Icon name="x" size={12} color="#fff" />
               </Pressable>
+              <View style={styles.mediaOrderActions}>
+                <Text style={styles.mediaOrderNumber}>{i + 1}</Text>
+                {[-1, 1].map((direction) => {
+                  const disabled = submitBusy || pendingMediaAssets.length > 0 || (direction === -1 ? i === 0 : i === orderedAssets.length - 1);
+                  return <Pressable key={direction} disabled={disabled}
+                    onPress={() => moveAttachedMedia(descriptor.id, direction)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Move media ${i + 1} ${direction === -1 ? "earlier" : "later"}`}
+                    accessibilityState={{ disabled }}
+                    style={[styles.mediaOrderButton, disabled && { opacity: 0.35 }]}>
+                    <Icon name={direction === -1 ? "chevron-left" : "chevron-right"} size={16} color={colors.text} />
+                  </Pressable>;
+                })}
+              </View>
             </View>
           );})}
-          {convertingClips.map((asset, index) => (
-            <View key={asset.id} style={[styles.thumb, styles.pendingThumb]}>
-              <PendingMediaPreview
-                asset={asset}
-                accessibilityLabel={`${asset.altText || `Clip ${photos.length + index + 1}`}, uploaded and converting`}
-              />
-              <View style={styles.pendingThumbBadge}><Text style={styles.pendingThumbBadgeText}>Converting</Text></View>
-              <Pressable style={styles.removeThumb} onPress={() => removeConvertingClip(asset.id)} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove clip ${photos.length + index + 1}`}>
-                <Icon name="x" size={12} color="#fff" />
-              </Pressable>
-            </View>
-          ))}
-          {pendingMediaAssets.map((asset, index) => (
+          {pendingMediaAssets.filter((asset) => !mediaProject.assets.some((saved) => saved.id === asset.id)).map((asset, index) => (
             <View key={asset.id} style={[styles.thumb, styles.pendingThumb]}>
               <PendingMediaPreview
                 asset={asset}
@@ -2512,8 +2574,8 @@ export default function LogScreen({
             </View>
           </View>
         ) : null}
-        {!isStatus && !isOnlineReview && <Text style={styles.submitHint} accessibilityLiveRegion="polite">{composerLogRequirement({ artist, venue, city, eventAddress, overall: computed.overall })}</Text>}
-        {!stepped || currentLogStep === storyStep ? <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy || postCoolingDown || featuredPostingBlocked} style={{ marginTop: engagementPrompt ? 14 : 28 }} /> : null}
+        {!isStatus && !isOnlineReview && <Text style={styles.submitHint} accessibilityLiveRegion="polite">{composerLogRequirement({ artist, venue, city, eventAddress, overall: overallRating })}</Text>}
+        {!stepped || currentLogStep === storyStep ? <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} loading={submitBusy} disabled={!canPost || submitBusy || postCoolingDown || featuredPostingBlocked} style={{ marginTop: engagementPrompt ? 14 : 28 }} /> : null}
         {!editing && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
             <Icon name="edit" size={14} color={colors.textDim} />
@@ -2691,15 +2753,18 @@ const styles = StyleSheet.create({
   pendingMediaCopy: { color: colors.textDim, fontSize: 11.5, lineHeight: 16, marginTop: 2 },
   pendingMediaRetry: { minHeight: 44, minWidth: 58, alignItems: "center", justifyContent: "center", paddingHorizontal: 10, borderRadius: radius.sm, backgroundColor: colors.amberStrong },
   pendingMediaRetryText: { color: "#1A1206", fontSize: 12, fontWeight: "900" },
-  thumb: { width: 76, height: 76, borderRadius: 10, overflow: "hidden", borderWidth: 1, borderColor: colors.line },
+  thumb: { width: 100, height: 120, borderRadius: 10, overflow: "hidden", borderWidth: 1, borderColor: colors.line },
   pendingThumb: { opacity: 0.8, borderColor: colors.amber },
+  mediaOrderActions: { position: "absolute", bottom: 0, left: 0, right: 0, flexDirection: "row", alignItems: "center", backgroundColor: colors.surfaceAlt },
+  mediaOrderNumber: { color: colors.amber, fontFamily: displayFont, fontSize: 10, paddingHorizontal: 4 },
+  mediaOrderButton: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center" },
   pendingVideoPreview: { alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: colors.surfaceAlt },
   pendingVideoPreviewText: { color: colors.textDim, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 1 },
   pendingThumbBadge: { position: "absolute", left: 3, bottom: 3, paddingHorizontal: 5, paddingVertical: 3, borderRadius: 5, backgroundColor: "rgba(7,9,15,0.84)" },
   pendingThumbBadgeText: { color: "#fff", fontFamily: mono, fontSize: 7.5, fontWeight: "900", letterSpacing: 0.6 },
   campaignThumbSelected: { borderWidth: 2, borderColor: colors.amber },
   removeThumb: { position: "absolute", top: 3, right: 3, width: 20, height: 20, borderRadius: 10, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
-  useBackground: { position: "absolute", left: 3, right: 3, bottom: 3, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 5, borderRadius: 7, backgroundColor: "rgba(7,9,15,0.84)", borderWidth: 1, borderColor: "rgba(255,255,255,0.22)" },
+  useBackground: { position: "absolute", left: 3, right: 3, bottom: 47, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 5, borderRadius: 7, backgroundColor: "rgba(7,9,15,0.84)", borderWidth: 1, borderColor: "rgba(255,255,255,0.22)" },
   useBackgroundSelected: { backgroundColor: "rgba(155,96,24,0.94)", borderColor: colors.amber },
   useBackgroundText: { color: "#fff", fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.45 },
   addThumb: { width: 76, height: 76, borderRadius: 10, borderWidth: 1, borderColor: colors.line, borderStyle: "dashed", alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: colors.surface },

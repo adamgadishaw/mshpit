@@ -26,8 +26,6 @@ export function mergeDirectMessageReadSummary(current, summary, { revision } = {
   const cursor = latestDirectMessageReadCursor(previous, incoming);
   // A cursor-free summary must not discard the demo mode's read count.
   if (!cursor && Number.isSafeInteger(current) && current >= 0) return current;
-  const requestState = current?.requestState === "accepted" ? "accepted"
-    : ["accepted", "pending", "none"].includes(summary?.requestState) ? summary.requestState : current?.requestState;
   const hasReplied = typeof summary?.hasReplied === "boolean" ? summary.hasReplied : current?.hasReplied;
   const advanced = !!incoming && (!previous || directMessageIsAfterCursor(incoming, previous));
   const staleCursor = !!previous && (!incoming || directMessageIsAfterCursor(previous, incoming));
@@ -52,8 +50,8 @@ export function mergeDirectMessageReadSummary(current, summary, { revision } = {
     unreadCoverageCursor: latestDirectMessageReadCursor(current?.unreadCoverageCursor ?? current?.latestIncomingCursor, boundary),
     summaryRevision: Math.max(order, current?.summaryRevision || 0),
   } : retained;
-  if (!cursor && typeof hasReplied !== "boolean" && !Number.isSafeInteger(counts.unread) && !requestState) return current;
-  return { ...cursor, ...(typeof hasReplied === "boolean" ? { hasReplied } : {}), ...(requestState ? { requestState } : {}), ...counts };
+  if (!cursor && typeof hasReplied !== "boolean" && !Number.isSafeInteger(counts.unread)) return current;
+  return { ...cursor, ...(typeof hasReplied === "boolean" ? { hasReplied } : {}), ...counts };
 }
 
 export function latestIncomingDirectMessageId(messages, accountId) {

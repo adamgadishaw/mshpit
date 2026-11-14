@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import Constants from "expo-constants";
-import { Linking, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { Linking, View, Text, StyleSheet, Pressable } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { colors, focusRing, radius, mono, THEMES, themeKey, space } from "../theme";
 import { isMod, useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";
@@ -10,8 +11,10 @@ import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { profileManagementAction } from "../domain/artistAccountIdentity.mjs";
 import { CONTACT_URL, JOBS_URL, SUPPORT_EMAIL, SUPPORT_URL } from "../domain/contact.mjs";
 import { visibleThemeChoices } from "../domain/themeChoices.mjs";
+import { isStaff } from "../domain/staffRoles.mjs";
 import AccountPasswordForm from "../features/signupOnboarding/AccountPasswordForm";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
+const LocalAlertSettings = lazyWithRetry(() => import("../features/localEventAlerts/LocalAlertSettings"), "LocalAlertSettings");
 const AuthScreen = lazyWithRetry(() => import("./AuthScreen"), "AuthScreen");
 import AccountSwitcher from "../features/signupOnboarding/AccountSwitcher";
 import CredentialForm, { CredentialInput, CredentialLabel, CredentialSubmit } from "../components/credential-form";
@@ -43,6 +46,7 @@ function Row({ icon, label, sub, onPress, danger, right, disabled = false, acces
       onPress={onPress}
       disabled={disabled}
       accessibilityRole={accessibilityRole || "button"}
+      aria-checked={accessibilityRole === "switch" ? accessibilityState?.checked : undefined}
       accessibilityState={{ ...accessibilityState, disabled }}
     >
       {body}
@@ -63,7 +67,7 @@ function Toggle({ value, busy = false }) {
 }
 
 export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout, onOpenCatalogEditor, onOpenNewsroom, onOpenModeration, onOpenAdministration, onRequestArtist, initialAccountAction = null }) {
-  const { session, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, updateProfile } = useStore();
+  const { session, chatAuthEpoch, authReady, deleteAccount, switchLinkedAccount, chooseTheme, blockedUsers, unblockUser, blockedDirectoryStatus, refreshBlockedDirectory, isBlockMutationPending, mutedUsers, unmuteUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, updateProfile } = useStore();
   const blocked = session ? blockedUsers() : [];
   const muted = session ? mutedUsers() : [];
   const [exporting, setExporting] = useState(false);
@@ -104,17 +108,17 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
   const manageProfile = profileManagementAction(session);
   const publicProfileLabel = manageProfile.destination === "artistHub" ? "View public artist page" : "View public profile";
   const publicProfileDetail = manageProfile.destination === "artistHub" ? session?.artistName : `@${session?.handle || ""}`;
-  const themeChoices = visibleThemeChoices(THEMES, { expanded: showMoreThemes, selectedKey: themeKey });
+  const themeChoices = visibleThemeChoices(THEMES, { expanded: showMoreThemes, selectedKey: themeKey, account: authReady ? session : null });
   const doExport = async () => {
     if (exporting || !exportPassword) return;
     setExporting(true);
     setExportResult(null);
     try {
       const result = await exportMyData(exportPassword);
-      setExportResult(result || { ok: false, error: "Pit could not prepare your data file." });
+      setExportResult(result || { ok: false, error: "Mshpit could not prepare your data file." });
       if (result?.ok) setExportPassword("");
     } catch {
-      setExportResult({ ok: false, error: "Pit could not prepare your data file." });
+      setExportResult({ ok: false, error: "Mshpit could not prepare your data file." });
     } finally {
       setExporting(false);
     }
@@ -139,7 +143,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
     setSearchIndexingResult(result?.ok
       ? (nextEnabled
         ? "Your personal profile can appear in search engines."
-        : "Pit now asks search engines not to index your personal profile. Earlier results may take time to disappear.")
+        : "Mshpit now asks search engines not to index your personal profile. Earlier results may take time to disappear.")
       : "That search visibility preference did not save. Please try again.");
     setSavingSearchIndexing(false);
   };
@@ -212,6 +216,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
     <View style={styles.wrap}>
       <SheetHeader title="Settings" onClose={onClose} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} contentInsetAdjustmentBehavior="automatic">
+        {authReady && session && <LocalAlertSettings accountId={session.id} authEpoch={chatAuthEpoch} Row={Row} Toggle={Toggle} styles={styles} onManageProfile={onManageProfile} />}
         <Text style={styles.section}>APPEARANCE</Text>
         <Text style={styles.hint}>{session ? "Pick a theme. It's saved to your account and follows you to any device." : "Pick a theme. It applies across the whole app."}</Text>
         <View style={styles.swatchGrid} accessibilityRole="radiogroup" accessibilityLabel="Appearance theme">
@@ -219,7 +224,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
             <ThemeSwatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => t.key !== themeKey && chooseTheme(t.key)} showMode />
           ))}
         </View>
-        <Pressable
+        {authReady && isStaff(session?.role) && <Pressable
           style={({ focused }) => [styles.moreThemesButton, focused && focusRing]}
           onPress={() => setShowMoreThemes((value) => !value)}
           accessibilityRole="button"
@@ -228,12 +233,12 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
         >
           <Text style={styles.moreThemesText}>{showMoreThemes ? "Show primary themes" : "More themes"}</Text>
           <Icon name="chevron-right" size={16} color={colors.amber} />
-        </Pressable>
+        </Pressable>}
 
         {session && (
           <>
             <Text style={styles.section}>ACCOUNT</Text>
-            {onFinishSetup && <Row icon="you" label="Finish profile setup" sub="Optional photos, banner and a welcome to your city" onPress={onFinishSetup} />}
+            {onFinishSetup && <Row icon="you" label="Finish profile setup" sub="Optional profile photo, banner and city guide" onPress={onFinishSetup} />}
             <Row icon="shield" label="Change password" sub="Only changes the password for this account" onPress={() => setAccountAction("password")} />
             <Row icon="you" label="Switch account" sub="Your connected profiles, without signing in again" onPress={() => setAccountAction("switch")} />
             <Row icon="plus" label="Add another account" sub={session.emailVerified ? "Up to two accounts with this email" : "Confirm your email first"} disabled={!session.emailVerified} onPress={() => setAccountAction("add")} />
@@ -320,7 +325,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
               label="Show my profile in search engines"
               sub={profileSearchIndexingEnabled
                 ? "On. Google and other search engines may show your personal member profile."
-                : "Off. Pit marks your personal member profile noindex and removes it from sitemaps. Public posts and artist pages can still appear."}
+                : "Off. Mshpit asks search engines to leave out your personal profile. Public posts and artist pages can still appear in search results."}
               onPress={toggleProfileSearchIndexing}
               disabled={savingSearchIndexing}
               accessibilityRole="switch"
@@ -353,7 +358,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onFinishSetup
               icon="mail"
               label="Email announcements"
               sub={announcementsEnabled
-                ? "On. Receive occasional Pit news and community updates."
+                ? "On. Receive occasional Mshpit news and community updates."
                 : "Off. Account and security email will still be delivered."}
               onPress={toggleAnnouncements}
               disabled={savingAnnouncements}

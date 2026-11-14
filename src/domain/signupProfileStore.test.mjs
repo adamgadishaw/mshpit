@@ -7,6 +7,7 @@ import { publicProfileCacheEntry } from "./dataPolicy.mjs";
 import { profileGenreSelection } from "./genrePreferences.mjs";
 import { confirmSignupProfile } from "./signupProfileDraft.mjs";
 import { clean, cleanHandle, cleanName, isHandle, LIMITS } from "./validation.mjs";
+import { canonicalProfileBadges, profileBadgesSaveConfirmed } from "./profileBadges.mjs";
 
 // Run the actual Store closure with deferred transport and React-state seams.
 // Pure sanitizers, account ownership, and public-cache projection stay real.
@@ -30,16 +31,20 @@ const owner = {
 };
 const neighbor = { id: "neighbor", name: "Other Fan", handle: "otherfan" };
 
-function fixture() {
-  const initial = structuredClone(owner);
+function fixture(overrides = {}) {
+  const initial = structuredClone({ ...owner, ...overrides });
   const state = { session: initial, users: [publicProfileCacheEntry(initial), { ...neighbor }] };
   const sessionRef = { current: initial };
   const accountMutationEpochRef = { current: 1 };
-  const calls = [], writes = [], pendingState = [];
+  const calls = [], writes = [], pendingState = [], badgeReconciliations = [];
   const dependencies = {
+    Platform: { OS: "ios" },
+    invalidateIOSDetailPrivacy: () => 0,
     session: initial, authReadyRef: { current: true },
     sessionRef, accountMutationEpochRef, captureAccountMutation, accountMutationIsCurrent,
+    reconcileAuthorBadges: user => { assert.equal(user.id, sessionRef.current.id); badgeReconciliations.push(structuredClone(user)); },
     clean, cleanName, cleanHandle, isHandle, LIMITS, profileGenreSelection, publicProfileCacheEntry,
+    canonicalProfileBadges, profileBadgesSaveConfirmed,
     ENABLE_DEMO_DATA: false,
     api: (path, options) => new Promise((resolve, reject) => calls.push({ path, options, resolve, reject })),
     setUsers: (update) => { writes.push("users"); state.users = update(state.users); },
@@ -58,8 +63,63 @@ function fixture() {
     state.users = user ? [publicProfileCacheEntry(user), { ...neighbor }] : [{ ...neighbor }];
   };
   const save = (patch, options = {}) => updateProfile(patch, { optimistic: false, expectedAccountId: owner.id, ...options });
-  return { save, calls, writes, state, sessionRef, accountMutationEpochRef, flush, adopt };
+  return { save, calls, writes, state, badgeReconciliations, sessionRef, accountMutationEpochRef, flush, adopt };
 }
+
+test("profile badge saves are confirmed-only, persist empty/default selections and project to public cache", async () => {
+  for (const selection of [["verified"], [], null]) {
+    const f = fixture({ profileBadgeSelectionSupported: true, profileBadges: ["email-confirmed"] });
+    const before = structuredClone(f.state);
+    const pending = f.save({ profileBadges: selection }, { optimistic: true });
+    assert.deepEqual(f.calls[0].options.body, { extras: { profileBadges: selection } });
+    assert.deepEqual(f.state, before);
+    assert.deepEqual(f.writes, []);
+    f.calls[0].resolve({ user: { ...owner, profileBadgeSelectionSupported: true, profileBadges: selection } });
+    assert.equal((await pending).ok, true);
+    f.flush();
+    assert.deepEqual(f.sessionRef.current.profileBadges, selection);
+    assert.deepEqual(f.state.session.profileBadges, selection);
+    assert.deepEqual(f.state.users[0].profileBadges, selection);
+    assert.equal(Object.hasOwn(f.state.users[0], "profileBadgeSelectionSupported"), false);
+  }
+});
+
+test("old servers and malformed choices cannot silently become successful badge saves", async () => {
+  for (const capability of [undefined, false]) {
+    const f = fixture({ profileBadgeSelectionSupported: capability });
+    const result = await f.save({ profileBadges: [] });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /not available/u);
+    assert.deepEqual(f.calls, []);
+  }
+  for (const selection of [["invented"], ["verified", "verified"], {}]) {
+    const f = fixture({ profileBadgeSelectionSupported: true });
+    assert.equal((await f.save({ profileBadges: selection })).ok, false);
+    assert.deepEqual(f.calls, []);
+  }
+  for (const receipt of [{}, { profileBadgeSelectionSupported: true }, { profileBadgeSelectionSupported: true, profileBadges: null }, { profileBadges: [] }]) {
+    const f = fixture({ profileBadgeSelectionSupported: true, profileBadges: ["verified"] });
+    const before = structuredClone(f.state);
+    const pending = f.save({ profileBadges: [] }, { optimistic: true });
+    f.calls[0].resolve({ user: { ...owner, ...receipt } });
+    const result = await pending;
+    assert.equal(result.ok, false);
+    assert.match(result.error.message, /could not confirm your badge choices/u);
+    f.flush();
+    assert.deepEqual(f.state, before);
+    assert.deepEqual(f.writes, []);
+  }
+});
+
+test("badge-only late response cannot cross an account switch", async () => {
+  const f = fixture({ profileBadgeSelectionSupported: true, profileBadges: null });
+  const pending = f.save({ profileBadges: [] });
+  f.adopt({ ...owner, id: "replacement", profileBadges: ["verified"] });
+  f.calls[0].resolve({ user: { ...owner, profileBadgeSelectionSupported: true, profileBadges: [] } });
+  assert.equal((await pending).stale, true);
+  f.flush();
+  assert.deepEqual(f.state.session.profileBadges, ["verified"]);
+});
 
 test("concert map preference crosses the confirmed profile wire and keeps false in the public cache", async () => {
   for (const visible of [false, true]) {
@@ -97,6 +157,7 @@ test("setup photo saves remain unchanged while pending and publish only confirme
   f.calls[0].resolve({ user });
   const result = await pending;
   assert.deepEqual(result, { ok: true, user: expectedUser, patch });
+  assert.deepEqual(f.badgeReconciliations, [user], "only confirmed server state reaches historical author reconciliation");
   assert.deepEqual(f.sessionRef.current, expectedUser, "confirmed changed fields update before React renders, not unrelated cooldown data");
   assert.deepEqual(f.state.session, before.session, "the fixture still has an uncommitted React state update");
   f.flush();

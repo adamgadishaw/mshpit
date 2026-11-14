@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
 import { discoverArtistPriorityKeys } from "./discoverArtistPriority.js";
+import { spotifyArtistPhotoModel } from "../src/domain/spotifyArtistPhoto.mjs";
 
 // discoverService's production singleton imports db.js. Give that harmless
 // default handle its own directory so this fixture never contends with parallel
@@ -14,7 +15,7 @@ import { discoverArtistPriorityKeys } from "./discoverArtistPriority.js";
 const dataDir = mkdtempSync(join(tmpdir(), "pit-discover-service-"));
 process.env.PIT_DATA_DIR = dataDir;
 const { canonicalGenre, createDiscoverService } = await import("./discoverService.js");
-const { db } = await import("./db.js");
+const { db, publicArtist } = await import("./db.js");
 
 after(() => {
   db.close();
@@ -288,6 +289,45 @@ test("chart rows never pass Spotify artwork through the generic photo field", ()
   } finally {
     database.close();
   }
+});
+
+test("Drake's existing attributed profile image survives every Discover artist projection", () => {
+  const database = fixture();
+  try {
+    const photo = "https://i.scdn.co/image/ab6761610000e5eb4293385d324db8558179afd9";
+    const data = evidencedGenre("Hip Hop", { spotifyId: "3TVXtAsR1Inumwj472S9r4", spotifyPhoto: photo,
+      photoSource: "spotify", photoCredit: "Spotify", photoDisplayPolicy: "original", spotifyPhotoCheckedAt: 123 });
+    database.prepare("INSERT INTO artists(norm,name,genre,country,popularity,rank_score,photo,data) VALUES(?,?,?,?,?,?,?,?)")
+      .run("drake", "Drake", "Hip Hop", "Canada", 99, 10, null, data);
+    for (const id of ["member-1", "member-2", "member-3"]) database.prepare("INSERT INTO plays VALUES (?,?,?)").run("Drake", id, 1);
+    const service = fixtureDiscoverService(database);
+    const expected = spotifyArtistPhotoModel(publicArtist(database.prepare("SELECT * FROM artists WHERE norm='drake'").get()));
+    assert.equal(expected.uri, photo);
+    for (const rows of [service.overview().chart.rows, service.chart({ by: "plays" }).rows,
+      service.chart({ genre: "Hip Hop" }).rows]) {
+      const row = rows.find(row => row.key === "drake");
+      assert.equal(row.photo, null, "the cropped-photo boundary is preserved");
+      assert.deepEqual(spotifyArtistPhotoModel(row), expected, "Discover must keep the same original-only image as the profile");
+      assert.equal(Object.hasOwn(row, "spotifyPhotoCheckedAt"), false, "internal refresh metadata stays private");
+    }
+    // A fresh projection clears removed/invalid fields; no profile fetch or
+    // stale metadata cache is needed to render a card.
+    for (const replacement of [{}, { photoSource: "spotify", spotifyPhoto: "https://attacker.example/image/a" },
+      { photoSource: "spotify", spotifyPhoto: photo, spotifyId: "invalid" }]) {
+      database.prepare("UPDATE artists SET data=? WHERE norm='drake'").run(evidencedGenre("Hip Hop", replacement));
+      assert.equal(spotifyArtistPhotoModel(service.chart().rows.find(row => row.key === "drake")), null);
+    }
+    database.prepare("UPDATE artists SET data=?,source='artist-created' WHERE norm='drake'").run(data);
+    database.prepare("INSERT INTO artist_profiles(artist_key,owner_id) VALUES('drake','member-1')").run();
+    assert.ok(service.chart().rows.some(row => row.key === 'drake'));
+    database.prepare("UPDATE users SET profile_audience='only_me' WHERE id='member-1'").run();
+    assert.equal(service.chart().rows.some(row => row.key === 'drake'), false, 'private identity images remain excluded');
+    database.prepare("UPDATE users SET profile_audience='everyone' WHERE id='member-1'").run();
+    database.prepare("INSERT INTO blocks VALUES('member-2','member-1')").run();
+    assert.equal(service.chart({ viewer: { id: 'member-2' } }).rows.some(row => row.key === 'drake'), false);
+    database.prepare("UPDATE artist_profiles SET removed=1 WHERE artist_key='drake'").run();
+    assert.equal(service.chart().rows.some(row => row.key === 'drake'), false);
+  } finally { database.close(); }
 });
 
 test("canonical identity survives overview, plays, and genre chart projections", () => {

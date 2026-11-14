@@ -8,6 +8,8 @@ import {
 } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import useReducedMotion from "../hooks/useReducedMotion";
+import { usePageReturn } from "./PageReturnContext";
+import { assignScrollRef, scrollPageToTop } from "../domain/pageReturn.mjs";
 import {
   beginWebPullGesture,
   canReleaseWebRefreshLatch,
@@ -217,6 +219,13 @@ export default function VinylRefreshBoundary({
   testID,
 }) {
   const child = Children.only(children);
+  const page = usePageReturn();
+  const scrollRef = useRef(null);
+  const originalRef = child.props.ref;
+  const composedRef = useCallback((value) => {
+    scrollRef.current = value;
+    assignScrollRef(originalRef, value);
+  }, [originalRef]);
   const boundaryRef = useRef(null);
   const indicatorRef = useRef(null);
   const recordRef = useRef(null);
@@ -320,6 +329,19 @@ export default function VinylRefreshBoundary({
     if (gestureRef.current?.status === "claimed") showPullIndicator(gestureRef.current);
     else if (refreshLatchRef.current.active || refreshingRef.current) showRefreshingIndicator();
   }, [showPullIndicator, showRefreshingIndicator]);
+
+  useEffect(() => {
+    setRefreshLatched(false);
+    const unregister = page?.register(() => {
+      scrollPageToTop(scrollRef.current);
+      requestRefresh();
+    });
+    return () => {
+      unregister?.();
+      // A changed account/route must not inherit a previous route's latch.
+      refreshLatchRef.current = { active: false, promiseSettled: true };
+    };
+  }, [page, requestRefresh]);
 
   useEffect(() => {
     // React development Strict Mode replays setup/cleanup once. Restore the
@@ -452,11 +474,12 @@ export default function VinylRefreshBoundary({
     };
   }, [canRefresh, cancelGesture, hideIndicator, requestRefresh, showPullIndicator, touchPhoneCapable]);
 
-  // Desktop, touch laptops, and tablets receive the caller's exact element.
-  // That means no wrapper, marker, style merge, listener, or indicator exists.
-  if (!touchPhoneCapable) return child;
+  // Desktop keeps the same scroll owner, with only a composed ref for the
+  // title/tab action. It receives no pull listeners, styles, or indicator.
+  if (!touchPhoneCapable) return page ? cloneElement(child, { ref: composedRef }) : child;
 
   const scrollChild = cloneElement(child, {
+    ref: composedRef,
     dataSet: { ...child.props.dataSet, pitRefreshScrollOwner: "true" },
     style: [child.props.style, styles.scrollOwner],
   });

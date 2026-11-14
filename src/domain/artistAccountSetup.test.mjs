@@ -53,7 +53,7 @@ test("artist setup is one account-scoped form with visible choices and safe conf
 test("free artist workspace exposes media tools and a separate owner-reviewed check", () => {
   assert.doesNotThrow(() => parse(hub, { sourceType: "module", plugins: ["jsx"] }));
   assert.match(hub, /session\?\.verified === true \? <Badge type="verified"/);
-  assert.match(hub, /title="Live photos & videos"[\s\S]*?onPress=\{onMediaPost\}/);
+  assert.match(hub, /title="Post to followers"[\s\S]*?onPress=\{onMediaPost\}/);
   assert.match(hub, /title="Promote a concert or release"[\s\S]*?onPress=\{onCampaignPost\}/);
   assert.match(hub, /two featured promotions per day/);
   assert.match(hub, /ArtistIdentityStatus accountId=\{session\?\.id\}/);

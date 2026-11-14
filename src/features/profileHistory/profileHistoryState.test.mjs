@@ -290,9 +290,9 @@ test("the shared Store deletion path removes posts from dedicated profile histor
 
 test("the shared Store rotates profile history at auth boundaries and scrubs it after a confirmed block", () => {
   const source = readFileSync(new URL("../../store.js", import.meta.url), "utf8");
-  assert.match(source, /adoptProfileHistoryAccount,/);
-  assert.match(source, /resetProfileHistoryAccount,/);
-  assert.match(source, /scrubBlockedProfileHistoryPerson,/);
+  assert.match(source, /adoptProfileHistoryAccount(?: as defaultAdoptProfileHistoryAccount)?,/);
+  assert.match(source, /resetProfileHistoryAccount(?: as defaultResetProfileHistoryAccount)?,/);
+  assert.match(source, /scrubBlockedProfileHistoryPerson(?: as defaultScrubBlockedProfileHistoryPerson)?,/);
 
   const adoptStart = source.indexOf("const adoptFeedAccount =");
   const adoptEnd = source.indexOf("useEffect(() => {", adoptStart);
@@ -310,4 +310,37 @@ test("the shared Store rotates profile history at auth boundaries and scrubs it 
   assert.ok(unblockEnd > unblockStart);
   assert.match(source.slice(unblockStart, unblockEnd), /captureAccountMutation\(accountId, accountMutationEpochRef\.current\)/);
   assert.match(source.slice(unblockStart, unblockEnd), /\.then\(\(\) => \{\s*if \(!isCurrent\(\)\) return \{ ok: false, stale: true \};[\s\S]*resetProfileHistoryAccount\(accountId\)/);
+});
+
+test('badge reconciliation restarts the initial matching wall read and leaves other scopes running', async () => {
+  const pending=[];
+  const store=createProfileHistoryStore({fetchPage:args=>new Promise(resolve=>pending.push({...args,resolve}))});
+  const params={accountId:'viewer',targetId:'author'};
+  const other={accountId:'viewer',targetId:'other'};
+  const first=store.ensure(params), unaffected=store.ensure(other);
+  store.reconcileAuthorBadges('viewer',{id:'author',role:'fan',verified:false,profileBadges:[]});
+  assert.equal(pending.length,3);
+  assert.equal(pending[0].signal.aborted,true);
+  assert.equal(pending[1].signal.aborted,false);
+  assert.equal(pending[2].signal.aborted,false);
+  pending[0].resolve({posts:[{id:'stale',userId:'author',user:{verified:true}}]});
+  pending[1].resolve({posts:[{id:'other',userId:'other'}]});
+  pending[2].resolve({posts:[{id:'fresh',userId:'author',user:{verified:false}}]});
+  await Promise.all([first,unaffected]);
+  await new Promise(resolve=>setImmediate(resolve));
+  const state=store.getSnapshot(profileHistoryScope('viewer','author'));
+  assert.equal(state.status,'ready');
+  assert.deepEqual(state.data.posts.map(p=>p.id),['fresh']);
+});
+
+test('badge reconciliation preserves loaded older wall pages and isolates viewers',()=>{
+  const store=createProfileHistoryStore({fetchPage:async()=>({posts:[]})});
+  const params={accountId:'viewer',targetId:'author'};
+  const privateParams={accountId:'other-viewer',targetId:'author'};
+  for(const id of ['old','older'])store.upsertPost(params,{id,userId:'author',user:{role:'admin',verified:true},review:id});
+  store.upsertPost(privateParams,{id:'private',userId:'author',user:{verified:true}});
+  store.reconcileAuthorBadges('viewer',{id:'author',role:'fan',verified:false,profileBadges:[]});
+  const rows=store.getSnapshot(profileHistoryScope('viewer','author')).data.posts;
+  assert.equal(rows.length,2);assert.ok(rows.every(p=>p.user.verified===false));
+  assert.equal(store.getSnapshot(profileHistoryScope('other-viewer','author')).data.posts[0].user.verified,true);
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -76,5 +76,51 @@ test('mobile backend rejects running a different checkout preload from the wrong
   });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Mobile smoke must run from its .*checkout/);
+  assert.doesNotMatch(result.stdout, /UNEXPECTED_START/);
+});
+
+
+test('persistent test mode reuses only its fixed local data directory without inherited credentials', (t) => {
+  const { root, preload } = checkoutFixture(t);
+  const runner = join(root, 'persistent-probe.mjs');
+  writeFileSync(runner, `
+    import { existsSync, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    import assert from 'node:assert/strict';
+    import http from 'node:http';
+    import net from 'node:net';
+    let listening;
+    net.Server.prototype.listen = function (...args) { listening = args; return this; };
+    await import(${JSON.stringify(pathToFileURL(preload).href)});
+    await assert.rejects(fetch('https://fixture.invalid'), /OUTBOUND_BLOCKED/);
+    assert.throws(() => http.get('http://fixture.invalid'), /OUTBOUND_BLOCKED/);
+    http.createServer().listen(3000);
+    assert.deepEqual(listening[0], { port: 3000, host: '127.0.0.1' });
+    const marker = join(process.env.PIT_DATA_DIR, 'synthetic-user.txt');
+    console.log(JSON.stringify({ data: process.env.PIT_DATA_DIR, retained: existsSync(marker), secret: !!process.env.RESEND_API_KEY }));
+    writeFileSync(marker, 'synthetic test user');
+  `);
+  const run = () => spawnSync(process.execPath, [runner], { cwd: root, encoding: 'utf8', timeout: 15000,
+    env: { ...process.env, MSHPIT_LOCAL_PERSISTENT_TEST_DATA: '1', PIT_DATA_DIR: '/forbidden-production', RESEND_API_KEY: 'synthetic-secret' } });
+  for (const retained of [false, true]) {
+    const result = run();
+    assert.equal(result.status, 0, result.stderr);
+    const observed = JSON.parse(result.stdout.trim().split('\n').at(-1));
+    assert.equal(observed.data, join(root, '.tmp', 'mobile-preview-data'));
+    assert.equal(observed.retained, retained);
+    assert.equal(observed.secret, false);
+  }
+});
+
+test('persistent test mode rejects redirected storage rather than touching another database', (t) => {
+  const { root, preload } = checkoutFixture(t);
+  mkdirSync(join(root, '.tmp'));
+  mkdirSync(join(root, 'other-data'));
+  symlinkSync(join(root, 'other-data'), join(root, '.tmp', 'mobile-preview-data'), 'junction');
+  const result = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, '-e', 'console.log("UNEXPECTED_START")'], {
+    cwd: root, encoding: 'utf8', timeout: 15000, env: { ...process.env, MSHPIT_LOCAL_PERSISTENT_TEST_DATA: '1' },
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /must not redirect/);
   assert.doesNotMatch(result.stdout, /UNEXPECTED_START/);
 });

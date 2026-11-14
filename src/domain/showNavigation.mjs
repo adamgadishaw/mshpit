@@ -14,6 +14,10 @@ const validPostId = (value) => {
   return typeof value === "string" && value.trim().length > 0;
 };
 
+export function isReviewDetail(log) {
+  return hasPostDiscussion(log) && log.kind !== "status" && !log.news && log.performanceEvent !== true;
+}
+
 // ShowScreen accepts both persisted Pit review posts and non-post performance
 // listings (Ticketmaster dates, artist-created tour dates, and archive
 // aggregates). Keep that distinction explicit so only real posts receive

@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(new URL("../screens/ArtistScreen.jsx", import.meta.url), "utf8");
+const source = readFileSync(new URL("../screens/ArtistScreen.ios.jsx", import.meta.url), "utf8");
+const reviewEventLink = readFileSync(new URL("../screens/ReviewEventLink.jsx", import.meta.url), "utf8");
 const showSource = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
 const artistArchiveSource = readFileSync(new URL("../screens/ArtistArchiveScreen.jsx", import.meta.url), "utf8");
 const tourArchiveSource = readFileSync(new URL("../screens/TourArchiveScreen.jsx", import.meta.url), "utf8");
@@ -13,14 +14,17 @@ test("generic memorial memories never render a dead-end View show action", () =>
 });
 
 test("artist review actions have distinct reload-safe post and concert URLs", () => {
-  assert.match(source, /href=\{postPath\(review\.id\)\}[\s\S]*?onNavigate=\{\(\) => onOpenPost\?\.\(review\)\}/);
-  assert.match(source, /href=\{concertPath\(review\.archiveShowKey\)\}[\s\S]*?onNavigate=\{\(\) => onOpenShow\?\.\(review\)\}/);
+  assert.match(source, /href=\{postPath\(review\.id\)\}[\s\S]*?onNavigate=\{guard\(\(\) => onOpenPost\?\.\(review\)\)\}/);
+  // Exact-show actions now resolve authoritative concert data in the shared
+  // navigation child. The separate post permalink must stay on the card.
+  assert.match(source, /<ReviewEventLink\s+review=\{review\}\s+onOpenShow=\{onOpenShow\}/);
+  assert.match(reviewEventLink, /href=\{reviewEventPath\(review\)\} onNavigate=\{\(\) => open\(review\)\}/);
   assert.match(source, /href=\{concertPath\(show\.key\)\}/);
   assert.doesNotMatch(source, /href=\{eventPath\(show\)\}/);
 });
 
 test("memorial and pre-1970 legacy profiles use distinct permanent presentation modes", () => {
-  assert.match(source, /deceased \? "CREATIVE LEGACY" : liveAvailable \? "CONCERT RATINGS" : "ARTIST STATUS"/);
+  assert.match(source, /deceased \? "CREATIVE LEGACY" : liveAvailable \? "LIVE PERFORMANCE" : "ARTIST STATUS"/);
   assert.match(source, /New live ratings are closed\./);
   assert.match(source, /deceased \? `FAN MEMORIES/);
   assert.match(source, /sectionModel\.active === "shows" && liveAvailable/);
@@ -60,13 +64,14 @@ test("artist and show screens fail closed until memorial status is authoritative
   assert.match(source, /artistPageSectionModel\(activeSection, \{ legacyMode: !profileServicesAvailable, signedIn: !!session \}\)/);
   assert.match(source, /useArtistOverview\(\{[\s\S]*?enabled: profileServicesAvailable/);
   assert.match(source, /sectionModel\.showLive && liveAvailable && \([\s\S]*?<ArtistUpcomingShows/);
-  assert.match(source, /liveAvailable \? "CONCERT RATINGS" : "ARTIST STATUS"/);
+  assert.match(source, /liveAvailable \? "LIVE PERFORMANCE" : "ARTIST STATUS"/);
   assert.match(source, /memorialKnown && sectionModel\.showCommunity/);
   assert.match(showSource, /const liveActionsAvailable = memorialAvailability === "living"/);
   assert.match(showSource, /useCanonicalArtistIdentity\(\{[\s\S]*?artistName: artist,[\s\S]*?artistKey: norm\.artistKey \|\| null/);
   assert.match(showSource, /const legacyMode = isLegacyArtistMemorial\(memorialResource\.data\)/);
   assert.match(showSource, /enabled: showPageAllowed && !!archiveShowKey/);
-  assert.match(showSource, /!showPageAllowed \? \([\s\S]*?<LegacyArtistArchiveGate/);
+  assert.match(showSource, /const archiveGate = <LegacyArtistArchiveGate/);
+  assert.match(showSource, /!showPageAllowed \? \([\s\S]*?\{archiveGate\}<\/ScrollView> : archiveGate/);
   assert.match(showSource, /presentation\.showPostEvent && liveActionsAvailable/);
   assert.match(showSource, /liveActionsAvailable && presentation\.allowTickets/);
   assert.match(showSource, /liveActionsAvailable && lifecycleView\.trusted/);

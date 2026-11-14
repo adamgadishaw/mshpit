@@ -5,13 +5,13 @@ import {createRequire} from 'node:module';
 import {transformSync} from '@babel/core';
 const require=createRequire(import.meta.url),code=transformSync(readFileSync(new URL('./ConvertingClipNotice.jsx',import.meta.url),'utf8'),{filename:'ConvertingClipNotice.jsx',babelrc:false,configFile:false,plugins:[[require('@babel/plugin-transform-react-jsx'),{runtime:'automatic'}],require('@babel/plugin-transform-modules-commonjs')]}).code;
 const settle=()=>new Promise(r=>setImmediate(r));
-function fixture({platform='android',active=true}={}){
+function fixture({platform='android',active=true,preview=false}={}){
  const slots=[],effects=[],layouts=[],timers=new Map(),calls=[];let cursor=0,seq=0,ready=0,clips=[{id:'local-converter-source',state:'processing'}];const retries=[];
  const scheduleEffect=(fn,deps,queue)=>{const i=cursor++,old=slots[i];if(!old||deps.some((d,n)=>d!==old.deps[n])){const value={deps,fn,prior:old};slots[i]=value;queue.push(value);}};
  const react={useState(initial){const i=cursor++;if(!(i in slots))slots[i]=typeof initial==='function'?initial():initial;return[slots[i],next=>slots[i]=typeof next==='function'?next(slots[i]):next];},useRef(initial){return slots[cursor++]||=({current:initial});},useEffect(fn,deps){scheduleEffect(fn,deps,effects);},useLayoutEffect(fn,deps){scheduleEffect(fn,deps,layouts);}};
- const jsx=(type,props)=>({type,props}),deps={react,'react/jsx-runtime':{jsx,jsxs:jsx},'react-native':{Platform:{OS:platform},ActivityIndicator:'Spinner',Pressable:'Button',Text:'Text',View:'View',StyleSheet:{create:s=>s,hairlineWidth:1}},'../lib/useAppActive':()=>active,'./Icon':'Icon','../theme':{colors:{},radius:{}},'../lib/convertingClipsApi':{checkConvertingClip:(id,{signal})=>new Promise(resolve=>calls.push({id,signal,resolve})),retryConvertingClip:id=>new Promise((resolve,reject)=>retries.push({id,resolve,reject}))}};
+ const jsx=(type,props)=>({type,props}),deps={react,'react/jsx-runtime':{jsx,jsxs:jsx},'react-native':{Platform:{OS:platform},ActivityIndicator:'Spinner',Pressable:'Button',Text:'Text',View:'View',StyleSheet:{create:s=>s,hairlineWidth:1}},'../lib/useAppActive':()=>active,'../hooks/useNativeTabPreview':()=>preview,'./Icon':'Icon','../theme':{colors:{},radius:{}},'../lib/convertingClipsApi':{checkConvertingClip:(id,{signal})=>new Promise(resolve=>calls.push({id,signal,resolve})),retryConvertingClip:id=>new Promise((resolve,reject)=>retries.push({id,resolve,reject}))}};
  const module={exports:{}};new Function('require','module','exports','setInterval','clearInterval',code)(name=>deps[name]||require(name),module,module.exports,fn=>{timers.set(++seq,fn);return seq;},id=>timers.delete(id));
- const render=({flushPassive=true}={})=>{cursor=0;const tree=module.exports.default({clips,onReady:()=>ready++});while(layouts.length){const e=layouts.shift();e.prior?.cleanup?.();e.cleanup=e.fn();}if(flushPassive)while(effects.length){const e=effects.shift();e.prior?.cleanup?.();e.cleanup=e.fn();}return tree;};render();return{calls,timers,retries,render,setClips:(value,options)=>{clips=value;return render(options);},get ready(){return ready;},tick:()=>[...timers.values()].forEach(fn=>fn()),setActive:value=>{active=value;render();},unmount:()=>slots.forEach(s=>s?.cleanup?.())};
+ const render=({flushPassive=true}={})=>{cursor=0;const tree=module.exports.default({clips,onReady:()=>ready++});while(layouts.length){const e=layouts.shift();e.prior?.cleanup?.();e.cleanup=e.fn();}if(flushPassive)while(effects.length){const e=effects.shift();e.prior?.cleanup?.();e.cleanup=e.fn();}return tree;};render();return{calls,timers,retries,render,setClips:(value,options)=>{clips=value;return render(options);},get ready(){return ready;},tick:()=>[...timers.values()].forEach(fn=>fn()),setActive:value=>{active=value;render();},setPreview:(value,options)=>{preview=value;return render(options);},unmount:()=>slots.forEach(s=>s?.cleanup?.())};
 }
 test('native checks immediately and serializes a slow check with the interval',async()=>{const f=fixture();assert.equal(f.calls.length,1);f.tick();assert.equal(f.calls.length,1);f.calls[0].resolve('ready');await settle();assert.equal(f.ready,1);f.unmount();assert.equal(f.timers.size,0);});
 test('a retired native notice aborts and ignores late ready results',async()=>{const f=fixture();f.unmount();assert.equal(f.calls[0].signal.aborted,true);f.calls[0].resolve('ready');await settle();assert.equal(f.ready,0);});
@@ -44,4 +44,24 @@ test('same-turn repeat retry is serialized and a refusal remains retryable',asyn
  f.retries[0].reject(new Error('synthetic unavailable'));await pending;
  const next=findRetry(f.render()).props.onPress();assert.equal(f.retries.length,2);f.retries[1].resolve('ready');await next;
  assert.equal(f.ready,1);assert.equal(f.render(),null);f.unmount();
+});
+
+
+test('iOS preview never polls conversion or refreshes feed until committed',async()=>{
+ const f=fixture({platform:'ios',preview:true});assert.equal(f.calls.length,0);assert.equal(f.timers.size,0);
+ f.setPreview(false);assert.equal(f.calls.length,1);f.setPreview(true,{flushPassive:false});
+ f.calls[0].resolve('ready');await settle();assert.equal(f.ready,0);f.render();assert.equal(f.calls[0].signal.aborted,true);f.unmount();
+});
+for(const platform of ['android','web'])test(`${platform} conversion ignores iOS preview context`,()=>{
+ const f=fixture({platform,preview:true});if(platform==='web')f.tick();assert.equal(f.calls.length,1);f.unmount();
+});
+test('iOS preview retires pending retry and promotion remains retryable',async()=>{
+ const f=fixture({platform:'ios'});f.calls[0].resolve('processing');await settle();f.setClips([{id:'failed-clip',state:'failed'}]);
+ const pending=findRetry(f.render()).props.onPress();f.setPreview(true,{flushPassive:false});f.retries[0].resolve('ready');await pending;assert.equal(f.ready,0);
+ f.setPreview(false);const retry=findRetry(f.render());assert.ok(retry);const next=retry.props.onPress();assert.equal(f.retries.length,2);f.retries[1].resolve('ready');await next;assert.equal(f.ready,1);f.unmount();
+});
+for(const platform of ['ios','android','web'])test(`${platform} accepted retry settles through background and does not strand retry state`,async()=>{
+ const f=fixture({platform});if(platform==='web')f.tick();f.calls[0].resolve('processing');await settle();f.setClips([{id:'failed-clip',state:'failed'}]);
+ const pending=findRetry(f.render()).props.onPress();f.setActive(false);f.retries[0].reject(new Error('synthetic offline'));await pending;f.setActive(true);
+ const retry=findRetry(f.render());assert.equal(retry.props.disabled,false);const next=retry.props.onPress();assert.equal(f.retries.length,2);f.retries[1].resolve('ready');await next;assert.equal(f.ready,1);f.unmount();
 });

@@ -3,7 +3,7 @@ import { isTransientYouTubeLookupStatus } from "./playback.mjs";
 const LOOKUP_NOTICES = Object.freeze({
   search_deferred: Object.freeze({
     kind: "catalogue_only",
-    message: "Previewing without spending a YouTube search.",
+    message: "Full-track YouTube search has not started.",
   }),
   search_login_required: Object.freeze({
     kind: "sign_in",
@@ -15,7 +15,7 @@ const LOOKUP_NOTICES = Object.freeze({
   }),
   search_actor_budget_exhausted: Object.freeze({
     kind: "account_limit",
-    message: "Your YouTube search allowance is used for now. Try again later.",
+    message: "You have reached your YouTube search limit. Try again later.",
   }),
   unconfigured: Object.freeze({
     kind: "configuration",
@@ -23,7 +23,7 @@ const LOOKUP_NOTICES = Object.freeze({
   }),
   search_budget_exhausted: Object.freeze({
     kind: "global_limit",
-    message: "PIT's shared YouTube search allowance is used for now.",
+    message: "Mshpit has reached its shared YouTube search limit. Try again later.",
   }),
   provider_paused: Object.freeze({
     kind: "provider_unavailable",
@@ -31,7 +31,7 @@ const LOOKUP_NOTICES = Object.freeze({
   }),
   recording_proof_unavailable: Object.freeze({
     kind: "recording_verification",
-    message: "PIT could not verify this exact recording for full-track playback yet.",
+    message: "Mshpit could not confirm a YouTube match for this exact recording.",
   }),
   quota_or_forbidden: Object.freeze({
     kind: "provider_unavailable",

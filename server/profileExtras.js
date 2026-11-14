@@ -1,7 +1,7 @@
 import { clean } from "./validate.js";
 import { canonicalProfileBadges } from "../src/domain/profileBadges.mjs";
+import { isThemeKey } from "../src/domain/themeAccess.mjs";
 
-const THEMES = new Set(["stage", "neon", "forest", "ember", "backstage", "vinyl", "daylight", "ice", "rose", "mint", "sunset", "lavender"]);
 const ALLOWED_KEYS = new Set([
   "theme", "consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion",
   "analyticsOptOut", "searchIndexingOptOut", "concertMapVisible", "nowPlaying", "treble", "bass", "playlists",
@@ -68,7 +68,7 @@ export function canonicalProfileExtras(value, { strict = false } = {}) {
   for (const [key, raw] of Object.entries(value)) {
     if (!ALLOWED_KEYS.has(key)) { valid = false; continue; }
     let normalized;
-    if (key === "theme") normalized = typeof raw === "string" && THEMES.has(raw) ? raw : undefined;
+    if (key === "theme") normalized = isThemeKey(raw) ? raw : undefined;
     else if (["consentAt", "analyticsConsentAt", "termsAcceptedAt"].includes(key)) normalized = timestamp(raw);
     else if (key === "termsVersion") normalized = typeof raw === "string" ? clean(raw, { max: 32 }) : undefined;
     else if (["analyticsOptOut", "searchIndexingOptOut", "concertMapVisible"].includes(key)) normalized = typeof raw === "boolean" ? raw : undefined;

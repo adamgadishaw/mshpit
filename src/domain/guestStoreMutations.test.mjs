@@ -22,7 +22,10 @@ const names = [
 ];
 const declarations = provider.body.body.flatMap((node) => node.type === "VariableDeclaration" ? node.declarations : []);
 const callbacks = names.map((name) => declarations.find((node) => node.id?.name === name))
-  .filter(Boolean).map((node) => `const ${source.slice(node.start, node.end)};`).join("\n");
+  .filter(Boolean).map((node) => `const ${source.slice(node.start, node.end)};`).join("\n")
+  // The module loader is the only additional replaced boundary; real delivery
+  // still runs after the asynchronous chunk has resolved.
+  .replace('import("./domain/postDelivery.mjs")', "loadPostDelivery()");
 const owner = { id: "account-a" };
 const other = { id: "account-b" };
 const seedPost = { id: "post-1", userId: owner.id, kind: "status", review: "An excellent night", likes: 4 };
@@ -35,11 +38,13 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
   const accountMutationEpochRef = { current: 1 }, feedMutationRevisionRef = { current: 0 };
   const update = (key) => (value) => { writes.push(key); state[key] = typeof value === "function" ? value(state[key]) : value; };
   const dependencies = {
+    Platform: { OS: "ios" },
+    invalidateIOSDetailPrivacy: () => 0,
     session: actor, sessionRef, authReadyRef, accountMutationEpochRef, feedMutationRevisionRef,
     captureAccountMutation, accountMutationIsCurrent,
     clean, clampRating, LIMITS, cleanArtistKey, normalizeArtistCampaign,
     normalizeTaggedPeople, taggedUserIdsFromPeople, buildMemoryCreateBody, buildReviewCreateBody, buildStatusCreateBody,
-    deliverPostCreate: (options) => deliverPostCreate({ ...options, retryDelaysMs: [] }),
+    loadPostDelivery: () => Promise.resolve({ deliverPostCreate: (options) => deliverPostCreate({ ...options, retryDelaysMs: [] }) }),
     normalizeServerPost: (post) => post,
     AppError: class extends Error { constructor(message, options) { super(message); Object.assign(this, options); } },
     ENABLE_DEMO_DATA: demo,
@@ -130,6 +135,7 @@ for (const [name, invoke] of Object.entries(commands)) {
   test(`${name}: an active member retains optimistic behavior and actor-bound requests`, async () => {
     const f = fixture(), pending = invoke(f);
     assert.ok(f.writes.length > 0);
+    await tick();
     assert.equal(f.calls.length, 1);
     assert.equal(f.calls[0].options.expectedAccountId, owner.id);
     f.calls[0].resolve({ id: "canonical-1", liked: true, count: 4 });
@@ -143,6 +149,7 @@ for (const [name, invoke] of Object.entries(commands)) {
     for (const replacement of [null, other, { ...owner }]) {
       for (const failed of [false, true]) {
         const f = fixture(), pending = invoke(f);
+        await tick();
         assert.equal(f.calls.length, 1);
         f.adopt(replacement, replacement?.id === owner.id ? 2 : 1);
         f.state.feed = [{ id: "replacement-post" }];
@@ -165,6 +172,7 @@ for (const [name, invoke] of Object.entries(commands)) {
   test(`${name}: active-account rejection restores the optimistic state`, async () => {
     const f = fixture(), before = structuredClone(f.state), pending = invoke(f);
     const error = Object.assign(new Error("Rejected"), { status: 403 });
+    await tick();
     f.calls[0].reject(error);
     const result = await pending; await tick();
     assert.equal(result.ok, false);
@@ -185,6 +193,7 @@ test("same-account profile refreshes do not invalidate legitimate actions", asyn
   const f = fixture();
   f.adopt({ ...owner, emailVerified: true }, 0);
   const pending = commands.addLog(f);
+  await tick();
   assert.equal(f.calls.length, 1);
   f.calls[0].resolve({ id: "canonical-1" });
   assert.equal((await pending).ok, true);
@@ -199,6 +208,7 @@ test("identity readiness resumes on a fresh tap without replaying a rejected act
     await tick();
     assert.equal(f.calls.length, 0, "identity confirmation must not replay the old intent");
     const pending = invoke(f);
+    await tick();
     assert.equal(f.calls.length, 1);
     f.calls[0].resolve({ id: "canonical-1", liked: true, count: 4 });
     assert.equal((await pending).ok, true);
@@ -209,6 +219,7 @@ test("the account guard does not introduce new verification or onboarding restri
   for (const invoke of Object.values(commands)) {
     const f = fixture({ actor: { ...owner, emailVerified: false, onboardingVersion: 0 } });
     const pending = invoke(f);
+    await tick();
     assert.equal(f.calls.length, 1, "the server retains ownership of member eligibility policy");
     f.calls[0].resolve({ id: "canonical-1", liked: true, count: 4 });
     assert.equal((await pending).ok, true);

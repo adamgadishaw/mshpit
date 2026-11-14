@@ -8,6 +8,7 @@ import { chatOutboxFor, confirmedChatMessage, updateChatOutboxItem, withoutChatO
 import { mergeChatMessages, reconcileRemovedDirectMessages } from "./chatMessages.mjs";
 import { directMessageUnreadCount, mergeDirectMessageReadSummary, normalizeDirectMessageReadCursor } from "./directMessageRead.mjs";
 import { normalizeMessageRelationshipContext } from "./messageRelationshipContext.mjs";
+import { applyDMRequestState, dmInboxBucket, dmRequestState, normalizeDMRequestState } from "../features/chat/directMessageConsent.mjs";
 
 
 const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
@@ -56,6 +57,7 @@ function fixture({ demo = false, queued = false } = {}) {
       ENABLE_DEMO_DATA: demo, mergeChatMessages, reconcileRemovedDirectMessages, chatOutboxFor, confirmedChatMessage,
       updateChatOutboxItem, withoutChatOutboxItem, normalizeMessageRelationshipContext,
       directMessageUnreadCount, mergeDirectMessageReadSummary, normalizeDirectMessageReadCursor,
+      applyDMRequestState, dmInboxBucket, dmRequestState, normalizeDMRequestState,
       captureAccountMutation, accountMutationIsCurrent,
       setDms: setter("dms"), setDmRead: setter("dmRead"), setUsers: setter("users"),
       absorbUsers: () => {}, publicProfileCacheEntry: user => user, ago: value => String(value),

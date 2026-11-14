@@ -1,3 +1,5 @@
+import { creatorUpdateDraft } from "./creatorUpdateDraft.mjs";
+
 export const POST_CREATE_RETRY_DELAYS_MS = Object.freeze([250, 900]);
 export const POST_CREATE_ATTEMPT_TIMEOUT_MS = 12_000;
 
@@ -28,7 +30,7 @@ export async function deliverPostCreate({
 
   for (let attempt = 0; ; attempt += 1) {
     try {
-      return await apiCall("/api/posts", {
+      const response = await apiCall("/api/posts", {
         method: "POST",
         body,
         context,
@@ -38,6 +40,18 @@ export async function deliverPostCreate({
         // attempts remain in Diagnostics but never produce duplicate toasts.
         silent: true,
       });
+      if (body.creatorUpdate?.calendar && response?.calendarReceipt && !response.post) {
+        if (response.calendarReceipt.mutationId !== body.clientMutationId || !["scheduled", "cancelled", "blocked"].includes(response.calendarReceipt.state)) throw new Error("The calendar save could not be confirmed. Retry your saved draft.");
+        return response;
+      }
+      if (body.creatorUpdate) {
+        const expected = creatorUpdateDraft(body.creatorUpdate);
+        if (!response?.post?.id || response.id !== response.post.id || !expected
+          || Object.entries(expected).some(([key, value]) => JSON.stringify(response.post.creatorUpdate?.[key]) !== JSON.stringify(value))) {
+          throw new Error("The page update could not be confirmed. Your draft is saved; retry before starting another post.");
+        }
+      }
+      return response;
     } catch (error) {
       if (attempt >= delays.length || !shouldRetryPostCreate(error)) throw error;
       await wait(delays[attempt]);

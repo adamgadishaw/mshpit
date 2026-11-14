@@ -107,13 +107,14 @@ test("a failed readback does not remove a newer same-account theme from another 
   assert.equal(data.get(KEYS.ownerKey), "u_1");
 });
 
-test("account theme sync cannot reload when verified persistence fails", () => {
+test("account theme sync requires verified persistence except for a dormant restricted preference", () => {
   const source = readFileSync(new URL("../theme.js", import.meta.url), "utf8");
   const start = source.indexOf("export function syncThemeFromAccount");
   const end = source.indexOf("// Official positions", start);
   assert.ok(start >= 0 && end > start);
   const sync = source.slice(start, end);
-  assert.match(sync, /if \(persistTheme\(next, ownerId\) && next !== key\) reloadTheme\(\);/);
+  assert.match(sync, /if \(\(dormant \|\| persistTheme\(selected, ownerId\)\) && selected !== key\) reloadTheme\(\);/);
+  assert.match(sync, /!canAccessTheme\(local.theme, actor\)/);
   assert.doesNotMatch(sync, /if \(next !== key\)/, "reload must not be independent of persistence success");
 });
 

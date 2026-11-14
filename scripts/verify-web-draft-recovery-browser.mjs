@@ -109,7 +109,7 @@ async function actualRecovery(browser, api, currentDist, output, mode, width = 1
   try {
     ({ context, record } = await isolatedContext(browser, server.origin, { member: true, width }));
     const page = await context.newPage(); await page.goto(server.origin + '/feed');
-    await page.getByText("Your life's musical journey", { exact: true }).waitFor();
+    await page.getByText("Your shows. Your music.", { exact: true }).waitFor();
     const draftText = `Release recovery ${mode}${suffix} saved draft`;
     await page.getByLabel('Make a post', { exact: true }).click();
     const editor = page.getByPlaceholder('Write about music, a show, or what you plan to see next...', { exact: true });
@@ -180,7 +180,7 @@ async function actualRecovery(browser, api, currentDist, output, mode, width = 1
       assert.equal(await fresh.evaluate(() => window.releaseRecoveryMemoryCanary), undefined, 'A new tab must not claim to restore heap-only work.');
       assert.deepEqual(await storageReceipt(context, fresh), saved);
       await fresh.goto(server.origin + '/feed');
-      await fresh.getByText("Your life's musical journey", { exact: true }).waitFor();
+      await fresh.getByText("Your shows. Your music.", { exact: true }).waitFor();
       await screenshot(page, output, 'actual-recovery-old-tab-preserved');
     }
     assert.deepEqual(record.routeErrors, []);

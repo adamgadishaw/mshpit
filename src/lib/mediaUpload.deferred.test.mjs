@@ -58,7 +58,7 @@ for (const explicitCrop of [true, false]) {
     });
     await assert.rejects(upload(asset, "avatar"), error => error === (explicitCrop ? failedCrop : preparationReached));
     assert.equal(preparationCalls, explicitCrop ? 0 : 1);
-    assert.deepEqual(captures, explicitCrop ? [{ context: "Preparing your profile photo" }] : []);
+    assert.deepEqual(captures, explicitCrop ? [{ context: "Preparing your profile photo", code: "PIT-UPLOAD-008" }] : []);
   });
 }
 const ticket = {

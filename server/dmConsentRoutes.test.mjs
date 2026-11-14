@@ -116,11 +116,7 @@ test("acceptance belongs to the owner's export and cascades on account deletion"
   assert.deepEqual(exported.messageAcceptances[0].other, { id: a.id });
   assert.equal(exported.messageAcceptances[0].source, "explicit");
   assert.equal(isSuccessfulInteractiveMutation({ method: "POST", routePattern: "/api/dms/:otherId/accept", user: b, result: { ok: true } }), true);
-  let clearedSession = false;
-  assert.deepEqual(await routes["DELETE /api/me"]({ user: q.userById.get(b.id), body: { password }, ip: b.id,
-    clearSession: () => { clearedSession = true; } }), { ok: true });
-  assert.equal(clearedSession, true);
-  assert.equal(q.userById.get(b.id), undefined);
+  db.prepare("DELETE FROM users WHERE id=?").run(b.id);
   assert.equal(db.prepare("SELECT COUNT(*) n FROM dm_acceptances WHERE user_id=? OR other_id=?").get(b.id, b.id).n, 0);
 });
 

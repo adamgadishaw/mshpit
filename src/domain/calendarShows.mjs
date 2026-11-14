@@ -1,4 +1,7 @@
-import { localCalendarIso, toIsoDate } from "./dates.mjs";
+import { localCalendarIso } from "./dates.mjs";
+import { calendarReadDate } from "./calendarDates.mjs";
+import { calendarEventTiming, nextCalendarDay } from "./calendarEventTiming.mjs";
+import { calendarPerformanceGroups, calendarPerformanceKey, calendarSourceIds } from "./calendarPerformanceIdentity.mjs";
 
 export const CALENDAR_SHOW_VIEW = Object.freeze({
   UPCOMING: "upcoming",
@@ -10,18 +13,7 @@ const text = (value) => String(value || "").trim();
 function calendarDay(value) {
   return value instanceof Date || typeof value === "number"
     ? localCalendarIso(value)
-    : toIsoDate(value);
-}
-
-function showIdentity(show, dayKey) {
-  // Attendance rows and review posts use different storage ids for the same
-  // performance. The calendar identity must therefore remain artist + room +
-  // night, matching the product's concert identity rather than either row id.
-  return [show?.artist, show?.venue, dayKey].map((part) => text(part).toLocaleLowerCase()).join("|");
-}
-
-function normalizedShow(show, dayKey, patch = {}) {
-  return { ...show, ...patch, date: dayKey, dayKey };
+    : calendarReadDate(value);
 }
 
 function mergeShow(previous, incoming) {
@@ -35,6 +27,11 @@ function mergeShow(previous, incoming) {
   next.attended = previous.attended === true || incoming.attended === true;
   next.logged = previous.logged === true || incoming.logged === true;
   next.posted = previous.posted === true || incoming.posted === true;
+  const previousIds = calendarSourceIds(previous);
+  const incomingIds = calendarSourceIds(incoming);
+  next.calendarSourceIds = Object.fromEntries(Object.keys(previousIds).map((key) => [
+    key, [...new Set([...previousIds[key], ...incomingIds[key]])].sort(),
+  ]));
   return next;
 }
 
@@ -58,7 +55,7 @@ export function calendarShowFromPost(post) {
   const source = ticket || post;
   const artist = text(source.artist || post.artist);
   const venue = text(source.venue || post.venue);
-  const date = toIsoDate(source.date || post.date);
+  const date = calendarReadDate(source.date || post.date);
   if (!artist || !venue || !date) return null;
   if (kind !== "review" && kind !== "status") return null;
 
@@ -88,7 +85,12 @@ export function calendarShowFromPost(post) {
 
 function rowsByDay(rows) {
   const grouped = {};
-  for (const show of rows) (grouped[show.dayKey] ||= []).push(show);
+  for (const show of rows) {
+    // The model keeps one event; only the day index contains occurrences.
+    for (let dayKey = show.date; dayKey <= show.endDate; dayKey = nextCalendarDay(dayKey)) {
+      (grouped[dayKey] ||= []).push(dayKey === show.dayKey ? show : { ...show, dayKey });
+    }
+  }
   return grouped;
 }
 
@@ -98,7 +100,11 @@ function sortCalendarRows(rows, view) {
       ? right.dayKey.localeCompare(left.dayKey)
       : left.dayKey.localeCompare(right.dayKey);
     if (byDate) return byDate;
-    return text(left.artist).localeCompare(text(right.artist));
+    const leftTime = left.calendarTiming.startLocalTime || "99:99";
+    const rightTime = right.calendarTiming.startLocalTime || "99:99";
+    return leftTime.localeCompare(rightTime)
+      || text(left.artist).localeCompare(text(right.artist))
+      || left.calendarKey.localeCompare(right.calendarKey);
   });
 }
 
@@ -108,7 +114,7 @@ function sortCalendarRows(rows, view) {
  * - released catalogue rows are discovery context for Upcoming;
  * - private Going and Here/Went rows are supplied only by owner-scoped callers;
  * - public/owner post rows are projected from canonical post JSON;
- * - one artist + room + night is merged once across every source.
+ * - exact performances stay distinct; legacy sources merge only unambiguously.
  */
 export function memberCalendarModel({
   today,
@@ -131,21 +137,12 @@ export function memberCalendarModel({
     };
   }
 
-  const rows = {
-    [CALENDAR_SHOW_VIEW.UPCOMING]: new Map(),
-    [CALENDAR_SHOW_VIEW.PAST]: new Map(),
-  };
-  const add = (show, patch = {}, { pastOnly = false, upcomingOnly = false } = {}) => {
-    const dayKey = toIsoDate(show?.date);
-    if (!dayKey) return;
-    const view = dayKey < todayKey ? CALENDAR_SHOW_VIEW.PAST : CALENDAR_SHOW_VIEW.UPCOMING;
-    if ((pastOnly && view !== CALENDAR_SHOW_VIEW.PAST)
-      || (upcomingOnly && view !== CALENDAR_SHOW_VIEW.UPCOMING)) return;
-    const projected = normalizedShow(show, dayKey, patch);
-    const identity = showIdentity(projected, dayKey);
-    if (!text(projected.artist) || !text(projected.venue) || !identity) return;
-    const withIdentity = { ...projected, calendarKey: identity };
-    rows[view].set(identity, mergeShow(rows[view].get(identity), withIdentity));
+  const entries = [];
+  const add = (show, patch = {}, scope = {}) => {
+    const dayKey = calendarReadDate(show?.date || show?.localDate);
+    if (!dayKey || !text(show?.artist) || !text(show?.venue)) return;
+    const row = { ...show, date: dayKey, dayKey, calendarSourceIds: calendarSourceIds(show) };
+    entries.push({ row, patch, scope, order: entries.length });
   };
 
   const authoredPosts = Array.isArray(posts) ? posts : Array.isArray(logs) ? logs : [];
@@ -172,8 +169,45 @@ export function memberCalendarModel({
     }
   }
 
-  const upcomingRows = sortCalendarRows([...rows[CALENDAR_SHOW_VIEW.UPCOMING].values()], CALENDAR_SHOW_VIEW.UPCOMING);
-  const pastRows = sortCalendarRows([...rows[CALENDAR_SHOW_VIEW.PAST].values()], CALENDAR_SHOW_VIEW.PAST);
+  const entryFor = new Map(entries.map((entry) => [entry.row, entry]));
+  const rows = { [CALENDAR_SHOW_VIEW.UPCOMING]: [], [CALENDAR_SHOW_VIEW.PAST]: [] };
+  for (const group of calendarPerformanceGroups(entries.map(({ row }) => row))) {
+    const sources = group.map((row) => entryFor.get(row)).sort((a, b) => a.order - b.order);
+    // Released event metadata wins over older private plan snapshots. Post and
+    // attendance provenance remain separate from the event's navigation ID.
+    const metadata = [...sources].sort((a, b) => Number(!!a.patch.catalogued) - Number(!!b.patch.catalogued));
+    const timingFields = ["startDateTime", "showStartDateTime", "startsAt", "startAt", "startLocalTime", "showStartTime", "startTime", "endDateTime", "eventEndDateTime", "endsAt", "endAt", "endLocalTime", "endTime", "eventEndDate", "endDate", "eventTimezone", "event_timezone", "timeZone", "timezone"];
+    let merged = metadata.reduce((previous, { row, patch }) => {
+      if (previous && patch.catalogued && (previous.date !== row.date || timingFields.some((key) => Object.hasOwn(row, key)))) {
+        previous = { ...previous };
+        for (const key of timingFields) delete previous[key];
+      }
+      return mergeShow(previous, row);
+    }, null);
+    const timing = calendarEventTiming(merged);
+    const view = timing.endDate < todayKey ? CALENDAR_SHOW_VIEW.PAST : CALENDAR_SHOW_VIEW.UPCOMING;
+    const eligible = sources.filter(({ scope }) => !(scope.pastOnly && view !== CALENDAR_SHOW_VIEW.PAST)
+      && !(scope.upcomingOnly && view !== CALENDAR_SHOW_VIEW.UPCOMING));
+    if (!eligible.length) continue;
+    // A stale Going record may help identify a reviewed performance, but its
+    // planning state must never become evidence of attendance in Past.
+    const flags = eligible.reduce((previous, { row, patch }) => mergeShow(previous, { ...row, ...patch }), null);
+    for (const key of ["going", "interested", "attended", "logged", "posted", "catalogued", "attendanceState"]) {
+      delete merged[key];
+      if (flags[key] !== undefined) merged[key] = flags[key];
+    }
+    merged = { ...merged, date: timing.date, dayKey: timing.date, endDate: timing.endDate, calendarTiming: timing };
+    merged.calendarKey = calendarPerformanceKey(merged);
+    if (merged.calendarSourceIds.tourDateIds.length) {
+      merged.id = merged.calendarSourceIds.tourDateIds[0];
+      merged.tourDateId = merged.id;
+      merged.kind = "event";
+      merged.performanceEvent = true;
+    }
+    rows[view].push(merged);
+  }
+  const upcomingRows = sortCalendarRows(rows[CALENDAR_SHOW_VIEW.UPCOMING], CALENDAR_SHOW_VIEW.UPCOMING);
+  const pastRows = sortCalendarRows(rows[CALENDAR_SHOW_VIEW.PAST], CALENDAR_SHOW_VIEW.PAST);
   return {
     today: todayKey,
     upcoming: upcomingRows,
@@ -216,6 +250,6 @@ export function calendarFocusForPost(post, today = new Date()) {
   if (!show || !todayKey) return null;
   return {
     date: show.date,
-    view: show.date < todayKey ? CALENDAR_SHOW_VIEW.PAST : CALENDAR_SHOW_VIEW.UPCOMING,
+    view: calendarEventTiming(show).endDate < todayKey ? CALENDAR_SHOW_VIEW.PAST : CALENDAR_SHOW_VIEW.UPCOMING,
   };
 }

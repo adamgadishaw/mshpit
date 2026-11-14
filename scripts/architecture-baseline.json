@@ -14,7 +14,6 @@
       "usePrivateEphemeral:fanClubs:setFanClubs",
       "usePrivateEphemeral:going:setGoing",
       "usePrivateEphemeral:lounge:setLounge",
-      "usePrivateEphemeral:notifications:setNotifications",
       "usePrivateEphemeral:requests:setRequests",
       "useState:adminMemberDirectory:setAdminMemberDirectory",
       "useState:adminMembers:setAdminMembers",
@@ -70,8 +69,9 @@
       "useAccountCommentCache": 1,
       "useContext": 1,
       "useEffect": 29,
+      "useNotificationActivity": 1,
       "usePersisted": 4,
-      "usePrivateEphemeral": 8,
+      "usePrivateEphemeral": 7,
       "useRef": 53,
       "useState": 47
     }
@@ -252,12 +252,8 @@
   ],
   "unexplainedEmptyCatchSignaturesByFile": {
     "server/api.js": {
-      "count": 10,
-      "fingerprint": "0eeadf6b7593a1b82d1e"
-    },
-    "server/backupScheduler.js": {
-      "count": 2,
-      "fingerprint": "eb917afbf97916eac81a"
+      "count": 9,
+      "fingerprint": "12697a1994f18e1889d7"
     },
     "server/cacheWarmer.js": {
       "count": 1,
@@ -351,10 +347,6 @@
       "count": 2,
       "fingerprint": "4ed3b449f83870e53928"
     },
-    "src/lib/videoPoster.web.js": {
-      "count": 5,
-      "fingerprint": "5086d58cf2e6458dcfba"
-    },
     "src/lib/videoPosterAssetLease.mjs": {
       "count": 1,
       "fingerprint": "240a3f93878d70fba271"
@@ -422,8 +414,8 @@
       "fingerprint": "01e0028f751a5ee02884"
     },
     "src/store.js": {
-      "count": 96,
-      "fingerprint": "090c2ce4fc9a6a574ae3"
+      "count": 92,
+      "fingerprint": "951700505e7844093bb1"
     }
   },
   "legacyClientContractShapesByFile": {

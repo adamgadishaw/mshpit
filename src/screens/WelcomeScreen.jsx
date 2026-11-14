@@ -1,4 +1,5 @@
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import BrandMark from "../components/BrandMark";
 import Button from "../components/Button";
@@ -22,13 +23,13 @@ export default function WelcomeScreen({ onClose, onOpenFanClubs, onOpenNearby, o
     <ScrollView contentContainerStyle={[styles.content, { paddingBottom: Math.max(insets.bottom, 24) }]}>
       <View style={styles.brand}><BrandMark size={32} color={colors.amber} /><Text style={styles.kicker}>LIVE MUSIC, REMEMBERED</Text></View>
       <Text style={styles.title} accessibilityRole="header">How Mshpit works</Text>
-      <Text style={styles.subtitle}>Hey {String(session?.name || "there").split(" ")[0]}. Mshpit is a social network for live music. Find your next show, remember your last one, and meet the people in between.</Text>
+      <Text style={styles.subtitle}>Hey {String(session?.name || "there").split(" ")[0]}. Find concerts, log the shows you attend, and share photos and reviews with other fans.</Text>
       <View style={styles.ticket}>
         <Text style={styles.ticketHeading}>Your next move</Text>
-        <Text style={styles.ticketText}>You do not need to fill out everything before exploring. Start with whatever brought you here.</Text>
+        <Text style={styles.ticketText}>Profile setup is optional. Choose an option below to get started.</Text>
       </View>
       <WelcomeGuide onChoose={choose} />
-      <View style={styles.community}><Text style={styles.heading}>Find your people</Text><Text style={styles.body}>Follow fans whose reviews you trust. When you attend and log it, tag your concert buddies. Share the night on the show’s page, or join the conversation in a fan club.</Text><Button title="Explore fan clubs" variant="secondary" icon="you" onPress={onOpenFanClubs} /></View>
+      <View style={styles.community}><Text style={styles.heading}>Find your people</Text><Text style={styles.body}>Follow fans whose reviews you trust. When you log a show, tag the friends who came with you. Share the night on the show’s page, or join the conversation in a fan club.</Text><Button title="Explore fan clubs" variant="secondary" icon="you" onPress={onOpenFanClubs} /></View>
       <Button title="Back to Mshpit" onPress={onClose} />
     </ScrollView>
   </View>;

@@ -1,4 +1,5 @@
-import { View, Text, StyleSheet } from "react-native";
+import { View, StyleSheet } from "react-native";
+import Text from "./DynamicTypeText";
 import { colors, mono } from "../theme";
 
 // The signature insight: "the band" (performance/setlist/energy) is scored

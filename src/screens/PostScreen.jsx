@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ActivityIndicator, Alert, Platform, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius, roleColor, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { useStore } from "../store";
@@ -7,6 +7,7 @@ import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import TicketStub from "../components/TicketStub";
 import { BadgeRow } from "../components/Badge";
+import { displayedProfileBadges } from "../domain/profileBadges.mjs";
 import { LIMITS } from "../domain/validation.mjs";
 import { applyPostLocalOverride, withRemovedSelfPostTag } from "../domain/postLocalOverrides.mjs";
 import { accountTargetScope } from "../domain/screenScope.mjs";
@@ -17,8 +18,20 @@ import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
-import NewsStoryCard from "../components/news/NewsStoryCard";
+import { usePostAuthorBadges } from "../hooks/usePostAuthorBadges";
+import NewsStoryCard from "../components/news/DeferredNewsStoryCard";
 import { CommentLikeButton } from "../components/SocialReactionButtons";
+import { readPublicPost, resolvePublicEntity } from "../features/publicNavigation/publicNavigationService";
+import { isReviewDetail } from "../domain/showNavigation.mjs";
+import { currentReview, reviewEventPath, reviewIsUnavailable } from "../domain/reviewDetail.mjs";
+import IOSPostKeyboardView from "../components/IOSPostKeyboardView";
+import useIOSCommentAnnouncement from "../hooks/useIOSCommentAnnouncement";
+
+const PostContainer = Platform.OS === "ios" ? IOSPostKeyboardView : View;
+
+const EMPTY_DRAFT = Object.freeze({});
+const readEmptyDraft = () => EMPTY_DRAFT;
+const subscribeEmptyDraft = () => () => {};
 
 const ago = (ts) => {
   if (!ts) return "";
@@ -32,7 +45,7 @@ const ago = (ts) => {
 // One comment row + its nested replies. A reply-to-comment is indented and shows
 // who it answers, so the thread reads like a forum, not a flat list.
 function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId, onOpenProfile, userById, userBadges, postId, onLike, onRequireAuth }) {
-  const author = resolvePostAuthor({ userId: c.userId, cached: userById?.(c.userId), embedded: { name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, membershipBadge: c.membershipBadge, profileUpdatedAt: c.profileUpdatedAt } });
+  const author = resolvePostAuthor({ userId: c.userId, cached: userById?.(c.userId), embedded: { name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, sponsor: c.sponsor, artistName: c.artistName, membershipBadge: c.membershipBadge, profileBadges: c.profileBadges, badgeSnapshot: c.badgeSnapshot, profileUpdatedAt: c.profileUpdatedAt } });
   const own = !c.deleted && !!sessionId && c.userId === sessionId;
   return (
     <View style={depth > 0 ? (depth <= 3 ? styles.replyWrap : styles.deepReplyWrap) : null}>
@@ -51,7 +64,7 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
                 {author.name}
               </PublicTextLink>
             )}
-            {!c.deleted && <BadgeRow badges={userBadges(author)} size={12} />}
+            {!c.deleted && <BadgeRow badges={displayedProfileBadges(userBadges(author), author.profileBadges)} size={12} />}
             <Text style={styles.cTime}>· {ago(c.at)}</Text>
           </View>
           <Text style={[styles.cText, c.deleted && styles.deletedText]}>{c.deleted ? "Comment deleted" : c.text}</Text>
@@ -88,19 +101,82 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
 
 // Post detail — the actual post + its comment thread. This is where like/comment
 // notifications land (not the performance page), and where forum-style replies live.
-export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag }) {
-  const { session, feed, commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, userById, userBadges, setCommentLike } = useStore();
+export default function PostScreen(props) {
+  return isReviewDetail(props.log) ? <ReviewContentLoader {...props} /> : <PostContent {...props} />;
+}
+
+function ReviewContentLoader(props) {
+  const { session, blockedIds, removedIds } = useStore();
+  const scope = accountTargetScope(session?.id, `review:${props.log.id}`);
+  const owner = useRef(scope);
+  owner.current = scope;
+  const [attempt, setAttempt] = useState(0);
+  const [resource, setResource] = useState({ scope, status: "loading", post: null });
+  useEffect(() => {
+    const controller = new AbortController();
+    setResource({ scope, status: "loading", post: null });
+    readPublicPost(props.log.id, { signal: controller.signal }).then(post => {
+      if (!controller.signal.aborted && owner.current === scope) setResource({ scope, status: post ? "ready" : "unavailable", post });
+    }).catch(error => {
+      if (!controller.signal.aborted && owner.current === scope) setResource({ scope, status: [403, 404].includes(error?.status) ? "unavailable" : "error", post: null });
+    });
+    return () => controller.abort();
+  }, [scope, attempt]);
+  const current = resource.scope === scope ? resource : { status: "loading", post: null };
+  if (current.status === "ready" && !reviewIsUnavailable(current.post, blockedIds, removedIds)) return <PostContent {...props} log={current.post} />;
+  return <View style={styles.wrap}>
+    <ReviewHeader onClose={props.onClose} />
+    <View style={styles.threadState} accessibilityLiveRegion="polite">
+      {current.status === "loading" ? <ActivityIndicator color={colors.amber} /> : null}
+      <Text style={styles.threadStateText}>{current.status === "loading" ? "Loading review..." : current.status === "error" ? "This review could not load. Check your connection and try again." : "This review is unavailable. It may be private or removed."}</Text>
+      {current.status === "error" ? <Pressable accessibilityRole="button" onPress={() => setAttempt(value => value + 1)}><Text style={styles.retryText}>Retry review</Text></Pressable> : null}
+    </View>
+  </View>;
+}
+
+function ReviewHeader({ onClose, title = "Original post", kicker = "Review", backLabel = "Leave the original post", backHint }) {
+  return <ScreenHeader title={title} kicker={kicker} onBack={onClose} backLabel={backLabel} backHint={backHint}
+    right={<Pressable onPress={onClose} accessibilityRole="button" accessibilityLabel="Close review" style={{ padding: 12 }}><Icon name="x" size={22} color={colors.text} /></Pressable>} />;
+}
+
+function PostContent({ log, commentDraft: suppliedCommentDraft = null, onClose, onRequireAuth, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag }) {
+  const { session, chatAuthEpoch, feed, commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, userById, userBadges, setCommentLike } = useStore();
+  const detail = isReviewDetail(log);
+  const Header = detail ? ReviewHeader : ScreenHeader;
   const [postLocalOverrides, setPostLocalOverrides] = useState({});
   // Navigation keeps the post that was originally opened. Resolve it against
   // live feed state so an edit made on this screen appears immediately. A
   // server-confirmed self-untag also overlays notification-fetched posts that
   // were never part of this feed page.
+  const authorReconciledLog = usePostAuthorBadges(detail ? currentReview(log, feed.find((post) => post.id === log.id)) : feed.find((post) => post.id === log.id) || log, session?.id || null);
   const activeLog = applyPostLocalOverride(
-    feed.find((post) => post.id === log.id) || log,
+    authorReconciledLog,
     postLocalOverrides,
     session?.id || null,
   );
   const isOnlineReview = activeLog.experienceType === "online" || activeLog.experience_type === "online";
+  const eventHref = detail ? reviewEventPath(activeLog) : null;
+  const [eventState, setEventState] = useState("idle");
+  const eventRequest = useRef(null);
+  useEffect(() => () => eventRequest.current?.abort(), []);
+  const openEvent = async () => {
+    if (!eventHref || eventRequest.current) return;
+    const controller = new AbortController();
+    eventRequest.current = controller;
+    setEventState("loading");
+    try {
+      const entity = await resolvePublicEntity(eventHref, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      if (entity?.kind === "concert" || entity?.kind === "event") {
+        setEventState("idle");
+        onOpenShow?.({ ...entity, performanceEvent: true });
+      } else setEventState("unavailable");
+    } catch {
+      if (!controller.signal.aborted) setEventState("error");
+    } finally {
+      if (eventRequest.current === controller) eventRequest.current = null;
+    }
+  };
   const reconcileSelfTagRemoval = (result) => {
     if (!result?.userId || !result?.id) return;
     setPostLocalOverrides((current) => withRemovedSelfPostTag(current, {
@@ -110,11 +186,35 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
       version: result.version,
     }));
   };
+  const commentDraft = Platform.OS === "ios" ? suppliedCommentDraft : null;
   const flat = commentsFor(log.id);
-  const [text, setText] = useState("");
-  const [replyTo, setReplyTo] = useState(null); // { id, name } or null (= reply to the post)
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState("");
+  const commentParentsRef = useRef(flat);
+  commentParentsRef.current = flat;
+  const commentMountedRef = useRef(false);
+  const commentReadyRef = useRef(false);
+  useLayoutEffect(() => {
+    if (!commentDraft) return;
+    commentMountedRef.current = true;
+    return () => { commentMountedRef.current = false; };
+  }, [commentDraft]);
+  const retainedDraft = useSyncExternalStore(commentDraft?.subscribe || subscribeEmptyDraft, commentDraft?.read || readEmptyDraft, readEmptyDraft);
+  const commentAnnouncement = useIOSCommentAnnouncement(session?.id, chatAuthEpoch, log.id, commentDraft,
+    JSON.stringify([retainedDraft.parentId, retainedDraft.invalidReply]));
+  const [localText, setText] = useState("");
+  const [localReplyTo, setReplyTo] = useState(null); // { id, name } or null (= reply to the post)
+  const [localSending, setSending] = useState(false);
+  const [localSendError, setSendError] = useState("");
+  const text = commentDraft ? retainedDraft.text : localText;
+  const liveParent = commentDraft && retainedDraft.parentId ? flat.find(c => c.id === retainedDraft.parentId && !c.deleted && !c.pending) : null;
+  const replyUnavailable = !!commentDraft && (retainedDraft.invalidReply || (!!retainedDraft.parentId && !liveParent));
+  const replyTo = commentDraft ? (retainedDraft.parentId || retainedDraft.invalidReply ? {
+    id: retainedDraft.parentId,
+    name: liveParent ? resolvePostAuthor({ userId: liveParent.userId, cached: userById?.(liveParent.userId), embedded: { name: liveParent.name, profileUpdatedAt: liveParent.profileUpdatedAt } }).name : null,
+  } : null) : localReplyTo;
+  const sending = commentDraft ? retainedDraft.sending : localSending;
+  const sendError = commentDraft ? retainedDraft.error : localSendError;
+  const retryAttempt = commentDraft?.failedAttempt();
+  const retryPrevious = !!commentDraft && retainedDraft.retry;
   const commentScope = accountTargetScope(session?.id, `post-comments:${String(log.id || "")}`);
   const [commentRequestVersion, setCommentRequestVersion] = useState(0);
   const [commentResource, setCommentResource] = useState(() => ({
@@ -192,6 +292,8 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
     ? commentResource
     : { scope: commentScope, status: "loading", loaded: flat.length > 0, error: null };
   const commentsUsable = scopedCommentResource.loaded;
+  commentReadyRef.current = commentsUsable;
+  const sendDisabled = sending || retryPrevious || retainedDraft.unavailable || !text.trim() || (!!commentDraft && !commentsUsable);
   const commentsPending = !commentsUsable && scopedCommentResource.status === "loading";
   const commentErrorMessage = scopedCommentResource.error?.userMessage
     || "The comment thread could not be reached. Check your connection and try again.";
@@ -212,22 +314,64 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
 
   const showComments = () => scrollRef.current?.scrollToEnd({ animated: true });
   const changeCommentText = (value) => {
+    if (commentDraft) {
+      if (commentMountedRef.current && commentScopeRef.current === commentScope) commentDraft.edit(value);
+      return;
+    }
     if (value !== commentSubmitRef.current.draft?.text) commentSubmitRef.current.intent = null;
     commentSubmitRef.current.draft = { ...commentSubmitRef.current.draft, text: value };
     setText(value);
   };
   const changeCommentReply = (value) => {
+    if (commentDraft) {
+      if (commentMountedRef.current && commentScopeRef.current === commentScope) {
+        const nextParent = value === null ? null : value?.id;
+        if (nextParent !== commentDraft.read().parentId || commentDraft.read().invalidReply) commentAnnouncement.cancelValidation();
+        commentDraft.reply(nextParent);
+      }
+      return;
+    }
     if ((value?.id || null) !== commentSubmitRef.current.draft?.parentId) commentSubmitRef.current.intent = null;
     commentSubmitRef.current.draft = { ...commentSubmitRef.current.draft, parentId: value?.id || null };
     setReplyTo(value);
   };
   const reply = (comment) => {
+    if (commentDraft && (!commentMountedRef.current || commentScopeRef.current !== commentScope)) return;
     if (!session?.id) { onRequireAuth?.(); return; }
     changeCommentReply({ id: comment.id, name: comment.name || userById?.(comment.userId)?.name });
     inputRef.current?.focus();
   };
-  const send = async () => {
+  const send = async (attempt = null) => {
     if (!session?.id) { onRequireAuth?.(); return; }
+    if (commentDraft) {
+      if (!commentMountedRef.current || !commentReadyRef.current || commentScopeRef.current !== commentScope) return;
+      const currentDraft = commentDraft.read();
+      if (currentDraft.retry ? attempt !== commentDraft.failedAttempt() : attempt !== null) return;
+      if (currentDraft.sending || currentDraft.unavailable || (!currentDraft.retry && !currentDraft.text.trim())) return;
+      const parentId = currentDraft.retry ? attempt.parentId : currentDraft.parentId;
+      const parentAvailable = commentParentsRef.current.some(c => c.id === parentId && !c.deleted && !c.pending);
+      const invalidParent = currentDraft.retry ? !!parentId && !parentAvailable : currentDraft.invalidReply || (!!parentId && !parentAvailable);
+      const claim = commentDraft.claim(parentAvailable);
+      if (!claim) {
+        // Null also means stale, busy, empty or unavailable: only the positively
+        // identified validation failure from this live draft gets speech.
+        if (invalidParent && commentDraft.read() !== currentDraft && commentDraft.read().error) {
+          const announcement = commentAnnouncement.begin(true);
+          commentAnnouncement.finish(announcement, currentDraft.retry ? "retryParentUnavailable" : "parentUnavailable");
+        }
+        return;
+      }
+      const announcement = commentAnnouncement.begin();
+      const { intent } = claim;
+      let result;
+      try {
+        result = await addComment(log.id, intent.text, intent.parentId, { clientMutationId: intent.clientMutationId });
+      } catch { result = { ok: false }; }
+      // Delivery always settles, including after navigation/speech revocation.
+      commentDraft.settle(claim, result);
+      commentAnnouncement.finish(announcement, result?.stale ? null : result?.ok ? "confirmed" : "unconfirmed");
+      return;
+    }
     const t = text.trim();
     if (!t || sending || commentSubmitRef.current.active || commentScopeRef.current !== commentScope) return;
     // A synchronous lock covers Enter + tap before React renders the busy state.
@@ -261,6 +405,17 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
     }
   };
 
+  const discardCommentAttempt = () => {
+    if (!commentMountedRef.current || commentScopeRef.current !== commentScope) return;
+    const attempt = commentDraft?.failedAttempt();
+    if (!attempt) return;
+    commentAnnouncement.cancel();
+    Alert.alert("Discard previous attempt?", "The previous comment may already be posted; this will not remove it. Check the thread before sending it again. Your current draft will stay here.", [
+      { text: "Keep attempt", style: "cancel" },
+      { text: "Discard attempt", style: "destructive", onPress: () => { if (commentMountedRef.current && commentScopeRef.current === commentScope) commentDraft.discardAttempt(attempt); } },
+    ]);
+  };
+
   const removeComment = (comment) => {
     const run = () => deleteOwnComment(log.id, comment.id);
     if (Platform.OS === "web") {
@@ -277,10 +432,11 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
   const removePost = async (postId) => { const result = await deleteOwnPost(postId); if (result?.ok) onClose?.(); return result; };
 
   return (
-    <View style={styles.wrap} testID="post-content-shell">
-      <ScreenHeader
+    <PostContainer style={styles.wrap} testID="post-content-shell">
+      <Header
         kicker={activeLog.news ? "Mshpit News" : isOnlineReview ? "Online concert review" : activeLog.review ? "Review" : "Post"}
         title={activeLog.news ? "Story" : "Original post"}
+        onClose={onClose}
         onBack={onClose}
         backLabel={activeLog.news ? "Leave the story" : "Leave the original post"}
         backHint={isOnlineReview ? "Returns to the page or feed you came from" : "Returns to the show, artist, or feed you came from"}
@@ -290,10 +446,16 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
         onRefresh={refreshPost}
         accessibilityLabel="Refresh post and comments"
       >
-      <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" {...(Platform.OS === "ios" ? { keyboardDismissMode: "interactive", automaticallyAdjustKeyboardInsets: false } : {})}>
+        {eventHref ? <PublicTextLink href={eventHref} onNavigate={openEvent} accessibilityLabel="View event page" style={styles.eventLink}>
+          {eventState === "loading" ? "Opening event..." : "View event page"}
+        </PublicTextLink> : null}
+        {eventState === "error" || eventState === "unavailable" ? <Text accessibilityLiveRegion="polite" style={styles.threadStateText}>
+          {eventState === "error" ? "The event could not load. Try View event page again." : "The event page is unavailable. Your review is still here."}
+        </Text> : null}
         {activeLog.news ? (
           <NewsStoryCard story={activeLog.news} post={activeLog} full accountId={session?.id || null} onOpen={showComments} onOpenArtist={onOpenArtist} onOpenProfile={onOpenProfile} onReport={onReport} onDelete={removePost} onRequireAuth={onRequireAuth} />
-        ) : <TicketStub log={activeLog} compactContent={false} showComments={false} onOpen={isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} onRequireAuth={onRequireAuth} onComment={showComments} onOpenPost={showComments} />}
+        ) : <TicketStub log={activeLog} compactContent={false} showComments={false} renderReviewText={detail ? ({ text, accessibilityLabel, style }) => <Text selectable accessibilityLabel={accessibilityLabel} style={style}>{text}</Text> : undefined} ratingDescription={detail ? `${resolvePostAuthor({ userId: activeLog.userId, cached: userById?.(activeLog.userId), embedded: activeLog.user }).name}’s ratings` : undefined} onOpen={detail ? showComments : isOnlineReview ? undefined : () => onOpenShow?.(activeLog)} onOpenShow={detail || isOnlineReview ? undefined : onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenArtistArchive={isOnlineReview ? undefined : onOpenArtistArchive} onOpenVenue={isOnlineReview ? undefined : onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} onRequireAuth={onRequireAuth} onComment={showComments} onOpenPost={showComments} />}
 
         <Text style={styles.sectionLabel}>
           {commentsUsable ? `${flat.length} COMMENT${flat.length === 1 ? "" : "S"}` : "COMMENTS"}
@@ -334,17 +496,23 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
             <Text style={styles.signin}>Sign in to comment</Text>
           </Pressable>
         </View>
-      ) : !commentsUsable ? (
+      ) : !commentsUsable && !commentDraft ? (
         <View style={styles.composerWrap}>
           <Text style={styles.signin}>{commentsPending ? "Connecting to comments..." : "Reconnect to the thread to comment."}</Text>
         </View>
       ) : (
         <View style={styles.composerWrap}>
+          {commentDraft && !commentsUsable && <Text style={styles.signin}>{commentsPending ? "Connecting to comments... Your draft is still here." : "Reconnect to the thread to send. Your draft is still here."}</Text>}
+          {retainedDraft.unavailable && <Text accessibilityRole="alert" style={styles.threadErrorCopy}>Finish or discard an unconfirmed comment in another thread before starting here.</Text>}
           {!!sendError && <Text accessibilityRole="alert" style={styles.threadErrorCopy}>{sendError}</Text>}
+          {retryPrevious && <View style={styles.retryActions}>
+            <Pressable onPress={() => send(retryAttempt)} disabled={!commentsUsable} accessibilityRole="button" accessibilityLabel="Retry previous comment" style={styles.retryAction}><Text style={styles.replyBtn}>Retry previous comment</Text></Pressable>
+            <Pressable onPress={discardCommentAttempt} accessibilityRole="button" accessibilityLabel="Discard previous attempt" style={styles.retryAction}><Text style={styles.deleteBtn}>Discard previous attempt</Text></Pressable>
+          </View>}
           {replyTo && (
             <View style={styles.replyingTo}>
-              <Text style={styles.replyingTxt} numberOfLines={1}>Replying to {replyTo.name || "comment"}</Text>
-              <Pressable onPress={() => changeCommentReply(null)} hitSlop={8}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
+              <Text style={styles.replyingTxt} numberOfLines={Platform.OS === "ios" ? undefined : 1}>{replyUnavailable ? "Reply target unavailable in this thread" : `Replying to ${replyTo.name || "comment"}`}</Text>
+              <Pressable onPress={() => changeCommentReply(null)} hitSlop={Platform.OS === "ios" ? undefined : 8} {...(Platform.OS === "ios" ? { style: styles.clearReply } : {})} accessibilityRole={Platform.OS === "ios" || commentDraft ? "button" : undefined} accessibilityLabel={Platform.OS === "ios" || commentDraft ? "Clear reply target" : undefined}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
             </View>
           )}
           <View style={styles.composer}>
@@ -353,24 +521,29 @@ export default function PostScreen({ log, onClose, onRequireAuth, onOpenProfile,
               style={styles.input}
               placeholder={replyTo ? "Write a reply..." : "Reply to this post..."}
               placeholderTextColor={colors.textFaint}
+              {...(Platform.OS === "ios" ? { accessibilityLabel: replyTo ? "Reply to comment" : "Comment on post", accessibilityHint: "Write your message, then use Send comment. Return adds a new line." } : {})}
+              editable={commentDraft ? !retainedDraft.unavailable : undefined}
               value={text}
               onChangeText={changeCommentText}
-              onSubmitEditing={send}
-              returnKeyType="send"
+              onSubmitEditing={Platform.OS === "ios" || retryPrevious ? undefined : () => send()}
+              returnKeyType={Platform.OS === "ios" ? "default" : "send"}
               multiline
               maxLength={LIMITS.message}
             />
-            <Pressable style={[styles.send, (!text.trim() || sending) && styles.sendOff]} onPress={send} disabled={!text.trim() || sending} accessibilityRole="button" accessibilityLabel={sending ? "Sending comment" : "Send comment"}>
+            <Pressable style={[styles.send, sendDisabled && styles.sendOff]} onPress={() => send()} disabled={sendDisabled} accessibilityRole="button" accessibilityLabel={sending ? "Sending comment" : "Send comment"}>
               <Icon name="chevron-right" size={18} color="#1A1206" />
             </Pressable>
           </View>
         </View>
       )}
-    </View>
+    </PostContainer>
   );
 }
 
 const styles = StyleSheet.create({
+  eventLink: { color: colors.amber, fontWeight: "700", paddingVertical: 14, fontSize: 16 },
+  retryActions: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  retryAction: { minHeight: 44, justifyContent: "center", ...(Platform.OS === "ios" ? { maxWidth: "100%", flexShrink: 1 } : {}) },
   wrap: { flex: 1, minWidth: 0, width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center", backgroundColor: colors.bg },
   content: { padding: 16, paddingBottom: 24 },
   sectionLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 4, marginBottom: 12 },
@@ -397,10 +570,11 @@ const styles = StyleSheet.create({
   reportBtn: { color: colors.textDim, fontSize: 12.5, fontWeight: "700", marginTop: 6 },
   composerWrap: { borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 12 },
   replyingTo: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingHorizontal: 6, paddingBottom: 8 },
-  replyingTxt: { color: colors.amber, fontSize: 12.5, fontWeight: "700", flex: 1 },
+  replyingTxt: { color: colors.amber, fontSize: 12.5, fontWeight: "700", flex: 1, ...(Platform.OS === "ios" ? { minWidth: 0, flexShrink: 1 } : {}) },
+  clearReply: { width: 44, height: 44, alignItems: "center", justifyContent: "center", flexShrink: 0 },
   composer: { flexDirection: "row", alignItems: "flex-end", gap: 8 },
-  input: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, maxHeight: 120 },
-  send: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },
+  input: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, maxHeight: 120, ...(Platform.OS === "ios" ? { minHeight: 44, minWidth: 0 } : {}) },
+  send: { width: Platform.OS === "ios" ? 44 : 40, height: Platform.OS === "ios" ? 44 : 40, borderRadius: Platform.OS === "ios" ? 22 : 20, ...(Platform.OS === "ios" ? { flexShrink: 0 } : {}), backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },
   sendOff: { opacity: 0.4 },
   signin: { color: colors.textDim, fontSize: 13, textAlign: "center", paddingVertical: 6 },
   signinButton: { minHeight: 44, justifyContent: "center" },

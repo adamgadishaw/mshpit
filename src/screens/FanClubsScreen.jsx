@@ -113,7 +113,7 @@ export default function FanClubsScreen({ onClose, onOpenFanClub }) {
           </>
         ) : (
           <>
-            <Text style={styles.hint}>Permanent chats for active artist communities. Swap shows, plan trips, no ticket needed.</Text>
+            <Text style={styles.hint}>Chat with other fans, talk about shows, and plan trips. No ticket needed.</Text>
             <Text style={styles.sectionLabel}>ACTIVE CLUBS · {active.length}</Text>
             {active.length === 0 && <Text style={styles.empty}>{fanClubDirectoryStatus === "loading" ? "Refreshing active clubs…" : "No clubs yet, search an artist to start one."}</Text>}
             {active.map((c) => <Row key={c.artist} c={c} />)}

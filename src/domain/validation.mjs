@@ -7,7 +7,8 @@ export const LIMITS = Object.freeze({
   name: 40,
   bio: 240,
   message: 1000,
-  review: 2000,
+  review: 2000, // Status, memory and venue scopes retain their existing policy.
+  concertReview: 32000, // UTF-16 units after cleanup; generous long-form concert reviews.
   note: 500,
   search: 80,
   artist: 80,
@@ -42,6 +43,10 @@ export function clean(value, { max = 500, newlines = false } = {}) {
   }
   return out.trim().slice(0, max);
 }
+
+// Match the API's existing normalization and UTF-16 length policy without truncating.
+export const normalizeReviewText = (value) => clean(value, { max: Infinity, newlines: true });
+export const reviewTextLength = (value) => normalizeReviewText(value).length;
 
 export const cleanEmail = (value) => clean(value, { max: 120 }).toLowerCase();
 export const isEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail(value));

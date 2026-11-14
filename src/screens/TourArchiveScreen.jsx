@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+import { Suspense, useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useStore } from "../store";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
@@ -16,7 +17,6 @@ import {
   archiveRatingLabel,
   archiveReviewMedia,
   compactArchiveCount,
-  findArchiveShowForReview,
   selectArchiveTour,
   showsForArchiveTour,
 } from "../domain/artistEventArchive.mjs";
@@ -124,12 +124,11 @@ function TourShowRow({ show, wide, onOpenShow, onOpenPhotos, onOpenProfile }) {
   );
 }
 
-function ReviewRow({ review, shows, wide, onOpenShow, onOpenPost, onOpenPhotos, onOpenProfile }) {
+function ReviewRow({ review, wide, onOpenShow, onOpenPost, onOpenPhotos, onOpenProfile }) {
   const author = review?.user?.name || "A Pit fan";
   const handle = review?.user?.handle ? `@${review.user.handle}` : "Pit fan";
   const media = archiveReviewMedia(review);
   const thumbnail = media[0] || null;
-  const show = findArchiveShowForReview(shows, review);
   const reviewText = String(review?.review || "").trim();
   return (
     <View style={[styles.reviewCard, wide && styles.reviewCardWide]}>
@@ -161,16 +160,17 @@ function ReviewRow({ review, shows, wide, onOpenShow, onOpenPost, onOpenPhotos, 
             <Text style={styles.reviewOpen}>Read post</Text>
           </View>
         </Pressable>
-        <Pressable
+        <Suspense fallback={<Text>View show</Text>}><ReviewEventLink
           style={({ pressed, focused }) => [styles.nightLink, pressed && styles.pressed, focused && focusRing]}
-          onPress={() => onOpenShow?.(show || review)}
+          review={review}
+          onOpenShow={onOpenShow}
           accessibilityRole="button"
           accessibilityLabel={`Open ${review?.venue || "the show"}, ${archiveDateLabel(review?.date)}`}
         >
           <Icon name="calendar" size={12} color={colors.amber} />
           <Text style={styles.nightLinkText} numberOfLines={1}>{review?.venue || "Live show"} · {archiveDateLabel(review?.date)}</Text>
           <Icon name="chevron-right" size={13} color={colors.amber} />
-        </Pressable>
+        </ReviewEventLink></Suspense>
       </View>
       {thumbnail ? (
         <SmartImage
@@ -193,13 +193,13 @@ function EmptyRow({ title, copy }) {
 }
 
 function buildRows(shows, reviews, reviewState, total) {
-  const rows = [{ type: "section", key: "section-shows", eyebrow: "THE TOUR MAP", title: "Recorded nights", copy: "Each performance combines the crowd’s ratings and public media.", count: shows.length }];
+  const rows = [{ type: "section", key: "section-shows", eyebrow: "TOUR HISTORY", title: "Recorded nights", copy: "Each performance combines the crowd’s ratings and public media.", count: shows.length }];
   if (shows.length) shows.forEach((show) => rows.push({ type: "show", key: `show:${show.key}`, show }));
   else rows.push({ type: "empty", key: "empty-shows", title: "No nights found", copy: "This tour does not have a recorded performance in the current archive yet." });
-  rows.push({ type: "section", key: "section-reviews", eyebrow: "FROM THE PIT", title: "Every review", copy: "The complete review stream for this tour, newest first.", count: total });
+  rows.push({ type: "section", key: "section-reviews", eyebrow: "FAN REVIEWS", title: "Every review", copy: "All reviews for this tour, newest first.", count: total });
   if (reviews.length) reviews.forEach((review) => rows.push({ type: "review", key: `review:${review.id}`, review }));
   else if (reviewState === "loading") rows.push({ type: "loading", key: "loading-reviews" });
-  else if (reviewState !== "error") rows.push({ type: "empty", key: "empty-reviews", title: "No reviews yet", copy: "The first fan to log this tour will start the conversation." });
+  else if (reviewState !== "error") rows.push({ type: "empty", key: "empty-reviews", title: "No reviews yet", copy: "No reviews for this tour yet." });
   return rows;
 }
 
@@ -249,7 +249,7 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
   const renderRow = ({ item }) => {
     if (item.type === "section") { const { key, ...section } = item; return <SectionRow key={key} {...section} />; }
     if (item.type === "show") return <TourShowRow show={item.show} wide={wide} onOpenShow={onOpenShow} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
-    if (item.type === "review") return <ReviewRow review={item.review} shows={shows} wide={wide} onOpenShow={onOpenShow} onOpenPost={onOpenPost} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
+    if (item.type === "review") return <ReviewRow review={item.review} wide={wide} onOpenShow={onOpenShow} onOpenPost={onOpenPost} onOpenPhotos={onOpenPhotos} onOpenProfile={onOpenProfile} />;
     if (item.type === "loading") return <View style={styles.loadingRow} accessibilityLiveRegion="polite"><ActivityIndicator color={colors.amber} /><Text style={styles.stateText}>Loading every review…</Text></View>;
     if (item.type === "empty") return <EmptyRow title={item.title} copy={item.copy} />;
     return null;
@@ -288,7 +288,7 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
         <View style={styles.center} accessibilityLiveRegion="polite">
           <ActivityIndicator color={colors.amber} />
           <Text style={styles.stateTitle}>Opening the tour archive…</Text>
-          <Text style={styles.stateText}>Gathering recorded nights, fan ratings, and tour media.</Text>
+          <Text style={styles.stateText}>Loading shows, fan ratings, photos, and videos.</Text>
         </View>
       ) : <VinylRefreshBoundary
         refreshing={refreshing}
@@ -331,6 +331,8 @@ export default function TourArchiveScreen({ artistName, artistKey, tourKey, tour
     </View>
   );
 }
+
+const ReviewEventLink = lazyWithRetry(() => import("./ReviewEventLink"), "ReviewEventLink");
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },

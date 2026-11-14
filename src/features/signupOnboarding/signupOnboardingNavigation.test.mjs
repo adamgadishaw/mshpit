@@ -1,3 +1,4 @@
+import { findShowFrame } from "../../cityIdentity.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -22,8 +23,8 @@ function fixture() {
   const commitReplace = (route) => navigations.push(route);
   const finishComposerBack = () => backCalls.push("back");
   const requireVerifiedMutation = (kind, run) => { verifiedActions.push(kind); if (!sessionRef.current?.emailVerified) return false; return run(); };
-  const finish = new Function("sessionRef", "completeSignupOnboarding", "commitReplace", "finishComposerBack", "requireVerifiedMutation",
-    `return (${productionCallback});`)(sessionRef, completeSignupOnboarding, commitReplace, finishComposerBack, requireVerifiedMutation);
+  const finish = new Function("sessionRef", "completeSignupOnboarding", "commitReplace", "finishComposerBack", "requireVerifiedMutation", "findShowFrame",
+    `return (${productionCallback});`)(sessionRef, completeSignupOnboarding, commitReplace, finishComposerBack, requireVerifiedMutation, findShowFrame);
   return { finish, sessionRef, calls, navigations, verifiedActions, backCalls, resolve, reject };
 }
 
@@ -51,7 +52,7 @@ test("an account change or logout after completion starts cannot redirect the ne
 });
 
 test("successful completion opens only an explicitly chosen destination", async () => {
-  for (const [destination, route] of [["artistPage", { reqArtist: true }], ["shows", { nearby: true, nearbyTab: "shows" }], ["artists", { pickArtists: true }], ["review", { logging: true, postMode: "show" }]]) {
+  for (const [destination, route] of [["artistPage", { reqArtist: true }], ["shows", { cityGuide: { directory: true } }], ["artists", { pickArtists: true }], ["review", { logging: true, postMode: "show" }]]) {
     const f = fixture(), controller = new AbortController();
     const pending = f.finish({ destination, expectedAccountId: "account-a", signal: controller.signal });
     // Publishing the confirmed version must not unmount the optional route.

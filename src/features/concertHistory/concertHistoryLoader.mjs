@@ -93,6 +93,12 @@ export function createConcertHistoryResource({ requestPage, readPost, batchPages
         if (opening === active) opening = null;
       }
     },
+    // Covering a retained iOS frame stops transport without dropping rows,
+    // pagination, local map selection, or its live Store subscription.
+    pause() {
+      controller?.abort(); opening?.abort(); opening = null; flight = null;
+      if (state.loadingMore || state.openingId) publish({ loadingMore: false, openingId: null });
+    },
     dispose() { disposed = true; controller?.abort(); opening?.abort(); opening = null; flight = null; listeners.clear(); },
   };
 }

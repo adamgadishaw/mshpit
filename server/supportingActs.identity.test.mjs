@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { cleanTimesSeen, ensureSeenBaselineSchema, projectSupportingActs, seenOrdinalForPost } from "./supportingActs.js";
+import { cleanTimesSeen, ensureSeenBaselineSchema, projectSupportingActs, seenOrdinalForPost, seenOrdinalSql } from "./supportingActs.js";
 import { parseTimesSeen } from "../src/domain/supportingActs.mjs";
 
 function fixture(t) {
@@ -66,4 +66,30 @@ test("times-seen input rejects JSON arrays, booleans and objects instead of coer
   }
   for (const value of [1, 999, "1", " 3 "]) assert.equal(cleanTimesSeen(value), Number(value));
   assert.equal(cleanTimesSeen(null), null); assert.equal(cleanTimesSeen(undefined), undefined);
+});
+
+test("large empty-lineup histories materialize sightings before same-night scans", t => {
+  const f=fixture(t);
+  f.database.exec("CREATE INDEX idx_test_history ON posts(user_id,removed,created_at)");
+  f.database.exec("BEGIN");
+  for(let i=0;i<2505;i++) f.put(`history-${i}`,"Artist","artist","");
+  f.database.exec("COMMIT");
+  assert.equal(f.count("history-2504"),2505);
+  const plan=f.database.prepare(`EXPLAIN QUERY PLAN SELECT ${seenOrdinalSql("p")} FROM posts p WHERE p.id=?`).all("history-2504").map(row=>row.detail);
+  assert.ok(plan.some(detail=>detail.includes("MATERIALIZE opener_sightings")),"the expensive anti-join only sees matching lineup entries");
+});
+
+test("opener sightings ignore removed, online, and malformed lineups without losing valid nights",t=>{
+  const f=fixture(t),acts=[{name:"Opener",artistKey:"opener"}];
+  f.put("valid","Headliner","headliner","2026-01-01",acts);
+  f.put("removed","Headliner","headliner","2026-01-02",acts);
+  f.database.prepare("UPDATE posts SET removed=1 WHERE id='removed'").run();
+  f.put("online","Headliner","headliner","2026-01-03",acts);
+  f.database.prepare("UPDATE posts SET experience_type='online' WHERE id='online'").run();
+  f.put("broken","Headliner","headliner","2026-01-04",acts);
+  f.database.prepare("UPDATE posts SET supporting_acts='{broken' WHERE id='broken'").run();
+  f.put("later","Opener","opener","2026-02-01");
+  assert.equal(f.count("later"),2);
+  f.database.prepare("UPDATE posts SET experience_type='online' WHERE id='later'").run();
+  assert.equal(f.count("later"),0);
 });

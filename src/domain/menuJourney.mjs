@@ -1,6 +1,6 @@
 import { profileManagementAction } from "./artistWorkspace.mjs";
 
-export const JOURNEY_TAGLINE = "Your life's musical journey";
+export const JOURNEY_TAGLINE = "Your shows. Your music.";
 
 export function landingSlideUri(uri, viewportWidth) {
   const source = typeof uri === "string" ? uri : "";
@@ -52,7 +52,7 @@ export function journeyMenuModel({ session = null, inboxUnread = 0, notification
       ? [{ key: "tourDates", icon: "calendar", title: "Events & tour dates", detail: "Publish festivals, fairs, and artist dates" }]
       : []),
     ...(role === "fan"
-      ? [{ key: "requestArtist", icon: "music", title: "Create or claim artist page", detail: "Free photos, videos, promotions and concert dates using this account" }]
+      ? [{ key: "requestArtist", icon: "music", title: "Create or claim artist page", detail: "Set up an artist page or request access to an existing one" }]
       : []),
   ] : [];
 
@@ -61,7 +61,7 @@ export function journeyMenuModel({ session = null, inboxUnread = 0, notification
       { key: "near", icon: "pin", title: "Near you", detail: city ? `Shows and scenes around ${city}` : "Local shows and scenes", accent: "good" },
       { key: "venues", icon: "search", title: "Find venues", detail: "Explore rooms by city and lineup", accent: "cool" },
       { key: "fanClubs", icon: "comment", title: "Fan clubs", detail: "Join artist communities", accent: "magenta" },
-      { key: "topRated", icon: "trophy", title: "Top-rated shows", detail: "The highest-rated nights close to home", accent: "gold" },
+      { key: "topRated", icon: "trophy", title: "Top-rated shows", detail: "Shows ranked by fan ratings near you", accent: "gold" },
       { key: "news", icon: "music", title: "News", detail: "New albums, singles and tour dates", accent: "amber" },
       ...(includeCrew ? [{ key: "crew", icon: "ticket", title: "Show swipe", detail: "Flip through upcoming shows and build your calendar", accent: "magenta" }] : []),
     ],

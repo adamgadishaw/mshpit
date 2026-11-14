@@ -9,6 +9,17 @@ import {
 
 const screensUrl = new URL("../screens/", import.meta.url);
 const readScreen = (screen) => readFileSync(new URL(screen, screensUrl), "utf8");
+// A controller may delegate its scroll markup while retaining account-scoped
+// refresh ownership. Inspect that composition rather than dropping its coverage.
+const readSurface = (screen) => {
+  const source = readScreen(screen);
+  if (screen !== "InboxScreen.jsx") return source;
+  assert.match(source, /import InboxPresentation from "\.\.\/components\/InboxPresentation"/);
+  assert.match(source, /<InboxPresentation[\s\S]*inboxRefreshing=\{inboxRefreshing\} refreshInbox=\{refreshInbox\}/);
+  const presentation = readFileSync(new URL("../components/InboxPresentation.jsx", import.meta.url), "utf8");
+  assert.match(presentation, /<VinylRefreshBoundary refreshing=\{inboxRefreshing\} onRefresh=\{refreshInbox\}/);
+  return `${source}\n${presentation}`;
+};
 const store = readFileSync(new URL("../store.js", import.meta.url), "utf8");
 const ownsVerticalScroll = (source) => ["<ScrollView", "<FlatList", "<SectionList"]
   .some((token) => source.includes(token));
@@ -16,7 +27,7 @@ const ownsVerticalScroll = (source) => ["<ScrollView", "<FlatList", "<SectionLis
 test("every vertical screen is explicitly classified for pull refresh", () => {
   const scrollScreens = readdirSync(screensUrl)
     .filter((name) => name.endsWith(".jsx"))
-    .filter((name) => ownsVerticalScroll(readScreen(name)))
+    .filter((name) => ownsVerticalScroll(readSurface(name)))
     .sort();
   const classified = PULL_REFRESH_COVERAGE.map((entry) => entry.screen).sort();
   assert.deepEqual(classified, scrollScreens);
@@ -28,7 +39,7 @@ test("every vertical screen is explicitly classified for pull refresh", () => {
 
 test("every required remote surface uses the shared scoped refresh control", () => {
   for (const screen of REQUIRED_PULL_REFRESH_SCREENS) {
-    const source = readScreen(screen);
+    const source = readSurface(screen);
     assert.match(source, /VinylRefreshBoundary/, `${screen} must use the shared vinyl boundary`);
     assert.match(source, /useScopedRefresh/, `${screen} must await and control refresh state`);
     assert.match(source, /refreshScope/, `${screen} must include account and target identity`);

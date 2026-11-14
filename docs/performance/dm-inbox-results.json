@@ -1,0 +1,1218 @@
+{
+  "measuredAt": "2026-11-11T19:34:22.793Z",
+  "baselineCommit": "c2bbe88246f249a5fa7cd60f3184f55b6b8794bf",
+  "node": "v24.16.0",
+  "sqlite": "3.53.0",
+  "scope": "Local synthetic data only; not production performance, an SLO or a capacity guarantee. Before/after summaryDataWork measures SQL/read/consent assembly; summaryDataWithRemovals also includes removal IDs; currentSummaryRoute separately includes current API hydration and relationship contexts.",
+  "warmupIterations": 3,
+  "measurements": [
+    {
+      "distribution": "five_peers_all_read",
+      "rows": 1000,
+      "peers": 5,
+      "removedRows": 0,
+      "globalUnread": 0,
+      "visibleSummaryThreads": 5,
+      "currentSummaryUsesBoundedRemovalQuery": true,
+      "latestRows": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 2.067700000000059,
+          "p95Ms": 2.2373999999999796,
+          "maxMs": 2.2373999999999796
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.3129999999996471,
+          "p95Ms": 0.3265999999998712,
+          "maxMs": 0.3265999999998712
+        }
+      },
+      "allPeerReadProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 0.2676000000001295,
+          "p95Ms": 0.28150000000005093,
+          "maxMs": 0.28150000000005093
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.2786999999998443,
+          "p95Ms": 0.33710000000019136,
+          "maxMs": 0.33710000000019136
+        }
+      },
+      "consentProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 0.27880000000004657,
+          "p95Ms": 0.2921999999998661,
+          "maxMs": 0.2921999999998661
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.08779999999978827,
+          "p95Ms": 0.12530000000015207,
+          "maxMs": 0.12530000000015207
+        }
+      },
+      "globalUnreadCount": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 0.19669999999996435,
+          "p95Ms": 0.20650000000023283,
+          "maxMs": 0.20650000000023283
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.15279999999984284,
+          "p95Ms": 0.19919999999956417,
+          "maxMs": 0.19919999999956417
+        }
+      },
+      "removedIds": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 0.2300000000000182,
+          "p95Ms": 0.258900000000267,
+          "maxMs": 0.258900000000267
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.347700000000259,
+          "p95Ms": 0.41919999999981883,
+          "maxMs": 0.41919999999981883
+        }
+      },
+      "summaryDataWork": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 2.705199999999877,
+          "p95Ms": 3.5073999999999614,
+          "maxMs": 3.5073999999999614
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.7069000000001324,
+          "p95Ms": 0.786200000000008,
+          "maxMs": 0.786200000000008
+        }
+      },
+      "summaryDataWithRemovals": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 3.1541000000001986,
+          "p95Ms": 4.320699999999761,
+          "maxMs": 4.320699999999761
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 1.0059000000001106,
+          "p95Ms": 1.0471999999999753,
+          "maxMs": 1.0471999999999753
+        }
+      },
+      "currentSummaryRoute": {
+        "repetitions": 7,
+        "medianMs": 1.3795000000000073,
+        "p95Ms": 1.464799999999741,
+        "maxMs": 1.464799999999741
+      }
+    },
+    {
+      "distribution": "five_peers_all_read",
+      "rows": 10000,
+      "peers": 5,
+      "removedRows": 0,
+      "globalUnread": 0,
+      "visibleSummaryThreads": 5,
+      "currentSummaryUsesBoundedRemovalQuery": true,
+      "latestRows": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 31.3412000000003,
+          "p95Ms": 34.61359999999968,
+          "maxMs": 34.61359999999968
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.3059000000002925,
+          "p95Ms": 0.34049999999979264,
+          "maxMs": 0.34049999999979264
+        }
+      },
+      "allPeerReadProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 3.7792999999996937,
+          "p95Ms": 6.858999999999924,
+          "maxMs": 6.858999999999924
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.23060000000032232,
+          "p95Ms": 0.253400000000056,
+          "maxMs": 0.253400000000056
+        }
+      },
+      "consentProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 4.686800000000403,
+          "p95Ms": 5.114900000000034,
+          "maxMs": 5.114900000000034
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.08489999999983411,
+          "p95Ms": 0.08870000000024447,
+          "maxMs": 0.08870000000024447
+        }
+      },
+      "globalUnreadCount": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 3.1419999999998254,
+          "p95Ms": 3.6345000000001164,
+          "maxMs": 3.6345000000001164
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.15030000000024302,
+          "p95Ms": 0.3040000000000873,
+          "maxMs": 0.3040000000000873
+        }
+      },
+      "removedIds": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 4.2824999999998,
+          "p95Ms": 5.272500000000036,
+          "maxMs": 5.272500000000036
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.32540000000017244,
+          "p95Ms": 0.38850000000002183,
+          "maxMs": 0.38850000000002183
+        }
+      },
+      "summaryDataWork": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 40.84659999999985,
+          "p95Ms": 46.056400000000394,
+          "maxMs": 46.056400000000394
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.6619000000000597,
+          "p95Ms": 0.7831999999998516,
+          "maxMs": 0.7831999999998516
+        }
+      },
+      "summaryDataWithRemovals": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 46.546299999999974,
+          "p95Ms": 49.889100000000326,
+          "maxMs": 49.889100000000326
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 1.0236000000004424,
+          "p95Ms": 1.0403999999998632,
+          "maxMs": 1.0403999999998632
+        }
+      },
+      "currentSummaryRoute": {
+        "repetitions": 7,
+        "medianMs": 1.4042000000008557,
+        "p95Ms": 1.8558000000002721,
+        "maxMs": 1.8558000000002721
+      }
+    },
+    {
+      "distribution": "five_peers_all_read",
+      "rows": 100000,
+      "peers": 5,
+      "removedRows": 0,
+      "globalUnread": 0,
+      "visibleSummaryThreads": 5,
+      "currentSummaryUsesBoundedRemovalQuery": true,
+      "latestRows": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 413.0610000000015,
+          "p95Ms": 426.67529999999897,
+          "maxMs": 426.67529999999897
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.5372999999999593,
+          "p95Ms": 1.859599999999773,
+          "maxMs": 1.859599999999773
+        }
+      },
+      "allPeerReadProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 33.5666999999994,
+          "p95Ms": 37.02009999999791,
+          "maxMs": 37.02009999999791
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.23240000000077998,
+          "p95Ms": 0.2499000000025262,
+          "maxMs": 0.2499000000025262
+        }
+      },
+      "consentProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 110.80069999999978,
+          "p95Ms": 117.83590000000186,
+          "maxMs": 117.83590000000186
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.08940000000075088,
+          "p95Ms": 0.09219999999913853,
+          "maxMs": 0.09219999999913853
+        }
+      },
+      "globalUnreadCount": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 32.32710000000225,
+          "p95Ms": 34.53980000000229,
+          "maxMs": 34.53980000000229
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.15059999999721185,
+          "p95Ms": 0.15910000000076252,
+          "maxMs": 0.15910000000076252
+        }
+      },
+      "removedIds": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 104.5632000000005,
+          "p95Ms": 116.69340000000011,
+          "maxMs": 116.69340000000011
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.32259999999951106,
+          "p95Ms": 0.35020000000076834,
+          "maxMs": 0.35020000000076834
+        }
+      },
+      "summaryDataWork": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 505.90109999999913,
+          "p95Ms": 540.7871999999988,
+          "maxMs": 540.7871999999988
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 0.6754000000000815,
+          "p95Ms": 0.7308999999986554,
+          "maxMs": 0.7308999999986554
+        }
+      },
+      "summaryDataWithRemovals": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 644.2927999999993,
+          "p95Ms": 702.4350000000013,
+          "maxMs": 702.4350000000013
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 1.0014000000010128,
+          "p95Ms": 1.0778000000063912,
+          "maxMs": 1.0778000000063912
+        }
+      },
+      "currentSummaryRoute": {
+        "repetitions": 7,
+        "medianMs": 1.7462999999988824,
+        "p95Ms": 2.8598999999958323,
+        "maxMs": 2.8598999999958323
+      },
+      "plans": {
+        "legacyLatest": [
+          "CO-ROUTINE (subquery-1)",
+          "CO-ROUTINE (subquery-3)",
+          "MULTI-INDEX OR",
+          "INDEX 1",
+          "SEARCH dms USING INDEX idx_dms_visible_cursor (from_id=?)",
+          "INDEX 2",
+          "SEARCH dms USING INDEX idx_dms_recipient_cursor (to_id=?)",
+          "USE TEMP B-TREE FOR ORDER BY",
+          "SCAN (subquery-3)",
+          "SCAN (subquery-1)",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ],
+        "legacyReads": [
+          "MATERIALIZE peers",
+          "MERGE (UNION)",
+          "LEFT",
+          "MERGE (UNION)",
+          "LEFT",
+          "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=?)",
+          "RIGHT",
+          "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+          "RIGHT",
+          "SEARCH dm_reads USING COVERING INDEX sqlite_autoindex_dm_reads_1 (user_id=?)",
+          "SCAN peers",
+          "SEARCH r USING INDEX sqlite_autoindex_dm_reads_1 (user_id=? AND other_id=?) LEFT-JOIN",
+          "CORRELATED SCALAR SUBQUERY 4",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "CORRELATED SCALAR SUBQUERY 5",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "CORRELATED SCALAR SUBQUERY 6",
+          "SEARCH sent USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "CORRELATED SCALAR SUBQUERY 7",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "CORRELATED SCALAR SUBQUERY 8",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=? AND created_at>?)"
+        ],
+        "legacyUnread": [
+          "MATERIALIZE peers",
+          "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+          "SCAN peers",
+          "CORRELATED SCALAR SUBQUERY 4",
+          "MULTI-INDEX OR",
+          "INDEX 1",
+          "SEARCH b USING COVERING INDEX sqlite_autoindex_blocks_1 (blocker_id=? AND blocked_id=?)",
+          "INDEX 2",
+          "SEARCH b USING COVERING INDEX sqlite_autoindex_blocks_1 (blocker_id=? AND blocked_id=?)",
+          "CORRELATED SCALAR SUBQUERY 5",
+          "SEARCH a USING COVERING INDEX sqlite_autoindex_dm_acceptances_1 (user_id=? AND other_id=?)",
+          "CORRELATED SCALAR SUBQUERY 6",
+          "SEARCH f USING COVERING INDEX sqlite_autoindex_follows_1 (follower_id=? AND followee_id=?)",
+          "CORRELATED SCALAR SUBQUERY 7",
+          "SEARCH sent USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "SEARCH actor USING COVERING INDEX sqlite_autoindex_users_1 (id=?)",
+          "SEARCH r USING INDEX sqlite_autoindex_dm_reads_1 (user_id=? AND other_id=?) LEFT-JOIN",
+          "CORRELATED SCALAR SUBQUERY 2",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "CORRELATED SCALAR SUBQUERY 3",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=? AND created_at>?)"
+        ],
+        "legacyConsent": [
+          "SEARCH dms USING INDEX idx_dms_recipient_cursor (to_id=?)"
+        ],
+        "legacyRemoved": [
+          "MULTI-INDEX OR",
+          "INDEX 1",
+          "SEARCH dms USING COVERING INDEX idx_dms_visible_cursor (from_id=?)",
+          "INDEX 2",
+          "SEARCH dms USING INDEX idx_dms_recipient_cursor (to_id=?)",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ],
+        "optimizedLatest": [
+          {
+            "sql": "WITH RECURSIVE incoming_peers(other_id) AS (\n  SELECT MIN(from_id) FROM dms WHERE to_id=$viewer\n  UNION ALL\n  SELECT (SELECT MIN(from_id) FROM dms WHERE to_id=$viewer AND from_id>incoming_peers.other_id)\n    FROM incoming_peers WHERE other_id IS NOT NULL\n),\n  outgoing_peers(other_id) AS (\n    SELECT MIN(to_id) FROM dms WHERE from_id=$viewer\n    UNION ALL\n    SELECT (SELECT MIN(to_id) FROM dms WHERE from_id=$viewer AND to_id>outgoing_peers.other_id)\n      FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), message_peers AS MATERIALIZED (\n    SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL\n    UNION SELECT other_id FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), candidates AS MATERIALIZED (\n      SELECT other_id,\n        (SELECT id FROM dms WHERE from_id=$viewer AND to_id=message_peers.other_id AND removed=0\n          ORDER BY created_at DESC,id DESC LIMIT 1) AS outgoing_id,\n        (SELECT id FROM dms WHERE from_id=message_peers.other_id AND to_id=$viewer AND removed=0\n          ORDER BY created_at DESC,id DESC LIMIT 1) AS incoming_id\n      FROM message_peers\n    ) SELECT d.id,d.from_id,d.to_id,d.text,d.created_at,c.other_id\n    FROM candidates c JOIN dms d ON d.id=(\n      SELECT id FROM dms WHERE id IN (c.outgoing_id,c.incoming_id)\n      ORDER BY created_at DESC,id DESC LIMIT 1\n    ) ORDER BY d.created_at DESC,d.id DESC LIMIT $limit",
+            "plan": [
+              "MATERIALIZE candidates",
+              "MATERIALIZE message_peers",
+              "MERGE (UNION)",
+              "LEFT",
+              "CO-ROUTINE incoming_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+              "RECURSIVE STEP",
+              "SCAN incoming_peers",
+              "CORRELATED SCALAR SUBQUERY 2",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=? AND from_id>?)",
+              "SCAN incoming_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "RIGHT",
+              "CO-ROUTINE outgoing_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=?)",
+              "RECURSIVE STEP",
+              "SCAN outgoing_peers",
+              "CORRELATED SCALAR SUBQUERY 5",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=? AND to_id>?)",
+              "SCAN outgoing_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "SCAN message_peers",
+              "CORRELATED SCALAR SUBQUERY 9",
+              "SEARCH dms USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 10",
+              "SEARCH dms USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "SCAN c",
+              "SEARCH d USING INDEX sqlite_autoindex_dms_1 (id=?)",
+              "CORRELATED SCALAR SUBQUERY 12",
+              "SEARCH dms USING INDEX sqlite_autoindex_dms_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "optimizedReads": [
+          {
+            "sql": "WITH RECURSIVE incoming_peers(other_id) AS (\n  SELECT MIN(from_id) FROM dms WHERE to_id=$viewer\n  UNION ALL\n  SELECT (SELECT MIN(from_id) FROM dms WHERE to_id=$viewer AND from_id>incoming_peers.other_id)\n    FROM incoming_peers WHERE other_id IS NOT NULL\n),\n  outgoing_peers(other_id) AS (\n    SELECT MIN(to_id) FROM dms WHERE from_id=$viewer\n    UNION ALL\n    SELECT (SELECT MIN(to_id) FROM dms WHERE from_id=$viewer AND to_id>outgoing_peers.other_id)\n      FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), message_peers AS MATERIALIZED (\n    SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL\n    UNION SELECT other_id FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), peers AS MATERIALIZED (\n    SELECT other_id FROM message_peers\n    UNION SELECT other_id FROM dm_reads WHERE user_id=$viewer\n  ) SELECT peers.other_id,r.last_read_at,r.last_read_id,\n  (SELECT d.id FROM dms d WHERE d.from_id=peers.other_id AND d.to_id=$viewer AND d.removed=0\n    ORDER BY d.created_at DESC,d.id DESC LIMIT 1) AS latest_incoming_id,\n  (SELECT d.created_at FROM dms d WHERE d.from_id=peers.other_id AND d.to_id=$viewer AND d.removed=0\n    ORDER BY d.created_at DESC,d.id DESC LIMIT 1) AS latest_incoming_at,\n  EXISTS(SELECT 1 FROM dms sent WHERE sent.from_id=$viewer AND sent.to_id=peers.other_id AND sent.removed=0) AS has_replied,\n  CASE WHEN r.user_id IS NULL THEN (\n    SELECT COUNT(*) FROM dms d WHERE d.from_id=peers.other_id AND d.to_id=$viewer AND d.removed=0\n  ) ELSE (\n    SELECT COUNT(*) FROM dms d WHERE d.from_id=peers.other_id AND d.to_id=$viewer AND d.removed=0\n      AND (d.created_at,d.id)>(r.last_read_at,r.last_read_id)\n  ) END AS unread\n  FROM peers LEFT JOIN dm_reads r ON r.user_id=$viewer AND r.other_id=peers.other_id",
+            "plan": [
+              "MATERIALIZE peers",
+              "MERGE (UNION)",
+              "LEFT",
+              "MATERIALIZE message_peers",
+              "MERGE (UNION)",
+              "LEFT",
+              "CO-ROUTINE incoming_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+              "RECURSIVE STEP",
+              "SCAN incoming_peers",
+              "CORRELATED SCALAR SUBQUERY 2",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=? AND from_id>?)",
+              "SCAN incoming_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "RIGHT",
+              "CO-ROUTINE outgoing_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=?)",
+              "RECURSIVE STEP",
+              "SCAN outgoing_peers",
+              "CORRELATED SCALAR SUBQUERY 5",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=? AND to_id>?)",
+              "SCAN outgoing_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "SCAN message_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "RIGHT",
+              "SEARCH dm_reads USING COVERING INDEX sqlite_autoindex_dm_reads_1 (user_id=?)",
+              "SCAN peers",
+              "SEARCH r USING INDEX sqlite_autoindex_dm_reads_1 (user_id=? AND other_id=?) LEFT-JOIN",
+              "CORRELATED SCALAR SUBQUERY 11",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 12",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 13",
+              "SEARCH sent USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 14",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 15",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=? AND created_at>?)"
+            ]
+          }
+        ],
+        "optimizedUnread": [
+          {
+            "sql": "WITH RECURSIVE incoming_peers(other_id) AS (\n  SELECT MIN(from_id) FROM dms WHERE to_id=$viewer\n  UNION ALL\n  SELECT (SELECT MIN(from_id) FROM dms WHERE to_id=$viewer AND from_id>incoming_peers.other_id)\n    FROM incoming_peers WHERE other_id IS NOT NULL\n), peers AS MATERIALIZED (\n      SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL\n    ) SELECT COALESCE(SUM(CASE WHEN r.user_id IS NULL THEN (\n        SELECT COUNT(*) FROM dms d WHERE d.to_id=$viewer AND d.from_id=peers.other_id AND d.removed=0\n      ) ELSE (\n        SELECT COUNT(*) FROM dms d WHERE d.to_id=$viewer AND d.from_id=peers.other_id AND d.removed=0\n          AND (d.created_at,d.id)>(r.last_read_at,r.last_read_id)\n      ) END),0) AS count FROM peers\n    JOIN users actor ON actor.id=peers.other_id\n    LEFT JOIN dm_reads r ON r.user_id=$viewer AND r.other_id=peers.other_id\n    WHERE NOT EXISTS (SELECT 1 FROM blocks b\n      WHERE (b.blocker_id=$viewer AND b.blocked_id=peers.other_id)\n         OR (b.blocker_id=peers.other_id AND b.blocked_id=$viewer))\n    AND (EXISTS (SELECT 1 FROM dm_acceptances a WHERE a.user_id=$viewer AND a.other_id=peers.other_id)\n      OR EXISTS (SELECT 1 FROM follows f WHERE f.follower_id=$viewer AND f.followee_id=peers.other_id)\n      OR EXISTS (SELECT 1 FROM dms sent WHERE sent.from_id=$viewer AND sent.to_id=peers.other_id AND sent.removed=0))\n  ",
+            "plan": [
+              "MATERIALIZE peers",
+              "CO-ROUTINE incoming_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+              "RECURSIVE STEP",
+              "SCAN incoming_peers",
+              "CORRELATED SCALAR SUBQUERY 2",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=? AND from_id>?)",
+              "SCAN incoming_peers",
+              "SCAN peers",
+              "CORRELATED SCALAR SUBQUERY 7",
+              "MULTI-INDEX OR",
+              "INDEX 1",
+              "SEARCH b USING COVERING INDEX sqlite_autoindex_blocks_1 (blocker_id=? AND blocked_id=?)",
+              "INDEX 2",
+              "SEARCH b USING COVERING INDEX sqlite_autoindex_blocks_1 (blocker_id=? AND blocked_id=?)",
+              "CORRELATED SCALAR SUBQUERY 8",
+              "SEARCH a USING COVERING INDEX sqlite_autoindex_dm_acceptances_1 (user_id=? AND other_id=?)",
+              "CORRELATED SCALAR SUBQUERY 9",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_follows_1 (follower_id=? AND followee_id=?)",
+              "CORRELATED SCALAR SUBQUERY 10",
+              "SEARCH sent USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "SEARCH actor USING COVERING INDEX sqlite_autoindex_users_1 (id=?)",
+              "SEARCH r USING INDEX sqlite_autoindex_dm_reads_1 (user_id=? AND other_id=?) LEFT-JOIN",
+              "CORRELATED SCALAR SUBQUERY 5",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 6",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=? AND created_at>?)"
+            ]
+          }
+        ],
+        "optimizedConsent": [
+          {
+            "sql": "SELECT other_id FROM dm_acceptances WHERE user_id=?",
+            "plan": [
+              "SEARCH dm_acceptances USING COVERING INDEX sqlite_autoindex_dm_acceptances_1 (user_id=?)"
+            ]
+          },
+          {
+            "sql": "WITH RECURSIVE incoming_peers(other_id) AS (\n  SELECT MIN(from_id) FROM dms WHERE to_id=$viewer\n  UNION ALL\n  SELECT (SELECT MIN(from_id) FROM dms WHERE to_id=$viewer AND from_id>incoming_peers.other_id)\n    FROM incoming_peers WHERE other_id IS NOT NULL\n)\n    SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL\n      AND EXISTS (SELECT 1 FROM dms WHERE from_id=incoming_peers.other_id AND to_id=$viewer AND removed=0)",
+            "plan": [
+              "CO-ROUTINE incoming_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+              "RECURSIVE STEP",
+              "SCAN incoming_peers",
+              "CORRELATED SCALAR SUBQUERY 2",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=? AND from_id>?)",
+              "SCAN incoming_peers",
+              "SEARCH dms EXISTS USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)"
+            ]
+          }
+        ],
+        "optimizedRemoved": [
+          {
+            "sql": "WITH RECURSIVE incoming_peers(other_id) AS (\n  SELECT MIN(from_id) FROM dms WHERE to_id=$viewer\n  UNION ALL\n  SELECT (SELECT MIN(from_id) FROM dms WHERE to_id=$viewer AND from_id>incoming_peers.other_id)\n    FROM incoming_peers WHERE other_id IS NOT NULL\n),\n  outgoing_peers(other_id) AS (\n    SELECT MIN(to_id) FROM dms WHERE from_id=$viewer\n    UNION ALL\n    SELECT (SELECT MIN(to_id) FROM dms WHERE from_id=$viewer AND to_id>outgoing_peers.other_id)\n      FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), message_peers AS MATERIALIZED (\n    SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL\n    UNION SELECT other_id FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), candidates AS (\n      SELECT d.id,d.created_at FROM message_peers p JOIN dms d ON d.id IN (\n        SELECT id FROM dms WHERE from_id=$viewer AND to_id=p.other_id AND removed=1\n          ORDER BY created_at DESC,id DESC LIMIT $limit\n      )\n      UNION\n      SELECT d.id,d.created_at FROM message_peers p JOIN dms d ON d.id IN (\n        SELECT id FROM dms WHERE from_id=p.other_id AND to_id=$viewer AND removed=1\n          ORDER BY created_at DESC,id DESC LIMIT $limit\n      )\n    ) SELECT id FROM candidates ORDER BY created_at DESC,id DESC LIMIT $limit",
+            "plan": [
+              "CO-ROUTINE candidates",
+              "MERGE (UNION)",
+              "LEFT",
+              "MATERIALIZE message_peers",
+              "MERGE (UNION)",
+              "LEFT",
+              "MATERIALIZE incoming_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+              "RECURSIVE STEP",
+              "SCAN incoming_peers",
+              "CORRELATED SCALAR SUBQUERY 2",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=? AND from_id>?)",
+              "SCAN incoming_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "RIGHT",
+              "MATERIALIZE outgoing_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=?)",
+              "RECURSIVE STEP",
+              "SCAN outgoing_peers",
+              "CORRELATED SCALAR SUBQUERY 5",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=? AND to_id>?)",
+              "SCAN outgoing_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "SCAN p",
+              "SEARCH d USING INDEX sqlite_autoindex_dms_1 (id=?)",
+              "CORRELATED LIST SUBQUERY 9",
+              "SEARCH dms USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "RIGHT",
+              "SCAN p",
+              "SEARCH d USING INDEX sqlite_autoindex_dms_1 (id=?)",
+              "CORRELATED LIST SUBQUERY 11",
+              "SEARCH dms USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "SCAN candidates",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "distribution": "250_peers_mixed",
+      "rows": 1000,
+      "peers": 250,
+      "removedRows": 57,
+      "globalUnread": 414,
+      "visibleSummaryThreads": 189,
+      "currentSummaryUsesBoundedRemovalQuery": true,
+      "latestRows": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 2.617899999997462,
+          "p95Ms": 3.297500000000582,
+          "maxMs": 3.297500000000582
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 2.4720000000015716,
+          "p95Ms": 2.5613000000012107,
+          "maxMs": 2.5613000000012107
+        }
+      },
+      "allPeerReadProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 1.6765999999988708,
+          "p95Ms": 1.6890000000057626,
+          "maxMs": 1.6890000000057626
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 2.4697999999989406,
+          "p95Ms": 3.0832999999984168,
+          "maxMs": 3.0832999999984168
+        }
+      },
+      "consentProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 0.6404999999940628,
+          "p95Ms": 0.7540999999982887,
+          "maxMs": 0.7540999999982887
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 1.1632000000026892,
+          "p95Ms": 1.2752999999938766,
+          "maxMs": 1.2752999999938766
+        }
+      },
+      "globalUnreadCount": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 0.8664999999964493,
+          "p95Ms": 1.0256999999983236,
+          "maxMs": 1.0256999999983236
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 1.5486000000018976,
+          "p95Ms": 1.6132999999972526,
+          "maxMs": 1.6132999999972526
+        }
+      },
+      "removedIds": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 0.31599999999889405,
+          "p95Ms": 0.43579999999928987,
+          "maxMs": 0.43579999999928987
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 1.6229999999995925,
+          "p95Ms": 1.826600000000326,
+          "maxMs": 1.826600000000326
+        }
+      },
+      "summaryDataWork": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 6.501600000003236,
+          "p95Ms": 11.662299999996321,
+          "maxMs": 11.662299999996321
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 6.780500000000757,
+          "p95Ms": 7.726300000002084,
+          "maxMs": 7.726300000002084
+        }
+      },
+      "summaryDataWithRemovals": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 5.6010000000023865,
+          "p95Ms": 9.92489999999816,
+          "maxMs": 9.92489999999816
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 9.234600000003411,
+          "p95Ms": 10.655800000000454,
+          "maxMs": 10.655800000000454
+        }
+      },
+      "currentSummaryRoute": {
+        "repetitions": 7,
+        "medianMs": 17.88850000000093,
+        "p95Ms": 21.91769999999815,
+        "maxMs": 21.91769999999815
+      }
+    },
+    {
+      "distribution": "250_peers_mixed",
+      "rows": 10000,
+      "peers": 250,
+      "removedRows": 585,
+      "globalUnread": 414,
+      "visibleSummaryThreads": 189,
+      "currentSummaryUsesBoundedRemovalQuery": true,
+      "latestRows": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 25.649899999996705,
+          "p95Ms": 27.327400000001944,
+          "maxMs": 27.327400000001944
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 5.846700000001874,
+          "p95Ms": 6.714299999999639,
+          "maxMs": 6.714299999999639
+        }
+      },
+      "allPeerReadProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 5.736799999998766,
+          "p95Ms": 7.616600000001199,
+          "maxMs": 7.616600000001199
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 5.574700000004668,
+          "p95Ms": 7.4835000000020955,
+          "maxMs": 7.4835000000020955
+        }
+      },
+      "consentProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 5.388700000003155,
+          "p95Ms": 7.47259999999369,
+          "maxMs": 7.47259999999369
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 1.1539000000047963,
+          "p95Ms": 1.9536000000007334,
+          "maxMs": 1.9536000000007334
+        }
+      },
+      "globalUnreadCount": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 3.550200000005134,
+          "p95Ms": 4.523699999997916,
+          "maxMs": 4.523699999997916
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 3.4183999999950174,
+          "p95Ms": 3.6666000000041095,
+          "maxMs": 3.6666000000041095
+        }
+      },
+      "removedIds": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 6.083300000005693,
+          "p95Ms": 6.576900000000023,
+          "maxMs": 6.576900000000023
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 8.032300000006217,
+          "p95Ms": 9.819999999999709,
+          "maxMs": 9.819999999999709
+        }
+      },
+      "summaryDataWork": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 37.464200000002165,
+          "p95Ms": 38.609700000000885,
+          "maxMs": 38.609700000000885
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 12.53469999999652,
+          "p95Ms": 17.19770000000426,
+          "maxMs": 17.19770000000426
+        }
+      },
+      "summaryDataWithRemovals": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 43.804999999993015,
+          "p95Ms": 47.74750000000495,
+          "maxMs": 47.74750000000495
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 21.58079999999609,
+          "p95Ms": 23.587100000004284,
+          "maxMs": 23.587100000004284
+        }
+      },
+      "currentSummaryRoute": {
+        "repetitions": 7,
+        "medianMs": 31.428699999996752,
+        "p95Ms": 33.241500000003725,
+        "maxMs": 33.241500000003725
+      }
+    },
+    {
+      "distribution": "250_peers_mixed",
+      "rows": 100000,
+      "peers": 250,
+      "removedRows": 5880,
+      "globalUnread": 414,
+      "visibleSummaryThreads": 189,
+      "currentSummaryUsesBoundedRemovalQuery": true,
+      "latestRows": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 332.01110000000335,
+          "p95Ms": 349.16070000000036,
+          "maxMs": 349.16070000000036
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 8.607600000003004,
+          "p95Ms": 10.488299999997253,
+          "maxMs": 10.488299999997253
+        }
+      },
+      "allPeerReadProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 34.87279999999737,
+          "p95Ms": 38.171699999998964,
+          "maxMs": 38.171699999998964
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 8.47609999999986,
+          "p95Ms": 9.213499999998021,
+          "maxMs": 9.213499999998021
+        }
+      },
+      "consentProjection": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 90.53200000000652,
+          "p95Ms": 93.9623999999967,
+          "maxMs": 93.9623999999967
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 4.71990000000369,
+          "p95Ms": 6.030399999996007,
+          "maxMs": 6.030399999996007
+        }
+      },
+      "globalUnreadCount": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 26.35009999999602,
+          "p95Ms": 31.830399999998917,
+          "maxMs": 31.830399999998917
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 4.834399999999732,
+          "p95Ms": 6.162799999998242,
+          "maxMs": 6.162799999998242
+        }
+      },
+      "removedIds": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 96.40879999999743,
+          "p95Ms": 101.20369999999821,
+          "maxMs": 101.20369999999821
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 67.72449999999662,
+          "p95Ms": 70.75790000000416,
+          "maxMs": 70.75790000000416
+        }
+      },
+      "summaryDataWork": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 477.39220000000205,
+          "p95Ms": 483.65120000000024,
+          "maxMs": 483.65120000000024
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 23.34100000000035,
+          "p95Ms": 28.67710000000079,
+          "maxMs": 28.67710000000079
+        }
+      },
+      "summaryDataWithRemovals": {
+        "before": {
+          "repetitions": 7,
+          "medianMs": 552.0069999999978,
+          "p95Ms": 560.4664000000048,
+          "maxMs": 560.4664000000048
+        },
+        "after": {
+          "repetitions": 7,
+          "medianMs": 91.07559999999648,
+          "p95Ms": 95.41709999999148,
+          "maxMs": 95.41709999999148
+        }
+      },
+      "currentSummaryRoute": {
+        "repetitions": 7,
+        "medianMs": 99.05070000000705,
+        "p95Ms": 102.68270000000484,
+        "maxMs": 102.68270000000484
+      },
+      "plans": {
+        "legacyLatest": [
+          "CO-ROUTINE (subquery-1)",
+          "CO-ROUTINE (subquery-3)",
+          "MULTI-INDEX OR",
+          "INDEX 1",
+          "SEARCH dms USING INDEX idx_dms_visible_cursor (from_id=?)",
+          "INDEX 2",
+          "SEARCH dms USING INDEX idx_dms_recipient_cursor (to_id=?)",
+          "USE TEMP B-TREE FOR ORDER BY",
+          "SCAN (subquery-3)",
+          "SCAN (subquery-1)",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ],
+        "legacyReads": [
+          "MATERIALIZE peers",
+          "MERGE (UNION)",
+          "LEFT",
+          "MERGE (UNION)",
+          "LEFT",
+          "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=?)",
+          "RIGHT",
+          "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+          "RIGHT",
+          "SEARCH dm_reads USING COVERING INDEX sqlite_autoindex_dm_reads_1 (user_id=?)",
+          "SCAN peers",
+          "SEARCH r USING INDEX sqlite_autoindex_dm_reads_1 (user_id=? AND other_id=?) LEFT-JOIN",
+          "CORRELATED SCALAR SUBQUERY 4",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "CORRELATED SCALAR SUBQUERY 5",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "CORRELATED SCALAR SUBQUERY 6",
+          "SEARCH sent USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "CORRELATED SCALAR SUBQUERY 7",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "CORRELATED SCALAR SUBQUERY 8",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=? AND created_at>?)"
+        ],
+        "legacyUnread": [
+          "MATERIALIZE peers",
+          "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+          "SCAN peers",
+          "CORRELATED SCALAR SUBQUERY 4",
+          "MULTI-INDEX OR",
+          "INDEX 1",
+          "SEARCH b USING COVERING INDEX sqlite_autoindex_blocks_1 (blocker_id=? AND blocked_id=?)",
+          "INDEX 2",
+          "SEARCH b USING COVERING INDEX sqlite_autoindex_blocks_1 (blocker_id=? AND blocked_id=?)",
+          "CORRELATED SCALAR SUBQUERY 5",
+          "SEARCH a USING COVERING INDEX sqlite_autoindex_dm_acceptances_1 (user_id=? AND other_id=?)",
+          "CORRELATED SCALAR SUBQUERY 6",
+          "SEARCH f USING COVERING INDEX sqlite_autoindex_follows_1 (follower_id=? AND followee_id=?)",
+          "CORRELATED SCALAR SUBQUERY 7",
+          "SEARCH sent USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "SEARCH actor USING COVERING INDEX sqlite_autoindex_users_1 (id=?)",
+          "SEARCH r USING INDEX sqlite_autoindex_dm_reads_1 (user_id=? AND other_id=?) LEFT-JOIN",
+          "CORRELATED SCALAR SUBQUERY 2",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+          "CORRELATED SCALAR SUBQUERY 3",
+          "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=? AND created_at>?)"
+        ],
+        "legacyConsent": [
+          "SEARCH dms USING INDEX idx_dms_recipient_cursor (to_id=?)"
+        ],
+        "legacyRemoved": [
+          "MULTI-INDEX OR",
+          "INDEX 1",
+          "SEARCH dms USING COVERING INDEX idx_dms_visible_cursor (from_id=?)",
+          "INDEX 2",
+          "SEARCH dms USING INDEX idx_dms_recipient_cursor (to_id=?)",
+          "USE TEMP B-TREE FOR ORDER BY"
+        ],
+        "optimizedLatest": [
+          {
+            "sql": "WITH RECURSIVE incoming_peers(other_id) AS (\n  SELECT MIN(from_id) FROM dms WHERE to_id=$viewer\n  UNION ALL\n  SELECT (SELECT MIN(from_id) FROM dms WHERE to_id=$viewer AND from_id>incoming_peers.other_id)\n    FROM incoming_peers WHERE other_id IS NOT NULL\n),\n  outgoing_peers(other_id) AS (\n    SELECT MIN(to_id) FROM dms WHERE from_id=$viewer\n    UNION ALL\n    SELECT (SELECT MIN(to_id) FROM dms WHERE from_id=$viewer AND to_id>outgoing_peers.other_id)\n      FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), message_peers AS MATERIALIZED (\n    SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL\n    UNION SELECT other_id FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), candidates AS MATERIALIZED (\n      SELECT other_id,\n        (SELECT id FROM dms WHERE from_id=$viewer AND to_id=message_peers.other_id AND removed=0\n          ORDER BY created_at DESC,id DESC LIMIT 1) AS outgoing_id,\n        (SELECT id FROM dms WHERE from_id=message_peers.other_id AND to_id=$viewer AND removed=0\n          ORDER BY created_at DESC,id DESC LIMIT 1) AS incoming_id\n      FROM message_peers\n    ) SELECT d.id,d.from_id,d.to_id,d.text,d.created_at,c.other_id\n    FROM candidates c JOIN dms d ON d.id=(\n      SELECT id FROM dms WHERE id IN (c.outgoing_id,c.incoming_id)\n      ORDER BY created_at DESC,id DESC LIMIT 1\n    ) ORDER BY d.created_at DESC,d.id DESC LIMIT $limit",
+            "plan": [
+              "MATERIALIZE candidates",
+              "MATERIALIZE message_peers",
+              "MERGE (UNION)",
+              "LEFT",
+              "CO-ROUTINE incoming_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+              "RECURSIVE STEP",
+              "SCAN incoming_peers",
+              "CORRELATED SCALAR SUBQUERY 2",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=? AND from_id>?)",
+              "SCAN incoming_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "RIGHT",
+              "CO-ROUTINE outgoing_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=?)",
+              "RECURSIVE STEP",
+              "SCAN outgoing_peers",
+              "CORRELATED SCALAR SUBQUERY 5",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=? AND to_id>?)",
+              "SCAN outgoing_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "SCAN message_peers",
+              "CORRELATED SCALAR SUBQUERY 9",
+              "SEARCH dms USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 10",
+              "SEARCH dms USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "SCAN c",
+              "SEARCH d USING INDEX sqlite_autoindex_dms_1 (id=?)",
+              "CORRELATED SCALAR SUBQUERY 12",
+              "SEARCH dms USING INDEX sqlite_autoindex_dms_1 (id=?)",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ],
+        "optimizedReads": [
+          {
+            "sql": "WITH RECURSIVE incoming_peers(other_id) AS (\n  SELECT MIN(from_id) FROM dms WHERE to_id=$viewer\n  UNION ALL\n  SELECT (SELECT MIN(from_id) FROM dms WHERE to_id=$viewer AND from_id>incoming_peers.other_id)\n    FROM incoming_peers WHERE other_id IS NOT NULL\n),\n  outgoing_peers(other_id) AS (\n    SELECT MIN(to_id) FROM dms WHERE from_id=$viewer\n    UNION ALL\n    SELECT (SELECT MIN(to_id) FROM dms WHERE from_id=$viewer AND to_id>outgoing_peers.other_id)\n      FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), message_peers AS MATERIALIZED (\n    SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL\n    UNION SELECT other_id FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), peers AS MATERIALIZED (\n    SELECT other_id FROM message_peers\n    UNION SELECT other_id FROM dm_reads WHERE user_id=$viewer\n  ) SELECT peers.other_id,r.last_read_at,r.last_read_id,\n  (SELECT d.id FROM dms d WHERE d.from_id=peers.other_id AND d.to_id=$viewer AND d.removed=0\n    ORDER BY d.created_at DESC,d.id DESC LIMIT 1) AS latest_incoming_id,\n  (SELECT d.created_at FROM dms d WHERE d.from_id=peers.other_id AND d.to_id=$viewer AND d.removed=0\n    ORDER BY d.created_at DESC,d.id DESC LIMIT 1) AS latest_incoming_at,\n  EXISTS(SELECT 1 FROM dms sent WHERE sent.from_id=$viewer AND sent.to_id=peers.other_id AND sent.removed=0) AS has_replied,\n  CASE WHEN r.user_id IS NULL THEN (\n    SELECT COUNT(*) FROM dms d WHERE d.from_id=peers.other_id AND d.to_id=$viewer AND d.removed=0\n  ) ELSE (\n    SELECT COUNT(*) FROM dms d WHERE d.from_id=peers.other_id AND d.to_id=$viewer AND d.removed=0\n      AND (d.created_at,d.id)>(r.last_read_at,r.last_read_id)\n  ) END AS unread\n  FROM peers LEFT JOIN dm_reads r ON r.user_id=$viewer AND r.other_id=peers.other_id",
+            "plan": [
+              "MATERIALIZE peers",
+              "MERGE (UNION)",
+              "LEFT",
+              "MATERIALIZE message_peers",
+              "MERGE (UNION)",
+              "LEFT",
+              "CO-ROUTINE incoming_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+              "RECURSIVE STEP",
+              "SCAN incoming_peers",
+              "CORRELATED SCALAR SUBQUERY 2",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=? AND from_id>?)",
+              "SCAN incoming_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "RIGHT",
+              "CO-ROUTINE outgoing_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=?)",
+              "RECURSIVE STEP",
+              "SCAN outgoing_peers",
+              "CORRELATED SCALAR SUBQUERY 5",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=? AND to_id>?)",
+              "SCAN outgoing_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "SCAN message_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "RIGHT",
+              "SEARCH dm_reads USING COVERING INDEX sqlite_autoindex_dm_reads_1 (user_id=?)",
+              "SCAN peers",
+              "SEARCH r USING INDEX sqlite_autoindex_dm_reads_1 (user_id=? AND other_id=?) LEFT-JOIN",
+              "CORRELATED SCALAR SUBQUERY 11",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 12",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 13",
+              "SEARCH sent USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 14",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 15",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=? AND created_at>?)"
+            ]
+          }
+        ],
+        "optimizedUnread": [
+          {
+            "sql": "WITH RECURSIVE incoming_peers(other_id) AS (\n  SELECT MIN(from_id) FROM dms WHERE to_id=$viewer\n  UNION ALL\n  SELECT (SELECT MIN(from_id) FROM dms WHERE to_id=$viewer AND from_id>incoming_peers.other_id)\n    FROM incoming_peers WHERE other_id IS NOT NULL\n), peers AS MATERIALIZED (\n      SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL\n    ) SELECT COALESCE(SUM(CASE WHEN r.user_id IS NULL THEN (\n        SELECT COUNT(*) FROM dms d WHERE d.to_id=$viewer AND d.from_id=peers.other_id AND d.removed=0\n      ) ELSE (\n        SELECT COUNT(*) FROM dms d WHERE d.to_id=$viewer AND d.from_id=peers.other_id AND d.removed=0\n          AND (d.created_at,d.id)>(r.last_read_at,r.last_read_id)\n      ) END),0) AS count FROM peers\n    JOIN users actor ON actor.id=peers.other_id\n    LEFT JOIN dm_reads r ON r.user_id=$viewer AND r.other_id=peers.other_id\n    WHERE NOT EXISTS (SELECT 1 FROM blocks b\n      WHERE (b.blocker_id=$viewer AND b.blocked_id=peers.other_id)\n         OR (b.blocker_id=peers.other_id AND b.blocked_id=$viewer))\n    AND (EXISTS (SELECT 1 FROM dm_acceptances a WHERE a.user_id=$viewer AND a.other_id=peers.other_id)\n      OR EXISTS (SELECT 1 FROM follows f WHERE f.follower_id=$viewer AND f.followee_id=peers.other_id)\n      OR EXISTS (SELECT 1 FROM dms sent WHERE sent.from_id=$viewer AND sent.to_id=peers.other_id AND sent.removed=0))\n  ",
+            "plan": [
+              "MATERIALIZE peers",
+              "CO-ROUTINE incoming_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+              "RECURSIVE STEP",
+              "SCAN incoming_peers",
+              "CORRELATED SCALAR SUBQUERY 2",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=? AND from_id>?)",
+              "SCAN incoming_peers",
+              "SCAN peers",
+              "CORRELATED SCALAR SUBQUERY 7",
+              "MULTI-INDEX OR",
+              "INDEX 1",
+              "SEARCH b USING COVERING INDEX sqlite_autoindex_blocks_1 (blocker_id=? AND blocked_id=?)",
+              "INDEX 2",
+              "SEARCH b USING COVERING INDEX sqlite_autoindex_blocks_1 (blocker_id=? AND blocked_id=?)",
+              "CORRELATED SCALAR SUBQUERY 8",
+              "SEARCH a USING COVERING INDEX sqlite_autoindex_dm_acceptances_1 (user_id=? AND other_id=?)",
+              "CORRELATED SCALAR SUBQUERY 9",
+              "SEARCH f USING COVERING INDEX sqlite_autoindex_follows_1 (follower_id=? AND followee_id=?)",
+              "CORRELATED SCALAR SUBQUERY 10",
+              "SEARCH sent USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "SEARCH actor USING COVERING INDEX sqlite_autoindex_users_1 (id=?)",
+              "SEARCH r USING INDEX sqlite_autoindex_dm_reads_1 (user_id=? AND other_id=?) LEFT-JOIN",
+              "CORRELATED SCALAR SUBQUERY 5",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "CORRELATED SCALAR SUBQUERY 6",
+              "SEARCH d USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=? AND created_at>?)"
+            ]
+          }
+        ],
+        "optimizedConsent": [
+          {
+            "sql": "SELECT other_id FROM dm_acceptances WHERE user_id=?",
+            "plan": [
+              "SEARCH dm_acceptances USING COVERING INDEX sqlite_autoindex_dm_acceptances_1 (user_id=?)"
+            ]
+          },
+          {
+            "sql": "WITH RECURSIVE incoming_peers(other_id) AS (\n  SELECT MIN(from_id) FROM dms WHERE to_id=$viewer\n  UNION ALL\n  SELECT (SELECT MIN(from_id) FROM dms WHERE to_id=$viewer AND from_id>incoming_peers.other_id)\n    FROM incoming_peers WHERE other_id IS NOT NULL\n)\n    SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL\n      AND EXISTS (SELECT 1 FROM dms WHERE from_id=incoming_peers.other_id AND to_id=$viewer AND removed=0)",
+            "plan": [
+              "CO-ROUTINE incoming_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+              "RECURSIVE STEP",
+              "SCAN incoming_peers",
+              "CORRELATED SCALAR SUBQUERY 2",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=? AND from_id>?)",
+              "SCAN incoming_peers",
+              "SEARCH dms EXISTS USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)"
+            ]
+          }
+        ],
+        "optimizedRemoved": [
+          {
+            "sql": "WITH RECURSIVE incoming_peers(other_id) AS (\n  SELECT MIN(from_id) FROM dms WHERE to_id=$viewer\n  UNION ALL\n  SELECT (SELECT MIN(from_id) FROM dms WHERE to_id=$viewer AND from_id>incoming_peers.other_id)\n    FROM incoming_peers WHERE other_id IS NOT NULL\n),\n  outgoing_peers(other_id) AS (\n    SELECT MIN(to_id) FROM dms WHERE from_id=$viewer\n    UNION ALL\n    SELECT (SELECT MIN(to_id) FROM dms WHERE from_id=$viewer AND to_id>outgoing_peers.other_id)\n      FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), message_peers AS MATERIALIZED (\n    SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL\n    UNION SELECT other_id FROM outgoing_peers WHERE other_id IS NOT NULL\n  ), candidates AS (\n      SELECT d.id,d.created_at FROM message_peers p JOIN dms d ON d.id IN (\n        SELECT id FROM dms WHERE from_id=$viewer AND to_id=p.other_id AND removed=1\n          ORDER BY created_at DESC,id DESC LIMIT $limit\n      )\n      UNION\n      SELECT d.id,d.created_at FROM message_peers p JOIN dms d ON d.id IN (\n        SELECT id FROM dms WHERE from_id=p.other_id AND to_id=$viewer AND removed=1\n          ORDER BY created_at DESC,id DESC LIMIT $limit\n      )\n    ) SELECT id FROM candidates ORDER BY created_at DESC,id DESC LIMIT $limit",
+            "plan": [
+              "CO-ROUTINE candidates",
+              "MERGE (UNION)",
+              "LEFT",
+              "MATERIALIZE message_peers",
+              "MERGE (UNION)",
+              "LEFT",
+              "MATERIALIZE incoming_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=?)",
+              "RECURSIVE STEP",
+              "SCAN incoming_peers",
+              "CORRELATED SCALAR SUBQUERY 2",
+              "SEARCH dms USING COVERING INDEX idx_dms_recipient_cursor (to_id=? AND from_id>?)",
+              "SCAN incoming_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "RIGHT",
+              "MATERIALIZE outgoing_peers",
+              "SETUP",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=?)",
+              "RECURSIVE STEP",
+              "SCAN outgoing_peers",
+              "CORRELATED SCALAR SUBQUERY 5",
+              "SEARCH dms USING COVERING INDEX idx_dms_pair (from_id=? AND to_id>?)",
+              "SCAN outgoing_peers",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "SCAN p",
+              "SEARCH d USING INDEX sqlite_autoindex_dms_1 (id=?)",
+              "CORRELATED LIST SUBQUERY 9",
+              "SEARCH dms USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "RIGHT",
+              "SCAN p",
+              "SEARCH d USING INDEX sqlite_autoindex_dms_1 (id=?)",
+              "CORRELATED LIST SUBQUERY 11",
+              "SEARCH dms USING COVERING INDEX idx_dms_visible_cursor (from_id=? AND to_id=? AND removed=?)",
+              "USE TEMP B-TREE FOR ORDER BY",
+              "SCAN candidates",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "integrity": "ok",
+  "foreignKeyViolations": 0
+}

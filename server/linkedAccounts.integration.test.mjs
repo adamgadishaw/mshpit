@@ -321,7 +321,9 @@ test("HTTP signup cookie blocks public and social writes until verification whil
   assert.equal(db.prepare("SELECT COUNT(*) n FROM dms WHERE from_id=?").get(accountId).n, 1);
   assert.equal(q.userById.get(accountId).bio, "Live music fan");
   assert.equal(q.userById.get(original.id).pass_hash, originalHash);
-  assert.equal((await request("/api/me", { cookie: originalLogin.cookie })).body.user.id, original.id);
+  assert.equal((await request("/api/me", { cookie: originalLogin.cookie })).body.user, null, "signup identity replacement revokes the outgoing session");
+  const originalReauthenticated = await login(original);
+  assert.equal(originalReauthenticated.body.user.id, original.id, "the original account remains usable with its existing credentials");
 
   const unfinished = await request("/api/signup", { method: "POST", body: {
     name: "Cancel HTTP Member", email: `cancel-http-${++sequence}@example.test`, password: "Cancel-password3",

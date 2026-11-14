@@ -196,7 +196,7 @@ function Hero({ artistName, archive }) {
       <View style={styles.heroCopy}>
         <Text style={styles.heroKicker}>THE LIVE RECORD</Text>
         <Text style={styles.heroTitle}>{artistName}</Text>
-        <Text style={styles.heroText}>Every fan-rated night, the images people kept, and the tours that became part of the story.</Text>
+        <Text style={styles.heroText}>Explore past shows, fan ratings, photos, and tours.</Text>
       </View>
       <View style={styles.stats}>
         {[
@@ -211,7 +211,7 @@ function Hero({ artistName, archive }) {
           </View>
         ))}
       </View>
-      {archive?.truncated && <Text style={styles.truncated}>This is a large archive, so the overview shows its newest window. Open a tour to continue through its complete review history.</Text>}
+      {archive?.truncated && <Text style={styles.truncated}>This overview shows the most recent part of the archive. Open a tour to browse all its reviews.</Text>}
     </View>
   );
 }
@@ -223,19 +223,19 @@ function buildRows(archive) {
   const shows = list(archive?.shows);
   const rows = [];
 
-  rows.push({ type: "section", key: "section-top", eyebrow: "HALL OF NIGHTS", title: "The top three", copy: "Confidence-weighted fan ratings reward nights with real community depth, not one perfect score.", count: topShows.length });
+  rows.push({ type: "section", key: "section-top", eyebrow: "TOP RATED", title: "The top three", copy: "Rankings consider both the scores and the number of fan ratings.", count: topShows.length });
   if (topShows.length) topShows.forEach((show, index) => rows.push({ type: "top-show", key: `top:${show.key}`, show, rank: index + 1 }));
-  else rows.push({ type: "empty", key: "empty-top", title: "The podium is still open", copy: "Once fans rate a few performances, the strongest nights will rise here." });
+  else rows.push({ type: "empty", key: "empty-top", title: "No rated shows yet", copy: "Top-rated shows will appear here as fans add ratings." });
 
-  rows.push({ type: "section", key: "section-tours", eyebrow: "TOUR SHELVES", title: "Browse by era", copy: "Open a tour to see its nights, fan media, and every review in one place.", count: tours.length });
+  rows.push({ type: "section", key: "section-tours", eyebrow: "TOURS", title: "Browse tours", copy: "Open a tour to see its shows, photos, videos, and reviews.", count: tours.length });
   if (tours.length) tours.forEach((tour) => rows.push({ type: "tour", key: `tour:${tour.key}`, tour }));
-  else rows.push({ type: "empty", key: "empty-tours", title: "No tours grouped yet", copy: "Historical nights will form tour shelves as the archive grows." });
+  else rows.push({ type: "empty", key: "empty-tours", title: "No tours grouped yet", copy: "No tours are listed in this archive yet." });
 
-  rows.push({ type: "section", key: "section-upcoming", eyebrow: "WORLDWIDE", title: "Coming up", copy: "Public dates across the global live calendar.", count: upcoming.length });
+  rows.push({ type: "section", key: "section-upcoming", eyebrow: "WORLDWIDE", title: "Coming up", copy: "Upcoming shows in all locations.", count: upcoming.length });
   if (upcoming.length) upcoming.forEach((show) => rows.push({ type: "upcoming", key: `upcoming:${show.id}`, show }));
-  else rows.push({ type: "empty", key: "empty-upcoming", icon: "globe", title: "No public dates right now", copy: "Check back when the next run is announced." });
+  else rows.push({ type: "empty", key: "empty-upcoming", icon: "globe", title: "No public dates right now", copy: "Check back for newly announced dates." });
 
-  rows.push({ type: "section", key: "section-history", eyebrow: "EVERY RECORDED NIGHT", title: "The full history", copy: "One card per performance, built from every eligible fan rating and public photo.", count: shows.length });
+  rows.push({ type: "section", key: "section-history", eyebrow: "EVERY RECORDED NIGHT", title: "The full history", copy: "Fan ratings and public photos, grouped by show.", count: shows.length });
   if (shows.length) shows.forEach((show) => rows.push({ type: "show", key: `show:${show.key}`, show }));
   else rows.push({ type: "empty", key: "empty-history", title: "No nights recorded yet", copy: "The first concert log will start this artist’s live archive." });
   return rows;
@@ -345,7 +345,7 @@ export default function ArtistArchiveScreen({ artistName, artistKey, onClose, on
               )}
             </>
           )}
-          ListFooterComponent={<View style={styles.listEnd}><Icon name="star" size={12} color={colors.gold} /><Text style={styles.listEndText}>Built from fan ratings and public media on Pit.</Text></View>}
+          ListFooterComponent={<View style={styles.listEnd}><Icon name="star" size={12} color={colors.gold} /><Text style={styles.listEndText}>Based on fan ratings and public photos and videos on Mshpit.</Text></View>}
           initialNumToRender={12}
           maxToRenderPerBatch={10}
           windowSize={7}
@@ -393,7 +393,7 @@ const styles = StyleSheet.create({
 
   coverWrap: { overflow: "hidden", position: "relative", backgroundColor: colors.bgElev },
   cover: { overflow: "hidden", backgroundColor: colors.bgElev },
-  coverImage: { width: "100%", height: "100%" },
+  coverImage: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
   coverFallback: { alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.lineSoft },
   credit: { position: "absolute", left: 7, right: 7, bottom: 7, minHeight: 25, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 7, borderRadius: radius.pill, backgroundColor: "rgba(0,0,0,0.68)" },
   creditText: { flex: 1, color: "#FFFFFF", fontSize: 9.5, fontWeight: "800" },

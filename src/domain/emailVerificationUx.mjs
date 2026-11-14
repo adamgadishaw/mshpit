@@ -33,7 +33,7 @@ const PROMPT_COPY = Object.freeze({
   }),
   default: Object.freeze({
     title: "Confirm your email to continue",
-    body: "You can keep exploring Pit now. Confirm your email before publishing, messaging, following, reacting, or changing public information.",
+    body: "You can keep browsing Mshpit. Confirm your email before publishing, messaging, following, reacting, or changing public information.",
   }),
 });
 

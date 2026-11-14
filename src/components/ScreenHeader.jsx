@@ -2,6 +2,7 @@ import { useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
 import { colors, displayFont, focusRing, font, isKeyboardFocus, radius, space } from "../theme";
 import Icon from "./Icon";
+import { PageTitle } from "./PageReturnContext";
 
 // Prominent, consistent header for detail screens: a round back button and a
 // bold title card. Optional `kicker` (small label above) and `right` slot.
@@ -14,10 +15,12 @@ export default function ScreenHeader({ title, kicker, onBack, right, backLabel =
         onPress={onBack} hitSlop={10} accessibilityRole="button" accessibilityLabel={backLabel} accessibilityHint={backHint}>
         <Icon name="chevron-left" size={22} color={colors.text} strokeWidth={2.4} />
       </Pressable>
-      <View style={styles.titleBox}>
+      <PageTitle label={title} style={styles.titleBox}>
+      <View>
         {kicker ? <Text style={styles.kicker}>{kicker}</Text> : null}
         <Text style={styles.title} numberOfLines={1} accessibilityRole="header">{title}</Text>
       </View>
+      </PageTitle>
       <View style={styles.right}>{right}</View>
     </View>
   );

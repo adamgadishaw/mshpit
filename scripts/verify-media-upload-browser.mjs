@@ -136,6 +136,7 @@ async function scenario(browser, origin, width) {
     await page.getByRole("button", { name: "Remove media 1", exact: true }).waitFor();
     await page.waitForFunction(() => window.__pickerHandles.revoked.length >= 1);
     await page.getByRole("progressbar", { name: /Starting media check/ }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Move media 1 later", exact: true }).isDisabled(), true);
     assert.equal(state.finalizes.length, 2, "A selected video must reach verification without any browser metadata decode.");
     await page.getByRole("button", { name: "Cancel media upload", exact: true }).click();
     const retry = page.getByRole("button", { name: "Retry uploading selected photos and videos", exact: true });
@@ -159,12 +160,125 @@ async function scenario(browser, origin, width) {
     assert.equal(await retry.count(), 0);
     assert.equal(await page.locator('[data-testid="composer-file-input"]').count(), 0);
     assert.equal(await review.inputValue(), "Keep this concert memory during interrupted uploads.");
+    assert.equal(await page.getByRole("button", { name: "Move media 1 earlier", exact: true }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Move media 2 later", exact: true }).isDisabled(), true);
+    await page.getByRole("button", { name: "Move media 2 earlier", exact: true }).click();
+    await page.getByRole("button", { name: "Remove clip 1", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Remove media 2", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Move media 1 later", exact: true }).click();
+    await page.getByRole("button", { name: "Remove clip 2", exact: true }).waitFor();
     assert.deepEqual(state.reports, []); assert.deepEqual(state.errors, []);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
     await page.screenshot({ path: join(shots, `media-${width}-complete.png`) });
     console.log(JSON.stringify({ name: `media-upload-${width}`, passed: true, sourceTransfers: state.puts.length, sourceReuploads: 0 }));
   } catch (error) {
     await page.screenshot({ path: join(shots, `media-${width}-failed.png`) }).catch(() => {});
+    console.error(JSON.stringify({ error: error.message, state, body: (await page.locator("body").innerText()).slice(-6000) }));
+    throw error;
+  } finally { state.closing = true; await context.close(); }
+}
+
+async function featuredRecoveryScenario(browser, origin, width, outcome) {
+  const context = await browser.newContext({ viewport: { width, height: 900 }, isMobile: width < 620, hasTouch: width < 620, serviceWorkers: "block" });
+  const user = { ...navigationUser, role: "artist", name: "Fixture Artist", artistName: "Fixture Artist", verified: true };
+  const imageId = "ma_background_12345678", otherId = "ma_neighbor_12345678";
+  const review = `Featured image recovery ${outcome} ${width}`;
+  const draft = { id: `featured-${outcome}-${width}`, ownerId: user.id, at: Date.now(), postType: "status", review,
+    campaign: { version: 1, treatment: "spotlight", backgroundAssetId: imageId },
+    photos: ["https://media.example.test/neighbor.png"], panels: { photos: true }, mediaProject: { version: 1, assets: [
+      { id: "saved-background", assetId: imageId, kind: "image", status: "finalizing", altText: "Blue stage lights" },
+      { id: "saved-neighbor", assetId: otherId, kind: "image", status: "ready", sourceUrl: "https://media.example.test/neighbor.png", altText: "The crowd" },
+    ] } };
+  const state = { reads: [], writes: [], reports: [], errors: [], closing: false };
+  const page = await context.newPage(); page.setDefaultTimeout(12_000);
+  await page.addInitScript(({ user, draft }) => {
+    if (localStorage.getItem("featured-fixture-seeded")) return;
+    localStorage.setItem("featured-fixture-seeded", "1");
+    localStorage.setItem("pit_theme", "stage");
+    localStorage.setItem("pit.session", JSON.stringify(user));
+    localStorage.setItem("pit.users", JSON.stringify([user]));
+    localStorage.setItem("pit.drafts", JSON.stringify([draft]));
+  }, { user, draft });
+  page.on("pageerror", error => state.errors.push(error.message));
+  await context.route("**/*", async route => {
+    const request = route.request(), url = new URL(request.url());
+    const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+    try {
+      if (url.origin === "https://media.example.test") return await route.fulfill({ status: 200, contentType: "image/png", body: png });
+      if (url.origin !== origin) return await route.abort();
+      if (!url.pathname.startsWith("/api/")) return await route.continue();
+      if (url.pathname === "/api/client-errors") { state.reports.push(request.postDataJSON()); return await json({ ok: true }); }
+      if (url.pathname === "/api/me") return await json({ user });
+      if (url.pathname === "/api/health") return await json({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: true } } });
+      if (url.pathname.startsWith("/api/media/assets")) {
+        assert.equal(request.headers()["x-pit-expected-account"], user.id);
+        assert.equal(url.pathname, `/api/media/assets/${imageId}`);
+        // Removal may retire only this synthetic unfinished upload. No new
+        // upload or PUT is permitted during server-identity draft recovery.
+        if (request.method() === "DELETE") return await json({ removed: true });
+        assert.equal(request.method(), "GET"); state.reads.push(url.pathname);
+        if (outcome === "missing") return await json({ error: "Missing", code: "NOT_FOUND" }, 404);
+        assert.equal(outcome, "ready");
+        return await json({ asset: { id: imageId, kind: "image", status: "ready", url: "https://media.example.test/recovered.png", width: 1, height: 1 } });
+      }
+      if (url.pathname === "/api/posts" && request.method() === "POST") {
+        assert.equal(request.headers()["x-pit-expected-account"], user.id);
+        state.writes.push(request.postDataJSON());
+        return await json({ post: { ...state.writes.at(-1), id: "p_featured_recovery_fixture", user, userId: user.id, kind: "status", at: Date.now(), likes: 0, comments: 0 }, created: true });
+      }
+      assert.equal(request.method(), "GET", `Unexpected mutation: ${url.pathname}`);
+      return await json(fixtureApiResponse(url.pathname, { member: true, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined }));
+    } catch (error) {
+      if (state.closing || /closed|disposed|handled|aborted|cancelled/i.test(error.message)) return;
+      state.errors.push(error.message); await route.abort().catch(() => {});
+    }
+  });
+  const openDraft = async () => {
+    await page.getByLabel("Make a post", { exact: true }).last().click();
+    await page.getByRole("button", { name: `Resume ${review}`, exact: true }).click();
+  };
+  try {
+    await page.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
+    await openDraft();
+    const submit = page.getByRole("button", { name: "Post", exact: true }).last();
+    assert.equal(await submit.isDisabled(), true, "waiting recovery blocks submission");
+    assert.equal(await page.getByRole("button", { name: "Use media 1 as featured post background", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Remove media 1 as featured post background", exact: true }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Move media 1 later", exact: true }).isDisabled(), true);
+    await page.getByRole("button", { name: "Remove featured post background image", exact: true }).waitFor();
+    if (outcome === "removed") await page.getByRole("button", { name: "Remove media 1", exact: true }).click();
+    else await page.getByRole("button", { name: "Retry uploading selected photos and videos", exact: true }).click();
+    await page.getByRole("button", { name: "Remove media 1", exact: true }).waitFor();
+    if (outcome === "ready") {
+      await page.getByRole("button", { name: "Remove media 1 as featured post background", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Move media 1 later", exact: true }).click();
+      await page.getByRole("button", { name: "Remove media 2 as featured post background", exact: true }).waitFor();
+    } else {
+      await page.getByText("Attach an image below, then choose Use as background.", { exact: true }).waitFor();
+      assert.equal(await page.getByRole("button", { name: "Remove featured post background image", exact: true }).count(), 0);
+    }
+    assert.equal(await submit.isEnabled(), true);
+    await page.getByText("Save draft & close", { exact: true }).click();
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await openDraft();
+    if (outcome === "ready") await page.getByRole("button", { name: "Remove media 2 as featured post background", exact: true }).waitFor();
+    else await page.getByText("Attach an image below, then choose Use as background.", { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    const savedDraft = await page.evaluate(id => JSON.parse(localStorage.getItem("pit.drafts") || "[]").find(item => item.id === id), draft.id);
+    assert.deepEqual(savedDraft.mediaProject.assets.map(item => item.altText), outcome === "ready" ? ["The crowd", "Blue stage lights"] : ["The crowd"]);
+    await page.screenshot({ path: join(shots, `featured-recovery-${outcome}-${width}.png`) });
+    await submit.click();
+    await page.getByPlaceholder("Write about music, a show, or what you plan to see next...", { exact: true }).waitFor({ state: "hidden" });
+    assert.equal(state.writes.length, 1);
+    const post = state.writes[0];
+    assert.equal(post.campaign?.backgroundAssetId, outcome === "ready" ? imageId : undefined);
+    assert.deepEqual(post.mediaAssetIds, outcome === "ready" ? [otherId, imageId] : [otherId]);
+    assert.deepEqual(post.photos, outcome === "ready" ? [draft.photos[0], "https://media.example.test/recovered.png"] : draft.photos);
+    assert.equal(state.reads.length, outcome === "removed" ? 0 : 1, "recovery reuses the owner identity without another upload");
+    assert.deepEqual(state.reports, []); assert.deepEqual(state.errors, []);
+    console.log(JSON.stringify({ name: `featured-image-recovery-${outcome}-${width}`, passed: true, simulatedPosts: state.writes.length }));
+  } catch (error) {
+    await page.screenshot({ path: join(shots, `featured-recovery-${outcome}-${width}-failed.png`) }).catch(() => {});
     console.error(JSON.stringify({ error: error.message, state, body: (await page.locator("body").innerText()).slice(-6000) }));
     throw error;
   } finally { state.closing = true; await context.close(); }
@@ -177,8 +291,11 @@ export async function main() {
   const { server, origin } = await localServer(); let browser;
   try {
     browser = await chromium.launch({ headless: true, ...(process.env.PIT_BROWSER_EXECUTABLE ? { executablePath: process.env.PIT_BROWSER_EXECUTABLE } : {}) });
-    for (const width of [375, 1280]) await scenario(browser, origin, width);
-    console.log(JSON.stringify({ passed: 2, failed: 0, network: "isolated fixtures only", screenshots: shots }));
+    for (const width of [375, 1280]) {
+      await scenario(browser, origin, width);
+      for (const outcome of ["ready", "removed", "missing"]) await featuredRecoveryScenario(browser, origin, width, outcome);
+    }
+    console.log(JSON.stringify({ passed: 8, failed: 0, network: "isolated fixtures only", screenshots: shots }));
   } finally { await browser?.close(); await new Promise(done => server.close(done)); }
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) main().catch(error => { console.error(error.message); process.exitCode = 1; });

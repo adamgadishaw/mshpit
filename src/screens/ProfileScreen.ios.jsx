@@ -1,0 +1,1216 @@
+// iOS retains this screen while another detail covers it. Other platforms use ProfileScreen.jsx.
+import ProfileGuidance from "../components/ProfileGuidance";
+import NativeLargeTitle, { NativeLargeTitleProvider } from "../components/NativeLargeTitle.ios";
+import { ScrollView } from "../components/NativeTabScroll";
+import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { ActionSheetIOS, ActivityIndicator, View, Text, StyleSheet, Pressable, Platform, useWindowDimensions } from "react-native";
+import { colors, mono, radius, roleColor, space, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
+import { useStore } from "../store";
+import Avatar from "../components/Avatar";
+import Icon from "../components/Icon";
+import TicketStub from "../components/TicketStub";
+import NativeDeleteRow from "../components/NativeDeleteRow";
+import { confirmOwnPostDelete } from "../lib/confirmOwnPostDelete";
+import { BadgeRow } from "../components/Badge";
+import { displayedProfileBadges } from "../domain/profileBadges.mjs";
+import { ACHIEVEMENT_RULES as ACHIEVEMENTS } from "../domain/achievementRules.mjs";
+import { showDateMs } from "../lib/showTime";
+import Countdown from "../components/Countdown";
+import SmartImage from "../components/SmartImage";
+import ClipPoster from "../components/ClipPoster";
+import { formatDate, localCalendarIso } from "../domain/dates.mjs";
+import { projectIOSDetailPost, projectIOSDetailUser } from "../domain/iosDetailPrivacyProjection.mjs";
+import { profileMediaItems } from "../domain/profileMedia.mjs";
+import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
+import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
+import { tasteMatch } from "../domain/tasteMatch.mjs";
+import { selectConcertReviews, selectProfileTimeline } from "../domain/profileTimeline.mjs";
+import { memberCalendarModel } from "../domain/calendarShows.mjs";
+import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
+import useAppActive from "../lib/useAppActive";
+import useIOSDetailPresentation from "../hooks/useIOSDetailPresentation";
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
+import useNativeTabContentReady from "../hooks/useNativeTabContentReady";
+import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
+import { PageTitle } from "../components/PageReturnContext";
+import useScopedRefresh from "../hooks/useScopedRefresh";
+import { refreshScope } from "../domain/scopedRefresh.mjs";
+import ExpandableText from "../components/ExpandableText";
+import { useConcertHistory } from "../features/concertHistory/useConcertHistory";
+import { concertNightKey } from "../features/concertHistory/concertHistoryModel.mjs";
+import ConcertHistory from "../features/concertHistory/ConcertHistory";
+import AccountSnapshotPrompt from "../components/AccountSnapshotPrompt";
+import NewsStoryCard from "../components/news/NewsStoryCard";
+import { PostNavigationContext } from "../components/PostNavigationContext";
+import { profileAccentColor } from "../domain/profileAccents.mjs";
+import { ProfileSection, ProfileIdentityRow, ProfileSectionTabs, hierarchyStyles } from "../features/profilePresentation/ProfileHierarchy";
+import { ProfileBannerCover, ProfileGallery, ProfileMediaRetryBoundary, useProfileMediaPresentation } from "../features/profileMedia/ProfileMediaPresentation";
+
+const IS_IOS = Platform.OS === "ios";
+const EMPTY_LIST = Object.freeze([]);
+const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "", favoriteShows: EMPTY_LIST });
+
+// Native menus keep account tools secondary without hiding their labels or
+// unread state. An open sheet must never act on a previous account/profile.
+function ProfileActionMenu({ actions, scope, label, unread = 0 }) {
+  const presentation = useIOSDetailPresentation();
+  const canAct = presentation.canAct || presentation.current;
+  const current = useRef({ actions, scope, mounted: true });
+  const showing = useRef(false);
+  current.current = { actions, scope, mounted: true };
+  useEffect(() => {
+    current.current.mounted = true;
+    return () => { current.current.mounted = false; };
+  }, []);
+  const open = () => {
+    if (!canAct() || showing.current) return;
+    const visible = actions.filter((action) => typeof action.onPress === "function");
+    showing.current = true;
+    ActionSheetIOS.showActionSheetWithOptions({
+      title: label,
+      options: [...visible.map((action) => action.label), "Cancel"],
+      cancelButtonIndex: visible.length,
+      destructiveButtonIndex: visible.map((action, index) => action.destructive ? index : -1).filter((index) => index >= 0),
+    }, (index) => {
+      showing.current = false;
+      if (!canAct() || !current.current.mounted || current.current.scope !== scope) return;
+      const selected = visible[index];
+      if (!selected) return;
+      selected.onPress?.();
+    });
+  };
+  return (
+    <Pressable testID="profile-action-menu" onPress={open} style={({ pressed }) => [styles.nativeMenu, pressed && { opacity: 0.6 }]} accessibilityRole="button" accessibilityLabel={`${label}${unread > 0 ? `, ${unread} unread updates` : ""}`} accessibilityHint="Opens the available actions">
+      <View style={styles.nativeMenuDots} accessible={false}>{[0, 1, 2].map((dot) => <View key={dot} style={styles.nativeMenuDot} />)}</View>
+      {unread > 0 ? <View style={styles.nativeUnreadDot} accessible={false} /> : null}
+    </Pressable>
+  );
+}
+
+// The member's pinned favorite shows, in their order, near the top.
+function FavoriteShows({ shows, accent, isSelf, onOpen, onManage, largeText = false }) {
+  if (!shows.length) {
+    return isSelf && onManage ? (
+      <Pressable style={styles.favoriteEmpty} onPress={onManage} accessibilityRole="button" accessibilityLabel="Pin your favorite shows">
+        <Icon name="star" size={16} color={colors.amber} />
+        <Text style={styles.favoriteEmptyText}>{IS_IOS ? "Pin up to four favorite shows here." : "Pin up to four favorite shows to the top of your profile."}</Text>
+        <Icon name="chevron-right" size={16} color={colors.textDim} />
+      </Pressable>
+    ) : null;
+  }
+  return (
+    <View style={styles.favorites}>
+      <Text style={styles.favoritesTitle} accessibilityRole="header">Favorite shows</Text>
+      <View style={styles.favoriteGrid}>
+        {shows.map((show) => {
+          const title = show.artist || show.onlineTitle || "A show";
+          const meta = [show.venue || (show.online ? "Watched online" : show.city), show.date ? formatDate(show.date, show.date) : ""].filter(Boolean).join(" · ");
+          return (
+            <Pressable key={show.id} style={[styles.favoriteCard, largeText && styles.nativeFavoriteLarge, accent && { borderColor: accent }]} onPress={() => onOpen?.(show.id)} disabled={!onOpen}
+              accessibilityRole="button" accessibilityLabel={`${title}${meta ? `, ${meta}` : ""}. Open the review.`}>
+              {show.photo ? <SmartImage uri={show.photo} style={[styles.favoritePhoto, largeText && styles.nativeFavoritePhotoLarge]} contain={false} accessible={false} />
+                : <View style={[styles.favoritePhoto, largeText && styles.nativeFavoritePhotoLarge, styles.favoritePhotoEmpty, accent && { backgroundColor: accent }]}><Icon name="ticket" size={20} color="#FFFFFF" /></View>}
+              <View style={[styles.favoriteCopy, largeText && styles.nativeFavoriteCopyLarge]}>
+                <Text style={styles.favoriteArtist} numberOfLines={IS_IOS ? undefined : 1}>{title}</Text>
+                {meta ? <Text style={styles.favoriteMeta} numberOfLines={IS_IOS ? undefined : 1}>{meta}</Text> : null}
+                {show.overall ? <Text style={[styles.favoriteScore, !IS_IOS && accent && { color: accent }]}>{show.overall.toFixed(1)}</Text> : null}
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+const EMPTY_CALENDAR = Object.freeze({ upcoming: EMPTY_LIST, past: EMPTY_LIST });
+
+function Stat({ value, label, onPress, largeText = false }) {
+  return (
+    <Pressable style={[styles.stat, largeText && styles.nativeStatLarge]} onPress={onPress} disabled={!onPress} accessibilityRole={onPress ? "button" : undefined} accessibilityLabel={`${value} ${label}`}>
+      <Text style={styles.statVal}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </Pressable>
+  );
+}
+
+const ProfileMediaTile = memo(function ProfileMediaTile({ item, index, viewerItems, onOpenPhotos }) {
+  const video = mediaDisplayKind(item) === "video";
+  const authoredAlt = typeof item.altText === "string" ? item.altText.trim() : "";
+  const open = useCallback(() => onOpenPhotos?.(viewerItems, index, item.postId), [index, item.postId, onOpenPhotos, viewerItems]);
+  return (
+    <Pressable
+      style={styles.galleryCell}
+      onPress={open}
+      accessibilityRole="button"
+      accessibilityLabel={authoredAlt || `Open profile ${video ? "video" : "photo"} ${index + 1}`}
+      accessibilityHint={video ? "Opens the video player" : "Opens the full-size photo"}
+    >
+      {video ? (
+        <ClipPoster uri={item.uri} posterUri={mediaPosterUri(item)} style={StyleSheet.absoluteFill} compact accessibilityLabel={authoredAlt || "Concert video preview"} accessible={false} />
+      ) : (
+        <SmartImage uri={item.uri} mediaKind="image" style={StyleSheet.absoluteFill} contain={false} previewWidth={720} accessibilityLabel={authoredAlt || "Concert photo"} accessible={false} />
+      )}
+    </Pressable>
+  );
+});
+
+const ProfileTicketRow = memo(function ProfileTicketRow({ log, actionsRef, capabilities, accountId = null }) {
+  const presentation = useIOSDetailPresentation();
+  const canAct = presentation.canAct || presentation.current;
+  // Check this captured admission before consulting same-presentation updates.
+  const receiptActions = actionsRef.current;
+  const [deleteFeedback, setDeleteFeedback] = useState("");
+  const deleteScope = `${accountId || "guest"}:${log.id}`;
+  const deleteScopeRef = useRef(deleteScope); deleteScopeRef.current = deleteScope;
+  const requestSlideDelete = () => canAct() && confirmOwnPostDelete(async () => {
+    if (!canAct()) return;
+    const result = await deletePost(log.id);
+    if (canAct() && deleteScopeRef.current === deleteScope && !result?.ok) setDeleteFeedback("This post could not be deleted. Try again.");
+  });
+  const openShow = useCallback((...args) => canAct() && actionsRef.current.onOpenShow?.(...args), [actionsRef, presentation]);
+  const openPost = useCallback((...args) => canAct() && actionsRef.current.onOpenPost?.(...args), [actionsRef, presentation]);
+  const requireAuth = useCallback(() => canAct() && actionsRef.current.onRequireAuth?.(), [actionsRef, presentation]);
+  const openProfile = useCallback((...args) => canAct() && actionsRef.current.onOpenProfile?.(...args), [actionsRef, presentation]);
+  const openArtist = useCallback((...args) => canAct() && actionsRef.current.onOpenArtist?.(...args), [actionsRef, presentation]);
+  const openArtistArchive = useCallback((...args) => canAct() && actionsRef.current.onOpenArtistArchive?.(...args), [actionsRef, presentation]);
+  const openVenue = useCallback((...args) => canAct() && actionsRef.current.onOpenVenue?.(...args), [actionsRef, presentation]);
+  const report = useCallback((...args) => canAct() && actionsRef.current.onReport?.(...args), [actionsRef, presentation]);
+  const edit = useCallback((...args) => canAct() && actionsRef.current.onEditPost?.(...args), [actionsRef, presentation]);
+  const openPhotos = useCallback((...args) => canAct() && actionsRef.current.onOpenPhotos?.(...args), [actionsRef, presentation]);
+  const removeMyPostTag = useCallback((...args) => canAct() && actionsRef.current.onRemoveMyPostTag?.(...args), [actionsRef, presentation]);
+  const deletePost = useCallback(async (postId) => {
+    if (!canAct()) return;
+    const actions = actionsRef.current;
+    const result = await actions.deleteOwnPost?.(postId);
+    if (result?.ok) {
+      actions.removeHistoryPost?.(postId);
+      actions.removeConcertPost?.(postId);
+    }
+    return result;
+  }, [actionsRef, presentation]);
+  const selfTagRemoved = useCallback(({ id, version, userId: removedUserId }) => {
+    receiptActions.updateHistoryPost?.(id, (post) => ({
+      ...post,
+      taggedPeople: (Array.isArray(post.taggedPeople) ? post.taggedPeople : []).filter((person) => person?.id !== removedUserId),
+      ...(Number.isSafeInteger(version) ? { version, editedAt: version } : {}),
+    }));
+  }, [receiptActions]);
+
+  if (log.news) {
+    return <NewsStoryCard story={log.news} post={log} accountId={accountId} onOpen={capabilities.openPost ? () => openPost(log) : undefined} onOpenArtist={capabilities.openArtist ? openArtist : undefined} onOpenProfile={capabilities.openProfile ? openProfile : undefined} onReport={capabilities.report ? report : undefined} onDelete={deletePost} onRequireAuth={requireAuth} />;
+  }
+  return (
+    <>
+    <TicketStub
+      log={log}
+      contextPresentation={presentation}
+      onOpen={capabilities.openShow ? openShow : undefined}
+      onOpenShow={capabilities.openShow ? openShow : undefined}
+      onOpenPost={capabilities.openPost ? openPost : undefined}
+      onRequireAuth={capabilities.requireAuth ? requireAuth : undefined}
+      onOpenProfile={capabilities.openProfile ? openProfile : undefined}
+      onOpenArtist={capabilities.openArtist ? openArtist : undefined}
+      onOpenArtistArchive={capabilities.openArtistArchive ? openArtistArchive : undefined}
+      onOpenVenue={capabilities.openVenue ? openVenue : undefined}
+      onReport={capabilities.report ? report : undefined}
+      onEdit={capabilities.edit ? edit : undefined}
+      onDelete={deletePost}
+      onRemoveMyPostTag={capabilities.removeMyPostTag ? removeMyPostTag : undefined}
+      onSelfTagRemoved={selfTagRemoved}
+      onOpenPhotos={capabilities.openPhotos ? openPhotos : undefined}
+      compactContent
+    />
+    {Platform.OS !== "web" && Platform.OS !== "ios" && accountId && accountId === log.userId && !!log.id && !log.attendanceTicket ? <>
+      <NativeDeleteRow testID={`own-post-delete-${log.id}`} enabled onDelete={requestSlideDelete}>
+        <View style={{ minHeight: 48, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, backgroundColor: colors.bgElev }}>
+          <Text style={{ color: colors.textDim, fontSize: 14 }}>Manage post</Text><Icon name="chevron-left" size={18} color={colors.textDim} />
+        </View>
+      </NativeDeleteRow>
+      {!!deleteFeedback && <Text accessibilityLiveRegion="polite" style={{ color: colors.danger, fontSize: 14, padding: 12 }}>{deleteFeedback}</Text>}
+    </> : null}
+    </>
+  );
+});
+
+// Public member profile: musical identity, live history, media, plans, and posts.
+export default function ProfileScreen({ userId, initialSection = null, asTab = false, ownerTools = null, children = null, onClose, onOpenShow, onOpenPost, onOpenProfile, onOpenArtist, onOpenArtistArchive, onOpenVenue, onManageProfile, onEditProfileDetails, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges, onRequireAuth }) {
+  const presentation = useIOSDetailPresentation();
+  const detailCanAct = presentation.canAct || presentation.current;
+  const sourceAvailable = useRef(true);
+  const canAct = useCallback(() => detailCanAct() && sourceAvailable.current, [detailCanAct]);
+  const { current, guard } = presentation;
+  // Captured handlers keep their admission, including native sheets and retries.
+  onClose = guard(onClose); onOpenShow = guard(onOpenShow); onOpenPost = guard(onOpenPost);
+  onOpenProfile = guard(onOpenProfile); onOpenArtist = guard(onOpenArtist); onOpenArtistArchive = guard(onOpenArtistArchive);
+  onOpenVenue = guard(onOpenVenue); onManageProfile = guard(onManageProfile); onMessage = guard(onMessage);
+  onReport = guard(onReport); onEditPost = guard(onEditPost); onOpenPhotos = guard(onOpenPhotos);
+  onRemoveMyPostTag = guard(onRemoveMyPostTag); onOpenFollowList = guard(onOpenFollowList);
+  onEditProfileDetails = guard(onEditProfileDetails);
+  onOpenBadges = guard(onOpenBadges); onRequireAuth = guard(onRequireAuth);
+  ownerTools = useMemo(() => ownerTools?.map(tool => ({ ...tool, onPress: guard(tool.onPress) })), [ownerTools, guard]);
+  const { height: windowHeight, width: windowWidth, fontScale } = useWindowDimensions();
+  const largeText = IS_IOS && fontScale > 1.25;
+  const webBannerMinHeight = windowWidth >= 900 ? Math.min(420, Math.max(352, windowHeight * 0.38)) : 320;
+  const appActive = useAppActive();
+  const nativePreview = useNativeTabPreview();
+  const { session, authReady, chatAuthEpoch, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, isMuted, muteUser, unmuteUser, userPoints, userAchievements, loadRewards, deleteOwnPost, removedIds = EMPTY_LIST, blockedIds = EMPTY_LIST, isPhotoRemoved } = useStore();
+  const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
+  const profileScopeRef = useRef(profileScope);
+  profileScopeRef.current = profileScope;
+  const profileScrollRef = useRef(null);
+  const sectionScope = `${profileScope}:${chatAuthEpoch}:${initialSection || ""}`;
+  const sectionScopeRef = useRef(sectionScope);
+  sectionScopeRef.current = sectionScope;
+  const initialNativeSection = initialSection === "concert-history" ? "shows" : "posts";
+  const [sectionSelection, setSectionSelection] = useState(null);
+  const nativeSection = sectionSelection?.scope === sectionScope ? sectionSelection.key : initialNativeSection;
+  const nativeSectionRef = useRef(nativeSection);
+  nativeSectionRef.current = nativeSection;
+  const concertFocusRef = useRef(null);
+  const concertLayoutRef = useRef(null);
+  const nativeShowsLayoutRef = useRef(null);
+  const nativeConcertLayoutRef = useRef(null);
+  const [concertLayout, setConcertLayout] = useState(null);
+  const publishNativeConcertLayout = useCallback(() => {
+    const section = nativeShowsLayoutRef.current, concert = nativeConcertLayoutRef.current;
+    if (!canAct() || section?.scope !== sectionScope || concert?.scope !== sectionScope || sectionScopeRef.current !== sectionScope || nativeSectionRef.current !== "shows") return;
+    const layout = { scope: profileScope, y: section.y + concert.y };
+    concertLayoutRef.current = layout;
+    setConcertLayout((current) => current?.scope === layout.scope && current.y === layout.y ? current : layout);
+  }, [canAct, profileScope, sectionScope]);
+  const postActionsRef = useRef({});
+  const [profileRevision, setProfileRevision] = useState(0);
+  const [profileState, setProfileState] = useState(() => ({ scope: profileScope, value: EMPTY_PROFILE_STATE }));
+  const profileView = scopedScreenValue(profileState, profileScope, EMPTY_PROFILE_STATE);
+  const confirmedUser = profileView.user?.id === userId ? profileView.user : null;
+  const directoryUser = userById(userId);
+  // loadUser publishes to the public directory before returning its receipt.
+  // A later quarantine removes that entry; an old local receipt cannot restore it.
+  const sourceRevoked = session?.id !== userId && (blockedIds.includes(userId) || (!!confirmedUser && !directoryUser));
+  sourceAvailable.current = !sourceRevoked && profileView.status !== "missing";
+  const history = useProfileHistory({ accountId: session?.id, targetId: userId, enabled: !!session && !!userId && profileView.status !== "missing" && !sourceRevoked });
+  const cachedUser = directoryUser || (session?.id === userId ? confirmedUser : null);
+  const privacy = { removedIds, blockedIds, isPhotoRemoved };
+  // The shared public-profile cache keeps only server-approved public profile
+  // picks and excludes consent fields and precise home data. The signed-in
+  // member can still see their complete server-authoritative session projection.
+  // Other people's cached projections remain quarantined until the server either
+  // confirms access or a transient failure labels them as stale.
+  const mayRenderProfile = session?.id === userId || profileView.status === "ready" || profileView.status === "stale";
+  const user = projectIOSDetailUser(profileView.status === "missing" || sourceRevoked || !mayRenderProfile
+    ? null
+    : session?.id === userId ? { ...cachedUser, ...session } : cachedUser, isPhotoRemoved);
+  const isSelf = !!user && session?.id === user.id;
+  const openPostById = guard(useContext(PostNavigationContext));
+  const accentColor = profileAccentColor(user?.accent);
+  // Back from the editor with different pins: read the profile again so the
+  // cards match. Runs only when the pin list itself changes.
+  const pinnedKey = isSelf && Array.isArray(session?.favoriteShows) ? session.favoriteShows.join(",") : "";
+  useEffect(() => {
+    if (!pinnedKey && !profileView.favoriteShows?.length) return;
+    if (pinnedKey !== (profileView.favoriteShows || []).map((show) => show.id).join(",")) setProfileRevision((value) => value + 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinnedKey]);
+  const concertScope = `${profileScope}:${chatAuthEpoch}:${user?.concertMapVisible !== false}`;
+  const concertScopeRef = useRef(concertScope);
+  concertScopeRef.current = concertScope;
+  const concertHistory = useConcertHistory({
+    accountId: session?.id || null, authEpoch: chatAuthEpoch, targetId: userId,
+    enabled: authReady && !!session && !!user, mapVisible: user?.concertMapVisible !== false,
+  });
+  // A successful empty receipt stays authoritative during refresh/failure.
+  // Falling back to feed rows here could resurrect removed/private media.
+  const historyOwnsLogs = history.denied || history.posts.length > 0 || history.status === "ready" || (IS_IOS && history.updatedAt != null);
+  const cachedLogs = user && !historyOwnsLogs ? logsByUser(user.id) : EMPTY_LIST;
+  const logs = useMemo(() => session && user
+    ? (historyOwnsLogs ? history.posts : cachedLogs).map(post => projectIOSDetailPost(post, privacy)).filter(Boolean)
+    : EMPTY_LIST, [session?.id, user?.id, historyOwnsLogs, history.posts, cachedLogs, removedIds, blockedIds, isPhotoRemoved, presentation.commandToken]);
+  const favoriteShows = useMemo(() => (profileView.favoriteShows || EMPTY_LIST)
+    .map(post => projectIOSDetailPost(post, privacy)).filter(Boolean), [profileView.favoriteShows, removedIds, blockedIds, isPhotoRemoved, presentation.commandToken]);
+  const reviews = useMemo(() => selectConcertReviews(logs), [logs]);
+  const timeline = useMemo(() => selectProfileTimeline(logs), [logs]);
+  // Prepared pages wait for primary identity/posts, never optional rewards or
+  // map widgets. Terminal primary errors/missing states are honest ready UI.
+  useNativeTabContentReady(!asTab || ["error", "missing"].includes(profileView.status)
+    || !!user && (logs.length > 0 || ["ready", "error"].includes(history.status)));
+  const going = user && isSelf ? goingFor(user.id) : EMPTY_LIST;
+  const calendarDay = localCalendarIso(Date.now());
+  const profileCalendar = useMemo(() => user ? memberCalendarModel({
+    today: new Date(),
+    going,
+    attendance: isSelf ? myAttendance : EMPTY_LIST,
+    posts: logs,
+  }) : EMPTY_CALENDAR, [calendarDay, going, isSelf, logs, myAttendance, user?.id]);
+  const planned = profileCalendar.upcoming;
+  // Keep the owner's private Went entries in their own history. Public review
+  // history comes from its bounded, permission-checked endpoint, not the feed.
+  const concertRows = useMemo(() => {
+    const visibleConcerts = concertHistory.concerts.map(post => projectIOSDetailPost(post, privacy)).filter(Boolean);
+    if (!isSelf) return visibleConcerts;
+    const privateShows = memberCalendarModel({ today: new Date(), attendance: myAttendance, posts: [] }).past
+      .filter((show) => show.attended);
+    const posted = new Set(visibleConcerts.map(concertNightKey));
+    return [...visibleConcerts, ...privateShows.filter((show) => !posted.has(concertNightKey(show))).map((show) => ({
+      ...show, id: `attendance:${show.calendarKey || show.key}`, postId: null,
+      lat: null, lng: null, country: null, countryCode: null, photo: null,
+    }))];
+  }, [calendarDay, concertHistory.concerts, isSelf, myAttendance, removedIds, blockedIds, isPhotoRemoved, presentation.commandToken]);
+  const openHistoryConcert = useCallback((concert) => {
+    if (!canAct()) return;
+    if (!concert.postId) { if (isSelf) onOpenShow?.(concert); return; }
+    const scope = concertScope;
+    void concertHistory.openConcert(concert, (post) => {
+      if (canAct() && concertScopeRef.current === scope) onOpenPost?.(post);
+    });
+  }, [canAct, concertScope, concertHistory.openConcert, isSelf, onOpenPost, onOpenShow]);
+  const gallery = useMemo(() => profileMediaItems(logs, { isSelf }), [isSelf, logs]);
+  const galleryPreview = useMemo(() => gallery.slice(0, 3), [gallery]);
+  const galleryViewerItems = useMemo(
+    () => gallery.map((item) => ({ ...item, by: user?.name, ownerId: user?.id })),
+    [gallery, user?.id, user?.name],
+  );
+  const profileMedia = useProfileMediaPresentation({ scope: `${profileScope}:${chatAuthEpoch}`, user, gallery: galleryViewerItems, onOpenPhotos });
+  const canEditPosts = typeof onEditPost === "function";
+  const canOpenArtist = typeof onOpenArtist === "function";
+  const canOpenArtistArchive = typeof onOpenArtistArchive === "function";
+  const canOpenPhotos = typeof onOpenPhotos === "function";
+  const canOpenPost = typeof onOpenPost === "function";
+  const canOpenProfile = typeof onOpenProfile === "function";
+  const canOpenShow = typeof onOpenShow === "function";
+  const canOpenVenue = typeof onOpenVenue === "function";
+  const canRemoveMyPostTag = typeof onRemoveMyPostTag === "function";
+  const canReportPosts = typeof onReport === "function";
+  const canRequireAuth = typeof onRequireAuth === "function";
+  const profilePostCapabilities = useMemo(() => ({
+    edit: canEditPosts,
+    openArtist: canOpenArtist,
+    openArtistArchive: canOpenArtistArchive,
+    openPhotos: canOpenPhotos,
+    openPost: canOpenPost,
+    openProfile: canOpenProfile,
+    openShow: canOpenShow,
+    openVenue: canOpenVenue,
+    removeMyPostTag: canRemoveMyPostTag,
+    report: canReportPosts,
+    requireAuth: canRequireAuth,
+  }), [canEditPosts, canOpenArtist, canOpenArtistArchive, canOpenPhotos, canOpenPost, canOpenProfile, canOpenShow, canOpenVenue, canRemoveMyPostTag, canReportPosts, canRequireAuth]);
+  postActionsRef.current = {
+    deleteOwnPost,
+    onEditPost,
+    onOpenArtist,
+    onOpenArtistArchive,
+    onOpenPhotos,
+    onOpenPost,
+    onOpenProfile,
+    onOpenShow,
+    onOpenVenue,
+    onRemoveMyPostTag,
+    onReport,
+    onRequireAuth,
+    removeHistoryPost: history.removePost,
+    removeConcertPost: concertHistory.removePost,
+    updateHistoryPost: history.updatePost,
+  };
+  useEffect(() => {
+    if (!presentation.active || !canAct()) return;
+    if (initialSection !== "concert-history") { concertFocusRef.current = null; return; }
+    if (IS_IOS && nativeSection !== "shows") return;
+    if (!session || !user || concertLayout?.scope !== profileScope) return;
+    if (history.status === "idle" || history.status === "loading" || history.status === "refreshing") return;
+    const focusKey = `${profileScope}:concert-history`;
+    if (concertFocusRef.current === focusKey) return;
+    // Gallery/upcoming rows can arrive above the map with the history response.
+    // Let their layout settle, then use the newest measured anchor, not the
+    // earlier loading-state position. Never keep snapping after user scrolling.
+    let secondFrame = null;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        const layout = concertLayoutRef.current;
+        if (!canAct() || profileScopeRef.current !== profileScope || layout?.scope !== profileScope) return;
+        concertFocusRef.current = focusKey;
+        profileScrollRef.current?.scrollTo?.({ y: Math.max(0, layout.y - 12), animated: false });
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      if (secondFrame !== null) cancelAnimationFrame(secondFrame);
+    };
+  }, [presentation.active, canAct, initialSection, nativeSection, profileScope, session?.id, user?.id, concertLayout, history.status]);
+  useEffect(() => {
+    if (!session || !userId || nativePreview || !presentation.active || !canAct()) return undefined;
+    const controller = new AbortController();
+    void loadRewards(userId, { signal: controller.signal });
+    return () => controller.abort();
+  }, [userId, session?.id, nativePreview, presentation.active, current]);
+  // Privacy retires commands, not an admitted authoritative read. Its denial
+  // must still replace the profile, without a quarantine/read/reload loop.
+  const loadedProfile = useRef(null);
+  // Always refresh from the server: fills real follower counts, and makes profiles
+  // we've never cached (a follower from a notification) open instead of blanking.
+  useEffect(() => {
+    if (!presentation.active || !detailCanAct()) return;
+    const requestScope = profileScope;
+    const readKey = `${profileScope}:${profileRevision}`;
+    if (loadedProfile.current === readKey) return;
+    const controller = new AbortController();
+    setProfileState(previous => previous.scope === requestScope ? previous : { scope: requestScope, value: EMPTY_PROFILE_STATE });
+    if (!userId) {
+      setProfileState({ scope: requestScope, value: { status: "missing", user: null, error: "" } });
+      return () => controller.abort();
+    }
+    loadUser(userId, { signal: controller.signal })
+      .then((outcome) => {
+        if (!current() || controller.signal.aborted || profileScopeRef.current !== requestScope) return;
+        loadedProfile.current = readKey;
+        setProfileState({
+          scope: requestScope,
+          value: {
+            status: outcome?.status || "error",
+            user: outcome?.user || null,
+            error: typeof outcome?.error === "string"
+              ? outcome.error
+              : "This profile could not be loaded. Check your connection and try again.",
+            favoriteShows: Array.isArray(outcome?.favoriteShows) ? outcome.favoriteShows : EMPTY_LIST,
+          },
+        });
+      })
+      .catch((error) => {
+        if (current() && !controller.signal.aborted && error?.name !== "AbortError" && profileScopeRef.current === requestScope) {
+          setProfileState({ scope: requestScope, value: { status: "error", user: null, error: "This profile could not be loaded. Check your connection and try again." } });
+        }
+      });
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileScope, profileRevision, userId, presentation.active, current]);
+  const profileRefreshScope = refreshScope(session?.id, "profile", userId);
+  const { refresh: refreshProfile, refreshing: profileRefreshing } = useScopedRefresh({
+    scope: profileRefreshScope,
+    enabled: !!userId && !nativePreview && presentation.active,
+    task: async ({ signal }) => {
+      if (!canAct()) return { stale: true };
+      const requestScope = profileScope;
+      if (IS_IOS) profileMedia.retryImages(signal);
+      const [outcome, historyOutcome, rewards, concertsOutcome] = await Promise.all([
+        loadUser(userId, { signal }),
+        session ? history.retry() : null,
+        session && !nativePreview ? loadRewards(userId, { signal }) : null,
+        session ? concertHistory.refresh() : null,
+      ]);
+      if (!current() || signal.aborted || profileScopeRef.current !== requestScope) return { stale: true };
+      setProfileState({
+        scope: requestScope,
+        value: {
+          status: outcome?.status || "error",
+          user: outcome?.user || null,
+          error: typeof outcome?.error === "string"
+            ? outcome.error
+            : outcome?.error?.message || "",
+          favoriteShows: Array.isArray(outcome?.favoriteShows) ? outcome.favoriteShows : EMPTY_LIST,
+        },
+      });
+      if (outcome?.status === "error") {
+        throw outcome?.error instanceof Error
+          ? outcome.error
+          : new Error(outcome?.error || "This profile could not be refreshed.");
+      }
+      return { outcome, historyOutcome, rewards, concertsOutcome };
+    },
+  });
+  if (!user) {
+    const missing = sourceRevoked || profileView.status === "missing";
+    const failed = profileView.status === "error";
+    return (
+      <View style={styles.wrap}>
+        <View style={styles.topbar}>
+          {asTab ? <View style={{ width: 40 }} /> : (
+            <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
+              <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
+            </Pressable>
+          )}
+          <Text style={styles.topTitle}>{missing ? "Unavailable" : "Profile"}</Text>
+          <View style={{ width: 40 }} />
+        </View>
+        <View style={styles.missingBox}>
+          {missing ? (
+            <>
+              <Icon name="you" size={30} color={colors.textFaint} />
+              <Text style={styles.missingTitle}>This account isn't available</Text>
+              <Text style={styles.missingSub}>It may be restricted, deleted, or no longer visible to you.</Text>
+            </>
+          ) : failed ? (
+            <>
+              <Text style={styles.missingTitle}>Profile could not be refreshed</Text>
+              <Text style={styles.missingSub}>{profileView.error}</Text>
+              <Pressable style={styles.profileRetry} onPress={guard(() => setProfileRevision((value) => value + 1))} accessibilityRole="button" accessibilityLabel="Retry loading profile">
+                <Text style={styles.profileRetryText}>Try again</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <ActivityIndicator size="small" color={colors.amber} />
+              <Text style={styles.missingSub}>Checking profile access...</Text>
+            </>
+          )}
+        </View>
+      </View>
+    );
+  }
+
+  const historyLoading = history.status === "idle" || history.status === "loading" || history.status === "refreshing";
+  // Only a current, complete receipt can establish absence. Keep real cached
+  // rows (including independent Going/attendance) visible during recovery.
+  const historyConfirmed = history.status === "ready" && history.complete;
+  const historyCount = (value) => IS_IOS && value === 0 && !historyConfirmed
+    ? "Not confirmed"
+    : `${value}${(IS_IOS ? historyConfirmed : history.complete) ? "" : "+"}`;
+  const historyHeadingCount = (value) => IS_IOS && value === 0 && !historyConfirmed
+    ? "" : ` · ${historyCount(value)}`;
+  // Shared attendance: shows both accounts intentionally logged, never a claim
+  // that the people met or were physically near each other at the venue.
+  const shared = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
+  const crossed = { ...shared, shows: shared.shows.map(post => projectIOSDetailPost(post, privacy)).filter(Boolean) };
+  const match = !isSelf && session ? tasteMatch(session, user) : null;
+
+  // Media gallery, every public photo or clip this person attached, newest first.
+  // On someone else's profile we only show ones they marked public; you always
+  // see all of your own. Stable descriptors keep posters, edits, and alt text.
+  const following = isFollowing(user.id);
+  const reportProfile = () => onReport?.({
+    targetType: "user", targetId: user.id, ownerId: user.id, targetName: "profile",
+    title: `${user.name} (@${user.handle})`,
+    summary: "Report this account and its public profile to the moderation team.",
+  });
+  const profileMenuActions = isSelf ? (ownerTools || []).map((tool) => ({
+    ...tool, label: tool.label + (tool.badge > 0 ? ` (${tool.badge} new)` : ""),
+  })) : [
+    { key: isMuted(user.id) ? "unmute" : "mute", label: isMuted(user.id) ? "Unmute" : "Mute", onPress: isMuted(user.id) ? () => canAct() && unmuteUser(user.id) : () => canAct() && muteUser(user.id) },
+    { key: isBlocked(user.id) ? "unblock" : "block", label: isBlocked(user.id) ? "Unblock" : "Block", destructive: !isBlocked(user.id), onPress: isBlocked(user.id) ? () => canAct() && unblockUser(user.id) : () => canAct() && blockUser(user.id) },
+    ...(onReport ? [{ key: "report", label: "Report profile", destructive: true, onPress: reportProfile }] : []),
+  ];
+  const ownerUnread = isSelf ? (ownerTools || []).reduce((total, tool) => total + (tool.badge || 0), 0) : 0;
+  const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? user.verified ? "VERIFIED ARTIST" : "ARTIST" : "FAN";
+  const profileHeader = (<>
+      <View testID="profile-header" style={styles.topbar}>
+        {asTab ? (
+          <NativeLargeTitle containerStyle={{ flex: 1, minWidth: 0 }}><Text style={[styles.topTitle, styles.topTitleTab, { flex: 0 }]} accessibilityRole="header">{IS_IOS ? "You" : `@${user.handle}`}</Text></NativeLargeTitle>
+        ) : (
+          <>
+            <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
+              <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
+            </Pressable>
+            <PageTitle label="Profile" style={{ flex: 1 }}><Text style={styles.topTitle}>@{user.handle}</Text></PageTitle>
+          </>
+        )}
+        {IS_IOS && session && (isSelf ? asTab && ownerTools?.length : true) ? (
+          <ProfileActionMenu actions={profileMenuActions} scope={profileScope} label={isSelf ? "Your account" : "Profile actions"} unread={ownerUnread} />
+        ) : asTab && isSelf && ownerTools?.length ? null : session && !isSelf && onReport ? (
+          <Pressable
+            style={styles.profileReportBtn}
+            onPress={() => onReport({
+              targetType: "user",
+              targetId: user.id,
+              ownerId: user.id,
+              targetName: "profile",
+              title: `${user.name} (@${user.handle})`,
+              summary: "Report this account and its public profile to the moderation team.",
+            })}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Report ${user.name}'s profile`}
+          >
+            <Icon name="flag" size={16} color={colors.danger} />
+          </Pressable>
+        ) : <View style={{ width: 40 }} />}
+      </View>
+      {!IS_IOS && asTab && isSelf && ownerTools?.length ? (
+        // Your own tools, each with its name under the icon, in one row that
+        // fits a 320px phone.
+        <View style={styles.ownerTools}>
+          {ownerTools.map((tool) => (
+            <Pressable
+              key={tool.key}
+              style={({ pressed }) => [styles.ownerTool, pressed && styles.ownerToolPressed]}
+              onPress={tool.onPress}
+              accessibilityRole="button"
+              accessibilityLabel={tool.label + (tool.badge > 0 ? `, ${tool.badge} new` : "")}
+            >
+              <View>
+                <Icon name={tool.icon} size={18} color={colors.text} />
+                {tool.badge > 0 && (
+                  <View style={styles.ownerToolBadge}>
+                    <Text style={styles.ownerToolBadgeText}>{tool.badge > 99 ? "99+" : tool.badge}</Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.ownerToolLabel} numberOfLines={1}>{tool.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+
+  </>);
+  return (
+    <NativeLargeTitleProvider reserveSpace><View style={styles.wrap}>
+      {!asTab ? profileHeader : null}
+
+      <ProfileMediaRetryBoundary value={profileMedia.retryValue}>
+      <VinylRefreshBoundary
+        refreshing={profileRefreshing}
+        onRefresh={guard(refreshProfile)}
+        accessibilityLabel={`Refresh ${user.name || "member"} profile`}
+        testID="profile-refresh"
+      >
+      <ScrollView ref={profileScrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} contentInsetAdjustmentBehavior={IS_IOS ? "automatic" : undefined}>
+        {asTab ? profileHeader : null}
+        {profileView.status === "stale" && (
+          <View style={styles.staleProfile} accessibilityRole="alert" accessibilityLiveRegion="polite">
+            <Text style={styles.staleProfileText}>{profileView.error}</Text>
+            <Pressable style={styles.staleProfileRetry} onPress={guard(() => setProfileRevision((value) => value + 1))} accessibilityRole="button" accessibilityLabel="Retry refreshing profile">
+              <Text style={styles.staleProfileRetryText}>Refresh</Text>
+            </Pressable>
+          </View>
+        )}
+        {/* banner + avatar */}
+        <View testID="profile-banner" style={[styles.banner, Platform.OS === "web" && { minHeight: user.banner ? webBannerMinHeight : 0 }]}>
+          {IS_IOS && user.banner ? <ProfileBannerCover uri={user.banner} name={user.name} onOpen={canOpenPhotos ? profileMedia.openBanner : undefined} largeText={largeText} /> : user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={[styles.bannerFallback, accentColor && { backgroundColor: accentColor }, IS_IOS && styles.nativeBannerArtwork, IS_IOS && styles.nativeBannerCompact]} />}
+          {!IS_IOS || !user.banner ? <View testID="profile-banner-fade" pointerEvents="none" style={[styles.bannerShade, IS_IOS && !user.banner && styles.nativeBannerCompact, Platform.OS === "web" && { backgroundColor: "transparent", backgroundImage: `linear-gradient(180deg, ${colors.bg}00 0px, ${colors.bg}30 32px, ${colors.bg}CC 104px, ${colors.bg}F2 220px, ${colors.bg} 340px)` }]} /> : null}
+          {accentColor && Platform.OS !== "web" && !IS_IOS ? <View style={[styles.accentStripe, { backgroundColor: accentColor }]} /> : null}
+        <View pointerEvents={IS_IOS ? "box-none" : undefined} style={[styles.identityWrap, !user.banner && styles.identityWrapCompact, IS_IOS && styles.nativeIdentityWrap, IS_IOS && !!user.banner && hierarchyStyles.nativeIdentityWithBanner, IS_IOS && !user.banner && styles.nativeIdentityCompact]}>
+        <View testID="profile-identity-tile" pointerEvents={IS_IOS ? "box-none" : undefined} style={[styles.head, Platform.OS === "web" && styles.integratedHead]}>
+          <ProfileIdentityRow>
+          <View testID="profile-identity-avatar" style={styles.avatarWrap}><Avatar user={user} size={96} preferOriginal priority="high" fallbackTextColor={IS_IOS ? colors.text : undefined} /></View>
+          {IS_IOS && isSelf ? <Pressable style={hierarchyStyles.nativeManageButton} onPress={onManageProfile} accessibilityRole="button" accessibilityLabel="Manage profile">
+            <Icon name="edit" size={15} color={colors.amber} /><Text style={styles.editTxt}>Manage profile</Text>
+          </Pressable> : null}
+          </ProfileIdentityRow>
+          <View style={[styles.nameRow, Platform.OS === "web" && styles.integratedNameRow]}>
+            <Text testID="profile-identity-name" style={[styles.name, Platform.OS === "web" && styles.integratedName]}>{user.name}</Text>
+            <BadgeRow badges={displayedProfileBadges(userBadges(user), user.profileBadges)} size={20} />
+          </View>
+          <Text testID="profile-identity-handle" style={[styles.handle, Platform.OS === "web" && styles.integratedHandle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}{user.pronouns ? <Text style={styles.pronouns}>{` · ${user.pronouns}`}</Text> : null}</Text>
+          <View style={styles.roleBadge}><Text style={styles.roleTxt}>{roleLabel}</Text></View>
+          {!!user.bio && (
+            <ExpandableText
+              text={user.bio}
+              style={styles.bio}
+              containerStyle={styles.bioPreview}
+              toggleStyle={styles.bioToggle}
+              moreAccessibilityLabel={`Read the full ${user.name} biography`}
+              lessAccessibilityLabel={`Show a shorter ${user.name} biography`}
+            />
+          )}
+
+          {isSelf ? (!IS_IOS ? (
+            <Pressable
+              style={styles.editBtn}
+              onPress={onManageProfile}
+              accessibilityRole="button"
+              accessibilityLabel="Manage profile"
+            >
+              <Icon name="edit" size={15} color={colors.amber} />
+              <Text style={styles.editTxt}>Manage profile</Text>
+            </Pressable>
+          ) : null) : session && isBlocked(user.id) ? (
+            <View style={styles.blockedBox}>
+              <Text style={styles.blockedTxt}>You've blocked this account. They can't message you, follow you, or see your posts.</Text>
+              <Pressable style={styles.unblockBtn} onPress={() => canAct() && unblockUser(user.id)} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `Unblock ${user.name}` } : {})}>
+                <Text style={styles.unblockTxt}>Unblock</Text>
+              </Pressable>
+            </View>
+          ) : (
+            session && (
+              <View style={[styles.actionRow, largeText && styles.nativeActionsLarge]}>
+                <Pressable style={[styles.followBtn, following && styles.followingBtn]} onPress={() => canAct() && (following ? unfollow(user.id) : follow(user.id))} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `${following ? "Unfollow" : "Follow"} ${user.name}` } : {})}>
+                  {!following && <Icon name="user-plus" size={15} color="#1A1206" />}
+                  <Text style={[styles.followTxt, following && styles.followingTxt]}>{following ? "Following" : "Follow"}</Text>
+                </Pressable>
+                <Pressable style={styles.msgBtn} onPress={() => onMessage?.(user.id)} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `Message ${user.name}` } : {})}>
+                  <Icon name="comment" size={15} color={colors.amber} />
+                  <Text style={styles.msgTxt}>Message</Text>
+                </Pressable>
+                {!IS_IOS ? <>
+                <Pressable style={styles.muteBtn} onPress={() => canAct() && (isMuted(user.id) ? unmuteUser(user.id) : muteUser(user.id))} accessibilityRole="button" accessibilityLabel={`${isMuted(user.id) ? "Unmute" : "Mute"} ${user.name}`}>
+                  <Text style={styles.muteTxt}>{isMuted(user.id) ? "Unmute" : "Mute"}</Text>
+                </Pressable>
+                <Pressable style={styles.blockBtn} onPress={() => canAct() && blockUser(user.id)} hitSlop={6} accessibilityLabel="Block user">
+                  <Icon name="lock" size={15} color={colors.danger} />
+                </Pressable>
+                </> : null}
+              </View>
+            )
+          )}
+        </View>
+
+        </View>
+        </View>
+
+        {isSelf && <ProfileGuidance key={session.id} user={session} onEdit={onEditProfileDetails} guard={guard} />}
+
+        {/* The owner's private block (the You tab passes concert memories here). */}
+        {!IS_IOS && isSelf ? children : null}
+
+        <View style={[styles.statsRow, largeText && styles.nativeStatsLarge]}>
+          <Stat largeText={largeText} value={followerCount(user.id)} label="Followers" onPress={() => onOpenFollowList?.(user.id, "followers")} />
+          <Stat largeText={largeText} value={followingCount(user.id)} label={IS_IOS ? "Following" : "People following"} onPress={() => onOpenFollowList?.(user.id, "following")} />
+          <Stat largeText={largeText} value={isSelf ? new Set((session?.favoriteArtists || []).map((name) => String(name).trim().toLowerCase())).size : user.artistFollowingCount ?? (user.favoriteArtists || []).length} label={IS_IOS ? "Artists" : "Artists followed"} onPress={() => onOpenFollowList?.(user.id, "artists")} />
+        </View>
+        {!IS_IOS ? <FavoriteShows shows={favoriteShows} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} largeText={largeText} /> : null}
+        {!session ? (
+          <AccountSnapshotPrompt
+            title={`Meet ${user.name} on Mshpit`}
+            body="Sign in to see their concert history, photos, and posts, or connect over the music you share."
+            onRequireAuth={onRequireAuth}
+            style={{ marginHorizontal: 16, marginTop: 16 }}
+          />
+        ) : <>
+        <View style={[styles.statsRow, largeText && styles.nativeStatsLarge]}>
+          <Stat largeText={largeText} value={historyCount(reviews.length)} label="Reviews" />
+          <Stat largeText={largeText} value={IS_IOS ? historyCount(planned.length) : planned.length} label="Upcoming" />
+        </View>
+
+        {/* Rewards: points + badges earned, tap for the full legend. */}
+        {!IS_IOS ? <Pressable style={styles.rewards} onPress={() => onOpenBadges?.(user.id)}>
+          <View style={styles.rewardsIcon}><Icon name="star" size={16} color={colors.amber} filled /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rewardsTitle}>{userPoints(user).toLocaleString()} points · {userAchievements(user).length}/{ACHIEVEMENTS.length} badges</Text>
+            <Text style={styles.rewardsSub}>{isSelf ? "See what you can earn next" : "See their badges"}</Text>
+          </View>
+          <Icon name="chevron-right" size={16} color={colors.textDim} />
+        </Pressable> : null}
+
+        {/* Shared attendance, the concert-overlap tracker. */}
+        {!isSelf && session && (crossed.shows.length > 0 || crossed.artists.length > 0) && (
+          <Pressable
+            style={styles.crossed}
+            onPress={crossed.shows.length ? () => onOpenShow?.(crossed.shows[0]) : undefined}
+          >
+            <View style={styles.crossedIcon}><Icon name="ticket" size={17} color={colors.magenta} /></View>
+            {crossed.shows.length > 0 ? (
+              <View style={{ flex: 1 }}>
+                <Text style={styles.crossedTitle}>
+                  You both logged <Text style={styles.crossedNum}>{crossed.shows.length}</Text> {crossed.shows.length === 1 ? "show" : "shows"}
+                </Text>
+                <Text style={styles.crossedSub} numberOfLines={largeText ? undefined : 1}>
+                  {crossed.shows.slice(0, 3).map((s) => s.artist).join(" · ")}{crossed.shows.length > 3 ? " …" : ""}
+                </Text>
+              </View>
+            ) : (
+              <View style={{ flex: 1 }}>
+                <Text style={styles.crossedTitle}>
+                  You've both seen <Text style={styles.crossedNum}>{crossed.artists.length}</Text> {crossed.artists.length === 1 ? "artist" : "artists"} live
+                </Text>
+                <Text style={styles.crossedSub} numberOfLines={largeText ? undefined : 1}>{crossed.artists.slice(0, 3).join(" · ")}</Text>
+              </View>
+            )}
+            {crossed.shows.length > 0 && <Icon name="chevron-right" size={16} color={colors.textDim} />}
+          </Pressable>
+        )}
+
+        {match && (
+          <View style={styles.tasteMatch}>
+            <View style={styles.tasteMatchHead}>
+              <View style={styles.tasteMatchIcon}><Icon name="music" size={16} color={colors.cool} /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.tasteMatchEyebrow}>Taste match</Text>
+                <Text style={styles.tasteMatchSummary}>{match.summary}</Text>
+              </View>
+            </View>
+            <View style={styles.tasteMatchChips} accessible={false}>
+              {match.sharedArtists.map((artist) => (
+                <Pressable key={`artist:${artist}`} style={styles.tasteMatchArtistChip} onPress={() => onOpenArtist?.(artist)} accessibilityRole="button" accessibilityLabel={`Open ${artist}`}>
+                  <Icon name="music" size={11} color={colors.amber} />
+                  <Text style={styles.tasteMatchArtistText}>{artist}</Text>
+                </Pressable>
+              ))}
+              {match.sharedGenres.map((genre) => (
+                <View key={`genre:${genre}`} style={styles.tasteMatchGenreChip}>
+                  <Text style={styles.tasteMatchGenreText}>{genre}</Text>
+                </View>
+              ))}
+            </View>
+            <Text style={styles.tasteMatchBasis}>Based only on artists and genres you both chose to share.</Text>
+          </View>
+        )}
+
+
+        <ProfileSectionTabs active={nativeSection} largeText={largeText}
+          onSelect={(key) => { if (canAct() && sectionScopeRef.current === sectionScope) setSectionSelection({ scope: sectionScope, key }); }} />
+        <ProfileSection section="gallery" active={nativeSection}>
+        {/* Media gallery, using the same resilient descriptor pipeline as You. */}
+        {IS_IOS ? <ProfileGallery items={galleryViewerItems} history={history} isSelf={isSelf} name={user.name}
+          onOpen={canOpenPhotos ? profileMedia.openGallery : undefined} onRefresh={guard(refreshProfile)} refreshing={profileRefreshing} request={profileMedia.request} /> : gallery.length > 0 && (
+          <>
+            <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>{IS_IOS ? "Gallery" : "Media"} · {historyCount(gallery.length)}</Text>
+            <View style={styles.gallery}>
+              {galleryPreview.map((g, i) => (
+                <ProfileMediaTile key={g.id || `${g.postId || "post"}:${g.uri}:${i}`} item={g} index={i} viewerItems={galleryViewerItems} onOpenPhotos={onOpenPhotos} />
+              ))}
+            </View>
+            {gallery.length > galleryPreview.length && onOpenPhotos ? (
+              <Pressable
+                style={styles.gallerySeeAll}
+                onPress={() => onOpenPhotos(galleryViewerItems, 0, gallery[0]?.postId || null)}
+                accessibilityRole="button"
+                accessibilityLabel={`See all ${gallery.length} media items from ${user.name}`}
+              >
+                <Text style={styles.gallerySeeAllText}>See all media</Text>
+                <Icon name="chevron-right" size={15} color={colors.amber} />
+              </Pressable>
+            ) : null}
+          </>
+        )}
+
+
+
+        </ProfileSection>
+        <ProfileSection section="shows" active={nativeSection} onLayout={(event) => {
+          if (!canAct() || nativeSectionRef.current !== "shows" || sectionScopeRef.current !== sectionScope) return;
+          nativeShowsLayoutRef.current = { scope: sectionScope, y: event.nativeEvent.layout.y };
+          publishNativeConcertLayout();
+        }}>
+        {IS_IOS ? <FavoriteShows shows={favoriteShows} accent={accentColor} isSelf={isSelf} onOpen={openPostById || undefined} onManage={onManageProfile} largeText={largeText} /> : null}
+        {/* One calendar projection powers both this summary and Calendar. A
+            dated post appears here immediately; plain statuses remain posts. */}
+        <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>Upcoming shows{IS_IOS ? historyHeadingCount(planned.length) : ` · ${planned.length}`}</Text>
+        {planned.length === 0 && (!IS_IOS || historyConfirmed) && <Text style={styles.empty}>No upcoming shows yet.</Text>}
+        {planned.map((p) => {
+          // Calendar rows carry a normalized day, not a verified doors time.
+          const target = IS_IOS ? null : showDateMs(p.date);
+          return (
+            <Pressable key={p.calendarKey || p.key || p.postId} style={[styles.showRow, largeText && styles.nativeShowLarge]} onPress={() => onOpenShow?.(p)} {...(IS_IOS ? { accessibilityRole: "button", accessibilityLabel: `${p.artist}, ${p.venue}, ${formatDate(p.date, p.date)}` } : {})}>
+              <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>
+              <View style={largeText ? { alignSelf: "stretch" } : { flex: 1 }}>
+                <Text style={styles.showArtist}>{p.artist}</Text>
+                <Text style={styles.showVenue}>{p.venue} · {formatDate(p.date, p.date)}</Text>
+              </View>
+              {p.going ? <View style={styles.showSource}><Text style={styles.showSourceTxt}>GOING</Text></View>
+                : p.logged ? <View style={styles.showSource}><Text style={styles.showSourceTxt}>LOGGED</Text></View>
+                  : p.posted ? <View style={styles.showSource}><Text style={styles.showSourceTxt}>POSTED</Text></View> : null}
+              {target != null && target - Date.now() > -86400000 && (
+                <View style={styles.countdownBox}>
+                  <Countdown target={target} active={appActive && presentation.active} style={styles.countdownT} />
+                  {target - Date.now() > 0 && <Text style={styles.countdownLabel}>until doors</Text>}
+                </View>
+              )}
+            </Pressable>
+          );
+        })}
+
+        <View testID="profile-concert-anchor" onLayout={(event) => {
+          if (IS_IOS) {
+            if (!canAct() || nativeSectionRef.current !== "shows" || sectionScopeRef.current !== sectionScope) return;
+            nativeConcertLayoutRef.current = { scope: sectionScope, y: event.nativeEvent.layout.y };
+            publishNativeConcertLayout();
+          } else {
+            const y = event.nativeEvent.layout.y;
+            concertLayoutRef.current = { scope: profileScope, y };
+            setConcertLayout((current) => current?.scope === profileScope && current.y === y ? current : { scope: profileScope, y });
+          }
+        }}>
+        <ConcertHistory
+            key={concertScope}
+            concerts={concertRows}
+            status={concertHistory.status}
+            complete={concertHistory.complete}
+            loadingMore={concertHistory.loadingMore}
+            error={concertHistory.error}
+            onRetry={concertHistory.retry}
+            onLoadMore={concertHistory.loadMore}
+            onOpenConcert={openHistoryConcert}
+            openingId={concertHistory.openingId}
+            openingError={concertHistory.openingError}
+            mapVisible={user.concertMapVisible !== false && concertHistory.mapVisible}
+        />
+        </View>
+
+        {/* Rewards: points + badges earned, tap for the full legend. */}
+        {IS_IOS ? <Pressable style={styles.rewards} onPress={() => onOpenBadges?.(user.id)}>
+          <View style={styles.rewardsIcon}><Icon name="star" size={16} color={colors.amber} filled /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rewardsTitle}>{userPoints(user).toLocaleString()} points · {userAchievements(user).length}/{ACHIEVEMENTS.length} badges</Text>
+            <Text style={styles.rewardsSub}>{isSelf ? "See what you can earn next" : "See their badges"}</Text>
+          </View>
+          <Icon name="chevron-right" size={16} color={colors.textDim} />
+        </Pressable> : null}
+
+        {IS_IOS && isSelf ? children : null}
+        </ProfileSection>
+        <ProfileSection section="posts" active={nativeSection}>
+        <View style={styles.postsSection}>
+        {/* their posts, the same feed card as home, so a profile reads like a
+            wall of everything this person has posted (Facebook/Letterboxd style) */}
+        <Text style={styles.sectionLabel} {...(IS_IOS ? { accessibilityRole: "header" } : {})}>{isSelf ? "Your posts" : "Posts"}{historyHeadingCount(logs.length)}</Text>
+        {logs.length === 0 && (IS_IOS ? historyConfirmed : !historyLoading) && (
+          <Text style={styles.empty}>{isSelf ? "You haven't posted yet. Tap “Make a post” to log a show or share an update." : "No posts yet."}</Text>
+        )}
+        {!logs.length && historyLoading && (
+          <View style={styles.historyState} accessibilityLiveRegion="polite">
+            <ActivityIndicator size="small" color={colors.amber} />
+            <Text style={styles.historyStateText}>Loading posts...</Text>
+          </View>
+        )}
+        <View style={styles.postsWrap}>
+          {timeline.map((l) => (
+            <ProfileTicketRow
+              key={l.id}
+              log={l}
+              accountId={session?.id || null}
+              actionsRef={postActionsRef}
+              capabilities={profilePostCapabilities}
+            />
+          ))}
+        </View>
+        {!!history.error && (
+          <View style={styles.historyError} accessibilityLiveRegion="assertive">
+            <Text style={styles.historyErrorText}>{history.posts.length ? "Earlier posts could not be loaded." : "Posts could not be loaded."}</Text>
+            <Pressable style={styles.historyButton} onPress={history.posts.length && history.nextCursor ? history.loadMore : history.retry} accessibilityRole="button" accessibilityLabel="Retry loading profile posts">
+              <Text style={styles.historyButtonText}>Try again</Text>
+            </Pressable>
+          </View>
+        )}
+        {!!history.nextCursor && !history.error && (
+          <Pressable style={styles.historyButton} onPress={history.loadMore} disabled={history.loadingMore} accessibilityRole="button" accessibilityLabel="Load earlier profile posts" accessibilityState={{ disabled: history.loadingMore }}>
+            {history.loadingMore && <ActivityIndicator size="small" color={colors.amber} />}
+            <Text style={styles.historyButtonText}>{history.loadingMore ? "Loading earlier posts..." : "Load earlier posts"}</Text>
+          </Pressable>
+        )}
+        </View>
+        </ProfileSection>
+        </>}
+
+      </ScrollView>
+      </VinylRefreshBoundary>
+      </ProfileMediaRetryBoundary>
+    </View></NativeLargeTitleProvider>
+  );
+}
+
+const baseStyles = StyleSheet.create({
+  wrap: { flex: 1, backgroundColor: colors.bg },
+  missingBox: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 40 },
+  missingTitle: { color: colors.text, fontSize: 17, fontWeight: "800", marginTop: 6 },
+  missingSub: { color: colors.textDim, fontSize: 14, textAlign: "center", lineHeight: 20 },
+  profileRetry: { minHeight: 44, justifyContent: "center", marginTop: 10, paddingHorizontal: 18, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
+  profileRetryText: { color: colors.amber, fontSize: 13, fontWeight: "800" },
+  historyState: { minHeight: 56, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
+  historyStateText: { color: colors.textDim, fontSize: 12 },
+  historyError: { alignItems: "center", gap: 8, marginHorizontal: 16, marginTop: 12, padding: 12, borderWidth: 1, borderColor: colors.danger, borderRadius: radius.md },
+  historyErrorText: { color: colors.textDim, fontSize: 12, textAlign: "center" },
+  historyButton: { alignSelf: "center", minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 12, paddingHorizontal: 18, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill },
+  historyButtonText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
+  topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 12, paddingBottom: 8 },
+  backBtn: { width: 40 },
+  backCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  topTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  profileReportBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  topTitleTab: { flex: 1, minWidth: 0, fontSize: 16, paddingLeft: 4 },
+  ownerTools: { flexDirection: "row", gap: 8, paddingHorizontal: 12, paddingBottom: 10 },
+  ownerTool: { flex: 1, minWidth: 0, minHeight: 56, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", gap: 4, paddingVertical: 8, paddingHorizontal: 4 },
+  ownerToolPressed: { opacity: 0.8 },
+  ownerToolLabel: { color: colors.text, fontSize: 12, lineHeight: 16, fontWeight: "700" },
+  ownerToolBadge: { position: "absolute", top: -7, right: -13, minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 4, backgroundColor: colors.magenta, alignItems: "center", justifyContent: "center" },
+  ownerToolBadgeText: { color: "#FFFFFF", fontSize: 12, lineHeight: 14, fontWeight: "800" },
+  content: { paddingBottom: 48 },
+  staleProfile: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10, marginHorizontal: 16, marginBottom: 10, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },
+  staleProfileText: { flex: 1, color: colors.textDim, fontSize: 12, lineHeight: 17 },
+  staleProfileRetry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 12 },
+  staleProfileRetryText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
+  banner: { overflow: "hidden", backgroundColor: colors.surfaceAlt },
+  bannerFallback: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.surfaceAlt },
+  bannerShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(11,14,22,0.25)" },
+  accentStripe: { position: "absolute", left: 0, right: 0, bottom: 0, height: 5 },
+  pronouns: { color: colors.textDim, fontWeight: "600" },
+  favorites: { marginHorizontal: 16, marginTop: 16, gap: 10 },
+  favoritesTitle: { color: colors.text, fontSize: 16, fontWeight: "900" },
+  favoriteGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  favoriteCard: { flexGrow: 1, flexBasis: "46%", minWidth: 140, maxWidth: 360, flexDirection: "row", alignItems: "center", gap: 10, padding: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  favoritePhoto: { width: 56, height: 56, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt, overflow: "hidden" },
+  favoritePhotoEmpty: { alignItems: "center", justifyContent: "center", backgroundColor: colors.amberStrong },
+  favoriteCopy: { flex: 1, minWidth: 0, gap: 1 },
+  favoriteArtist: { color: colors.text, fontSize: 14, fontWeight: "900" },
+  favoriteMeta: { color: colors.textDim, fontSize: 12 },
+  favoriteScore: { color: colors.amber, fontFamily: mono, fontSize: 12.5, fontWeight: "900", marginTop: 2 },
+  favoriteEmpty: { marginHorizontal: 16, marginTop: 16, flexDirection: "row", alignItems: "center", gap: 10, padding: 12, borderRadius: radius.md, borderWidth: 1, borderStyle: "dashed", borderColor: colors.line },
+  favoriteEmptyText: { flex: 1, minWidth: 0, color: colors.textDim, fontSize: 13, lineHeight: 18 },
+  identityWrap: { width: "100%", paddingHorizontal: 24, paddingVertical: 24, alignItems: "center", ...Platform.select({ web: { paddingHorizontal: 16 } }) },
+  identityWrapCompact: { paddingHorizontal: 16, paddingVertical: 16 },
+  integratedHead: { alignItems: "center", paddingHorizontal: 16, paddingVertical: 0, borderWidth: 0, borderRadius: 0, backgroundColor: "transparent", boxShadow: "none" },
+  integratedAvatar: { borderWidth: 3, borderColor: colors.bg, borderRadius: 50 },
+  integratedNameRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10 },
+  integratedName: { color: colors.text, fontSize: 23, fontWeight: "900" },
+  integratedHandle: { color: colors.textDim, fontSize: 13, marginTop: 2 },
+  head: { width: "100%", maxWidth: 620, alignItems: "center", padding: 16, borderRadius: 24, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, ...Platform.select({ web: { boxShadow: "0 8px 24px rgba(0,0,0,0.10)" }, default: { shadowColor: "#000000", shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.08, shadowRadius: 14, elevation: 3 } }) },
+  avatarWrap: { borderWidth: 3, borderColor: colors.surface, borderRadius: 50 },
+  nameRow: { width: "100%", minWidth: 0, flexDirection: "row", alignItems: "center", justifyContent: "center", flexWrap: "wrap", gap: 6, marginTop: 8 },
+  name: { maxWidth: "100%", flexShrink: 1, textAlign: "center", color: colors.text, fontSize: 26, fontWeight: "900" },
+  handle: { maxWidth: "100%", flexShrink: 1, textAlign: "center", color: colors.textDim, fontSize: 14, lineHeight: 20, marginTop: 2 },
+  roleBadge: { marginTop: 10, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 4 },
+  roleTxt: { color: colors.amber, fontSize: 10, letterSpacing: 1.5, fontWeight: "800" },
+  bio: { color: colors.textDim, fontSize: 14, lineHeight: 20, textAlign: "center", marginTop: 12 },
+  bioPreview: { width: "100%", alignItems: "center" },
+  bioToggle: { alignSelf: "center" },
+  editBtn: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 18, paddingVertical: 9, marginTop: 16 },
+  editTxt: { color: colors.amber, fontSize: 14, fontWeight: "600" },
+  actionRow: { maxWidth: "100%", flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 10, marginTop: 16 },
+  followBtn: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 22, paddingVertical: 10 },
+  msgBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 18, paddingVertical: 10 },
+  msgTxt: { color: colors.amber, fontSize: 14, fontWeight: "700" },
+  blockBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  muteBtn: { minHeight: 40, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 12, alignItems: "center", justifyContent: "center" },
+  muteTxt: { color: colors.textDim, fontSize: 12, fontWeight: "800" },
+  blockedBox: { alignItems: "center", gap: 10, marginTop: 14, paddingHorizontal: 20 },
+  blockedTxt: { color: colors.textDim, fontSize: 13, textAlign: "center", lineHeight: 19 },
+  unblockBtn: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, paddingHorizontal: 20, paddingVertical: 9 },
+  unblockTxt: { color: colors.danger, fontSize: 14, fontWeight: "800" },
+  followingBtn: { backgroundColor: "transparent", borderWidth: 1, borderColor: colors.line },
+  followTxt: { color: "#1A1206", fontSize: 14, fontWeight: "800" },
+  followingTxt: { color: colors.textDim },
+  statsRow: { flexDirection: "row", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginTop: 20, marginHorizontal: 16, paddingVertical: 14 },
+  rewards: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, marginTop: 10, marginHorizontal: 16, padding: 12 },
+  rewardsIcon: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
+  rewardsTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  rewardsSub: { color: colors.textDim, fontSize: 12, marginTop: 1 },
+  crossed: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 12, marginHorizontal: 16, paddingVertical: 12, paddingHorizontal: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.magenta, backgroundColor: "rgba(224,69,123,0.07)" },
+  crossedIcon: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.magenta, backgroundColor: colors.bgElev },
+  crossedTitle: { color: colors.text, fontSize: 14, fontWeight: "700" },
+  crossedNum: { color: colors.magenta, fontWeight: "900", fontFamily: mono },
+  crossedSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
+  tasteMatch: { gap: 10, marginTop: 12, marginHorizontal: 16, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.cool, backgroundColor: "rgba(65,184,213,0.07)" },
+  tasteMatchHead: { flexDirection: "row", alignItems: "center", gap: 11 },
+  tasteMatchIcon: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.cool, backgroundColor: colors.bgElev },
+  tasteMatchEyebrow: { color: colors.cool, fontSize: 12, fontWeight: "800" },
+  tasteMatchSummary: { color: colors.text, fontSize: 13.5, lineHeight: 19, fontWeight: "700", marginTop: 2 },
+  tasteMatchChips: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  tasteMatchArtistChip: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
+  tasteMatchArtistText: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
+  tasteMatchGenreChip: { minHeight: 32, justifyContent: "center", paddingHorizontal: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  tasteMatchGenreText: { color: colors.textDim, fontSize: 11.5, fontWeight: "700" },
+  tasteMatchBasis: { color: colors.textFaint, fontSize: 10.5, lineHeight: 15 },
+  stat: { flex: 1, alignItems: "center" },
+  statVal: { color: colors.text, fontFamily: mono, fontSize: 20, fontWeight: "800" },
+  statLabel: { color: colors.textDim, fontSize: 12, marginTop: 4, fontWeight: "600" },
+  nowCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginHorizontal: 16, marginTop: 12, padding: 12 },
+  nowLabel: { color: colors.good, fontSize: 9, letterSpacing: 1, fontWeight: "800" },
+  nowTxt: { color: colors.text, fontSize: 13, marginTop: 3 },
+  listenBtn: { borderWidth: 1, borderColor: colors.good, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 7 },
+  listenTxt: { color: colors.good, fontSize: 12, fontWeight: "800" },
+  sectionLabel: { color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: "800", marginTop: space(6), marginBottom: space(2), marginHorizontal: 16 },
+  countdownBox: { alignItems: "flex-end" },
+  countdownT: { color: colors.amber, fontFamily: mono, fontSize: 15, fontWeight: "800", letterSpacing: 0.5, fontVariant: ["tabular-nums"] },
+  countdownLabel: { color: colors.textFaint, fontSize: 9.5, letterSpacing: 1, marginTop: 1, textTransform: "uppercase" },
+  calendarSummaryHint: { color: colors.textFaint, fontSize: 11.5, lineHeight: 17, marginHorizontal: 16, marginTop: 2 },
+  hint: { color: colors.textDim, fontSize: 12, marginHorizontal: 16, marginTop: -6, marginBottom: 12 },
+  empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginHorizontal: 16 },
+  gallery: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginHorizontal: 16 },
+  galleryCell: { width: "32%", aspectRatio: 1, backgroundColor: colors.surfaceAlt, borderRadius: 8, overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft },
+  gallerySeeAll: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, marginHorizontal: 16, marginTop: 6, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  gallerySeeAllText: { color: colors.amber, fontSize: 13, fontWeight: "800" },
+  topRow: { flexDirection: "row", gap: 12, marginHorizontal: 16 },
+  tb: { flex: 1, alignItems: "center", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, padding: 14 },
+  tbKind: { fontSize: 10, letterSpacing: 2, fontWeight: "800" },
+  tbRecord: { marginVertical: 10 },
+  tbTitle: { color: colors.text, fontSize: 14, fontWeight: "800", textAlign: "center" },
+  tbArtist: { color: colors.textDim, fontSize: 12, marginTop: 2, textAlign: "center" },
+  tbListen: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 8 },
+  tbListenTxt: { fontSize: 12, fontWeight: "800" },
+  tbEmpty: { color: colors.textFaint, fontSize: 12 },
+  showRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8, marginHorizontal: 16 },
+  goingDot: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  goingDotTxt: {},
+  showArtist: { color: colors.text, fontSize: 16, fontWeight: "700" },
+  showVenue: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  showSource: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 7, paddingVertical: 3 },
+  showSourceTxt: { color: colors.amber, fontFamily: mono, fontSize: 8.5, fontWeight: "900", letterSpacing: 0.7 },
+  postsSection: Platform.OS === "web" ? { width: "100%", maxWidth: CONTENT_COLUMN_MAX_WIDTH, alignSelf: "center" } : {},
+  postsWrap: { paddingHorizontal: 16 },
+  reviewRow: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8, marginHorizontal: 16 },
+  reviewTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  reviewText: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 8 },
+  scorePill: { flexDirection: "row", alignItems: "center", gap: 4 },
+  scoreTxt: { color: colors.gold, fontFamily: mono, fontSize: 14, fontWeight: "700" },
+});
+
+
+// iOS has a quieter, editorial profile. The original Android/web styles above
+// remain unchanged, including the web-specific integrated banner treatment.
+const iosStyles = IS_IOS ? StyleSheet.create({
+  topbar: { ...baseStyles.topbar, paddingHorizontal: 20, paddingBottom: 12, paddingTop: 4, minHeight: 56 },
+  topTitle: { ...baseStyles.topTitle, fontSize: 17, fontWeight: "600", flexShrink: 1, textAlign: "center" },
+  topTitleTab: { flex: 1, minWidth: 0, fontSize: 30, fontWeight: "700", letterSpacing: -0.8, textAlign: "left" },
+  backBtn: { width: 44, minHeight: 44, justifyContent: "center" },
+  backCircle: { ...baseStyles.backCircle, width: 44, height: 44, borderRadius: 22, borderWidth: 0 },
+  nativeMenu: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceAlt },
+  nativeMenuDots: { flexDirection: "row", alignItems: "center", gap: 3 },
+  nativeMenuDot: { width: 4, height: 4, borderRadius: 2, backgroundColor: colors.amber },
+  nativeUnreadDot: { position: "absolute", right: 3, top: 2, width: 10, height: 10, borderRadius: 5, backgroundColor: colors.magenta, borderWidth: 2, borderColor: colors.bg },
+  content: { paddingBottom: 48 },
+  banner: { backgroundColor: colors.bg },
+  nativeBannerArtwork: { position: "absolute", left: 20, right: 20, top: 0, height: 128, borderRadius: 18, overflow: "hidden" },
+  bannerShade: { position: "absolute", left: 20, right: 20, top: 0, height: 128, borderRadius: 18, backgroundColor: "rgba(0,0,0,0.12)" },
+  nativeIdentityWrap: { paddingHorizontal: 24, paddingTop: 16, paddingBottom: 4, alignItems: "flex-start" },
+  nativeBannerCompact: { height: 48, borderRadius: 14 },
+  nativeIdentityCompact: { paddingTop: 12 },
+  head: { width: "100%", alignItems: "flex-start", padding: 0, borderWidth: 0, backgroundColor: "transparent", shadowOpacity: 0, elevation: 0 },
+  avatarWrap: { borderWidth: 4, borderColor: colors.bg, borderRadius: 52 },
+  nameRow: { ...baseStyles.nameRow, justifyContent: "flex-start", gap: 7, marginTop: 12 },
+  name: { ...baseStyles.name, fontSize: 30, fontWeight: "700", letterSpacing: -0.7, textAlign: "left" },
+  handle: { ...baseStyles.handle, fontSize: 15, lineHeight: 21, textAlign: "left", marginTop: 3 },
+  roleBadge: { marginTop: 9 },
+  roleTxt: { color: colors.amber, fontSize: 11, fontWeight: "700", letterSpacing: 0.7 },
+  bio: { color: colors.text, fontSize: 15, lineHeight: 22, marginTop: 12 },
+  bioPreview: { width: "100%", alignItems: "flex-start" },
+  bioToggle: { alignSelf: "flex-start" },
+  editBtn: { ...baseStyles.editBtn, maxWidth: "100%", borderWidth: 0, borderRadius: 12, backgroundColor: colors.surfaceAlt, paddingHorizontal: 16, marginTop: 16 },
+  editTxt: { flexShrink: 1, color: colors.amber, fontSize: 15, fontWeight: "600" },
+  nativeActionsLarge: { flexDirection: "column", alignItems: "stretch" },
+  nativeStatsLarge: { flexDirection: "column", gap: 16 },
+  nativeStatLarge: { flex: 0, alignSelf: "stretch" },
+  nativeShowLarge: { flexDirection: "column", alignItems: "flex-start" },
+  followTxt: { ...baseStyles.followTxt, flexShrink: 1 },
+  msgTxt: { ...baseStyles.msgTxt, flexShrink: 1 },
+  actionRow: { ...baseStyles.actionRow, width: "100%", justifyContent: "flex-start", gap: 10 },
+  followBtn: { ...baseStyles.followBtn, flexGrow: 1, minHeight: 44, borderRadius: 12, justifyContent: "center" },
+  msgBtn: { ...baseStyles.msgBtn, flexGrow: 1, minHeight: 44, borderWidth: 0, borderRadius: 12, justifyContent: "center", backgroundColor: colors.surfaceAlt },
+  unblockBtn: { ...baseStyles.unblockBtn, minHeight: 44, justifyContent: "center" },
+  statsRow: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: 24, marginTop: 20, paddingVertical: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  stat: { flex: 1, minWidth: 80, minHeight: 44, alignItems: "flex-start", justifyContent: "center", paddingRight: 6 },
+  statVal: { color: colors.text, fontSize: 21, fontWeight: "600", fontVariant: ["tabular-nums"] },
+  statLabel: { color: colors.textDim, fontSize: 12, marginTop: 3 },
+  favorites: { marginHorizontal: 24, marginTop: 26, gap: 14 },
+  favoritesTitle: { color: colors.text, fontSize: 22, fontWeight: "700", letterSpacing: -0.35 },
+  favoriteGrid: { flexDirection: "row", flexWrap: "wrap", gap: 16 },
+  favoriteCard: { flexGrow: 1, flexBasis: "44%", minWidth: 130, maxWidth: 360, gap: 9 },
+  favoritePhoto: { width: "100%", aspectRatio: 1, borderRadius: 12, overflow: "hidden", backgroundColor: colors.surfaceAlt },
+  favoriteCopy: { minWidth: 0, gap: 3 },
+  nativeFavoriteLarge: { flexBasis: "100%", maxWidth: "100%", flexDirection: "row", alignItems: "flex-start", gap: 14 },
+  nativeFavoritePhotoLarge: { width: 80, height: 80 },
+  nativeFavoriteCopyLarge: { flex: 1 },
+  favoriteArtist: { color: colors.text, fontSize: 16, fontWeight: "600" },
+  favoriteMeta: { color: colors.textDim, fontSize: 13, lineHeight: 18 },
+  favoriteScore: { color: colors.amber, fontSize: 14, fontWeight: "600", fontVariant: ["tabular-nums"], marginTop: 2 },
+  favoriteEmpty: { ...baseStyles.favoriteEmpty, marginHorizontal: 24, marginTop: 24, padding: 16, minHeight: 64, borderWidth: 0, borderRadius: 14, backgroundColor: colors.surface },
+  favoriteEmptyText: { ...baseStyles.favoriteEmptyText, fontSize: 14, lineHeight: 20 },
+  sectionLabel: { color: colors.text, fontSize: 22, fontWeight: "700", letterSpacing: -0.35, marginTop: 30, marginBottom: 14, marginHorizontal: 24 },
+  empty: { color: colors.textDim, fontSize: 15, lineHeight: 22, marginHorizontal: 24 },
+  gallery: { ...baseStyles.gallery, marginHorizontal: 24, gap: 5 },
+  galleryCell: { ...baseStyles.galleryCell, borderWidth: 0, borderRadius: 10 },
+  gallerySeeAll: { ...baseStyles.gallerySeeAll, borderWidth: 0, backgroundColor: "transparent", justifyContent: "flex-start", marginHorizontal: 24 },
+  gallerySeeAllText: { color: colors.amber, fontSize: 15, fontWeight: "600" },
+  showRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 12, minHeight: 72, marginHorizontal: 24, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  goingDot: { ...baseStyles.goingDot, borderWidth: 0, borderRadius: 10, backgroundColor: colors.surfaceAlt },
+  showVenue: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 3 },
+  showSource: { ...baseStyles.showSource, borderWidth: 0, paddingHorizontal: 0 },
+  rewards: { ...baseStyles.rewards, marginHorizontal: 24, marginTop: 24, paddingVertical: 16, paddingHorizontal: 0, borderWidth: 0, borderRadius: 0, backgroundColor: "transparent", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.line },
+  rewardsIcon: { ...baseStyles.rewardsIcon, borderWidth: 0, backgroundColor: colors.surfaceAlt },
+  rewardsTitle: { color: colors.text, fontSize: 15, fontWeight: "600" },
+  rewardsSub: { color: colors.textDim, fontSize: 13, marginTop: 4 },
+  crossed: { ...baseStyles.crossed, marginHorizontal: 24, borderWidth: 0, backgroundColor: colors.surface, borderRadius: 14 },
+  tasteMatch: { ...baseStyles.tasteMatch, marginHorizontal: 24, borderWidth: 0, backgroundColor: colors.surface, borderRadius: 14 },
+  tasteMatchArtistChip: { ...baseStyles.tasteMatchArtistChip, maxWidth: "100%", paddingVertical: 8 },
+  tasteMatchArtistText: { ...baseStyles.tasteMatchArtistText, flexShrink: 1 },
+  tasteMatchGenreChip: { ...baseStyles.tasteMatchGenreChip, maxWidth: "100%", paddingVertical: 6 },
+  tasteMatchGenreText: { ...baseStyles.tasteMatchGenreText, flexShrink: 1 },
+  tasteMatchBasis: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
+  postsWrap: { paddingHorizontal: 20 },
+}) : {};
+const styles = { ...baseStyles, ...iosStyles };

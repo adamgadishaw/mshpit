@@ -6,11 +6,26 @@ import { createAccountTaskScope } from "../domain/accountTaskScope.mjs";
 import { shouldContinueMediaBatch } from "../domain/mediaBatchPolicy.mjs";
 import { createMediaTransferProgressPublisher } from "../domain/mediaTransferProgress.mjs";
 import { retireMediaAssetDrafts } from "../lib/mediaAssetDraftCleanup.mjs";
+import { createEditProfileCloseGuard } from "./editProfileCloseGuard.mjs";
 import {
   mediaProjectPublishedMedia, mediaProjectRequiresLegacyUpload,
-  originalMediaProjectAsset, reconcileMediaProjectSelection, normalizeMediaProjectAsset,
+  originalMediaProjectAsset, reconcileMediaProjectSelection, normalizeMediaProjectAsset, removeMediaProjectAsset, normalizeMediaProject, mediaProjectFromPost, mediaProjectSubmissionAssetIds,
 } from "../domain/mediaProject.mjs";
 import { artistCampaignLimitCooldownMs, postRateLimitCooldownMs } from "../domain/postRetryCooldown.mjs";
+import { normalizeComposerDraft, composerDraftFingerprint } from "../domain/composerDraft.mjs";
+import { clampRating } from "../domain/validation.mjs";
+import { computeReview } from "../data.js";
+import { mediaDisplayKind } from "../domain/postMediaDisplay.mjs";
+
+const uploadDependencies = {};
+for (const file of ["../lib/mediaAssetFinalize.mjs", "../domain/mediaEdit.mjs", "../domain/mediaUploadPolicy.mjs", "../domain/mediaUploadIdentity.mjs", "../domain/mediaRequestRecovery.mjs", "../domain/mediaUploadDeadline.mjs"]) {
+  Object.assign(uploadDependencies, await import(file));
+}
+const originalUploadSource = readFileSync(new URL("../lib/mediaAssetUpload.js", import.meta.url), "utf8")
+  .replace(/^import .*;\r?$/gm, "").replace("export async function uploadOriginalMediaAsset", "async function uploadOriginalMediaAsset");
+const actualOriginalUpload = new Function(...Object.keys(uploadDependencies), "api", "isDurableMediaUrl", "prepareMediaUploadAsset", "uploadPreparedMediaAsset",
+  `${originalUploadSource}; return uploadOriginalMediaAsset;`)(...Object.values(uploadDependencies), () => { throw new Error("Unexpected real API"); },
+  value => /^https:\/\//u.test(value || ""), () => { throw new Error("Unexpected device read"); }, () => { throw new Error("Unexpected source PUT"); });
 
 function find(node, predicate) {
   if (!node || typeof node !== "object") return null;
@@ -55,8 +70,12 @@ function crossBoundary(tasks, boundary) {
 
 const pickerResult = { canceled: false, assets: [{ id: "local-a", uri: "file:///camera.jpg", kind: "image" }] };
 const photoCases = [
-  ["EditProfileScreen.jsx", "EditProfileScreen", "pickPhoto", "setAvatarUri"],
-  ["EditProfileScreen.jsx", "EditProfileScreen", "pickBanner", "setBanner"],
+  ["EditProfileScreen.jsx", "EditProfileScreen", "pickPhotoTask", "setAvatarUri"],
+  ["EditProfileScreen.jsx", "EditProfileScreen", "pickBannerTask", "setBanner"],
+  ...["ios", "android", "web"].flatMap((platform) => [
+    ["EditProfileScreen.jsx", "EditProfileScreen", "pickPhoto", "setAvatarUri", platform],
+    ["EditProfileScreen.jsx", "EditProfileScreen", "pickBanner", "setBanner", platform],
+  ]),
   ["EditArtistProfileScreen.jsx", "ConfirmedArtistProfileEditor", "pickPhoto", "setAvatarUri"],
   ["EditArtistProfileScreen.jsx", "ConfirmedArtistProfileEditor", "pickBanner", "setBanner"],
   ["VenueReviewScreen.jsx", "VenueReviewScreen", "addPhoto", "setPhotos"],
@@ -65,10 +84,10 @@ const photoCases = [
 function photoFixture(compile, compileSelected, { cancelCrop = false } = {}) {
   const accountTasks = scope(), picker = deferred(), upload = deferred(), uploadStarted = deferred();
   const events = [], uploads = [];
-  const setters = Object.fromEntries(["setAvatarUri", "setAvatarChanged", "setBanner", "setBannerChanged", "setPhotos", "setUploadingAvatar", "setUploadingBanner", "setUploadingPhotos", "setSaveError"]
+  const setters = Object.fromEntries(["setAvatarUri", "setAvatarChanged", "setBanner", "setBannerChanged", "setPhotos", "setUploadingAvatar", "setUploadingBanner", "setUploadingPhotos", "setSaveError", "setMediaError"]
     .map((name) => [name, (value) => events.push({ name, value })]));
   const bindings = {
-    accountTasks, session: { id: "a" }, accountId: "a", uploadingAvatar: false, uploadingBanner: false,
+    reviewIOS: null, accountTasks, session: { id: "a" }, accountId: "a", uploadingAvatar: false, uploadingBanner: false,
     uploadingPhotos: false, posting: false, saving: false, photos: [], MEDIA_POST_MAX_ATTACHMENTS: 8,
     ImagePicker: { launchImageLibraryAsync: () => picker.promise }, Platform: { OS: "web" },
     profileImagePickerOptions: () => ({}), postMediaPickerOptions: () => ({}),
@@ -85,10 +104,20 @@ function photoFixture(compile, compileSelected, { cancelCrop = false } = {}) {
   return { accountTasks, picker, upload, uploadStarted, events, uploads, run };
 }
 
-for (const [file, component, name, resultSetter] of photoCases) {
-  const compile = callback(file, component, name);
+for (const [file, component, name, resultSetter, platform] of photoCases) {
+  const compileCallback = callback(file, component, name);
+  // Test both the original account-scoped tasks and their public entry points.
+  // The iOS wrapper gets its real close guard rather than a no-op busy stub.
+  const compileTask = platform ? callback(file, component, `${name}Task`) : null;
+  const compile = platform ? (bindings) => compileCallback({
+    iosEditor: platform === "ios" ? { run: action => action({ isCurrent: () => true }) } : null,
+    [`${name}Task`]: compileTask({ ...bindings, Platform: { OS: platform } }),
+    editorClose: platform === "ios" ? createEditProfileCloseGuard({
+      accountId: "a", draft: {}, alert: () => assert.fail("Uploads alone must not show a close dialog"),
+    }) : null,
+  }) : compileCallback;
   const compileSelected = component === "VenueReviewScreen" ? null : callback(file, component, "uploadSelectedImage");
-  const label = `${component}.${name}`;
+  const label = `${component}.${name}${platform ? ` (${platform})` : ""}`;
   test(`${label} rejects picker results after logout, switch, round trip or unmount`, {timeout:3000}, async () => {
     for (const boundary of ["logout", "switch", "round-trip", "unmount"]) {
       const f = photoFixture(compile, compileSelected), run = f.run();
@@ -197,6 +226,78 @@ test("double-open is fenced synchronously while a successful owner selection sta
 });
 
 const compileComposerUpload = callback("LogScreen.jsx", "LogScreen", "uploadOriginalMedia");
+const compileResumeComposer = callback("LogScreen.jsx", "LogScreen", "resume");
+
+for (const outcome of ["failed", "missing", "processing", "ready", "failed-finalization"]) test(`actual draft restoration verifies ${outcome} server clips before publishing and retains occupied order`, async () => {
+  const f = composerUploadFixture();
+  const state = { pending: [], project: { assets: [] }, photos: [], errors: [] };
+  const savedAssets = [
+    originalMediaProjectAsset({ id: "clip", assetId: "ma_clip", kind: "video", status: "processing" }),
+    originalMediaProjectAsset({ id: "photo", assetId: "ma_photo", kind: "image", status: "ready", sourceUrl: "https://media.test/photo.jpg" }),
+  ];
+  const setPendingMediaAssets = update => { state.pending = typeof update === "function" ? update(state.pending) : update; };
+  const setMediaProject = update => { state.project = typeof update === "function" ? update(state.project) : update; f.bindings.mediaProjectRef.current = state.project; };
+  const setPhotos = update => { state.photos = typeof update === "function" ? update(state.photos) : update; f.bindings.photosRef.current = state.photos; };
+  const resumeSetters = Object.fromEntries([
+    "setDraftId", "setSavedDraftFingerprint", "setPostType", "setCampaign", "setExperienceType", "setArtist", "setArtistPicked", "setArtistKey", "setVenue", "setVenuePicked", "setCity", "setEventAddress", "setTour", "setShowFormat", "setEndDate", "setLineup", "setTimesSeen", "setDate", "setOnlineTitle", "setYoutubeUrl", "setOnlineRating", "setDims", "setReview", "setTaggedPeople", "setSong", "setSongUrl", "setPreservedPlaylist", "setPhotosPublic", "setLandingShowcase", "setShowSong", "setShowPhotos", "setShowPeople",
+  ].map(name => [name, () => {}]));
+  const resume = compileResumeComposer({
+    setCreatorUpdate: value => { state.creatorUpdate = value; },
+    setCreatorIntent: value => { state.creatorIntent = value; },
+    setOverallRating: value => { state.overall = value; }, clampRating, computeReview,
+    ...resumeSetters, normalizeComposerDraft, composerDraftFingerprint, normalizeMediaProject, mediaProjectFromPost, originalMediaProjectAsset,
+    draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: null },
+    onDraftIdentity: null, composerId: "composer-a", isDurableMediaUrl: value => /^https:\/\//u.test(value || ""),
+    ONLINE_REVIEW_EXPERIENCE: "online", lineupFromPost: () => [], restoredComposerDate: value => value,
+    hasLandingCompatibleImage: () => true, setMediaProject, setPhotos, setPendingMediaAssets,
+    recoverRestoredMedia: async () => {},
+  });
+  resume({ id: "saved", postType: "status", photos: [savedAssets[1].sourceUrl], mediaProject: { assets: savedAssets } });
+  resume(normalizeComposerDraft({ id: "saved", postType: "status", photos: state.photos, mediaProject: state.project }));
+  assert.deepEqual(state.project.assets.map(asset => asset.id), ["clip", "photo"]);
+  assert.equal(state.project.assets[0].status, "selected", "cached processing is not publishable");
+  assert.deepEqual(state.pending.map(asset => asset.id), ["clip"], "submission remains blocked with an actionable Retry");
+  assert.deepEqual(mediaProjectSubmissionAssetIds(state.project, state.photos), ["ma_photo"]);
+  const reads = [];
+  const result = await compileComposerUpload({ ...f.bindings, setMediaProject, setPhotos, setPendingMediaAssets,
+    setMediaError: error => state.errors.push(error),
+    uploadOriginalMediaAsset: options => actualOriginalUpload(options, { apiCall: async (path, request) => {
+      reads.push({ path, method: request.method || "GET" }); assert.equal(request.expectedAccountId, "a");
+      if (outcome === "failed-finalization") {
+        if (reads.length === 1) {
+          assert.equal(request.method, undefined);
+          return { asset: { id: "ma_clip", kind: "video", status: "upload_pending" }, finalize: { state: "failed", code: "VIDEO_TRANSCODE_FAILED" } };
+        }
+        assert.equal(path, "/api/media/assets/ma_clip/finalize");
+        assert.equal(request.method, "POST");
+        assert.equal(request.body.async, true);
+        return { asset: { id: "ma_clip", kind: "video", status: "upload_pending" }, finalize: { state: "processing" } };
+      }
+      assert.equal(request.method, undefined);
+      if (outcome === "missing") throw Object.assign(new Error("Missing"), { status: 404, serverCode: "NOT_FOUND" });
+      return { asset: { id: "ma_clip", kind: "video", status: outcome === "processing" ? "upload_pending" : outcome,
+        url: "https://media.test/clip.mp4", posterUrl: "https://media.test/poster.jpg" },
+        ...(outcome === "processing" ? { finalize: { state: "processing" } } : {}) };
+    } }),
+  })(state.pending);
+  assert.deepEqual(reads, [
+    { path: "/api/media/assets/ma_clip", method: "GET" },
+    ...(outcome === "failed-finalization" ? [{ path: "/api/media/assets/ma_clip/finalize", method: "POST" }] : []),
+  ]);
+  if (outcome === "failed") {
+    assert.equal(result.ok, false); assert.equal(state.pending.length, 1);
+    assert.match(state.errors.at(-1), /Try the final step again/);
+    assert.equal(state.project.assets[0].status, "selected");
+  } else if (outcome === "missing") {
+    assert.equal(state.pending.length, 0); assert.deepEqual(state.project.assets.map(asset => asset.id), ["photo"]);
+    assert.match(state.errors.at(-1), /Choose any missing originals again/);
+  } else {
+    assert.equal(result.ok, true); assert.equal(state.pending.length, 0);
+    assert.deepEqual(state.project.assets.map(asset => asset.id), ["clip", "photo"]);
+    assert.deepEqual(mediaProjectSubmissionAssetIds(state.project, state.photos), ["ma_clip", "ma_photo"]);
+    assert.equal(state.project.assets[0].status, outcome === "failed-finalization" ? "processing" : outcome);
+  }
+});
 const compileProjectSetter = callback("LogScreen.jsx", "LogScreen", "setMediaProject");
 const compilePhotosSetter = callback("LogScreen.jsx", "LogScreen", "setPhotos");
 function composerUploadFixture() {
@@ -209,12 +310,12 @@ function composerUploadFixture() {
     uploadControllerRef, uploadOperationRef, uploadingPhotos: false, posting: false,
     createMediaTransferProgressPublisher, mediaProjectRequiresLegacyUpload,
     mediaProject: mediaProjectRef.current, mediaProjectRef, photos: [], photosRef, reconcileMediaProjectSelection, mediaProjectPublishedMedia,
-    shouldContinueMediaBatch, remoteDraftAssetIdsRef: { current: new Map() },
+    shouldContinueMediaBatch, removeMediaProjectAsset, remoteDraftAssetIdsRef: { current: new Map() },
     releaseMediaDraftAsset: async () => {}, retireRemoteDrafts: async () => {},
     uploadOriginalMediaAsset: (options) => { started.resolve(options); return upload.promise; },
     ...Object.fromEntries(["setUploadProgress", "setUploadingPhotos", "setMediaError", "setPendingMediaAssets"]
       .map((name) => [name, (value) => events.push({ name, value })])),
-    setMediaProject: compileProjectSetter({ mediaProjectRef, renderMediaProject: (value) => events.push({ name: "setMediaProject", value }) }),
+    setMediaProject: compileProjectSetter({ mediaProjectRef, setCampaign: (value) => events.push({ name: "setCampaign", value }), renderMediaProject: (value) => events.push({ name: "setMediaProject", value }) }),
     setPhotos: compilePhotosSetter({ photosRef, renderPhotos: (value) => events.push({ name: "setPhotos", value }) }),
   };
   const run = compileComposerUpload(bindings);
@@ -251,7 +352,7 @@ test("manual upload cancellation still clears the current composer's busy state"
 
 const compileSubmit = callback("LogScreen.jsx", "LogScreen", "submit");
 const compileShowPostFailure = callback("LogScreen.jsx", "LogScreen", "showPostFailure");
-function submitFixture({ photosPublic = false } = {}) {
+function submitFixture({ photosPublic = false, creatorUpdate = null } = {}) {
   const accountTasks = scope(), response = deferred(), events = [], posts = [];
   const setPostError = () => events.push("setPostError");
   const showPostFailure = compileShowPostFailure({
@@ -272,7 +373,7 @@ function submitFixture({ photosPublic = false } = {}) {
     isDurableMediaUrl: () => true, mediaProjectSubmissionAssetIds: () => [], mediaProject: { assets: [] },
     mediaProjectPublishedMedia, isStatus: true, isMemorialMemory: false, protectedLegacyMemory: false,
     editing: null, review: "A private draft", memoryTextOnly: false, song: null, isCampaign: false,
-    artistMediaConsent: { photosPublic },
+    artistMediaConsent: { photosPublic }, isCreator: !!creatorUpdate, creatorUpdate,
     onPost: (post) => { events.push("post"); posts.push(post); return response.promise; },
     showPostFailure, setPostError, draftIdRef: { current: "draft-a" }, composerId: "composer-a",
     ...Object.fromEntries(["setPosting", "deleteDraft", "setDraftId", "setSavedDraftFingerprint", "onDraftIdentity"]
@@ -386,6 +487,7 @@ test("removing the failed pending item clears its error and cannot be undone by 
   const removePending = callback("LogScreen.jsx", "LogScreen", "removePendingMedia")({
     pendingMediaAssets: f.pendingMediaAssetsRef.current, pendingMediaAssetsRef: f.pendingMediaAssetsRef,
     setPendingMediaAssets: f.setPendingMediaAssets, setMediaError: f.setMediaError,
+    setMediaProject: () => {}, removeMediaProjectAsset,
     retireRemoteDrafts: async (ids) => retired.push(ids), releaseMediaDraftAsset: async (asset) => released.push(asset.id),
   });
   const retrying = f.run();
@@ -541,7 +643,7 @@ test("a terminal rejected clip does not block later files or detach successful u
   const state = { pending: selected, project: { assets: [] }, photos: [] };
   const bindings = { ...f.bindings,
     setPendingMediaAssets: (update) => { state.pending = typeof update === "function" ? update(state.pending) : update; },
-    setMediaProject: (value) => { state.project = value; f.bindings.mediaProjectRef.current = value; },
+    setMediaProject: (value) => { state.project = typeof value === "function" ? value(state.project) : value; f.bindings.mediaProjectRef.current = state.project; },
     setPhotos: (value) => { state.photos = value; },
     retireRemoteDrafts: async (ids) => retired.push(ids),
     uploadOriginalMediaAsset: async ({ asset, expectedAccountId }) => {
@@ -612,4 +714,219 @@ test("two finished attachments survive Retry with six pending files including a 
   assert.deepEqual(retry.pendingMediaAssetsRef.current, []);
   assert.match(message, /could not be recovered/u);
   assert.match(message, /1 original file is no longer available/u);
+});
+
+
+// Campaign background regressions run the real composer callbacks. Queue
+// campaign setters like React instead of making cross-state updates immediate.
+function campaignMediaFixture(assets, initialCampaign) {
+  const mediaProjectRef = { current: normalizeMediaProject({ assets }) };
+  const updates = [];
+  let campaign = initialCampaign;
+  const setCampaign = (update) => updates.push(update);
+  const setMediaProject = compileProjectSetter({ mediaProjectRef, setCampaign, renderMediaProject: () => {} });
+  return {
+    mediaProjectRef, setMediaProject, setCampaign,
+    flush() {
+      while (updates.length) {
+        const update = updates.shift();
+        if (typeof update !== "function") { campaign = update; continue; }
+        const pendingUpdates = updates.length;
+        const next = update(campaign);
+        assert.deepEqual(update(campaign), next, "React may replay a pure campaign updater");
+        assert.equal(updates.length, pendingUpdates, "updater must not enqueue other setters");
+        campaign = next;
+      }
+      return campaign;
+    },
+  };
+}
+const campaignImage = (patch = {}) => ({ id: "background-image", assetId: "ma_background_12345678", kind: "image",
+  status: "ready", sourceUrl: "https://media.test/background.jpg", ...patch });
+const campaignSelection = (patch = {}) => ({ version: 1, treatment: "spotlight", backgroundAssetId: "ma_background_12345678", ...patch });
+
+for (const outcome of ["ready", "missing", "retryable"]) test(`restored featured image ${outcome} recovery reconciles background identity through the actual composer`, async () => {
+  const f = campaignMediaFixture([], null), upload = composerUploadFixture();
+  const state = { pending: [], photos: [], errors: [] };
+  const savedImage = campaignImage({ status: "finalizing", sourceUrl: null, uri: "", altText: "The band under blue stage lights" });
+  const neighbor = normalizeMediaProjectAsset(campaignImage({ id: "other", assetId: "ma_other_12345678",
+    sourceUrl: "https://media.test/other.jpg", altText: "The crowd", edit: { aspect: "square", zoom: 1.5, focalX: 0.3, focalY: 0.7, rotation: 90 } }));
+  const pendingMediaAssetsRef = { current: [] }, photosRef = { current: [] };
+  const setPendingMediaAssets = compilePendingSetter({ pendingMediaAssetsRef, renderPendingMediaAssets: value => { state.pending = value; } });
+  const setPhotos = compilePhotosSetter({ photosRef, renderPhotos: value => { state.photos = value; } });
+  const resumeSetters = Object.fromEntries([
+    "setDraftId", "setSavedDraftFingerprint", "setPostType", "setExperienceType", "setArtist", "setArtistPicked", "setArtistKey", "setVenue", "setVenuePicked", "setCity", "setEventAddress", "setTour", "setShowFormat", "setEndDate", "setLineup", "setTimesSeen", "setDate", "setOnlineTitle", "setYoutubeUrl", "setOnlineRating", "setDims", "setReview", "setTaggedPeople", "setSong", "setSongUrl", "setPreservedPlaylist", "setPhotosPublic", "setLandingShowcase", "setShowSong", "setShowPhotos", "setShowPeople",
+  ].map(name => [name, () => {}]));
+  const resume = compileResumeComposer({
+    setCreatorUpdate: value => { state.creatorUpdate = value; },
+    setCreatorIntent: value => { state.creatorIntent = value; },
+    setOverallRating: value => { state.overall = value; }, clampRating, computeReview,
+    ...resumeSetters, normalizeComposerDraft, composerDraftFingerprint, normalizeMediaProject, mediaProjectFromPost, originalMediaProjectAsset,
+    draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: null },
+    onDraftIdentity: null, composerId: "composer-a", isDurableMediaUrl: value => /^https:\/\//u.test(value || ""),
+    ONLINE_REVIEW_EXPERIENCE: "online", lineupFromPost: () => [], restoredComposerDate: value => value,
+    hasLandingCompatibleImage: () => true, setMediaProject: f.setMediaProject, setCampaign: f.setCampaign,
+    setPhotos, setPendingMediaAssets, recoverRestoredMedia: async () => {},
+  });
+  const saved = normalizeComposerDraft({ id: "featured-draft", postType: "status", campaign: campaignSelection(),
+    photos: [neighbor.sourceUrl], mediaProject: { assets: [savedImage, neighbor] } });
+  const snapshot = () => normalizeComposerDraft({ ...saved, campaign: f.flush(), photos: state.photos, mediaProject: f.mediaProjectRef.current });
+  resume(saved);
+  resume(snapshot()); // Saving and reopening before recovery must not move or detach the waiting image.
+  assert.equal(f.flush().backgroundAssetId, savedImage.assetId);
+  assert.deepEqual(state.pending.map(asset => asset.id), [savedImage.id]);
+  assert.deepEqual(f.mediaProjectRef.current.assets.map(asset => asset.id), [savedImage.id, neighbor.id]);
+  const requests = [];
+  const retry = compileComposerRetry({ ...upload.bindings, pendingMediaAssetsRef, setPendingMediaAssets,
+    submitBusy: false, mediaRetryOperationRef: { current: null },
+    recoverMediaDraftAssets: async assets => { assert.deepEqual(assets, [], "owner-scoped server identities need no local file"); return []; },
+    uploadOriginalMedia: compileComposerUpload({ ...upload.bindings, mediaProjectRef: f.mediaProjectRef,
+      setMediaProject: f.setMediaProject, photosRef, setPhotos, setPendingMediaAssets,
+      setMediaError: value => state.errors.push(value),
+      uploadOriginalMediaAsset: options => actualOriginalUpload(options, { recovery: { wait: async () => {} }, apiCall: async (path, request) => {
+        requests.push({ path, method: request.method || "GET" });
+        assert.equal(request.expectedAccountId, "a");
+        if (outcome === "missing") throw Object.assign(new Error("Missing"), { status: 404, serverCode: "NOT_FOUND" });
+        if (outcome === "retryable") throw Object.assign(new Error("Temporarily unavailable"), { status: 503 });
+        return { asset: { id: savedImage.assetId, kind: "image", status: "ready", url: "https://media.test/new-background.jpg?version=2" } };
+      } }),
+    }),
+  });
+  await retry();
+  assert.deepEqual(requests, Array.from({ length: outcome === "retryable" ? 3 : 1 }, () => ({
+    path: `/api/media/assets/${savedImage.assetId}`, method: "GET",
+  })));
+  assert.equal(f.flush().backgroundAssetId, outcome === "missing" ? undefined : savedImage.assetId);
+  assert.deepEqual(f.mediaProjectRef.current.assets.find(asset => asset.id === neighbor.id), neighbor, "unrelated recipes and alt text remain intact");
+  if (outcome === "ready") {
+    assert.deepEqual(state.pending, []);
+    assert.deepEqual(state.photos, ["https://media.test/new-background.jpg?version=2", neighbor.sourceUrl]);
+    assert.deepEqual(mediaProjectSubmissionAssetIds(f.mediaProjectRef.current, state.photos), [savedImage.assetId, neighbor.assetId]);
+    assert.equal(f.mediaProjectRef.current.assets[0].altText, savedImage.altText);
+    resume(snapshot());
+    assert.deepEqual(state.pending, []);
+    assert.equal(f.flush().backgroundAssetId, savedImage.assetId, "a new delivery URL must not detach the featured image");
+    assert.deepEqual(f.mediaProjectRef.current.assets.map(asset => asset.id), [savedImage.id, neighbor.id]);
+  } else if (outcome === "missing") {
+    assert.deepEqual(state.pending, []);
+    assert.deepEqual(mediaProjectSubmissionAssetIds(f.mediaProjectRef.current, state.photos), [neighbor.assetId]);
+    assert.match(state.errors.at(-1), /Choose any missing originals again/u);
+  } else {
+    assert.deepEqual(state.pending.map(asset => asset.id), [savedImage.id], "failed recovery remains actionable and blocks posting");
+    assert.match(state.errors.at(-1), /Temporarily unavailable/u);
+  }
+});
+
+test("featured background selection requires an attached ready nonwaiting image", () => {
+  const source = readFileSync(new URL("./LogScreen.jsx", import.meta.url), "utf8");
+  const expression = source.match(/const canBeCampaignBackground = ([\s\S]*?);/u)?.[1];
+  assert.ok(expression);
+  const eligible = new Function("isCampaign", "waiting", "descriptor", "uri", "backgroundAssetId", "mediaDisplayKind", `return ${expression};`);
+  for (const [asset, waiting, isCampaign, expected] of [
+    [campaignImage(), false, true, true],
+    [campaignImage({ status: "selected", sourceUrl: null }), true, true, false],
+    [campaignImage(), true, true, false],
+    [campaignImage({ status: "failed" }), false, true, false],
+    [campaignImage({ sourceUrl: null }), false, true, false],
+    [campaignImage({ kind: "video" }), false, true, false],
+    [campaignImage({ assetId: null }), false, true, false],
+    [campaignImage(), false, false, false],
+  ]) assert.equal(eligible(isCampaign, waiting, asset, asset.sourceUrl, asset.assetId, mediaDisplayKind), expected);
+});
+
+test("project cleanup preserves chosen image identity across reorder, recovery and queued draft restores", () => {
+  const selected = Object.freeze(campaignSelection());
+  const image = campaignImage();
+  const clip = { id: "clip", assetId: "ma_clip_12345678", kind: "video", status: "processing" };
+  const f = campaignMediaFixture([image, clip], selected);
+  let calls = 0;
+  f.setMediaProject((current) => { calls += 1; return { ...current, assets: current.assets.slice().reverse() }; });
+  assert.equal(f.flush(), selected);
+  assert.equal(calls, 1, "project updater runs synchronously once, not inside React's campaign updater");
+  for (const [status, sourceUrl] of [["selected", null], ["uploading", null], ["finalizing", null],
+    ["ready", null], ["ready", "https://media.test/new-delivery.jpg?version=2"]]) {
+    f.setMediaProject(normalizeMediaProject({ assets: [campaignImage({ status, uri: "", sourceUrl }), clip] }));
+    assert.equal(f.flush(), selected, `${status} keeps the original stable image ID`);
+  }
+  const restoredA = campaignSelection({ treatment: "tour-poster" });
+  const restoredB = campaignSelection({ backgroundAssetId: "ma_restored_12345678", treatment: "after-dark" });
+  // resume replaces campaign state before it installs that draft's project.
+  f.setCampaign(restoredA);
+  f.setMediaProject(normalizeMediaProject({ assets: [campaignImage({ status: "selected", uri: "", sourceUrl: null })] }));
+  f.setCampaign(restoredB);
+  f.setMediaProject(normalizeMediaProject({ assets: [campaignImage({ assetId: restoredB.backgroundAssetId })] }));
+  assert.equal(f.flush(), restoredB, "a superseded restore cannot clear the newer draft's background");
+});
+
+test("removing a restored waiting image clears only its selected campaign background", () => {
+  const image = campaignImage({ status: "selected", sourceUrl: null });
+  const f = campaignMediaFixture([image], campaignSelection());
+  const pendingMediaAssetsRef = { current: [image] };
+  const remove = callback("LogScreen.jsx", "LogScreen", "removePendingMedia")({
+    pendingMediaAssetsRef, setPendingMediaAssets: update => { pendingMediaAssetsRef.current = update(pendingMediaAssetsRef.current); },
+    setMediaProject: f.setMediaProject, removeMediaProjectAsset, setMediaError: () => {},
+    retireRemoteDrafts: async () => {}, releaseMediaDraftAsset: async () => {},
+  });
+  remove(image.id);
+  assert.equal(pendingMediaAssetsRef.current.length, 0);
+  assert.equal(f.mediaProjectRef.current.assets.length, 0);
+  assert.deepEqual(f.flush(), { version: 1, treatment: "spotlight", backgroundAssetId: undefined });
+});
+
+for (const missing of [false, true]) test(`campaign image ${missing ? "terminal rejection clears" : "retryable failure preserves"} its background identity`, async () => {
+  const image = campaignImage({ status: "selected", sourceUrl: null });
+  const selected = Object.freeze(campaignSelection());
+  const f = campaignMediaFixture([image], selected);
+  const upload = composerUploadFixture();
+  let pending = [image];
+  const result = await compileComposerUpload({ ...upload.bindings,
+    mediaProjectRef: f.mediaProjectRef, mediaProject: f.mediaProjectRef.current,
+    setMediaProject: f.setMediaProject, photosRef: { current: [] }, photos: [],
+    setPendingMediaAssets: update => { pending = update(pending); },
+    uploadOriginalMediaAsset: async ({ expectedAccountId }) => {
+      assert.equal(expectedAccountId, "a");
+      throw Object.assign(new Error(missing ? "Missing" : "Try again"), { code: missing ? "MEDIA_SOURCE_MISSING" : "MEDIA_FINALIZE_PENDING" });
+    },
+  })(pending);
+  assert.equal(result.ok, false);
+  assert.equal(pending.length, missing ? 0 : 1);
+  assert.equal(f.mediaProjectRef.current.assets.length, missing ? 0 : 1);
+  const actual = f.flush();
+  if (missing) assert.equal(actual.backgroundAssetId, undefined);
+  else assert.equal(actual, selected);
+});
+
+test("background cleanup retains unrelated selections and clears removed or reclassified image IDs", () => {
+  const selected = Object.freeze(campaignSelection());
+  const other = campaignImage({ id: "other", assetId: "ma_other_12345678" });
+  const f = campaignMediaFixture([campaignImage(), other], selected);
+  f.setMediaProject((project) => removeMediaProjectAsset(project, other.id));
+  assert.equal(f.flush(), selected);
+  f.setMediaProject(normalizeMediaProject({ assets: [campaignImage({ assetId: "ma_replacement_12345678" })] }));
+  assert.equal(f.flush().backgroundAssetId, undefined);
+  f.setCampaign(selected);
+  f.setMediaProject(normalizeMediaProject({ assets: [campaignImage({ kind: "video" })] }));
+  assert.equal(f.flush().backgroundAssetId, undefined);
+  f.setCampaign(null);
+  f.setMediaProject(normalizeMediaProject());
+  assert.equal(f.flush(), null);
+  const withoutBackground = Object.freeze({ version: 1, treatment: "after-dark" });
+  f.setCampaign(withoutBackground);
+  f.setMediaProject(normalizeMediaProject());
+  assert.equal(f.flush(), withoutBackground);
+});
+
+test("creator publication uses the same checkpoint, account boundary and retry identity as ordinary uploads", async () => {
+  const creatorUpdate = { version: 1, entityType: "venue", entityKey: "test-room", kind: "release", title: "New season", date: "", location: "", url: "" };
+  const f = submitFixture({ creatorUpdate }), first = f.run();
+  assert.equal(f.posts[0].creatorUpdate, creatorUpdate);
+  assert.equal(f.posts[0].id, "post-a");
+  f.response.resolve({ ok: false, error: new Error("connection interrupted") }); await first;
+  assert.equal(f.events.includes("deleteDraft"), false);
+  assert.equal(f.events.includes("checkpoint"), true);
+  for (const boundary of ["logout", "switch", "round-trip", "unmount"]) {
+    const f = submitFixture({ creatorUpdate }), run = f.run(); crossBoundary(f.accountTasks, boundary);
+    const before = f.events.length; f.response.resolve({ ok: true }); await run;
+    assert.equal(f.events.length, before, boundary);
+  }
 });

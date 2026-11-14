@@ -1,0 +1,39 @@
+{
+  "result": "PASS",
+  "evidence": "Observed completed run; receipt written without rerunning",
+  "command": "node notification-open-acceptance.mjs",
+  "shell": "powershell",
+  "workingDirectory": "C:\\Users\\Adam Gadishaw\\Documents\\Codex\\2026-11-10\\task",
+  "environment": {
+    "commandOverrides": {},
+    "inheritance": "Process inherited the executor environment; its full contents were not captured or asserted.",
+    "databaseIsolation": "Script sets process.env.PIT_DATA_DIR to a newly created OS-temp pit-notification-open-acceptance-* directory before importing server modules, then closes SQLite and removes that temporary directory in finally.",
+    "transport": "Direct synthetic in-process server routes; no live account or production endpoint used"
+  },
+  "placement": {
+    "script": "notification-open-acceptance.mjs",
+    "requiredSiblingCheckout": "mshpit",
+    "portability": "Imports resolve relative to the script: ./mshpit/src and ./mshpit/server. Babel resolves via ./mshpit/package.json and installed dependencies. Keep this unchanged script beside a checkout named mshpit; copying the script alone to another folder requires the same sibling layout."
+  },
+  "implementationExercised": [
+    "Actual refreshNotifications and markNotificationsRead callbacks extracted from src/store.js with Babel",
+    "Actual fetchNotificationHistory helper",
+    "Real GET /api/me/notifications and POST /api/me/notifications/read/scoped handlers",
+    "Temporary SQLite with synthetic accounts and notifications"
+  ],
+  "observedOutput": {
+    "result": "PASS",
+    "initiallyCached": 100,
+    "initialUnread": 235,
+    "priorReadHistory": 17,
+    "hiddenExcluded": 8,
+    "historyPages": [100, 100, 52],
+    "acknowledgementBatches": [100, 100, 35],
+    "confirmedExistingUnread": 235,
+    "retainedLocalHistory": 253,
+    "concurrentArrivalUnread": true,
+    "remainingServerVisibleUnread": 1
+  },
+  "exitCode": 0,
+  "limitations": "Store/helper/server acceptance, not a rendered browser or native-device interaction. No runtime or acceptance-script modification was required."
+}

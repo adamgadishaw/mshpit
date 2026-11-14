@@ -216,7 +216,7 @@ test("access and capacity outcomes get truthful player notices", () => {
   assert.equal(playerYouTubeLookupNotice("provider_paused")?.kind, "provider_unavailable");
   assert.deepEqual(playerYouTubeLookupNotice("recording_proof_unavailable"), {
     kind: "recording_verification",
-    message: "PIT could not verify this exact recording for full-track playback yet.",
+    message: "Mshpit could not confirm a YouTube match for this exact recording.",
   });
   assert.equal(playerYouTubeLookupNotice("resolution_timeout")?.kind, "temporary");
   assert.equal(playerYouTubeLookupNotice("unconfigured")?.kind, "configuration");
@@ -238,11 +238,11 @@ test("preview status copy reports actual playback state", () => {
   );
   assert.equal(
     playerYouTubeStatusMessage(playerYouTubeLookupNotice("search_deferred"), { preview: true, previewState: "playing" }),
-    "Previewing without spending a YouTube search.",
+    "Full-track YouTube search has not started.",
   );
   assert.equal(
     playerYouTubeStatusMessage(playerYouTubeLookupNotice("recording_proof_unavailable"), { preview: true, previewState: "playing" }),
-    "PIT could not verify this exact recording for full-track playback yet. Preview playing.",
+    "Mshpit could not confirm a YouTube match for this exact recording. Preview playing.",
     "a source-proof outage must not claim that the YouTube provider paused",
   );
 });

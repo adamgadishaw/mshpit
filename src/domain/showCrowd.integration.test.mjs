@@ -47,7 +47,9 @@ test("trusted Show attendance is lifecycle-gated, stable-ID bound, and never cal
   assert.match(showScreen, /ShowAttendanceControls/);
   assert.match(showScreen, /lifecycleView\.trusted/);
   assert.match(showScreen, /currentAttendance=/);
-  assert.match(attendanceControls, /attendanceOptionsForPhase\(lifecycle\)/);
+  assert.match(attendanceControls, /attendanceOptionsForPhase\(attendancePhase\)/);
+  assert.match(attendanceControls, /useEventRsvp\(show\)/);
+  assert.match(attendanceControls, /!rsvp\.canPlan \? rsvp\.phase/);
   assert.match(attendanceControls, /attendanceControlsVisible/);
   assert.match(attendanceControls, /currentAttendance: attendance/);
   assert.match(attendanceControls, /options\.length > 0/);

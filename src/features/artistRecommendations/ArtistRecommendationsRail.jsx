@@ -1,16 +1,25 @@
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { ScrollView } from "../../components/NativeTabScroll";
+import { useState } from "react";
+import { Image } from "expo-image";
+import { ActivityIndicator, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import Avatar from "../../components/Avatar";
 import Icon from "../../components/Icon";
 import SmartImage from "../../components/SmartImage";
+import DiscoverArtistPhotoCredit from "../../components/discover/DiscoverArtistPhotoCredit";
+import { discoverArtistArtwork } from "../../domain/discoverArtistArtwork.mjs";
 import { formatDate } from "../../domain/dates.mjs";
 import { colors, displayFont, focusRing, mono, radius, shadow } from "../../theme";
 
 function ArtistPhoto({ artist, priority = "normal" }) {
+  const photo = discoverArtistArtwork(artist);
+  const [failedUri, setFailedUri] = useState(null);
   return (
-    <View style={styles.photoFrame}>
-      {artist.photo ? (
+    <View style={[styles.photoFrame, photo?.original && { borderRadius: 4 }]}>
+      {photo?.original && photo.uri !== failedUri ? <Image source={{ uri: photo.uri }} style={[styles.photo, { borderRadius: 4 }]}
+        contentFit="contain" cachePolicy="memory-disk" recyclingKey={photo.uri} accessible={false}
+        onError={() => setFailedUri(photo.uri)} /> : photo && !photo.original ? (
         <SmartImage
-          uri={artist.photo}
+          uri={photo.uri}
           style={styles.photo}
           contain={false}
           previewWidth={192}
@@ -63,6 +72,7 @@ function RecommendationCard({ recommendation, index, width, onOpenArtist, onOpen
         <Text style={styles.artistName} numberOfLines={1}>{artist.name}</Text>
         <Text style={styles.artistMeta} numberOfLines={1}>{[artist.genre, rating].filter(Boolean).join(" · ") || "Live artist"}</Text>
       </Pressable>
+      <DiscoverArtistPhotoCredit artist={artist} />
 
       <View style={styles.reasonBubble}>
         <View style={styles.reasonTitleRow}>
@@ -153,7 +163,7 @@ export default function ArtistRecommendationsRail({
       ) : (
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>Give us a little more of your taste.</Text>
-          <Text style={styles.emptyText}>Choose favourite artists or genres, or log a show. We won’t make up recommendations without real signals from you.</Text>
+          <Text style={styles.emptyText}>Choose favorite artists or genres, or log a show to get recommendations.</Text>
           <Pressable style={({ focused }) => [styles.smallAction, focused && focusRing]} onPress={onManageTaste} accessibilityRole="button">
             <Text style={styles.smallActionText}>Tune your music picks</Text>
           </Pressable>

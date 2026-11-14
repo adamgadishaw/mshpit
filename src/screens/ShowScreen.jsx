@@ -1,6 +1,14 @@
+import useEventRsvp from "../hooks/useEventRsvp";
+import { eventRsvpWindow } from "../domain/eventRsvp.mjs";
+import ShowSection from "../features/showDetails/ShowSection";
+import { savedShowRating, showPageRating, showPageEventArtwork } from "../domain/showPageDetails.mjs";
+import useIOSDetailBackBlock from "../hooks/useIOSDetailBackBlock";
+import ShowRefreshNotice, { isTransientShowReadFailure, isRetainedShowDocument, restrictedShowAvailabilityCopy } from "./ShowRefreshRecovery";
+import { concertDetailStyles, concertDetailWide } from "../components/concertDetailLayout";
+import useIOSTicketAction from "../components/useIOSTicketAction";
 import EventPhotoCredit from "../components/EventPhotoCredit";
 import CatalogText from "../features/catalogEditor/CatalogText";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import LineupDetails from "../components/LineupDetails";
 import { postHeadline } from "../domain/lineup.mjs";
 import { ordinalWord } from "../domain/supportingActs.mjs";
@@ -9,9 +17,9 @@ import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
 import RatingSplit from "../components/RatingSplit";
 import RatingBreakdown from "../components/RatingBreakdown";
-import NearbyAfterparty from "../components/NearbyAfterparty";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
 import Icon from "../components/Icon";
-import VenuePhotoWidget from "../components/VenuePhotoWidget";
+import VenuePhotoWidget from "../components/VenuePhotoPanel";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
@@ -36,7 +44,6 @@ import { readShowCrowdAttendance, readShowDocument, readShowLoungeMeta } from ".
 import ShowAttendanceControls from "../features/showSocial/ShowAttendanceControls";
 import GoingTicketComposer from "../components/GoingTicketComposer";
 import LegacyArtistArchiveGate from "../components/artist/LegacyArtistArchiveGate";
-import { openTicketLink } from "../lib/ticketLinks";
 import { ENABLE_CANONICAL_SHOW_READ } from "../config/runtime.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
@@ -48,6 +55,7 @@ import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
 import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
 import usePublicEventSnapshot from "../hooks/usePublicEventSnapshot";
 import { publicEventArtistIdentityPending, publicEventCandidateId, readablePublicEventSnapshot } from "../domain/publicEventSnapshot.mjs";
+const AfterShowSection = lazyWithRetry(() => import("./VenueScreens").then(module => ({ default: module.AfterShowSection })), "AfterShowSection");
 
 const CROWD_FILTER_LABELS = Object.freeze({
   everyone: "Everyone",
@@ -59,10 +67,11 @@ const CROWD_FILTER_LABELS = Object.freeze({
 // catalogue artist. This intentionally receives only the validated server
 // snapshot: no local post data or artist-only interaction callbacks.
 function PublicEventSnapshotPanel({
-  event, status, onRetry, onOpenVenue, artistIdentityPending = false,
+  event, status, onRetry, onOpenVenue, ticketScope, artistIdentityPending = false,
   artistStatus = null, artistError = null, artistMissing = false,
-  onRetryArtist, artistRetryDisabled = false,
+  onRetryArtist, artistRetryDisabled = false, eventAccountSection = null, canonicalPresentation = null, refreshNotice = null,
 }) {
+  const ticketAction = useIOSTicketAction(ticketScope);
   const loading = status === "loading" || status === "refreshing";
   const artistChecking = !artistIdentityPending && artistStatus === "checking";
   const artistUnavailable = !artistIdentityPending && !artistMissing
@@ -77,6 +86,7 @@ function PublicEventSnapshotPanel({
   </Pressable> : null;
   if (!event) return (
     <ScrollView contentContainerStyle={styles.content}>
+      {refreshNotice}
       <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
         {loading ? <ActivityIndicator color={colors.amber} /> : <Icon name="calendar" size={18} color={colors.amber} />}
         <View style={styles.reviewUnavailableCopy}>
@@ -93,15 +103,20 @@ function PublicEventSnapshotPanel({
     </ScrollView>
   );
   const venue = { name: event.venue, source: event.source, providerVenueId: event.providerVenueId };
-  const cancelled = showLifecycleView(null, null, false, Date.now(), event, event).lifecycle === "cancelled";
+  const canonicalRestriction = Platform.OS === "ios" ? canonicalPresentation : null;
+  const publicCancelled = showLifecycleView(null, null, false, Date.now(), event, event).lifecycle === "cancelled";
+  const cancelled = publicCancelled || canonicalRestriction?.screenKicker === "Cancelled";
+  const allowTickets = !cancelled && canonicalRestriction?.allowTickets !== false;
+  const unavailableCopy = restrictedShowAvailabilityCopy({ allowTickets, artistIdentityPending, artistChecking, artistUnavailable });
   return (
-    <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      {refreshNotice}
       <View style={styles.ticket}>
-        <Text style={styles.ticketKicker}>{cancelled ? "THIS SHOW WAS CANCELLED" : "EVENT DETAILS"}</Text>
-        <Text style={styles.artist}>{event.name}</Text>
+        <Text style={styles.ticketKicker}>{cancelled ? "THIS SHOW WAS CANCELLED" : canonicalRestriction?.ticketKicker || "EVENT DETAILS"}</Text>
+        <Text style={styles.artist} accessibilityRole={Platform.OS === "ios" ? "header" : undefined}>{event.name}</Text>
         <View style={styles.perfWrap}><View style={styles.dashed} /></View>
         <View style={styles.stubRow}>
-          <Pressable style={{ flex: 1 }} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
+          <Pressable style={Platform.OS === "ios" ? { minHeight: 44, justifyContent: "center" } : { flex: 1 }} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
             <Text style={styles.stubLabel}>THE ROOM</Text>
             <Text style={styles.venueLink}>{event.venue}</Text>
             {!!event.city && <Text style={styles.stubCity}>{event.city}</Text>}
@@ -110,14 +125,16 @@ function PublicEventSnapshotPanel({
           <View style={styles.stubDateColumn}>
             <Text style={styles.stubLabel}>THE DATE</Text>
             <Text style={styles.date}>{formatDate(event.date, event.date)}</Text>
-            {!cancelled && event.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
+            {allowTickets && event.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
           </View>
         </View>
       </View>
       <CatalogText type="event" entityKey={event.id} />
-      {!cancelled && event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${event.name} at ${event.venue}`}>
-        <Text style={styles.ticketsTxt}>Get tickets</Text>
+      {allowTickets && event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void ticketAction.open(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`${Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"} for ${event.name} at ${event.venue}`}>
+        <Text style={styles.ticketsTxt}>{Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"}</Text>
       </Pressable> : null}
+      {ticketAction.error ? <Text style={styles.ticketError} accessibilityRole="alert">{ticketAction.error}</Text> : null}
+      {eventAccountSection}
       {!cancelled && <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
         <View style={styles.reviewUnavailableCopy}>
           <Text style={styles.reviewUnavailableTitle}>{artistIdentityPending || artistMissing
@@ -125,13 +142,13 @@ function PublicEventSnapshotPanel({
             : artistChecking ? "Checking artist availability"
               : artistUnavailable ? "Artist information is temporarily unavailable"
                 : "The event is here. Artist features are separate."}</Text>
-          <Text style={styles.reviewUnavailableText}>{artistIdentityPending
+          <Text style={styles.reviewUnavailableText}>{unavailableCopy || (artistIdentityPending
             ? "This show is available, but its artist identity still needs a confirmed match. To avoid opening a different artist with the same name, profile, ratings and archive links are paused. You can still view the date, venue and available tickets."
             : artistChecking
               ? "Confirming this artist's profile and status. You can still view the event details and available tickets."
               : artistUnavailable
                 ? "We couldn't check this artist right now. The event details and available tickets are still here. Try the artist check again shortly."
-                : "This listing's date and venue are available. Artist profiles and live ratings need a verified artist match; an event name is not always an artist."}</Text>
+                : "This listing's date and venue are available. Artist profiles and live ratings need a verified artist match; an event name is not always an artist.")}</Text>
           {artistRetryControl}
           {status === "error" ? <Text style={styles.reviewUnavailableText}>The latest refresh failed. Showing the event details already loaded.</Text> : null}
           <Pressable style={styles.reviewUnavailableRetry} onPress={onRetry} disabled={loading} accessibilityRole="button" accessibilityState={{ busy: loading, disabled: loading }} accessibilityLabel="Refresh event details">
@@ -190,14 +207,10 @@ function ReviewMediaTile({ media, author, postId, onOpenPhotos }) {
 // community score and the setlist. It must render for ANY event shape - a
 // logged review, a bare tour date from the calendar, a lounge link - so every
 // field is guarded; a tour date has no score and that's a mode, not a crash.
-export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth }) {
-  const { width } = useWindowDimensions();
-  const tabletLayout = width >= 720;
-  const archiveReviewTileStyle = width >= 1100
-    ? styles.archiveReviewCardThird
-    : tabletLayout
-      ? styles.archiveReviewCardHalf
-      : styles.archiveReviewCardFull;
+export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth, renderEventAccount }) {
+  const { width, fontScale } = useWindowDimensions();
+  const tabletLayout = concertDetailWide(width, fontScale, Platform.OS, 720);
+  const archiveReviewTileStyle = styles.archiveReviewCardFull;
   const appActive = useAppActive();
   const {
     venueCoord, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision,
@@ -216,9 +229,11 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const eventIdentitySnapshot = readablePublicEventSnapshot(publicEventResource, { eventId: publicEventId, accountId });
   const [showDocumentRead, setShowDocumentRead] = useState(null);
   const documentIdentity = showDocumentIdentity(legacyKey, accountId);
+  const ticketAction = useIOSTicketAction(documentIdentity);
+  const retainedShowDocument = isRetainedShowDocument(showDocumentRead, documentIdentity);
   const trustedShow = ENABLE_CANONICAL_SHOW_READ
     && showDocumentRead?.identity === documentIdentity
-    && showDocumentRead.status === "ready"
+    && (showDocumentRead.status === "ready" || retainedShowDocument)
     ? showDocumentRead.show
     : null;
   const artistIdentityPending = trustedShow?.artistIdentityPending === true
@@ -226,7 +241,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const venue = trustedShow?.venue || legacyVenue;
   const city = trustedShow?.city || legacyCity;
   const artist = trustedShow?.artist || legacyArtist;
-  const overall = typeof log.overall === "number" ? log.overall : null;
+  const rating = showPageRating(log);
+  const overall = rating.overall;
   const setlist = Array.isArray(log.setlist) ? log.setlist : [];
   // A festival review names the festival; a co-headline review, every headliner.
   const reviewFormat = log?.kind === "status" ? null : log?.showFormat || null;
@@ -280,6 +296,12 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const deceased = memorialAvailability === "deceased";
   const legacyMode = isLegacyArtistMemorial(memorialResource.data);
   const publicEventSnapshot = readablePublicEventSnapshot(publicEventResource, { eventId: publicEventId, accountId, legacyMode });
+  // Only a scoped, resolver-validated tour-date identity is a page-access target.
+  // This element mounts in one active branch; archive/review hints never qualify.
+  const eventAccountSection = publicEventSnapshot && renderEventAccount ? <ShowSection
+    key={`event-account:${accountId || "guest"}:${publicEventSnapshot.id}`}
+    title="Event updates & page access" keepMounted
+  >{renderEventAccount({ targetKind: "event", targetId: publicEventSnapshot.id, accountId, onOpenPost, onRequireAuth })}</ShowSection> : null;
   const liveActionsAvailable = memorialAvailability === "living";
   const memorialChecking = memorialAvailability === "checking";
   const showPageAllowed = !artistIdentityPending && artistIdentityStatus === "ready"
@@ -317,6 +339,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const localLoungeCount = loungeFor(key).length;
   const archiveShowKey = log.archiveShowKey || null;
   const archiveCover = archiveCoverMedia(log.cover);
+  const eventArtwork = showPageEventArtwork(norm);
   const {
     resource: archiveReviewResource,
     reload: reloadArchiveReviews,
@@ -326,7 +349,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     name: artist,
     artistKey: memorialArtistKey,
     showKey: archiveShowKey,
-    limit: 20,
+    limit: 6,
     enabled: showPageAllowed && !!archiveShowKey,
   });
   const archiveReviewData = archiveReviewResource.data || {};
@@ -336,6 +359,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const [socialRead, setSocialRead] = useState(null);
   const [attendanceRefreshVersion, setAttendanceRefreshVersion] = useState(0);
   const [goingTicketPrompt, setGoingTicketPrompt] = useState(null);
+  useIOSDetailBackBlock(!!goingTicketPrompt || goingBusy);
   const showDocumentRequestRef = useRef(0);
   const showSocialRequestRef = useRef(0);
   const socialIdentity = showSocialIdentity(key, accountId);
@@ -416,7 +440,14 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
       if (signal?.aborted || showDocumentRequestRef.current !== request) return { ok: false, stale: true };
       // A legacy/member-created key may intentionally have no public canonical
       // document. Preserve the existing ShowScreen instead of surfacing noise.
-      setShowDocumentRead({ identity, status: "unavailable", show: null });
+      if (Platform.OS === "ios" && isTransientShowReadFailure(error)) {
+        setShowDocumentRead((previous) => previous?.identity === identity
+          && ["ready", "stale"].includes(previous.status) && previous.show?.provider?.backed === true
+          ? { identity, status: "stale", show: previous.show }
+          : { identity, status: "unavailable", show: null });
+      } else {
+        setShowDocumentRead({ identity, status: "unavailable", show: null });
+      }
       return { ok: false, unavailable: true, error };
     }
   };
@@ -516,6 +547,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         refreshShowSocial({ signal, strict: true }),
         loadVenuePhotos(venue, { ...venuePhotoIdentity, force: true, signal }),
       ]);
+      if (Platform.OS === "ios" && documentResult.error) throw documentResult.error;
       return { documentResult, socialResult, refreshedPhotos };
     },
   });
@@ -531,6 +563,10 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     eventIdentitySnapshot,
   );
   const presentation = showPresentationModel(lifecycleView);
+  const rsvpShow = { ...norm, ...(trustedShow || {}),
+    eventTimezone: trustedShow?.timezone || norm.eventTimezone,
+  };
+  const rsvp = useEventRsvp(rsvpShow);
   const [, setCountdownRevision] = useState(0);
   const handleCountdownComplete = useCallback(() => {
     // Doors, access, and showtime are separate phases. The label owns the
@@ -558,6 +594,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   // window: nobody wants the surprise ruined before their own night. Hidden by
   // default, one tap reveals.
   const [revealed, setRevealed] = useState(!log.inTourWindow);
+  useEffect(() => setRevealed(!log.inTourWindow), [key, accountId, log.inTourWindow]);
   const handleAttendanceSaved = (result, transition = {}) => {
     applyMyAttendanceMutation?.({
       ...norm,
@@ -577,6 +614,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     }
   };
   const toggleLegacyGoing = async () => {
+    if (!going && !eventRsvpWindow(rsvpShow).canPlan) return;
     if (!session) {
       onRequireAuth?.();
       return;
@@ -590,6 +628,28 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     }
     if (!wasGoing && tourDateId) setGoingTicketPrompt({ ready: true });
   };
+  const legacyGoingButton = liveActionsAvailable && !lifecycleView.trusted && (going || (presentation.allowGoing && rsvp.canPlan)) ? <Pressable
+            style={[styles.goingBtn, going && styles.goingOn, goingBusy && styles.goingBusy]}
+            onPress={() => { void toggleLegacyGoing(); }}
+            accessibilityRole="button"
+            accessibilityLabel={going ? "Remove this show from Going" : "Add this show to Going"}
+            accessibilityState={{ selected: going, busy: goingBusy }}
+          >
+            {goingBusy ? <ActivityIndicator size="small" color={going ? "#1A1206" : colors.amber} /> : (
+              <Icon name={going ? "check" : "calendar"} size={16} color={going ? "#1A1206" : colors.amber} />
+            )}
+            <Text style={[styles.goingTxt, going && { color: "#1A1206" }]}>{goingBusy ? "Saving…" : going ? "Going" : "I'm going"}</Text>
+          </Pressable> : null;
+  const refreshNotice = retainedShowDocument
+    ? <ShowRefreshNotice styles={styles} onRetry={refreshShow} refreshing={showRefreshing} /> : null;
+  const archiveGate = <LegacyArtistArchiveGate
+    artistName={artist}
+    state={profileGateState}
+    onBack={onClose}
+    onRetry={retryProfileStatus}
+    retryDisabled={artistIdentityStatus === "unavailable" && artistIdentityRetryDisabled}
+    identityMissing={artistIdentityMissing}
+  />;
   return (
     <View style={styles.wrap}>
       <ScreenHeader
@@ -603,6 +663,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
       {!showPageAllowed ? (
         publicEventId && !legacyMode ? <PublicEventSnapshotPanel
           event={publicEventSnapshot}
+          eventAccountSection={eventAccountSection}
+          ticketScope={documentIdentity}
           status={publicEventResource.status}
           artistIdentityPending={artistIdentityPending}
           artistStatus={profileGateState}
@@ -612,46 +674,54 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           onRetry={reloadPublicEvent}
           onRetryArtist={retryProfileStatus}
           onOpenVenue={onOpenVenue}
-        /> : <LegacyArtistArchiveGate
-          artistName={artist}
-          state={profileGateState}
-          onBack={onClose}
-          onRetry={retryProfileStatus}
-          retryDisabled={artistIdentityStatus === "unavailable" && artistIdentityRetryDisabled}
-          identityMissing={artistIdentityMissing}
-        />
+          canonicalPresentation={Platform.OS === "ios" && lifecycleView.trusted && !presentation.allowTickets ? presentation : null}
+          refreshNotice={refreshNotice}
+        /> : refreshNotice ? <ScrollView contentContainerStyle={styles.content}>{refreshNotice}{archiveGate}</ScrollView> : archiveGate
       ) : <VinylRefreshBoundary
         refreshing={showRefreshing}
         onRefresh={refreshShow}
         accessibilityLabel={`Refresh ${eventTitle} show page`}
       >
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <CatalogText type="event" entityKey={publicEventId || tourDateId} />
-        {/* Ticket-style hero: this is what makes a NIGHT read differently from
-            a venue. Artist headline, then a perforated stub strip carrying the
-            room + the date, like the ticket you'd have kept. */}
-        <View style={[
-          styles.showSummary,
-          presentation.showPostEvent && tabletLayout && styles.showSummaryWide,
-        ]}>
-          <View style={[
-            styles.showSummaryMediaColumn,
-            presentation.showPostEvent && tabletLayout && styles.showSummaryMediaColumnWide,
-          ]}>
-        <View style={[styles.heroGrid, !presentation.showPostEvent && tabletLayout && styles.heroGridWide]}>
-          <View style={[styles.heroTicketColumn, !presentation.showPostEvent && tabletLayout && styles.heroTicketColumnWide]}>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        {refreshNotice}
+        <View style={[styles.overview, tabletLayout && (archiveCover || eventArtwork) && styles.overviewWide]}>
+          <View style={[styles.overviewPhotos, tabletLayout && (archiveCover || eventArtwork) && styles.overviewPhotosWide]}>
+        {archiveCover ? (
+          <View style={styles.archiveHero}>
+            <SmartImage
+              uri={archiveCover.uri}
+              posterUri={archiveCover.posterUri}
+              mediaKind={archiveCover.kind}
+              style={styles.archiveHeroImage}
+              contain={false}
+              accessibilityLabel={`Open fan photo from ${artist} at ${venue}`}
+              onPress={() => onOpenPhotos?.([archiveCover], 0, archiveCover.postId)}
+            />
+            <View style={styles.archiveHeroCredit} pointerEvents="none">
+              <Text style={styles.archiveHeroCreditText} numberOfLines={1}>{archiveCover.kind === "video" ? "Clip" : "Photo"} · {archiveCover.by}</Text>
+            </View>
+          </View>
+        ) : eventArtwork ? (
+          <View>
+            <SmartImage uri={eventArtwork.uri} style={styles.eventArtwork} contain accessibilityLabel={`Event artwork for ${eventTitle}`} />
+            <Text style={styles.artworkCredit}>Event artwork · {eventArtwork.by}</Text>
+          </View>
+        ) : <Text style={styles.photoEmpty}>No event photos available.</Text>}
+          </View>
+          <View style={styles.overviewInfo}>
         <View style={styles.ticket}>
-          <Text style={styles.ticketKicker}>{presentation.ticketKicker}</Text>
+          {!presentation.showPostEvent && <Text style={styles.ticketKicker}>{presentation.ticketKicker}</Text>}
           {festivalReview ? (
             <View>
-              <Text style={styles.artist}>{eventTitle}</Text>
+              <Text style={styles.artist} accessibilityRole={Platform.OS === "ios" ? "header" : undefined}>{eventTitle}</Text>
               <Text style={styles.eventLineup}>FESTIVAL</Text>
             </View>
           ) : isNamedLiveEvent ? (
             <View>
-              <Text style={styles.artist}>{eventTitle}</Text>
-              {!!eventLineup && <Text style={styles.eventLineup} numberOfLines={2}>LINEUP · {eventLineup}</Text>}
+              <Text style={styles.artist} accessibilityRole={Platform.OS === "ios" ? "header" : undefined}>{eventTitle}</Text>
+              {!!eventLineup && <Text style={styles.eventLineup} numberOfLines={Platform.OS === "ios" ? undefined : 2}>LINEUP · {eventLineup}</Text>}
               <Pressable
+                style={Platform.OS === "ios" ? { minHeight: 44, justifyContent: "center" } : undefined}
                 onPress={() => onOpenArtist?.(artist)}
                 accessibilityRole="button"
                 accessibilityLabel={`Open ${artist}'s profile`}
@@ -665,15 +735,11 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               accessibilityRole="button"
               accessibilityLabel={archiveShowKey ? `Open every recorded ${artist} night` : `Open ${artist}'s profile`}
             >
-              <Text style={styles.artist}>{artist}</Text>
-              <Text style={styles.artistLink}>View all {artist} nights ›</Text>
+              <Text style={styles.artist} accessibilityRole={Platform.OS === "ios" ? "header" : undefined}>{artist}</Text>
+              <Text style={styles.artistLink}>{archiveShowKey ? "View concert archive" : "Artist profile"} ›</Text>
             </Pressable>
           )}
-          <View style={styles.perfWrap}>
-            <View style={[styles.notch, { left: -27 }]} />
-            <View style={styles.dashed} />
-            <View style={[styles.notch, { right: -27 }]} />
-          </View>
+          <View style={styles.summaryDivider} />
           <View style={styles.stubRow}>
             <Pressable
               style={{ flex: 1 }}
@@ -682,8 +748,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               accessibilityLabel={`Open ${venue}'s venue page`}
             >
               <Text style={styles.stubLabel}>THE ROOM</Text>
-              <Text style={styles.venueLink} numberOfLines={1}>{venue}</Text>
-              {!!city && <Text style={styles.stubCity} numberOfLines={1}>{city}</Text>}
+              <Text style={styles.venueLink}>{venue}</Text>
+              {!!city && <Text style={styles.stubCity}>{city}</Text>}
             </Pressable>
             <View style={styles.stubDivider} />
             <View style={styles.stubDateColumn}>
@@ -692,10 +758,6 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
-          {/* A review's lineup with each set's rating and note, and how many
-              times its author has now seen the headliner. */}
-          <LineupDetails post={log} onOpenArtist={onOpenArtist} style={styles.supportingActs} />
-          {log.seen > 1 ? <Text style={styles.seenLine}>{ordinalWord(log.seen)} time in the pit</Text> : null}
           {ticketShow?.timing?.length ? (
             <View style={styles.timingRow}>
               {ticketShow.timing.map((timing) => (
@@ -706,92 +768,53 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               ))}
             </View>
           ) : null}
-          {liveActionsAvailable && presentation.showCountdown && hasAuthenticCountdownTarget && targetMs != null && (
-            <View style={styles.countdownStrip}>
-              <Icon name="clock" size={14} color={colors.amber} />
-              <Countdown target={targetMs} active={appActive} onComplete={handleCountdownComplete} style={styles.countdownTxt} />
-              {targetMs > countdownNowMs && <Text style={styles.countdownSub}>{countdownTimingKind === "doors"
-                ? "until verified doors"
-                : countdownTimingKind === "access" ? "until event access" : "until showtime"}</Text>}
-            </View>
-          )}
         </View>
-          </View>
-          <View style={[styles.heroVenueColumn, !presentation.showPostEvent && tabletLayout && styles.heroVenueColumnWide]}>
-            <VenuePhotoWidget
-              compact
-              photos={photos}
-              venueName={venue}
-              city={city}
-              coord={coord}
-              loading={photoState.status === "idle" || photoState.status === "loading"}
-              error={photoState.status === "error"}
-              onRetry={() => { void loadVenuePhotos(venue, { ...venuePhotoIdentity, force: true }).catch(() => { /* architecture: allow-empty-catch -- the venue widget keeps its visible retry state while the optional gallery request fails */ }); }}
-              onPress={() => onOpenVenue?.(venueNavigation)}
-            />
-          </View>
-        </View>
-
-        {archiveCover ? (
-          <View style={styles.archiveHero}>
-            <SmartImage
-              uri={archiveCover.uri}
-              posterUri={archiveCover.posterUri}
-              mediaKind={archiveCover.kind}
-              style={styles.archiveHeroImage}
-              contain={false}
-              accessibilityLabel={`Open fan photo from ${artist} at ${venue}`}
-              onPress={() => onOpenPhotos?.([archiveCover], 0, archiveCover.postId)}
-            />
-            <View style={styles.archiveHeroCredit} pointerEvents="none">
-              <Text style={styles.archiveHeroCreditText} numberOfLines={1}>FAN COVER · {archiveCover.by}</Text>
-            </View>
+        {presentation.showPostEvent ? (
+          <View style={styles.overallRow}>
+            {overall != null ? <>
+              <Text style={styles.overallValue} accessibilityLabel={`${overall.toFixed(1)} out of 5`}>{overall.toFixed(1)}</Text>
+              <View style={styles.overallCopy}>
+                <Text style={styles.overallLabel}>{rating.label}</Text>
+                <Stars value={overall} size={15} />
+                {!!rating.countLabel && <Text style={styles.scoreSub}>{rating.countLabel}</Text>}
+              </View>
+            </> : <View style={styles.overallCopy}>
+              <Text style={styles.overallLabel}>No overall show rating yet</Text>
+              <Text style={styles.note}>{deceased ? "New live ratings are closed." : "Rate this show if you were there."}</Text>
+            </View>}
           </View>
         ) : null}
           </View>
-
-        {Platform.OS !== "web" && <EventPhotoCredit credit={log.discoverPhotoCredit} />}
-
-        {/* A night that happened gets its community score. An upcoming night
-            gets tickets instead: never a fabricated 0.0. */}
-        {presentation.showPostEvent && overall != null && (
-          <View style={[styles.scoreCard, tabletLayout && styles.scoreCardSummaryWide]}>
-            <View style={styles.scoreSummary}>
-              <Text style={styles.bigScore}>{overall.toFixed(1)}</Text>
-              <Stars value={overall} size={18} />
-              <Text style={styles.scoreSub}>community score · {log.ratingCount ?? ((log.likes || 0) + (log.comments || 0))} {log.ratingCount === 1 ? "rating" : "ratings"}</Text>
-            </View>
-            <View style={styles.scoreDetails}>
-              {log.dims && Object.values(log.dims).some((v) => v > 0)
-                ? <RatingBreakdown dims={log.dims} />
-                : !archiveShowKey && (log.band || log.room)
-                  ? <RatingSplit band={log.band || 0} room={log.room || 0} />
-                  : null}
-              <Text style={styles.note}>
-                {archiveShowKey
-                  ? "Each account counts once. A few perfect ratings cannot outweigh a larger crowd."
-                  : `Artist and venue ratings stay separate. This venue score belongs to ${venue}.`}
-              </Text>
-            </View>
-          </View>
-        )}
-        {presentation.showPostEvent && overall == null && (
-          <View style={[styles.scoreCard, tabletLayout && styles.scoreCardSummaryWide]}>
-            <Text style={styles.noScoreTitle}>No score yet</Text>
-            <Text style={styles.note}>{deceased
-              ? "No historical score was recorded for this night. New live ratings are closed."
-              : liveActionsAvailable
-                ? "Nobody has logged this night. Were you there? Yours would be the first review."
-                : "Mshpit is verifying whether live ratings are available for this artist."}</Text>
-          </View>
-        )}
         </View>
+        {/* review-in-post: log/review this exact show. Only a night that has
+            actually happened can be reviewed. */}
+        {presentation.showPostEvent && !liveActionsAvailable ? (
+          <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
+            <Icon name={deceased ? "dove" : "shield"} size={18} color={colors.gold} strokeWidth={1.7} />
+            <View style={styles.reviewUnavailableCopy}>
+              <Text style={styles.reviewUnavailableTitle}>{deceased ? "This artist is remembered in tribute" : memorialChecking ? "Checking artist status" : "Reviews are temporarily unavailable"}</Text>
+              <Text style={styles.reviewUnavailableText}>{deceased
+                ? "Historical ratings remain in the archive, but new live ratings are closed. You can share a fan memory from the artist page."
+                : memorialChecking
+                  ? "Mshpit is confirming whether new live ratings are available for this artist."
+                  : "Mshpit could not safely confirm this artist's status, so the review action stays hidden."}</Text>
+              {!deceased && !memorialChecking ? (
+                <Pressable style={styles.reviewUnavailableRetry} onPress={retryMemorial} accessibilityRole="button" accessibilityLabel={`Retry checking ${artist}'s artist status`}>
+                  <Text style={styles.reviewUnavailableRetryText}>Try again</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+        ) : null}
+
         {liveActionsAvailable && presentation.allowTickets && log.ticketUrl ? (
-          <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(log.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${eventTitle} at ${venue}`}>
+          <Pressable style={styles.ticketsBtn} onPress={() => { void ticketAction.open(log.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`${Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"} for ${eventTitle} at ${venue}`}>
             <Icon name="star" size={15} color="#1A1206" />
-            <Text style={styles.ticketsTxt}>Get tickets</Text>
+            <Text style={styles.ticketsTxt}>{Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"}</Text>
           </Pressable>
         ) : null}
+
+        {ticketAction.error ? <Text style={styles.ticketError} accessibilityRole="alert">{ticketAction.error}</Text> : null}
 
         {/* Typed attendance is available only when the canonical provider
             lifecycle makes each state safe. Legacy/member-created Shows keep
@@ -806,35 +829,25 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             lifecycle={lifecycleView.lifecycle}
             onRequireAuth={onRequireAuth}
             onSaved={handleAttendanceSaved}
-            show={{ ...trustedShow, tourDateId }}
+            show={{ ...rsvpShow, tourDateId }}
           />
         ) : null}
 
         {/* One persistent Lounge belongs to this exact show in every lifecycle. */}
         {liveActionsAvailable ? <View style={styles.socialRow}>
-          {!lifecycleView.trusted && presentation.allowGoing ? <Pressable
-            style={[styles.goingBtn, going && styles.goingOn, goingBusy && styles.goingBusy]}
-            onPress={() => { void toggleLegacyGoing(); }}
-            accessibilityRole="button"
-            accessibilityLabel={going ? "Remove this show from Going" : "Add this show to Going"}
-            accessibilityState={{ selected: going, busy: goingBusy }}
-          >
-            {goingBusy ? <ActivityIndicator size="small" color={going ? "#1A1206" : colors.amber} /> : (
-              <Icon name={going ? "check" : "calendar"} size={16} color={going ? "#1A1206" : colors.amber} />
-            )}
-            <Text style={[styles.goingTxt, going && { color: "#1A1206" }]}>{goingBusy ? "Saving…" : going ? "Going" : "I'm going"}</Text>
-          </Pressable> : null}
+          {presentation.showPostEvent && liveActionsAvailable ? (
+          <Pressable style={[styles.reviewCta, styles.reviewCtaInline]} onPress={() => onReview?.(norm)} accessibilityRole="button" accessibilityLabel={`Log or review ${eventTitle} at ${venue}`}>
+            <Icon name="star" size={16} color="#1A1206" />
+            <Text style={styles.reviewCtaTxt}>Rate & review</Text>
+          </Pressable>
+          ) : null}
+          {!presentation.showPostEvent && legacyGoingButton}
           <Pressable style={[styles.loungeBtn, loungeClosed && styles.loungeBtnClosed]} onPress={() => onOpenLounge?.(norm)} accessibilityRole="button" accessibilityLabel={loungeClosed ? "Open this show's closed Lounge details" : `Open this show's Lounge, ${social.messageCount} messages`}>
             <Icon name={loungeClosed ? "lock" : "comment"} size={16} color={colors.amber} />
             <Text style={styles.loungeTxt}>{loungeClosed ? "Lounge closed" : "Lounge"}</Text>
             {!loungeClosed ? <View style={styles.loungeCount}><Text style={styles.loungeCountTxt}>{social.messageCount}</Text></View> : null}
           </Pressable>
         </View> : null}
-        {liveActionsAvailable ? <Text style={styles.loungeHint}>{loungeClosed
-          ? social.loungeCutoffSource === "show_start"
-            ? "Doors time was unavailable, so the Lounge closed 24 hours after show start."
-            : "The Lounge closed 24 hours after doors opened."
-          : "One Lounge for this exact show, open before, during, and until 24 hours after doors open."}</Text> : null}
         {liveActionsAvailable && goingTicketPrompt && tourDateId ? (
           <GoingTicketComposer
             event={ticketEvent}
@@ -844,6 +857,152 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             user={session}
           />
         ) : null}
+        <ShowSection key={`reviews:${socialIdentity}`} title="Reviews" initiallyOpen summary={archiveShowKey && (archiveReviewResource.status === "ready" || archiveReviews.length > 0) ? `${archiveReviewData.total} ${archiveReviewData.total === 1 ? "review" : "reviews"}` : presentation.showPostEvent ? "From this show" : lifecycleView.lifecycle === "cancelled" ? "Cancelled show" : "Available after the show"}>
+        {!!log.review && !archiveShowKey && (
+          <>
+            <Text style={styles.sectionLabel}>FAN REVIEW</Text>
+            <View style={styles.reviewCard}>
+              <Text style={styles.review} numberOfLines={discussionAvailable ? 4 : undefined}>{log.review}</Text>
+              <Pressable onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
+                <Text style={styles.byline}>- {log.user?.name || "a fan"}</Text>
+              </Pressable>
+            </View>
+          </>
+        )}
+
+        {archiveShowKey ? (
+          <>
+            {["idle", "loading", "refreshing"].includes(archiveReviewResource.status) && archiveReviews.length === 0 ? (
+              <View style={styles.archiveReviewState}><ActivityIndicator color={colors.amber} /><Text style={styles.archiveReviewStateText}>Loading reviews…</Text></View>
+            ) : null}
+            {archiveReviewResource.status === "error" && archiveReviews.length === 0 ? (
+              <Pressable style={styles.archiveReviewRetry} onPress={reloadArchiveReviews} accessibilityRole="button">
+                <Text style={styles.archiveReviewRetryText}>Couldn't load reviews. Try again</Text>
+              </Pressable>
+            ) : null}
+            {archiveReviewResource.status === "ready" && archiveReviews.length === 0 ? <Text style={styles.archiveReviewStateText}>No reviews to show yet.</Text> : null}
+            {archiveReviewResource.status === "error" && archiveReviews.length > 0 && !archiveLoadMoreFailed ? <Pressable style={styles.archiveReviewRetry} onPress={reloadArchiveReviews} accessibilityRole="button" accessibilityLabel="Retry refreshing reviews"><Text style={styles.archiveReviewRetryText}>Couldn't refresh reviews. Try again</Text></Pressable> : null}
+            <View style={styles.archiveReviewGrid}>
+              {archiveReviews.map((review) => {
+                const media = archiveReviewMedia(review);
+                const author = review.user?.name || "A Pit fan";
+                return (
+                  <View key={review.id} style={[styles.archiveReviewCard, archiveReviewTileStyle]}>
+                    <View style={styles.archiveReviewTop}>
+                      <Pressable style={styles.archiveReviewAuthor} onPress={() => review.userId && onOpenProfile?.(review.userId)} accessibilityRole="button" accessibilityLabel={`Open ${author}'s profile`}>
+                        <Avatar user={review.user || { name: author, initials: "PF" }} size={30} />
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text style={styles.archiveReviewName} numberOfLines={1}>{author}</Text>
+                          <Text style={styles.archiveReviewMeta} numberOfLines={1}>{review.user?.handle ? `@${review.user.handle} · ` : ""}{formatDate(review.date, review.date)}</Text>
+                        </View>
+                      </Pressable>
+                      {savedShowRating(review.overall) != null ? <View style={styles.archiveReviewScore} accessibilityLabel={`Overall show rating ${review.overall.toFixed(1)} out of 5`}><Icon name="star" size={11} color={colors.gold} /><Text style={styles.archiveReviewScoreText}>{review.overall.toFixed(1)}</Text></View> : null}
+                    </View>
+                    <ReviewMediaTile media={media} author={author} postId={review.id} onOpenPhotos={onOpenPhotos} />
+                    {!!review.review && <Text style={styles.archiveReviewText} numberOfLines={4}>{review.review}</Text>}
+                    <Pressable style={styles.archiveReviewOpen} onPress={() => onOpenPost?.(review)} accessibilityRole="button" accessibilityLabel={`Open ${author}'s review and comments`}>
+                      <Text style={styles.archiveReviewOpenText}>Open review</Text>
+                      <View style={styles.archiveReviewSignals}><Icon name="heart" size={11} color={colors.magenta} /><Text style={styles.archiveReviewSignalText}>{review.likes || 0}</Text><Icon name="comment" size={11} color={colors.textDim} /><Text style={styles.archiveReviewSignalText}>{review.comments || 0}</Text></View>
+                      <Icon name="chevron-right" size={14} color={colors.amber} />
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </View>
+            {archiveLoadMoreFailed ? (
+              <View style={styles.archiveReviewMoreError} accessibilityLiveRegion="assertive">
+                <Text style={styles.archiveReviewMoreErrorText} selectable>More reviews could not be loaded. The reviews already on screen are still available.</Text>
+                <Pressable style={styles.archiveReviewMoreRetry} onPress={() => { void loadMoreArchiveReviewsWithFeedback(); }} accessibilityRole="button" accessibilityLabel="Retry loading more reviews">
+                  <Icon name="plus" size={14} color={colors.amber} />
+                  <Text style={styles.archiveReviewMoreRetryText}>Try again</Text>
+                </Pressable>
+              </View>
+            ) : archiveReviewData.nextCursor ? (
+              <Pressable style={styles.archiveReviewMore} onPress={() => { void loadMoreArchiveReviewsWithFeedback(); }} disabled={archiveReviewData.loadingMore} accessibilityRole="button" accessibilityState={{ busy: !!archiveReviewData.loadingMore }}>
+                {archiveReviewData.loadingMore ? <ActivityIndicator size="small" color={colors.amber} /> : <Icon name="plus" size={14} color={colors.amber} />}
+                <Text style={styles.archiveReviewMoreText}>{archiveReviewData.loadingMore ? "Loading…" : "Load more reviews"}</Text>
+              </Pressable>
+            ) : null}
+          </>
+        ) : null}
+
+        {/* A fan review is one post attached to this show, not a second show-page
+            discussion. The original PostScreen keeps its review, media, reactions,
+            and replies together. */}
+        {discussionAvailable ? (
+          <Pressable
+            style={({ pressed }) => [styles.originalPostCard, pressed && styles.originalPostCardPressed]}
+            onPress={() => onOpenPost?.(norm)}
+            accessibilityRole="button"
+            accessibilityLabel="Open the original fan post"
+            accessibilityHint="Shows the complete post where this review was shared"
+          >
+            <View style={styles.originalPostIcon}><Icon name="feed" size={17} color={colors.amber} /></View>
+            <View style={styles.originalPostCopy}>
+              <Text style={styles.originalPostLabel}>FAN POST</Text>
+              <Text style={styles.originalPostTitle}>Open the original fan post</Text>
+              <Text style={styles.originalPostText}>See the full review and its photos where the fan shared it.</Text>
+            </View>
+            <Icon name="chevron-right" size={16} color={colors.amber} />
+          </Pressable>
+        ) : null}
+
+          {!archiveShowKey && !log.review && <View><Text style={styles.archiveReviewStateText}>{presentation.showPostEvent ? "Look for this date in the artist's concert archive to read fan reviews." : lifecycleView.lifecycle === "cancelled" ? "This show was cancelled." : "Reviews will be available after the show."}</Text>{presentation.showPostEvent && onOpenArchive ? <Pressable style={styles.archiveReviewOpen} onPress={() => onOpenArchive(artist, norm.artistKey || null)} accessibilityRole="button" accessibilityLabel={`Browse ${artist}'s concert reviews`}><Text style={styles.archiveReviewOpenText}>Browse concert reviews</Text><Icon name="chevron-right" size={16} color={colors.amber} /></Pressable> : null}</View>}
+        </ShowSection>
+        {eventAccountSection}
+        <ShowSection key={`details:${socialIdentity}`} title="Event details" summary="Lineup, venue and show information"><CatalogText type="event" entityKey={publicEventId || tourDateId} />
+          {/* A review's lineup with each set's rating and note, and how many
+              times its author has now seen the headliner. */}
+          <LineupDetails post={log} onOpenArtist={onOpenArtist} style={styles.supportingActs} />
+          {log.seen > 1 ? <Text style={styles.seenLine}>{ordinalWord(log.seen)} time in the pit</Text> : null}
+          {liveActionsAvailable && presentation.showCountdown && hasAuthenticCountdownTarget && targetMs != null && (
+            <View style={styles.countdownStrip}>
+              <Icon name="clock" size={14} color={colors.amber} />
+              <Countdown target={targetMs} active={appActive} onComplete={handleCountdownComplete} style={styles.countdownTxt} />
+              {targetMs > countdownNowMs && <Text style={styles.countdownSub}>{countdownTimingKind === "doors"
+                ? "until verified doors"
+                : countdownTimingKind === "access" ? "until event access" : "until showtime"}</Text>}
+            </View>
+          )}
+        {/* jump to the artist or the venue from the concert */}
+        <View style={styles.seeRow}>
+          <Pressable style={styles.seeBtn} onPress={() => onOpenArtist?.(artist)} accessibilityRole="button" accessibilityLabel={`Open ${artist}'s profile`}>
+            <Icon name="music" size={16} color={colors.amber} />
+            <Text style={styles.seeTxt}>See this artist</Text>
+            <Icon name="chevron-right" size={16} color={colors.textDim} />
+          </Pressable>
+          <Pressable style={styles.seeBtn} onPress={() => onOpenVenue?.(venueNavigation)} accessibilityRole="button" accessibilityLabel={`Open ${venue}'s venue page`}>
+            <Icon name="pin" size={16} color={colors.amber} />
+            <Text style={styles.seeTxt}>See this venue</Text>
+            <Icon name="chevron-right" size={16} color={colors.textDim} />
+          </Pressable>
+        </View>
+
+          <Text style={styles.sectionLabel}>VENUE PHOTOS</Text>
+            <VenuePhotoWidget
+              compact
+              photos={photos}
+              venueName={venue}
+              city={city}
+              coord={coord}
+              loading={photoState.status === "idle" || photoState.status === "loading"}
+              error={photoState.status === "error"}
+              onRetry={() => { void loadVenuePhotos(venue, { ...venuePhotoIdentity, force: true }).catch(() => { /* architecture: allow-empty-catch -- the venue widget keeps its visible retry state while the optional gallery request fails */ }); }}
+              onPress={() => onOpenVenue?.(venueNavigation)}
+            />
+          {eventArtwork ? <EventPhotoCredit credit={{ creator: eventArtwork.by, sourcePage: eventArtwork.sourcePage }} />
+            : Platform.OS !== "web" && <EventPhotoCredit credit={log.discoverPhotoCredit} />}
+        </ShowSection>
+        {presentation.showPostEvent && ((log.dims && Object.values(log.dims).some(value => value > 0)) || (!archiveShowKey && (log.band || log.room))) ? <ShowSection key={`ratings:${socialIdentity}`} title="Rating breakdown" summary="Artist, venue and night">
+          {log.dims && Object.values(log.dims).some(value => value > 0) ? <RatingBreakdown dims={log.dims} /> : <RatingSplit band={log.band || 0} room={log.room || 0} />}<Text style={styles.note}>Artist and venue ratings stay separate. This venue score belongs to {venue}.</Text>
+        </ShowSection> : null}
+        {liveActionsAvailable || attendeeTotal > 0 || session ? <ShowSection key={`crowd:${socialIdentity}`} title="Crowd & Lounge" summary={social.loading ? "Loading attendees…" : crowdReadFailed ? "Attendees unavailable" : `${attendeeTotal} ${attendeeTotal === 1 ? "attendee" : "attendees"}`}>
+        {presentation.showPostEvent && legacyGoingButton}
+        {liveActionsAvailable ? <Text style={styles.loungeHint}>{loungeClosed
+          ? social.loungeCutoffSource === "show_start"
+            ? "Doors time was unavailable, so the Lounge closed 24 hours after show start."
+            : "The Lounge closed 24 hours after doors opened."
+          : "One Lounge for this exact show, open before, during, and until 24 hours after doors open."}</Text> : null}
         {(attendeeTotal > 0 || !!session) && (
           <View style={styles.attendeesCard}>
             <View style={styles.crowdHeader}>
@@ -892,8 +1051,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
                     <Avatar user={attendee} size={30} />
                     <View style={styles.attendeeCopy}>
                       <Text style={styles.attendeeName} numberOfLines={1}>{attendee.name}</Text>
-                      {attendanceStateDisplayLabel(attendee.state, { cutoffAt: attendanceCutoffAt, now: countdownNowMs }) ? (
-                        <Text style={styles.attendeeState}>{attendanceStateDisplayLabel(attendee.state, { cutoffAt: attendanceCutoffAt, now: countdownNowMs })}{attendee.verifiedAttendance ? " · Verified" : ""}</Text>
+                      {attendanceStateDisplayLabel(attendee.state, { show: rsvpShow, cutoffAt: attendanceCutoffAt, now: countdownNowMs }) ? (
+                        <Text style={styles.attendeeState}>{attendanceStateDisplayLabel(attendee.state, { show: rsvpShow, cutoffAt: attendanceCutoffAt, now: countdownNowMs })}{attendee.verifiedAttendance ? " · Verified" : ""}</Text>
                       ) : null}
                     </View>
                   </Pressable>
@@ -918,152 +1077,17 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           </View>
         )}
 
-        {/* review-in-post: log/review this exact show. Only a night that has
-            actually happened can be reviewed. */}
-        {presentation.showPostEvent && liveActionsAvailable ? (
-          <Pressable style={styles.reviewCta} onPress={() => onReview?.(norm)} accessibilityRole="button" accessibilityLabel={`Log or review ${eventTitle} at ${venue}`}>
-            <Icon name="star" size={16} color="#1A1206" />
-            <Text style={styles.reviewCtaTxt}>Log / review this {socialObjectLabel}</Text>
-          </Pressable>
-        ) : presentation.showPostEvent ? (
-          <View style={styles.reviewUnavailable} accessibilityLiveRegion="polite">
-            <Icon name={deceased ? "dove" : "shield"} size={18} color={colors.gold} strokeWidth={1.7} />
-            <View style={styles.reviewUnavailableCopy}>
-              <Text style={styles.reviewUnavailableTitle}>{deceased ? "This artist is remembered in tribute" : memorialChecking ? "Checking artist status" : "Reviews are temporarily unavailable"}</Text>
-              <Text style={styles.reviewUnavailableText}>{deceased
-                ? "Historical ratings remain in the archive, but new live ratings are closed. You can share a fan memory from the artist page."
-                : memorialChecking
-                  ? "Mshpit is confirming whether new live ratings are available for this artist."
-                  : "Mshpit could not safely confirm this artist's status, so the review action stays hidden."}</Text>
-              {!deceased && !memorialChecking ? (
-                <Pressable style={styles.reviewUnavailableRetry} onPress={retryMemorial} accessibilityRole="button" accessibilityLabel={`Retry checking ${artist}'s artist status`}>
-                  <Text style={styles.reviewUnavailableRetryText}>Try again</Text>
-                </Pressable>
-              ) : null}
-            </View>
-          </View>
-        ) : null}
-
-        {!!log.review && !archiveShowKey && (
-          <>
-            <Text style={styles.sectionLabel}>TOP REVIEW</Text>
-            <View style={styles.reviewCard}>
-              <Text style={styles.review}>{log.review}</Text>
-              <Pressable onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
-                <Text style={styles.byline}>- {log.user?.name || "a fan"}</Text>
-              </Pressable>
-            </View>
-          </>
-        )}
-
-        {archiveShowKey ? (
-          <>
-            <View style={styles.archiveReviewsHead}>
-              <View style={styles.archiveReviewsHeadingCopy}>
-                <Text style={styles.archiveReviewsKicker}>FROM THIS SHOW · {archiveReviewData.total || archiveReviews.length}</Text>
-                <Text style={styles.archiveReviewsTitle} accessibilityRole="header">Reviews</Text>
-                <Text style={styles.archiveReviewsIntro}>Photos and reviews from this exact show. Tap a photo to see the full set.</Text>
-              </View>
-              <View style={styles.archiveReviewsIcon} accessible={false}>
-                <Icon name="archive" size={19} color={colors.amber} />
-              </View>
-            </View>
-            {archiveReviewResource.status === "loading" && archiveReviews.length === 0 ? (
-              <View style={styles.archiveReviewState}><ActivityIndicator color={colors.amber} /><Text style={styles.archiveReviewStateText}>Loading reviews…</Text></View>
-            ) : null}
-            {archiveReviewResource.status === "error" && archiveReviews.length === 0 ? (
-              <Pressable style={styles.archiveReviewRetry} onPress={reloadArchiveReviews} accessibilityRole="button">
-                <Text style={styles.archiveReviewRetryText}>Couldn't load reviews. Try again</Text>
-              </Pressable>
-            ) : null}
-            <View style={styles.archiveReviewGrid}>
-              {archiveReviews.map((review) => {
-                const media = archiveReviewMedia(review);
-                const author = review.user?.name || "A Pit fan";
-                return (
-                  <View key={review.id} style={[styles.archiveReviewCard, archiveReviewTileStyle]}>
-                    <View style={styles.archiveReviewTop}>
-                      <Pressable style={styles.archiveReviewAuthor} onPress={() => review.userId && onOpenProfile?.(review.userId)} accessibilityRole="button" accessibilityLabel={`Open ${author}'s profile`}>
-                        <Avatar user={review.user || { name: author, initials: "PF" }} size={30} />
-                        <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={styles.archiveReviewName} numberOfLines={1}>{author}</Text>
-                          <Text style={styles.archiveReviewMeta} numberOfLines={1}>{review.user?.handle ? `@${review.user.handle} · ` : ""}{formatDate(review.date, review.date)}</Text>
-                        </View>
-                      </Pressable>
-                      <View style={styles.archiveReviewScore}><Icon name="star" size={11} color={colors.gold} /><Text style={styles.archiveReviewScoreText}>{Number(review.overall || 0).toFixed(1)}</Text></View>
-                    </View>
-                    <ReviewMediaTile media={media} author={author} postId={review.id} onOpenPhotos={onOpenPhotos} />
-                    {!!review.review && <Text style={styles.archiveReviewText} numberOfLines={4}>{review.review}</Text>}
-                    <Pressable style={styles.archiveReviewOpen} onPress={() => onOpenPost?.(review)} accessibilityRole="button" accessibilityLabel={`Open ${author}'s review and comments`}>
-                      <Text style={styles.archiveReviewOpenText}>Open review</Text>
-                      <View style={styles.archiveReviewSignals}><Icon name="heart" size={11} color={colors.magenta} /><Text style={styles.archiveReviewSignalText}>{review.likes || 0}</Text><Icon name="comment" size={11} color={colors.textDim} /><Text style={styles.archiveReviewSignalText}>{review.comments || 0}</Text></View>
-                      <Icon name="chevron-right" size={14} color={colors.amber} />
-                    </Pressable>
-                  </View>
-                );
-              })}
-            </View>
-            {archiveLoadMoreFailed ? (
-              <View style={styles.archiveReviewMoreError} accessibilityLiveRegion="assertive">
-                <Text style={styles.archiveReviewMoreErrorText} selectable>More reviews could not be loaded. The reviews already on screen are still available.</Text>
-                <Pressable style={styles.archiveReviewMoreRetry} onPress={() => { void loadMoreArchiveReviewsWithFeedback(); }} accessibilityRole="button" accessibilityLabel="Retry loading more reviews">
-                  <Icon name="plus" size={14} color={colors.amber} />
-                  <Text style={styles.archiveReviewMoreRetryText}>Try again</Text>
-                </Pressable>
-              </View>
-            ) : archiveReviewData.nextCursor ? (
-              <Pressable style={styles.archiveReviewMore} onPress={() => { void loadMoreArchiveReviewsWithFeedback(); }} disabled={archiveReviewData.loadingMore} accessibilityRole="button" accessibilityState={{ busy: !!archiveReviewData.loadingMore }}>
-                {archiveReviewData.loadingMore ? <ActivityIndicator size="small" color={colors.amber} /> : <Icon name="plus" size={14} color={colors.amber} />}
-                <Text style={styles.archiveReviewMoreText}>{archiveReviewData.loadingMore ? "Loading…" : "Load more reviews"}</Text>
-              </Pressable>
-            ) : null}
-          </>
-        ) : null}
-
-        {/* jump to the artist or the venue from the concert */}
-        <View style={styles.seeRow}>
-          <Pressable style={styles.seeBtn} onPress={() => onOpenArtist?.(artist)} accessibilityRole="button" accessibilityLabel={`Open ${artist}'s profile`}>
-            <Icon name="music" size={16} color={colors.amber} />
-            <Text style={styles.seeTxt}>See this artist</Text>
-            <Icon name="chevron-right" size={16} color={colors.textDim} />
-          </Pressable>
-          <Pressable style={styles.seeBtn} onPress={() => onOpenVenue?.(venueNavigation)} accessibilityRole="button" accessibilityLabel={`Open ${venue}'s venue page`}>
-            <Icon name="pin" size={16} color={colors.amber} />
-            <Text style={styles.seeTxt}>See this venue</Text>
-            <Icon name="chevron-right" size={16} color={colors.textDim} />
-          </Pressable>
-        </View>
-
-        {/* A fan review is one post attached to this show, not a second show-page
-            discussion. The original PostScreen keeps its review, media, reactions,
-            and replies together. */}
-        {discussionAvailable ? (
-          <Pressable
-            style={({ pressed }) => [styles.originalPostCard, pressed && styles.originalPostCardPressed]}
-            onPress={() => onOpenPost?.(norm)}
-            accessibilityRole="button"
-            accessibilityLabel="Open the original fan post"
-            accessibilityHint="Shows the complete post where this review was shared"
-          >
-            <View style={styles.originalPostIcon}><Icon name="feed" size={17} color={colors.amber} /></View>
-            <View style={styles.originalPostCopy}>
-              <Text style={styles.originalPostLabel}>FAN POST</Text>
-              <Text style={styles.originalPostTitle}>Open the original fan post</Text>
-              <Text style={styles.originalPostText}>See the full review and its photos where the fan shared it.</Text>
-            </View>
-            <Icon name="chevron-right" size={16} color={colors.amber} />
-          </Pressable>
-        ) : null}
-
+        </ShowSection> : null}
+        <ShowSection key={`nearby:${socialIdentity}`} keepMounted title={["completed", "cancelled", "postponed"].includes(lifecycleView.lifecycle) || (lifecycleView.lifecycle === "unknown" && presentation.showPostEvent) ? "Around the venue" : "After the show"} summary="Food, places to go & routes home">
         {/* Nearby discovery is deliberately Maps-only: Pit makes no claims
             about a business being open, close, accessible, or age-appropriate. */}
-        <View style={styles.afterCard}>
-          <NearbyAfterparty log={norm} coord={coord} />
-        </View>
+          <Suspense fallback={<ActivityIndicator accessibilityLabel="Loading after-show planning" color={colors.amber} />}>
+            <AfterShowSection log={norm} venueIdentity={venuePhotoIdentity} accountId={accountId} lifecycle={lifecycleView.lifecycle === "unknown" && presentation.showPostEvent ? "completed" : lifecycleView.lifecycle} />
+          </Suspense>
 
+        </ShowSection>
         {setlist.length > 0 && (
-          <>
-            <Text style={styles.sectionLabel}>SETLIST · {setlist.length} SONGS</Text>
+          <ShowSection key={`setlist:${socialIdentity}`} title="Setlist" summary={`${setlist.length} songs${log.inTourWindow ? " · Spoilers" : ""}`}>
             {revealed ? (
               <View style={styles.reviewCard}>
                 {setlist.map((s, i) => (
@@ -1078,16 +1102,16 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
                 {onPreview && <Text style={styles.previewHint}>Tap a song for a licensed 30s preview.</Text>}
               </View>
             ) : (
-              <Pressable style={styles.spoiler} onPress={() => setRevealed(true)}>
+              <Pressable style={styles.spoiler} onPress={() => setRevealed(true)} accessibilityRole="button" accessibilityLabel="Reveal setlist spoilers">
                 <Icon name="lock" size={18} color={colors.amber} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.spoilerTitle}>Setlist hidden</Text>
-                  <Text style={styles.spoilerSub}>This tour is still running, tap to reveal (spoiler).</Text>
+                  <Text style={styles.spoilerSub}>This tour is still running. Tap to reveal the setlist (spoilers).</Text>
                 </View>
                 <Text style={styles.spoilerCta}>Reveal</Text>
               </Pressable>
             )}
-          </>
+          </ShowSection>
         )}
       </ScrollView>
       </VinylRefreshBoundary>}
@@ -1095,29 +1119,24 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = {
+  ticketError: { color: colors.danger, fontSize: 15, lineHeight: 22, marginTop: 10 },
   wrap: { flex: 1, backgroundColor: colors.bg },
-  topbar: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingBottom: 10,
-  },
-  backBtn: { flexDirection: "row", alignItems: "center", width: 56 },
-  back: { color: colors.amber, fontSize: 15 },
-  topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },
-  content: { width: "100%", maxWidth: 1200, alignSelf: "center", padding: 16, paddingBottom: 48 },
-  showSummary: { width: "100%", maxWidth: "100%", minWidth: 0 },
-  showSummaryWide: { flexDirection: "row", alignItems: "stretch", gap: 14 },
-  showSummaryMediaColumn: { width: "100%", maxWidth: "100%", minWidth: 0 },
-  showSummaryMediaColumnWide: { width: "auto", flex: 1.08 },
-  heroGrid: { gap: 12 },
-  heroGridWide: { flexDirection: "row", alignItems: "flex-start" },
-  heroTicketColumn: { width: "100%", maxWidth: "100%", minWidth: 0 },
-  heroTicketColumnWide: { width: "auto", flex: 1.05 },
-  heroVenueColumn: { width: "100%", maxWidth: "100%", minWidth: 0 },
-  heroVenueColumnWide: { width: "auto", flex: 0.95 },
+  overview: { gap: 14 },
+  summaryDivider: { borderTopWidth: 1, borderTopColor: colors.lineSoft, marginVertical: 14 },
+  reviewCtaInline: { flex: 1, marginTop: 0 },
+  overviewWide: { flexDirection: "row", alignItems: "flex-start" },
+  overviewPhotos: { width: "100%", minWidth: 0 },
+  overviewPhotosWide: { width: "43%" },
+  overviewInfo: { flex: 1, minWidth: 0 },
+  eventArtwork: { height: 232, borderRadius: radius.md },
+  artworkCredit: { color: colors.textDim, fontSize: 11, lineHeight: 16, marginTop: 6 },
+  photoEmpty: { color: colors.textDim, fontSize: 12, paddingVertical: 12 },
+  overallRow: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 14 },
+  overallValue: { color: colors.gold, fontFamily: mono, fontSize: 32, fontWeight: "800" },
+  overallCopy: { flex: 1, minWidth: 0, gap: 4 },
+  overallLabel: { color: colors.text, fontSize: 13, fontWeight: "700" },
+  content: { width: "100%", maxWidth: 1040, alignSelf: "center", padding: 16, paddingBottom: 48 },
   socialRow: { flexDirection: "row", gap: 10, marginTop: 16 },
   goingBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev, paddingVertical: 14 },
   goingOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
@@ -1161,7 +1180,6 @@ const styles = StyleSheet.create({
   ticketKicker: { color: colors.amber, fontFamily: mono, fontSize: 10, letterSpacing: 2, fontWeight: "800", marginBottom: 6 },
   perfWrap: { flexDirection: "row", alignItems: "center", height: 16, marginVertical: 12 },
   dashed: { flex: 1, borderTopWidth: 1, borderStyle: "dashed", borderColor: colors.line },
-  notch: { position: "absolute", width: 16, height: 16, borderRadius: 8, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.lineSoft },
   stubRow: { flexDirection: "row", alignItems: "center", gap: 14 },
   stubDateColumn: { maxWidth: "48%", minWidth: 0, flexShrink: 1, alignItems: "flex-end" },
   stubLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 9, letterSpacing: 1.5, fontWeight: "800", marginBottom: 3 },
@@ -1182,7 +1200,6 @@ const styles = StyleSheet.create({
   reviewUnavailableText: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, paddingTop: 3 },
   reviewUnavailableRetry: { alignSelf: "flex-start", minHeight: 36, justifyContent: "center", marginTop: 8, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.gold, backgroundColor: colors.surface },
   reviewUnavailableRetryText: { color: colors.gold, fontSize: 11.5, fontWeight: "900" },
-  noScoreTitle: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "800" },
 
   artist: { color: colors.text, fontFamily: displayFont, fontSize: 26, fontWeight: "900", letterSpacing: -0.4 },
   supportingActs: { marginTop: 10 },
@@ -1201,22 +1218,9 @@ const styles = StyleSheet.create({
   originalPostText: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
   afterCard: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 16, marginTop: 12 },
   venueLink: { color: colors.text, fontWeight: "700" },
-  venue: { color: colors.textDim, fontSize: 15, marginTop: 4 },
   date: { maxWidth: "100%", flexShrink: 1, color: colors.amber, fontFamily: mono, fontSize: 13, marginTop: 6, letterSpacing: 1, textAlign: "right" },
 
-  scoreCard: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.lineSoft,
-    padding: 14,
-    marginTop: 14,
-  },
-  scoreSummary: { alignItems: "center", marginBottom: 12 },
-  scoreCardSummaryWide: { flex: 0.92, minWidth: 0, maxWidth: "100%", marginTop: 0, alignSelf: "stretch" },
-  scoreDetails: { flex: 1, minWidth: 0, justifyContent: "center" },
-  bigScore: { color: colors.gold, fontFamily: mono, fontSize: 36, fontWeight: "800", lineHeight: 40 },
-  scoreSub: { color: colors.textFaint, fontSize: 11, marginTop: 6, textAlign: "center" },
+  scoreSub: { color: colors.textDim, fontSize: 12, marginTop: 4 },
   note: { color: colors.textFaint, fontSize: 11.5, marginTop: 10, lineHeight: 16 },
 
   sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
@@ -1229,16 +1233,10 @@ const styles = StyleSheet.create({
   },
   review: { color: colors.text, fontSize: 15, lineHeight: 22 },
   byline: { color: colors.textDim, fontSize: 13, marginTop: 12 },
-  archiveHero: { height: 180, marginTop: 12, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card },
+  archiveHero: { height: 232, marginTop: 0, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, ...shadow.card },
   archiveHeroImage: { width: "100%", height: "100%" },
   archiveHeroCredit: { position: "absolute", left: 10, bottom: 10, maxWidth: "80%", paddingHorizontal: 9, paddingVertical: 5, borderRadius: radius.pill, backgroundColor: "rgba(8,8,10,0.82)" },
   archiveHeroCreditText: { color: "#fff", fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
-  archiveReviewsHead: { width: "100%", maxWidth: "100%", minWidth: 0, flexDirection: "row", alignItems: "flex-end", gap: 12, marginTop: space(7), marginBottom: space(3), paddingLeft: 12, borderLeftWidth: 4, borderLeftColor: colors.amber },
-  archiveReviewsHeadingCopy: { flex: 1, minWidth: 0 },
-  archiveReviewsKicker: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.6, marginBottom: 4 },
-  archiveReviewsTitle: { color: colors.text, fontFamily: displayFont, fontSize: 30, lineHeight: 34, fontWeight: "900", letterSpacing: -0.5 },
-  archiveReviewsIntro: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 4 },
-  archiveReviewsIcon: { width: 44, height: 44, flexShrink: 0, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   archiveReviewState: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, minHeight: 90, borderRadius: radius.md, backgroundColor: colors.surface },
   archiveReviewStateText: { color: colors.textDim, fontSize: 12.5 },
   archiveReviewRetry: { minHeight: 52, alignItems: "center", justifyContent: "center", borderRadius: radius.md, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.surface },
@@ -1246,8 +1244,6 @@ const styles = StyleSheet.create({
   archiveReviewGrid: { width: "100%", maxWidth: "100%", minWidth: 0, flexDirection: "row", flexWrap: "wrap", alignItems: "flex-start", gap: 10 },
   archiveReviewCard: { minWidth: 0, maxWidth: "100%", overflow: "hidden", padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, ...shadow.card },
   archiveReviewCardFull: { width: "100%" },
-  archiveReviewCardHalf: { width: "49%" },
-  archiveReviewCardThird: { width: "32%" },
   archiveReviewTop: { flexDirection: "row", alignItems: "center", gap: 10 },
   archiveReviewAuthor: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 9 },
   archiveReviewName: { color: colors.text, fontSize: 13.5, fontWeight: "800" },
@@ -1286,4 +1282,6 @@ const styles = StyleSheet.create({
     paddingLeft: 2,
   },
   previewHint: { color: colors.textFaint, fontSize: 11, marginTop: 10, fontStyle: "italic" },
-});
+};
+
+const styles = StyleSheet.create(concertDetailStyles(baseStyles, Platform.OS, "show", colors));

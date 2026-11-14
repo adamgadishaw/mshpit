@@ -172,3 +172,10 @@ test("date-only shows wait until the following day has fully passed", () => {
   assert.equal(attendanceStateDisplayLabel("going", { show: { date: "2026-09-16" }, now: cutoff - 1 }), "Going");
   assert.equal(attendanceStateDisplayLabel("going", { show: { date: "2026-09-16" }, now: cutoff }), "Attended");
 });
+
+test("ongoing multi-day planning keeps its saved Going label without rewriting attendance", () => {
+  const show={date:"2026-11-10",startDateTime:"2026-11-10T18:00:00-05:00",eventEndDate:"2026-11-15",eventTimezone:"America/Toronto"};
+  assert.equal(attendanceStateDisplayLabel("going",{show,now:Date.parse("2026-11-12T20:00:00Z")}),"Going");
+  assert.equal(attendanceStateDisplayLabel("here",{show,now:Date.parse("2026-11-12T20:00:00Z")}),"Here");
+  assert.equal(attendanceStateDisplayLabel("going",{show,now:Date.parse("2026-11-17T20:00:00Z")}),"Attended");
+});

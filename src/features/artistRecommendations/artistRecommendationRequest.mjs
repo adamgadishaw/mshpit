@@ -1,3 +1,4 @@
+import { spotifyArtistPhotoModel } from '../../domain/spotifyArtistPhoto.mjs';
 const LIMIT_MAX = 8;
 
 const cleanText = (value, max = 200) => {
@@ -74,12 +75,15 @@ function recommendationFromResponse(value) {
     .filter(Boolean)
     .slice(0, 3);
   const liveRating = safeCount(value?.liveRating);
+  const original = spotifyArtistPhotoModel(value.artist);
   return Object.freeze({
     artist: Object.freeze({
       key,
       name,
       publicSlug: cleanText(value.artist.publicSlug, 200),
       photo: safeHttps(value.artist.photo),
+      ...(original ? { spotifyPhoto: original.uri, spotifyArtistUrl: original.sourceUrl,
+        photoSource: 'spotify', photoCredit: original.credit, photoDisplayPolicy: 'original' } : {}),
       genre: cleanText(value.artist.genre, 80),
       country: cleanText(value.artist.country, 80),
     }),

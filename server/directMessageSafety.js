@@ -22,6 +22,10 @@ export function mayStartDirectMessage({ conversationExists = false, recipientPol
   if (!isClassifiedAccountAgeBand(senderBand)) {
     return { allowed: false, reason: "age_classification_required" };
   }
+  // Age safety adds a mutual-follow requirement; it cannot reopen first contact
+  // when the recipient has chosen Nobody. Existing chats keep their rules below.
+  const policy = directMessagePolicy(recipientPolicy);
+  if (!conversationExists && policy === "nobody") return { allowed: false, reason: "recipient_closed" };
   const mutual = !!senderFollowsRecipient && !!recipientFollowsSender;
   // Until a migrated recipient classifies, protect them as though the stricter
   // teen rule applies. This does not reveal their age band to the sender.
@@ -37,8 +41,6 @@ export function mayStartDirectMessage({ conversationExists = false, recipientPol
   // closes first contact. Blocking remains the control that stops an existing
   // relationship; age safety is re-evaluated on every new message.
   if (conversationExists) return { allowed: true, reason: "existing_conversation" };
-  const policy = directMessagePolicy(recipientPolicy);
-  if (policy === "nobody") return { allowed: false, reason: "recipient_closed" };
   if (policy === "mutuals") return { allowed: mutual, reason: mutual ? "mutual" : "mutual_required" };
   return { allowed: !!recipientFollowsSender, reason: recipientFollowsSender ? "recipient_follows_sender" : "follow_required" };
 }

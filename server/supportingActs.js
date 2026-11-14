@@ -317,15 +317,21 @@ const inPersonReview = (s) => `${s}.removed=0 AND COALESCE(${s}.kind,'review')='
 // The "Nth time seeing them" number for post `p`, as an SQL expression: the
 // author's reviews of the artist up to this one, the times the artist opened
 // an earlier show they reviewed, and their "seen before logging" number.
+// Materialize matching opener sightings before checking same-night reviews.
+// Otherwise SQLite can run that nested history scan for every earlier post,
+// even when its lineup is empty, making a page quadratic in author history.
 export function seenOrdinalSql(p = "p") {
   return `(CASE WHEN COALESCE(${p}.kind,'review')='review' AND COALESCE(${p}.experience_type,'in_person')='in_person' THEN
     (SELECT COUNT(*) FROM posts s WHERE s.user_id=${p}.user_id AND ${inPersonReview("s")} AND ${sameArtist("s", p)} AND ${atOrBefore("s", p)})
-    + (SELECT COUNT(DISTINCT CASE WHEN o.date<>'' THEN 'date:' || o.date ELSE 'post:' || o.id END)
+    + (WITH opener_sightings AS MATERIALIZED (
+        SELECT o.id,o.date,o.user_id
         FROM posts o, json_each(CASE WHEN json_valid(o.supporting_acts) THEN o.supporting_acts ELSE '[]' END) act
         WHERE o.user_id=${p}.user_id AND o.id<>${p}.id AND ${inPersonReview("o")} AND ${earlierNight("o", p)}
           AND ${artistMatch("json_extract(act.value,'$.artistKey')", `${p}.artist_key`, "json_extract(act.value,'$.name')", `${p}.artist`)}
+      ) SELECT COUNT(DISTINCT CASE WHEN o.date<>'' THEN 'date:' || o.date ELSE 'post:' || o.id END)
+        FROM opener_sightings o
           -- Seen open for someone and reviewed the same night is one sighting.
-          AND NOT EXISTS (SELECT 1 FROM posts r WHERE r.user_id=o.user_id AND ${inPersonReview("r")} AND r.date<>'' AND r.date=o.date
+          WHERE NOT EXISTS (SELECT 1 FROM posts r WHERE r.user_id=o.user_id AND ${inPersonReview("r")} AND r.date<>'' AND r.date=o.date
             AND ${sameArtist("r", p)}))
     + COALESCE((SELECT b.count FROM artist_seen_baselines b WHERE b.user_id=${p}.user_id
         AND b.artist_ref=CASE WHEN ${p}.artist_key IS NOT NULL AND ${p}.artist_key<>'' THEN ${p}.artist_key ELSE 'name:' || LOWER(TRIM(${p}.artist)) END), 0)

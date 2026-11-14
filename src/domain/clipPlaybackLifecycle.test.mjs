@@ -168,6 +168,8 @@ function fixture(platform = "android", { rejectInitialPlay = false, deferNativeP
     },
     "../theme": { colors: {}, radius: {}, shadow: {}, mono: "mono" },
     "../components/Icon": "Icon", "../components/Avatar": "Avatar", "../components/ClipPoster": "ClipPoster",
+    "../components/PageReturnContext": { PageTitle: "PageTitle" },
+    "../components/PageScrollView": "ScrollView",
     "../components/VinylRefreshBoundary": "Refresh", "../hooks/useScopedRefresh": () => ({}),
     "../lib/useAppActive": () => appActive, "../features/feedImpressions/feedImpressionService": {}, "../store": {},
   };

@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { showPageRating } from "../src/domain/showPageDetails.mjs";
+import { prepareShowNavigation } from "../src/domain/showNavigation.mjs";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-post-location-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -20,6 +22,22 @@ function fixture() {
 }
 const draft = { artist: "Local Band", artistKey: null, venue: "", city: "Toronto, Ontario, Canada", date: "2026-08-10", overall: 4, review: "A great outdoor show." };
 const invalid = (error) => error.status === 400 && error.code === "VALIDATION_FAILED";
+
+test("an ordinary persisted review keeps its author score label after View this show navigation", () => {
+  const f = fixture();
+  const created = f.create({ ...draft, venue: "Known Room", overall: 4.5, dims: { performance: 4, sound: 3 } });
+  assert.ok(created.post.archiveShowKey, "Complete in-person posts receive an archive identity");
+  // Historical precise values are valid persisted scores, separate from details.
+  db.prepare("UPDATE posts SET overall=4.7 WHERE id=?").run(created.id);
+  const persisted = routes["GET /api/posts/:id"]({ params: { id: created.id }, ip: "rating-label-public" }).post;
+  assert.equal(persisted.kind, "review");
+  assert.equal(persisted.archiveShowKey, created.post.archiveShowKey);
+  const destination = prepareShowNavigation(persisted).destination;
+  const rating = showPageRating(destination);
+  assert.equal(rating.overall, 4.7);
+  assert.equal(rating.label, `${persisted.user.name}'s overall show rating`);
+  assert.equal(rating.countLabel, null);
+});
 
 test("city-only concert create persists and projects location without manufacturing venue identity", () => {
   const f = fixture();

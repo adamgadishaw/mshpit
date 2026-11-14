@@ -385,7 +385,13 @@ test("support and deletion pages provide actionable no-login information without
   assert.match(deletion, /Settings/);
   assert.match(deletion, /Delete account permanently/);
   assert.match(deletion, /There is no recovery period/);
-  assert.match(deletion, /If you cannot sign in/);
+  assert.match(deletion, /Request deletion by email/);
+  assert.match(deletion, /whether or not you can sign in/);
+  assert.match(deletion, /do not need to reinstall the app or try password recovery first/);
+  assert.match(deletion, /verify that the account belongs to you/);
+  assert.match(deletion, /Never send your password/);
+  assert.match(deletion, new RegExp(`mailto:${SUPPORT_EMAIL.replace(".", "\\.")}`));
+  assert.doesNotMatch(deletion, /If you still cannot access|Use Forgot password on the sign-in screen first/);
   assert.match(deletion, /durably queues Mshpit-owned uploaded photos and clips/i);
   assert.match(deletion, /Cleanup retries automatically but may not finish immediately/i);
   assert.match(deletion, /backups can remain until their retention period ends/i);

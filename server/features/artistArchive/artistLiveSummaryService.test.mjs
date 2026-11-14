@@ -25,7 +25,7 @@ function fixture() {
       ticketmaster_coverage_limited INTEGER DEFAULT 0,last_error_code TEXT);
     CREATE TABLE tour_dates(id TEXT PRIMARY KEY,artist_key TEXT,artist TEXT DEFAULT 'Alpha',venue TEXT DEFAULT 'Hall',
       artist_identity_status TEXT,
-      date TEXT DEFAULT '2026-10-01',event_end_date TEXT,event_timezone TEXT,owner_id TEXT,release_at INTEGER DEFAULT 0,
+      date TEXT DEFAULT '2026-10-01',event_end_date TEXT,event_timezone TEXT,event_status TEXT,owner_id TEXT,release_at INTEGER DEFAULT 0,
       source TEXT DEFAULT 'ticketmaster',provider_active INTEGER DEFAULT 1,music_qualified INTEGER DEFAULT 1,
       event_kind TEXT DEFAULT 'concert',music_evidence TEXT,billed_artists TEXT,venue_city TEXT DEFAULT 'Toronto',venue_country_code TEXT DEFAULT 'CA');
     CREATE TABLE posts(id TEXT PRIMARY KEY,user_id TEXT DEFAULT 'fan',artist TEXT DEFAULT 'Alpha',artist_key TEXT DEFAULT 'alpha',
@@ -235,6 +235,8 @@ test("schedule preserves release, account, block, classification, local-day and 
     f.addDate("blocked", { owner_id: "blocked" });
     f.addDate("deleted-owner", { owner_id: "missing" });
     f.addDate("inactive", { provider_active: 0 });
+    f.addDate("cancelled", { event_status: " Cancelled " });
+    f.addDate("canceled", { event_status: "CANCELED" });
     f.addDate("sports", { music_qualified: 0 });
     f.addDate("expired", { date: "2026-01-01" });
     f.addDate("tokyo", { date: "2026-09-06", event_timezone: "Asia/Tokyo" });
@@ -453,4 +455,41 @@ test("actual artist client request, response and controller load all mixed-forma
     assert.match(requests[1].path, /&after=/u);
     controller.dispose();
   } finally { f.database.close(); }
+});
+
+test('profile performance stays separate from room and overall, balances members, and keeps unknowns empty', () => {
+ const f = fixture();
+ try {
+  f.addPost('one', { dims: JSON.stringify({performance:5, venue:1}), overall:3.7, band:5 });
+  assert.equal(f.read().reputation.performanceRating,5);
+  assert.equal(f.read().reputation.avgRating,3.7);
+  f.addPost('skip', {date:'2026-08-02',dims:JSON.stringify({performance:0,setlist:null,venue:1}),band:5});
+  f.addPost('overall-only', {date:'2026-08-03',overall:2});
+  assert.equal(f.read().reputation.performanceRatingCount,1);
+  f.addPost('legacy', {date:'2026-08-04',band:3});
+  f.addPost('second-member', {user_id:'viewer',band:2});
+  assert.equal(f.read().reputation.performanceRating,3);
+  assert.equal(f.read().reputation.performanceMemberCount,2);
+  f.addPost('newest-same-show', {created_at:5,dims:JSON.stringify({performance:1}),overall:1});
+  assert.equal(f.read().reputation.performanceRating,2);
+  f.database.exec("UPDATE users SET profile_audience='private' WHERE id='fan'");
+  assert.equal(f.read().reputation.performanceRating,2);
+  f.database.exec("UPDATE users SET is_banned=1 WHERE id='viewer'");
+  assert.equal(f.read().reputation.performanceRating,null);
+ } finally { f.database.close(); }
+});
+
+test('artist profile includes half-star dimensions, legacy band and show experience without premature rounding', () => {
+ const f=fixture();
+ try {
+  f.addPost('half-mixed',{dims:JSON.stringify({performance:0.5,setlist:5}),overall:0.5,band:2.8});
+  let reputation=f.read().reputation;
+  assert.equal(reputation.performanceRating,2.75);
+  assert.equal(reputation.avgRating,0.5);
+  assert.equal(reputation.ratingCount,1);
+  f.database.prepare("UPDATE posts SET dims=? WHERE id='half-mixed'").run(JSON.stringify({performance:0.5,setlist:0}));
+  assert.equal(f.read().reputation.performanceRating,0.5);
+  f.database.exec("UPDATE posts SET dims='{}',band=0.5 WHERE id='half-mixed'");
+  assert.equal(f.read().reputation.performanceRating,0.5);
+ } finally { f.database.close(); }
 });

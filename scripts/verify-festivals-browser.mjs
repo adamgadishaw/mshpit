@@ -64,6 +64,18 @@ async function scenario(browser, origin, width) {
       if (!url.pathname.startsWith("/api/")) return await route.continue();
       if (url.pathname === "/api/health") return await json({ ok: true });
       if (url.pathname === "/api/client-errors") return await json({ ok: true });
+      if (url.pathname === "/api/event-accounts/target") {
+        assert.equal(url.searchParams.get("kind"), "festival");
+        const id = url.searchParams.get("id");
+        assert.ok(["lollapalooza", "boots-and-hearts"].includes(id));
+        return await json({ entity: { entityType: "event", entityKey: `festival:${id}`, targetKind: "festival", targetId: id },
+          canManage: false, canFollow: true, canRequest: true, claimed: false, following: false, notifyUpdates: true, claim: null });
+      }
+      if (/^\/api\/creators\/event\/festival%3A(lollapalooza|boots-and-hearts)\/posts$/i.test(url.pathname)) return await json({ posts: [] });
+      if (/^\/api\/creators\/event\/festival%3A(lollapalooza|boots-and-hearts)\/follow$/i.test(url.pathname)) {
+        assert.equal(request.method(), "GET");
+        return await json({ following: false, notifyUpdates: true });
+      }
       if (url.pathname === "/api/festivals") return await json({ upcoming: [edition], festivals: [] });
       if (url.pathname === "/api/festivals/lollapalooza") {
         return await json({ festival, upcoming: [{ ...edition, lineup, going: 12 + (state.plan ? 1 : 0), goingByDay: {}, mustSee: [], plan: state.plan }],

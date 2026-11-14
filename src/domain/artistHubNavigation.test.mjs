@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import vm from "node:vm";
 import { parse } from "@babel/parser";
 import {
   beginLoadState,
@@ -25,6 +26,17 @@ const composer = readFileSync(new URL("../screens/LogScreen.jsx", import.meta.ur
 const feedCard = readFileSync(new URL("../components/TicketStub.jsx", import.meta.url), "utf8");
 const afterparty = readFileSync(new URL("../components/AfterpartyPreview.jsx", import.meta.url), "utf8");
 const store = readFileSync(new URL("../store.js", import.meta.url), "utf8");
+
+function astNodes(source) {
+  const nodes = [];
+  const visit = node => {
+    if (!node || typeof node !== "object") return;
+    if (node.type) nodes.push(node);
+    for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(visit); else visit(value);
+  };
+  visit(parse(source, { sourceType: "module", plugins: ["jsx"] }));
+  return nodes;
+}
 
 test("Artist HQ navigation modules remain parseable", () => {
   for (const [name, source] of Object.entries({ app, menu, you, artist, hub, artistEditor, profile, settings, feed, composer, feedCard, afterparty })) {
@@ -74,7 +86,15 @@ test("the shell keeps artist management, staff editing, and fan preview as disti
   assert.match(app, /onManageArtistProfile=\{\(\) => go\(\{ artistHub: true \}\)\}/);
   assert.match(app, /onEditArtistProfile=\{\(name\) => name && requireVerifiedMutation\("artist", \(\) => go\(\{ editArtist: name \}\)\)\}/);
   assert.match(app, /go\(\{ artistPreview: name \}\)/);
-  assert.match(app, /else if \(nav\.artistPreview\) overlay = <ArtistScreen artistName=\{nav\.artistPreview\} previewAsFan/);
+  const previewRoute = astNodes(app).find(node => node.type === "IfStatement" && node.test?.type === "MemberExpression" && node.test.object?.name === "nav" && node.test.property?.name === "artistPreview");
+  const preview = previewRoute.consequent.expression.right.openingElement;
+  assert.equal(preview.name.name, "ArtistScreen");
+  const props = new Map(preview.attributes.filter(attr => attr.type === "JSXAttribute").map(attr => [attr.name.name, attr.value]));
+  assert.ok(props.has("previewAsFan"));
+  assert.equal(props.get("previewAsFan"), null, "preview is explicitly enabled");
+  const name = props.get("artistName").expression;
+  assert.equal(vm.runInNewContext(`(${app.slice(name.start, name.end)})`, { nav: { artistPreview: "Preview artist", artistName: "Other" } }), "Preview artist");
+  for (const action of ["onManageArtistProfile", "onEditArtistProfile"]) assert.equal(props.has(action), false, "preview never receives editing callbacks");
   assert.match(app, /\["artistHub", "artist_hq"\]/);
   assert.match(app, /\["artistPreview", "artist_preview"\]/);
 });
@@ -86,7 +106,7 @@ test("Artist HQ exposes one primary action for each distinct job", () => {
   assert.equal((hub.match(/onPress=\{onTourDates\}/g) || []).length, 1, "one upcoming-shows action");
   assert.equal((hub.match(/onPress=\{onEditAccount\}/g) || []).length, 1, "one personal-account action");
   assert.match(hub, />Preview artist page<\/Text>/);
-  assert.match(hub, /title="Live photos & videos"/);
+  assert.match(hub, /title="Post to followers"/);
   assert.match(hub, /title="Promote a concert or release"/);
   assert.equal((hub.match(/onPress=\{onMediaPost\}/g) || []).length, 1, "one normal live-media post action, distinct from capped featured promotions");
   assert.match(hub, /title="Upcoming shows"/);
@@ -101,13 +121,19 @@ test("Artist HQ launches the artist-only campaign composer and the feed renders 
   assert.match(composer, /backgroundAssetId: isCampaignBackground \? undefined : backgroundAssetId/);
   assert.match(composer, /media: publishedMedia/);
   assert.match(feedCard, /artistCampaignPresentation\(log\.campaign, postMedia\)/);
-  assert.match(feedCard, /autoplay=\{!reduceMotion\}/);
+  assert.match(feedCard, /autoplay=\{!tabPreview && !reduceMotion && cardVisible\}/);
+  // Preview, motion preference, and retained-card visibility each gate playback.
+  const autoplay = feedCard.match(/autoplay=\{([^}]+)\}/)[1];
+  const evaluateAutoplay = new Function("tabPreview", "reduceMotion", "cardVisible", `return (${autoplay});`);
+  for (const preview of [false, true]) for (const reduced of [false, true]) for (const visible of [false, true]) {
+    assert.equal(evaluateAutoplay(preview, reduced, visible), !preview && !reduced && visible);
+  }
   assert.match(feedCard, /FEATURED ARTIST POST|campaignTreatment\.eyebrow\.toUpperCase\(\)/);
   assert.match(feedCard, /campaignTouchTarget: \{ minWidth: 44, minHeight: 44 \}/);
   assert.match(afterparty, /palette\.mutedTextColor/);
   assert.match(afterparty, /campaignBubble/);
   assert.doesNotMatch(afterparty, /TextInput|loadComments|addComment|campaignSend/);
-  assert.match(hub, /Featured feed posts still appear in the main feed\./);
+  assert.match(hub, /New updates appear in the main feed and on your artist page/);
 });
 
 test("fan preview hides ownership affordances and unreleased dates", () => {
@@ -132,7 +158,21 @@ test("staff can follow artists; only the artist's own account has no Follow butt
   // Follow on ownsArtistPage hid it from the site owner on every artist page.
   assert.match(artist, /const followHidden = ownsNamedArtistPage;/);
   assert.match(artist, /\{!followHidden \? \(\s*<Pressable\s+style=\{\[styles\.artistFollowBtn/);
-  assert.match(artist, /onFollow=\{followHidden \? undefined : session \? followUi\.toggleFollow : onRequireAuth\}/);
+  const nodes = astNodes(artist);
+  const expression = nodes.find(node => node.type === "JSXAttribute" && node.name?.name === "onFollow").value.expression;
+  const wrapper = nodes.find(node => node.type === "VariableDeclarator" && node.id?.name === "announceFollow").init;
+  for (const IS_IOS of [false, true]) for (const session of [null, { id: "staff", role: "admin" }, { id: "member", role: "user" }]) for (const followHidden of [false, true]) {
+    const calls = [];
+    const context = { guard: value => value, current: () => true, canAct: () => true, IS_IOS, session, followHidden, followUi: { toggleFollow: () => calls.push("follow") },
+      onRequireAuth: () => calls.push("auth"), announcements: { current: { request: () => calls.push("announce") } } };
+    context.announceFollow = vm.runInNewContext(`(${artist.slice(wrapper.start, wrapper.end)})`, context);
+    const action = vm.runInNewContext(`(${artist.slice(expression.start, expression.end)})`, context);
+    if (followHidden) assert.equal(action, undefined);
+    else {
+      action();
+      assert.deepEqual(calls, !session ? ["auth"] : IS_IOS ? ["announce", "follow"] : ["follow"]);
+    }
+  }
   assert.doesNotMatch(artist, /!ownsArtistPage \? \(\s*<Pressable\s+style=\{\[styles\.artistFollowBtn/);
 });
 
@@ -143,10 +183,11 @@ test("artist publishing reports authoritative outcomes and preserves failed draf
   assert.match(store, /return commandSuccess\(\{ id \}\)/);
   assert.match(store, /return commandError\(error, context\)/);
 
-  assert.match(hub, /const result = await addArtistPost/);
-  assert.match(hub, /const submittedDraft = draft/);
-  assert.match(hub, /setDraft\(\(current\) => current === submittedDraft \? "" : current\)/);
-  assert.match(hub, /draft is still here/i);
+  assert.match(hub, /<CreatorPostsSection/);
+  assert.match(hub, /onCompose=\{onMediaPost\}/);
+  assert.match(app, /postMode: "creator"/);
+  assert.match(composer, /persistDraftSnapshot\(normalizeComposerDraft/);
+  assert.match(composer, /showPostFailure\(result.error\)/);
   assert.doesNotMatch(artist, /addArtistPost|removeArtistPost|Publish page update|deletePageUpdate/);
   assert.match(artist, /Artist posts are read-only here/);
 });
@@ -194,7 +235,7 @@ test("Artist HQ page reads expose a retryable scoped contract and gate unconfirm
   assert.match(hub, /disabled=\{!hasConfirmedArtistPage\}/);
   assert.match(hub, /accessibilityLabel="Retry loading artist page data"/);
   assert.match(hub, /\{hasConfirmedArtistPage \? \(\s*<View style=\{styles\.statsRow\}>/);
-  assert.match(hub, /hasConfirmedArtistPage && !model\.feedEnabled/);
+  assert.match(hub, /hasConfirmedArtistPage && posts\.length > 0 && !model\.feedEnabled/);
   assert.match(hub, /\{!hasConfirmedArtistPage \? \([\s\S]*Existing artist posts will appear after the artist page loads\./);
   assert.match(artist, /loadArtistPage\(a\.name, \{ signal: controller\.signal \}\)/);
 });

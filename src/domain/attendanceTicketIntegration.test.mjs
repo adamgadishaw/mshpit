@@ -40,7 +40,7 @@ test("ticket transport sends only the exact event identity and explicit seat con
   assert.match(store, /\.\.\.\(tourDateId \? \{ tourDateId \} : \{\}\)/,
     "legacy Going writes retain the exact catalogue event alongside the display key");
   assert.match(show, /toggleGoing\(\{ \.\.\.norm, tourDateId \}\)/);
-  assert.match(show, /show=\{\{ \.\.\.trustedShow, tourDateId \}\}/,
+  assert.match(show, /show=\{\{ \.\.\.rsvpShow, tourDateId \}\}/,
     "typed attendance writes retain the same exact catalogue identity");
 });
 
@@ -53,7 +53,7 @@ test("a lost-response retry reuses the same per-event ticket mutation id", () =>
   assert.match(composer, /id:\s*clientMutationId/);
   assert.match(store, /const localId = log\.id \|\| "p_local_" \+ Date\.now\(\)/);
   assert.match(store, /clientMutationId:\s*localId/);
-  assert.match(store, /if \(!safe\.attendanceTicket\) \{[\s\S]*?setFeed[\s\S]*?upsertProfileHistoryPost/,
+  assert.match(store, /if \(!safe\.attendanceTicket && !safe\.creatorUpdate\?\.calendar\) \{[\s\S]*?setFeed[\s\S]*?upsertProfileHistoryPost/,
     "a server-owned ticket cannot briefly appear published before exact-event authorization succeeds");
 });
 
@@ -62,8 +62,8 @@ test("ticket share uses the retry-safe post delivery path and owns one safe erro
   const store = source("../store.js");
   const composer = source("../components/GoingTicketComposer.jsx");
 
-  assert.match(store, /import \{ deliverPostCreate \} from "\.\/domain\/postDelivery\.mjs"/);
-  assert.match(store, /return deliverPostCreate\(\{[\s\S]*?apiCall: api,[\s\S]*?body,[\s\S]*?expectedAccountId: postingActor\.id,[\s\S]*?\}\)/,
+  assert.match(store, /import\("\.\/domain\/postDelivery\.mjs"\)\.then/);
+  assert.match(store, /=> deliverPostCreate\(\{[\s\S]*?apiCall: api,[\s\S]*?body,[\s\S]*?expectedAccountId: postingActor\.id,[\s\S]*?\}\)/,
     "all post types reuse the same immutable body and account binding when a response is lost");
   assert.match(show, /onPost=\{\(post\) => addLog\(post, \{ silent: true \}\)\}/,
     "the ticket composer suppresses only the duplicate global toast");
@@ -77,12 +77,8 @@ test("ticket share uses the retry-safe post delivery path and owns one safe erro
 test("exact Going attendance survives account hydration even without an ambiguous legacy alias", () => {
   const store = source("../store.js");
 
-  assert.match(store, /const exactGoingRows = canonicalAttendance\.filter/);
-  assert.match(store, /const exactDisplayKeys = new Set/);
-  assert.match(store, /rows\.filter\(\(entry\) => goingTourDateId\(entry\)/,
-    "an exact row replaces its same-key legacy calendar projection instead of duplicating it");
-  assert.match(store, /goingEntryIdentity\(candidate\) === identity/,
-    "the private canonical attendance projection restores exact Going identity after reload");
+  assert.match(store, /const hydratedGoingRows = hydrateAttendanceGoingRows\(rows, canonicalAttendance, goingRef\.current\[accountId\]\)/,
+    "hydration uses the behavior-tested exact identity merge and retains ambiguous legacy plans");
 });
 
 test("a legacy display key never impersonates one of two exact catalogue events", () => {
@@ -114,7 +110,9 @@ test("the shared post renderer owns ticket presentation and disables generic edi
   assert.doesNotMatch(card, /onPress=\{\(\) => onOpen\?\.\(log\)\}\s*accessibilityHint="Open this Going post and its comments"/);
   assert.match(feed, /const openShow = useCallback\(\(show\) => actionsRef\.current\.onOpen\?\.\(show, \{ surface, position: itemIndex \}\)/);
   assert.match(feed, /onOpenShow=\{openShow\}/);
-  assert.match(post, /onOpenShow=\{isOnlineReview \? undefined : onOpenShow\}/);
+  assert.match(card, /if \(Platform\.OS === "ios"\) \{[\s\S]*?onOpenShow = guard\(onOpenShow\);/,
+    "the iOS card fences exact-show callbacks without changing shared row routing");
+  assert.match(post, /onOpenShow=\{detail \|\| isOnlineReview \? undefined : onOpenShow\}/);
   assert.match(profile, /onOpenShow=\{capabilities\.openShow \? openShow : undefined\}/);
   assert.match(app, /log\.kind === "status" && log\.performanceEvent !== true/);
   assert.ok(app.includes("publicFramePath(frame"), "App delegates canonical history serialization to the tested public-frame helper");

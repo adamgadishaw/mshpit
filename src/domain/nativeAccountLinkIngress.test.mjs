@@ -38,7 +38,7 @@ function fixture(ready = true) {
 for (const kind of ['verify', 'reset']) test(`newer warm News cannot be covered by delayed launch ${kind}`, async () => {
   const f = fixture(), navigation = [], effects = [];
   runInNewContext(`(function () { ${source.slice(start, end)} })()`, {
-    web: false, authReady: true, Linking: f.linking, nativeNewsLinkFrame,
+    web: false, authReady: true, startupLinkingFor: () => f.linking, nativeNewsLinkFrame,
     go: frame => navigation.push(JSON.parse(JSON.stringify(frame))),
     useRef: current => ({ current }), useEffect: effect => effects.push(effect),
   });

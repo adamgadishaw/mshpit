@@ -1,3 +1,5 @@
+import { INCOMING_MESSAGE_PEERS_CTE, MESSAGE_PEERS_CTES } from "./features/messaging/directMessageThreads.js";
+
 function readCursor(row) {
   return row?.last_read_id ? { createdAt: row.last_read_at, id: row.last_read_id } : null;
 }
@@ -35,9 +37,8 @@ export function directMessageReadFor(database, userId, otherId) {
 }
 
 export function directMessageReadProjection(database, userId) {
-  const rows = database.prepare(`WITH peers AS MATERIALIZED (
-    SELECT to_id AS other_id FROM dms WHERE from_id=$viewer
-    UNION SELECT from_id AS other_id FROM dms WHERE to_id=$viewer
+  const rows = database.prepare(`WITH RECURSIVE ${MESSAGE_PEERS_CTES}, peers AS MATERIALIZED (
+    SELECT other_id FROM message_peers
     UNION SELECT other_id FROM dm_reads WHERE user_id=$viewer
   ) ${READ_PROJECTION}`).all({ $viewer: userId });
   const summaries = new Map(rows.map(row => [row.other_id, readSummary(row)]));
@@ -56,8 +57,8 @@ export function directMessageInboxUnread(database, accountId) {
   // or scan an entire mostly-read history through a joined cursor predicate.
   // Durable directional consent survives unfollowing/removing message content;
   // retain follow/sent evidence for compatibility with legacy writers.
-  return database.prepare(`WITH peers AS MATERIALIZED (
-      SELECT DISTINCT from_id AS other_id FROM dms WHERE to_id=$viewer
+  return database.prepare(`WITH RECURSIVE ${INCOMING_MESSAGE_PEERS_CTE}, peers AS MATERIALIZED (
+      SELECT other_id FROM incoming_peers WHERE other_id IS NOT NULL
     ) SELECT COALESCE(SUM(CASE WHEN r.user_id IS NULL THEN (
         SELECT COUNT(*) FROM dms d WHERE d.to_id=$viewer AND d.from_id=peers.other_id AND d.removed=0
       ) ELSE (

@@ -1,5 +1,10 @@
-import { useMemo, useState, useEffect, useRef } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
+import useNativeTabContentReady from "../hooks/useNativeTabContentReady";
+import useNativeTabPreview from "../hooks/useNativeTabPreview";
+import NativeTabSwipeExclusion from "../components/NativeTabSwipeExclusion";
+import NativeLargeTitle from "../components/NativeLargeTitle";
+import { ScrollView } from "../components/NativeTabScroll";
+import { Fragment, useMemo, useState, useEffect, useLayoutEffect, useRef } from "react";
+import { ActivityIndicator, View, Text, StyleSheet, TextInput, Pressable, Image, Platform, useWindowDimensions } from "react-native";
 import { colors, focusRing, mono, radius, roleColor } from "../theme";
 import { ratedShows } from "../data";
 import { ingestedArtists } from "../seed/ingested";
@@ -21,6 +26,8 @@ import {
   visibleUnifiedPeople,
   withoutBlockedPersonSearches,
 } from "../domain/unifiedSearch.mjs";
+import { createBrowseScrollReturn } from "../domain/iosBrowseReturn.mjs";
+import useIOSSearchAnnouncement from "../hooks/useIOSSearchAnnouncement";
 import { searchLiveAnnouncement } from "../domain/searchAccessibility.mjs";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { createUnifiedEventSearchIndex, searchUnifiedEventIndex } from "../domain/unifiedLocationSearch.mjs";
@@ -33,23 +40,30 @@ import { ENABLE_DEMO_DATA, ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 import CityDiscoveryTiles from "../features/cities/CityDiscoveryTiles";
 import { availableSearchCategories } from "../components/discover/discovery-recovery.mjs";
 
+const IS_IOS = Platform.OS === "ios";
+const SearchControls = IS_IOS ? View : Fragment;
+const resultTextLines = IS_IOS ? undefined : 1;
+const sectionTitle = (title) => IS_IOS ? title.toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase()) : title;
+
 const EMPTY_LOOKUP_STATE = Object.freeze({ busy: false, message: "" });
 const EMPTY_ROWS = Object.freeze([]);
 const SEARCH_ALL_PREVIEW_LIMIT = 5;
 
 // ---- result rows (shared by every section of the unified dropdown) ----
 function PersonRow({ u, following, canFollow, onFollow, onOpen }) {
+  const { fontScale } = useWindowDimensions();
+  const largeText = IS_IOS && fontScale > 1.25;
   const rc = roleColor(u.role);
   return (
-    <View style={styles.row}>
-      <Pressable style={styles.rowMain} onPress={onOpen} accessibilityRole="button" accessibilityLabel={`Open ${u.name}'s profile${u.handle ? `, @${u.handle}` : ""}`}>
+    <View style={[styles.row, largeText && styles.rowReflow]}>
+      <Pressable style={[styles.rowMain, largeText && styles.rowMainReflow]} onPress={onOpen} accessibilityRole="button" accessibilityLabel={`Open ${u.name}'s profile${u.handle ? `, @${u.handle}` : ""}`}>
         <Avatar user={u} size={36} />
         <View style={{ flex: 1 }}>
           <View style={styles.nameLine}>
-            <Text style={styles.rowName} numberOfLines={1}>{u.name}</Text>
+            <Text style={styles.rowName} numberOfLines={resultTextLines}>{u.name}</Text>
             {u.verified && <Badge type="verified" size={15} />}
           </View>
-          <Text style={[styles.rowSub, rc && { color: rc, fontWeight: "800" }]} numberOfLines={1}>@{u.handle}{u.home?.city ? ` · ${u.home.city}` : ""}</Text>
+          <Text style={[styles.rowSub, rc && { color: rc, fontWeight: "800" }]} numberOfLines={resultTextLines}>@{u.handle}{u.home?.city ? ` · ${u.home.city}` : ""}</Text>
         </View>
       </Pressable>
       {canFollow && (
@@ -67,7 +81,7 @@ function ArtistRow({ name, genre, memorial, onPress }) {
       <View style={[styles.dot, { borderColor: remembered ? colors.gold : colors.amber }]}><Icon name={remembered ? "dove" : "music"} size={14} color={remembered ? colors.gold : colors.amber} /></View>
       <View style={{ flex: 1 }}>
         <View style={styles.nameLine}>
-          <Text style={[styles.rowName, { flexShrink: 1 }]} numberOfLines={1}>{name}</Text>
+          <Text style={[styles.rowName, { flexShrink: 1 }]} numberOfLines={resultTextLines}>{name}</Text>
           {remembered ? (
             <View style={styles.memorialPill} accessible={false}>
               <Icon name="dove" size={11} color={colors.gold} />
@@ -75,7 +89,7 @@ function ArtistRow({ name, genre, memorial, onPress }) {
             </View>
           ) : null}
         </View>
-        {!!genre && <Text style={styles.rowSub} numberOfLines={1}>{genre}</Text>}
+        {!!genre && <Text style={styles.rowSub} numberOfLines={resultTextLines}>{genre}</Text>}
       </View>
       <Icon name="chevron-right" size={16} color={colors.textDim} />
     </Pressable>
@@ -90,8 +104,8 @@ function SongRow({ song, onPress, onAdd }) {
           ? <Image source={{ uri: song.art }} style={styles.songArt} accessible={false} />
           : <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="music" size={14} color={colors.good} /></View>}
         <View style={{ flex: 1 }}>
-          <Text style={styles.rowName} numberOfLines={1}>{song.title}</Text>
-          <Text style={styles.rowSub} numberOfLines={1}>{song.artist}{mins ? ` · ${mins}` : ""}</Text>
+          <Text style={styles.rowName} numberOfLines={resultTextLines}>{song.title}</Text>
+          <Text style={styles.rowSub} numberOfLines={resultTextLines}>{song.artist}{mins ? ` · ${mins}` : ""}</Text>
         </View>
         {onPress && <Icon name="play" size={14} color={colors.amber} />}
       </Pressable>
@@ -108,14 +122,16 @@ function VenueRow({ v, onPress }) {
     <Pressable style={styles.row} onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open venue ${v.name}${v.place ? `, ${v.place}` : ""}${v.upcoming > 0 ? `, ${v.upcoming} upcoming` : ""}`}>
       <View style={[styles.dot, { borderColor: colors.cool }]}><Icon name="pin" size={14} color={colors.cool} /></View>
       <View style={{ flex: 1 }}>
-        <Text style={styles.rowName} numberOfLines={1}>{v.name}</Text>
-        <Text style={styles.rowSub} numberOfLines={1}>{v.place || "Location not listed"}</Text>
+        <Text style={styles.rowName} numberOfLines={resultTextLines}>{v.name}</Text>
+        <Text style={styles.rowSub} numberOfLines={resultTextLines}>{v.place || "Location not listed"}</Text>
       </View>
       {v.upcoming > 0 && <View style={styles.pill}><Text style={styles.pillTxt}>{v.upcoming}</Text></View>}
     </Pressable>
   );
 }
 function EventRow({ t, onOpenShow, onOpenVenue, onOpenTicket }) {
+  const { fontScale } = useWindowDimensions();
+  const largeText = IS_IOS && fontScale > 1.25;
   const venue = {
     name: t.venue,
     place: t.place || t.city || "",
@@ -127,12 +143,12 @@ function EventRow({ t, onOpenShow, onOpenVenue, onOpenTicket }) {
     venueCountry: t.venueCountry || null,
   };
   return (
-    <View style={styles.row}>
-      <Pressable style={styles.rowMain} onPress={() => onOpenShow?.(t)} accessibilityRole="button" accessibilityLabel={`Open show for ${t.artist} at ${t.venue}, ${formatDate(t.date, t.date)}`}>
+    <View style={[styles.row, largeText && styles.rowReflow]}>
+      <Pressable style={[styles.rowMain, largeText && styles.rowMainReflow]} onPress={() => onOpenShow?.(t)} accessibilityRole="button" accessibilityLabel={`Open show for ${t.artist} at ${t.venue}, ${formatDate(t.date, t.date)}`}>
         <View style={[styles.dot, { borderColor: colors.line }]}><Icon name="calendar" size={14} color={colors.amber} /></View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.rowName} numberOfLines={1}>{t.artist}</Text>
-          <Text style={styles.rowSub} numberOfLines={1}>{t.venue} · {formatDate(t.date, t.date)}</Text>
+          <Text style={styles.rowName} numberOfLines={resultTextLines}>{t.artist}</Text>
+          <Text style={styles.rowSub} numberOfLines={resultTextLines}>{t.venue} · {formatDate(t.date, t.date)}</Text>
         </View>
       </Pressable>
       <Pressable style={styles.secondaryAction} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open venue ${t.venue}`}>
@@ -147,12 +163,14 @@ function EventRow({ t, onOpenShow, onOpenVenue, onOpenTicket }) {
 
 // A collapsible-free section: header + rows. Renders nothing when empty.
 function Section({ icon, tint, title, count, rows, hidden = false, onShowAll }) {
+  const { fontScale } = useWindowDimensions();
+  const largeText = IS_IOS && fontScale > 1.25;
   if (hidden || !rows || rows.length === 0) return null;
   return (
     <View style={styles.section}>
-      <View style={styles.secHead}>
-        <Icon name={icon} size={13} color={tint} />
-        <Text style={styles.secTitle} accessibilityRole="header">{title}</Text>
+      <View style={[styles.secHead, largeText && styles.sectionHeadReflow]}>
+        {!IS_IOS && <Icon name={icon} size={13} color={tint} />}
+        <Text style={styles.secTitle} accessibilityRole="header">{sectionTitle(title)}</Text>
         {onShowAll ? <Pressable style={({ focused }) => [styles.sectionReveal, focused && focusRing]} onPress={onShowAll} accessibilityRole="button" accessibilityLabel={`Show all ${count} available ${title.toLowerCase()}`}>
           <Text style={styles.sectionRevealText}>Show all {count}</Text><Icon name="chevron-right" size={14} color={colors.amber} />
         </Pressable> : <Text style={styles.secCount}>{count}</Text>}
@@ -169,25 +187,49 @@ function searchResultBucket(count) {
   return "over_twenty";
 }
 
-export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
+export default function SearchScreen({ browseReturn, onOpen, onOpenArtist, onOpenCity, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
+  const { fontScale } = useWindowDimensions();
+  const largeText = IS_IOS && fontScale > 1.25;
   const { tourDates, refreshTourDates, searchVenues, artistsAlphabetical, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, track,
-    session, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
+    session, chatAuthEpoch, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
+  const isTabPreview = useNativeTabPreview();
+  const previewRef = useRef(isTabPreview);
+  previewRef.current = isTabPreview;
+  const browseReturnRef = useRef(browseReturn);
+  browseReturnRef.current = browseReturn;
+  const mountedRef = useRef(false);
+  useLayoutEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  const [initialBrowse] = useState(() => IS_IOS && !isTabPreview ? browseReturn?.read() : null);
   const searchAccountScope = accountTargetScope(session?.id, "search");
+  const searchAnnouncements = useIOSSearchAnnouncement(searchAccountScope, chatAuthEpoch);
   const lookupRequestRef = useRef(null);
   if (!lookupRequestRef.current) lookupRequestRef.current = createArtistLookupController();
-  const [queryState, setQueryState] = useState(() => ({ scope: searchAccountScope, value: "" }));
+  const [queryState, setQueryState] = useState(() => ({ scope: searchAccountScope, value: initialBrowse?.query || "" }));
   const q = scopedScreenValue(queryState, searchAccountScope, "");
   const setQ = (value) => {
+    if (IS_IOS && (previewRef.current || !searchAnnouncements.isCurrent())) return;
+    if (IS_IOS) {
+      const nextQuery = String(value || "").trim().toLowerCase();
+      if (nextQuery !== q.trim().toLowerCase()) searchAnnouncements.request(searchAccountScope, nextQuery);
+    }
     lookupRequestRef.current.cancel();
     setQueryState({ scope: searchAccountScope, value: String(value || "") });
   };
   const [focused, setFocused] = useState(false);
-  const [activeCategory, setActiveCategory] = useState("all");
+  const [activeCategory, setActiveCategory] = useState(initialBrowse?.category || "all");
   const resultScrollRef = useRef(null);
+  const scrollReturn = useRef(null);
+  if (!scrollReturn.current) scrollReturn.current = createBrowseScrollReturn(initialBrowse?.scrollY, (patch) => {
+    if (mountedRef.current && !previewRef.current) browseReturnRef.current?.save(patch);
+  });
+  useEffect(() => { if (IS_IOS && !previewRef.current) browseReturnRef.current?.save({ query: q, category: activeCategory }); }, [q, activeCategory, browseReturn, isTabPreview]);
+  const initialAccountScope = useRef(searchAccountScope);
   const searchInputRef = useRef(null);
   const categoryRefs = useRef({});
   const selectCategory = (key) => {
+    if (IS_IOS && previewRef.current) return;
+    scrollReturn.current.cancel();
     setActiveCategory(key);
     resultScrollRef.current?.scrollTo?.({ y: 0, animated: false });
     categoryRefs.current[key]?.focus?.();
@@ -215,6 +257,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   }), [session?.id]);
   const lookupScopeRef = useRef(lookupScope);
   lookupScopeRef.current = lookupScope;
+  const authEpochRef = useRef(chatAuthEpoch);
+  authEpochRef.current = chatAuthEpoch;
   const [lookupState, setLookupState] = useState(() => ({ scope: lookupScope, value: EMPTY_LOOKUP_STATE }));
   const { busy: lookupBusy, message: actionMessage } = scopedScreenValue(lookupState, lookupScope, EMPTY_LOOKUP_STATE);
   const [, refreshLookupCooldown] = useState(0);
@@ -231,6 +275,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   }));
   const setActionMessage = (message) => updateLookupState({ message });
   const changeQuery = (value) => {
+    if (IS_IOS && (previewRef.current || !searchAnnouncements.isCurrent())) return;
+    if (IS_IOS) scrollReturn.current.cancel();
     setQ(value);
     // Case-only and whitespace-only edits keep the same normalized scope. Clear
     // an old lookup message explicitly, but avoid another state write while the
@@ -240,9 +286,25 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
     }
   };
   const clearSearch = () => {
+    if (IS_IOS && (previewRef.current || !searchAnnouncements.isCurrent())) return;
     changeQuery("");
     setSearchError("");
     searchInputRef.current?.focus?.();
+  };
+  const cancelSearch = () => {
+    if (IS_IOS && (previewRef.current || !searchAnnouncements.isCurrent())) return;
+    changeQuery("");
+    setSearchError("");
+    setActiveCategory("all");
+    searchInputRef.current?.blur?.();
+    setFocused(false);
+    resultScrollRef.current?.scrollTo?.({ y: 0, animated: false });
+  };
+  const retrySearch = () => {
+    if (IS_IOS && (previewRef.current || !searchAnnouncements.isCurrent())) return;
+    if (IS_IOS) searchAnnouncements.request(searchAccountScope, query);
+    setSearchError("");
+    setSearchRevision((value) => value + 1);
   };
   const peopleScope = unifiedPeopleSearchScope(session?.id, blockedIds);
   const [peopleCache, setPeopleCache] = useState({ scope: null, query: "", rows: [] });
@@ -260,9 +322,12 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
     }
     setSurfaceRefreshing(false);
     setSurfaceRefreshError(false);
-    setQueryState({ scope: searchAccountScope, value: "" });
+    if (initialAccountScope.current !== searchAccountScope) {
+      setQueryState({ scope: searchAccountScope, value: "" });
+      setActiveCategory("all");
+      initialAccountScope.current = searchAccountScope;
+    }
     setFocused(false);
-    setActiveCategory("all");
     setSearchError("");
     setLookupState({ scope: accountTargetScope(session?.id, "search:"), value: EMPTY_LOOKUP_STATE });
   }, [searchAccountScope, session?.id]);
@@ -338,6 +403,9 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
     const requestScope = remoteSearchScope;
     const searchQuery = settledQuery;
     const effectRevision = searchRevision;
+    const requestAuthEpoch = chatAuthEpoch;
+    const mayRecordSearch = () => !IS_IOS || (mountedRef.current && !previewRef.current
+      && lookupScopeRef.current === requestScope && authEpochRef.current === requestAuthEpoch);
     const settleRefreshWaiter = (succeeded) => {
       const waiter = searchRefreshWaiterRef.current;
       if (!waiter || waiter.revision !== effectRevision || waiter.scope !== requestScope) return;
@@ -408,6 +476,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
               : "Search could not update. Check your connection and try again.");
         }
         const resultBucket = searchResultBucket(resultCount);
+        if (!mayRecordSearch()) return;
         if (session?.id) {
           track("search", { kind: "all", resultBucket });
         } else if (requestHadSuccess) {
@@ -420,7 +489,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
       } catch (error) {
         if (live && !controller.signal.aborted && error?.name !== "AbortError") {
           setSearchError("Search could not update. Check your connection and try again.");
-          if (!session?.id) {
+          if (!session?.id && mayRecordSearch()) {
             void recordGuestSearch({ kind: "all", resultBucket: "unknown", outcome: "failed" }, { signal: controller.signal });
           }
         }
@@ -440,6 +509,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   }, [peopleScope, remoteSearchScope, searchRevision, session?.id, settledQuery]);
 
   const refreshSearch = async () => {
+    if (IS_IOS && previewRef.current) return false;
     if (surfaceRefreshControllerRef.current) return false;
     const controller = new AbortController();
     surfaceRefreshControllerRef.current = controller;
@@ -499,8 +569,15 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   }, [settledQuery, tourDates, dbArtists]);
   const artists = queryIsSettled ? searchedArtists : [];
 
+  // A matching snapshot is produced for success, empty results and terminal
+  // artist failures. Do not borrow an older query's unscoped error message.
+  useNativeTabContentReady(queryIsSettled && artistCache.scope === lookupScope
+    && (!searchLoading || dbArtists.length > 0));
   const showBrowse = !query;
   const exactArtist = artists.some((a) => a.name.toLowerCase() === query);
+  useEffect(() => {
+    if (IS_IOS) scrollReturn.current.update(resultScrollRef.current, !searchLoading && queryIsSettled && (!query || artistCache.scope === lookupScope || !!searchError));
+  });
   const resultState = unifiedSearchState({ query, loading: searchLoading || !queryIsSettled, people, artists, songs, venues, events, clubs });
   const resultGroups = { people, artists, songs, venues, events, clubs };
   const availableCategories = availableSearchCategories(searchCategories, resultGroups);
@@ -517,6 +594,21 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   const showCategory = (key) => activeCategory === "all" || activeCategory === key;
   const visibleSearchError = queryIsSettled ? searchError : "";
   const liveAnnouncement = actionMessage || searchLiveAnnouncement({ query, state: visibleResultState, error: visibleSearchError, groups: visibleResultGroups });
+  const completedSearchAnnouncement = searchLiveAnnouncement({ query, state: visibleResultState, error: visibleSearchError, groups: visibleResultGroups });
+  useEffect(() => {
+    if (!IS_IOS) return;
+    if (previewRef.current) {
+      // Revoke an already queued intent too; promotion never replays it.
+      searchAnnouncements.request(null, "");
+      return;
+    }
+    searchAnnouncements.update({
+      scope: searchAccountScope, query,
+      ready: queryIsSettled && !searchLoading && visibleResultState !== "loading",
+      outcome: visibleSearchError ? "error" : visibleResultState === "ready" ? "results" : visibleResultState,
+      message: completedSearchAnnouncement,
+    });
+  });
   const previewRows = (rows, category) => showBrowse ? rows : unifiedSearchPreviewRows(rows, {
     activeCategory, category, limit: SEARCH_ALL_PREVIEW_LIMIT,
   });
@@ -593,15 +685,19 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
     onFailure: () => setActionMessage(`The ticket link for ${event.artist} could not be opened.`),
   });
 
-  return (
-    <View style={styles.wrap}>
+  const cityDiscovery = (activeCategory === "all" || activeCategory === "venues")
+    ? <CityDiscoveryTiles query={settledQuery} limit={5} onOpenCity={onOpenCity} layout="rail" /> : null;
+
+  const searchHeader = (
       <View style={styles.header}>
-        <View style={[styles.field, focused && styles.fieldFocused]}>
+        {IS_IOS && <NativeLargeTitle inFlow><Text style={styles.pageTitle} accessibilityRole="header">Search</Text></NativeLargeTitle>}
+        <NativeTabSwipeExclusion><SearchControls {...(IS_IOS ? { style: [styles.searchControls, largeText && styles.searchControlsReflow] } : {})}>
+        <View style={[styles.field, focused && styles.fieldFocused, largeText && styles.fieldReflow]}>
           <Icon name="search" size={18} color={focused ? colors.amber : colors.textDim} />
           <TextInput
             ref={searchInputRef}
             style={styles.input}
-            placeholder={session?.id ? "Search artists, people, shows, venues" : "Search artists, shows, venues"}
+            placeholder={IS_IOS ? "Artists, shows, and more" : session?.id ? "Search artists, people, shows, venues" : "Search artists, shows, venues"}
             placeholderTextColor={colors.textFaint}
             value={q}
             onChangeText={changeQuery}
@@ -616,9 +712,14 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
             accessibilityHint={session?.id ? "Find artists, people, shows, venues, and fan clubs" : "Find artists, shows, venues, and fan clubs"}
             accessibilityState={{ busy: searchLoading || !queryIsSettled }}
             returnKeyType="search"
+            {...(IS_IOS ? { onSubmitEditing: () => searchInputRef.current?.blur?.(), clearButtonMode: "never" } : {})}
           />
           {!!q && <Pressable style={styles.fieldAction} onPress={clearSearch} accessibilityRole="button" accessibilityLabel="Clear search"><Icon name="x" size={16} color={colors.textFaint} /></Pressable>}
         </View>
+        {IS_IOS && (focused || !!q) && <Pressable style={styles.cancelSearch} onPress={cancelSearch} accessibilityRole="button" accessibilityLabel="Cancel search" accessibilityHint="Clear the search and dismiss the keyboard">
+          <Text style={styles.cancelText}>Cancel</Text>
+        </Pressable>}
+        </SearchControls></NativeTabSwipeExclusion>
         {!!query && (
           <ScrollView
             horizontal
@@ -644,11 +745,17 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
           <Text style={[styles.resultStatus, (visibleSearchError || actionMessage) && styles.resultError]} accessibilityRole="summary" accessibilityLiveRegion={visibleSearchError || actionMessage ? "assertive" : "polite"}>{liveAnnouncement}</Text>
         )}
         {!!visibleSearchError && (
-          <Pressable style={styles.retrySearch} onPress={() => { setSearchError(""); setSearchRevision((value) => value + 1); }} accessibilityRole="button" accessibilityLabel="Retry search">
+          <Pressable style={styles.retrySearch} onPress={retrySearch} accessibilityRole="button" accessibilityLabel="Retry search">
             <Text style={styles.retrySearchText}>Try search again</Text>
           </Pressable>
         )}
       </View>
+
+  );
+
+  return (
+    <View style={styles.wrap}>
+      {!IS_IOS && searchHeader}
 
       <VinylRefreshBoundary
         refreshing={surfaceRefreshing}
@@ -656,8 +763,10 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
         accessibilityLabel="Refresh search results"
         testID="search-refresh"
       >
-      <ScrollView ref={resultScrollRef} style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic">
-        {(activeCategory === "all" || activeCategory === "venues") && <CityDiscoveryTiles query={settledQuery} limit={5} onOpenCity={onOpenCity} layout="rail" />}
+      <ScrollView {...(IS_IOS ? { collapsingTitle: true } : {})} ref={resultScrollRef} {...(IS_IOS ? { onLayout: scrollReturn.current.onLayout, onContentSizeChange: scrollReturn.current.onContentSizeChange, onScroll: scrollReturn.current.onScroll, onScrollBeginDrag: scrollReturn.current.onScrollBeginDrag, scrollEventThrottle: 32 } : {})} style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled" contentInsetAdjustmentBehavior="automatic"
+        {...(IS_IOS ? { keyboardDismissMode: "interactive", automaticallyAdjustKeyboardInsets: true } : {})}>
+        {IS_IOS && searchHeader}
+        {!IS_IOS && cityDiscovery}
         {surfaceRefreshError ? (
           <Text style={styles.surfaceRefreshError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
             Some search sources could not refresh. Your current results are still here.
@@ -675,9 +784,9 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
 
         {showBrowse && visibleRecentSearches.length > 0 && (
           <View style={styles.section}>
-            <View style={styles.recentHead}>
-              <Icon name="search" size={13} color={colors.textDim} />
-              <Text style={[styles.secTitle, { flex: 1 }]}>RECENT</Text>
+            <View style={[styles.recentHead, largeText && styles.sectionHeadReflow]}>
+              {!IS_IOS && <Icon name="search" size={13} color={colors.textDim} />}
+              <Text style={[styles.secTitle, !IS_IOS && { flex: 1 }]} accessibilityRole={IS_IOS ? "header" : undefined}>{IS_IOS ? "Recent" : "RECENT"}</Text>
               <Pressable style={styles.clearAction} onPress={clearRecentSearches} accessibilityRole="button" accessibilityLabel="Clear all recent searches">
                 <Text style={styles.clearTxt}>Clear</Text>
               </Pressable>
@@ -687,8 +796,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
                 <Pressable style={styles.rowMain} onPress={() => reopenRecent(e)} accessibilityRole="button" accessibilityLabel={`Reopen ${e.label}`}>
                   <View style={[styles.dot, { borderColor: recentTint(e.type) }]}><Icon name={recentIcon(e.type)} size={14} color={recentTint(e.type)} /></View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.rowName} numberOfLines={1}>{e.label}</Text>
-                    {!!e.sub && <Text style={styles.rowSub} numberOfLines={1}>{e.sub}</Text>}
+                    <Text style={styles.rowName} numberOfLines={resultTextLines}>{e.label}</Text>
+                    {!!e.sub && <Text style={styles.rowSub} numberOfLines={resultTextLines}>{e.sub}</Text>}
                   </View>
                 </Pressable>
                 <Pressable style={styles.secondaryAction} onPress={() => removeRecentSearch(e.label, e.type)} accessibilityRole="button" accessibilityLabel={`Remove ${e.label} from recent searches`}>
@@ -698,6 +807,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
             ))}
           </View>
         )}
+
+        {IS_IOS && cityDiscovery}
 
         {resultState === "loading" && (
           <View style={styles.loading} accessibilityRole="progressbar" accessibilityLabel="Searching Mshpit" accessibilityState={{ busy: true }}>
@@ -734,8 +845,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
               <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())} disabled={lookupBusy || lookupCoolingDown} accessibilityRole="button" accessibilityLabel={`Search the full artist directory for ${q.trim()}`} accessibilityHint={lookupCoolingDown ? "The artist directory is temporarily unavailable. Retry will be available shortly." : "Use this when the artist is not on Mshpit yet"} accessibilityState={{ busy: lookupBusy, disabled: lookupBusy || lookupCoolingDown }}>
                 <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="search" size={14} color={colors.good} /></View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.rowName} numberOfLines={1}>Search the full directory for “{q.trim()}”</Text>
-                  <Text style={styles.rowSub} numberOfLines={1}>{lookupCoolingDown ? "Please wait before trying the directory again" : "Find an artist who is not on Mshpit yet"}</Text>
+                  <Text style={styles.rowName} numberOfLines={resultTextLines}>Search the full directory for “{q.trim()}”</Text>
+                  <Text style={styles.rowSub} numberOfLines={resultTextLines}>{lookupCoolingDown ? "Please wait before trying the directory again" : "Find an artist who is not on Mshpit yet"}</Text>
                 </View>
                 {lookupBusy ? <ActivityIndicator size="small" color={colors.good} /> : <Icon name="chevron-right" size={16} color={colors.textDim} />}
               </Pressable>
@@ -779,8 +890,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
             <Pressable key={"fc_" + c.artist} style={styles.row} onPress={() => onOpenFanClub?.(c.artist)} accessibilityRole="button" accessibilityLabel={`Open ${c.artist} fan club${c.members > 0 ? `, ${c.members} members` : ""}`}>
               <View style={[styles.dot, { borderColor: colors.magenta }]}><Icon name="comment" size={14} color={colors.magenta} /></View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.rowName} numberOfLines={1}>{c.artist} fan club</Text>
-                <Text style={styles.rowSub} numberOfLines={1}>{c.members > 0 ? `${c.members} members` : "Be the first to join"}</Text>
+                <Text style={styles.rowName} numberOfLines={resultTextLines}>{c.artist} fan club</Text>
+                <Text style={styles.rowSub} numberOfLines={resultTextLines}>{c.members > 0 ? `${c.members} members` : "Be the first to join"}</Text>
               </View>
               <Icon name="chevron-right" size={16} color={colors.textDim} />
             </Pressable>
@@ -789,6 +900,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
 
         {!visibleSearchError && !actionMessage && visibleResultState === "no-results" && (
           <View style={styles.empty} accessibilityLiveRegion="polite">
+            {IS_IOS && <View style={styles.emptyIcon} accessible={false}><Icon name="search" size={28} color={colors.textDim} /></View>}
             <Text style={styles.emptyTitle} selectable>No {activeCategory === "all" ? "matches" : activeCategoryLabel.toLowerCase()} for “{q}”.</Text>
             <Text style={styles.emptyDetail}>{alternativeCategories.length ? "There are matches in other categories." : "Try a shorter name, another spelling, or a city."}</Text>
             <View style={styles.emptyActions}>
@@ -807,7 +919,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenCity, onOpenV
   );
 }
 
-const styles = StyleSheet.create({
+const legacyStyles = StyleSheet.create({
   songArt: { width: 36, height: 36, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
   wrap: { flex: 1, backgroundColor: colors.bg },
   header: { padding: 16, paddingBottom: 12 },
@@ -865,3 +977,62 @@ const styles = StyleSheet.create({
   followingBtn: { backgroundColor: "transparent", borderWidth: 1, borderColor: colors.line },
   followingTxt: { color: colors.textDim },
 });
+
+
+// Presentation only. Android/web keep their original style object unchanged.
+const iosStyles = StyleSheet.create({
+  header: { padding: 0, paddingTop: 8, paddingBottom: 20 },
+  pageTitle: { color: colors.text, fontSize: 34, fontWeight: "700", letterSpacing: -0.6, marginBottom: 16 },
+  searchControls: { flexDirection: "row", alignItems: "center", gap: 10 },
+  searchControlsReflow: { flexDirection: "column", alignItems: "stretch", gap: 2 },
+  field: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surfaceAlt, borderRadius: 12, borderWidth: 1, borderColor: "transparent", paddingLeft: 12, paddingRight: 4, minHeight: 48 },
+  fieldReflow: { flex: 0, width: "100%" },
+  fieldFocused: { borderColor: colors.amber },
+  input: { flex: 1, minWidth: 0, color: colors.text, fontSize: 17, paddingVertical: 12 },
+  fieldAction: { width: 44, height: 44, alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  cancelSearch: { minWidth: 44, minHeight: 44, paddingVertical: 8, justifyContent: "center", alignSelf: "center", flexShrink: 0 },
+  cancelText: { color: colors.amber, fontSize: 17, fontWeight: "500" },
+  categoryRail: { gap: 8, paddingTop: 14, paddingBottom: 2, paddingRight: 8 },
+  categoryChip: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: colors.surface },
+  categoryChipSelected: { backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.amber },
+  categoryChipText: { color: colors.textDim, fontSize: 15, fontWeight: "600" },
+  categoryChipTextSelected: { color: colors.amber, fontWeight: "700" },
+  categoryCount: { color: colors.textDim, fontSize: 13, fontVariant: ["tabular-nums"] },
+  resultStatus: { color: colors.textDim, fontSize: 15, marginTop: 12 },
+  retrySearchText: { color: colors.amber, fontSize: 17, fontWeight: "600" },
+  list: { paddingHorizontal: 20, paddingBottom: 40, maxWidth: 680, width: "100%", alignSelf: "center" },
+  browseHint: { color: colors.textDim, fontSize: 17, marginTop: 8, marginBottom: 24 },
+  surfaceRefreshError: { color: colors.danger, fontSize: 15, marginBottom: 16 },
+  section: { marginBottom: 28 },
+  secHead: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8, paddingBottom: 10 },
+  recentHead: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8, paddingBottom: 8 },
+  sectionHeadReflow: { flexDirection: "column", alignItems: "flex-start" },
+  secTitle: { color: colors.text, fontSize: 22, fontWeight: "700", flexGrow: 1, flexShrink: 1 },
+  secCount: { color: colors.textDim, fontSize: 15, fontVariant: ["tabular-nums"] },
+  sectionRevealText: { color: colors.amber, fontSize: 15, fontWeight: "600", flexShrink: 1 },
+  clearTxt: { color: colors.amber, fontSize: 17, fontWeight: "500" },
+  row: { minHeight: 68, flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.lineSoft },
+  rowMain: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 12 },
+  rowReflow: { flexWrap: "wrap" },
+  rowMainReflow: { flexBasis: "100%", flexGrow: 0, flexShrink: 0 },
+  rowName: { color: colors.text, fontSize: 17, fontWeight: "600", flexShrink: 1 },
+  rowSub: { color: colors.textDim, fontSize: 15, marginTop: 4 },
+  nameLine: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 },
+  dot: { width: 40, height: 40, flexShrink: 0, borderRadius: 12, backgroundColor: colors.surfaceAlt, alignItems: "center", justifyContent: "center" },
+  songArt: { width: 40, height: 40, flexShrink: 0, borderRadius: 8, backgroundColor: colors.surfaceAlt },
+  followBtn: { minHeight: 44, paddingHorizontal: 16, paddingVertical: 8, justifyContent: "center", borderRadius: 12, backgroundColor: colors.amberStrong },
+  followTxt: { color: "#1A1206", fontSize: 15, fontWeight: "600" },
+  pillTxt: { color: colors.amber, fontSize: 15, fontWeight: "600" },
+  memorialPill: { flexDirection: "row", alignItems: "center", gap: 4, maxWidth: "100%", paddingVertical: 4 },
+  memorialPillText: { color: colors.gold, fontSize: 12, fontWeight: "600", flexShrink: 1 },
+  soldOut: { color: colors.danger, fontSize: 13, fontWeight: "600", flexShrink: 1 },
+  loading: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "center", gap: 12, paddingVertical: 28 },
+  loadingText: { color: colors.textDim, fontSize: 17, flexShrink: 1 },
+  empty: { paddingVertical: 28, gap: 12 },
+  emptyIcon: { marginBottom: 4 },
+  emptyTitle: { color: colors.text, fontSize: 22, fontWeight: "700" },
+  emptyDetail: { color: colors.textDim, fontSize: 17 },
+  recoveryAction: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 12, backgroundColor: colors.surfaceAlt },
+  recoveryActionText: { color: colors.amber, fontSize: 17, fontWeight: "600", flexShrink: 1 },
+});
+const styles = IS_IOS ? { ...legacyStyles, ...iosStyles } : legacyStyles;

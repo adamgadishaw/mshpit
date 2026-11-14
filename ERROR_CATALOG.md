@@ -8,6 +8,7 @@ reuse a published `PIT-*` code for a different meaning.
 
 | Code | Category | Meaning | Retry |
 | --- | --- | --- | --- |
+| `PIT-LINK-001` | Navigation | External link could not open on the device | Yes |
 | `PIT-NET-001` | Connectivity | The client could not reach Pit | Yes |
 | `PIT-NET-002` | Connectivity | A request timed out or was aborted | Yes |
 | `PIT-AUTH-001` | Authentication | Session missing, invalid, or expired | Sign in first |
@@ -29,6 +30,7 @@ reuse a published `PIT-*` code for a different meaning.
 | `PIT-UPLOAD-007` | Upload | Deterministic video conversion/output validation failed | Contact support; no automatic retry |
 | `PIT-MEDIA-001` | Playback | Audio/video could not start | Yes |
 | `PIT-STORE-001` | Storage | Device-local persistence failed | Yes |
+| `PIT-STORE-004` | Storage | Sign-in intent could not be confirmed in device storage | Yes, check storage and sign in again |
 | `PIT-APP-001` | Application | React render failure caught by the app boundary | Yes |
 | `PIT-UNK-001` | Unknown | Unclassified client failure | Yes |
 

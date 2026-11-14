@@ -74,6 +74,20 @@ export function prepareRecoveryDatabase(database, { privacyReplayReference, cred
         status=CASE WHEN status='pending' THEN 'expired' ELSE status END
         WHERE status='pending' OR token_hash IS NOT NULL`).run(at).changes;
     }
+    // Editorial API grants authenticate independently of browser sessions. A
+    // snapshot can predate their revocation, and a pending pairing can mint a
+    // fresh grant after restoration. Require new explicit pairing instead;
+    // retain grant IDs, immutable audit rows and idempotency history.
+    if (present.has("media_api_grants")) {
+      changes.mediaApiGrants = database.prepare(`UPDATE media_api_grants SET
+        status=CASE WHEN status='active' THEN 'revoked' ELSE status END,
+        token_hash=NULL,
+        revoked_at=CASE WHEN status='active' THEN ? ELSE revoked_at END,
+        updated_at=? WHERE status='active' OR token_hash IS NOT NULL`).run(at, at).changes;
+    }
+    if (present.has("media_api_pairings")) {
+      changes.mediaApiPairings = database.prepare("UPDATE media_api_pairings SET status='revoked' WHERE status='pending'").run().changes;
+    }
     const assignments = [...nulled.map((column) => `${column}=NULL`), ...expired.map((column) => `${column}=0`)];
     if (assignments.length) changes.invalidatedUserTokens = database.prepare(`UPDATE users SET ${assignments.join(",")}`).run().changes;
     // Queued mail can contain old recovery links or notifications about erased

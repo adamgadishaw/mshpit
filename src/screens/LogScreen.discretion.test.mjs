@@ -4,9 +4,12 @@ import test from "node:test";
 import { parse } from "@babel/parser";
 import { composerDraftFingerprint, normalizeComposerDraft } from "../domain/composerDraft.mjs";
 import { hasDetailedComposerRatings, restoredComposerDate } from "../domain/composerLogDetails.mjs";
-import { normalizeMediaProject, originalMediaProjectAsset } from "../domain/mediaProject.mjs";
+import { normalizeMediaProject, originalMediaProjectAsset, mediaProjectFromPost } from "../domain/mediaProject.mjs";
 import { normalizeReviewExperienceType, ONLINE_REVIEW_EXPERIENCE } from "../domain/onlineReview.mjs";
+import { clampRating } from "../domain/validation.mjs";
+import { computeReview } from "../data.js";
 import { festivalDays, lineupFromPost } from "../domain/lineup.mjs";
+import { creatorUpdateError } from "../domain/creatorUpdate.mjs";
 
 const source = readFileSync(new URL("./LogScreen.jsx", import.meta.url), "utf8");
 const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
@@ -29,9 +32,9 @@ function callback(name, bindings) {
 
 test("real draft restoration preserves unknown date, city-only location, sparse ratings, friends and media", () => {
   const values = {};
-  const setters = ["DraftId", "SavedDraftFingerprint", "PostType", "Campaign", "ExperienceType", "Artist", "ArtistPicked", "ArtistKey", "Venue", "VenuePicked", "City", "EventAddress", "Tour", "ShowFormat", "EndDate", "Lineup", "TimesSeen", "Date", "OnlineTitle", "YoutubeUrl", "OnlineRating", "Dims", "Review", "TaggedPeople", "Song", "SongUrl", "PreservedPlaylist", "Photos", "MediaProject", "PendingMediaAssets", "PhotosPublic", "LandingShowcase", "ShowDetailedRatings", "ShowTour", "ShowSong", "ShowPhotos", "ShowPeople"];
+  const setters = ["DraftId", "SavedDraftFingerprint", "PostType", "Campaign", "CreatorUpdate", "CreatorIntent", "ExperienceType", "Artist", "ArtistPicked", "ArtistKey", "Venue", "VenuePicked", "City", "EventAddress", "Tour", "ShowFormat", "EndDate", "Lineup", "TimesSeen", "Date", "OnlineTitle", "YoutubeUrl", "OnlineRating", "OverallRating", "Dims", "Review", "TaggedPeople", "Song", "SongUrl", "PreservedPlaylist", "Photos", "MediaProject", "PendingMediaAssets", "PhotosPublic", "LandingShowcase", "ShowDetailedRatings", "ShowTour", "ShowSong", "ShowPhotos", "ShowPeople"];
   const bindings = {
-    normalizeComposerDraft, composerDraftFingerprint, restoredComposerDate, hasDetailedComposerRatings,
+    normalizeComposerDraft, composerDraftFingerprint, restoredComposerDate, hasDetailedComposerRatings, clampRating, computeReview,
     normalizeMediaProject, originalMediaProjectAsset, ONLINE_REVIEW_EXPERIENCE, lineupFromPost,
     draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: "new" },
     composerId: "composer", onDraftIdentity: () => {}, isDurableMediaUrl: () => true,
@@ -51,6 +54,7 @@ test("real draft restoration preserves unknown date, city-only location, sparse 
   assert.equal(values.Date, "");
   assert.equal(values.Venue, "");
   assert.equal(values.City, "Toronto, Ontario, Canada");
+  assert.equal(values.OverallRating, 4, "Old drafts restore their former computed score once");
   assert.equal(values.Dims.experience, 4);
   assert.equal(values.Dims.performance, 0);
   assert.equal(values.ShowDetailedRatings, undefined, "Restoring a sparse draft must not collapse detailed ratings.");
@@ -73,6 +77,39 @@ test("real experience toggle leaves a deliberately unknown date untouched", () =
     setDate: (value) => writes.push(["date", value]), date: "", todayStr: "2026-09-16",
   })("in_person");
   assert.deepEqual(writes, [["experience", "in_person"], ["error", ""], ["picker", false]]);
+});
+
+test("resumed ordinary and creator drafts own validation independently of the entry point", () => {
+  const entity = { entityType: "artist", entityKey: "artist", kind: "update", title: "An update" };
+  for (const draft of [
+    { postType: "status", review: "An ordinary saved draft" },
+    { postType: "status", review: "A creator draft", creatorUpdate: entity },
+    { postType: "status", review: "Calendar details survive", creatorUpdate: { ...entity, kind: "show", date: "2027-01-20", location: "Draft Hall, Toronto", calendar: { action: "create", eventId: "", expectedRevision: 0, venue: "Draft Hall", place: "Toronto, Canada", releaseAt: 0 } } },
+    { postType: "status", review: "Unfinished creator draft", creatorIntent: true },
+  ]) {
+    const values = {};
+    const node = find(ast, entry => entry.type === "VariableDeclarator" && entry.id?.name === "resume").init;
+    const setterNames = [...new Set(source.slice(node.start, node.end).match(/\bset[A-Z]\w*(?=\()/g))];
+    const bindings = {
+      normalizeComposerDraft, composerDraftFingerprint, restoredComposerDate, hasDetailedComposerRatings, clampRating, computeReview,
+      normalizeMediaProject, originalMediaProjectAsset, mediaProjectFromPost, ONLINE_REVIEW_EXPERIENCE, lineupFromPost,
+      draftIdRef: { current: null }, initialFingerprintRef: { current: null }, submissionIdRef: { current: "fresh" },
+      composerId: "composer", onDraftIdentity: () => {}, isDurableMediaUrl: () => true,
+      hasLandingCompatibleImage: () => false, recoverRestoredMedia: () => {},
+      ...Object.fromEntries(setterNames.map(name => [name, value => { values[name.slice(3)] = value; }])),
+    };
+    callback("resume", bindings)({ ...draft, id: "saved", submissionId: "same-attempt" });
+    assert.equal(values.Review, draft.review);
+    assert.deepEqual(values.CreatorUpdate, normalizeComposerDraft(draft).creatorUpdate);
+    assert.equal(bindings.submissionIdRef.current, "same-attempt");
+    const isCreator = !!values.CreatorUpdate;
+    const creatorProblem = callback("creatorProblem", { isCreator, creatorUpdate: values.CreatorUpdate, creatorIntent: values.CreatorIntent, creatorUpdateError });
+    const allowed = authorized => callback("canPost", { canPostBase: true, lineupProblem: "", reviewTooLong: false, creatorProblem,
+      isCreator, creatorAuthorizedAccount: authorized ? "owner" : null, user: { id: "owner" }, pendingMediaAssets: [] });
+    if (draft.creatorUpdate) { assert.equal(allowed(false), false); assert.equal(allowed(true), true); }
+    else if (draft.creatorIntent) { assert.equal(creatorProblem, "Choose a page account."); assert.equal(allowed(true), false); }
+    else { assert.equal(values.CreatorIntent, false); assert.equal(allowed(false), true); }
+  }
 });
 
 test("real submission sends unknown details honestly and failed saves keep the draft for retry", async () => {

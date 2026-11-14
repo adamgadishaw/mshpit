@@ -1,3 +1,4 @@
+const FIXTURE_NOW = Date.parse("2026-08-20T12:00:00Z");
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
@@ -19,6 +20,9 @@ function createDatabase() {
   const database = new DatabaseSync(":memory:");
   database.exec(`
     PRAGMA foreign_keys=ON;
+    CREATE TABLE tour_dates (
+      id TEXT PRIMARY KEY, owner_id TEXT, source TEXT, provider_event_id TEXT, descriptor TEXT
+    );
     CREATE TABLE users (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -79,7 +83,7 @@ function fixture({
   resolveTourDateShow = null,
 } = {}) {
   const database = createDatabase();
-  let clock = 2_000_000_000_000;
+  let clock = FIXTURE_NOW;
   let beforeAtomicWrite = null;
   const userById = database.prepare("SELECT * FROM users WHERE id=?");
   const calls = { limits: [], safety: [] };
@@ -154,7 +158,11 @@ function fixture({
       if (!ctx.user.email_verified_at) throw new ApiError(403, "Verify.", "EMAIL_VERIFICATION_REQUIRED");
       return ctx.user;
     },
-    resolveTourDateShow,
+    resolveTourDateShow: resolveTourDateShow || ((_user, id) => {
+      const source = database.prepare("SELECT descriptor FROM tour_dates WHERE id=?").get(id);
+      if (!source) throw new ApiError(404, "Event unavailable.", "NOT_FOUND");
+      return JSON.parse(source.descriptor);
+    }),
     userById,
   });
   return {
@@ -188,6 +196,18 @@ const show = Object.freeze({
   date: "2026-08-21",
   tour: "The Tour",
 });
+
+function trustShow(database, showId, providerEventId, startAt) {
+  const tourDateId = `source-${providerEventId}`;
+  database.prepare(`UPDATE shows SET provider='ticketmaster',provider_event_id=?,
+    start_at=?,timezone='America/Toronto',lifecycle='happening' WHERE id=?`)
+    .run(providerEventId, startAt, showId);
+  database.prepare(`INSERT INTO tour_dates (id,source,provider_event_id,descriptor)
+    VALUES (?,'ticketmaster',?,?)`).run(tourDateId, providerEventId, JSON.stringify({
+    ...show, tourDateId, provider: "ticketmaster", providerEventId, startAt,
+    timezone: "America/Toronto", lifecycle: "happening",
+  }));
+}
 
 test("canonical show schema is additive, namespace-safe, indexed, and never startup-backfills going", () => {
   const database = createDatabase();
@@ -722,7 +742,7 @@ test("explicit Members Going dual-writes legacy state while richer states and ch
     assert.equal(calls.safety[0].tour, show.tour, "tour text reaches the authored-content safety gate");
     const legacyCreatedAt = database.prepare("SELECT created_at FROM going WHERE user_id=?").get(member.id).created_at;
 
-    setNow(2_000_000_000_500);
+    setNow((FIXTURE_NOW + 500));
     const identicalGoing = post({ going: true });
     const unchangedGoing = database.prepare(`SELECT created_at,updated_at FROM show_attendance
       WHERE user_id=?`).get(member.id);
@@ -734,21 +754,19 @@ test("explicit Members Going dual-writes legacy state while richer states and ch
     assert.equal(database.prepare("SELECT created_at FROM going WHERE user_id=?").get(member.id).created_at, legacyCreatedAt,
       "an identical Going command cannot reorder either attendance representation");
 
-    setNow(2_000_000_001_000);
+    setNow((FIXTURE_NOW + 1000));
     assert.throws(
       () => post({ state: "here", visibility: "followers" }),
       (error) => error.status === 409 && error.code === "CHECK_IN_UNAVAILABLE",
       "an authored show key cannot manufacture a trusted live check-in window",
     );
-    database.prepare(`UPDATE shows SET provider='ticketmaster',provider_event_id='trusted-event',
-      start_at=?,timezone='America/Toronto',lifecycle='happening' WHERE id=?`)
-      .run(2_000_000_001_000, going.showId);
+    trustShow(database, going.showId, "trusted-event", (FIXTURE_NOW + 1000));
     const here = post({ state: "here" });
     assert.equal(here.going, true);
     assert.equal(here.attendance.state, "here");
     assert.equal(here.attendance.visibility, "private",
       "a fresh live-presence transition requires new audience consent");
-    assert.equal(here.attendance.checkedInAt, 2_000_000_001_000);
+    assert.equal(here.attendance.checkedInAt, (FIXTURE_NOW + 1000));
     assert.equal(database.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(member.id, show.key), undefined,
       "Here never enters a visibility-blind legacy table");
     assert.equal(createShowAttendanceRepository(database).hasAttendeeAccess(member.id, show.key), true,
@@ -757,12 +775,12 @@ test("explicit Members Going dual-writes legacy state while richer states and ch
     assert.deepEqual(privateHereMine.going, [], "legacy clients never mistake Here history for a Going toggle");
     assert.equal(privateHereMine.attendance[0].state, "here");
 
-    setNow(2_000_000_001_500);
+    setNow((FIXTURE_NOW + 1500));
     const identicalHere = post({ state: "here" });
     assert.equal(identicalHere.attendance.checkedInAt, here.attendance.checkedInAt);
     assert.equal(identicalHere.attendance.updatedAt, here.attendance.updatedAt,
       "an identical Here command preserves both check-in time and ordering");
-    setNow(2_000_000_002_000);
+    setNow((FIXTURE_NOW + 2000));
     const went = post({ state: "went" });
     assert.equal(went.attendance.checkedInAt, null,
       "the live Here timestamp is cleared from the social relationship outside Here");
@@ -956,10 +974,8 @@ test("unverified and restricted owners can erase or privatize existing attendanc
       body: { ...show, ...body },
     }));
     const going = activePost({ state: "going", visibility: "members" });
-    const startsAt = 2_000_000_003_000;
-    database.prepare(`UPDATE shows SET provider='ticketmaster',provider_event_id='privacy-event',
-      start_at=?,timezone='America/Toronto',lifecycle='happening' WHERE id=?`)
-      .run(startsAt, going.showId);
+    const startsAt = (FIXTURE_NOW + 3000);
+    trustShow(database, going.showId, "privacy-event", startsAt);
     setNow(startsAt);
     const here = activePost({ state: "here", visibility: "members" });
     const beforePrivacy = database.prepare(`SELECT state,legacy_artist,legacy_venue,legacy_city,
@@ -1012,10 +1028,8 @@ test("an existing live check-in can be retried or made private after the trusted
       body: { ...show, ...body },
     }));
     const going = post(member, { going: true });
-    const startsAt = 2_000_000_001_000;
-    database.prepare(`UPDATE shows SET provider='ticketmaster',provider_event_id='closed-window-event',
-      start_at=?,timezone='America/Toronto',lifecycle='happening' WHERE id=?`)
-      .run(startsAt, going.showId);
+    const startsAt = (FIXTURE_NOW + 1000);
+    trustShow(database, going.showId, "closed-window-event", startsAt);
     setNow(startsAt + 100);
     const here = post(member, { state: "here", visibility: "members" });
     assert.equal(here.attendance.checkedInAt, startsAt + 100);
@@ -1139,13 +1153,14 @@ test("attendance authorization and live-transition checks use the locked current
     const restricted = addUser(database, "locked_privacy_owner", { verified: false });
     const liveMember = addUser(database, "locked_here_owner");
     const key = "locked provider|trusted room|2026-12-20";
-    const startsAt = 2_000_000_000_000;
+    const startsAt = FIXTURE_NOW;
     database.prepare(`INSERT INTO shows
       (id,canonical_key,artist,venue,start_at,timezone,lifecycle,provider,provider_event_id,
         identity_source,public_eligible,created_at,updated_at)
       VALUES ('locked-provider-show',?,'Locked Provider','Trusted Room',?,'America/Toronto',
         'happening','ticketmaster','locked-event','ticketmaster',1,80,80)`)
       .run("locked-provider-canonical", startsAt);
+    trustShow(database, "locked-provider-show", "locked-event", startsAt);
     database.prepare(`INSERT INTO show_aliases
       (alias_type,alias_value,show_id,created_at)
       VALUES ('legacy_concert_key',?,'locked-provider-show',80)`).run(key);
@@ -1191,6 +1206,30 @@ test("attendance authorization and live-transition checks use the locked current
   }
 });
 
+test("fresh Here resolves source lifecycle after acquiring the write transaction for IDs and aliases", () => {
+  const { database, routes, setBeforeAtomicWrite } = fixture();
+  try {
+    const member = addUser(database, "source_lock_owner");
+    const post = (body) => routes["POST /api/going"](context({ user: member, body }));
+    const saved = post({ ...show, state: "going" });
+    trustShow(database, saved.showId, "source-lock-event", FIXTURE_NOW);
+    const readSource = database.prepare("SELECT descriptor FROM tour_dates WHERE id=?");
+    const writeSource = database.prepare("UPDATE tour_dates SET descriptor=? WHERE id=?");
+    const sourceId = "source-source-lock-event";
+    const descriptor = JSON.parse(readSource.get(sourceId).descriptor);
+    const prior = database.prepare("SELECT * FROM show_attendance WHERE user_id=?").get(member.id);
+    for (const key of [saved.showId, show.key]) {
+      writeSource.run(JSON.stringify(descriptor), sourceId);
+      setBeforeAtomicWrite(() => writeSource.run(JSON.stringify({ ...descriptor, lifecycle: "cancelled" }), sourceId));
+      assert.throws(() => post({ key, state: "here" }),
+        (error) => error.status === 409 && error.code === "CHECK_IN_UNAVAILABLE");
+      assert.deepEqual(database.prepare("SELECT * FROM show_attendance WHERE user_id=?").get(member.id), prior);
+      assert.equal(database.prepare("SELECT lifecycle FROM shows WHERE id=?").get(saved.showId).lifecycle,
+        "happening", "the rejected refresh and attendance change roll back together");
+    }
+  } finally { database.close(); }
+});
+
 test("Crowd scopes enforce attendance visibility, follows, friendship, blocks, and separate verification", () => {
   const { database, routes, setNow } = fixture();
   try {
@@ -1214,10 +1253,8 @@ test("Crowd scopes enforce attendance visibility, follows, friendship, blocks, a
     write(member, "going", "members");
     write(followed, "going", "followers");
     write(nonfollow, "going", "followers");
-    database.prepare(`UPDATE shows SET provider='ticketmaster',provider_event_id='trusted-crowd-event',
-      start_at=?,timezone='America/Toronto',lifecycle='happening' WHERE id=?`)
-      .run(2_000_000_000_000, viewerResult.showId);
-    setNow(2_000_000_000_100);
+    trustShow(database, viewerResult.showId, "trusted-crowd-event", FIXTURE_NOW);
+    setNow((FIXTURE_NOW + 100));
     write(friend, "here", "members");
     write(privateOther, "went", "private");
     write(interested, "interested", "members");
@@ -1225,10 +1262,10 @@ test("Crowd scopes enforce attendance visibility, follows, friendship, blocks, a
     write(banned, "going", "members");
     database.prepare(`INSERT INTO show_attendance
       (show_id,user_id,state,visibility,created_at,updated_at) VALUES (?,?,?,?,?,?)`)
-      .run(viewerResult.showId, unverified.id, "going", "members", 2_000_000_000_100, 2_000_000_000_100);
+      .run(viewerResult.showId, unverified.id, "going", "members", (FIXTURE_NOW + 100), (FIXTURE_NOW + 100));
     database.prepare(`INSERT INTO going
       (user_id,concert_key,artist,venue,city,date,created_at) VALUES (?,?,?,?,?,?,?)`)
-      .run(unverifiedLegacy.id, show.key, show.artist, show.venue, show.city, show.date, 2_000_000_000_100);
+      .run(unverifiedLegacy.id, show.key, show.artist, show.venue, show.city, show.date, (FIXTURE_NOW + 100));
     database.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(banned.id);
 
     const follow = database.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)");
@@ -1239,7 +1276,7 @@ test("Crowd scopes enforce attendance visibility, follows, friendship, blocks, a
     database.prepare("INSERT INTO blocks (blocker_id,blocked_id) VALUES (?,?)").run(blocked.id, viewer.id);
     database.prepare(`INSERT INTO show_attendance_verifications
       (show_id,user_id,source,verified_at) VALUES (?,?,?,?)`)
-      .run(viewerResult.showId, friend.id, "ticket_import", 2_000_000_000_100);
+      .run(viewerResult.showId, friend.id, "ticket_import", (FIXTURE_NOW + 100));
 
     const read = (user, scope = "everyone", extraQuery = {}) => routes["GET /api/going/:key/attendees"](context({
       user,
@@ -1314,5 +1351,31 @@ test("attendance inputs fail closed on contradictory states, invalid privacy, an
     );
   } finally {
     database.close();
+  }
+});
+
+test("new planning uses the locked clock, exact end and fresh source while preserving old state", () => {
+  for (const transition of ["elapsed", "cancelled", "deleted"]) {
+    const { database, routes, setNow, setBeforeAtomicWrite } = fixture();
+    try {
+      const user = addUser(database,"rsvp-owner");
+      const post = body => routes["POST /api/going"](context({user,body}));
+      const saved = post({...show,state:"interested"});
+      const start = Date.parse("2026-08-21T18:00:00Z"), end = start+3600000;
+      trustShow(database,saved.showId,"rsvp-race",start);
+      const sourceId="source-rsvp-race", row=database.prepare("SELECT descriptor FROM tour_dates WHERE id=?").get(sourceId);
+      const descriptor={...JSON.parse(row.descriptor),endAt:end};
+      database.prepare("UPDATE tour_dates SET descriptor=? WHERE id=?").run(JSON.stringify(descriptor),sourceId);
+      setNow(end-1);
+      const prior=database.prepare("SELECT * FROM show_attendance WHERE user_id=?").get(user.id);
+      setBeforeAtomicWrite(()=>{
+        if(transition==="elapsed")setNow(end);
+        if(transition==="cancelled")database.prepare("UPDATE tour_dates SET descriptor=? WHERE id=?").run(JSON.stringify({...descriptor,lifecycle:"cancelled"}),sourceId);
+        if(transition==="deleted")database.prepare("DELETE FROM tour_dates WHERE id=?").run(sourceId);
+      });
+      assert.throws(()=>post({key:saved.showId,state:"going"}),error=>["EVENT_RSVP_CLOSED","NOT_FOUND"].includes(error.code),transition);
+      assert.deepEqual(database.prepare("SELECT * FROM show_attendance WHERE user_id=?").get(user.id),prior);
+      assert.equal(post({key:saved.showId,state:null}).attendance,null,"removal survives source expiry or deletion");
+    } finally {database.close();}
   }
 });

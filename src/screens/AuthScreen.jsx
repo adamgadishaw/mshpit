@@ -1,8 +1,10 @@
 import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { colors, displayFont, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore } from "../store";
+import useIOSAuthErrorAnnouncement from "../hooks/useIOSAuthErrorAnnouncement";
 import Icon from "../components/Icon";
 import BrandMark from "../components/BrandMark";
 import SheetHeader from "../components/SheetHeader";
@@ -12,18 +14,18 @@ import { lazyWithRetry } from "../lib/lazyWithRetry";
 
 // The policy pages load only when someone opens them, and share one chunk
 // with the app's own /privacy and /terms routes.
-const PrivacyScreen = lazyWithRetry(() => import("./PrivacyScreen"), "PrivacyScreen");
-const TermsScreen = lazyWithRetry(() => import("./TermsScreen"), "TermsScreen");
+const PrivacyScreen = lazyWithRetry(() => import("./PolicyEntry").then(module => ({ default: module.PrivacyScreen })), "PrivacyScreen");
+const TermsScreen = lazyWithRetry(() => import("./PolicyEntry").then(module => ({ default: module.TermsScreen })), "TermsScreen");
 import { PROFILE_GENRE_MAX, PROFILE_GENRE_OPTIONS } from "../domain/genrePreferences.mjs";
 import { cleanHandle, isEmail } from "../domain/validation.mjs";
 import { SIGNUP_STEPS, signupAccountError, signupAriaProps, signupFormPayload, signupHandlePresentation, signupMusicError, signupStepError, signupStepForField } from "../domain/signupForm.mjs";
 
 // Signup, one short step at a time. The words for each step's heading.
 const SIGNUP_STEP_COPY = [
-  ["Make it your night.", "Start with who you are."],
-  ["Your sign-in.", "The email and password you’ll log in with."],
-  ["Find your kind of show.", "Pick your music and your city. We’ll take it from there."],
-  ["One last thing.", "Confirm your age group and our terms, then you’re in."],
+  ["Create your account.", "Choose your name and username."],
+  ["Your login details.", "The email and password you’ll log in with."],
+  ["Your music and city.", "Choose genres and a city for recommendations and nearby shows."],
+  ["Finish creating your account.", "Choose your age group and review the terms."],
 ];
 const SIGNUP_NEXT = ["Continue to sign-in", "Continue to music", "Continue to the last step", "Create account"];
 const SIGNUP_BACK = ["Back to your details", "Back to sign-in", "Back to music"];
@@ -38,7 +40,7 @@ function AuthPressable({ accessibilityState = {}, disabled, ...props }) {
 }
 
 export default function AuthScreen({ onDone, onCancel, onModeChange, navigationAbortRef, initialMode = "login", addAccount = false, initialEmail = "" }) {
-  const { login, signup, forgotPassword, session } = useStore();
+  const { login, signup, forgotPassword, session, chatAuthEpoch } = useStore();
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState(["signup", "forgot"].includes(initialMode) ? initialMode : "login");
   const [step, setStep] = useState(1);
@@ -79,6 +81,12 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   const handleStatus = signupHandlePresentation(availability.resource, handle);
   const currentAvailability = availability.resource.status === "ready" ? availability.resource.data : null;
 
+  const errorAnnouncement = useIOSAuthErrorAnnouncement(session?.id, chatAuthEpoch, navigationAbortRef,
+    mode, step, signupChoice, accounts, sentTo, viewing, pickingCity, addAccount,
+    artistSignup, city, genres, ageBand, agreed, analyticsConsent);
+  const cancelErrorAnnouncement = useRef(null);
+  cancelErrorAnnouncement.current = errorAnnouncement.cancel;
+
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; authAttempt.current?.abort(); }; }, []);
   useLayoutEffect(() => {
     if (!navigationAbortRef) return undefined;
@@ -86,6 +94,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     // must cancel the identity-changing request synchronously, not wait for
     // passive cleanup while a late response is still able to sign somebody in.
     const abortPending = () => {
+      cancelErrorAnnouncement.current?.();
       const attempt = authAttempt.current;
       if (!attempt) return;
       authAttempt.current = null;
@@ -112,7 +121,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     if (!errorField || !inputs.current[errorField]) scroll.current?.scrollTo?.({ y: 0, animated: false });
   }, [error, errorField, step]);
 
-  const clearError = () => { setError(""); setErrorField(null); };
+  const clearError = () => { errorAnnouncement.cancel(); setError(""); setErrorField(null); };
   const showError = (failure) => { setError(failure.message); setErrorField(failure.field || null); };
   const changeMode = (next) => {
     if (busyRef.current) return;
@@ -134,6 +143,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   const submit = async (accountId, { createAdditional = false, useExisting = false } = {}) => {
     if (typeof accountId !== "string") accountId = undefined;
     if (busyRef.current) return;
+    errorAnnouncement.cancel();
     const creating = signupMode && !useExisting;
     if (creating && step < SIGNUP_STEPS.length) { advance(); return; }
     if (creating) {
@@ -148,30 +158,42 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
     clearError(); busyRef.current = true; setBusyAction("auth");
     const attempt = new AbortController();
     authAttempt.current = attempt;
+    const announcementClaim = errorAnnouncement.begin(attempt.signal);
+    const complete = (result) => {
+      if (!mounted.current || attempt.signal.aborted || authAttempt.current !== attempt) return;
+      errorAnnouncement.cancel(announcementClaim);
+      setPassword(""); setShowPassword(false);
+      setAccounts(null); setCurrentPassword("");
+      // Completion navigates Back. Retire cancellation before Root can replace
+      // the account-keyed form, so accepted login cannot reset this visit.
+      authAttempt.current = null;
+      busyRef.current = false;
+      setBusyAction(null);
+      onDone?.(creating ? "signup" : "login", { artistSetup: creating && artistSignup, accountId: result.accountId });
+    };
     try {
       const result = creating
         ? await signup({ ...signupFormPayload({ ...accountValues(), city, genres, ageBand, agreed, analyticsConsent }), ...(addAccount ? { addAccount, currentPassword } : {}), createAdditional }, { signal: attempt.signal })
-        : await login(email.trim(), password, accountId, { signal: attempt.signal });
+        : await login(email.trim(), password, accountId, { signal: attempt.signal, onAccepted: complete });
       if (!mounted.current || attempt.signal.aborted || authAttempt.current !== attempt) return;
       if (result?.ok) {
+        errorAnnouncement.cancel(announcementClaim);
         if (result.needsAccountChoice) { setSignupChoice(result); return; }
         if (result.chooseAccount) { setSignupChoice(null); setAccounts(result.accounts); return; }
-        setPassword(""); setShowPassword(false);
-        setAccounts(null); setCurrentPassword("");
-        // Completion itself navigates Back. It is no longer cancellation and
-        // must not revoke the session that the server has just confirmed.
-        authAttempt.current = null;
-        busyRef.current = false;
-        setBusyAction(null);
-        onDone?.(creating ? "signup" : "login", { artistSetup: creating && artistSignup, accountId: result.accountId });
+        complete(result);
       } else {
         const handleTaken = result?.error?.serverCode === "HANDLE_TAKEN" || result?.code === "HANDLE_TAKEN"
           || /username.*taken|handle.*taken/i.test(readableError(result?.error, ""));
         if (signupMode && handleTaken) { setStep(1); availability.retry(); }
+        if (handleTaken) errorAnnouncement.cancel(announcementClaim);
+        else errorAnnouncement.finish(announcementClaim, creating);
         showError({ field: handleTaken ? "handle" : null, message: readableError(result?.error, "That request did not complete. Please try again.") });
       }
     } catch (failure) {
-      if (mounted.current && !attempt.signal.aborted && authAttempt.current === attempt) showError({ message: readableError(failure, "Couldn't connect. Check your connection and try again.") });
+      if (mounted.current && !attempt.signal.aborted && authAttempt.current === attempt) {
+        showError({ message: readableError(failure, "Couldn't connect. Check your connection and try again.") });
+        errorAnnouncement.finish(announcementClaim, creating);
+      }
     } finally {
       if (authAttempt.current === attempt) {
         authAttempt.current = null;
@@ -182,6 +204,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   };
   const close = () => {
     if (busyRef.current) return;
+    errorAnnouncement.cancel();
     setPassword(""); setCurrentPassword(""); setAccounts(null); onCancel?.();
   };
   const sendReset = async () => {
@@ -259,7 +282,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
   const headingText = signupChoice || accounts ? "Choose your account." : mode === "forgot" ? sentTo ? "Check your email." : "Back to your account."
     : signupMode ? SIGNUP_STEP_COPY[step - 1][0] : "Good to see you.";
   const subheading = signupChoice || accounts ? "Choose which profile to open." : mode === "forgot" ? "A reset link gets you back in."
-    : signupMode ? SIGNUP_STEP_COPY[step - 1][1] : "Your shows, photos and people are waiting.";
+    : signupMode ? SIGNUP_STEP_COPY[step - 1][1] : "Log in to your Mshpit account.";
   const progress = { min: 1, max: SIGNUP_STEPS.length, now: step, text: `Step ${step} of ${SIGNUP_STEPS.length}: ${SIGNUP_STEPS[step - 1]}` };
 
   return <KeyboardAvoidingView style={[styles.wrap, { paddingTop: insets.top }]} behavior={Platform.OS === "ios" ? "padding" : Platform.OS === "android" ? "height" : undefined}>
@@ -287,8 +310,8 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
                 <View style={styles.fieldPair} accessibilityRole="radiogroup" accessibilityLabel="Account purpose">
                   {[[false, "Music fan"], [true, "Artist or band"]].map(([value, title]) => <AuthPressable key={title} disabled={busy} accessibilityRole="radio" accessibilityState={{ checked: artistSignup === value }} onPress={() => { setArtistSignup(value); clearError(); }} style={controlStyle([styles.genreChip, artistSignup === value && styles.selectedChip], busy)}><Text style={[styles.genreText, artistSignup === value && styles.selectedText]}>{title}</Text></AuthPressable>)}
                 </View>
-                <Text style={styles.hint}>One free account. Artists can publish a page, live photos and videos, promotions, and upcoming concerts. No separate login.</Text>
-                {artistSignup && field("artistName", "Artist or band name", artistName, setArtistName, { maxLength: 60, hint: "After confirming your email, create a new page or claim an existing one. The artist check requires Mshpit approval." })}
+                <Text style={styles.hint}>Artist accounts can manage a page, share photos, videos and updates, and list upcoming concerts.</Text>
+                {artistSignup && field("artistName", "Artist or band name", artistName, setArtistName, { maxLength: 60, hint: "After confirming your email, create a new page or claim an existing one. The artist verification badge requires Mshpit approval." })}
               </View>}
               {signupMode ? <View style={styles.fieldPair}>
                 {field("name", "Name", name, setName, { paired: true, maxLength: 40, autoComplete: "name", textContentType: "name", onSubmit: () => inputs.current.handle?.focus?.() })}
@@ -338,7 +361,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
                 })}</View>
               </View>
               <View style={styles.section}><View style={styles.sectionHeading}><Text style={styles.fieldLabel}>Your city</Text><Text style={styles.optional}>Optional</Text></View>
-                <Text style={styles.hint}>Your city sets the shows near you and the news for your part of the world.</Text>
+                <Text style={styles.hint}>Your city helps us show nearby concerts and regional news.</Text>
                 <AuthPressable style={controlStyle(styles.cityPick, busy)} onPress={() => setPickingCity(true)} disabled={busy} accessibilityRole="button" accessibilityLabel={city ? `City, ${city.label}` : "Choose your city"} accessibilityHint="Sets nearby shows and news for your region" accessibilityState={{ disabled: busy }}>
                   <Icon name="pin" size={18} color={colors.amber} /><Text style={styles.cityText}>{city?.label || "Find shows near you"}</Text><Icon name="chevron-right" size={16} color={colors.textDim} />
                 </AuthPressable>
@@ -346,8 +369,18 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
               </View>
             </> : null}
             {signupMode && step === 4 ? <>
+              <View style={styles.section}>
+                <Text style={styles.fieldLabel} accessibilityRole="header">Review your choices</Text>
+                <Text style={styles.hint}>Your name, username, music choices, and city appear on your public profile. You can edit them later.</Text>
+                <Text style={styles.fieldLabel}>{name.trim()} · @{cleanHandle(handle)}</Text>
+                <AuthPressable onPress={() => { clearError(); setStep(1); }} disabled={busy} style={controlStyle(styles.retry, busy)} accessibilityRole="button"><Text style={styles.link}>Edit name and username</Text></AuthPressable>
+                <Text style={styles.hint}>Music: {genres.join(", ")}</Text>
+                <Text style={styles.hint}>City (optional): {city?.city || "Not added"}</Text>
+                <AuthPressable onPress={() => { clearError(); setStep(3); }} disabled={busy} style={controlStyle(styles.retry, busy)} accessibilityRole="button"><Text style={styles.link}>Edit music and city</Text></AuthPressable>
+                <Text style={styles.hint}>Photos and a bio are optional. Add them after confirming your email.</Text>
+              </View>
               <View ref={(node) => { inputs.current.ageBand = node; }} tabIndex={-1} style={styles.section} accessibilityRole="radiogroup" accessibilityLabel="Age group">
-                <Text style={styles.fieldLabel}>Age group</Text><Text style={styles.hint}>For account safety. No birth date needed.</Text>
+                <Text style={styles.fieldLabel}>Age group · Required</Text><Text style={styles.hint}>For account safety. No birth date needed.</Text>
                 <View style={styles.ageChoices}>{[["13_17", "13–17"], ["18_plus", "18+"]].map(([value, label]) => <AuthPressable key={value} style={({ focused, pressed }) => [styles.ageChoice, ageBand === value && styles.selectedChip, pressed && styles.pressed, focused && focusRing]} onPress={() => { setAgeBand(value); clearError(); }} disabled={busy} accessibilityRole="radio" accessibilityState={{ checked: ageBand === value, disabled: busy }} accessibilityLabel={label}><Text style={[styles.genreText, ageBand === value && styles.selectedText]}>{label}</Text></AuthPressable>)}</View>
               </View>
               <View style={styles.consents}>
@@ -355,7 +388,7 @@ export default function AuthScreen({ onDone, onCancel, onModeChange, navigationA
                   <View style={[styles.checkbox, agreed && styles.checked]}>{agreed ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}</View><Text style={styles.consentText}>I agree to the Terms & Conditions and Privacy policy.</Text>
                 </AuthPressable>
                 <View style={styles.policyLinks}><AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setViewing("terms")} disabled={busy} accessibilityRole="button" accessibilityLabel="Read Terms"><Text style={styles.link}>Read Terms</Text></AuthPressable><AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setViewing("privacy")} disabled={busy} accessibilityRole="button" accessibilityLabel="Read Privacy policy"><Text style={styles.link}>Read Privacy policy</Text></AuthPressable></View>
-                <AuthPressable style={controlStyle(styles.consent, busy)} onPress={() => setAnalyticsConsent(!analyticsConsent)} disabled={busy} accessibilityRole="checkbox" accessibilityLabel="Share optional limited account usage data" accessibilityState={{ checked: analyticsConsent, disabled: busy }}><View style={[styles.checkbox, analyticsConsent && styles.checked]}>{analyticsConsent ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}</View><Text style={styles.consentText}>Optional: share limited account usage data to help improve Mshpit.</Text></AuthPressable>
+                <AuthPressable style={controlStyle(styles.consent, busy)} onPress={() => setAnalyticsConsent(!analyticsConsent)} disabled={busy} accessibilityRole="checkbox" accessibilityLabel="Share optional limited account usage data" accessibilityState={{ checked: analyticsConsent, disabled: busy }}><View style={[styles.checkbox, analyticsConsent && styles.checked]}>{analyticsConsent ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}</View><Text style={styles.consentText}>Optional: share limited account usage data to help improve Mshpit. Leave unchecked to keep it off.</Text></AuthPressable>
                 <AuthPressable style={controlStyle(styles.retry, busy)} onPress={() => setAnalyticsDetails(!analyticsDetails)} disabled={busy} accessibilityRole="button" accessibilityState={{ expanded: analyticsDetails }} accessibilityLabel="What usage data is shared"><Text style={styles.link}>{analyticsDetails ? "Hide details" : "What is shared?"}</Text></AuthPressable>
                 {analyticsDetails ? <Text style={styles.hint}>We record limited usage events linked to your account. They do not include the contents of authored posts or reviews, search terms, messages, or uploaded media. IP addresses are not stored with these analytics events. Change your choice any time in Settings; opting out deletes your raw product events.</Text> : null}
               </View>

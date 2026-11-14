@@ -2,7 +2,8 @@
 // Actual Store callbacks, server routes, ThreadScreen and visibility/scroll hooks.
 // No network, production data, native builds, or release-worktree mutation.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test, { after } from 'node:test';
 import { parse } from '@babel/parser';
@@ -12,10 +13,15 @@ import { chatOutboxFor } from '../src/domain/chatDelivery.mjs';
 import { mergeChatMessages, reconcileRemovedDirectMessages } from '../src/domain/chatMessages.mjs';
 import { directMessageUnreadCount, mergeDirectMessageReadSummary, normalizeDirectMessageReadCursor } from '../src/domain/directMessageRead.mjs';
 import { normalizeMessageRelationshipContext } from '../src/domain/messageRelationshipContext.mjs';
+import { applyDMRequestState, dmInboxBucket, dmRequestState, normalizeDMRequestState } from '../src/features/chat/directMessageConsent.mjs';
 
 
 assert.equal(process.env.NODE_ENV, 'test');
 assert.match(process.env.PIT_DATA_DIR || '', /pit-tests-/);
+// This companion exercises the same acceptance data as the native suite. Keep
+// its real SQLite database in a runner-owned child directory so concurrent file
+// startup and seeded IDs cannot interfere. The runner removes the whole root.
+process.env.PIT_DATA_DIR = mkdtempSync(join(process.env.PIT_DATA_DIR, 'web-dm-'));
 const { db, q } = await import('./db.js');
 const { routes } = await import('./api.js');
 after(() => { db.close(); });
@@ -48,6 +54,7 @@ function addUser(id) {
   return q.userById.get(id);
 }
 function pair(prefix) {
+  prefix = `web-accept-${prefix}`;
   const viewer = addUser(`${prefix}v`), peer = addUser(`${prefix}p`);
   db.prepare("INSERT INTO dm_acceptances VALUES(?,?,?,'explicit')").run(viewer.id, peer.id, 1);
   let serial = 0;
@@ -98,6 +105,7 @@ function client(p) {
       ENABLE_DEMO_DATA: false, mergeChatMessages, reconcileRemovedDirectMessages, chatOutboxFor,
       normalizeMessageRelationshipContext,
       directMessageUnreadCount, mergeDirectMessageReadSummary, normalizeDirectMessageReadCursor,
+      applyDMRequestState, dmInboxBucket, dmRequestState, normalizeDMRequestState,
       captureAccountMutation, accountMutationIsCurrent, notificationActivity,
       setDms: setter('dms'), setDmRead: setter('dmRead'), setUsers: setter('users'),
       absorbUsers() {}, publicProfileCacheEntry: user => user, ago: String,
@@ -310,10 +318,10 @@ test('successful refresh retries the unchanged observed target after failure wit
 test('authoritative counts survive a deleted latest message omitted by 750 newer inbox tombstones', async () => {
   const p = pair('delete'); const all = p.incoming(3), c = client(p); c.hydrate();
   assert.equal(c.snapshot('before removal').rowUnread, 3);
-  const outsider = addUser('deleteother');
+  const outsider = addUser('web-accept-deleteother');
   db.exec('BEGIN');
   for (let index = 0; index < 800; index++) {
-    const id = `other-removed-${index}`;
+    const id = `web-accept-other-removed-${index}`;
     insertDm.run(id, outsider.id, p.viewer.id, 'Synthetic removed elsewhere', 200000 + index);
     db.prepare('UPDATE dms SET removed=1 WHERE id=?').run(id);
   }

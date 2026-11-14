@@ -48,14 +48,18 @@ function visiblePostCandidates(database, {
   indexName,
   viewer,
   limit,
+  strictVenue,
 }) {
   const args = [...identityArgs];
+  if (strictVenue) args.push(strictVenue.path, String(strictVenue.place || "").trim().toLowerCase());
   if (viewer) args.push(viewer, viewer);
   args.push(limit);
-  return database.prepare(`SELECT p.id,p.user_id,p.photos,p.created_at
+  return database.prepare(`SELECT p.id,p.user_id,p.photos,p.created_at,u.name
     FROM posts p INDEXED BY ${indexName} JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND p.photos_public=1 AND ${inPersonReviewSql("p")}
       AND ${identitySql} AND ${activeAccountSql("u")}
+      ${strictVenue ? `AND u.profile_audience='everyone'
+        AND (p.venue_key=? OR (trim(p.city)<>'' AND lower(trim(p.city))=?))` : ""}
       AND NOT EXISTS (SELECT 1 FROM reports report
         WHERE report.target_type='post' AND report.target_id=p.id AND report.status='open')
       ${blockClause(viewer, "p.user_id")}
@@ -66,9 +70,11 @@ export function publicVenueFanPhotos(database, {
   venueKey,
   viewerId = null,
   limit = VENUE_FAN_PHOTO_LIMIT,
+  strictVenue = null,
 } = {}) {
   if (!database?.prepare) return [];
   const keys = venueLookupKeys(venueKey);
+  if (strictVenue?.path && !keys.includes(strictVenue.path)) keys.push(strictVenue.path);
   const slugs = venueLookupSlugs(venueKey);
   if (!keys.length) return [];
   const max = boundedLimit(limit);
@@ -78,7 +84,9 @@ export function publicVenueFanPhotos(database, {
   const reviewArgs = [...keys];
   if (viewer) reviewArgs.push(viewer, viewer);
   reviewArgs.push(candidateLimit);
-  const reviews = database.prepare(`SELECT r.id,r.user_id,r.photos,r.created_at
+  // Discovery only uses in-person concert photos, never venue-review media
+  // with an ambiguous name-only venue association.
+  const reviews = strictVenue ? [] : database.prepare(`SELECT r.id,r.user_id,r.photos,r.created_at
     FROM venue_reviews r JOIN users u ON u.id=r.user_id
     WHERE r.venue_key IN (${placeholders(keys)}) AND r.removed=0 AND r.photos_public=1 AND ${activeAccountSql("u")}
       AND NOT EXISTS (SELECT 1 FROM reports report
@@ -95,6 +103,7 @@ export function publicVenueFanPhotos(database, {
     indexName: "idx_posts_venue_visibility",
     viewer,
     limit: candidateLimit,
+    strictVenue,
   });
   const legacyPosts = slugs.length ? visiblePostCandidates(database, {
     identitySql: `p.venue_key IS NULL AND trim(COALESCE(p.venue,''))<>''
@@ -103,6 +112,7 @@ export function publicVenueFanPhotos(database, {
     indexName: "idx_posts_venue_public_slug",
     viewer,
     limit: candidateLimit,
+    strictVenue,
   }) : [];
   const posts = [...new Map([...currentPosts, ...legacyPosts].map((post) => [post.id, post])).values()]
     .sort((left, right) => Number(right.created_at || 0) - Number(left.created_at || 0)
@@ -142,6 +152,7 @@ export function publicVenueFanPhotos(database, {
           origin: "post",
           ownerId: post.user_id,
           postId: post.id,
+          credit: post.name,
           createdAt: post.created_at,
         });
       }

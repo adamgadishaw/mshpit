@@ -1,7 +1,9 @@
 import { createProfileHistoryStore } from "./profileHistoryState.mjs";
 import { profileHistoryPageRequest } from "./services/profileHistoryApi.mjs";
+import { subscribeAuthorBadgeChanges } from "../../domain/authorBadgeChanges.mjs";
 
 export const profileHistoryStore = createProfileHistoryStore({ fetchPage: profileHistoryPageRequest });
+subscribeAuthorBadgeChanges(({ accountId, user }) => profileHistoryStore.reconcileAuthorBadges(accountId, user));
 
 const params = (accountId, targetId) => ({ accountId: accountId || null, targetId: targetId || null });
 const normalizedAccountId = (accountId) => accountId == null || accountId === "" ? null : String(accountId);

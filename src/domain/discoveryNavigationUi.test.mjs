@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { parse } from "@babel/parser";
+import { defaultDiscoverAreaChoice } from "./discoverArea.mjs";
+import { restoreDiscoverViewState } from "./discoverViewState.mjs";
 
 const read = (path) => readFile(new URL(path, import.meta.url), "utf8");
 
@@ -14,11 +17,15 @@ test("desktop discovery rail promotes signed-in lounges without retaining the ve
 
 test("Discover retains upcoming events and deeper discovery alongside its connected venue explorer", async () => {
   const source = await read("../screens/DiscoverScreen.jsx");
-  const upcoming = source.indexOf('title="Upcoming events"');
-  const venue = source.indexOf("<DiscoverVenues");
-  const explorer = await read("../components/discover/DiscoverVenues.jsx");
-  const chart = source.indexOf("<DiscoverChart");
-  const genres = source.indexOf("<DiscoverGenres");
+  // iOS now supplies an isolated presentation. Check the original platform
+  // render independently, not unrelated JSX passed into the iOS branch.
+  const legacy = source.slice(source.indexOf("  return (\n    <VinylRefreshBoundary"));
+  assert.ok(legacy.startsWith("  return ("), "Android/web render remains present");
+  const upcoming = legacy.indexOf('title="Upcoming events"');
+  const venue = legacy.indexOf("<DiscoverVenues");
+  const explorer = await read("../features/venueCommunity/DiscoverVenues.jsx");
+  const chart = legacy.indexOf("<DiscoverChart");
+  const genres = legacy.indexOf("<DiscoverGenres");
   assert.ok(upcoming >= 0 && venue > upcoming, "Shows and the venue explorer must remain available in programme order");
   assert.ok(venue >= 0 && chart > venue, "the Venue destination should precede charts");
   assert.ok(genres > chart, "genre exploration should remain available later in the page");
@@ -32,14 +39,28 @@ test("Discover retains upcoming events and deeper discovery alongside its connec
   assert.match(source, /eventImage[\s\S]*source: "provider"[\s\S]*provider: "ticketmaster"/);
   assert.match(source, /const liveEvents = useMemo\(\(\) => upcomingEventsForScope/);
   assert.match(source, /accessibilityLabel="Browse all events"/);
-  assert.equal((source.match(/<DiscoverVenues/g) || []).length, 1, "The map and list are one coherent explorer");
+  assert.equal((legacy.match(/<DiscoverVenues/g) || []).length, 1, "The map and list are one coherent explorer on Android/web");
+  assert.match(source, /if \(Platform\.OS === "ios"\) return <DiscoverBrowse/);
+  assert.match(source, /venues: section === "venues" \? <DiscoverVenues region=\{region\}/, "iOS owns the same single venue explorer in its bounded section factory");
   assert.match(explorer, /mapOpen && <VenueMap venues=\{venues\} selected=\{chosenVenue\} onSelect=\{selectMapVenue\}/);
   assert.match(explorer, /onPress=\{\(\) => onOpenVenue\?\.\(venue\)\}/);
   assert.equal((source.match(/title="Find venues"/g) || []).length, 0, "Venues already owns a full section");
   assert.match(source, /const sceneProjection = useMemo\(\(\) => projectDiscoverScene\(rangeMatchesScene \? eventRange\.rows : tourDates, \{[\s\S]*region,[\s\S]*eventLimit: 12,[\s\S]*venueLimit: 8,[\s\S]*countryForCity,[\s\S]*\}\), \[eventRange\.rows, rangeMatchesScene, region, tourDates\]\)/);
   assert.match(source, /const initialRangeEvents = useMemo\(\(\) => selectDiscoverRangeEvents\([\s\S]*localEvents : sceneProjection\.events/);
   assert.match(source, /worldwideEvents: initialRangeEvents/);
-  assert.match(source, /const \[areaChoice, setAreaChoice\] = useState\(\(\) => defaultDiscoverAreaChoice\(areaContext\)\)/);
+  const ast = parse(source, { sourceType: "module", plugins: ["jsx"] });
+  const component = ast.program.body.find((node) => node.type === "ExportDefaultDeclaration").declaration;
+  const area = component.body.body.flatMap((node) => node.declarations || [])
+    .find((node) => node.id.type === "ArrayPattern" && node.id.elements[0]?.name === "areaChoice");
+  assert.equal(area.init.callee.name, "useState", "area remains screen-local state");
+  const initializer = area.init.arguments[0];
+  assert.equal(initializer.type, "ArrowFunctionExpression");
+  const initialize = new Function("restoredView", `return (${source.slice(initializer.start, initializer.end)})();`);
+  const context = { accountId: "viewer", homeCity: "Toronto", homeCountry: "Canada" };
+  assert.deepEqual(initialize(restoreDiscoverViewState(null, context)), defaultDiscoverAreaChoice(context));
+  const saved = { accountId: "viewer", areaChoice: { accountId: "viewer", region: "France", scope: "country", touched: true } };
+  assert.equal(initialize(restoreDiscoverViewState(saved, context)).region, "France");
+  assert.deepEqual(initialize(restoreDiscoverViewState({ ...saved, accountId: "old" }, context)), defaultDiscoverAreaChoice(context));
   assert.match(source, /selectDiscoverCountryArea/);
   assert.match(source, /selectDiscoverScopeArea/);
   assert.doesNotMatch(source, /regionChoice|liveScopeChoice/);

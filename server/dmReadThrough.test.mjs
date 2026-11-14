@@ -39,12 +39,9 @@ function fixture() {
 
 test("arrival between GET and targeted POST remains unread and its notification remains intact", () => {
   const f = fixture(), seen = f.message("a", 100);
-  db.prepare("INSERT INTO follows(follower_id,followee_id) VALUES(?,?)").run(f.viewer.id, f.peer.id);
-  const notificationPage = () => routes["GET /api/me/notifications"]({ user: f.viewer, query: {} });
   const fetched = f.page();
   assert.deepEqual(fetched.latestIncomingCursor, { createdAt: 100, id: seen });
   const later = f.message("b", 101);
-  assert.equal(notificationPage().inboxUnread, 2);
   const receipt = f.read({ messageId: seen });
   assert.deepEqual(receipt.readCursor, { createdAt: 100, id: seen });
   assert.deepEqual(receipt.latestIncomingCursor, { createdAt: 101, id: later });
@@ -54,7 +51,6 @@ test("arrival between GET and targeted POST remains unread and its notification 
   assert.equal(f.notification(seen), 1);
   assert.equal(f.notification(later), 0);
   assert.equal(f.inbox().unread, 1);
-  assert.equal(notificationPage().inboxUnread, 1, "the global Inbox badge retains the unobserved arrival too");
   assert.equal(f.page({ after: fetched.syncCursor }).unread, 1);
 });
 

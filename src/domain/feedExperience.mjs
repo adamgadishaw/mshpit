@@ -19,7 +19,7 @@ export function feedFooterState({ visibleCount = 0, loadedCount = 0, hasMore = f
 }
 
 const SUGGESTED_POST_LABEL = "Suggested post";
-const SUGGESTED_POST_DETAIL = "Pit mixes recent posts from across the community to keep your feed fresh. Suggestions change over time.";
+const SUGGESTED_POST_DETAIL = "Mshpit suggests recent posts from across the community. Suggestions change over time.";
 
 export function recommendationDisclosure(recommendation) {
   if (!recommendation || typeof recommendation !== "object") return null;

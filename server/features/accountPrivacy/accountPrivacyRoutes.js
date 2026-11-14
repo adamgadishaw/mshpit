@@ -1,3 +1,7 @@
+import { exportLocalAlerts } from "../localEventAlerts/localAlertPrivacy.js";
+import { exportCreatorCalendar } from "../creatorCalendar/creatorCalendarSchema.js";
+import { exportEventClaims } from "../eventAccounts/eventAccountSchema.js";
+import { exportCreatorRelationships } from "../creatorPosts/creatorEntityOwnership.js";
 import { exportArtistVerification } from "../artistAccounts/artistVerificationExport.js";
 import { readNewsRegionChoice } from "../newsDesk/newsRegions.js";
 
@@ -10,6 +14,11 @@ function parseJson(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function portableStringSelections(value) {
+  const selections = parseJson(value, []);
+  return Array.isArray(selections) ? selections.filter((entry) => typeof entry === "string") : [];
 }
 
 // Owner media projections can include a short-lived storage capability in
@@ -94,7 +103,7 @@ export function accountPrivacyRoutes({
           "Password hashes, reset credentials, provider tokens, session cookies, raw IP addresses, and user-agent strings are intentionally excluded.",
           "Uploaded media files are represented by attached URLs and stable media descriptors; storage-provider audit metadata is not part of the account export.",
           "Other accounts are represented by stable internal ids only; live names and handles are excluded so an export cannot bypass blocks or profile visibility.",
-          "This synchronous export includes all current feed preferences plus up to 5,000 recently viewed posts, 300 plays, 1,000 sent and received messages, 200 notifications, 5,000 activity events, 1,000 posts tagging you, and 1,000 tags you removed. A queued archive job is required before production-scale launch.",
+          "This synchronous export includes all current feed preferences, account mutes and festival plans, plus up to 5,000 recently viewed posts, 300 plays, 1,000 sent and received messages, 200 notifications, 5,000 activity events, 1,000 posts tagging you, and 1,000 tags you removed. A queued archive job is required before production-scale launch.",
         ],
         profile: projectSelf(user),
         // Where this account's news comes from: "auto" follows the home city.
@@ -106,7 +115,7 @@ export function accountPrivacyRoutes({
           return grant ? {kind:"first-wave",number:grant.slot,grantedAt:grant.granted_at} : null;
         })(),
         posts: database.prepare("SELECT * FROM posts WHERE user_id=? ORDER BY created_at DESC").all(user.id)
-          .map((post) => ({ id: post.id, kind: post.kind || "review", experienceType: post.experience_type || "in_person", onlineTitle: post.online_title || null, youtubeUrl: post.youtube_url || null, youtubeVideoId: post.youtube_video_id || null, artist: post.artist, venue: post.venue, city: post.city, eventAddress: post.event_address || null, date: post.date, overall: post.overall, band: post.band, room: post.room, review: post.review, tour: post.tour, setlist: parseJson(post.setlist, []), supportingActs: parseJson(post.supporting_acts, []), showFormat: post.show_format || "headline", endDate: post.end_date || null, tags: parseJson(post.tags, []), taggedUserIds: parseJson(post.tagged_user_ids, []), campaign: parseJson(post.campaign, null), photos: parseJson(post.photos, []), photosPublic: !!post.photos_public, landingShowcase: !!post.landing_showcase, song: parseJson(post.song, null), playlist: parseJson(post.playlist, null), removed: !!post.removed, createdAt: post.created_at })),
+          .map((post) => ({ id: post.id, kind: post.kind || "review", experienceType: post.experience_type || "in_person", onlineTitle: post.online_title || null, youtubeUrl: post.youtube_url || null, youtubeVideoId: post.youtube_video_id || null, artist: post.artist, venue: post.venue, city: post.city, eventAddress: post.event_address || null, date: post.date, overall: post.overall, band: post.band, room: post.room, review: post.review, tour: post.tour, setlist: parseJson(post.setlist, []), supportingActs: parseJson(post.supporting_acts, []), showFormat: post.show_format || "headline", endDate: post.end_date || null, tags: parseJson(post.tags, []), taggedUserIds: parseJson(post.tagged_user_ids, []), creatorUpdate: parseJson(post.creator_update, null), campaign: parseJson(post.campaign, null), photos: parseJson(post.photos, []), photosPublic: !!post.photos_public, landingShowcase: !!post.landing_showcase, song: parseJson(post.song, null), playlist: parseJson(post.playlist, null), removed: !!post.removed, createdAt: post.created_at })),
         taggedInPosts: database.prepare(`SELECT t.post_id,p.user_id AS author_id,p.removed,p.created_at
           FROM post_user_tags t JOIN posts p ON p.id=t.post_id
           WHERE t.user_id=? ORDER BY p.created_at DESC,p.id DESC LIMIT 1000`).all(user.id)
@@ -128,6 +137,8 @@ export function accountPrivacyRoutes({
         following: database.prepare("SELECT followee_id id FROM follows WHERE follower_id=?").all(user.id).map((row) => accountReference(row.id)),
         followers: database.prepare("SELECT follower_id id FROM follows WHERE followee_id=?").all(user.id).map((row) => accountReference(row.id)),
         blocked: database.prepare("SELECT blocked_id id FROM blocks WHERE blocker_id=?").all(user.id).map((row) => accountReference(row.id)),
+        muted: database.prepare("SELECT muted_id,created_at FROM account_mutes WHERE muter_id=? ORDER BY created_at DESC,muted_id").all(user.id)
+          .map((row) => ({ id: row.muted_id, createdAt: row.created_at })),
         feedPreferences: database.prepare("SELECT post_id,action,created_at FROM recommendation_preferences WHERE user_id=? ORDER BY created_at DESC").all(user.id)
           .map((row) => ({ postId: row.post_id, action: row.action, createdAt: row.created_at })),
         feedImpressions: {
@@ -157,6 +168,15 @@ export function accountPrivacyRoutes({
         listeningHistory: database.prepare("SELECT title,artist,url,video_id,provider,source_id,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300").all(user.id)
           .map((row) => ({ title: row.title, artist: row.artist, url: row.url, videoId: row.video_id, provider: row.provider, sourceId: row.source_id, at: row.created_at })),
         going: database.prepare("SELECT artist,venue,city,date FROM going WHERE user_id=?").all(user.id),
+        // Saved plans remain owned data when an edition is past, hidden, or
+        // later changes its dates/lineup. Do not apply public catalog filters
+        // or rewrite the member's selections against today's catalog.
+        festivalPlans: database.prepare(`SELECT p.edition_id,e.festival_slug,p.days,p.must_see,p.created_at,p.updated_at
+          FROM festival_plans p LEFT JOIN festival_editions e ON e.id=p.edition_id
+          WHERE p.user_id=? ORDER BY p.updated_at DESC,p.edition_id`).all(user.id)
+          .map((row) => ({ editionId: row.edition_id, festivalSlug: row.festival_slug,
+            days: portableStringSelections(row.days), mustSee: portableStringSelections(row.must_see),
+            createdAt: row.created_at, updatedAt: row.updated_at })),
         attendance: database.prepare(`SELECT a.show_id,s.canonical_key,
           COALESCE(a.legacy_concert_key,
             (SELECT sa.alias_value FROM show_aliases sa
@@ -186,6 +206,8 @@ export function accountPrivacyRoutes({
             updatedAt: row.updated_at,
           })),
         ratings: database.prepare("SELECT kind,ref,rating FROM ratings WHERE user_id=?").all(user.id),
+        venueClaims: database.prepare('SELECT id,venue_path,venue_name,website,note,status,created_at,reviewed_at,conversion_consent,conversion_consent_at,account_role_at_request FROM venue_claims WHERE user_id=? ORDER BY created_at DESC,id DESC').all(user.id),
+
         venueReviews: database.prepare("SELECT id,venue_key,rating,text,photos,photos_public,removed,created_at FROM venue_reviews WHERE user_id=? ORDER BY created_at DESC").all(user.id)
           .map((row) => ({ id: row.id, venueKey: row.venue_key, rating: row.rating, text: row.text, photos: parseJson(row.photos, []), photosPublic: !!row.photos_public, removed: !!row.removed, createdAt: row.created_at })),
         fanClubs: {
@@ -201,6 +223,8 @@ export function accountPrivacyRoutes({
           .map((row) => ({ from: accountReference(row.from_id), text: row.text, removed: !!row.removed, createdAt: row.created_at })),
         messageAcceptances: database.prepare("SELECT other_id,accepted_at,source FROM dm_acceptances WHERE user_id=? ORDER BY accepted_at DESC,other_id").all(user.id)
           .map((row) => ({ other: accountReference(row.other_id), acceptedAt: row.accepted_at, source: row.source })),
+        showNotifications: exportLocalAlerts(database, user.id),
+        creatorAccount: { ...exportCreatorRelationships(database, user.id), eventClaims: exportEventClaims(database, user.id), calendar: exportCreatorCalendar(database, user.id) },
         artistAccount: {
           ...exportArtistVerification(database, user.id),
           requests: database.prepare("SELECT id,artist_name,note,status,created_at FROM artist_requests WHERE user_id=? ORDER BY created_at DESC").all(user.id)

@@ -69,6 +69,7 @@ test("each exact show has one lifecycle-spanning Lounge and nearby maps are labe
   assert.match(show, /<Text style=\{styles\.originalPostLabel\}>FAN POST<\/Text>/);
   assert.match(show, />Open the original fan post<\/Text>/);
   assert.doesNotMatch(show, /Comments on this post|Open comments|>POST DISCUSSION<\/Text>/);
-  assert.match(nearby, />AFTER THE SHOW NEARBY<\/Text>/);
-  assert.match(nearby, />SPOTS NEAR THE VENUE<\/Text>/);
+  assert.match(nearby, /After the show/);
+  assert.match(nearby, /Food, places to go & routes home/);
+  assert.match(nearby, /Hours and availability aren’t verified by mshpit/);
 });

@@ -513,8 +513,8 @@ const PAGES = Object.freeze({
   "/account-deletion": {
     title: "Delete your Mshpit account",
     description: "How to permanently delete a Mshpit account and its associated activity.",
-    intro: "Mshpit lets you permanently delete your account from inside the app. Deletion starts only after you confirm the warning and your current password is verified by the server. There is no recovery period after deletion succeeds.",
-    note: "You do not need to contact support if you can sign in and complete these steps.",
+    intro: "You can permanently delete your Mshpit account inside the app or request deletion by email. In-app deletion starts only after you confirm the warning and your current password is verified by the server. There is no recovery period after deletion succeeds.",
+    note: "Choose the option that works for you. You do not need to contact support to use in-app deletion.",
     sections: [
       {
         heading: "Delete your account in Mshpit",
@@ -543,8 +543,8 @@ const PAGES = Object.freeze({
         paragraphs: ["If you want a copy of your information, use Download my data in Settings before deleting the account. Account deletion cannot be undone."],
       },
       {
-        heading: "If you cannot sign in",
-        paragraphs: ["Use Forgot password on the sign-in screen first. If you still cannot access the account, email support from the address connected to the account when possible and include your Mshpit handle. Support may need to verify that the request belongs to you before helping with access or deletion. Never send your password."],
+        heading: "Request deletion by email",
+        paragraphs: ["You can request account deletion by email whether or not you can sign in. You do not need to reinstall the app or try password recovery first. Email support from the address connected to the account when possible, include your Mshpit handle, and say that you want your account deleted. Support may need to verify that the account belongs to you before completing deletion. Never send your password."],
         links: [link(SUPPORT_EMAIL, `mailto:${SUPPORT_EMAIL}`)],
       },
     ],
@@ -795,7 +795,7 @@ export function renderPublicPage(pathname, env = process.env, pageOverride = nul
   </main>
   <footer>
     <div class="foot">
-      <p>Mshpit - Your life's musical journey</p>
+      <p>Mshpit - Your shows. Your music.</p>
       <div class="foot-links">
         <a href="/promotion-sources">Sources</a>
         <a href="/artists">Artists</a>

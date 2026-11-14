@@ -55,7 +55,14 @@ async function contextFor(browser,origin,width,viewer,state){
    else if(method==="POST"&&path==="/api/feed/news-introduction")result={post:null};
    else if(method==="POST"&&path==="/api/feed/revalidate")result={invalidPostIds:[]};
    else if(method==="POST"&&path==="/api/feed/impressions")result={ok:true};
-   else if(method==="POST"&&path==="/api/me/notifications/read")result={ok:true};
+   else if(method==="POST"&&path==="/api/me/notifications/read/scoped"){
+    assert.equal(req.headers()["x-pit-expected-account"],viewer.id);
+    assert.equal(viewer.id,navigationUser.id);
+    const ids=req.postDataJSON().notificationIds;
+    assert.ok(Array.isArray(ids)&&ids.length>0);
+    for(const id of ids){assert.ok(["n_comment_like","n_repost"].includes(id));state.readIds.add(id);}
+    result={ok:true,readContract:"notification-ids-v1",notificationIds:ids,unread:2-state.readIds.size};
+   }
    else if(method==="POST"&&path==="/api/posts/"+postId+"/repost"){
     assert.equal(req.headers()["x-pit-expected-account"],viewer.id);
     assert.equal(viewer.id,navigationUser.id);const desired=req.postDataJSON().reposted;assert.equal(typeof desired,"boolean");state.reposted=desired;state.repostWrites.push(desired);
@@ -74,9 +81,9 @@ async function contextFor(browser,origin,width,viewer,state){
     else if(path==="/api/posts/"+postId)result={post:post(state,viewer)};
     else if(path==="/api/posts/"+postId+"/comments")result={comments:baseComments.map(c=>({...c,likes:state.liked[c.id]?1:0,liked:!!state.liked[c.id]}))};
     else if(path==="/api/me/notifications")result={notifications:viewer.id===navigationUser.id?[
-     {id:"n_comment_like",type:"comment_like",actorId:author.id,actorName:"Fixture Comment Fan",postId,commentId:"c_parent",ts:now,read:false},
-     {id:"n_repost",type:"repost",actorId:author.id,actorName:"Fixture Repost Fan",postId,ts:now-100,read:false},
-    ]:[]};
+     {id:"n_comment_like",type:"comment_like",actorId:author.id,actorName:"Fixture Comment Fan",postId,commentId:"c_parent",ts:now,read:state.readIds.has("n_comment_like")},
+     {id:"n_repost",type:"repost",actorId:author.id,actorName:"Fixture Repost Fan",postId,ts:now-100,read:state.readIds.has("n_repost")},
+    ]:[],unread:viewer.id===navigationUser.id?2-state.readIds.size:0,nextCursor:null,readContract:"notification-ids-v1"};
     else if(path==="/api/feed"&&url.searchParams.get("mode")==="following")result={posts:viewer.id===follower.id&&state.reposted?[post(state,viewer)]:[],nextCursor:null};
     else if(["/api/feed","/api/feed/for-you","/api/feed/recommended"].includes(path))result={posts:[],hasMore:false,nextCursor:null,hiddenPostIds:[]};
     else result=fixtureApiResponse(path,{member:true,method,resolvedPath:url.searchParams.get("path")||undefined});
@@ -87,7 +94,7 @@ async function contextFor(browser,origin,width,viewer,state){
  return{page,local,close:async()=>{local.closing=true;await context.close();}};
 }
 async function scenario(browser,origin,width){
- const state={liked:{},reposted:false,replyAttempts:0,likeWrites:[],repostWrites:[]};const main=await contextFor(browser,origin,width,navigationUser,state);
+ const state={liked:{},reposted:false,replyAttempts:0,likeWrites:[],repostWrites:[],readIds:new Set()};const main=await contextFor(browser,origin,width,navigationUser,state);
  let current=main;
  try{
   const page=main.page;
@@ -116,6 +123,7 @@ async function scenario(browser,origin,width){
    await page.getByText("Fixture child reply.",{exact:true}).waitFor();
    assert.equal(new URL(page.url()).pathname,postPath);
   }
+  assert.deepEqual([...state.readIds].sort(),["n_comment_like","n_repost"]);
   assert.deepEqual(main.local.errors,[]);assert.deepEqual(main.local.external,[]);
   await main.close();
   current=await contextFor(browser,origin,width,follower,state);

@@ -155,3 +155,132 @@ test("false is a contained failure and retry timers do not fan out", async () =>
   assert.equal(clock.once.length, 2, "the existing retry is reused instead of allocating another timer");
   await scheduler.stop();
 });
+
+test("a delayed first regular tick anchors the subsequent daily cadence", async () => {
+  const clock = timers();
+  const day = 24 * 60 * 60_000;
+  let calls = 0;
+  const scheduler = startPeriodicJob({
+    run: async () => { calls += 1; },
+    initialDelayMs: 5 * 60_000,
+    intervalMs: day,
+    initialIntervalDelayMs: 6 * 60 * 60_000,
+    ...clock,
+  });
+  try {
+    assert.deepEqual(clock.once.map(({ delay }) => delay), [5 * 60_000, 6 * 60 * 60_000]);
+    assert.equal(clock.repeating.length, 0, "the ordinary daily interval must not start at process startup");
+    await clock.once[0].callback();
+    assert.equal(calls, 1, "the independent startup check still runs");
+    assert.equal(clock.repeating.length, 0);
+    await clock.once[1].callback();
+    assert.equal(calls, 2);
+    assert.equal(clock.repeating.length, 1);
+    assert.equal(clock.repeating[0].delay, day);
+    assert.equal(await clock.once[1].callback(), false, "a duplicate delayed-start callback cannot create another cadence");
+    assert.equal(clock.repeating.length, 1);
+    await clock.repeating[0].callback();
+    assert.equal(calls, 3);
+  } finally { await scheduler.stop(); }
+});
+
+test("the aligned regular tick gets one retry before waiting for its daily interval", async () => {
+  const clock = timers();
+  const reports = [];
+  let calls = 0;
+  const scheduler = startPeriodicJob({
+    run: async () => {
+      calls += 1;
+      if (calls > 1) throw new Error("provider unavailable");
+    },
+    report: (_error, context) => reports.push(context),
+    initialDelayMs: 5 * 60_000,
+    intervalMs: 24 * 60 * 60_000,
+    initialIntervalDelayMs: 6 * 60 * 60_000,
+    retryDelayMs: 15 * 60_000,
+    ...clock,
+  });
+  try {
+    await clock.once[0].callback();
+    assert.equal(await clock.once[1].callback(), false);
+    assert.equal(calls, 2);
+    assert.equal(clock.once[2].delay, 15 * 60_000);
+    await clock.once[2].callback();
+    assert.equal(calls, 3);
+    assert.equal(clock.once.length, 3, "failed recovery cannot create another short retry");
+    assert.deepEqual(reports.map(({ willRetry }) => willRetry), [true, false]);
+    await clock.repeating[0].callback();
+    assert.equal(calls, 4);
+    assert.equal(clock.once.length, 4, "the next daily slot opens one fresh recovery window");
+  } finally { await scheduler.stop(); }
+});
+
+test("stopping before an aligned regular tick prevents a stale callback from recreating timers", async () => {
+  const clock = timers();
+  let calls = 0;
+  const scheduler = startPeriodicJob({
+    run: async () => { calls += 1; },
+    initialDelayMs: 5 * 60_000,
+    intervalMs: 24 * 60 * 60_000,
+    initialIntervalDelayMs: 6 * 60 * 60_000,
+    ...clock,
+  });
+
+  await scheduler.stop();
+  assert.deepEqual(clock.clearedOnce, clock.once);
+  assert.deepEqual(clock.clearedRepeating, []);
+  assert.equal(await clock.once[0].callback(), false);
+  assert.equal(await clock.once[1].callback(), false);
+  assert.equal(clock.repeating.length, 0);
+  assert.equal(calls, 0);
+});
+
+test("stopping after alignment clears the new daily timer and waits for its active run", async () => {
+  const clock = timers();
+  const gate = deferred();
+  let calls = 0;
+  const scheduler = startPeriodicJob({
+    run: async () => { calls += 1; await gate.promise; },
+    initialDelayMs: 5 * 60_000,
+    intervalMs: 24 * 60 * 60_000,
+    initialIntervalDelayMs: 6 * 60 * 60_000,
+    ...clock,
+  });
+
+  const active = clock.once[1].callback();
+  await Promise.resolve();
+  let stopped = false;
+  const stopping = scheduler.stop().then(() => { stopped = true; });
+  await Promise.resolve();
+  assert.equal(stopped, false);
+  assert.deepEqual(clock.clearedOnce, [clock.once[0]]);
+  assert.deepEqual(clock.clearedRepeating, [clock.repeating[0]]);
+  assert.equal(await clock.once[1].callback(), false);
+  assert.equal(await clock.repeating[0].callback(), false);
+  gate.resolve();
+  await stopping;
+  await active;
+  assert.equal(stopped, true);
+  assert.equal(calls, 1);
+  assert.equal(clock.repeating.length, 1);
+});
+
+test("absent, invalid, and full-interval alignment preserves the existing timer setup", async () => {
+  const day = 24 * 60 * 60_000;
+  for (const initialIntervalDelayMs of [undefined, null, 0, -1, NaN, Infinity, day, day * 2]) {
+    const clock = timers();
+    const scheduler = startPeriodicJob({
+      run() {}, initialDelayMs: 5 * 60_000, intervalMs: day, initialIntervalDelayMs, ...clock,
+    });
+    assert.equal(clock.once.length, 1);
+    assert.equal(clock.repeating.length, 1);
+    assert.equal(clock.repeating[0].delay, day);
+    await scheduler.stop();
+  }
+  const clock = timers();
+  const scheduler = startPeriodicJob({
+    run() {}, initialDelayMs: 0, intervalMs: day, initialIntervalDelayMs: 0.1, ...clock,
+  });
+  assert.equal(clock.once[1].delay, 1_000, "positive alignment has a bounded minimum instead of spinning");
+  await scheduler.stop();
+});

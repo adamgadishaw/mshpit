@@ -29,8 +29,16 @@ function webAttributionLinkProps(value) {
     : {};
 }
 
-function ClipStage({ uri, posterUri, postId, onTrack, altText, width = 0, height = 0 }) {
+function ClipStage({ uri, posterUri, postId, onTrack, altText, width = 0, height = 0, isCurrentIOSRoute, isCurrentIOSMedia }) {
   const [attempt, setAttempt] = useState(0);
+  const retryIntentRef = useRef({});
+  const retryIntent = retryIntentRef.current;
+  const currentIOSMedia = () => retryIntentRef.current === retryIntent && (!isCurrentIOSMedia || isCurrentIOSMedia());
+  const retry = () => {
+    // Retire the old Open action before React replaces the keyed player.
+    if (Platform.OS === "ios") retryIntentRef.current = {};
+    setAttempt((value) => value + 1);
+  };
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const [videoSize, setVideoSize] = useState({ width: Number(width) || 0, height: Number(height) || 0 });
   const handleVideoSize = useCallback((next) => {
@@ -63,7 +71,7 @@ function ClipStage({ uri, posterUri, postId, onTrack, altText, width = 0, height
           height: viewportSize.height,
         } : null,
       ]}>
-        <MshpitVideoPlayer key={`${uri}:${attempt}`} uri={uri} posterUri={posterUri} postId={postId} onTrack={onTrack} onVideoSize={handleVideoSize} altText={altText} onRetry={() => setAttempt((value) => value + 1)} />
+        <MshpitVideoPlayer key={`${uri}:${attempt}`} uri={uri} posterUri={posterUri} postId={postId} onTrack={onTrack} onVideoSize={handleVideoSize} altText={altText} onRetry={retry} isCurrentIOSRoute={isCurrentIOSRoute} isCurrentIOSMedia={currentIOSMedia} />
       </View>
     </View>
   );
@@ -88,6 +96,8 @@ export default function PhotoViewer({
   onRequireAuth,
   onRememberIndex,
   onClose,
+  iosGestureScope,
+  isCurrentIOSRoute,
 }) {
   const insets = useSafeAreaInsets();
   const [i, setI] = useState(() => normalizedGalleryIndex(index, photos.length));
@@ -107,8 +117,24 @@ export default function PhotoViewer({
     postId: galleryItemPostId(item, postId),
   })).filter((item) => item.url && item.postId);
   const reactionScope = reactionItems.map((item) => `${item.postId}:${item.url}`).join("|");
-  const prev = () => setI((x) => (x - 1 + photos.length) % photos.length);
-  const next = () => setI((x) => (x + 1) % photos.length);
+  const iosMediaOwnerRef = useRef(null);
+  const [, publishIOSMediaIntent] = useState(0);
+  const mediaKey = JSON.stringify([i, uri, currentPostId]);
+  if (!iosMediaOwnerRef.current || iosMediaOwnerRef.current.key !== mediaKey) {
+    iosMediaOwnerRef.current = { key: mediaKey, intent: {} };
+  }
+  const mediaOwner = iosMediaOwnerRef.current;
+  const mediaIntent = mediaOwner.intent;
+  const isCurrentIOSMedia = () => iosMediaOwnerRef.current === mediaOwner && mediaOwner.intent === mediaIntent;
+  const advanceIOSMediaIntent = () => {
+    if (Platform.OS !== "ios") return;
+    // Selection is queued, but the old external action must retire now. Publish
+    // fresh controls even when a rapid Next/Previous returns to the same item.
+    iosMediaOwnerRef.current.intent = {};
+    publishIOSMediaIntent(value => value + 1);
+  };
+  const prev = () => { advanceIOSMediaIntent(); setI((x) => (x - 1 + photos.length) % photos.length); };
+  const next = () => { advanceIOSMediaIntent(); setI((x) => (x + 1) % photos.length); };
 
   // Touch: swipe a photo sideways to move, pull it down to close. The photo
   // follows the finger and springs back when the drag is too short. The
@@ -166,13 +192,22 @@ export default function PhotoViewer({
         tagName: e.target?.tagName,
         isContentEditable: !!e.target?.isContentEditable,
       });
-      if (action === "close") onClose?.();
-      else if (action === "previous" && photos.length > 1) prev();
+      // Escape closes on keyup, so a single press cannot also dismiss the
+      // review exposed underneath. Capture it before RN Web's Modal handler;
+      // this also works while the viewer's opening animation is in progress.
+      if (action === "previous" && photos.length > 1) prev();
       else if (action === "next" && photos.length > 1) next();
       if (action) e.preventDefault?.();
     };
+    const onKeyUp = (event) => {
+      if (galleryKeyAction({ key: event.key, tagName: event.target?.tagName, isContentEditable: !!event.target?.isContentEditable }) !== "close") return;
+      event.stopPropagation();
+      event.preventDefault();
+      onClose?.();
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKeyUp, true);
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("keyup", onKeyUp, true); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photos.length, onClose]);
 
@@ -310,11 +345,11 @@ export default function PhotoViewer({
         {/* SmartImage = HEIC transcode + proxy-rescue ladder, so an iPhone photo
             renders here instead of a black void. Clips get a real player. */}
         {video
-          ? <ClipStage key={uri} uri={uri} posterUri={posterUri} postId={currentPostId} onTrack={track} altText={altText} width={mediaWidth} height={mediaHeight} />
+          ? <ClipStage key={uri} uri={uri} posterUri={posterUri} postId={currentPostId} onTrack={track} altText={altText} width={mediaWidth} height={mediaHeight} isCurrentIOSRoute={isCurrentIOSRoute} isCurrentIOSMedia={isCurrentIOSMedia} />
           : (
             web ? <Animated.View style={[styles.swipeLayer, { transform: swipeDrag.getTranslateTransform() }]} {...swipe.panHandlers}>
               <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />
-            </Animated.View> : <NativePhotoSwipe count={photos.length} onNext={next} onPrevious={prev} onClose={onClose}>
+            </Animated.View> : <NativePhotoSwipe key={Platform.OS === "ios" ? JSON.stringify([i, uri, currentPostId]) : undefined} presentation={iosGestureScope} isCurrentRoute={isCurrentIOSRoute} count={photos.length} onNext={next} onPrevious={prev} onClose={onClose}>
               <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />
             </NativePhotoSwipe>
           )}

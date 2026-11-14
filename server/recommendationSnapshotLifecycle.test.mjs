@@ -146,6 +146,26 @@ test("a foreign viewer cannot consume or evict another viewer's live cursor", ()
   assert.equal(new Set([...first.rows, ...second.rows, ...third.rows].map((row) => row.id)).size, 3);
 });
 
+test("a new-content head refresh preserves an existing traversal and its privacy checks", () => {
+  const actor = viewer("snapshot_block_viewer");
+  const first = page(actor);
+  db.prepare("INSERT INTO posts(id,user_id,artist,venue,overall,created_at) VALUES(?,?,?,'Venue',4,?)")
+    .run("snapshot_new_arrival", "snapshot_author", "Artist", START + 1);
+  try {
+    const refreshed = page(actor, START + 2);
+    assert.notEqual(snapshotId(refreshed.nextCursor), snapshotId(first.nextCursor));
+    const second = page(actor, START + 2, first.nextCursor);
+    assert.notEqual(second.rows[0].id, first.rows[0].id);
+    assert.notEqual(second.rows[0].id, "snapshot_new_arrival");
+    db.prepare("INSERT INTO blocks(blocker_id,blocked_id,created_at) VALUES(?,?,?)")
+      .run("snapshot_author", actor.id, START + 2);
+    assert.deepEqual(page(actor, START + 2, second.nextCursor).rows, []);
+    assert.deepEqual(page(actor, START + 2, refreshed.nextCursor).rows, []);
+  } finally {
+    db.prepare("DELETE FROM posts WHERE id='snapshot_new_arrival'").run();
+  }
+});
+
 test("capacity eviction bounds snapshots and viewer indexes without changing the fixed limit", () => {
   assert.equal(service.maximum, 250);
   const first = page(viewer("snapshot_capacity_first"));
@@ -153,6 +173,33 @@ test("capacity eviction bounds snapshots and viewer indexes without changing the
   assert.deepEqual([service.state().snapshots, service.state().viewers], [service.maximum, service.maximum]);
   expired(() => page(viewer("snapshot_capacity_first"), START, first.nextCursor));
   assert.equal(service.state().viewers, service.maximum);
+});
+
+test("quiet head reuse at capacity preserves the oldest live snapshot", () => {
+  const actor = viewer("snapshot_capacity_oldest");
+  const first = page(actor);
+  for (let index = 1; index < service.maximum; index++) page(viewer(`snapshot_capacity_quiet_${index}`));
+  assert.equal(snapshotId(page(actor).nextCursor), snapshotId(first.nextCursor));
+  assert.ok(page(actor, START, first.nextCursor).rows.length);
+  assert.deepEqual([service.state().snapshots, service.state().viewers], [service.maximum, service.maximum]);
+});
+
+test("repeated new-content heads retain only the bounded number of snapshots", () => {
+  const actor = viewer("snapshot_publish_capacity");
+  const first = page(actor);
+  db.prepare("INSERT INTO posts(id,user_id,artist,venue,overall,created_at) VALUES(?,?,?,'Venue',4,?)")
+    .run("snapshot_revision_only", "snapshot_author", "Artist", START + 60_000);
+  try {
+    for (let index = 0; index < service.maximum; index++) {
+      db.prepare("UPDATE posts SET rowid=rowid+1 WHERE id='snapshot_revision_only'").run();
+      page(actor);
+    }
+    assert.deepEqual([service.state().snapshots, service.state().viewers], [service.maximum, 1]);
+    expired(() => page(actor, START, first.nextCursor));
+    assert.ok(page(actor).rows.length);
+  } finally {
+    db.prepare("DELETE FROM posts WHERE id='snapshot_revision_only'").run();
+  }
 });
 
 function restrictAuthor(restriction) {

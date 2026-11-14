@@ -1,3 +1,6 @@
+import { ensureLocalAlertSchema } from "./features/localEventAlerts/localAlertSchema.js";
+import { ensureLocalAlertRuntimeSchema } from "./features/localEventAlerts/localAlertRuntime.js";
+import { ensureCreatorCalendarSchema } from "./features/creatorCalendar/creatorCalendarSchema.js";
 // SQLite database layer, Node's built-in node:sqlite, zero dependencies.
 // WAL mode + foreign keys + busy timeout: safe under concurrent requests and
 // survives crashes mid-write (the WAL journal replays).
@@ -5,7 +8,11 @@
 // WAL is also why copying pit.db is NOT a backup: committed transactions live in
 // pit.db-wal until a checkpoint, so a bare copy can be torn or stale. Use
 // `npm run backup` (VACUUM INTO), which asks SQLite for a consistent snapshot.
+import { ensureEventAccountSchema } from "./features/eventAccounts/eventAccountSchema.js";
+import { ensureCreatorPostSchema } from "./features/creatorPosts/creatorPostSchema.js";
 import { DatabaseSync } from "node:sqlite";
+import { ensureVenueCommunitySchema } from "./features/venueCommunity/schema.js";
+import { resolveTheme } from "../src/domain/themeAccess.mjs";
 import { ensureJobSchema } from "./features/jobs/jobRepository.js";
 import { ensureArtistAccessRetentionSchema } from "./features/artistAccounts/artistAccessRetention.js";
 import { assertDatabaseRecoveryReady } from "./databaseRecovery.js";
@@ -593,6 +600,8 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifs_user ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifs_cursor ON notifications(user_id, created_at DESC, id DESC);
+-- Count candidates without revisiting read history; visibility remains a query-time check.
+CREATE INDEX IF NOT EXISTS idx_notifs_unread_user ON notifications(user_id) WHERE read=0;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notifs_post_tag_unique
   ON notifications(user_id, post_id, type) WHERE type='post_tag' AND post_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_notifs_post_tag_actor_recipient_created
@@ -2190,6 +2199,11 @@ db.exec(`INSERT OR IGNORE INTO post_create_receipts
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 ensureCommentMutationSchema(db);
 ensureSocialReactionSchema(db);
+ensureCreatorPostSchema(db);
+ensureCreatorCalendarSchema(db);
+ensureLocalAlertSchema(db);
+ensureLocalAlertRuntimeSchema(db);
+ensureEventAccountSchema(db);
 ensureJobSchema(db);
 ensureArtistAccessRetentionSchema(db);
 ensureLineupSchema(db);
@@ -2265,6 +2279,15 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_reviews
 db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_name_reviews
   ON posts(lower(artist), created_at DESC, id)
   WHERE removed=0 AND COALESCE(kind,'review')='review' AND length(trim(review))>0`);
+// Directory evidence includes sanitized photo-only reviews and legacy dates.
+// Its keyed and unkeyed-name branches must seek within one artist without
+// relying on the narrower text-only or calendar-date archive predicates.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_public_artist_evidence
+  ON posts(artist_key) WHERE removed=0 AND COALESCE(kind,'review')='review'
+    AND COALESCE(experience_type,'in_person')='in_person'`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_public_artist_name_evidence
+  ON posts(lower(artist)) WHERE artist_key IS NULL AND removed=0
+    AND COALESCE(kind,'review')='review' AND COALESCE(experience_type,'in_person')='in_person'`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_archive
   ON posts(artist_key, date DESC, created_at DESC, id DESC)
   WHERE removed=0 AND COALESCE(kind,'review')='review'
@@ -2506,6 +2529,8 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_expiry ON sessions(expires_at,t
 export const STORAGE_MAINTENANCE_BATCH_SIZE = 500;
 
 // --- tiny helpers ------------------------------------------------------------
+ensureVenueCommunitySchema(db);
+
 export const q = {
   userByEmail: db.prepare("SELECT * FROM users WHERE lower(trim(email)) = lower(trim(?)) ORDER BY created_at,id LIMIT 1"),
   usersByEmail: db.prepare("SELECT * FROM users WHERE lower(trim(email)) = lower(trim(?)) ORDER BY created_at,id LIMIT 2"),
@@ -3151,6 +3176,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
   // picks). They are user-controlled, so they must never replace typed/trusted
   // DB columns or expose a raw column under its database or public name.
   const extras = canonicalProfileExtras(parseJsonObject(u.extras)).value;
+  if (extras.theme !== undefined) extras.theme = resolveTheme(extras.theme, u);
   for (const key of Object.keys(u)) delete extras[key];
   for (const key of [
     "id", "email", "name", "handle", "role", "verified", "sponsor",

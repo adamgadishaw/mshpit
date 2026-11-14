@@ -59,6 +59,8 @@ function fixture(actor = admin, ready = true) {
   const setter = (key) => (next) => { effects.push(key); state[key] = typeof next === "function" ? next(state[key]) : next; };
   const request = (...args) => new Promise((resolve, reject) => calls.push({ args, resolve, reject }));
   const dependencies = {
+    Platform: { OS: "ios" },
+    invalidateIOSDetailPrivacy: () => 0,
     session: actor, sessionRef, authReadyRef: { current: ready }, accountMutationEpochRef,
     captureAccountMutation, accountMutationIsCurrent, staffScopeFor, confirmedRoleMutationPatch,
     clean, LIMITS, ARTIST_REQUEST_CONFIRMATION_ERROR, artistRequestFailureMessage, confirmedArtistRequest, mergeConfirmedArtistRequest, reconcileConfirmedArtistRequestDecision,

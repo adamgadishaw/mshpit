@@ -8,6 +8,8 @@ import { artistInitials } from "../../domain/artistInitials.mjs";
 import { discoverGenreLabel } from "../../domain/discoverView.mjs";
 import { artistPath } from "../../domain/urls.mjs";
 import { PublicPressableLink } from "../PublicWebLinks";
+import { discoverArtistArtwork } from "../../domain/discoverArtistArtwork.mjs";
+import DiscoverArtistPhotoCredit from "./DiscoverArtistPhotoCredit";
 
 // A small, stable colour wash per artist so a missing photo still looks
 // designed instead of empty. Hues stay muted to sit on the graphite theme.
@@ -16,10 +18,11 @@ const washFor = (name) => WASHES[[...String(name || "")].reduce((sum, char) => s
 
 function ArtistPhoto({ row, size }) {
   const [failedUri, setFailedUri] = useState(null);
-  const uri = row?.photo ? (isHttp(row.photo) ? proxied(row.photo, size * 2) : row.photo) : null;
+  const photo = discoverArtistArtwork(row);
+  const uri = photo ? (!photo.original && isHttp(photo.uri) ? proxied(photo.uri, size * 2) : photo.uri) : null;
   return <View style={[StyleSheet.absoluteFill, styles.wash, { backgroundColor: washFor(row?.name) }]}>
     <Text style={styles.washInitials} numberOfLines={1}>{artistInitials(row?.name)}</Text>
-    {uri && failedUri !== uri ? <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit="cover" cachePolicy="memory-disk"
+    {uri && failedUri !== uri ? <Image source={{ uri }} style={StyleSheet.absoluteFill} contentFit={photo.original ? "contain" : "cover"} cachePolicy="memory-disk"
       recyclingKey={uri} accessible={false} onError={() => setFailedUri(uri)} /> : null}
   </View>;
 }
@@ -28,20 +31,24 @@ function ArtistPhoto({ row, size }) {
 export const DiscoverArtistCard = memo(function DiscoverArtistCard({ row, rank = null, detail = null, width, onOpen }) {
   const { fontScale } = useWindowDimensions();
   const genre = discoverGenreLabel(row?.genre);
+  const original = discoverArtistArtwork(row)?.original;
   const line = detail ?? [genre, row?.topTrack?.title].filter(Boolean).join(" · ");
   return (
+    <View style={[styles.card, { width }, original && styles.original]}>
     <PublicPressableLink href={artistPath(row)} onNavigate={() => onOpen?.(row)}
-      style={({ hovered, pressed }) => [styles.card, { width }, hovered && styles.cardHover, pressed && styles.cardPressed]}
+      style={({ hovered, pressed }) => [hovered && styles.cardHover, pressed && styles.cardPressed]}
       accessibilityLabel={`Open ${row.name}${genre ? `, ${genre}` : ""}`}>
       <View style={styles.photo}>
         <ArtistPhoto row={row} size={Math.round(width)} />
-        {rank != null ? <View style={styles.rank}><Text style={styles.rankText}>{rank}</Text></View> : null}
+        {rank != null && !original ? <View style={styles.rank}><Text style={styles.rankText}>{rank}</Text></View> : null}
       </View>
       <View style={styles.copy}>
-        <Text style={styles.name} numberOfLines={Platform.OS === "web" ? 1 : fontScale > 1.25 ? undefined : 2}>{row.name}</Text>
+        <Text style={styles.name} numberOfLines={Platform.OS === "web" ? 1 : fontScale > 1.25 ? undefined : 2}>{original && rank != null ? `${rank}. ${row.name}` : row.name}</Text>
         {line ? <Text style={styles.detail} numberOfLines={Platform.OS === "web" ? 1 : 2}>{line}</Text> : null}
       </View>
     </PublicPressableLink>
+    <DiscoverArtistPhotoCredit artist={row} />
+    </View>
   );
 });
 
@@ -64,6 +71,7 @@ export function DiscoverArtistGrid({ rows, ranked = false, detailFor = null, onO
 }
 
 const styles = StyleSheet.create({
+  original: { borderRadius: 4 },
   grid: { width: "100%", flexDirection: "row", flexWrap: "wrap", gap: 12 },
   card: { borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft,
     ...Platform.select({ web: { cursor: "pointer", transitionDuration: "140ms", transitionProperty: "border-color, transform" }, default: {} }) },

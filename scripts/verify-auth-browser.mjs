@@ -46,6 +46,7 @@ const cases = [
   { name: "login-mobile", kind: "login", width: 390 },
   { name: "login-desktop", kind: "login", width: 1280 },
   { name: "login-wrong-password-retry", kind: "login-retry", width: 390 },
+  ...[375, 1280].map(width => ({ name: `login-autofill-repeated-retry-${width}`, kind: "login-autofill-retry", width })),
   { name: "login-two-profile-choice", kind: "login-choice", width: 390 },
   { name: "login-canceled-browser-back-mobile", kind: "login-canceled", width: 390 },
   { name: "login-canceled-browser-back-desktop", kind: "login-canceled", width: 1280 },
@@ -274,7 +275,7 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     await landing();
     await openLogin();
     await page.getByRole("button", { name: "No account? Sign up", exact: true }).click();
-    await page.getByRole("heading", { name: "Make it your night.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Create your account.", exact: true }).waitFor();
     const before = await credentialFields(page, [["Name", "name"], ["Username", "off"], ["Email", "username"], ["Password", "new-password"]]);
     await screenshot();
     // Four short steps with a progress bar; nothing is created until the last.
@@ -282,13 +283,13 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     await page.getByLabel("Name", { exact: true }).fill(alice.name);
     await page.getByLabel("Username", { exact: true }).fill(alice.handle);
     await page.getByLabel("Username", { exact: true }).press("Enter");
-    await page.getByRole("heading", { name: "Your sign-in.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Your login details.", exact: true }).waitFor();
     assert.equal(count("/api/signup"), 0, "Step one created an account instead of advancing.");
     assert.equal(await before.submissions(), 1, "Step-one Enter must submit the existing form exactly once.");
     await page.getByLabel("Email", { exact: true }).fill(alice.email);
     await page.getByLabel("Password", { exact: true }).fill(fixturePassword);
     await page.getByLabel("Password", { exact: true }).press("Enter");
-    await page.getByRole("heading", { name: "Find your kind of show.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Your music and city.", exact: true }).waitFor();
     assert.equal(count("/api/signup"), 0, "Step two created an account instead of advancing.");
     assert.equal(await before.submissions(), 2);
     const after = await credentialFields(page, [["Name", "name"], ["Username", "off"], ["Email", "username"], ["Password", "new-password"]]);
@@ -296,14 +297,24 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     assert.deepEqual(after.fields.map(field => [field.id, field.form]), before.fields.map(field => [field.id, field.form]), "Signup lost its credential inputs/form between steps.");
     assert.equal(await page.getByLabel("Password", { exact: true }).inputValue(), fixturePassword);
     await page.getByRole("button", { name: "Back to sign-in", exact: true }).click();
-    await page.getByRole("heading", { name: "Your sign-in.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Your login details.", exact: true }).waitFor();
     assert.equal(count("/api/signup"), 0, "Signup Back submitted the account.");
     assert.equal(await before.submissions(), 2, "Signup Back emitted a submit event.");
     await page.getByLabel("Password", { exact: true }).press("Enter");
-    await page.getByRole("heading", { name: "Find your kind of show.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Your music and city.", exact: true }).waitFor();
     await page.getByRole("checkbox", { name: "Rock", exact: true }).click();
     await page.getByRole("button", { name: "Continue to the last step", exact: true }).click();
-    await page.getByRole("heading", { name: "One last thing.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Finish creating your account.", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Review your choices", exact: true }).waitFor();
+    await page.getByText("City (optional): Not added", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("checkbox", { name: "Share optional limited account usage data", exact: true }).getAttribute("aria-checked"), "false");
+    await page.getByRole("button", { name: "Edit music and city", exact: true }).click();
+    await page.getByRole("heading", { name: "Your music and city.", exact: true }).waitFor();
+    assert.equal(await page.getByRole("checkbox", { name: "Rock", exact: true }).getAttribute("aria-checked"), "true");
+    assert.equal(await page.getByLabel("Password", { exact: true }).inputValue(), fixturePassword);
+    assert.equal(count("/api/signup"), 0, "Review edit link must never create an account.");
+    await page.getByRole("button", { name: "Continue to the last step", exact: true }).click();
+    assert.equal(await page.getByRole("checkbox", { name: "Share optional limited account usage data", exact: true }).getAttribute("aria-checked"), "false");
     await screenshot("-finish");
     await page.getByRole("radio", { name: "18+", exact: true }).click();
     await page.getByRole("checkbox", { name: "I agree to the Terms and Privacy policy", exact: true }).click();
@@ -312,7 +323,7 @@ async function semanticFormCase(page, origin, item, state, { landing, feed, you 
     await waitFor(() => count("/api/signup") > 0, "Final signup submission was not sent.");
     await feed();
     assert.equal(count("/api/signup"), 1, "Signup was submitted more than once.");
-    assert.equal(await before.submissions(), 5, "Three advances, one after Back, and the final confirmation must use exactly five native form submissions.");
+    assert.equal(await before.submissions(), 6, "Advances, returning from the review, and final confirmation must each submit exactly once.");
   } else if (item.kind === "forms-reset") {
     await credentialFields(page, [["New password", "new-password"], ["Confirm new password", "new-password"]]);
     await page.getByLabel("New password", { exact: true }).fill(replacementPassword);
@@ -406,7 +417,7 @@ async function runCase(browser, origin, item) {
     calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [],
     releaseLogin: null, releaseSwitch: null, releaseDiscover: null, holdDiscover: item.kind === "login-canceled",
     loginCompleted: false, connected: item.kind !== "forms-connect", credentialUrlLeaks: [],
-    locationPost: null, locationWrites: [], releaseCitySearch: null,
+    locationPost: null, locationWrites: [], locationLookups: [], releaseCitySearch: null,
     documents: [],
   };
   page.on("request", request => {
@@ -451,6 +462,15 @@ async function runCase(browser, origin, item) {
         ] : [{ city: "London", region: "England", country: "United Kingdom", countryCode: "GB", citySlug: "london" }] });
       }
       if (locationCase && url.pathname === "/api/artists") return await json({ artists: [{ name: "Fixture Artist", key: "fixture-artist" }] });
+      if (locationCase && url.pathname === "/api/concerts/lookup" && request.method() === "GET") {
+        assert.equal(account, alice.id);
+        const query = Object.fromEntries(url.searchParams);
+        assert.equal(query.artist, "Fixture Artist");
+        assert.match(query.date, /^\d{4}-\d{2}-\d{2}$/);
+        assert.ok(["catalog", "ticketmaster"].includes(query.source));
+        state.locationLookups.push(query);
+        return await json({ matches: [], complete: true });
+      }
       if (locationCase && url.pathname === "/api/health") return await json({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: false } } });
       if (locationCase && ((url.pathname === "/api/posts" && request.method() === "POST")
         || (url.pathname === "/api/posts/p_location_browser" && request.method() === "PATCH"))) {
@@ -484,7 +504,7 @@ async function runCase(browser, origin, item) {
         return await json({ user: state.user });
       }
       if (url.pathname === "/api/login") {
-        if (["login-canceled", "forms-login"].includes(item.kind)) await new Promise(fulfill => { state.releaseLogin = fulfill; });
+        if (["login-canceled", "forms-login", "login-autofill-retry"].includes(item.kind)) await new Promise(fulfill => { state.releaseLogin = fulfill; });
         if (state.badPassword) return await json({ error: "Wrong email or password.", code: "INVALID_CREDENTIALS" }, 401);
         if (item.kind === "login-choice" && !body.accountId) return await json({ chooseAccount: true, accounts: [alice, bob] });
         // Model server-side success even when a browser aborts or discards the
@@ -565,6 +585,8 @@ async function runCase(browser, origin, item) {
       if (url.pathname === "/api/signup/handle-availability") return await json({ handle: url.searchParams.get("handle"), available: true });
       if (url.pathname === "/api/signup") {
         assert.equal(request.method(), "POST"); assert.equal(body.password, fixturePassword); assert.equal(body.email, alice.email);
+        assert.equal(body.analyticsConsent, false);
+        assert.deepEqual(body.genres, ["Rock"]);
         state.user = alice;
         return await json({ created: true, user: alice });
       }
@@ -596,6 +618,12 @@ async function runCase(browser, origin, item) {
       if (url.pathname === "/api/discovery/sidebar") return await json({ upcomingEvents: [], suggestedUsers: [], topArtists: [], trendingVenues: [], popularLounges: [], landingMedia: [], catalogTotals: { artists: 40, venues: 80 } });
       if (["/api/me/blocked", "/api/me/muted"].includes(url.pathname)) return await json({ users: [] });
       if (url.pathname === "/api/me/notifications") return await json({ notifications: [] });
+      if (url.pathname === "/api/me/local-alerts/preferences" && request.method() === "GET") {
+        assert.ok(state.user?.id, "Notification preferences require a signed-in fixture account.");
+        assert.equal(account, state.user.id, "Notification preferences must use the current account boundary.");
+        return await json({ preferences: { datesInbox: true, salesInbox: true, datesPush: false, salesPush: false },
+          homeCity: null, deliveryEnabled: false, pushDeliveryEnabled: false });
+      }
       if (url.pathname === "/api/me/threads") return await json({ threads: [] });
       if (url.pathname === "/api/me/following") return await json({ following: [] });
       if (url.pathname === "/api/me/seen-count") return await json({ count: 1 });
@@ -636,7 +664,7 @@ async function runCase(browser, origin, item) {
     }
   });
   const landing = () => page.getByRole("link", { name: "Browse concerts", exact: true }).waitFor();
-  const feed = () => page.getByText("Your life's musical journey", { exact: true }).waitFor();
+  const feed = () => page.getByText("Your shows. Your music.", { exact: true }).waitFor();
   const you = async user => {
     await page.getByRole("tab", { name: "You", exact: true }).click();
     await page.getByText(user.name, { exact: true }).first().waitFor();
@@ -655,7 +683,7 @@ async function runCase(browser, origin, item) {
     }));
     assert.deepEqual(privateVisible, { flashed: false, present: false }, "Private account UI reappeared after the guest boundary.");
     const privateReads = state.calls.slice(after).filter(call =>
-      /\/api\/me\/(following|blocked|muted|threads|fanclubs|going|notifications|artist-recommendations)$/.test(call.path)
+      /\/api\/me\/(following|blocked|muted|threads|fanclubs|going|notifications|artist-recommendations|local-alerts\/preferences)$/.test(call.path)
       || /^\/api\/users\/auth-fixture-[ab]\/posts$/.test(call.path));
     assert.deepEqual(privateReads, [], "Canceled/cleared identity caused private account reads.");
   };
@@ -796,6 +824,9 @@ async function runCase(browser, origin, item) {
       // exact selection, never a delay or a replacement click that hides failure.
       await page.waitForFunction(() => document.querySelector('input[aria-label="Concert city, region and country"]')?.value === "Toronto, Ontario, Canada", null, { timeout: timeoutMs });
       assert.equal(await cityInput.inputValue(), "Toronto, Ontario, Canada");
+      await page.getByText("No matching concerts found. Add the venue below, or adjust the artist, city or date.", { exact: true }).waitFor();
+      assert.deepEqual(state.locationLookups.filter(query => query.city === "Toronto, Ontario, Canada").map(query => query.source).sort(),
+        ["catalog", "ticketmaster"], "Both debounced lookup sources must finish before exercising manual fallback.");
       assert.equal(await page.getByLabel("Concert venue, optional with a city", { exact: true }).inputValue(), "");
       assert.equal(await addressInput.isVisible(), true, "Public event address must be visible without expanding a hidden field.");
       await addressInput.fill("123 Queen Street West");
@@ -805,7 +836,7 @@ async function runCase(browser, origin, item) {
       await page.getByLabel("Concert venue, optional with a city", { exact: true }).scrollIntoViewIfNeeded();
       await page.screenshot({ path: join(root, ".tmp", `location-composer-${item.width}.png`) });
       await page.getByRole("button", { name: "Next: The music", exact: true }).click();
-      await page.getByLabel("Rating", { exact: true }).first().press("End");
+      await page.getByLabel("Overall concert rating", { exact: true }).press("End");
       await page.getByRole("button", { name: "Next: Your story", exact: true }).click();
       const postButton = page.getByRole("button", { name: "Post to feed", exact: true });
       assert.equal(await postButton.isEnabled(), true, "A rated city-only concert must be publishable.");
@@ -847,16 +878,16 @@ async function runCase(browser, origin, item) {
       for (const tab of ["Feed", "You"]) {
         await page.getByRole("tab", { name: tab, exact: true }).click();
         await page.getByRole("heading", { name: "Good to see you.", exact: true }).waitFor();
-        assert.equal(await page.getByText("Your life's musical journey", { exact: true }).count(), 0);
+        assert.equal(await page.getByText("Your shows. Your music.", { exact: true }).count(), 0);
         await page.goBack();
       }
       await page.getByRole("tab", { name: "Search", exact: true }).click();
       assert.equal(await page.getByRole("heading", { name: "Good to see you.", exact: true }).count(), 0);
       assert.deepEqual(state.calls.filter(call => call.path.startsWith("/api/feed") || /\/api\/users\/.*\/(posts|concert-history)$/.test(call.path)), []);
     } else if (guestCase) {
-      if (publicPost.kind === "review" && publicPost.experienceType !== "online") {
-        await page.getByText("Open the original fan post", { exact: true }).click();
-      }
+      await page.getByTestId("post-content-shell").waitFor();
+      assert.equal(new URL(page.url()).pathname, "/post/" + publicPost.id);
+      await page.getByText(publicPost.review, { exact: true }).last().waitFor();
       const like = () => page.getByRole("button", { name: "Like, 3 likes", exact: true }).last();
       await like().waitFor();
       const after = state.calls.length;
@@ -916,6 +947,49 @@ async function runCase(browser, origin, item) {
       assert.deepEqual(guestCalls.filter(call => /\/api\/artists\//.test(call.path)), [], "Social controls must not navigate to or load the post's artist.");
     } else if (item.kind.startsWith("forms-")) {
       await semanticFormCase(page, origin, item, state, { landing, feed, you });
+    } else if (item.kind === "login-autofill-retry") {
+      await landing();
+      await page.getByRole("link", { name: "Log in", exact: true }).last().click();
+      const { form } = await credentialFields(page, [["Email", "username"], ["Password", "current-password"]]);
+      // Synthetic autofill events on the real controlled DOM fields. This is
+      // deliberately not a claim of Safari/Keychain Password AutoFill testing.
+      await form.evaluate((node, values) => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+        for (const [name, value] of Object.entries(values)) {
+          const input = node.elements.namedItem(name);
+          setter.call(input, value);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      }, { email: alice.email, password: fixturePassword });
+      const email = await page.getByLabel("Email", { exact: true }).elementHandle();
+      const password = await page.getByLabel("Password", { exact: true }).elementHandle();
+      const count = () => state.calls.filter(call => call.path === "/api/login").length;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        state.badPassword = attempt < 2;
+        const submit = form.locator('button[type="submit"]');
+        await submit.click();
+        await waitFor(() => typeof state.releaseLogin === "function", "Synthetic login response was not held.");
+        // Browser and keyboard repeats during a pending request cannot create
+        // another identity transition or replace the mounted credential owner.
+        await form.evaluate(node => { node.requestSubmit(); node.requestSubmit(); });
+        await page.keyboard.press("Enter");
+        assert.equal(count(), attempt + 1);
+        state.releaseLogin(); state.releaseLogin = null;
+        if (attempt < 2) {
+          await page.getByRole("alert").filter({ hasText: "Wrong email or password." }).waitFor();
+          await page.waitForFunction(() => !document.querySelector('button[type="submit"]')?.disabled);
+          assert.equal(await email.evaluate(node => node.isConnected), true);
+          assert.equal(await password.evaluate(node => node.isConnected), true);
+          assert.equal(await page.getByLabel("Email", { exact: true }).inputValue(), alice.email);
+          assert.equal(await page.getByLabel("Password", { exact: true }).inputValue(), fixturePassword);
+          assert.equal(state.user, null);
+        }
+      }
+      await feed();
+      assert.equal(await page.getByLabel("Password", { exact: true }).count(), 0);
+      assert.equal(count(), 3);
+      assert.equal(state.calls.some(call => call.path === "/api/logout"), false);
+      await you(alice);
     } else if (item.kind.startsWith("login")) {
       if (item.kind === "login-canceled") {
         await waitFor(() => typeof state.releaseDiscover === "function", "Discover must be suspended before opening login.");

@@ -250,16 +250,15 @@ function pruneSnapshots(at) {
 }
 
 function createSnapshot(viewer, at, hiddenIds) {
-  pruneSnapshots(at);
   const viewerKey = viewer?.id || "guest";
   const activeId = activeSnapshotByViewer.get(viewerKey);
   const active = activeId ? snapshots.get(activeId) : null;
   const contentRevision = postContentRevision();
   if (active && active.expiresAt > at && active.contentRevision === contentRevision) return active;
-  // The requesting client will adopt the fresh snapshot's cursor. Retire its
-  // former active snapshot so routine publishing cannot exhaust the bounded
-  // in-memory pool with superseded heads.
-  if (activeId) snapshots.delete(activeId);
+  // Another tab/device may still be paging the previous head. Keep its issued
+  // cursor valid until the normal TTL/capacity eviction, and reserve capacity
+  // only when allocating (a quiet head read must not evict a live snapshot).
+  pruneSnapshots(at);
   const ranked = rankRecommendations(candidateRows(viewer, at, hiddenIds).map(rankingCandidate), recommendationSignals(viewer, at), {
     snapshotAt: at,
     seed: `${viewerKey}:${Math.floor(at / SNAPSHOT_TTL_MS)}`,
@@ -300,14 +299,15 @@ function createSnapshot(viewer, at, hiddenIds) {
   return snapshot;
 }
 
-function encodePageCursor(snapshotId, offset) {
-  return Buffer.from(JSON.stringify({ v: 1, snapshotId, offset }), "utf8").toString("base64url");
+function encodePageCursor(snapshotId, offset, before = null) {
+  return Buffer.from(JSON.stringify({ v: 1, snapshotId, offset, before }), "utf8").toString("base64url");
 }
 
 function decodePageCursor(value) {
   try {
     const parsed = JSON.parse(Buffer.from(String(value || ""), "base64url").toString("utf8"));
     if (parsed?.v !== 1 || typeof parsed.snapshotId !== "string" || !Number.isSafeInteger(parsed.offset) || parsed.offset < 0) throw new Error();
+    if (parsed.before != null && (!Number.isFinite(parsed.before.createdAt) || typeof parsed.before.id !== "string")) throw new Error();
     return parsed;
   } catch {
     throw new ApiError(400, "That recommendation page expired. Refresh the feed to continue.", "RECOMMENDATION_CURSOR_INVALID");
@@ -337,6 +337,7 @@ export function recommendedFeedPage({ viewer = null, cursor = null, limit = 20, 
   const hiddenIds = hiddenRecommendationPostIds(viewer, at);
   let snapshot;
   let offset = 0;
+  let before = null;
   if (cursor) {
     const decoded = decodePageCursor(cursor);
     snapshot = snapshots.get(decoded.snapshotId);
@@ -352,6 +353,7 @@ export function recommendedFeedPage({ viewer = null, cursor = null, limit = 20, 
       throw new ApiError(400, "That recommendation page expired. Refresh the feed to continue.", "RECOMMENDATION_CURSOR_EXPIRED");
     }
     offset = decoded.offset;
+    before = decoded.before || null;
   } else {
     snapshot = createSnapshot(viewer, at, hiddenIds);
   }
@@ -370,10 +372,40 @@ export function recommendedFeedPage({ viewer = null, cursor = null, limit = 20, 
     }
   }
 
+  // Ranking is a bounded head, not the end of community history. The tail
+  // keyset visits all omissions and older posts without an in-memory ID list.
+  // Eligibility is applied in SQL before LIMIT, so sparse/blocked histories do
+  // not require an unbounded JavaScript scan in one request.
+  let tailHasMore = true;
+  if (consumed >= snapshot.ids.length) {
+    const newsIds = eligibleNewsPosts(db, viewer, at).map(row => row.post_id);
+    const args = [snapshot.at, at, JSON.stringify(snapshot.ids), JSON.stringify([...hiddenIds]), JSON.stringify(newsIds)];
+    const boundary = before ? "AND (p.created_at<? OR (p.created_at=? AND p.id<?))" : "";
+    if (before) args.push(before.createdAt, before.createdAt, before.id);
+    const privacy = viewer?.id ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+      (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))
+      AND NOT EXISTS (SELECT 1 FROM account_mutes m WHERE m.muter_id=? AND m.muted_id=p.user_id)` : "";
+    if (viewer?.id) args.push(viewer.id, viewer.id, viewer.id);
+    const remaining = pageSize - rows.length;
+    args.push(remaining + 1);
+    const tail = db.prepare(`${POST_SELECT}
+      WHERE p.created_at<=? AND p.removed=0 AND u.is_banned=0 AND u.dormant_at IS NULL
+        AND (u.suspended_until IS NULL OR u.suspended_until<=?)
+        AND p.id NOT IN (SELECT value FROM json_each(?))
+        AND p.id NOT IN (SELECT value FROM json_each(?))
+        AND (substr(p.id,1,5)<>'news_' OR p.id IN (SELECT value FROM json_each(?)))
+        ${boundary} ${privacy}
+      ORDER BY p.created_at DESC,p.id DESC LIMIT ?`).all(...args);
+    const page = tail.slice(0, remaining);
+    rows.push(...page);
+    if (page.length) before = { createdAt: page.at(-1).created_at, id: page.at(-1).id };
+    tailHasMore = tail.length > remaining;
+  }
+
   return {
     rows,
     recommendations: new Map(rows.map((row) => [row.id, snapshot.recommendations.get(row.id)])),
-    nextCursor: consumed < snapshot.ids.length ? encodePageCursor(snapshot.id, consumed) : null,
+    nextCursor: consumed < snapshot.ids.length || tailHasMore ? encodePageCursor(snapshot.id, consumed, before) : null,
     algorithm: {
       id: RECOMMENDATION_ALGORITHM,
       version: RECOMMENDATION_ALGORITHM_VERSION,

@@ -22,6 +22,16 @@ export const navigationUser = Object.freeze({
   profileAudience: "everyone", analyticsOptOut: true, ageBand: "18_plus", termsVersion: "2026-09-02",
 });
 export const postPath = "/post/p_navigation_fixture";
+// Mirrors the reported public review's route identity, with synthetic author/content.
+export const archiveReviewFixture = Object.freeze({
+  id: "p_navigation_fixture", userId: "public-fixture-author",
+  user: { id: "public-fixture-author", name: "Public Fixture Author", handle: "publicfixture", role: "fan" },
+  kind: "review", experienceType: "live", artist: "Hollowfest / Nessfest", artistKey: null,
+  venue: "The Woods", city: "Perth, Ontario, Canada", date: "2026-10-16", at: 1792195200000,
+  archiveShowKey: "show.WyJob2xsb3dmZXN0IC8gbmVzc2Zlc3QiLCJ0aGUgd29vZHMiLCIiLCIyMDI2LTEwLTE2Il0",
+  text: "Archive-linked review permalink fixture.", review: "Archive-linked review permalink fixture.",
+  overall: 8, likes: 3, comments: 0, photos: [],
+});
 export const eventPath = "/event/tm_navigation_fixture";
 export const cancelledEventFixture = Object.freeze({
   id: "tm_navigation_fixture", kind: "event", path: eventPath, publicEventSnapshot: true,
@@ -71,6 +81,9 @@ export const serverCollectionPaths = Object.freeze([
 export const clientCollectionPaths = Object.freeze(["/artists", "/events", "/venues"]);
 export const navigationCases = Object.freeze([
   ...[390, 1280].flatMap(width => [
+    ...["overall-only", "performance"].map(mode => ({ name: `profile-score-artist-${mode}-${width}`, kind: "artist-profile-score", mode, path: artistPath, member: true, width })),
+    { name: `profile-score-venue-${width}`, kind: "venue-profile-score", path: venueHydrationPath, member: true, width },
+    ...[false, true].map(member => ({ name: `archive-review-${member ? "member" : "guest"}-${width}`, kind: "archive-review", path: postPath, member, width })),
     ...[venueHydrationAlias, venueHydrationPath].map(path => ({ name: `cold-guest-venue-${path.split("/").at(-1)}-${width}`, kind: "venue-hydration", path, width })),
     ...[postPath, eventPath].map(path => ({ name: `deep-link-${width < 620 ? "home" : "intro"}-${path.startsWith("/post") ? "post" : "event"}-${width}`, kind: "deep-link", path, width })),
     ...["canonical-404", "stale-upcoming", "artist-fallback"].map(mode => ({
@@ -118,7 +131,7 @@ function injectQueryMetadataFixture(html, url) {
     .replace("</head>", head + "</head>");
 }
 
-export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, discoverArtwork = false, artistLookupTransient = false, artistIdentityPending = false, cancelledEvent = false, venueHydration = false, after = null } = {}) {
+export function fixtureApiResponse(pathname, { member = false, method = "GET", resolvedPath = postPath, artistBioMode = "imported", discoverArtist = false, discoverShow = false, discoverArtwork = false, artistLookupTransient = false, artistIdentityPending = false, cancelledEvent = false, venueHydration = false, after = null, archiveReview = false } = {}) {
   if (pathname === "/api/client-errors" && method === "POST") return { ok: true };
   assert.equal(method, "GET", `Navigation must not mutate data: ${method} ${pathname}`);
   if (venueHydration) {
@@ -153,6 +166,9 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
     };
   }
   if (pathname.startsWith("/api/catalog-text/")) return { text: null };
+  if (pathname === "/api/venue-community") return { path: resolvedPath, ownership: "community", isOperator: false,
+    claim: null, myReview: null, creatorEntity: null, rating: { count: 0, average: null },
+    stats: { reviewCount: 0, ratingCount: 0, averageRating: null }, reviews: [], nextCursor: null };
   if (pathname === "/api/me") return { user: member ? navigationUser : null };
   if (pathname === "/api/page-head") {
     assert.match(resolvedPath, /^\/[a-zA-Z0-9_/-]*$/, "Fixture metadata paths must be inert local paths.");
@@ -166,6 +182,7 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
     assert.equal(resolvedPath, postPath, "The fixture must not resolve an unrelated URL as a post.");
     return { entity: { kind: "show", id: "p_navigation_fixture", path: postPath } };
   }
+  if (archiveReview && pathname === "/api/posts/p_navigation_fixture") return { post: archiveReviewFixture };
   if (pathname === "/api/posts/p_navigation_fixture") return { post: {
     id: "p_navigation_fixture", userId: "public-fixture-author",
     user: { id: "public-fixture-author", name: "Public Fixture Author", handle: "publicfixture", role: "fan" },
@@ -180,6 +197,8 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   if (pathname === "/api/me/seen-count") return { count: 1 };
   if (pathname === "/api/lineup/suggestions") return { suggestions: [] };
   if (pathname === "/api/artists/sets") return { summary: {}, sets: [], openedFor: [], festivals: [] };
+  if (pathname === "/api/artists/reviews") return { reviews: [], nextCursor: null };
+  if (pathname === "/api/artists/seen") return { count: 0, names: [] };
   if (pathname === "/api/discovery/sidebar") return { upcomingEvents: [], suggestedUsers: [], topArtists: [], trendingVenues: [], popularLounges: [], landingMedia: [], catalogTotals: { artists: 40, venues: 80 } };
   if (pathname === "/api/tourdates") return { tourDates: [] };
   if (pathname === "/api/discover/overview") return {
@@ -218,7 +237,9 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   if (pathname.startsWith("/api/lounges/") && pathname.endsWith("/meta")) return { status: "open", messages: 0 };
   if (pathname.startsWith("/api/feed")) { assert.ok(member, "Guests must never request the private feed."); return { posts: [], hasMore: false, hiddenPostIds: [] }; }
   const privateFixtures = {
-    "/api/me/blocked": { users: [] }, "/api/me/muted": { users: [] }, "/api/me/notifications": { notifications: [] },
+    "/api/me/local-alerts/preferences": { preferences: { datesInbox: true, salesInbox: true, datesPush: false, salesPush: false },
+      homeCity: null, deliveryEnabled: false, pushDeliveryEnabled: false },
+    "/api/me/blocked": { users: [] }, "/api/me/muted": { users: [] }, "/api/me/notifications": { notifications: [], unread: 0, nextCursor: null, readContract: "notification-ids-v1" },
     "/api/me/threads": { threads: [] }, "/api/me/following": { following: [] }, "/api/me/fanclubs": { fanClubs: [] },
     "/api/me/going": { going: [] }, "/api/me/artist-recommendations": { artists: [] },
     "/api/users/navigation-fixture-user/posts": { posts: [], hasMore: false },
@@ -311,7 +332,7 @@ async function visiblePage(page, path) {
   if (path === "/") return landing(page);
   if (path === "/search") return page.getByLabel("Search Mshpit", { exact: true }).waitFor();
   if (path === "/discover") return page.getByRole("heading", { name: "Discover", exact: true }).waitFor();
-  if (path === "/feed") return page.getByText("Your life's musical journey", { exact: true }).waitFor();
+  if (path === "/feed") return page.getByText("Your shows. Your music.", { exact: true }).waitFor();
   if (path === "/you") return page.getByText(navigationUser.name, { exact: true }).first().waitFor();
   if (path === "/artists") return page.getByText("Find the artists fans are talking about", { exact: true }).waitFor();
   if (path === "/events") return page.getByText("Upcoming concerts around the world", { exact: true }).waitFor();
@@ -400,11 +421,29 @@ async function runCase(browser, origin, item) {
         assert.equal(url.searchParams.get("name"), discoverShowArtist.name);
         state.lookupAttempts += 1;
       }
+      if (item.kind === "venue-profile-score" && decodeURIComponent(url.pathname) === "/api/venues/lee's palace/reviews") {
+        // The first page deliberately has no prose reviews. The full aggregate
+        // still represents two members' latest valid standalone star ratings.
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({ reviews: [], stats: { reviewCount: 0, ratingCount: 2, averageRating: 0.75 } }) });
+      }
+      if (item.kind === "venue-profile-score" && url.pathname === "/api/venue-community") {
+        assert.equal(url.searchParams.get("path"), venueHydrationPath);
+        return await route.fulfill({ contentType: "application/json", body: JSON.stringify({
+          path: venueHydrationPath, ownership: "community", isOperator: false, claim: null, myReview: null, creatorEntity: null,
+          rating: { count: 2, average: 0.75 }, stats: { reviewCount: 0, ratingCount: 2, averageRating: 0.75 }, reviews: [], nextCursor: null,
+        }) });
+      }
       const body = fixtureApiResponse(url.pathname, { member: state.member, method: request.method(), resolvedPath: url.searchParams.get("path") || undefined, artistBioMode: state.artistBioMode, discoverArtist: item.kind === "discover-canonical-artist", discoverShow, discoverArtwork: item.kind === "discover-event-back",
-        venueHydration: item.kind === "venue-hydration", after: url.searchParams.get("after"),
+        archiveReview: item.kind === "archive-review", venueHydration: ["venue-hydration", "venue-profile-score"].includes(item.kind), after: url.searchParams.get("after"),
         cancelledEvent: item.kind === "cancelled-event",
         artistIdentityPending: (item.kind === "discover-show-artist-conflict" && !state.identityConfirmed) || (item.kind === "cancelled-event" && item.mode === "artist-fallback"),
         artistLookupTransient: item.kind === "discover-show-artist-recovery" && !state.catalogRepaired });
+      if (item.kind === "artist-profile-score" && url.pathname.endsWith("/live-summary")) {
+        body.reputation = { ...body.reputation, avgRating: 1, ratingCount: 3,
+          performanceRating: item.mode === "performance" ? 4.5 : null,
+          performanceRatingCount: item.mode === "performance" ? 2 : 0,
+          performanceMemberCount: item.mode === "performance" ? 2 : 0 };
+      }
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
     } catch (error) {
       if (item.kind === "delayed" && url.pathname === "/api/resolve" && state.resolveReleased && /closed|disposed|handled|aborted|canceled|cancelled/i.test(error.message)) return;
@@ -425,7 +464,47 @@ async function runCase(browser, origin, item) {
       await page.goto(origin + "/", { waitUntil: "networkidle" }); await landing(page);
     }
     await page.goto(origin + start, { waitUntil: item.kind === "delayed" ? "domcontentloaded" : "networkidle", timeout: timeoutMs });
-    if (item.kind === "venue-hydration") {
+    if (item.kind === "archive-review") {
+      const assertReview = async () => {
+        await page.getByText(archiveReviewFixture.review, { exact: true }).last().waitFor();
+        await page.getByText("No comments yet. Start the conversation.", { exact: true }).waitFor();
+        await assertPath(page, postPath); await assertPageIdentity(page, postPath);
+        assert.equal(await page.getByRole("button", { name: "Sign in to comment", exact: true }).count(), item.member ? 0 : 1);
+        assert.equal(state.calls.some(call => call.path.startsWith("/api/shows/")), false,
+          "A review permalink must not hydrate a concert or gate content on artist identity.");
+      };
+      await assertReview(); await snapshot("archive review direct entry");
+      await page.reload({ waitUntil: "networkidle" }); await assertReview();
+      // The review dialog deliberately blocks its background Home control.
+      // Navigate a real document for this permalink history/reload regression;
+      // the overlay verifier separately covers every interactive dismissal.
+      await page.goto(origin + "/", { waitUntil: "networkidle" });
+      await landing(page); await assertPath(page, "/");
+      await page.goBack({ waitUntil: "networkidle" }); await assertReview();
+      await page.goForward({ waitUntil: "networkidle" }); await landing(page); await assertPath(page, "/");
+      await page.goBack({ waitUntil: "networkidle" }); await assertReview();
+      await snapshot("review restored through Back/Forward");
+    } else if (item.kind === "artist-profile-score") {
+      await page.getByText("LIVE PERFORMANCE", { exact: true }).waitFor();
+      const scoreCard = page.getByText("LIVE PERFORMANCE", { exact: true }).locator("..");
+      await page.getByText("Show experience 1.0/5", { exact: false }).waitFor();
+      if (item.mode === "performance") {
+        await scoreCard.getByText("4.5", { exact: true }).waitFor();
+        await scoreCard.getByText("2 performance ratings from 2 members", { exact: true }).waitFor();
+      } else {
+        await scoreCard.getByText("No performance ratings yet", { exact: true }).waitFor();
+        assert.equal(await scoreCard.getByText("1.0", { exact: true }).count(), 0, "Overall-only feedback must not become artist performance");
+      }
+      await snapshot("separate artist performance and show experience");
+    } else if (item.kind === "venue-profile-score") {
+      await page.getByText("VENUE SCORE", { exact: true }).waitFor();
+      await page.getByText("Rated by 2 members", { exact: true }).waitFor();
+      await page.getByText("2 member ratings · 0.8 average", { exact: true }).waitFor();
+      assert.equal(await page.getByText("ROOM SCORE", { exact: true }).count(), 0);
+      await page.getByRole("tab", { name: "Reviews venue page section", exact: true }).click();
+      await page.getByText("Rated by 2 members", { exact: true }).waitFor();
+      await snapshot("standalone venue half-star ratings survive empty prose page");
+    } else if (item.kind === "venue-hydration") {
       const assertVenue = async () => {
         await page.getByRole("heading", { name: "Lee's Palace", exact: true }).waitFor();
         await assertPath(page, venueHydrationPath);
@@ -686,6 +765,16 @@ async function runCase(browser, origin, item) {
       await page.reload({ waitUntil: "networkidle" }); await visiblePage(page, "/discover"); await assertPath(page, "/discover");
     } else if (item.kind === "member-tabs") {
       await visiblePage(page, "/feed"); await assertPath(page, "/feed");
+      await page.waitForLoadState("networkidle");
+      const feedReads = () => state.calls.filter(call => call.path === "/api/feed/for-you").length;
+      let reads = feedReads();
+      await page.getByRole("button", { name: "Your feed, return to top and refresh", exact: true }).click();
+      await waitFor(() => feedReads() > reads, "Feed title did not refresh the visible feed.");
+      await page.waitForLoadState("networkidle");
+      reads = feedReads();
+      await openTab("Feed");
+      await waitFor(() => feedReads() > reads, "Reselecting Feed did not refresh the visible feed.");
+      await assertPath(page, "/feed");
       for (const [tab, path] of [["Search", "/search"], ["Discover", "/discover"], ["You", "/you"]]) {
         await openTab(tab); await visiblePage(page, path); await assertPath(page, path);
       }

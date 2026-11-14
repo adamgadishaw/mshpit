@@ -1,10 +1,11 @@
 import { Suspense, useState, useEffect, useMemo, useRef } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
+import { ActivityIndicator, Platform, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius, space, CONTENT_COLUMN_MAX_WIDTH } from "../theme";
 import { useStore, isStaff, isMod } from "../store";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SheetHeader from "../components/SheetHeader";
+import IosModerationNavigation from "../components/moderation/IosModerationNavigation";
 import EmailConsole from "../components/EmailConsole";
 import BadgeConsole from "../components/BadgeConsole";
 import ModerationConsole from "../components/moderation/ModerationConsole";
@@ -36,8 +37,10 @@ import useScopedRefresh from "../hooks/useScopedRefresh";
 import { refreshScope } from "../domain/scopedRefresh.mjs";
 import CatalogMaintenancePanel from "../features/catalogMaintenance/CatalogMaintenancePanel";
 import { lazyWithRetry } from "../lib/lazyWithRetry";
+const VenueClaimsPanel = lazyWithRetry(() => import("./VenueScreens").then(module => ({ default: module.VenueClaimsPanel })), "VenueClaimsPanel");
 
 // The newsroom loads with its own chunk (shared with the Newsroom screen).
+const EventClaimReviewPanel = lazyWithRetry(() => import("../features/eventAccounts/EventClaimReviewPanel"), "EventClaimReviewPanel");
 const NewsDeskEditor = lazyWithRetry(() => import("../features/newsroom/newsroomEntry").then((module) => ({ default: module.NewsDeskEditor })), "NewsDeskEditor");
 import SearchGrowthPanel from "../features/searchGrowth/SearchGrowthPanel";
 
@@ -759,6 +762,17 @@ export default function AdminScreen({ onClose }) {
 
   return (
     <View style={styles.wrap} testID="moderation-shell">
+      {Platform.OS === "ios" ? (
+        <IosModerationNavigation
+          key={artistRequestScope}
+          session={session}
+          tabs={TABS}
+          activeTab={activeTab}
+          onChange={setTab}
+          onClose={onClose}
+        />
+      ) : (
+        <>
       <SheetHeader title="Moderation" onBack={onClose} />
 
       <View style={[styles.column, styles.h1Row]}>
@@ -799,6 +813,9 @@ export default function AdminScreen({ onClose }) {
         })}
       </View>
 
+        </>
+      )}
+
       <VinylRefreshBoundary
         refreshing={adminRefreshing}
         onRefresh={refreshAdmin}
@@ -806,6 +823,7 @@ export default function AdminScreen({ onClose }) {
         enabled={adminPullTabs.has(activeTab)}
       >
       <ScrollView
+        key={Platform.OS === "ios" ? activeTab : undefined}
         automaticallyAdjustKeyboardInsets
         contentContainerStyle={[styles.column, styles.content]}
         contentInsetAdjustmentBehavior="automatic"
@@ -1172,6 +1190,8 @@ export default function AdminScreen({ onClose }) {
         {/* ---- REQUESTS ---- */}
         {activeTab === "requests" && (
           <>
+            {iAmAdmin && <Suspense fallback={<ActivityIndicator color={colors.amber} />}><EventClaimReviewPanel key={`${session?.id}:event-access`} accountId={session?.id} /></Suspense>}
+            <Suspense fallback={<Text style={styles.policy}>Loading venue claims...</Text>}><VenueClaimsPanel key={`venue-claims:${artistRequestScope}`} accountId={session?.id} /></Suspense>
             <ArtistIdentitySafetyPanel key={`artist-identity-safety:${artistRequestScope}`} searchArtists={searchArtistIdentities} reviewIdentity={reviewArtistIdentity} returnToCatalogue={returnArtistPageToCatalogue} />
             <Text style={styles.policy}>Verify the established official identity and this member's authority before granting a check. A name, follower count, screenshot or supplied URL alone is not proof. Identity holds are separate from ordinary unverified pages. Ownership claims also grant management access.</Text>
             {scopedArtistRequestAction.status === "error" && (

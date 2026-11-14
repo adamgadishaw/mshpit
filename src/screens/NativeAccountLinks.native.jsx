@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { ActivityIndicator, BackHandler, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, BackHandler, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useStore } from '../store';
 import { colors } from '../theme';
 import { apiBaseForRuntime } from '../domain/apiOrigin.mjs';
 import { connectNativeAccountLinks } from '../domain/nativeAccountLink.mjs';
+import { startupLinkingFor } from '../lib/nativeStartupLinks';
 import VerifyEmailScreen from './VerifyEmailScreen';
 import ResetPasswordScreen from './ResetPasswordScreen';
 import InvalidAccountLinkScreen from './InvalidAccountLinkScreen';
@@ -18,7 +19,7 @@ export default function NativeAccountLinks({ onActiveChange, onEnter }) {
   callbacks.current = { onEnter, onActiveChange };
   const close = () => inbox.current?.close();
   useEffect(() => {
-    const controller = connectNativeAccountLinks({ linking: Linking, origin,
+    const controller = connectNativeAccountLinks({ linking: startupLinkingFor('account'), origin,
       onIntent: next => { callbacks.current.onEnter?.(); setFlow(next); },
       onInvalidate: event => {
         abort.current?.();

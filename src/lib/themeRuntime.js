@@ -6,7 +6,7 @@ export function readThemeSelection() {
   try {
     if (typeof window === "undefined" || !window.localStorage) return { theme: null, ownerId: null };
     return { theme: window.localStorage.getItem(keys.themeKey), ownerId: window.localStorage.getItem(keys.ownerKey) };
-  } catch { return { theme: null, ownerId: null }; }
+  } catch { return { theme: null, ownerId: null, unavailable: true }; }
 }
 export function persistThemeSelection(theme, ownerId) {
   if (typeof window === "undefined") return false;

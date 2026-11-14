@@ -10,6 +10,7 @@ import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 import { api } from "../lib/api";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
+import { chatDeliveryPresentation } from "../domain/chatDeliveryPresentation.mjs";
 import { normalizeLoungeMeta } from "../domain/showSocial.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import { resolvePostAuthor } from "../domain/postAuthor.mjs";
@@ -18,12 +19,14 @@ import { refreshScope } from "../domain/scopedRefresh.mjs";
 import { ENABLE_CREW } from "../config/runtime.mjs";
 import LoungePlans from "../components/crew/LoungePlans";
 
-const EMPTY_LOUNGE_ACTIONS = Object.freeze({ enteredRoom: null, entering: false, sending: false, text: "" });
+import useIOSCommunityComposer from "../hooks/useIOSCommunityComposer";
+
+const EMPTY_LOUNGE_ACTIONS = Object.freeze({ sendFeedback: "", enteredRoom: null, entering: false, sending: false, text: "" });
 
 // One persistent Lounge belongs to this exact show before, during, and after.
 // Gated: you have to tap in, so conversation reads and polling stay off until
 // the member deliberately enters the room.
-export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle, onOpenFanClub, onReport, onRequireAuth }) {
+export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle, onOpenFanClub, onReport, onRequireAuth, draftOwner, isCurrentRoute }) {
   const {
     session, chatAuthEpoch, concertKey, loungeFor, enterLounge, addLoungeMessage,
     retryChatMessage, cancelChatMessage, loadLounge, attendeesFor, userById, removeLoungeMessage,
@@ -32,11 +35,12 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   const staff = isStaff(session?.role);
   const key = concertKey(log);
   const roomIdentity = session && key ? `${session.id}:${key}` : null;
-  const actionScope = accountTargetScope(session?.id, `lounge:${key || ""}`);
+  const actionScope = accountTargetScope(session?.id, Platform.OS === "ios" ? JSON.stringify([chatAuthEpoch, "lounge", key]) : `lounge:${key || ""}`);
   const actionScopeRef = useRef(actionScope);
   actionScopeRef.current = actionScope;
   const [actionState, setActionState] = useState(() => ({ scope: actionScope, value: EMPTY_LOUNGE_ACTIONS }));
-  const { enteredRoom, entering, sending, text } = scopedScreenValue(actionState, actionScope, EMPTY_LOUNGE_ACTIONS);
+  const localActions = scopedScreenValue(actionState, actionScope, EMPTY_LOUNGE_ACTIONS);
+  const { enteredRoom, entering } = localActions;
   const updateActions = (changes) => setActionState((current) => ({
     scope: actionScope,
     value: { ...scopedScreenValue(current, actionScope, EMPTY_LOUNGE_ACTIONS), ...changes },
@@ -44,15 +48,34 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   const entered = !!roomIdentity && enteredRoom === roomIdentity;
   const [gateMeta, setGateMeta] = useState(null);
   const [metaRefresh, setMetaRefresh] = useState(0);
-  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
   const messages = loungeFor(key);
+  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll({ messageCount: messages.length, scopeKey: `${chatAuthEpoch}:${actionScope}` });
   const attendees = attendeesFor(key);
   const currentGateMeta = gateMeta?.key === key ? gateMeta : null;
   const loungeOpen = currentGateMeta?.status === "open";
 
+  const iosComposer = useIOSCommunityComposer({ draftOwner, accountId: session?.id || null, authEpoch: chatAuthEpoch,
+    kind: "lounge", target: key, enabled: entered && loungeOpen, isCurrentRoute });
+  const { text, sending, unavailable } = iosComposer || localActions;
+
+  const metadataRetryRef = useRef(null);
+  if (iosComposer && metadataRetryRef.current?.meta !== currentGateMeta) {
+    metadataRetryRef.current = { meta: currentGateMeta, claimed: false };
+  }
+  const metadataRetry = metadataRetryRef.current;
+  const retryMetadata = () => {
+    if (!iosComposer?.current() || metadataRetryRef.current !== metadataRetry
+      || metadataRetry?.meta?.status !== "error" || metadataRetry.claimed) return;
+    // One explicit refresh per displayed failure. Repeated or retired controls
+    // cannot restart a read; a later failure presents its own fresh Retry.
+    metadataRetry.claimed = true;
+    setMetaRefresh(value => value + 1);
+  };
+
   const readLoungeMessages = async ({ after, signal, strict = false }) => {
       const result = await loadLounge(key, { after, signal, strict });
       if (result?.closed && !signal?.aborted) {
+        iosComposer?.pause();
         clearLounge(key);
         setGateMeta((current) => current?.key === key
           ? { ...current, status: "closed", messageCount: 0 }
@@ -97,6 +120,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
           return;
         }
         const alreadyClosed = meta.cutoffAt != null && Date.now() >= meta.cutoffAt;
+        if (alreadyClosed || meta.status === "closed") iosComposer?.pause();
         setGateMeta({ ...meta, key, status: alreadyClosed ? "closed" : meta.status });
       })
       .catch(() => {
@@ -114,6 +138,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
     const arm = () => {
       const remaining = currentGateMeta.cutoffAt - Date.now();
       if (remaining <= 0) {
+        iosComposer?.pause();
         clearLounge(key);
         setGateMeta((current) => current?.key === key
           ? { ...current, status: "closed", messageCount: 0 }
@@ -127,12 +152,13 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   }, [clearLounge, currentGateMeta?.cutoffAt, currentGateMeta?.status, key]);
 
   const enter = async () => {
+    if (iosComposer && !iosComposer.current()) return;
     if (!session) { onRequireAuth?.(); return; }
     if (entering || !roomIdentity || !loungeOpen) return;
     const requestScope = actionScope;
     updateActions({ entering: true });
     const result = await enterLounge(log);
-    if (actionScopeRef.current !== requestScope) return;
+    if (actionScopeRef.current !== requestScope || (iosComposer && !iosComposer.ownsRoute())) return;
     updateActions({ enteredRoom: result?.ok && !result?.guest ? roomIdentity : null, entering: false });
   };
   const entryDisabled = session ? entering || !loungeOpen : !onRequireAuth;
@@ -166,19 +192,31 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   }
 
   const send = async () => {
+    if (iosComposer) {
+      const requestScope = actionScope;
+      return iosComposer.send(async draft => {
+        updateActions({ sendFeedback: "" });
+        const result = await addLoungeMessage(key, draft);
+        if (actionScopeRef.current === requestScope && iosComposer.current()) {
+          updateActions({ sendFeedback: result?.queueFull ? result.deliveryMessage : "" });
+        }
+        return result;
+      });
+    }
     const submitted = text;
     const draft = submitted.trim();
     if (!draft || sending) return;
     const requestScope = actionScope;
-    updateActions({ sending: true });
+    updateActions({ sending: true, sendFeedback: "" });
     const result = await addLoungeMessage(key, draft);
     if (actionScopeRef.current !== requestScope) return;
     setActionState((current) => {
       const value = scopedScreenValue(current, requestScope, EMPTY_LOUNGE_ACTIONS);
-      return { scope: requestScope, value: { ...value, text: result?.ok && value.text === submitted ? "" : value.text, sending: false } };
+      return { scope: requestScope, value: { ...value, text: result?.ok && value.text === submitted ? "" : value.text, sending: false, sendFeedback: result?.queueFull ? result.deliveryMessage : "" } };
     });
   };
   const retry = async (message) => {
+    if (iosComposer) return iosComposer.retry(message, retryChatMessage);
     const requestScope = actionScope;
     const result = await retryChatMessage(message.id);
     if (result?.ok && actionScopeRef.current === requestScope) {
@@ -201,7 +239,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
             <Text style={{ color: colors.text, fontWeight: "700" }}>{log.artist}</Text> · {log.venue}
           </Text>
           {currentGateMeta?.status === "error" ? (
-            <Pressable style={styles.retryBtn} onPress={() => setMetaRefresh((value) => value + 1)} accessibilityRole="button">
+            <Pressable style={styles.retryBtn} onPress={iosComposer ? retryMetadata : () => setMetaRefresh((value) => value + 1)} accessibilityRole="button" accessibilityLabel={iosComposer ? "Retry Lounge status" : undefined}>
               <Text style={styles.retryTxt}>Try checking the Lounge again</Text>
             </Pressable>
           ) : (
@@ -221,6 +259,18 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   return (
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <ScreenHeader kicker={`Lounge · ${log.venue}`} title={log.artist} onBack={onClose} />
+      {iosComposer && (currentGateMeta?.status === "loading" || currentGateMeta?.status === "error") ? (
+        <View style={styles.iosMetaStatus}>
+          <Text style={styles.iosMetaCopy} accessibilityRole={currentGateMeta.status === "error" ? "alert" : undefined} accessibilityLiveRegion="polite">
+            {currentGateMeta.status === "error" ? "Lounge status could not be confirmed." : "Checking this Lounge…"}
+          </Text>
+          {currentGateMeta.status === "error" ? (
+            <Pressable style={[styles.retryBtn, styles.iosMetaRetry]} onPress={retryMetadata} accessibilityRole="button" accessibilityLabel="Retry Lounge status">
+              <Text style={styles.retryTxt}>Retry</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
       {/* Group plans are for adults only and stay hidden from everyone else. */}
       {ENABLE_CREW && loungeOpen && session?.ageBand === "18_plus" ? (
         <LoungePlans loungeKey={key} session={session} onReport={onReport} onOpenProfile={onOpenProfile} />
@@ -235,6 +285,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
         {messages.length === 0 && <Text style={styles.empty}>No messages yet - say hi.</Text>}
         {messages.map((m) => {
           const mine = m.userId === session?.id;
+          const failure = mine ? chatDeliveryPresentation(m) : null;
           const u = resolvePostAuthor({ userId: m.userId, cached: userById(m.userId), embedded: m });
           return (
             <View key={m.id} style={[styles.msgRow, mine && styles.msgRowMine]}>
@@ -245,14 +296,14 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
                 <View style={styles.msgFoot}>
                   <Text style={[styles.msgTs, mine && { color: "rgba(26,18,6,0.6)" }]}>{m.ts}</Text>
                   {mine && m.pending ? <Text style={styles.deliveryMine} accessibilityLiveRegion="polite">sending…</Text> : null}
-                  {mine && m.failed ? (
+                  {failure ? (
                     <View style={styles.deliveryActions}>
-                      <Text style={styles.deliveryFailed} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel="Lounge message not sent">not sent</Text>
-                      <Pressable onPress={() => retry(m)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry lounge message">
+                      <Text style={styles.deliveryFailed} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel={failure.label}>{failure.label}</Text>
+                      {failure.retryable ? <Pressable onPress={() => retry(m)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry lounge message">
                         <Text style={styles.deliveryAction}>retry</Text>
-                      </Pressable>
-                      <Pressable onPress={() => cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel failed lounge message">
-                        <Text style={styles.deliveryAction}>cancel</Text>
+                      </Pressable> : null}
+                      <Pressable onPress={() => iosComposer ? iosComposer.cancel(m, cancelChatMessage) : cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel={failure.dismissLabel} accessibilityHint={failure.dismissHint}>
+                        <Text style={styles.deliveryAction}>{failure.dismissText}</Text>
                       </Pressable>
                     </View>
                   ) : null}
@@ -280,23 +331,25 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
                     </Pressable>
                   )}
                 </View>
+                {failure?.detail ? <Text style={styles.deliveryDetail}>{failure.detail}</Text> : null}
               </View>
             </View>
           );
         })}
       </ScrollView>
       </VinylRefreshBoundary>
+      {localActions.sendFeedback ? <Text style={styles.composerFeedback} accessibilityRole="alert" accessibilityLiveRegion="polite">{localActions.sendFeedback}</Text> : null}
 
       {session ? (
         <View style={styles.inputBar}>
-          <TextInput style={styles.input} placeholder="Message the lounge…" placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateActions({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
+          <TextInput style={styles.input} editable={iosComposer ? iosComposer.canCompose : undefined} placeholder={unavailable ? "Wait for another message to finish sending" : "Message the lounge…"} placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => iosComposer ? iosComposer.edit(value) : updateActions({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
           <Pressable
             style={[styles.sendBtn, sending && { opacity: 0.65 }]}
             onPress={send}
-            disabled={sending || !text.trim()}
+            disabled={(iosComposer && !iosComposer.canCompose) || sending || !text.trim()}
             accessibilityRole="button"
             accessibilityLabel={`Send message to the ${log.artist} lounge`}
-            accessibilityState={{ disabled: sending || !text.trim(), busy: sending }}
+            accessibilityState={{ disabled: (iosComposer && !iosComposer.canCompose) || sending || !text.trim(), busy: sending }}
           >
             <Icon name="chevron-right" size={20} color="#1A1206" />
           </Pressable>
@@ -321,6 +374,10 @@ const styles = StyleSheet.create({
   retryBtn: { minHeight: 44, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, paddingHorizontal: 18, alignItems: "center", justifyContent: "center", marginTop: 12 },
   retryTxt: { color: colors.amber, fontSize: 14, fontWeight: "800" },
 
+  iosMetaStatus: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  iosMetaCopy: { flex: 1, color: colors.textDim, fontSize: 13, lineHeight: 18 },
+  iosMetaRetry: { minWidth: 72, marginTop: 0 },
+
   chat: { padding: 16, paddingBottom: 24, gap: 12 },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", textAlign: "center", marginTop: 20 },
   msgRow: { flexDirection: "row", alignItems: "flex-end", gap: 8, maxWidth: "85%" },
@@ -330,11 +387,13 @@ const styles = StyleSheet.create({
   bubbleFailed: { borderColor: colors.magenta, borderWidth: 1.5 },
   msgName: { color: colors.amber, fontSize: 11, fontWeight: "800", marginBottom: 2 },
   msgText: { color: colors.text, fontSize: 14, lineHeight: 19 },
-  msgFoot: { flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "flex-end", marginTop: 3 },
+  msgFoot: { flexWrap: "wrap", flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "flex-end", marginTop: 3 },
   msgTs: { color: colors.textFaint, fontSize: 10, fontFamily: mono },
   deliveryMine: { color: "rgba(26,18,6,0.65)", fontSize: 10, fontFamily: mono },
-  deliveryActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  deliveryActions: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 },
   deliveryFailed: { color: "#7B1836", fontSize: 10, fontFamily: mono, fontWeight: "800" },
+  deliveryDetail: { color: "#7B1836", fontSize: 12, lineHeight: 17, marginTop: 5 },
+  composerFeedback: { color: colors.magenta, fontSize: 13, lineHeight: 18, paddingHorizontal: 16, paddingVertical: 8 },
   deliveryAction: { color: "#1A1206", fontSize: 11, fontWeight: "900", textDecorationLine: "underline" },
   reportBtn: { minWidth: 28, minHeight: 28, alignItems: "center", justifyContent: "center", marginVertical: -4 },
   inputBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 8, paddingBottom: Platform.OS === "ios" ? 24 : 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, backgroundColor: colors.bgElev },

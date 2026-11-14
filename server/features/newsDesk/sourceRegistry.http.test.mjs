@@ -17,7 +17,7 @@ test("source registry real HTTP enforces full admin, origin, identity and source
   await new Promise(done => probe.close(done));
   const origin = `http://127.0.0.1:${port}`;
   const directory = mkdtempSync(join(tmpdir(), "pit-news-category-http-"));
-  const environment = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "LOCALAPPDATA"]
+  const environment = Object.fromEntries(["PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "LOCALAPPDATA"]
     .filter(key => process.env[key]).map(key => [key, process.env[key]]));
   Object.assign(environment, { NODE_ENV: "test", RENDER: "true", PORT: String(port), PUBLIC_ORIGIN: origin,
     PIT_DATA_DIR: directory, PIT_NEWS_CATEGORY_FIXTURE: "1", PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "true",

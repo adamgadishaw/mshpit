@@ -1,3 +1,4 @@
+import { creatorUpdateDraft } from "./creatorUpdateDraft.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
 import { parseTimesSeen } from "./supportingActs.mjs";
 import { cleanShowFormat, lineupActs } from "./lineup.mjs";
@@ -52,6 +53,8 @@ export function normalizeComposerDraft(value = {}) {
     id: value.id || null,
     submissionId: text(value.submissionId) || null,
     postType,
+    creatorUpdate: postType === "status" ? creatorUpdateDraft(value.creatorUpdate) : null,
+    creatorIntent: postType === "status" && (value.creatorIntent === true || !!value.creatorUpdate),
     campaign: postType === "status" ? normalizeArtistCampaign(value.campaign) : null,
     experienceType,
     artist: text(value.artist),
@@ -72,6 +75,8 @@ export function normalizeComposerDraft(value = {}) {
     onlineTitle: isOnlineReview ? text(value.onlineTitle ?? value.online_title) : "",
     youtubeUrl: isOnlineReview ? text(value.youtubeUrl ?? value.youtube_url) : "",
     onlineRating: isOnlineReview ? normalizeOnlineRating(value.onlineRating ?? value.overall) : 0,
+    // Missing means a draft saved before independent scoring. Zero is an explicit clear.
+    overallRating: value.overallRating == null ? null : Math.max(0, Math.min(5, Number(value.overallRating) || 0)),
     dims: normalizedDims(value.dims),
     review: text(value.review),
     taggedPeople: normalizeTaggedPeople(value.taggedPeople),
@@ -107,7 +112,8 @@ export function composerDraftFingerprint(value) {
 export function composerDraftHasContent(value) {
   const draft = normalizeComposerDraft(value);
   return !!(
-    draft.artist.trim()
+    draft.creatorUpdate?.title || draft.creatorUpdate?.date || draft.creatorUpdate?.location || draft.creatorUpdate?.url
+    || draft.artist.trim()
     || draft.venue.trim()
     || draft.city.trim()
     || draft.eventAddress.trim()
@@ -115,6 +121,7 @@ export function composerDraftHasContent(value) {
     || draft.onlineTitle.trim()
     || draft.youtubeUrl.trim()
     || draft.onlineRating > 0
+    || draft.overallRating > 0
     || draft.review.trim()
     || draft.taggedPeople.length
     || draft.song?.videoId
@@ -128,6 +135,7 @@ export function composerDraftHasContent(value) {
 
 export function composerDraftTitle(value) {
   const draft = normalizeComposerDraft(value);
+  if (draft.creatorUpdate?.title) return draft.creatorUpdate.title;
   if (draft.postType === "memory") return draft.review.trim() || `${draft.artist.trim() || "Artist"} fan memory`;
   if (draft.postType === "status") return draft.review.trim() || (draft.campaign ? "Featured post draft" : "Post draft");
   if (draft.experienceType === ONLINE_REVIEW_EXPERIENCE) {

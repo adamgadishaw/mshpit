@@ -1,8 +1,16 @@
 import { ensureArtistAccessRetentionTables } from "../artistAccounts/artistAccessRetention.js";
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { createArtistRecommendationService } from "./artistRecommendationService.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spotifyArtistPhotoModel } from "../../../src/domain/spotifyArtistPhoto.mjs";
+const dataDir = mkdtempSync(join(tmpdir(), "pit-recommendation-image-"));
+process.env.PIT_DATA_DIR = dataDir;
+const { createArtistRecommendationService } = await import("./artistRecommendationService.js");
+const { db: defaultDb } = await import("../../db.js");
+after(() => { defaultDb.close(); rmSync(dataDir, { recursive: true, force: true }); });
 
 function database() {
   const db = new DatabaseSync(":memory:");
@@ -101,6 +109,26 @@ test("self-created artist recommendations cannot escape private, removed, restri
     db.prepare("UPDATE users SET is_banned=0 WHERE id='owner'").run();
     db.prepare("UPDATE artist_profiles SET removed=1 WHERE artist_key='created'").run();
     assert.equal(recommended().includes("created"), false);
+  } finally { db.close(); }
+});
+
+test("personalized recommendations retain the same validated original-only image contract", () => {
+  const db = database();
+  try {
+    insertUser(db, { id: "viewer", genres: ["Indie"] });
+    insertArtist(db, { key: "image-fixture", name: "Image Recommendation Fixture" });
+    const stored = JSON.parse(db.prepare("SELECT data FROM artists WHERE norm='image-fixture'").get().data);
+    const data = { ...stored, spotifyId: "3TVXtAsR1Inumwj472S9r4", spotifyPhoto: "https://i.scdn.co/image/recommendationFixture",
+      photoSource: "spotify", photoCredit: "Spotify", photoDisplayPolicy: "original" };
+    db.prepare("UPDATE artists SET photo=NULL,data=? WHERE norm='image-fixture'").run(JSON.stringify(data));
+    const service = createArtistRecommendationService(db), viewer = db.prepare("SELECT * FROM users WHERE id='viewer'").get();
+    const read = () => service.list(viewer).recommendations.find(row => row.artist.key === "image-fixture").artist;
+    assert.equal(read().photo, null);
+    assert.equal(spotifyArtistPhotoModel(read()).uri, data.spotifyPhoto);
+    db.prepare("UPDATE artists SET data=? WHERE norm='image-fixture'").run(JSON.stringify(stored));
+    assert.equal(spotifyArtistPhotoModel(read()), null);
+    db.prepare("UPDATE artists SET photo='http://untrusted.example/image.jpg' WHERE norm='image-fixture'").run();
+    assert.equal(read().photo, null, "recommendations keep their existing HTTPS restriction");
   } finally { db.close(); }
 });
 

@@ -41,7 +41,7 @@ test("SDK 57 picker options never open the square iOS editor for a banner", () =
   assert.equal(Object.hasOwn(avatar, "aspect"), false, "aspect is Android-only in Expo SDK 57");
   assert.equal(Object.hasOwn(banner, "aspect"), false, "aspect is Android-only in Expo SDK 57");
   assert.equal(avatar.quality, 0.85);
-  assert.equal(banner.quality, 0.85);
+  assert.equal(banner.quality, 1);
   assert.equal(avatar.shouldDownloadFromNetwork, true);
   assert.equal(banner.shouldDownloadFromNetwork, true);
   assert.deepEqual(avatar.mediaTypes, ["images"]);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { publicBrowserDestination } from "./publicBrowserDestination.mjs";
 import { composerDraftFingerprint, composerDraftHasContent, normalizeComposerDraft } from "./composerDraft.mjs";
 import { buildReviewCreateBody, buildReviewEditBody } from "./post-payload.mjs";
 import { postMatchesEditIntent } from "./postReconciliation.mjs";
@@ -68,17 +69,17 @@ test("ambiguous edit recovery verifies addresses instead of silently accepting a
 
 test("the real Store edit guard accepts city-only reviews and requires city for addresses", () => {
   const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
-  const begin = source.indexOf("    const safe = buildReviewEditBody(changes);");
+  const begin = source.indexOf("    const safe = buildReviewEditBody(changes, previous);");
   const end = source.indexOf("    const version = previous.version", begin);
   assert.ok(begin > 0 && end > begin);
-  const guard = new Function("changes", "buildReviewEditBody", `${source.slice(begin, end)}; return { ok: true, safe };`);
-  assert.equal(guard(review, buildReviewEditBody).ok, true);
+  const guard = new Function("changes", "buildReviewEditBody", "previous", `${source.slice(begin, end)}; return { ok: true, safe };`);
+  assert.equal(guard(review, buildReviewEditBody, review).ok, true);
   assert.equal(guard({ ...review, venue: "", city: "", eventAddress: "" }, buildReviewEditBody).ok, false);
   assert.equal(guard({ ...review, venue: "Known room", city: "", eventAddress: "" }, buildReviewEditBody).ok, true);
   assert.equal(guard({ ...review, venue: "Known room", city: "" }, buildReviewEditBody).ok, false);
 });
 
-test("city-only reviews open their original post and never acquire a fake show identity", () => {
+test("city-only reviews open their original post and never acquire a fake show identity", async () => {
   assert.equal(isCityOnlyReview(review), true);
   assert.equal(isCityOnlyReview({ ...review, venue: "Known room" }), false);
   assert.equal(isCityOnlyReview({ ...review, performanceEvent: true }), false);
@@ -86,7 +87,10 @@ test("city-only reviews open their original post and never acquire a fake show i
   assert.equal(isCityOnlyReview({ ...review, experienceType: "online" }), false);
   assert.equal(isCityOnlyReview({ ...review, userId: null }), false);
   const app = readFileSync(new URL("../../App.js", import.meta.url), "utf8");
-  const destination = readFileSync(new URL("./publicBrowserDestination.mjs", import.meta.url), "utf8");
-  assert.match(destination, /isCityOnlyReview\(post\) \? \{ post \} : \{ openLog: post \}/);
+  const destination = await publicBrowserDestination("/post/p_city_review", {
+    resolveEntity: async () => ({ kind: "show", id: review.id, path: "/post/p_city_review" }),
+    readPost: async () => review,
+  });
+  assert.deepEqual(destination.stack.at(-1), { post: review });
   assert.match(app, /isCityOnlyReview\(log\)\) return openPost\(log, analytics\)/);
 });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { createIOSCommentDrafts } from "../domain/iosCommentDrafts.mjs";
 import { transformSync, parseSync } from "@babel/core";
 
 const require = createRequire(import.meta.url);
@@ -15,8 +16,9 @@ const nodes = (node) => !node || typeof node !== "object" ? [] : Array.isArray(n
 // Execute production components and callbacks. Only platform, rendering and
 // store seams are replaced; domain projections are their real implementations.
 function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
-  const calls = { auth: [], comments: [], likes: [], close: [], show: [], scroll: [], focus: [], remember: [], order: [] };
+  const calls = { alerts: [], auth: [], comments: [], likes: [], close: [], show: [], scroll: [], focus: [], remember: [], order: [] };
   const slots = [];
+  const subscriptions = [];
   let cursor = 0;
   let session = initialSession;
   const componentUrl = new URL(paths[name], import.meta.url);
@@ -28,6 +30,12 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
   const jsx = (type, props) => ({ type, props });
   const componentRequire = (dependency) => {
     if (dependency === "react") return {
+      useSyncExternalStore(subscribe, read) {
+        const index = cursor++;
+        if (slots[index]?.subscribe !== subscribe) { slots[index]?.unsubscribe(); slots[index] = { subscribe, unsubscribe: subscribe(() => {}) }; subscriptions.push(() => slots[index]?.unsubscribe()); }
+        return read();
+      },
+      useLayoutEffect(create) { const index = cursor++; if (!(index in slots)) { slots[index] = true; const cleanup = create(); if (cleanup) subscriptions.push(cleanup); } },
       useEffect() {}, useMemo: (create) => create(), useCallback: (callback) => callback,
       useRef(initial) {
         const index = cursor++;
@@ -43,8 +51,8 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
     if (dependency === "react/jsx-runtime") return { jsx, jsxs: jsx, Fragment: "Fragment" };
     if (dependency === "react-native") return {
       ActivityIndicator: "ActivityIndicator", View: "View", Text: "Text", ScrollView: "ScrollView",
-      Pressable: "Pressable", TextInput: "TextInput", Modal: "Modal", Alert: { alert() {} }, Linking: {},
-      Platform: { OS: "web" }, StyleSheet: { create: (styles) => styles, absoluteFill: {}, absoluteFillObject: {} },
+      Pressable: "Pressable", TextInput: "TextInput", Modal: "Modal", Alert: { alert: (...args) => calls.alerts.push(args) }, Linking: {},
+      Platform: { OS: storeOverrides.platform || "web" }, StyleSheet: { create: (styles) => styles, absoluteFill: {}, absoluteFillObject: {} },
       // The viewer's swipe layer: a still value and a gesture layer that never fires.
       Animated: {
         View: "Animated.View",
@@ -58,19 +66,32 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
     if (dependency === "expo-video") return { VideoView: "VideoView", useVideoPlayer: () => ({}) };
     if (dependency === "../theme") return { colors: {}, radius: {}, roleColor: () => null };
     if (dependency === "../store") return { useStore: () => ({ session, feed: [],
-      commentsFor: () => [{ id: "c_public", userId: "author", name: "Public Author", text: "Public comment" }],
-      userById: () => null, userBadges: () => [], loadComments: async () => ({ ok: true }),
+      commentsFor: storeOverrides.commentsFor || (() => [{ id: "c_public", userId: "author", name: "Public Author", text: "Public comment" }]),
+      userById: storeOverrides.userById || (() => null), userBadges: () => [], loadComments: async () => ({ ok: true }),
       addComment: async (...args) => { calls.comments.push(args); return storeOverrides.addComment ? storeOverrides.addComment(...args) : { ok: true }; },
       deleteOwnComment: () => assert.fail("guest must not delete"), deleteOwnPost: () => assert.fail("guest must not delete"),
     }) };
+    if (dependency === "../features/publicNavigation/publicNavigationService") return { readPublicPost: async () => null, resolvePublicEntity: async () => null };
     if (dependency === "../hooks/useScopedRefresh") return () => ({ refresh() {}, refreshing: false });
+    if (dependency === "../hooks/usePostAuthorBadges") {
+      // Run the real hook against this fixture's React slots. Its domain
+      // reconciliation remains production code, just like the screen's.
+      const key = "usePostAuthorBadges";
+      if (!compiled.has(key)) compiled.set(key, transformSync(readFileSync(new URL("../hooks/usePostAuthorBadges.js", import.meta.url), "utf8"), {
+        filename: "usePostAuthorBadges.js", babelrc: false, configFile: false,
+        plugins: [require("@babel/plugin-transform-modules-commonjs")],
+      }).code);
+      const hookModule = { exports: {} };
+      new Function("require", "module", "exports", compiled.get(key))(componentRequire, hookModule, hookModule.exports);
+      return hookModule.exports;
+    }
     if (dependency.endsWith("/Badge")) return { BadgeRow: "BadgeRow" };
     if (dependency.endsWith("/PublicWebLinks")) return { PublicTextLink: "PublicTextLink" };
     if (dependency.startsWith("../components/") || dependency.startsWith("./")) return dependency.split("/").at(-1);
     return localRequire(dependency);
   };
   const module = { exports: {} };
-  new Function("require", "module", "exports", compiled.get(name))(componentRequire, module, module.exports);
+  new Function("require", "module", "exports", (compiled.get(name) + (name === "PostScreen" ? "\nmodule.exports.default = PostContent;" : "")))(componentRequire, module, module.exports);
   const log = { id: "p_public", artist: "Public Artist", venue: "Public Venue", review: "A public review" };
   let props = {
     log, photos: ["https://example.test/first.jpg", "https://example.test/second.jpg"], index: 0, postId: log.id,
@@ -92,7 +113,7 @@ function fixture(name, initialSession, overrides = {}, storeOverrides = {}) {
     return node;
   };
   render();
-  return { calls, log, render, find, all: () => nodes(tree), setSession(value) { session = value; render(); } };
+  return { calls, log, render, find, unmount: () => subscriptions.forEach(fn => fn()), all: () => nodes(tree), setSession(value) { session = value; render(); } };
 }
 
 for (const session of [null, undefined, {}]) {
@@ -144,7 +165,7 @@ test("PostScreen member reply and send preserve the parent comment and clear the
 
 test("PostScreen send guard rejects a guest even when a nonempty draft reaches the callback", async () => {
   const ast = parseSync(postSource, { filename: "PostScreen.jsx", babelrc: false, configFile: false, parserOpts: { plugins: ["jsx"] } });
-  const screen = ast.program.body.find((node) => node.type === "ExportDefaultDeclaration").declaration;
+  const screen = ast.program.body.find((node) => node.type === "FunctionDeclaration" && node.id.name === "PostContent");
   const send = screen.body.body.filter((node) => node.type === "VariableDeclaration")
     .flatMap((node) => node.declarations).find((node) => node.id.name === "send").init;
   for (const session of [null, undefined, {}]) {
@@ -308,7 +329,7 @@ const rootFunction = (name) => {
 };
 
 test("Root remounts the private comment composer when either account or post changes", () => {
-  assert.match(appSource, /<PostScreen key=\{`\$\{session\?\.id \|\| "guest"\}:\$\{nav\.post\.id\}`\}/);
+  assert.match(appSource, /<PostScreen key=\{Platform.OS === "ios" \? JSON.stringify\(\[session\?\.id \|\| null, chatAuthEpoch, nav.post.id\]\) :/);
 });
 
 test("Root consistently wires every public guest action surface to the single sign-in entry", () => {
@@ -370,4 +391,154 @@ test("Root remembers only a valid current gallery index without growing the navi
   stackRef.current.push({ auth: true });
   remember(0);
   assert.equal(frames.length, 1, "a late callback cannot replace the auth frame");
+});
+
+const commentOwner = () => { const owner = createIOSCommentDrafts(); owner.account("member", 1); return owner; };
+const mountIOSPost = (owner, props = {}, store = {}) => fixture("PostScreen", { id: "member" }, { commentDraft: owner.lease("p_public"), ...props }, { platform: "ios", ...store });
+for (const destination of ["profile", "photos", "show"]) test(`iOS production reply and text survive ${destination} callback, unmount and Back`, () => {
+  const owner = commentOwner(); let opened = 0;
+  const f = mountIOSPost(owner, { onOpenProfile: () => opened++, onOpenPhotos: () => opened++, onOpenShow: () => opened++ });
+  f.find(n => n.props.accessibilityLabel === "Reply to comment").props.onPress();
+  f.find(n => n.type === "TextInput").props.onChangeText("Keep my reply"); f.render();
+  if (destination === "profile") f.find(n => n.type === "Avatar").props.onPress();
+  else f.find(n => n.type === "TicketStub").props[destination === "photos" ? "onOpenPhotos" : "onOpenShow"]();
+  assert.equal(opened, 1); f.unmount();
+  const back = mountIOSPost(owner, {}, { userById: () => ({ name: "Current Name", profileUpdatedAt: 2 }) });
+  assert.equal(back.find(n => n.type === "TextInput").props.value, "Keep my reply");
+  assert.ok(back.all().some(n => n.props.children === "Replying to Current Name"));
+  assert.equal(owner.lease("p_public").read().parentId, "c_public");
+  assert.equal(f.calls.comments.length, 0);
+});
+test("iOS actual in-flight callback survives unmount, rejects repeat send, and preserves newer edits", async () => {
+  const owner = commentOwner(), request = deferred();
+  const f = mountIOSPost(owner, {}, { addComment: () => request.promise });
+  const send = inputComment(f, "Original"); const pending = send(); await send(); f.unmount();
+  const back = mountIOSPost(owner);
+  const button = back.find(n => n.props.accessibilityLabel === "Sending comment");
+  assert.equal(button.props.disabled, true); await button.props.onPress();
+  assert.equal(back.calls.comments.length, 0); assert.equal(f.calls.comments.length, 1);
+  back.find(n => n.type === "TextInput").props.onChangeText("Temporary");
+  back.find(n => n.type === "TextInput").props.onChangeText("Original");
+  request.resolve({ ok: true }); await pending; back.render();
+  assert.equal(back.find(n => n.type === "TextInput").props.value, "Original");
+});
+test("iOS unavailable original retry target blocks, then resumes exact payload and key when available", async () => {
+  const owner = commentOwner(); const f = mountIOSPost(owner, {}, { addComment: async () => ({ ok: false }) });
+  f.find(n => n.props.accessibilityLabel === "Reply to comment").props.onPress(); f.render();
+  await inputComment(f, " Original reply ")(); f.unmount();
+  let rows = [{ id: "other", userId: "other", text: "Other" }];
+  const back = mountIOSPost(owner, {}, { commentsFor: () => rows });
+  back.find(n => n.type === "TextInput").props.onChangeText("New draft");
+  back.find(n => n.props.accessibilityLabel === "Clear reply target").props.onPress(); back.render();
+  await back.find(n => n.props.accessibilityLabel === "Retry previous comment").props.onPress();
+  assert.equal(back.calls.comments.length, 0);
+  rows = [...rows, { id: "c_public", userId: "author", name: "Public Author", text: "Loaded again" }]; back.render();
+  await back.find(n => n.props.accessibilityLabel === "Retry previous comment").props.onPress();
+  assert.deepEqual(back.calls.comments[0], f.calls.comments[0]); back.render();
+  assert.equal(back.find(n => n.type === "TextInput").props.value, "New draft");
+});
+for (const reason of ["deleted", "blocked", "outside-window", "pending"]) test(`iOS NEW reply ${reason} is unavailable, never silently top-level`, async () => {
+  const owner = commentOwner(); const f = mountIOSPost(owner);
+  f.find(n => n.props.accessibilityLabel === "Reply to comment").props.onPress();
+  inputComment(f, "Keep reply"); f.unmount();
+  const rows = reason === "deleted" ? [{ id: "c_public", deleted: true }] : reason === "pending" ? [{ id: "c_public", pending: true }] : [];
+  rows.push({ id: "other", userId: "other", text: "Other" });
+  const back = mountIOSPost(owner, {}, { commentsFor: () => rows });
+  await back.find(n => n.props.accessibilityLabel === "Send comment").props.onPress(); back.render();
+  assert.equal(back.calls.comments.length, 0);
+  assert.match(back.find(n => n.props.accessibilityRole === "alert").props.children, /unavailable in this thread/);
+  assert.equal(back.find(n => n.type === "TextInput").props.value, "Keep reply");
+  back.find(n => n.props.accessibilityLabel === "Clear reply target").props.onPress(); back.render();
+  await back.find(n => n.props.accessibilityLabel === "Send comment").props.onPress();
+  assert.equal(back.calls.comments[0][2], null);
+});
+for (const platform of ["android", "web"]) test(`${platform} ignores an iOS lease and keeps local composer behavior`, async () => {
+  const owner = commentOwner(); owner.lease("p_public").edit("iOS only");
+  const f = fixture("PostScreen", { id: "member" }, { commentDraft: owner.lease("p_public") }, { platform });
+  assert.equal(f.find(n => n.type === "TextInput").props.value, "");
+  await inputComment(f, "Legacy")(); assert.equal(owner.lease("p_public").read().text, "iOS only");
+});
+
+test("iOS synchronous target change validates the current parent, not last-render reply identity", async () => {
+  const owner = commentOwner(); const f = mountIOSPost(owner, {}, { commentsFor: () => [
+    { id: "confirmed", userId: "author", text: "Confirmed" }, { id: "optimistic", userId: "member", pending: true, text: "Sending" },
+  ] });
+  f.all().filter(n => n.props.accessibilityLabel === "Reply to comment")[0].props.onPress();
+  const send = inputComment(f, "A reply");
+  f.all().filter(n => n.props.accessibilityLabel === "Reply to comment")[1].props.onPress();
+  await send(); assert.equal(f.calls.comments.length, 0);
+  assert.equal(owner.lease("p_public").read().parentId, "optimistic");
+});
+
+test("iOS explicit discard warns about unknown outcome, preserves current draft and permits a fresh key", async () => {
+  const owner = commentOwner(); const f = mountIOSPost(owner, {}, { addComment: async () => ({ ok: false }) });
+  await inputComment(f, "Original")(); f.render();
+  f.find(n => n.type === "TextInput").props.onChangeText("Edited draft"); f.render();
+  assert.equal(f.find(n => n.type === "TextInput").props.onSubmitEditing, undefined);
+  assert.equal(f.find(n => n.props.accessibilityLabel === "Send comment").props.disabled, true);
+  f.find(n => n.props.accessibilityLabel === "Discard previous attempt").props.onPress();
+  assert.match(f.calls.alerts[0][1], /may already be posted/); assert.equal(owner.lease("p_public").read().retry, true);
+  f.calls.alerts[0][2][1].onPress(); f.render();
+  await f.find(n => n.props.accessibilityLabel === "Send comment").props.onPress();
+  assert.equal(f.calls.comments[1][1], "Edited draft");
+  assert.notEqual(f.calls.comments[1][3].clientMutationId, f.calls.comments[0][3].clientMutationId);
+});
+
+for (const target of ["deleted", "pending", "omitted"]) test(`iOS captured send checks current ${target} parent state`, async () => {
+  const owner = commentOwner(); let rows = [{ id: "parent", userId: "author", text: "Reply here" }];
+  const f = mountIOSPost(owner, {}, { commentsFor: () => rows });
+  f.find(n => n.props.accessibilityLabel === "Reply to comment").props.onPress();
+  const capturedSend = inputComment(f, "Reply");
+  rows = target === "omitted" ? [{ id: "other", text: "Other" }] : [{ id: "parent", [target]: true }]; f.render();
+  await capturedSend(); assert.equal(f.calls.comments.length, 0); assert.equal(owner.lease("p_public").read().text, "Reply");
+});
+test("iOS captured send cannot start a new request after unmount", async () => {
+  const owner = commentOwner(), f = mountIOSPost(owner); const capturedSend = inputComment(f, "Retain only");
+  f.unmount(); await capturedSend(); assert.equal(f.calls.comments.length, 0);
+  assert.equal(owner.lease("p_public").read().text, "Retain only");
+});
+
+test("iOS captured normal Send cannot implicitly retry, and captured Retry cannot send a new draft after discard", async () => {
+  const owner = commentOwner(), f = mountIOSPost(owner, {}, { addComment: async () => ({ ok: false }) });
+  const oldSend = inputComment(f, "Original"); await oldSend(); f.render();
+  const oldRetry = f.find(n => n.props.accessibilityLabel === "Retry previous comment").props.onPress;
+  await oldSend(); assert.equal(f.calls.comments.length, 1);
+  owner.lease("p_public").discardAttempt(owner.lease("p_public").failedAttempt()); await oldRetry(); assert.equal(f.calls.comments.length, 1);
+});
+
+test("iOS captured Retry and discard confirmation cannot act on a newer failed attempt", async () => {
+  const owner = commentOwner(), f = mountIOSPost(owner, {}, { addComment: async () => ({ ok: false }) });
+  await inputComment(f, "first")(); f.render();
+  const retry = f.find(n => n.props.accessibilityLabel === "Retry previous comment").props.onPress;
+  f.find(n => n.props.accessibilityLabel === "Discard previous attempt").props.onPress();
+  const discard = f.calls.alerts[0][2][1].onPress; discard(); f.render();
+  await inputComment(f, "second")(); f.render();
+  const latest = owner.lease("p_public").failedAttempt(); discard(); await retry();
+  assert.equal(owner.lease("p_public").failedAttempt(), latest); assert.equal(f.calls.comments.length, 2);
+  f.find(n => n.props.accessibilityLabel === "Discard previous attempt").props.onPress();
+  f.unmount(); f.calls.alerts[1][2][1].onPress(); assert.equal(owner.lease("p_public").failedAttempt(), latest);
+});
+
+test("iOS obsolete composer callbacks cannot overwrite a successor's draft or reply", () => {
+  const owner = commentOwner(), old = mountIOSPost(owner);
+  const edit = old.find(n => n.type === "TextInput").props.onChangeText;
+  const reply = old.find(n => n.props.accessibilityLabel === "Reply to comment").props.onPress;
+  reply(); old.render(); const clear = old.find(n => n.props.accessibilityLabel === "Clear reply target").props.onPress;
+  old.unmount(); const current = mountIOSPost(owner);
+  current.find(n => n.type === "TextInput").props.onChangeText("New draft after return");
+  edit("Queued old native text"); clear(); reply();
+  assert.equal(owner.lease("p_public").read().text, "New draft after return");
+  assert.equal(owner.lease("p_public").read().parentId, "c_public");
+});
+
+test("iOS retained text and discard stay reachable with no loaded comments; send and retry stay blocked", async () => {
+  const owner = commentOwner(), first = mountIOSPost(owner, {}, { addComment: async () => ({ ok: false }) });
+  await inputComment(first, "Retained")(); first.unmount();
+  const back = mountIOSPost(owner, {}, { commentsFor: () => [] });
+  assert.equal(back.find(n => n.type === "TextInput").props.value, "Retained");
+  const retry = back.find(n => n.props.accessibilityLabel === "Retry previous comment"); assert.equal(retry.props.disabled, true); await retry.props.onPress();
+  assert.equal(back.calls.comments.length, 0);
+  back.find(n => n.props.accessibilityLabel === "Discard previous attempt").props.onPress(); back.calls.alerts[0][2][1].onPress(); back.render();
+  assert.equal(back.find(n => n.type === "TextInput").props.value, "Retained");
+  const send = back.find(n => n.props.accessibilityLabel === "Send comment"); assert.equal(send.props.disabled, true); await send.props.onPress(); assert.equal(back.calls.comments.length, 0);
 });

@@ -9,7 +9,7 @@ import { fetchArtistNews, fetchNews } from "../../lib/newsApi";
 import { newsDateLabel, releaseAvailability, releaseTypeLabel } from "../../domain/artistNews.mjs";
 import { localCalendarIso } from "../../domain/dates.mjs";
 import { colors, displayFont, radius, space, CONTENT_COLUMN_MAX_WIDTH } from "../../theme";
-import NewsStoryCard from "./NewsStoryCard";
+import NewsStoryCard from "./DeferredNewsStoryCard";
 import useNewsDeskStories from "./useNewsDeskStories";
 import LiveEventPanel from "./LiveEventPanel";
 import LiveCoverageCard from "./LiveCoverageCard";

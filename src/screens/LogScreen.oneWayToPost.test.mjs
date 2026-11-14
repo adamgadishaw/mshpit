@@ -24,7 +24,7 @@ test("a show is attached and removed from inside the composer, keeping what was 
 
   // An existing post keeps its kind while being edited: the server treats a
   // review and a plain post differently, including for badges.
-  assert.match(composer, /\{!editing && !isMemorialMemory && !isCampaign && \(\s*<Pressable\s+style=\{\(\{ pressed \}\) => \[styles\.addShow/);
+  assert.match(composer, /\{!editing && !isMemorialMemory && !isCampaign && !isCreator && \(\s*<Pressable\s+style=\{\(\{ pressed \}\) => \[styles\.addShow/);
   assert.match(composer, /\{!editing && \(\s*<View style=\{styles\.showAttached\}>/);
 });
 

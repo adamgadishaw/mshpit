@@ -116,7 +116,7 @@ function addVerifiedReadyImage({ id, ownerId }) {
   return publicUrl;
 }
 
-test("public venue reviews exclude hidden accounts and require substantive text or verified owned photos", () => {
+test("venue excerpts require substantive text or verified photos while visible short ratings still count", () => {
   const textAuthor = addUser("u_vr_text", "vrtext", { name: "Text Reviewer" });
   const photoAuthor = addUser("u_vr_photo", "vrphoto", { name: "Photo Reviewer" });
   const unverifiedAuthor = addUser("u_vr_unverified", "vrunverified");
@@ -174,7 +174,7 @@ test("public venue reviews exclude hidden accounts and require substantive text 
   assert.deepEqual(result.reviews[0].photos, verified.slice(0, 3));
   assert.equal(result.reviews.some((review) => review.photos.includes(unverifiedUrl)), false);
   assert.equal(result.reviews.some((review) => review.photos.includes(privateVerified)), false);
-  assert.deepEqual(result.stats, { reviewCount: 2, ratingCount: 2, averageRating: 4.5 });
+  assert.deepEqual(result.stats, { reviewCount: 2, ratingCount: 5, averageRating: 4 });
   assert.equal(JSON.stringify(result).includes("userId"), false);
   assert.equal(JSON.stringify(result).includes("@private.example.test"), false);
 });
@@ -257,4 +257,43 @@ test("review projection is deterministic, sanitized, bounded, and keeps authored
   assert.deepEqual(statsOnly.stats, { reviewCount: 11, ratingCount: 11, averageRating: 4 });
   assert.deepEqual(service.read({ venueKey: "" }), null);
   assert.deepEqual(service.read({ venueKey: null }), null);
+});
+
+test('profile stats span pages, aliases and repeat authors with viewer blocks', () => {
+ const venueKey='profile-many';
+ addUser('profile-one','profile_one'); addUser('profile-two','profile_two');
+ for(let i=0;i<260;i++) addReview({id:'profile-'+i,venueKey,userId:'profile-one',rating:5,createdAt:i+10});
+ addReview({id:'profile-old',venueKey,userId:'profile-two',rating:1,createdAt:1});
+ assert.deepEqual(service.read({venueKey,limit:0}).stats,{reviewCount:2,ratingCount:2,averageRating:3});
+ assert.deepEqual(service.read({venueKey,limit:0}).stats,service.read({venueKey}).stats);
+ db.prepare('INSERT INTO blocks(blocker_id,blocked_id,created_at) VALUES (?,?,?)').run('profile-two','profile-one',1);
+ assert.deepEqual(service.read({venueKey,viewerId:'profile-two',limit:0}).stats,{reviewCount:1,ratingCount:1,averageRating:1});
+});
+
+test('app and public scores share explicit venue aliases', () => {
+ addUser('profile-alias-one','profile_alias_one'); addUser('profile-alias-two','profile_alias_two');
+ addReview({id:'profile-alias-1',venueKey:'budweiser stage',userId:'profile-alias-one',rating:5});
+ addReview({id:'profile-alias-2',venueKey:'rbc amphitheatre',userId:'profile-alias-two',rating:1});
+ assert.deepEqual(service.read({venueKey:'budweiser stage'}).stats,service.read({venueKey:'rbc amphitheatre'}).stats);
+ assert.equal(service.read({venueKey:'budweiser stage'}).stats.averageRating,3);
+});
+
+test('half-star numeric votes survive short or empty text and replace older scores in timestamp/id order', () => {
+ addUser('half-a','half_a'); addUser('half-b','half_b');
+ const venueKey='half star room';
+ addReview({id:'half-old',venueKey,userId:'half-a',rating:5,text:'',createdAt:100});
+ addReview({id:'half-new',venueKey,userId:'half-a',rating:0.5,text:'short',createdAt:200});
+ addReview({id:'half-zero',venueKey,userId:'half-a',rating:0,text:'',createdAt:300});
+ addReview({id:'half-other',venueKey,userId:'half-b',rating:1,text:'',createdAt:100});
+ assert.deepEqual(service.read({venueKey}),{reviews:[],stats:{reviewCount:0,ratingCount:2,averageRating:0.75}});
+ addReview({id:'half-z-tie',venueKey,userId:'half-a',rating:5,text:'',createdAt:200});
+ assert.equal(service.read({venueKey}).stats.averageRating,3);
+ addReview({id:'half-zz-tie',venueKey,userId:'half-a',rating:0.5,text:'',createdAt:200});
+ assert.equal(service.read({venueKey}).stats.averageRating,0.75);
+ for(const rating of [0,-1,0.25,5.5]) {
+  addReview({id:'half-invalid-'+rating,venueKey,userId:'half-a',rating,text:'',createdAt:400});
+  assert.equal(service.read({venueKey}).stats.averageRating,0.75);
+ }
+ db.prepare('INSERT INTO blocks(blocker_id,blocked_id,created_at) VALUES (?,?,?)').run('half-b','half-a',1);
+ assert.equal(service.read({venueKey,viewerId:'half-b'}).stats.averageRating,1);
 });

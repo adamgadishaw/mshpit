@@ -28,7 +28,9 @@ function fixture() {
     View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", Icon: "Icon",
     CatalogText: "CatalogText",
     styles: {}, colors: {}, formatDate, showLifecycleView,
-    openTicketLink: (url) => tickets.push(url),
+    restrictedShowAvailabilityCopy: () => null, // This fixture uses the unchanged web fallback.
+    Platform: { OS: "web" },
+    useIOSTicketAction: () => ({ open: (url) => tickets.push(url), error: "" }),
   });
   return { render: module.exports, tickets };
 }

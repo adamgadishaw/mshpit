@@ -134,6 +134,7 @@ async function runCase(browser, origin, item) {
       }
       state.calls.push({ path: url.pathname, query: url.search, method: request.method(), account: request.headers()["x-pit-expected-account"] || null });
       if (url.pathname === "/api/client-errors") { state.reports.push(request.postDataJSON()); return await json({ ok: true }); }
+      if (url.pathname === "/api/page-head") return await json({ path: url.searchParams.get("path"), head: "<title>Fixture Profile concert history</title>" });
       if (url.pathname === "/api/me") return await json({ user: viewer });
       if (["/api/me/blocked", "/api/me/muted"].includes(url.pathname)) return await json({ users: [] });
       if (url.pathname === "/api/me/notifications") return await json({ notifications: [] });
@@ -144,7 +145,7 @@ async function runCase(browser, origin, item) {
       if (url.pathname === "/api/me/artist-recommendations") return await json({ recommendations: [] });
       if (url.pathname === "/api/resolve") {
         assert.equal(url.searchParams.get("path"), "/@fixtureprofile");
-        return await json({ entity: { kind: "profile", id: profileId, path: "/@fixtureprofile" } });
+        return await json({ entity: { kind: "profile", id: profileId, path: "/u/fixtureprofile" } });
       }
       if (url.pathname === `/api/users/${profileId}`) return await json({ user: { ...profile, concertMapVisible: mapVisible }, followers: 0, following: 0, isFollowing: false });
       if (url.pathname === `/api/users/${profileId}/posts`) return await json({ posts: [], hasMore: false, nextCursor: null });
@@ -186,22 +187,16 @@ async function runCase(browser, origin, item) {
   });
   let failure = null;
   try {
-    await page.goto(item.kind === "own-map-entry" ? origin : `${origin}/@fixtureprofile`, { waitUntil: "networkidle", timeout: timeoutMs });
+    await page.goto(item.kind === "own-map-entry" ? `${origin}/feed` : `${origin}/@fixtureprofile`, { waitUntil: "networkidle", timeout: timeoutMs });
     if (item.kind === "own-map-entry") {
       await page.getByRole("tab", { name: "You", exact: true }).click();
-      await page.getByTestId("you-concert-history").waitFor();
-      assert.equal(await page.getByTestId("profile-concert-history").count(), 0, "You must link to the existing profile map, not duplicate it.");
-      await page.getByRole("button", { name: "Open your concert history and map", exact: true }).click();
+      assert.equal(await page.getByTestId("you-concert-history").count(), 0, "The unified You profile must not restore the retired duplicate shortcut.");
     }
     const history = page.getByTestId("profile-concert-history");
     await history.waitFor();
     if (item.kind === "own-map-entry") {
-      await waitFor(async () => {
-        const rect = await history.boundingBox();
-        return !!rect && rect.y >= 0 && rect.y < 280;
-      }, "The own-map entry must scroll directly to concert history, not the top of the profile.");
-      const heading = await history.getByRole("heading", { name: "Concert history", exact: true }).boundingBox();
-      assert.ok(heading && heading.y >= 80 && heading.y < 330, "The shortcut must leave the section heading below the fixed profile header.");
+      assert.equal(await history.count(), 1, "You uses the existing profile history once.");
+      assert.ok(state.calls.some(call => call.path === `/api/users/${viewer.id}/concert-history`), "You reads the signed-in member's own history.");
     }
     await history.scrollIntoViewIfNeeded();
     const rows = history.locator('[data-testid^="concert-history-row-"]');
@@ -218,7 +213,7 @@ async function runCase(browser, origin, item) {
       await history.getByText("No concerts logged yet", { exact: true }).waitFor();
       assert.equal(await rows.count(), 0);
       assert.equal(await history.getByRole("button", { name: "See all concerts", exact: true }).count(), 0);
-      await map.getByText("A map of nights to remember", { exact: true }).waitFor();
+      await map.getByText("Log a show to put it on the map.", { exact: true }).waitFor();
     } else {
       await history.getByText(missingLocation ? "8 concerts · 2 venues" : item.kind === "city-and-address" ? "8 concerts · 2 city locations · 1 country" : item.kind === "two-countries" ? "8 concerts · 2 venues · 2 countries" : "8 concerts · 2 venues · 1 country", { exact: true }).waitFor();
       if (item.kind === "two-countries") await map.getByText("World", { exact: true }).waitFor();
@@ -242,8 +237,8 @@ async function runCase(browser, origin, item) {
         const cityPin = map.getByRole("button", { name: "Toronto. 4 logged concerts. Approximate city location.", exact: true });
         const addressPin = map.getByRole("button", { name: "10 Waterfront Road, Vancouver. 4 logged concerts. Approximate city location.", exact: true });
         await cityPin.click();
-        await history.getByText("IN THIS CITY", { exact: true }).waitFor();
-        assert.equal(await history.getByText("AT THIS VENUE", { exact: true }).count(), 0);
+        await history.getByText("In this city", { exact: true }).waitFor();
+        assert.equal(await history.getByText("At this venue", { exact: true }).count(), 0);
         assert.equal(await history.getByText("Venue not recorded", { exact: true }).count(), 0);
         await history.getByText("4 logged concerts · approximate city location", { exact: true }).waitFor();
         await addressPin.click();
@@ -269,7 +264,7 @@ async function runCase(browser, origin, item) {
         await history.getByText("4 logged concerts · Toronto", { exact: true }).waitFor();
         await history.getByRole("button", { name: "View here", exact: true }).waitFor();
         await vancouverPin.click();
-        await history.getByText("AT THIS VENUE", { exact: true }).waitFor();
+        await history.getByText("At this venue", { exact: true }).waitFor();
         await waitFor(async () => await rows.count() === Math.min(expectedPreview, 4), "The venue pin did not filter the list.");
         assert.deepEqual(await rows.evaluateAll(elements => elements.map(element => element.getAttribute("data-testid"))), concerts.slice(4, 4 + expectedPreview).map(row => `concert-history-row-${row.id}`));
         await history.getByRole("button", { name: "All concerts", exact: true }).click();
@@ -283,7 +278,7 @@ async function runCase(browser, origin, item) {
         assert.equal(state.calls.some(call => /\/api\/artists\//.test(call.path)), false, "Open review must not open an artist page.");
         await page.goBack();
         await page.getByTestId("profile-concert-history").waitFor();
-        assert.equal(new URL(page.url()).pathname, "/@fixtureprofile", "Back must return to the same public profile.");
+        assert.equal(new URL(page.url()).pathname, "/u/fixtureprofile", "Back must return to the same canonical public profile.");
       }
     }
     if (process.env.PIT_CONCERT_BROWSER_SCREENSHOTS === "1") {

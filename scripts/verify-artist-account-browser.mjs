@@ -59,7 +59,7 @@ async function scenario(browser, origin, width, kind) {
   page.on("console", message => {
     if (message.type() !== "error") return;
     if (["/api/artist-pages", "/api/artist-account", "/api/artist-verification-challenges", "/api/artist-requests"].map(path => origin + path).includes(message.location().url) && /409|503/.test(message.text())) return;
-    state.errors.push(message.text());
+    state.errors.push(`${message.text()} (${message.location().url})`);
   });
   await context.route("**/*", async route => {
     const request = route.request(), url = new URL(request.url());
@@ -76,6 +76,9 @@ async function scenario(browser, origin, width, kind) {
       const method = request.method(), body = method === "GET" ? null : request.postDataJSON();
       state.calls.push({ path: url.pathname, method });
       if (url.pathname === "/api/client-errors") { state.reports.push(body); return await json({ ok: true }); }
+      if (url.pathname === "/api/me/creator-entities") return await json({ entities: state.owns ? [{ entityType: "artist", entityKey: navigationArtist.name.toLowerCase(), name: navigationArtist.name }] : [] });
+      if (url.pathname.startsWith("/api/creators/") && url.pathname.endsWith("/posts")) return await json({ posts: [] });
+      if (url.pathname.startsWith("/api/creators/") && url.pathname.endsWith("/follow")) return await json({ following: false, notifyUpdates: true });
       if (url.pathname === "/api/me") return await json({ user: state.user });
       if (url.pathname === "/api/health") return await json({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: true, pipeline: "private-derivative-v1", sourceTypes: ["video/mp4", "video/quicktime"] } } });
       if (url.pathname === "/api/signup/handle-availability") return await json({ handle: url.searchParams.get("handle"), available: true });
@@ -143,7 +146,7 @@ async function scenario(browser, origin, width, kind) {
         assert.deepEqual(body.photos, [mediaUrl]); assert.deepEqual(body.mediaAssetIds, [mediaId]);
         assert.equal(body.artist, undefined, "Artist attribution remains server-owned, not supplied by this form.");
         state.writes.push({ path: url.pathname, body });
-        return await json({ id: "p_artist_fixture" });
+        return await json({ id: "p_artist_fixture", post: { id: "p_artist_fixture", kind: "status", userId: navigationUser.id, user: state.user, photos: [mediaUrl], media: [{ id: mediaId, kind: "image", url: mediaUrl }], creatorUpdate: { ...body.creatorUpdate, entityName: navigationArtist.name }, review: body.review } });
       }
       if (/^\/api\/artists\/[^/]+\/profile$/.test(url.pathname)) return await json({ artist: navigationArtist, profile: accountPayload().profile, posts: [], legacyProfile: false });
       if (/^\/api\/artists\/[^/]+\/memorial$/.test(url.pathname)) return await json({ memorial: null });
@@ -222,7 +225,7 @@ async function scenario(browser, origin, width, kind) {
         assert.equal(state.user.verified, false);
       } else if (kind === "pending") {
         await page.getByRole("button", { name: "Manage profile", exact: true }).last().click();
-        await page.getByRole("button", { name: "Live photos & videos", exact: true }).waitFor();
+        await page.getByRole("button", { name: "Post to followers", exact: true }).first().waitFor();
         assert.equal(await page.getByText("VERIFIED ARTIST", { exact: true }).count(), 0);
         await page.getByRole("button", { name: "Request or check verification", exact: true }).click();
         await page.getByRole("button", { name: "REVIEW PENDING", exact: true }).waitFor();
@@ -267,13 +270,14 @@ async function scenario(browser, origin, width, kind) {
           await createButton().click();
           await page.getByText("Your artist page is ready", { exact: true }).waitFor();
           await page.getByRole("button", { name: "OPEN ARTIST HQ", exact: true }).click();
-          await page.getByRole("button", { name: "Live photos & videos", exact: true }).waitFor();
+          await page.getByRole("button", { name: "Post to followers", exact: true }).first().waitFor();
           await page.getByRole("button", { name: "Edit artist page", exact: true }).waitFor();
           assert.equal(await page.getByText("VERIFIED ARTIST", { exact: true }).count(), 0);
-          await page.getByRole("button", { name: "Live photos & videos", exact: true }).scrollIntoViewIfNeeded();
+          await page.getByRole("button", { name: "Post to followers", exact: true }).first().scrollIntoViewIfNeeded();
           await screenshot("artist-hq");
-          await page.getByRole("button", { name: "Live photos & videos", exact: true }).click();
-          await page.getByRole("heading", { name: "New post", exact: true }).waitFor();
+          await page.getByRole("button", { name: "Post to followers", exact: true }).first().click();
+          await page.getByRole("heading", { name: "Post to followers", exact: true }).first().waitFor();
+          await page.getByLabel("Title", { exact: true }).fill("A new live session");
           assert.equal(await page.getByText("Choose a background for this post", { exact: true }).count(), 0);
           await page.getByRole("button", { name: /Photo \/ video/ }).waitFor();
           await page.getByRole("button", { name: "Photo / video", exact: true }).click();

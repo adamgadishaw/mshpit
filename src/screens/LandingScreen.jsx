@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, useWindowDimensions, Platform, ScrollView, AccessibilityInfo, PixelRatio } from "react-native";
+import { View, Text, StyleSheet, useWindowDimensions, Platform, AccessibilityInfo, PixelRatio } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { Image as ExpoImage } from "expo-image";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { displayFont, focusRing, mono, radius } from "../theme";

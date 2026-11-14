@@ -186,7 +186,7 @@ test("native automatic covers score multiple decoded frames before full-quality 
 });
 
 test("web legacy covers preserve output time without degrading local cover selection", () => {
-  const source = readFileSync(new URL("../lib/videoPoster.web.js", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../lib/videoPosterWebImplementation.mjs", import.meta.url), "utf8");
   assert.match(source, /const outputReserveMs = Math\.min\([\s\S]*REMOTE_POSTER_OUTPUT_RESERVE_MS[\s\S]*Math\.floor\(remainingMs \* 0\.35\)[\s\S]*const availableScoringMs = remainingMs - outputReserveMs/);
   assert.match(source, /source\.crossOrigin && error\?\.code === VIDEO_POSTER_ERROR_CODES\.timeout && best\) break/);
   assert.match(source, /if \(source\.crossOrigin && videoPosterFrameIsStrong\(profile\)\) break/);

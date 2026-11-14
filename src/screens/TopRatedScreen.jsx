@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
@@ -12,11 +12,13 @@ import {
   normalizeTopRatedShows,
   topRatedShowCities,
   topRatedShowMatchesCity,
-  topRatedShowNavigation,
 } from "../domain/topRatedShows.mjs";
+import { resolveRankedShow } from "../features/artistEvents/resolveRankedShow";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+const EventPageNavigation = lazyWithRetry(() => import("./EventPageNavigation"), "EventPageNavigation");
 
 export default function TopRatedScreen({ initialRegion = "Worldwide", onClose, onOpen }) {
-  const { loadDiscoverOverview, session } = useStore();
+  const { loadDiscoverOverview, session, remoteArtistMeta, resolveArtist } = useStore();
   const requestedRegion = String(initialRegion || "Worldwide").trim() || "Worldwide";
   const loaderRef = useRef(loadDiscoverOverview);
   loaderRef.current = loadDiscoverOverview;
@@ -120,7 +122,7 @@ export default function TopRatedScreen({ initialRegion = "Worldwide", onClose, o
           ))}
         </View>
 
-        {invalidCity && <Text style={styles.cityError} accessibilityRole="alert" accessibilityLiveRegion="polite">Choose a listed city. Pit will not substitute a different location.</Text>}
+        {invalidCity && <Text style={styles.cityError} accessibilityRole="alert" accessibilityLiveRegion="polite">Choose a city from the list to see its shows.</Text>}
         {resource.status === "loading" && (
           <View style={styles.loading} accessibilityRole="progressbar" accessibilityLabel="Loading top-rated shows" accessibilityState={{ busy: true }}>
             <ActivityIndicator size="small" color={colors.amber} />
@@ -136,13 +138,16 @@ export default function TopRatedScreen({ initialRegion = "Worldwide", onClose, o
           </View>
         )}
 
-        {ranked.map((s, i) => (
+        <Suspense fallback={<Text style={styles.cityHint}>Opening show list…</Text>}>
+        <EventPageNavigation read={(row, options) => resolveRankedShow(row, { ...options, remoteArtistMeta, resolveArtist })} onOpen={onOpen}>
+        {({ open: openRankedShow, state: opening }) => ranked.map((s, i) => (
           <Pressable
             key={s.key}
             style={styles.row}
             accessibilityRole="button"
             accessibilityLabel={`Number ${i + 1}, ${s.artist} at ${s.venue}, ${s.avgRating.toFixed(1)} stars from ${s.ratingCount} ratings`}
-            onPress={() => onOpen?.(topRatedShowNavigation(s))}
+            onPress={() => openRankedShow(s)}
+            accessibilityState={{ busy: opening?.target.key === s.key && opening.status === "loading" }}
           >
             <Text style={styles.rank}>{i + 1}</Text>
             <View style={{ flex: 1 }}>
@@ -152,9 +157,13 @@ export default function TopRatedScreen({ initialRegion = "Worldwide", onClose, o
                 <Stars value={s.avgRating} size={12} />
                 <Text style={styles.meta}>{s.avgRating.toFixed(1)} · {s.ratingCount} {s.ratingCount === 1 ? "rating" : "ratings"}{s.reviewCount ? ` · ${s.reviewCount} reviews` : ""}</Text>
               </View>
+              {opening?.target.key === s.key && opening.status === "loading" ? <Text style={styles.cityHint} accessibilityLiveRegion="polite">Opening event…</Text> : null}
+              {opening?.target.key === s.key && ["error", "unavailable"].includes(opening.status) ? <Text style={styles.cityError} accessibilityLiveRegion="polite">{opening.status === "unavailable" ? "This show is not available in the artist archive." : "This show could not load."} Tap the show to try again.</Text> : null}
             </View>
           </Pressable>
         ))}
+        </EventPageNavigation>
+        </Suspense>
 
         {resource.status === "ready" && ranked.length === 0 && (
           <Text style={styles.empty} accessibilityLiveRegion="polite">
@@ -166,7 +175,7 @@ export default function TopRatedScreen({ initialRegion = "Worldwide", onClose, o
 
         {ranked.length > 0 && (
           <Text style={styles.note}>
-            Ranked from real public Mshpit ratings. Each account counts once per show, and rating confidence keeps one perfect score from overpowering a well-supported crowd result.
+            Rankings use public Mshpit ratings and consider both scores and the number of ratings. Each account counts once per show.
           </Text>
         )}
       </ScrollView>

@@ -1,14 +1,28 @@
+import { createPublicVenueReviewService } from "./features/seo/publicVenueReviews.js";
+import { venueReviewVisibilitySql } from "./features/seo/venueReviewVisibility.js";
+import { scheduledCalendarMediaReference } from "./creatorCalendarMedia.js";
+import { resolvedOwnedMediaKey } from "./mediaDeletion.js";
+import { withImmediateWrite } from "./databaseTransaction.js";
+import { creatorCalendarRoutes } from "./features/creatorCalendar/creatorCalendarRoutes.js";
+import { resolveCanonicalEventEntity } from "./features/eventAccounts/eventAccountTargets.js";
+import { writeTourDateBatch } from "./features/creatorCalendar/tourDateWriter.js";
+import { createCreatorCalendarService } from "./features/creatorCalendar/creatorCalendarService.js";
+import { startPeriodicJob } from "./periodicJobScheduler.js";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { canAccessTheme, isThemeKey } from "../src/domain/themeAccess.mjs";
 import { calendarEventTiming } from "../src/domain/calendarEventTiming.mjs";
+import { postAuthorBadgeProjection } from "./postAuthorBadgeProjection.js";
+import { postBadgeBundle } from "../src/domain/postBadgeBundle.mjs";
+import { mapLibreServerEnabled } from "./mapLibreConfiguration.mjs";
+import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
+import { createVenueMapCatalogueResponse } from "./venueMapCatalogueResponse.mjs";
 import {
   encodeTourDateCalendarCursor, tourDateCalendarPublicRange,
   tourDateCalendarRequest, tourDateCalendarSummary,
 } from "./tourDateCalendarRange.mjs";
-import { mapLibreServerEnabled } from "./mapLibreConfiguration.mjs";
-import { createVenueMapCatalogueCache } from "./venueMapCatalogueCache.mjs";
-import { createVenueMapCatalogueResponse } from "./venueMapCatalogueResponse.mjs";
 import { LEGACY_ARTIST_DEATH_DATE_CUTOFF, isLegacyArtistMemorial } from "../src/domain/artistLegacy.mjs";
 import { LEGAL_ACCEPTANCE_VERSION } from "../src/domain/privacyDisclosures.mjs";
+import { reparentRepliesForAccountErasure } from "./features/accountPrivacy/commentErasure.js";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
 import { retainedProfileProjection, retainedContributor } from "./features/artistAccounts/artistAccessPublication.js";
 // API routes. Conventions that keep this hard to crash and easy to fix:
@@ -97,12 +111,14 @@ import {
 import { mediaAssetRoutes } from "./mediaAssetRoutes.js";
 import { mediaLegacyFinalizeRoutes } from "./mediaLegacyFinalizeRoutes.js";
 import { directMessageReadFor, directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
+import { directMessageInboxRemovedIds, directMessageLatestPerPeer } from "./features/messaging/directMessageThreads.js";
 import { directMessageConsentFor, directMessageConsentProjection, directMessageConsentRoutes } from "./features/messaging/directMessageConsent.js";
 import { createMessageRelationshipContextService } from "./features/messaging/messageRelationshipContext.js";
 import { notificationRoutes } from "./features/notifications/notificationRoutes.js";
 import { postTagRoutes } from "./postTagRoutes.js";
 import { artistReviewRoutes } from "./features/artistReviews/artistReviewRoutes.js";
 import { concertHistoryRoutes } from "./features/concertHistory/concertHistoryRoutes.js";
+import { concertLookupRoutes } from "./features/concertLookup/concertLookupRoutes.js";
 import { artistResolveRoutes } from "./features/artistSearch/artistResolveRoutes.js";
 import { artistArchiveRoutes } from "./features/artistArchive/artistArchiveRoutes.js";
 import { createArtistLiveSummaryService } from "./features/artistArchive/artistLiveSummaryService.js";
@@ -115,6 +131,8 @@ import { sourceRegistryRoutes } from "./features/newsDesk/sourceRegistry.js";
 import { newsDeskEditorRoutes } from "./features/newsDesk/newsDeskEditorRoutes.js";
 import { createMediaApiService } from "./features/mediaApi/mediaApiService.js";
 import { mediaApiRoutes } from "./features/mediaApi/mediaApiRoutes.js";
+import { createLocalAlertComposition, LOCAL_ALERT_NOTICE_VISIBLE_SQL } from "./features/localEventAlerts/localAlertComposition.js";
+import { eraseLocalAlerts } from "./features/localEventAlerts/localAlertPrivacy.js";
 import { ensureNewsLiveSchema } from "./features/newsDesk/newsLive.js";
 import { ensureNewsCardPhotoSchema } from "./features/newsDesk/newsCardPhotos.js";
 import { festivalRoutes } from "./features/festivals/festivalRoutes.js";
@@ -123,6 +141,9 @@ import { startFestivalScheduler } from "./features/festivals/festivalScan.js";
 import { newsLiveRoutes } from "./features/newsDesk/newsLiveRoutes.js";
 import { providerProfileRoutes } from "./features/providerProfiles/providerProfileRoutes.js";
 import { crewRoutes } from "./features/crew/crewRoutes.js";
+import { assertCreatorUpdate, persistCreatorUpdate, projectedCreatorUpdate, managedCreatorEntity } from "./features/creatorPosts/creatorPostService.js";
+import { eventAccountRoutes } from "./features/eventAccounts/eventAccountRoutes.js";
+import { creatorPostRoutes } from "./features/creatorPosts/creatorPostRoutes.js";
 import { artistUpdatesRoutes } from "./features/artistUpdates/artistUpdatesRoutes.js";
 import { createArtistNewsReader } from "./features/artistUpdates/artistNewsReader.js";
 import { startArtistNewsScheduler } from "./features/artistUpdates/artistNewsJob.js";
@@ -149,6 +170,7 @@ import { showAttendanceRoutes } from "./features/shows/showAttendanceRoutes.js";
 import { showRoutes } from "./features/shows/showRoutes.js";
 import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
 import { normalizeShowAliasKey, normalizeTourDateId } from "./features/shows/showIdentity.js";
+import { tourDateShowLifecycle } from "./features/shows/showLifecycle.js";
 import { socialShareCardRoutes } from "./features/socialSharing/socialShareCardRoutes.js";
 import { createSocialShareCardRenderer } from "./features/socialSharing/socialShareCardRenderer.js";
 import { createLoungeLifecycleService } from "./features/lounges/loungeLifecycleService.js";
@@ -180,9 +202,11 @@ import {
   legacyImageRecoveryHealth,
 } from "./legacyPostImageRecovery.js";
 import { discoverySidebar } from "./discovery.js";
-import { pageHeadFor, publicDocumentForPath, publicVenueSnapshotForPath, resolveEntity, sitemapSnapshotHealth, catalogSeoMaintenanceStatus } from "./seo.js";
+import { pageHeadFor, publicDocumentForPath, publicVenueSnapshotForPath, resolveVenueReviewKeys, resolveEntity, sitemapSnapshotHealth, catalogSeoMaintenanceStatus } from "./seo.js";
 import { pageHeadRoutes } from "./features/seo/pageHeadRoutes.js";
 import { publicVenueSnapshotRoutes } from "./features/seo/publicVenueSnapshot.js";
+import { venueCommunityRoutes } from "./features/venueCommunity/routes.js";
+import { canonicalVenueCreatorTarget } from "./features/venueCommunity/creatorTarget.js";
 import { userRewards } from "./rewards.js";
 import { prepareVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
 import { memberBadgeFor, grantFirstWaveBadge } from "./memberBadges.js";
@@ -253,6 +277,7 @@ import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
 import { jobRoutes } from "./features/jobs/jobRoutes.js";
 import { createPeopleSuggestionService } from "./features/people/peopleSuggestionService.js";
 import { accountMuteRoutes } from "./features/accountMute/accountMuteRoutes.js";
+import { createRelationshipManagementProjection } from "./relationshipManagementProjection.js";
 import { accountOnboardingRoutes } from "./features/accountOnboarding/accountOnboardingRoutes.js";
 import { accountSecurityRoutes } from "./features/accountOnboarding/accountSecurityRoutes.js";
 import { createLinkedAccounts } from "./features/accountOnboarding/linkedAccounts.js";
@@ -731,17 +756,7 @@ function analyticsEventsRoute(ctx, { requireIds = false } = {}) {
   return ingestAnalyticsBatch({ user: ctx.user, events, requireIds, at: now() });
 }
 
-function atomicWrite(work) {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const result = work();
-    db.exec("COMMIT");
-    return result;
-  } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
-    throw error;
-  }
-}
+function atomicWrite(work) { return withImmediateWrite(db, work); }
 
 function artistIdentityMatches(user, key) {
   return user?.role === "artist" && normName(user.artist_name) === normName(key);
@@ -1299,6 +1314,28 @@ function cleanTourDateBatch(ctx, user) {
     throw new ApiError(400, "Release the dates before the first show and within three years.", "VALIDATION_FAILED");
   }
   return { artist, dates, releaseAt };
+}
+
+function validatedTourDateBatch(ctx, user) {
+    const batch = cleanTourDateBatch(ctx, user);
+    if (user.role === "artist") assertArtistManagementCandidate(user, normName(batch.artist));
+    if (user.role !== "admin" && isLegacyArtistProfile(normName(batch.artist), batch.artist)) {
+      throw legacyArtistReadOnlyError(
+        "Legacy artist pages do not accept artist-submitted tour or concert dates.",
+      );
+    }
+    const includesCurrentOrFutureDate = batch.dates.some((entry) => isCurrentOrUpcomingLiveEvent({
+      date: entry.date,
+      eventEndDate: entry.eventEndDate,
+    }, now()));
+    if (includesCurrentOrFutureDate && artistHasPublishedMemorial(db, {
+      artistKey: normName(batch.artist),
+      artist: batch.artist,
+    })) {
+      throw new ApiError(409, "Future dates cannot be published for a memorialized artist.", "ARTIST_MEMORIALIZED");
+    }
+
+  return batch;
 }
 
 // Ensure a unique handle derived from a public-safe base string.
@@ -2283,21 +2320,6 @@ function visibleTicketTourDate(user, tourDateId, at = now()) {
   return row;
 }
 
-function tourDateShowLifecycle(row, at) {
-  const status = String(row?.event_status || "").trim().toLowerCase();
-  if (status === "cancelled" || status === "canceled") return "cancelled";
-  if (status === "postponed") return "postponed";
-  const startAt = Date.parse(row?.start_date_time || "");
-  if (Number.isFinite(startAt)) {
-    if (at < startAt) return "upcoming";
-    return at <= startAt + 12 * 60 * 60 * 1000 ? "happening" : "completed";
-  }
-  const today = liveEventQueryFloorDate(at);
-  if (row?.date < today) return "completed";
-  if (row?.date > today) return "upcoming";
-  return "unknown";
-}
-
 function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
   const id = normalizeTourDateId(tourDateId);
   const row = id ? visibleTourDateRows(user, { id, limit: 2, at })
@@ -2345,6 +2367,7 @@ function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
     startAt: Number.isFinite(startAt) ? startAt : null,
     startLocalTime: providerFields.startLocalTime,
     timezone: liveEventTimeZone(row),
+    eventEndDate: row.event_end_date || null,
     lifecycle: tourDateShowLifecycle(row, at),
     tour: providerFields.tourName,
     provider: providerFields.providerEventId ? provider : null,
@@ -2497,8 +2520,15 @@ function canonicalAttendanceTicketCreateRequest(user, source, storedPost) {
   };
 }
 
+function acceptedReviewText(value) {
+  const normalized = clean(value, { max: Infinity, newlines: true });
+  if (normalized.length > LIMITS.concertReview) throw new ApiError(400, "Concert reviews must be 32,000 characters or fewer after formatting cleanup.", "VALIDATION_FAILED");
+  return normalized;
+}
+
 function canonicalCreateRequest(user, body, storedPost = null) {
   const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  const creatorUpdate = assertCreatorUpdate(db, user.id, source);
   const eventAddress = cleanEventAddress(source.eventAddress);
   if (["status", "memory"].includes(source.kind) && eventAddress) {
     throw new ApiError(400, "An event address can only be added to an in-person review.", "VALIDATION_FAILED");
@@ -2575,6 +2605,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       campaign,
       taggedUserIds,
       mediaSelection: stableMedia,
+      creatorUpdate,
       memorialMemory,
       artist: publishedArtist,
       binding: publishedBinding,
@@ -2584,7 +2615,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       "tagged song title": values.song?.title,
       "tagged song artist": values.song?.artist,
     });
-    if (!values.review && !values.photos.length && !stableMedia?.ids?.length && !values.song && !playlist) {
+    if (!creatorUpdate && !values.review && !values.photos.length && !stableMedia?.ids?.length && !values.song && !playlist) {
       throw new ApiError(400, "Write something, add media, tag a song, or share a playlist to post.", "VALIDATION_FAILED");
     }
     return {
@@ -2614,6 +2645,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
         song: values.song,
         playlistId: playlist?.id || null,
         campaign,
+        ...(creatorUpdate ? { creatorUpdate } : {}),
         experienceType: "in_person",
         onlineTitle: null,
         youtubeUrl: null,
@@ -2634,7 +2666,11 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     band: { parse: (x) => clampRating(x) },
     room: { parse: (x) => clampRating(x) },
     dims: { parse: cleanPostRatingDims },
-    review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
+    // Known tokens can contain a historical oversized request. Preserve its
+    // full canonical text; retry resolution separately checks the old digest.
+    review: { parse: (value) => storedPost
+      ? clean(value, { max: Infinity, newlines: true })
+      : acceptedReviewText(value) },
     photos: { parse: (x) => cleanStringArray(x, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 }) },
     photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
     landingShowcase: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
@@ -2803,7 +2839,7 @@ function canonicalStoredPost(row) {
     band: kind === "status" || online.experienceType === "online" || row?.band == null ? null : clampRating(row.band),
     room: kind === "status" || online.experienceType === "online" || row?.room == null ? null : clampRating(row.room),
     dims: kind === "status" || online.experienceType === "online" ? {} : dims,
-    review: clean(row?.review, { max: LIMITS.review, newlines: true }),
+    review: clean(row?.review, { max: kind === "status" ? LIMITS.review : Infinity, newlines: true }),
     photos: cleanStringArray(parseJsonArray(row?.photos), { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 }),
     mediaAssetIds: row?.id ? postMediaAssetIds(db, row.id) : [],
     photosPublic: row?.photos_public ? 1 : 0,
@@ -2865,9 +2901,7 @@ function removedDmIdsFor(userId, otherId = null) {
       ORDER BY created_at DESC,id DESC`)
       .all(userId, otherId, otherId, userId).map((row) => row.id);
   }
-  return db.prepare(`SELECT id FROM dms WHERE removed=1 AND (from_id=? OR to_id=?)
-    ORDER BY created_at DESC,id DESC LIMIT ?`)
-    .all(userId, userId, DM_TOMBSTONE_LIMIT).map((row) => row.id);
+  return directMessageInboxRemovedIds(db, userId, DM_TOMBSTONE_LIMIT);
 }
 
 const REPORTABLE_TARGET_TYPES = new Set([
@@ -3115,7 +3149,8 @@ function postJson(p, viewerId) {
     id: p.id,
     userId: p.user_id,
     kind: p.kind || "review",
-    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0, membershipBadge: memberBadgeFor(db, { id: p.user_id }) },
+    user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: safePublicProfileImage(p.user_id, p.u_avatar), avatarColor: p.u_color, profileUpdatedAt: Number(p.u_profile_updated_at) || 0,
+      ...postAuthorBadgeProjection({ user: q.userById.get(p.user_id), viewerId, projectUser: publicUser }) },
     artist: p.artist,
     venue: online.experienceType === "online" ? "" : p.venue,
     city: online.experienceType === "online" ? "" : p.city,
@@ -3133,6 +3168,7 @@ function postJson(p, viewerId) {
     room: online.experienceType === "online" ? null : p.room,
     dims: online.experienceType === "online" ? {} : parseJsonObject(p.dims),
     review: p.review,
+    creatorUpdate: projectedCreatorUpdate(db, p),
     // A news desk story: headline and the outlets that confirmed it.
     news: p.kind === "status" && String(p.id).startsWith("news_") ? newsDeskReader.forPost(p.id, { viewerId }) : null,
     // A stable descriptor is the publication authority. If its verified
@@ -3210,12 +3246,8 @@ const COMMENT_AUTHOR_IDENTITY_SQL = `u.email_verified_at,
     WHERE a.owner_id=u.id AND a.artist_key=lower(trim(u.artist_name))
       AND a.identity_review_status IN ('pending','rejected')) THEN 1 ELSE 0 END AS artist_identity_held`;
 
-function commentAuthorStatus(comment) {
-  return {
-    role: comment.artist_identity_held ? "fan" : comment.role,
-    verified: !comment.artist_identity_held && !!comment.verified,
-    membershipBadge: memberBadgeFor(db, { id: comment.user_id, email_verified_at: comment.email_verified_at }),
-  };
+function commentAuthorStatus(comment, viewerId) {
+  return postAuthorBadgeProjection({ user: q.userById.get(comment.user_id), viewerId, projectUser: publicUser });
 }
 
 function withCommentPreviews(posts, viewerId) {
@@ -3249,7 +3281,7 @@ function withCommentPreviews(posts, viewerId) {
       avatarUri: safePublicProfileImage(comment.user_id, comment.avatar_uri),
       avatarColor: comment.avatar_color,
       profileUpdatedAt: Number(comment.profile_updated_at) || 0,
-      ...commentAuthorStatus(comment),
+      ...commentAuthorStatus(comment, viewerId),
       text: comment.text,
       deleted: false,
       parentId: comment.parent_id || null,
@@ -3654,7 +3686,7 @@ function safePublicProfileImage(ownerId, value) {
 function publicUser(row, options = {}) {
   const projected = storedPublicUser(row, options);
   if (!projected) return projected;
-  if (options.self) return { ...projected, owner: isOwnerId(db, row.id) };
+  if (options.self) return { ...projected, owner: isOwnerId(db, row.id), postBadgeSnapshot: postBadgeBundle(storedPublicUser(row)) };
   return {
     ...projected,
     avatarUri: safePublicProfileImage(row.id, projected.avatarUri),
@@ -4272,18 +4304,18 @@ function postJsonWithImpressions(p, viewerId) {
 function resolvePostCreateRetry(userId, mutationId, mutationHash, { canonical } = {}) {
   if (!mutationId) return null;
   const receipt = postReceiptByClientMutation.get(userId, mutationId);
+  // Matching only a truncated prefix cannot prove the same authored request,
+  // even for legacy rows. Keep the full text so conflicts preserve the draft.
+  const retryHashes = new Set([mutationHash]);
+  if (canonical) {
+    retryHashes.add(postMutationHash(canonical));
+    if (canonical.mediaAssetIds?.length) retryHashes.add(postMutationHash(canonical, { legacyMediaUrls: true }));
+  }
   if (receipt?.state === "removed") {
     throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
   }
   if (receipt) {
-    let matches = receipt.client_mutation_hash === mutationHash;
-    if (!matches && canonical?.mediaAssetIds?.length) {
-      // Compatibility is an exact legacy digest check, never a comparison
-      // waiver. Keep all authored fields, ordered IDs and current ready URLs.
-      // An old receipt whose pending URL subset has since changed cannot be
-      // reconstructed from attempt-start timestamps: retain a safe conflict.
-      matches = receipt.client_mutation_hash === postMutationHash(canonical, { legacyMediaUrls: true });
-    }
+    const matches = retryHashes.has(receipt.client_mutation_hash);
     if (!matches) {
       throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
     }
@@ -4303,17 +4335,17 @@ function resolvePostCreateRetry(userId, mutationId, mutationHash, { canonical } 
   }
   const stored = feedPostById.get(existing.id);
   const storedHash = stored ? postMutationHash(canonicalStoredPost(stored)) : null;
-  if (!storedHash || storedHash !== mutationHash) {
+  if (!storedHash || !retryHashes.has(storedHash)) {
     throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
   }
   // Rows created before canonical hashing may contain a raw-payload hash or
   // NULL. Heal only after proving the stored post means exactly the same
   // thing as this request; never guess that a missing hash implies success.
-  if (existing.client_mutation_hash !== mutationHash) {
+  if (existing.client_mutation_hash !== storedHash) {
     db.prepare("UPDATE posts SET client_mutation_hash=? WHERE id=? AND user_id=?")
-      .run(mutationHash, existing.id, userId);
+      .run(storedHash, existing.id, userId);
   }
-  insertPostCreateReceipt.run(userId, mutationId, mutationHash, existing.id, now(), now());
+  insertPostCreateReceipt.run(userId, mutationId, storedHash, existing.id, now(), now());
   return {
     id: existing.id,
     post: postJsonWithImpressions(feedPostById.get(existing.id), userId),
@@ -4565,6 +4597,7 @@ function eraseAccountData(u, { at = now(), journal = true } = {}) {
   if (!db.isTransaction) throw new TypeError("Account erasure requires an active transaction");
   if (!u?.id) throw new TypeError("Account erasure requires a current account");
   if (isOwnerId(db, u.id)) throw new ApiError(403, "The permanent Owner account cannot be deleted.", "FORBIDDEN");
+  eraseLocalAlerts(db, u.id);
   const accountReportWhere = `reporter_id=?
     OR (target_type='user' AND target_id=?)
     OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
@@ -4618,6 +4651,7 @@ function eraseAccountData(u, { at = now(), journal = true } = {}) {
   // actions performed by this account and actions about its reports/content.
   db.prepare(`DELETE FROM moderation_actions WHERE target_type='report'
     AND target_id IN (SELECT id FROM reports WHERE ${accountReportWhere})`).run(...accountReportParams);
+  db.prepare("DELETE FROM moderation_actions WHERE target_type='venue_claim' AND target_id IN (SELECT id FROM venue_claims WHERE user_id=?)").run(u.id);
   db.prepare(`DELETE FROM moderation_actions WHERE actor_id=?
     OR (target_type='user' AND target_id=?)
     OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
@@ -4680,6 +4714,9 @@ function eraseAccountData(u, { at = now(), journal = true } = {}) {
   // Structured post tags are JSON rather than foreign-key rows, so account
   // erasure must explicitly remove this id from posts authored by others.
   scrubTaggedUserFromPosts(u.id);
+  // Preserve other authors' reply chains before authored comments cascade.
+  // This shares the deletion transaction, including inactivity and replay.
+  reparentRepliesForAccountErasure(db, u.id);
   // Off-host record so restoring an older backup cannot bring the account back.
   if (journal) recordPrivacyEvent(db, { kind: "account_erased", subjectId: u.id, at });
   db.prepare("DELETE FROM users WHERE id=?").run(u.id);
@@ -4705,12 +4742,12 @@ function setMarketingPreferenceJournaled(preference) {
 export function replayPrivacyJournalOnRestore(options = {}) {
   return replayPrivacyJournalIfRestored(db, {
     ...options,
-    erase: (userId) => atomicWrite(() => {
+    erase: (userId) => {
       const user = q.userById.get(userId);
       if (!user || isOwnerId(db, user.id)) return false;
       eraseAccountData(user, { at: now(), journal: false });
       return true;
-    }),
+    },
     optOut: (userId) => {
       const user = q.userById.get(userId);
       if (!user || user.marketing_opt_out === 1) return false;
@@ -4750,13 +4787,57 @@ const connections = createConnections({
   projectUser: publicUser, projectArtist: publicArtist, resolveArtist: resolveCatalogArtistReference,
   decodeKey: (ctx) => decodedPathParam(ctx, "key", { max: 200, label: "artist link" }), atomicWrite, now,
 });
+const projectManagedUser = createRelationshipManagementProjection({
+  visibleProfileOrNull, blockedEitherWay, projectUser: publicUser,
+});
+
+export const localAlerts = createLocalAlertComposition({ db, requireUser, resolveArtistIdentity: fanClubArtistIdentity, now });
+export const startLocalAlerts = () => localAlerts.start();
+
+const CALENDAR_PUBLISH = Symbol("calendar-publish");
+export const creatorCalendarService = createCreatorCalendarService({ database: db, requireUser, uid, now,
+  authorizeWithdrawal: user => assertArtistPostCleanupCandidate(user, normName(user.artist_name)),
+  authorize: user => {
+    assertArtistPublicationAllowed(user);
+    if (!managedCreatorEntity(db, user.id, "artist", normName(user.artist_name))) throw new ApiError(403, "This account no longer manages its artist page.", "FORBIDDEN");
+  },
+  validatePost: (user, body) => canonicalCreateRequest(user, body),
+  validateBatch: validatedTourDateBatch,
+  submissionLimit: ctx => limit(ctx, "creator-calendar", 20, 60 * 60 * 1000),
+  createPost: (ctx, body) => routes["POST /api/posts"]({ ...ctx, body, [CALENDAR_PUBLISH]: true }),
+  readPost: (ctx, id) => ({ id, ...routes["GET /api/posts/:id"]({ ...ctx, params: { id } }) }),
+  holdMedia: (user, body) => {
+    const request = canonicalCreateRequest(user, body);
+    markOwnedMediaAssociated(db, { ownerId: user.id, urls: request.values.photos, at: now() });
+    for (const record of assetObjectRecords(db, request.values.mediaSelection?.ids || [])) {
+      if (record.ownerId !== user.id) throw new ApiError(403, "Choose your own uploaded media.", "FORBIDDEN");
+      db.prepare("UPDATE media_objects SET status='associated',associated_at=COALESCE(associated_at,?),updated_at=? WHERE owner_id=? AND object_key=? AND status IN ('issued','associated')")
+        .run(now(),now(),user.id,record.objectKey);
+    }
+  },
+  releaseMedia: (accountId, body) => {
+    const ids = (body.mediaAssetIds || []).filter(id => !scheduledCalendarMediaReference(db, { ownerId: accountId, assetId: id })
+      && !db.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(id));
+    const keys = assetObjectRecords(db, ids).filter(row => row.ownerId === accountId).map(row => row.objectKey);
+    for (const url of unreferencedOwnedMediaUrls(db, { ownerId: accountId, urls: body.photos || [] })) {
+      const key = resolvedOwnedMediaKey(db, url, { ownerId: accountId }).key; if (key) keys.push(key);
+    }
+    for (const key of new Set(keys)) db.prepare("UPDATE media_objects SET status='issued',updated_at=? WHERE owner_id=? AND object_key=? AND status='associated'").run(now(),accountId,key);
+  },
+});
+export function startCreatorCalendar() {
+  return startPeriodicJob({ initialDelayMs: 1000, intervalMs: 60000,
+    run: () => creatorCalendarService.runDue(), report: error => console.error("[creator-calendar]", error.code || "publication failed") });
+}
 
 export const routes = {
+  ...localAlerts.routes,
   ...jobRoutes({ database: db, ApiError, assertSafeAuthoredText, requireAdmin, rateLimit: limit, now }),
   ...socialReactionRoutes({ database: db, ApiError, requireUser, rateLimit: limit, atomicWrite, addNotif, now }),
   ...discoverPhotoRoutes({ database: db, rateLimit: limit, ApiError }),
   ...pageHeadRoutes({ ApiError, rateLimit: limit, pageHeadFor }),
   ...publicVenueSnapshotRoutes({ rateLimit: limit, readSnapshot: publicVenueSnapshotForPath }),
+  ...venueCommunityRoutes({ db, readSnapshot: publicVenueSnapshotForPath, resolveReviewKeys: resolveVenueReviewKeys, requireUser, requireAdmin, limit, atomicWrite, uid, now, clean, assertSafeAuthoredText, moderationRecord }),
   ...capacityHandshakeRoutes({
     ApiError,
     databasePath: DATABASE_PATH,
@@ -4780,7 +4861,7 @@ export const routes = {
     now,
     desiredState,
     userById: (id) => q.userById.get(id),
-    projectUser: publicUser,
+    projectManagedUser,
     invalidateRecommendations: invalidateRecommendationSnapshotForViewer,
   }),
   ...accountOnboardingRoutes({
@@ -4897,6 +4978,7 @@ export const routes = {
     requireVerifiedUser,
   }),
   ...concertHistoryRoutes({ database: db, ApiError, requireUser, visibleProfileOrNull, blockedEitherWay, rateLimit: limit, now }),
+  ...concertLookupRoutes({ database: db, ApiError, requireUser, rateLimit: limit, clean, now }),
   ...artistReviewRoutes({
     database: db,
     ApiError,
@@ -6167,6 +6249,7 @@ export const routes = {
           db.prepare("UPDATE users SET signup_cancel_hash=? WHERE id=?").run(cancelHash, id);
           const created = q.userById.get(id);
           const verification = prepareVerification(created);
+          destroySession(ctx.token);
           const issued = createSession(id, ctx.ip, ctx.ua);
           linkedAccounts.grantVerifiedAccounts({ userId: id, users: [q.userById.get(id), ...matching], token: issued.token });
           return { session: issued, verification };
@@ -6222,6 +6305,9 @@ export const routes = {
       if (!current || current.pass_hash !== u.pass_hash || cleanEmail(current.email) !== v.email) {
         throw new ApiError(401, "Wrong email or password.", "AUTH_INVALID");
       }
+      // Replacing this browser/device identity revokes its old registrations in
+      // the same transaction; unrelated sessions and roles remain unchanged.
+      destroySession(ctx.token);
       const session = createSession(current.id, ctx.ip, ctx.ua);
       linkedAccounts.grantVerifiedAccounts({ userId: current.id, users: matching, token: session.token });
       return { session, user: q.userById.get(current.id) };
@@ -6320,6 +6406,7 @@ export const routes = {
       if (!consumed) throw new ApiError(400, "This reset link is invalid or has expired. Request a new one.");
       db.prepare("DELETE FROM sessions WHERE user_id=?").run(u.id);
       revokeNewsroomSessionsForUser(u.id); // sign out everywhere else
+      destroySession(ctx.token);
       const issued = createSession(u.id, ctx.ip, ctx.ua);
       const current = q.userById.get(u.id);
       linkedAccounts.grantVerifiedAccounts({ userId: u.id, users: [current, ...matching.filter((entry) => entry.id !== u.id)], token: issued.token });
@@ -6451,10 +6538,7 @@ export const routes = {
       directMessagePolicy: { parse: (x) => (DIRECT_MESSAGE_POLICIES.includes(x) ? x : undefined) },
       profileAudience: { parse: (x) => (PROFILE_AUDIENCES.includes(x) ? x : undefined) },
       ageBand: { parse: (x) => (isClassifiedAccountAgeBand(x) ? x : undefined) },
-      // Keep this server allow-list aligned with theme.js. If it falls behind,
-      // newer themes get silently rejected here, the server then re-hydrates the
-      // stale theme on /api/me and the client "snaps back" to a previous theme.
-      theme: { parse: (x) => (["stage", "neon", "forest", "ember", "backstage", "vinyl", "daylight", "ice", "rose", "mint", "sunset", "lavender"].includes(x) ? x : undefined) },
+      theme: { parse: (x) => (isThemeKey(x) ? x : undefined) },
       searchIndexingOptOut: { parse: (x) => (typeof x === "boolean" ? x : undefined) },
       concertMapVisible: { parse: (x) => (typeof x === "boolean" ? x : undefined) },
       extras: { parse: () => serializedExtras },
@@ -6462,6 +6546,9 @@ export const routes = {
     if (profileErrors.length) {
       throw new ApiError(400, profileErrors[0], "VALIDATION_FAILED");
     }
+    // Clearing a bio is an explicit edit. The shared optional-field parser
+    // skips empty strings, so retain this one without changing other routes.
+    if (ctx.body?.bio === "") v.bio = "";
     // `shape` leaves null values alone for ordinary optional fields. These two
     // media slots additionally accept explicit null as removal; an omitted
     // slot still means retain it. The existing transaction owns reference
@@ -6524,6 +6611,13 @@ export const routes = {
     atomicWrite(() => {
       ctx.assertCurrentSession?.();
       const identityMember = q.userById.get(u.id);
+      // Validate BOTH write surfaces under the lock against the current role.
+      // A public direct field must not mask a restricted extras.theme request.
+      for (const requested of [v.theme, incomingExtras?.value?.theme]) {
+        if (requested !== undefined && !canAccessTheme(requested, identityMember)) {
+          throw new ApiError(403, "That appearance is reserved for the Pit Team.", "FORBIDDEN");
+        }
+      }
       // Another request may replace these slots while this writer waits. Use
       // the locked row for both finalized-media authority and old-object cleanup.
       const replacedProfileMedia = [
@@ -6740,10 +6834,11 @@ export const routes = {
   },
   "GET /api/me/blocked": (ctx) => {
     const u = requireUser(ctx);
+    ctx.setHeader?.("Cache-Control", "private, no-store");
     const rows = db.prepare(`
       SELECT us.* FROM blocks b JOIN users us ON us.id = b.blocked_id
       WHERE b.blocker_id = ? ORDER BY b.created_at DESC LIMIT 500`).all(u.id);
-    return { users: rows.map((r) => publicUser(r)) };
+    return { users: rows.map((row) => projectManagedUser(row, u)) };
   },
 
 
@@ -6881,56 +6976,13 @@ export const routes = {
     const user = requireUser(ctx);
     assertArtistPublicationAllowed(user);
     limit(ctx, "tour-date-batch", 20, 60 * 60 * 1000);
-    const batch = cleanTourDateBatch(ctx, user);
-    if (user.role === "artist") assertArtistManagementCandidate(user, normName(batch.artist));
-    if (user.role !== "admin" && isLegacyArtistProfile(normName(batch.artist), batch.artist)) {
-      throw legacyArtistReadOnlyError(
-        "Legacy artist pages do not accept artist-submitted tour or concert dates.",
-      );
-    }
-    const includesCurrentOrFutureDate = batch.dates.some((entry) => isCurrentOrUpcomingLiveEvent({
-      date: entry.date,
-      eventEndDate: entry.eventEndDate,
-    }, now()));
-    if (includesCurrentOrFutureDate && artistHasPublishedMemorial(db, {
-      artistKey: normName(batch.artist),
-      artist: batch.artist,
-    })) {
-      throw new ApiError(409, "Future dates cannot be published for a memorialized artist.", "ARTIST_MEMORIALIZED");
-    }
+    const batch = validatedTourDateBatch(ctx, user);
     const writtenAt = now();
-    const source = user.role === "artist" ? "artist-submitted" : "admin-submitted";
     const rows = atomicWrite(() => {
       ctx.assertCurrentSession?.();
       if (user.role === "artist") claimArtistManagement(q.userById.get(user.id), normName(batch.artist));
       assertArtistPublicationAllowed(user);
-      return batch.dates.map((entry) => {
-        const existing = db.prepare(`SELECT id FROM tour_dates
-          WHERE owner_id=? AND lower(artist)=lower(?) AND lower(venue)=lower(?)
-            AND lower(place)=lower(?) AND date=? LIMIT 1`)
-          .get(user.id, batch.artist, entry.venue, entry.place, entry.date);
-        const updatedAt = Math.max(writtenAt, Date.parse(`${entry.date}T00:00:00.000Z`) || writtenAt);
-        const id = existing?.id || uid("td");
-        if (existing) {
-          db.prepare(`UPDATE tour_dates SET artist=?,venue=?,place=?,lat=NULL,lng=NULL,ticket_url=?,sold_out=0,
-            source=?,updated_at=?,release_at=?,event_name=?,event_kind=?,event_end_date=?,billed_artists=?,
-            music_evidence=?,music_qualified=1,event_source_url=? WHERE id=? AND owner_id=?`)
-            .run(batch.artist, entry.venue, entry.place, entry.ticketUrl, source, updatedAt, batch.releaseAt,
-              entry.eventName || null, entry.eventKind || "concert", entry.eventEndDate || null,
-              JSON.stringify(entry.billedArtists || []), entry.eventName ? "staff:verified-official-source" : null,
-              entry.eventSourceUrl || null, id, user.id);
-        } else {
-          db.prepare(`INSERT INTO tour_dates
-            (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,owner_id,release_at,
-              event_name,event_kind,event_end_date,billed_artists,music_evidence,music_qualified,event_source_url)
-            VALUES (?,?,?,?,NULL,NULL,?,?,0,?,?,?,?,?,?,?,?,?,1,?)`)
-            .run(id, batch.artist, entry.venue, entry.place, entry.date, entry.ticketUrl, source, updatedAt, user.id, batch.releaseAt,
-              entry.eventName || null, entry.eventKind || "concert", entry.eventEndDate || null,
-              JSON.stringify(entry.billedArtists || []), entry.eventName ? "staff:verified-official-source" : null,
-              entry.eventSourceUrl || null);
-        }
-        return db.prepare("SELECT * FROM tour_dates WHERE id=?").get(id);
-      });
+      return writeTourDateBatch(db, { batch, user, uid, at: writtenAt });
     });
     return { tourDates: rows.map(tourDateJson) };
   },
@@ -6960,10 +7012,14 @@ export const routes = {
     const blockSql = viewer ? `AND NOT EXISTS (
       SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
     ) AND NOT EXISTS (SELECT 1 FROM account_mutes mute WHERE mute.muter_id=? AND mute.muted_id=p.user_id)` : "";
+    const local = ctx.query?.mode === "local";
+    const homeCity = local ? String(user.home_city || "").trim() : "";
+    const localSql = local ? "AND trim(lower(u.home_city))=trim(lower(?)) AND length(trim(u.home_city))>0" : "";
     const cursorSql = cursor ? "AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))" : "";
     const args = [];
     if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
     if (viewer) args.push(viewer, viewer, viewer);
+    if (local) args.push(homeCity);
     args.push(lim + 1);
     if (!cursor) args.push(off);
     // Moderators see which cards carry open reports right on the feed, so
@@ -6979,7 +7035,7 @@ export const routes = {
           WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
         ${SEEN_ORDINAL_SQL}${flagSql}
       FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE p.removed=0 AND substr(p.id,1,5)<>'news_' AND ${activeAccountSql("u")} ${cursorSql} ${blockSql}
+      WHERE p.removed=0 AND substr(p.id,1,5)<>'news_' AND ${activeAccountSql("u")} ${cursorSql} ${blockSql} ${localSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
     const projectedRows = attachPostImpressionStats(db, attachViewerLikes(
@@ -7227,7 +7283,10 @@ export const routes = {
     };
   },
 
+  ...creatorCalendarRoutes(creatorCalendarService),
+
   "POST /api/posts": (ctx) => {
+    if (ctx.body?.creatorUpdate?.calendar && !ctx[CALENDAR_PUBLISH]) return creatorCalendarService.submit(ctx);
     const u = requireUser(ctx);
     assertArtistPublicationAllowed(u);
     const mutationId = clientMutationId(ctx.body?.clientMutationId);
@@ -7242,6 +7301,9 @@ export const routes = {
     const retryMedia = { canonical: request.canonical };
     const duplicate = resolvePostCreateRetry(u.id, mutationId, mutationHash, retryMedia);
     if (duplicate) return duplicate;
+    // Compatibility above can only return an already committed identical post.
+    // No oversized request may reach a new write, including a raced retry.
+    if (request.kind === "review") acceptedReviewText(ctx.body?.review);
     postWriteLimits(ctx, {
       campaign: request.kind === "status" && !!request.values.campaign,
     });
@@ -7297,6 +7359,7 @@ export const routes = {
         if (v.attendanceTicket) postAttendanceTicket.run(JSON.stringify(v.attendanceTicket), id, u.id);
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
         if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
+        persistCreatorUpdate(db, { accountId: u.id, postId: id, update: v.creatorUpdate, at: now(), artistIdentity: v.creatorUpdate?.entityType === "artist" ? fanClubArtistIdentity(v.creatorUpdate.entityKey) : null });
         addPostTagNotifications(transactionTaggedUserIds, u.id, id, v.memorialMemory ? v.artist : null);
         return null;
       });
@@ -7350,6 +7413,8 @@ export const routes = {
       throw new ApiError(409, "Going ticket posts cannot be edited. Remove it and share a new ticket instead.", "CONFLICT");
     }
 
+    if (current.creator_update) assertCreatorUpdate(db, u.id, { kind: "status", creatorUpdate: JSON.parse(current.creator_update) });
+    if (ctx.body?.creatorUpdate != null) throw new ApiError(400, "Publish a new update to change its date or release details.", "VALIDATION_FAILED");
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
     const editable = ["artist", "artistKey", "venue", "city", "eventAddress", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign", "experienceType", "onlineTitle", "youtubeUrl", "youtubeVideoId",
@@ -7393,7 +7458,7 @@ export const routes = {
       if (body[key] === null && !required) { next[key] = null; return; }
       const numeric = Number(body[key]);
       if (!Number.isFinite(numeric)) throw new ApiError(400, `${key} is invalid`, "VALIDATION_FAILED");
-      const value = clampRating(numeric);
+      const value = numeric === Number(current[key]) ? current[key] : clampRating(numeric);
       if (required && value <= 0) throw new ApiError(400, `${key} is required`, "VALIDATION_FAILED");
       next[key] = value;
     };
@@ -7418,7 +7483,12 @@ export const routes = {
       if (raw && !value) throw new ApiError(400, "date is invalid", "VALIDATION_FAILED");
       next.date = value;
     }
-    textField("review", LIMITS.review, { newlines: true });
+    if (has("review") && current.kind !== "status") {
+      if (typeof body.review !== "string") throw new ApiError(400, "review is invalid", "VALIDATION_FAILED");
+      next.review = body.review === current.review ? current.review : acceptedReviewText(body.review);
+    } else {
+      textField("review", LIMITS.review, { newlines: true });
+    }
     if (has("review")) assertSafeAuthoredText(next.review, { field: current.kind === "status" ? "post" : "review" });
     ratingField("overall", { required: true });
     ratingField("band");
@@ -7640,7 +7710,7 @@ export const routes = {
     }
 
     if (current.kind === "status") {
-      if (!next.review && !storedPhotos.length && !next.song && !next.playlist) {
+      if (!current.creator_update && !next.review && !storedPhotos.length && !next.song && !next.playlist) {
         throw new ApiError(400, "Keep some text, media, a tagged song, or a playlist in this post.", "VALIDATION_FAILED");
       }
     }
@@ -7761,6 +7831,7 @@ export const routes = {
     const nextTaggedUserIds = storedPostTaggedUserIds(next.tagged_user_ids);
     atomicWrite(() => {
       ctx.assertCurrentSession?.();
+      if (current.creator_update) assertCreatorUpdate(db, u.id, { kind: "status", creatorUpdate: JSON.parse(current.creator_update) });
       const transactionCurrent = db.prepare(`SELECT tagged_user_ids,COALESCE(updated_at,created_at) AS version
         FROM posts WHERE id=? AND user_id=? AND removed=0`).get(current.id, u.id);
       if (!transactionCurrent || transactionCurrent.version !== currentVersion) {
@@ -8010,7 +8081,7 @@ export const routes = {
         parentId: c.parent_id || null, createdAt: c.created_at,
       } : {
         id: c.id, userId: c.user_id, name: c.name, initials: c.initials,
-        avatarUri: safePublicProfileImage(c.user_id, c.avatar_uri), avatarColor: c.avatar_color, ...commentAuthorStatus(c),
+        avatarUri: safePublicProfileImage(c.user_id, c.avatar_uri), avatarColor: c.avatar_color, ...commentAuthorStatus(c, viewerId),
         profileUpdatedAt: Number(c.profile_updated_at) || 0, text: c.text, deleted: false,
         parentId: c.parent_id || null, createdAt: c.created_at,
         ...commentLikeInfo(db, c.id, viewerId),
@@ -8095,27 +8166,17 @@ export const routes = {
   },
 
   // ---- direct messages (SQLite migration slice 4) ----
-  // Every user I've DM'd + that thread's messages. At prototype scale returning
-  // all messages is cheap and lets the client compute the Requests/Friends split
-  // and unread exactly as it does locally (read markers stay client-side).
+  // Thread previews and server-owned read/consent state. Older messages remain
+  // available through the existing cursor-paginated single-conversation route.
   "GET /api/me/threads": (ctx) => {
     const u = requireUser(ctx);
     const hidden = blockedIdSet(u.id);
     const readProjection = directMessageReadProjection(db, u.id);
     const consentProjection = directMessageConsentProjection(db, u.id);
-    // Inbox refreshes need only one latest message per conversation. A windowed
-    // query avoids downloading up to 500 messages for every thread every time the
-    // inbox is opened or refreshed, while the full route remains for hydration.
+    // Seek the latest visible row in each direction instead of ranking history.
+    // The full route remains available for hydration with its existing limits.
     if (String(ctx.query?.summary || "") === "1") {
-      const latest = db.prepare(`SELECT id,from_id,to_id,text,created_at,other_id FROM (
-        SELECT id,from_id,to_id,text,created_at,
-          CASE WHEN from_id=? THEN to_id ELSE from_id END AS other_id,
-          ROW_NUMBER() OVER (
-            PARTITION BY CASE WHEN from_id=? THEN to_id ELSE from_id END
-            ORDER BY created_at DESC,id DESC
-          ) AS row_number
-        FROM dms WHERE removed=0 AND (from_id=? OR to_id=?)
-      ) WHERE row_number=1 ORDER BY created_at DESC,id DESC LIMIT 200`).all(u.id, u.id, u.id, u.id);
+      const latest = directMessageLatestPerPeer(db, u.id);
       const visibleLatest = latest.filter((message) => !hidden.has(message.other_id));
       const relationshipContexts = messageRelationshipContextService.forPeers(
         u.id,
@@ -8126,7 +8187,7 @@ export const routes = {
         const other = q.userById.get(message.other_id);
         return other ? {
           otherId: message.other_id,
-          otherUser: publicUser(other),
+          otherUser: projectManagedUser(other, u),
           messages: [{ id: message.id, from: message.from_id, text: message.text, createdAt: message.created_at }],
           relationshipContext: relationshipContexts.get(message.other_id) || null,
           ...readProjection.forOther(message.other_id),
@@ -8134,8 +8195,7 @@ export const routes = {
         } : null;
       }).filter(Boolean), removedIds: removedDmIdsFor(u.id) };
     }
-    const others = db.prepare(`SELECT DISTINCT CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other
-                               FROM dms WHERE removed=0 AND (from_id = ? OR to_id = ?)`).all(u.id, u.id, u.id);
+    const others = directMessageLatestPerPeer(db, u.id, -1).map(message => ({ other: message.other_id }));
     const visibleOthers = others.filter((entry) => !hidden.has(entry.other));
     const relationshipContexts = messageRelationshipContextService.forPeers(
       u.id,
@@ -8150,7 +8210,7 @@ export const routes = {
         .all(u.id, o.other, o.other, u.id);
       return {
         otherId: o.other,
-        otherUser: publicUser(other),
+        otherUser: projectManagedUser(other, u),
         messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })),
         relationshipContext: relationshipContexts.get(o.other) || null,
         ...readProjection.forOther(o.other),
@@ -8215,7 +8275,10 @@ export const routes = {
     };
   },
 
-  "POST /api/dms/:otherId": (ctx) => {
+  // Acquire the writer lock before resolving current authority or retry state.
+  // The message, directional consent triggers and any required notification
+  // either commit together or leave no failed-looking delivery behind.
+  "POST /api/dms/:otherId": (ctx) => atomicWrite(() => {
     const u = requireUser(ctx);
     const other = ctx.params.otherId;
     if (other === u.id) throw new ApiError(400, "You can't message yourself.");
@@ -8226,11 +8289,11 @@ export const routes = {
     assertSafeAuthoredText(text, { field: "message" });
     const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId
-      ? db.prepare("SELECT id,to_id,text,removed FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      ? db.prepare("SELECT id,to_id,text,removed,created_at FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
       : null;
     if (existing) {
       assertChatRetryMatches(existing, { to_id: other, text });
-      return { id: existing.id, duplicate: true };
+      return { id: existing.id, createdAt: existing.created_at, duplicate: true };
     }
     const priorConversation = !!db.prepare(`SELECT 1 FROM dms
       WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) LIMIT 1`).get(u.id, other, other, u.id);
@@ -8256,24 +8319,25 @@ export const routes = {
     }
     limit(ctx, "dm", 120, 10 * 60 * 1000);
     const id = uid("dm");
+    const createdAt = now();
     if (mutationId) {
       const inserted = db.prepare("INSERT OR IGNORE INTO dms (id,from_id,to_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
-        .run(id, u.id, other, text, mutationId, now());
+        .run(id, u.id, other, text, mutationId, createdAt);
       if (!inserted.changes) {
-        const raced = db.prepare("SELECT id,to_id,text,removed FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1")
+        const raced = db.prepare("SELECT id,to_id,text,removed,created_at FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1")
           .get(u.id, mutationId);
         assertChatRetryMatches(raced, { to_id: other, text });
-        if (raced) return { id: raced.id, duplicate: true };
+        if (raced) return { id: raced.id, createdAt: raced.created_at, duplicate: true };
         throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
       }
     } else {
-      db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run(id, u.id, other, text, now());
+      db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run(id, u.id, other, text, createdAt);
     }
     addNotif(other, u.id, "dm", { postId: id, text: text.slice(0, 80) });
-    return { id };
-  },
+    return { id, createdAt };
+  }),
 
-  ...notificationRoutes({ database: db, requireUser, ApiError, pageRequest, finishPage, safePublicProfileImage }),
+  ...notificationRoutes({ database: db, requireUser, ApiError, pageRequest, finishPage, safePublicProfileImage, localAlertVisibility: LOCAL_ALERT_NOTICE_VISIBLE_SQL }),
 
   // ---- fan clubs (SQLite migration slice 5) ----
   // The artists this account is a member of, lets the client hydrate membership
@@ -8446,28 +8510,29 @@ export const routes = {
     if (!artist) throw new ApiError(403, "Join this fan club before jumping into the conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
     const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId
-      ? db.prepare("SELECT id,artist,text,removed FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      ? db.prepare("SELECT id,artist,text,removed,created_at FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
       : null;
     if (existing) {
       assertChatRetryMatches(existing, { artist, text });
-      return { id: existing.id, duplicate: true };
+      return { id: existing.id, createdAt: existing.created_at, duplicate: true };
     }
     limit(ctx, "fanmsg", 60, 60 * 60 * 1000);
     const id = uid("fc");
+    const createdAt = now();
     if (mutationId) {
       const inserted = db.prepare("INSERT OR IGNORE INTO fan_club_messages (id,artist,user_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
-        .run(id, artist, u.id, text, mutationId, now());
+        .run(id, artist, u.id, text, mutationId, createdAt);
       if (!inserted.changes) {
-        const raced = db.prepare("SELECT id,artist,text,removed FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
+        const raced = db.prepare("SELECT id,artist,text,removed,created_at FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
           .get(u.id, mutationId);
         assertChatRetryMatches(raced, { artist, text });
-        if (raced) return { id: raced.id, duplicate: true };
+        if (raced) return { id: raced.id, createdAt: raced.created_at, duplicate: true };
         throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
       }
     } else {
-      db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, artist, u.id, text, now());
+      db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, artist, u.id, text, createdAt);
     }
-    return { id };
+    return { id, createdAt };
   },
 
   // ---- concert lounge (shared attendee chat, keyed by concertKey) ----
@@ -8566,12 +8631,12 @@ export const routes = {
     if (!attendee) throw new ApiError(403, "Join this show's Going list before posting in the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
     const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId
-      ? db.prepare("SELECT id,lounge_id,text,removed FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      ? db.prepare("SELECT id,lounge_id,text,removed,created_at FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
       : null;
     if (existing) {
       assertChatRetryMatches(existing, { lounge_id: key, text });
       legacySafeLoungeSnapshot(key, now(), { register: true });
-      return { id: existing.id, duplicate: true };
+      return { id: existing.id, createdAt: existing.created_at, duplicate: true };
     }
     const lifecycle = legacySafeLoungeSnapshot(key, now(), { register: true });
     if (lifecycle.status === "closed") {
@@ -8579,20 +8644,21 @@ export const routes = {
     }
     limit(ctx, "loungemsg", 90, 60 * 60 * 1000);
     const id = uid("lm");
+    const createdAt = now();
     if (mutationId) {
       const inserted = db.prepare("INSERT OR IGNORE INTO lounge_messages (id,lounge_id,user_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
-        .run(id, key, u.id, text, mutationId, now());
+        .run(id, key, u.id, text, mutationId, createdAt);
       if (!inserted.changes) {
-        const raced = db.prepare("SELECT id,lounge_id,text,removed FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
+        const raced = db.prepare("SELECT id,lounge_id,text,removed,created_at FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
           .get(u.id, mutationId);
         assertChatRetryMatches(raced, { lounge_id: key, text });
-        if (raced) return { id: raced.id, duplicate: true };
+        if (raced) return { id: raced.id, createdAt: raced.created_at, duplicate: true };
         throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
       }
     } else {
-      db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, now());
+      db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, createdAt);
     }
-    return { id };
+    return { id, createdAt };
   },
 
   // ---- consented first-party product analytics ----
@@ -10054,23 +10120,19 @@ export const routes = {
   // ---- venue reviews (slice 7) ----
   "GET /api/venues/:key/reviews": (ctx) => {
     const key = canonicalVenueKey(decodedPathParam(ctx, "key", { max: 200, label: "venue link" }));
+    if (key?.startsWith('/venue/')) throw new ApiError(400, "Open the venue page to read its ratings.", "VALIDATION_FAILED");
     if (!key) throw new ApiError(400, "Choose a venue first.", "VALIDATION_FAILED");
     const lookupKeys = venueLookupKeys(key);
     const viewer = ctx.user?.id || null;
     const { cursor, limit } = pageRequest(ctx, 200, 200);
-    const blockSql = viewer ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
-      (b.blocker_id=? AND b.blocked_id=r.user_id) OR (b.blocker_id=r.user_id AND b.blocked_id=?))` : "";
-    const cursorSql = cursor ? "AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : "";
-    const args = [...lookupKeys];
-    if (viewer) args.push(viewer, viewer);
-    if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
-    args.push(limit + 1);
-    const keyPlaceholders = lookupKeys.map(() => "?").join(",");
+    const cursorSql = cursor ? "AND (r.created_at < @at OR (r.created_at = @at AND r.id < @id))" : "";
+    const args = { keys: JSON.stringify(lookupKeys), viewer, limit: limit + 1,
+      ...(cursor ? { at: cursor.createdAt, id: cursor.id } : {}) };
     const found = db.prepare(`SELECT r.*, u.name, u.initials FROM venue_reviews r JOIN users u ON u.id=r.user_id
-                             WHERE r.venue_key IN (${keyPlaceholders}) AND r.removed=0 AND ${activeAccountSql("u")} ${blockSql} ${cursorSql}
-                             ORDER BY r.created_at DESC, r.id DESC LIMIT ?`).all(...args);
+                             WHERE r.venue_key IN (SELECT value FROM json_each(@keys)) AND ${venueReviewVisibilitySql()} ${cursorSql}
+                             ORDER BY r.created_at DESC, r.id DESC LIMIT @limit`).all(args);
     const { rows, nextCursor } = finishPage(found, limit);
-    return { reviews: rows.map((r) => ({
+    return { stats: createPublicVenueReviewService(db, { resolveReviewKeys: resolveVenueReviewKeys }).read({ venueKey: key, viewerId: viewer, limit: 0 }).stats, reviews: rows.map((r) => ({
       id: r.id,
       userId: r.user_id,
       name: r.name,
@@ -10087,6 +10149,7 @@ export const routes = {
     const u = requireUser(ctx);
     limit(ctx, "venuereview", 30, 60 * 60 * 1000);
     const key = canonicalVenueKey(decodedPathParam(ctx, "key", { max: 200, label: "venue link" }));
+    if (key?.startsWith('/venue/')) throw new ApiError(400, "Open the venue page to rate this venue.", "VALIDATION_FAILED");
     const rating = clampRating(ctx.body?.rating);
     if (!key || !rating) throw new ApiError(400, "Bad review.");
     const text = clean(ctx.body?.text, { max: LIMITS.review, newlines: true });
@@ -10156,6 +10219,10 @@ export const routes = {
       return row && !row.removed && !blockedEitherWay(viewerId, row.user_id) ? postJsonWithImpressions(row, viewerId) : null;
     },
   }),
+  ...eventAccountRoutes({ database: db, requireUser, requireAdmin, rateLimit: limit, moderationRecord, uid, pageRequest, finishPage, now }),
+  ...creatorPostRoutes({ database: db, requireUser, rateLimit: limit, artistIdentity: fanClubArtistIdentity,
+    resolveUnclaimedEntity: (type, key) => type === 'venue' ? canonicalVenueCreatorTarget(publicVenueSnapshotForPath, key) : resolveCanonicalEventEntity(db, type, key),
+    readPost: (ctx, id) => routes["GET /api/posts/:id"]({ ...ctx, params: { id } }) }),
   ...artistUpdatesRoutes({
     ApiError,
     rateLimit: limit,

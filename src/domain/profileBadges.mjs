@@ -1,4 +1,4 @@
-import { STATUS_BADGES } from "./badges.mjs";
+import { STATUS_BADGES } from "./statusBadges.mjs";
 
 // A display preference, never a source of earned badges or account authority.
 // null/omitted follows current and future awards; [] deliberately hides all.

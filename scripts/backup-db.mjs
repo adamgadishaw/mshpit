@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
 import { uploadPrivateBackup } from "../server/backupTransfer.js";
 import { fenceBackupSnapshot } from "../server/databaseRecovery.js";
+import { createBackupPartial, reconcileBackupPartials, removeBackupPartial } from "./backup-db-partials.mjs";
 import {
   backupRetentionCount,
   backupSourceManifest,
@@ -106,7 +107,9 @@ function freeBackupBytes() {
 // that refuses to start without one stayed down (2026-09-11). Delete the oldest
 // completed snapshots only when that makes the copy fit; the newest always stays.
 function makeRoomForCopy(requiredBytes) {
-  const plan = snapshotsToFreeSpace({ snapshots: completedSnapshots(), freeBytes: freeBackupBytes(), requiredBytes });
+  const freeBytes = freeBackupBytes();
+  console.log(`capacity  ${Number.isFinite(freeBytes) ? megabytes(freeBytes) : "unknown"} MB free, ${megabytes(requiredBytes)} MB required including write headroom`);
+  const plan = snapshotsToFreeSpace({ snapshots: completedSnapshots(), freeBytes, requiredBytes });
   if (!plan.fits) {
     throw Object.assign(new Error("Backup deferred: disk space cannot safely hold a new snapshot and write headroom."), {
       code: "BACKUP_DISK_SPACE",
@@ -146,6 +149,11 @@ if (verifyAt !== -1) {
 if (!existsSync(SOURCE)) { console.error(`No database at ${SOURCE}. Set PIT_DATA_DIR.`); process.exit(1); }
 mkdirSync(BACKUP_DIR, { recursive: true });
 
+// Reclaim only aged, explicitly owned partials whose writer is known to have
+// exited. Re-measure actual filesystem space afterwards, before any recovery
+// point is pruned. Unknown/legacy and active partials remain visible in totals.
+const partials = reconcileBackupPartials(BACKUP_DIR);
+console.log(`partials  ${partials.removedCount} abandoned removed (${megabytes(partials.removedBytes)} MB), ${partials.preservedCount} preserved (${megabytes(partials.partialBytes)} MB), ${partials.unreadableCount} unreadable`);
 const walPath = `${SOURCE}-wal`;
 // An impossible copy must not destroy history during retention rotation.
 makeRoomForCopy(requiredBackupBytes(statSync(SOURCE).size, existsSync(walPath) ? statSync(walPath).size : 0));
@@ -169,7 +177,8 @@ try {
 const dest = join(BACKUP_DIR, `pit-${stamp()}.db`);
 // A crash or failed integrity check must not leave a filename the scheduler
 // considers successful. Only the atomic rename publishes a completed snapshot.
-const partial = `${dest}.partial-${process.pid}`;
+let ownedPartial = createBackupPartial(BACKUP_DIR, basename(dest));
+let partial = ownedPartial.path;
 let got;
 let bytes;
 let uploadedAt = null;
@@ -181,7 +190,7 @@ try {
     // On a full disk keep only the newest verified snapshot and retry once; a
     // second failure still refuses, as before.
     if (!isDiskFullError(error)) throw error;
-    if (existsSync(partial)) unlinkSync(partial);
+    if (!removeBackupPartial(ownedPartial)) throw error;
     // Recheck after the failed copy: concurrent writes may have consumed the
     // initial margin. Never delete additional recovery history if a retry still
     // cannot fit with write headroom, or if disk metrics are now unavailable.
@@ -191,6 +200,8 @@ try {
     const totalDropped = beforeRetry - completedSnapshots().length;
     if (!totalDropped) throw error;
     console.log(`space     disk full during copy: pruned ${totalDropped} older snapshot(s), kept the newest, retrying once`);
+    ownedPartial = createBackupPartial(BACKUP_DIR, basename(dest));
+    partial = ownedPartial.path;
     copyDatabaseInto(partial);
   }
 
@@ -206,11 +217,12 @@ try {
   // The scheduler checks off-host receipts independently of local freshness, so
   // this does not suppress a missing/overdue remote retry or claim remote success.
   renameSync(partial, dest);
+  removeBackupPartial(ownedPartial);
   if (args.includes("--upload")) uploadedAt = await uploadPrivateBackup(dest, {
     publishedName: basename(dest), timeoutMs: UPLOAD_TIMEOUT_MS,
   });
 } catch (error) {
-  try { if (existsSync(partial)) unlinkSync(partial); } catch {}
+  try { removeBackupPartial(ownedPartial); } catch {}
   throw error;
 }
 

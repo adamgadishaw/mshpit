@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Image, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Image, StyleSheet, Text, TextInput, View } from "react-native";
+import ScrollView from "../components/PageScrollView";
 import { useStore } from "../store";
 import { catalogEditorForAccount } from "../features/catalogEditor/catalogEditorService";
 import { createCatalogBatch } from "../features/catalogEditor/catalogBatchState.mjs";

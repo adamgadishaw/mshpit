@@ -1,3 +1,4 @@
+import { CREATOR_NOTICE_VISIBLE_SQL } from "../creatorPosts/creatorPostService.js";
 import { directMessageInboxUnread } from "../../dmReadRoutes.js";
 import { withImmediateWrite } from "../../databaseTransaction.js";
 import { SOCIAL_NOTIFICATION_VISIBLE_SQL } from "../socialReactions/socialReactions.js";
@@ -6,7 +7,7 @@ const READ_CONTRACT = "notification-ids-v1";
 const MAX_ACKNOWLEDGEMENTS = 100;
 // The same visibility rule governs rows, totals and acknowledgements. Apply it
 // before LIMIT so hidden actors cannot consume a page or its continuation slot.
-const VISIBLE_SQL = `${SOCIAL_NOTIFICATION_VISIBLE_SQL}
+const VISIBLE_SQL = `${SOCIAL_NOTIFICATION_VISIBLE_SQL} AND ${CREATOR_NOTICE_VISIBLE_SQL}
   AND (n.actor_id IS NULL OR NOT EXISTS (
     SELECT 1 FROM blocks b WHERE (b.blocker_id=n.user_id AND b.blocked_id=n.actor_id)
       OR (b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)
@@ -14,9 +15,11 @@ const VISIBLE_SQL = `${SOCIAL_NOTIFICATION_VISIBLE_SQL}
     SELECT 1 FROM account_mutes mute WHERE mute.muter_id=n.user_id AND mute.muted_id=n.actor_id
   ))`;
 
-export function notificationRoutes({ database, requireUser, ApiError, pageRequest, finishPage, safePublicProfileImage }) {
+export function notificationRoutes({ database, requireUser, ApiError, pageRequest, finishPage, safePublicProfileImage, localAlertVisibility = "1=1" }) {
+  const visibleSql = `${VISIBLE_SQL} AND ${localAlertVisibility}`;
+  const hasLocalAlerts = localAlertVisibility !== "1=1";
   const unread = (accountId) => database.prepare(`SELECT COUNT(*) c FROM notifications n
-    WHERE n.user_id=$viewer AND n.read=0 AND ${VISIBLE_SQL}`).get({ $viewer: accountId }).c;
+    WHERE n.user_id=$viewer AND n.read=0 AND ${visibleSql}`).get({ $viewer: accountId }).c;
 
   const acknowledge = (ctx) => {
     const account = requireUser(ctx);
@@ -40,7 +43,7 @@ export function notificationRoutes({ database, requireUser, ApiError, pageReques
           return key;
         }).join(",");
         const visible = new Set(database.prepare(`SELECT n.id FROM notifications n
-          WHERE n.user_id=$viewer AND n.id IN (${placeholders}) AND ${VISIBLE_SQL}`).all(bindings).map((row) => row.id));
+          WHERE n.user_id=$viewer AND n.id IN (${placeholders}) AND ${visibleSql}`).all(bindings).map((row) => row.id));
         confirmed = ids.filter((id) => visible.has(id));
         const markRead = database.prepare("UPDATE notifications SET read=1 WHERE user_id=? AND id=? AND read=0");
         for (const id of confirmed) markRead.run(account.id, id);
@@ -60,9 +63,10 @@ export function notificationRoutes({ database, requireUser, ApiError, pageReques
       const args = { $viewer: account.id, $limit: limit + 1,
         ...(cursor ? { $before: cursor.createdAt, $id: cursor.id } : {}) };
       const found = database.prepare(`SELECT n.*, a.name AS actor_name, a.initials AS actor_initials,
-          a.avatar_uri AS actor_uri, a.avatar_color AS actor_color
-        FROM notifications n LEFT JOIN users a ON a.id=n.actor_id
-        WHERE n.user_id=$viewer AND ${VISIBLE_SQL} ${cursorSql}
+          a.avatar_uri AS actor_uri, a.avatar_color AS actor_color, p.kind AS post_kind, p.creator_update IS NOT NULL AS creator_update,
+          ${hasLocalAlerts ? "(SELECT alert.id FROM local_event_alerts alert WHERE alert.notification_id=n.id AND alert.owns_notice=1 AND alert.account_id=n.user_id)" : "NULL"} AS alert_id
+        FROM notifications n LEFT JOIN users a ON a.id=n.actor_id LEFT JOIN posts p ON p.id=n.post_id
+        WHERE n.user_id=$viewer AND ${visibleSql} ${cursorSql}
         ORDER BY n.created_at DESC, n.id DESC LIMIT $limit`).all(args);
       const { rows, nextCursor } = finishPage(found, limit);
       return {
@@ -71,8 +75,8 @@ export function notificationRoutes({ database, requireUser, ApiError, pageReques
           id: n.id, type: n.type, actorId: n.actor_id,
           actorName: n.actor_name || "Someone", actorInitials: n.actor_initials || "?",
           actorUri: safePublicProfileImage(n.actor_id, n.actor_uri), actorColor: n.actor_color,
-          postId: n.post_id, commentId: n.comment_id || null, artist: n.artist, text: n.text,
-          ts: n.created_at, read: !!n.read,
+          postId: n.post_id, postKind: n.post_kind || null, creatorUpdate: !!n.creator_update, commentId: n.comment_id || null, artist: n.artist, text: n.text,
+          alertId: n.alert_id || null, ts: n.created_at, read: !!n.read,
         })),
         unread: unread(account.id), inboxUnread: directMessageInboxUnread(database, account.id), nextCursor,
       };

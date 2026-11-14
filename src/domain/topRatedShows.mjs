@@ -63,16 +63,33 @@ export function topRatedShowMatchesCity(row, city) {
   return clean(row?.venueCity || row?.city?.split(",")[0], 120).toLocaleLowerCase("en") === requested;
 }
 
-export function topRatedShowNavigation(row) {
-  if (!row) return null;
+export function topRatedShowNavigation(row, archive) {
+  if (!row || !archive) return null;
+  const identity = value => String(value || "").trim().normalize("NFKC").toLocaleLowerCase("en").replace(/\s+/gu, " ");
+  const shows = Array.isArray(archive.shows) ? archive.shows : [];
+  const exactKey = row.archiveShowKey || row.key;
+  const exact = shows.find(show => show.key === exactKey);
+  const matches = exact ? [exact] : shows.filter(show => show.date === row.date && (
+    row.venueKey
+      ? !!show.venueKey && identity(row.venueKey) === identity(show.venueKey)
+      : identity(row.venue) === identity(show.venue)
+  ));
+  // Ranking keys include provider/location identity; archive keys belong to
+  // the canonical artist and post venue. Never send one namespace as the other.
+  if (matches.length !== 1 || !matches[0].key) return null;
+  const show = matches[0];
   return {
     ...row,
-    key: row.key,
+    ...show,
+    id: show.key,
+    key: show.key,
+    archiveShowKey: show.key,
+    artistKey: archive.artist?.key || archive.artist?.artistKey || row.artistKey,
     performanceEvent: true,
-    overall: row.avgRating,
-    ratingCount: row.ratingCount,
-    city: row.place || row.city || "",
-    tour: row.tourName || "",
+    overall: show.avgRating,
+    ratingCount: show.ratingCount,
+    city: show.place || show.city || row.place || row.city || "",
+    tour: show.tourName || "",
     review: "",
     media: 0,
     likes: 0,

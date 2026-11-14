@@ -1,23 +1,37 @@
+import { assertEventRsvpAvailable } from "./domain/eventRsvp.mjs";
+const claimIOSCommentRead = Platform.OS === "ios" ? require("./lib/iosCommentReadFence.ios.js").claimIOSCommentRead : null;
+import { createFeedHeadStatus, hasFeedHeadReceipt } from "./hooks/feedHeadStatus";
+const invalidateIOSDetailPrivacy = Platform.OS === "ios" ? require("./lib/iosDetailPrivacy").invalidateIOSDetailPrivacy : null;
 import { nativeVenueCoordinates } from "./domain/nativeVenueCoordinates.mjs";
 import { nativeNearbyVenues } from "./domain/nativeNearbyVenues.mjs";
 import { nativeVenueLookupCache } from "./domain/nativeVenueLookupCache.mjs";
 import { createContext, useContext, useState, useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
+const claimIOSProfileRead = Platform.OS === "ios" ? require("./lib/iosProfileReadFence.ios.js").claimIOSProfileRead : null;
+const createIOSArtistPhotoLoader = Platform.OS === "ios" ? require("./features/artistReviews/services/artistPhotoPrivacyService.ios.js").createIOSArtistPhotoLoader : null;
+const projectIOSArtistPhotos = Platform.OS === "ios" ? require("./features/artistReviews/services/artistPhotoPrivacyService.ios.js").projectIOSArtistPhotos : null;
+const createIOSArtistSeenCount = Platform.OS === "ios" ? require("./features/artistOverview/artistDetailReadsService.ios.js").createIOSArtistSeenCount : null;
+const createIOSArtistRatingLoader = Platform.OS === "ios" ? require("./features/artistOverview/artistDetailReadsService.ios.js").createIOSArtistRatingLoader : null;
 import { seedFeed, ratedShows, haversineKm, installDemoCatalogShows } from "./data";
 import { memberBadgeTypes } from "./domain/memberBadges.mjs";
+import { reconcilePostAuthorBadges, reconcileCommentAuthorBadges } from "./domain/postBadgeBundle.mjs";
+import { publishAuthorBadgeChange } from "./domain/authorBadgeChanges.mjs";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
 import { load, remove, save } from "./lib/persist";
 import { api, AppError, captureAppError, configureApiIdentity } from "./lib/api";
 import { fetchPostById } from "./lib/newsDeskApi";
-import { saveArtistFollowing } from "./lib/connectionsApi";
+import { saveArtistFollowing } from "./lib/artistFollowingApi";
 import { MAX_FOLLOWED_ARTISTS, artistFollowReceipt } from "./domain/artistFollowFanClub.mjs";
 import { authTransitions, AUTH_INTENT_KEY } from "./lib/authTransitions";
 import { classifyAccountAgeBand, requestAccountExport, updateAnnouncementEmailPreference, updateDirectMessagePreference, updateProfileAudience, updateProfileSearchIndexingPreference } from "./lib/accountPrivacyApi";
 import { requestFreshDeezerPreview } from "./lib/playbackApi";
-import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount, syncNativeAccountTheme } from "./theme";
+import { clearStoredTheme, setTheme as applyTheme, syncThemeFromAccount, syncNativeAccountTheme } from "./theme";
+import { isStaff } from "./domain/staffRoles.mjs";
+import { canAccessTheme } from "./domain/themeAccess.mjs";
 import { artistMeta, installIngestedCatalog } from "./seed/ingested";
 import { arenaVenues } from "./seed/arenas";
-import { ACHIEVEMENTS } from "./domain/badges.mjs";
+import { ACHIEVEMENT_RULES as ACHIEVEMENTS } from "./domain/achievementRules.mjs";
+import { canonicalProfileBadges, profileBadgesSaveConfirmed } from "./domain/profileBadges.mjs";
 import { verifiedArtistGenre } from "./domain/genre.mjs";
 import { profileGenreSelection } from "./domain/genrePreferences.mjs";
 import { SIGNUP_ONBOARDING_VERSION } from "./domain/signupOnboarding.mjs";
@@ -55,6 +69,7 @@ import { mergeUniquePage, reconcileMemberMutationPage } from "./domain/pageMerge
 import { mergeChatMessages, reconcileRemovedDirectMessages } from "./domain/chatMessages.mjs";
 import { normalizeMessageRelationshipContext } from "./domain/messageRelationshipContext.mjs";
 import {
+  chatDeliveryFailure,
   chatOutboxFor,
   chatOutboxMessageId,
   confirmedChatMessage,
@@ -73,12 +88,11 @@ import {
   upsertAccountDraft,
 } from "./domain/draftPolicy.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "./domain/mediaUploadPolicy.mjs";
-import { LEGAL_ACCEPTANCE_VERSION } from "./domain/privacyDisclosures.mjs";
+import { LEGAL_ACCEPTANCE_VERSION } from "./domain/legalAcceptanceVersion.mjs";
 import { buildMemoryCreateBody, buildMemoryEditBody, buildReviewCreateBody, buildReviewEditBody, buildStatusCreateBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { isInPersonConcertReview } from "./domain/onlineReview.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
-import { deliverPostCreate } from "./domain/postDelivery.mjs";
 import { activeYouTubeLookupStatus, classifyResolve, requestYouTubeTrackOnce, shouldUseYouTubeLookupCache, CACHE_MS } from "./domain/playback.mjs";
 import { recommendTracks as recommendFromCandidates } from "./domain/recommend.mjs";
 import { trackKey, trackMetadataKey, trackTupleKey, youtubeLookupCacheKey } from "./domain/trackIdentity.mjs";
@@ -127,10 +141,13 @@ import { mediaDisplayItems, sameMediaDisplayItems } from "./domain/postMediaDisp
 import { normalizeArtistCampaign } from "./domain/artistCampaignPost.mjs";
 import { normalizeTaggedPeople, taggedUserIdsFromPeople } from "./domain/postFriendTags.mjs";
 import { fetchDirectMessageSummaries, writeDirectMessageRead } from "./features/chat/services/dmReadApi.mjs";
+import { writeDMRequestAcceptance } from "./features/chat/services/dmConsentApi.mjs";
+import { applyDMRequestState, dmInboxBucket, dmRequestState, normalizeDMRequestState } from "./features/chat/directMessageConsent.mjs";
 import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.mjs";
 import { saveMemoryPostEdit } from "./features/postEditing/services/memoryPostEditApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
 import { attachArtistSuggestion, fetchArtistSuggestions, fetchResolvedArtist, mergeArtistSearchCacheEntry, refreshArtistCatalogEntry } from "./features/artistSearch/artistSearchApi.mjs";
+import { sessionValidationStatusForOwner } from "./hooks/sessionValidationStatus";
 import { createSessionValidationRetry } from "./domain/sessionValidationRetry.mjs";
 import { useAccountCommentCache } from "./features/comments/useAccountCommentCache";
 import { writeCommentLike, writePostRepost, notifySocialReactionChange } from "./features/socialReactions/socialReactionsApi";
@@ -138,12 +155,17 @@ import { useAccountArtistPageCache } from "./features/artistPage/useAccountArtis
 import { artistMemorialPreparationName } from "./domain/artistMemorialCandidate.mjs";
 import { prepareArtistMemorialCandidate } from "./features/artistMemorials/services/artistMemorialApi.mjs";
 import {
-  adoptProfileHistoryAccount,
-  removeProfileHistoryPost,
-  resetProfileHistoryAccount,
-  scrubBlockedProfileHistoryPerson,
-  upsertProfileHistoryPost,
+  adoptProfileHistoryAccount as defaultAdoptProfileHistoryAccount,
+  removeProfileHistoryPost as defaultRemoveProfileHistoryPost,
+  resetProfileHistoryAccount as defaultResetProfileHistoryAccount,
+  scrubBlockedProfileHistoryPerson as defaultScrubBlockedProfileHistoryPerson,
+  upsertProfileHistoryPost as defaultUpsertProfileHistoryPost,
 } from "./features/profileHistory/profileHistoryClient.mjs";
+const adoptProfileHistoryAccount = Platform.OS === "ios" ? require("./features/profileHistory/profileHistoryClient.ios.mjs").adoptProfileHistoryAccount : defaultAdoptProfileHistoryAccount;
+const removeProfileHistoryPost = Platform.OS === "ios" ? require("./features/profileHistory/profileHistoryClient.ios.mjs").removeProfileHistoryPost : defaultRemoveProfileHistoryPost;
+const resetProfileHistoryAccount = Platform.OS === "ios" ? require("./features/profileHistory/profileHistoryClient.ios.mjs").resetProfileHistoryAccount : defaultResetProfileHistoryAccount;
+const scrubBlockedProfileHistoryPerson = Platform.OS === "ios" ? require("./features/profileHistory/profileHistoryClient.ios.mjs").scrubBlockedProfileHistoryPerson : defaultScrubBlockedProfileHistoryPerson;
+const upsertProfileHistoryPost = Platform.OS === "ios" ? require("./features/profileHistory/profileHistoryClient.ios.mjs").upsertProfileHistoryPost : defaultUpsertProfileHistoryPost;
 import { artistGalleryIdentityKey, mergeArtistGalleryMedia, postMatchesArtistGallery } from "./domain/artistGalleryMedia.mjs";
 import {
   deleteMediaDraftsForOwner,
@@ -156,7 +178,7 @@ import {
   startPrivateListening,
 } from "./domain/privateListening.mjs";
 import { createGoingIntentCoordinator, goingIntentKey } from "./domain/goingIntent.mjs";
-import { reconcileAttendancePlan } from "./domain/attendancePlanCache.mjs";
+import { attendancePlanDetails, hydrateAttendanceGoingRows, reconcileAttendancePlan, replaceGoingPlan } from "./domain/attendancePlanCache.mjs";
 import { accountMutationIsCurrent, captureAccountMutation } from "./domain/accountMutation.mjs";
 import { captureFeedRead, feedReadIsCurrent } from "./domain/feedPagination.mjs";
 import { commandFailure, commandSuccess } from "./domain/commandResult.mjs";
@@ -164,7 +186,8 @@ import {
   reconcileConfirmedArtistRequestDecision,
 } from "./domain/artistRequestMutation.mjs";
 import { reconcileConfirmedArtistPostRemoval } from "./domain/artistPostMutation.mjs";
-import { reconcileConfirmedNotificationReads } from "./domain/notificationReadMutation.mjs";
+import { reconcileConfirmedNotificationReads, visibleNotificationActors } from "./domain/notificationReadMutation.mjs";
+import useNotificationActivity from "./features/notifications/useNotificationActivity";
 import {
   directMessageUnreadCount,
   mergeDirectMessageReadSummary,
@@ -402,7 +425,7 @@ const seedRequests = demoSeed(
   [],
 );
 
-export const isStaff = (role) => role === "admin";
+export { isStaff } from "./domain/staffRoles.mjs";
 // Moderators can moderate (reports, members, content) but not administer roles,
 // see ad analytics, or approve artists, those stay admin-only. Discord-style tier.
 export const isMod = (role) => role === "admin" || role === "moderator";
@@ -442,7 +465,7 @@ export const artistRankOf = (name) => ARTIST_RANK.get((name || "").trim().toLowe
 
 // role → the official badge it earns (Pit team / moderator / verified artist).
 export const roleBadge = (role) =>
-  role === "admin" ? "staff" : role === "moderator" ? "mod" : null;
+  isStaff(role) ? "staff" : role === "moderator" ? "mod" : null;
 
 // Bump when the Terms/Privacy change materially, so we can tell who consented to
 // which version (recorded on the account at sign-up).
@@ -497,6 +520,8 @@ const loadRecentSearches = (accountId) => {
 };
 
 export function StoreProvider({ children }) {
+  // Factories capture dependencies during render, so initialize this before them.
+  const norm = (s) => (s || "").trim().toLowerCase();
   // Hydrate the identity-critical state from storage so a refresh / new page keeps
   // you logged in and keeps your data. (See src/lib/persist.js.)
   const [users, setUsers] = useState(() =>
@@ -518,7 +543,9 @@ export function StoreProvider({ children }) {
   const [authReady, setAuthReady] = useState(ENABLE_DEMO_DATA);
   const authReadyRef = useRef(ENABLE_DEMO_DATA);
   const authValidationSequenceRef = useRef(0);
+  const sessionValidationStatus = sessionValidationStatusForOwner(authValidationSequenceRef);
   const accountMutationEpochRef = useRef(0);
+  const profileReadAuthority = accountMutationEpochRef.profileReads || (accountMutationEpochRef.profileReads = new Map());
   sessionRef.current = session;
   authReadyRef.current = authReady;
   // A callback belongs to the account epoch that rendered it. Rechecking only
@@ -666,6 +693,9 @@ export function StoreProvider({ children }) {
   // state prevents overlapping deliberate refreshes from racing each other.
   const feedMutationRevisionRef = useRef(0);
   const feedRefreshRef = useRef({ inFlight: false, sequence: 0 });
+  // iOS observes this existing reader; Android/web resolve to a null observer.
+  // Keep the owner stable without adding Store state or another request effect.
+  if (!("headStatus" in feedRefreshRef.current)) feedRefreshRef.current.headStatus = createFeedHeadStatus();
   const feedModeRef = useRef("for-you");
   const feedAlgorithmRef = useRef("global-personal-v1");
   const feedSnapshotIdentityRef = useRef(null);
@@ -732,6 +762,7 @@ export function StoreProvider({ children }) {
   const staffStateScopeRef = useRef(staffScopeFor(session));
 
   const resetStaffState = () => {
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     staffReadsRef.current.reset();
     adminMembersRef.current = [];
     adminStatsRef.current = emptyAdminStats();
@@ -765,7 +796,9 @@ export function StoreProvider({ children }) {
   const setMutedIds = (updater) => {
     const current = blockedIdsRef.mutedIds;
     const next = typeof updater === "function" ? updater(current) : updater;
-    blockedIdsRef.mutedIds = Array.isArray(next) ? next : [];
+    const normalized = Array.isArray(next) ? next : [];
+    if (Platform.OS === "ios" && (current.length !== normalized.length || current.some((id) => !normalized.includes(id)))) invalidateIOSDetailPrivacy();
+    blockedIdsRef.mutedIds = normalized;
     setBlockedIds((ids) => [...ids]);
   };
   if (blockedIdsRef.accountId === undefined) blockedIdsRef.accountId = session?.id || null;
@@ -842,7 +875,10 @@ export function StoreProvider({ children }) {
   const setArtistProfiles = artistPageCache.updateProfiles;
   const setArtistPosts = artistPageCache.updatePosts;
   const adoptArtistPageAccount = artistPageCache.adoptAccount;
-  const invalidateArtistPageCache = artistPageCache.invalidate;
+  const invalidateArtistPageCache = Platform.OS === "ios" ? () => {
+    invalidateIOSDetailPrivacy();
+    artistPageCache.invalidate();
+  } : artistPageCache.invalidate;
   // Venue reviews are public, but the visible snapshot is personalized by
   // blocks/moderation. Keep each account's bounded cache separate so a shared
   // device cannot carry account A's hidden/visible rows into account B.
@@ -883,6 +919,7 @@ export function StoreProvider({ children }) {
     accountId = sessionRef.current?.id || null,
     blockGraphAuthoritative = venuePhotoCacheRef.current.privacy.blockGraphAuthoritative,
   } = {}) => {
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     const previousPrivacy = venuePhotoCacheRef.current.privacy;
     venuePhotoCacheRef.current.privacyEpoch += 1;
     const revision = previousPrivacy.revision + 1;
@@ -943,11 +980,11 @@ export function StoreProvider({ children }) {
   const chatAuthEpochRef = useRef(0);
   // Notifications / activity, the social heartbeat. Each item is addressed to a
   // recipient (userId) and generated when someone acts on their content/graph.
-  const [notifications, setNotifications] = usePrivateEphemeral("pit.notifications", demoSeed([
-    { id: "nf1", userId: "u_demo", type: "follow", actorId: "u_mara", actorName: "Mara Quinn", actorInitials: "MQ", ts: Date.now() - 3600000, read: false },
-    { id: "nf2", userId: "u_demo", type: "like", actorId: "u_devon", actorName: "Devon Ash", actorInitials: "DA", postId: "log_1", artist: "Turnstile", ts: Date.now() - 7200000, read: false },
-    { id: "nf3", userId: "u_demo", type: "comment", actorId: "u_priya", actorName: "Priya N.", actorInitials: "PN", postId: "log_1", artist: "Turnstile", ts: Date.now() - 10800000, read: true },
-  ], []));
+  const { notifications, setNotifications, notificationActivity, refreshNotifications, loadMoreNotifications, markNotificationsRead } = useNotificationActivity({
+    getIdentity: () => ({ accountId: sessionRef.current?.id || null, epoch: accountMutationEpochRef.current, ready: authReadyRef.current }),
+    getHiddenActorIds: () => [...blockedIdsRef.current, ...blockedIdsRef.mutedIds],
+    demo: ENABLE_DEMO_DATA,
+  });
   // Album + song ratings (stand-in for stream data) keyed by artist|title
   const [albumRatings, setAlbumRatings] = usePersisted("pit.albumRatings", demoSeed({ "turnstile|glow on": { u_mara: 5, u_devon: 4.5 }, "turnstile|never enough": { u_mara: 4 } }, {}));
   const [songRatings, setSongRatings] = usePersisted("pit.songRatings", demoSeed({ "turnstile|healing": { u_mara: 5, u_demo: 5 } }, {}));
@@ -995,6 +1032,8 @@ export function StoreProvider({ children }) {
     blockedIdsRef.accountId = nextAccountId || null;
     blockedIdsRef.status = ENABLE_DEMO_DATA || !nextAccountId ? "ready" : "loading";
     accountMutationEpochRef.current += 1;
+    profileReadAuthority.clear();
+    feedRefreshRef.current.headStatus?.reset();
     // Rating aggregates include the viewer's `mine` field. Drop them at the
     // synchronous identity boundary instead of waiting for a passive effect.
     // Scoped keys and response guards below provide a second line of defense.
@@ -1114,15 +1153,7 @@ export function StoreProvider({ children }) {
     const account = sessionRef.current;
     if (!authReadyRef.current) return;
     if (syncNativeAccountTheme(account)) return;
-    if (!account?.theme) return;
-    const { theme: localTheme, ownerId } = storedThemeSelection();
-    if (localTheme && ownerId === account.id) {
-      if (account.theme !== localTheme) api("/api/me", { method: "PATCH", body: { theme: localTheme }, expectedAccountId: account.id }).catch(() => {
-        // architecture: allow-empty-catch -- The owner-scoped device appearance remains usable when best-effort cross-device preference synchronization is offline; this never changes authentication.
-      });
-    } else {
-      syncThemeFromAccount(account.theme, account.id);
-    }
+    syncThemeFromAccount(account?.theme, account?.id || null, account);
   };
   // Keep dormant playlist data intact while avoiding hidden bootstrap traffic.
   useEffect(() => {
@@ -1135,7 +1166,7 @@ export function StoreProvider({ children }) {
   // Pull server posts (with current counts and viewer-like state) and upsert them
   // into the local cache. Existing IDs must be replaced, not skipped, otherwise
   // edits and cross-device likes/comments remain stale forever.
-  const mergeServerFeed = (posts, { prepend = true, preserveOrder = false, authoritative = false } = {}) => {
+  const mergeServerFeed = (posts, { prepend = true, preserveOrder = false, authoritative = false, stableAppend = false } = {}) => {
     if (!Array.isArray(posts) || !posts.length) return;
     const incoming = posts.map(normalizeServerPost);
     setFeed((current) => {
@@ -1148,12 +1179,15 @@ export function StoreProvider({ children }) {
       const remaining = current.filter((post) => !serverIds.has(post.id)
         && (!authoritative || post.pending || String(post.id || "").startsWith("p_local_")));
       let next;
-      if (preserveOrder) {
+      if (stableAppend) {
+        const byId = new Map(normalized.map(post => [post.id, post]));
+        next = [...current.map(post => byId.get(post.id) || post), ...[...byId.values()].filter(post => !currentById.has(post.id))];
+      } else if (preserveOrder) {
         const byId = new Map(normalized.map((post) => [post.id, post]));
         const replaced = current.map((post) => byId.get(post.id) || post);
         const existingIds = new Set(current.map((post) => post.id));
         const missing = normalized.filter((post) => !existingIds.has(post.id));
-        next = [...replaced, ...missing].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+        next = [...replaced, ...missing];
       } else {
         next = prepend ? [...normalized, ...remaining] : [...remaining, ...normalized];
       }
@@ -1190,7 +1224,8 @@ export function StoreProvider({ children }) {
   const hydrateFeed = async ({ resetPagination = true, signal } = {}) => {
     if (!authReadyRef.current || !feedAccountIdRef.current || signal?.aborted) return null;
     const refresh = feedRefreshRef.current;
-    if (refresh.inFlight) return null;
+    if (refresh.inFlight && !refresh.signal?.aborted) return null;
+    refresh.signal = signal;
     const sequence = ++refresh.sequence;
     const read = captureFeedRead(currentFeedReadState());
     const isCurrent = (error) => feedReadIsCurrent(read, currentFeedReadState(), { signal, error });
@@ -1200,6 +1235,7 @@ export function StoreProvider({ children }) {
     feedLoadMoreRef.current = null;
     setFeedLoadingMore(false);
     refresh.inFlight = true;
+    const headStatusTicket = refresh.headStatus?.begin();
     try {
       const startedAt = Date.now();
       let payload;
@@ -1248,6 +1284,7 @@ export function StoreProvider({ children }) {
         setFeedNextCursor(nextCursor || null);
         setFeedHasMore(!!nextCursor);
         feedPageRef.current = 1;
+        refresh.pageCursors = new Set();
       }
       trackProductEvent("feed_request", { surface: "everyone", algorithm: feedAlgorithmRef.current, page: 1, fallback });
       trackProductEvent("performance", {
@@ -1256,9 +1293,11 @@ export function StoreProvider({ children }) {
         surface: "everyone",
         outcome: "ok",
       });
+      refresh.headStatus?.settle(headStatusTicket, hasFeedHeadReceipt(payload) ? "ready" : "error");
       return true;
     } catch (error) {
       const current = isCurrent(error);
+      if (current) refresh.headStatus?.settle(headStatusTicket, "error");
       if (current) trackProductEvent("performance", {
         metric: "feed_load",
         durationBucket: "over_5s",
@@ -1267,14 +1306,16 @@ export function StoreProvider({ children }) {
       });
       return current ? false : null;
     } finally {
+      refresh.headStatus?.settle(headStatusTicket, "cancelled");
       if (sequence === refresh.sequence) refresh.inFlight = false;
     }
   };
-  const loadMoreFeed = async () => {
+  const loadMoreFeed = async ({ requireProgress = false } = {}) => {
     if (!authReadyRef.current || !feedAccountIdRef.current) return false;
     // React state does not update until the next render. FlatList may fire
     // onEndReached more than once in that window, so use an immediate lock too.
     if (feedRefreshRef.current.inFlight || feedLoadMoreRef.current || feedLoadingMore || !feedHasMore || !feedNextCursor) return false;
+    if (requireProgress && feedRefreshRef.current.pageCursors?.has(`${feedModeRef.current}:${feedNextCursor}`)) return false;
     const request = { controller: new AbortController(), read: captureFeedRead(currentFeedReadState()) };
     const signal = request.controller.signal;
     const isCurrent = (error) => feedLoadMoreRef.current === request
@@ -1288,29 +1329,13 @@ export function StoreProvider({ children }) {
       let mode = feedModeRef.current;
       let algorithm = feedAlgorithmRef.current;
       if (mode === "for-you") {
-        try {
-          payload = await api(`/api/feed/for-you?limit=${FEED_PAGE_LIMIT}&cursor=${encodeURIComponent(feedNextCursor)}`, {
-            expectedAccountId: request.read.accountId,
-            context: "Loading more recommended concert posts",
-            silent: true,
-            signal,
-          });
-          algorithm = payload?.algorithm?.id || algorithm;
-        } catch (error) {
-          if (!isCurrent(error) || error?.status === 401 || error?.status === 403) throw error;
-          // Recommendation cursors are intentionally incompatible with the
-          // chronological endpoint. Preserve existing card positions while a
-          // legacy first page establishes a compatible cursor.
-          fallback = true;
-          payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}`, {
-            expectedAccountId: request.read.accountId,
-            context: "Loading the chronological concert feed",
-            silent: true,
-            signal,
-          });
-          mode = "legacy";
-          algorithm = "chronological-v1";
-        }
+        payload = await api(`/api/feed/for-you?limit=${FEED_PAGE_LIMIT}&cursor=${encodeURIComponent(feedNextCursor)}`, {
+          expectedAccountId: request.read.accountId,
+          context: "Loading more recommended concert posts",
+          silent: true,
+          signal,
+        });
+        algorithm = payload?.algorithm?.id || algorithm;
       } else {
         payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}&before=${encodeURIComponent(feedNextCursor)}`, {
           expectedAccountId: request.read.accountId,
@@ -1321,9 +1346,21 @@ export function StoreProvider({ children }) {
       }
       if (!isCurrent()) return false;
       const { posts, nextCursor } = payload || {};
+      // Endless pagination must not mistake a malformed response for the end,
+      // or repeatedly request a cursor that the server has already consumed.
+      const cursors = feedRefreshRef.current.pageCursors || new Set();
+      const requestedCursor = `${feedModeRef.current}:${feedNextCursor}`;
+      const returnedCursor = nextCursor ? `${mode}:${nextCursor}` : null;
+      if (requireProgress && (!Array.isArray(posts) || !Object.prototype.hasOwnProperty.call(payload, "nextCursor")
+        || (nextCursor != null && (typeof nextCursor !== "string" || !nextCursor))
+        || (returnedCursor && (returnedCursor === requestedCursor || cursors.has(returnedCursor))))) return false;
+      if (requireProgress) {
+        cursors.add(requestedCursor);
+        feedRefreshRef.current.pageCursors = cursors;
+      }
       feedModeRef.current = mode;
       feedAlgorithmRef.current = algorithm;
-      mergeServerFeed(posts, { prepend: false, preserveOrder: fallback });
+      mergeServerFeed(posts, { prepend: false, preserveOrder: true, stableAppend: requireProgress });
       setFeedNextCursor(nextCursor || null);
       setFeedHasMore(!!nextCursor);
       feedPageRef.current += 1;
@@ -1337,12 +1374,16 @@ export function StoreProvider({ children }) {
       return true;
     } catch (error) {
       // architecture: allow-ambiguous-result -- optional next-page callers use false for unchanged feed/cursor on failure or obsolete reads
-      if (isCurrent(error)) trackProductEvent("performance", {
+      const current = isCurrent(error);
+      if (current) trackProductEvent("performance", {
         metric: "feed_next_page",
         durationBucket: analyticsDurationBucket(Date.now() - startedAt),
         surface: "everyone",
         outcome: "error",
       });
+      if (current && ["RECOMMENDATION_CURSOR_EXPIRED", "RECOMMENDATION_CURSOR_INVALID"].includes(error?.serverCode)) {
+        return { ok: false, refreshRequired: true };
+      }
       return false;
     } finally {
       if (feedLoadMoreRef.current === request) {
@@ -1372,6 +1413,7 @@ export function StoreProvider({ children }) {
       if (signal?.aborted || (sessionRef.current?.id || null) !== accountId) return null;
       const invalid = new Set(Array.isArray(invalidPostIds) ? invalidPostIds : []);
       if (invalid.size) {
+        if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
         feedMutationRevisionRef.current += 1;
         setFeed((current) => current.filter((post) => !invalid.has(post.id)));
         setRemovedIds((current) => [...new Set([...current, ...invalid])]);
@@ -1414,6 +1456,7 @@ export function StoreProvider({ children }) {
     void hydrateFeed({ resetPagination: true, signal: controller.signal });
     return () => {
       controller.abort();
+      feedRefreshRef.current.headStatus?.reset();
       feedRefreshRef.current.sequence += 1;
       feedRefreshRef.current.inFlight = false;
       feedLoadMoreRef.current?.controller.abort();
@@ -1588,9 +1631,23 @@ export function StoreProvider({ children }) {
 
   // Merge found users (people search) into local state so their profiles, avatars,
   // and follow buttons resolve everywhere, without touching the session.
-  const absorbUsers = (list) => {
+  const reconcileAuthorBadges = (user) => {
+    if (!user?.id) return;
+    // A confirmed authority change supersedes any profile read already running.
+    profileReadAuthority.delete(user.id);
+    const publicAuthor = user.postBadgeSnapshot ? { ...user.postBadgeSnapshot, id: user.id } : user;
+    // A confirmed response owns this bundle, never optimistic profile fields.
+    // Invalidate older feed reads before they can restore obsolete claims.
+    feedMutationRevisionRef.current += 1;
+    accountMutationEpochRef.commentRevision = (accountMutationEpochRef.commentRevision || 0) + 1;
+    setFeed(posts => reconcilePostAuthorBadges(posts, publicAuthor));
+    setComments(groups => reconcileCommentAuthorBadges(groups, publicAuthor));
+    publishAuthorBadgeChange({ accountId: sessionRef.current?.id || null, user: publicAuthor });
+  };
+  const absorbUsers = (list, isCurrent = () => true) => {
     if (!Array.isArray(list) || !list.length) return;
     setUsers((all) => {
+      if (!isCurrent()) return all;
       let next = all;
       for (const su of list) {
         if (!su?.id) continue;
@@ -1611,11 +1668,17 @@ export function StoreProvider({ children }) {
   const loadUser = async (id, { signal } = {}) => {
     if (!id) return unavailableProfileOutcome("missing-id");
     const read = captureAccountMutation(sessionRef.current?.id, accountMutationEpochRef.current);
+    const authorityTicket = {};
+    profileReadAuthority.set(id, authorityTicket);
     const assertCurrent = (error) => assertCurrentProfileRead(
-      read, sessionRef.current?.id, accountMutationEpochRef.current, { signal, error },
+      read, sessionRef.current?.id, accountMutationEpochRef.current,
+      { signal, error, authorityIsCurrent: profileReadAuthority.get(id) === authorityTicket },
     );
     const cachedAtStart = !!userById(id) || sessionRef.current?.id === id;
+    const profileRead = Platform.OS === "ios" ? claimIOSProfileRead(accountMutationEpochRef, id) : null;
     const quarantine = () => {
+      profileRead?.quarantine();
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       setUsers((current) => withoutUnavailableProfile(current, id));
       setFeed((current) => withoutUnavailableProfilePosts(current, id));
       setUserStats((current) => {
@@ -1635,6 +1698,7 @@ export function StoreProvider({ children }) {
         signal,
         silent: true,
         context: "Loading this profile",
+        expectedAccountId: read.accountId,
       }));
       assertCurrent();
       if (!su?.id) {
@@ -1647,9 +1711,15 @@ export function StoreProvider({ children }) {
       const outcome = profileFailureOutcome(error, { hasCachedProfile: cachedAtStart });
       if (outcome.evict) quarantine();
       return outcome;
+    } finally {
+      if (profileReadAuthority.get(id) === authorityTicket) profileReadAuthority.delete(id);
     }
 
+    // An authoritative denial may have arrived from another same-target read.
+    // Its older success cannot repopulate the quarantined directory or pins.
+    if (profileRead && !profileRead.current()) return unavailableProfileOutcome("superseded-privacy");
     absorbUsers([su]);
+    reconcileAuthorBadges(su);
     setUserStats((m) => ({ ...m, [su.id]: { followers: followers || 0, following: following || 0 } }));
     // Sync my follow state for this person (another device may have followed).
     if (session && fol && !(follows[session.id] || []).includes(su.id)) {
@@ -2011,7 +2081,7 @@ export function StoreProvider({ children }) {
 
   // How many times the signed-in user has logged this artist (artist profile
   // "you've been in the pit with them" counter). Cached per session per artist.
-  const artistSeenCount = async (name) => {
+  const artistSeenCount = Platform.OS === "ios" ? createIOSArtistSeenCount({ sessionRef, accountMutationEpochRef, seenCountCache, accountTargetScope, norm, captureAccountMutation, accountMutationIsCurrent, api }) : async (name) => {
     const accountId = sessionRef.current?.id || null;
     if (!accountId || !name) return null;
     const key = accountTargetScope(accountId, `artist-seen:${norm(name)}`);
@@ -2160,6 +2230,8 @@ export function StoreProvider({ children }) {
 
   const moderateReport = async ({ action, reportId, reason = "" } = {}) => {
     const actionScope = staffScopeFor(sessionRef.current);
+    if (Platform.OS === "ios") assertStaffMutation(actionScope);
+    if (Platform.OS === "ios" && (action !== "dismiss")) invalidateIOSDetailPrivacy();
     const result = await staffApi("/api/admin/moderation/actions", {
       method: "POST",
       body: { action, reportId, ...(reason ? { reason } : {}) },
@@ -2168,6 +2240,7 @@ export function StoreProvider({ children }) {
     // The server may have committed just before this account signed out. Do not
     // repopulate the next session with the previous staff member's result.
     assertStaffMutation(actionScope);
+    if (Platform.OS === "ios" && (action !== "dismiss")) invalidateIOSDetailPrivacy();
     staffReadsRef.current.invalidate("moderation", sessionRef.current);
     const status = action === "dismiss" ? "dismissed" : "actioned";
     setReports((current) => current.map((report) => report.id === reportId ? { ...report, status } : report));
@@ -2571,6 +2644,7 @@ export function StoreProvider({ children }) {
     configureProductAnalytics(merged);
     sessionRef.current = merged;
     setSession(merged);
+    reconcileAuthorBadges(su);
     if (announce) broadcastAuthEpoch();
     if (!hydrateAccount) return merged;
     // Hydrate the follow graph for this account from the server (see MIGRATION.md,
@@ -2626,7 +2700,7 @@ export function StoreProvider({ children }) {
               server: true,
               relationshipContext,
             }));
-            n[key] = mergeChatMessages(n[key] || [], incoming, removedIds, 750);
+            n[key] = applyDMRequestState(mergeChatMessages(n[key] || [], incoming, removedIds, 750), su.id, t.requestState, d[key]);
           });
           return n;
         });
@@ -2664,9 +2738,8 @@ export function StoreProvider({ children }) {
         severity: "warning",
         toast: false,
       }));
-    // Server-backed notifications: replace MY notifications with the authoritative
-    // server list (keep local welcome/system ones), so activity is real cross-device.
-    void refreshNotifications({ accountId: su.id });
+    // Server-backed notifications now hydrate in the account-scoped feature.
+    // It also owns active-app badge freshness without replaying other hydrations.
     // Staff queue hydration uses the same normalized, account-scoped loader as
     // the console. The legacy endpoint remains on the server for old clients.
     if (isMod(su.role)) {
@@ -2696,13 +2769,16 @@ export function StoreProvider({ children }) {
     let identityHasBeenConfirmed = authReadyRef.current;
     let coordinator;
     const validationRetry = createSessionValidationRetry();
+    const validationStatus = sessionValidationStatus?.begin();
 
     const lockIdentity = () => {
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       const accountId = sessionRef.current?.id || null;
       configureProductAnalytics(null);
       configureApiIdentity(accountId, { ready: false });
       authReadyRef.current = false;
       setAuthReady(false);
+      validationStatus?.checking();
     };
 
     const publishAuthoritativeGuest = (departingAccountId) => {
@@ -2720,14 +2796,40 @@ export function StoreProvider({ children }) {
     const scheduleRetry = (strict, error) => {
       if (stopped) return;
       if (retryTimer) clearTimeout(retryTimer);
-      retryTimer = setTimeout(() => {
+      const timer = setTimeout(() => {
+        // A deliberately replaced iOS retry cannot dispatch from a stale timer.
+        if (validationStatus && (stopped || retryTimer !== timer)) return;
         retryTimer = null;
         void coordinator.validate({ force: true, strict, reason: "retry" });
       }, validationRetry.next(error));
+      retryTimer = timer;
+      if (validationStatus && !authReadyRef.current) {
+        const sequence = authValidationSequenceRef.current;
+        const intentRevision = authTransitions.revision();
+        const hint = Number(error?.retryAfterMs);
+        // The existing timer owns the bounded server delay. Do not expose
+        // an early action or create a second clock/countdown for that delay.
+        if (Number.isFinite(hint) && hint > 0) { validationStatus.waiting(); return; }
+        validationStatus.unavailable(() => {
+          if (stopped || authReadyRef.current || sequence !== authValidationSequenceRef.current
+            || intentRevision !== authTransitions.revision() || authTransitions.blocked()) return;
+          // Join a settling flight without superseding it or stealing its timer.
+          if (coordinator.snapshot().inFlight) {
+            return coordinator.validate({ force: true, reason: "manual-retry" });
+          }
+          // Only a deliberate iOS tap can replace local backoff. Server hints
+          // stay on the automatic timer; the retry policy itself never resets.
+          if (retryTimer) clearTimeout(retryTimer);
+          retryTimer = null;
+          validationStatus.checking();
+          return coordinator.validate({ force: true, strict, reason: "manual-retry" });
+        });
+      }
     };
 
     const runValidation = async (context) => {
       if (stopped) return { authoritative: false };
+      if (!authReadyRef.current) validationStatus?.checking();
       if (retryTimer) {
         clearTimeout(retryTimer);
         retryTimer = null;
@@ -2836,6 +2938,7 @@ export function StoreProvider({ children }) {
       run: async (context) => {
         const result = await runValidation(context);
         if (result.authoritative) validationRetry.reset();
+        if (!stopped && authReadyRef.current) validationStatus?.clear();
         return result;
       },
       onStrictRequest: lockIdentity,
@@ -2876,6 +2979,7 @@ export function StoreProvider({ children }) {
     }
     return () => {
       stopped = true;
+      validationStatus?.dispose();
       stopAuthRetry();
       if (retryTimer) clearTimeout(retryTimer);
       appStateSubscription?.remove?.();
@@ -2913,7 +3017,7 @@ export function StoreProvider({ children }) {
     } catch (error) { return { ok: false, error }; }
   };
 
-  const login = async (email, password, accountId, { signal } = {}) => {
+  const login = async (email, password, accountId, { signal, onAccepted } = {}) => {
     if (remoteIdentityValidationEnabled(LOCAL_AUTH_FALLBACK)) {
       try {
         return await performAuthentication(() => api("/api/login", { method: "POST", body: { email, password, ...(accountId ? { accountId } : {}) }, context: "Signing in", silent: true, skipIdentityCheck: true }), (response) => {
@@ -2922,11 +3026,16 @@ export function StoreProvider({ children }) {
           }
           const user = response?.user;
           if (!user?.id) { void logout(); return { ok: false, error: "Sign-in could not be confirmed. Try again." }; }
+          // Root's account-keyed presentation may remount the credential form
+          // as soon as this identity is published. Complete its accepted visit
+          // first, while it still owns navigation and its abort controller.
+          onAccepted?.({ accountId: user.id });
           absorbServerUser(user, { announce: true });
           track("login", { method: "password" });
-          return { ok: true };
+          return { ok: true, accountId: user.id };
         }, signal);
       } catch (e) {
+        if (e.code === "PIT-STORE-004") return { ok: false, error: e.userMessage };
         if (e.status) return { ok: false, error: e.message }; // real server verdict
       }
       return { ok: false, error: "Couldn't connect. Check your connection and try again." };
@@ -2938,6 +3047,7 @@ export function StoreProvider({ children }) {
     const u = users.find((x) => x.email.toLowerCase() === em);
     if (!u || !u.password || u.password !== pw) return { ok: false, error: "Wrong email or password." };
     if (u.isBanned) return { ok: false, error: "This account is banned." };
+    onAccepted?.({ accountId: u.id });
     configureApiIdentity(u.id, { ready: true });
     authReadyRef.current = true;
     setAuthReady(true);
@@ -2945,7 +3055,7 @@ export function StoreProvider({ children }) {
     adoptFeedAccount(u.id);
     configureProductAnalytics(u);
     setSession(u);
-    return { ok: true };
+    return { ok: true, accountId: u.id };
   };
 
   const adoptEmailVerifiedSession = (candidate) => {
@@ -3090,6 +3200,9 @@ export function StoreProvider({ children }) {
           return { ok: false, error: "That request did not complete. Please try again." };
         }, signal);
       } catch (e) {
+        if (e.code === "PIT-STORE-004") return e.authIntentPhase === "pending"
+          ? { ok: false, error: "Mshpit could not prepare sign-in on your device. Check available storage, then try creating your account again." }
+          : { ok: false, outcome: "uncertain", error: "Your account may already have been created, but Mshpit could not save its sign-in on this device. Check available storage, then try logging in with these details." };
         if (e.status >= 400 && e.status < 500) return { ok: false, error: e.message };
       }
       return { ok: false, outcome: "uncertain", error: "Your account may already have been created. Try logging in with these details before signing up again. Check your connection if login is unavailable." };
@@ -3133,8 +3246,11 @@ export function StoreProvider({ children }) {
   };
 
   const logout = () => {
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     authValidationSequenceRef.current += 1;
     accountMutationEpochRef.current += 1;
+    profileReadAuthority.clear();
+    feedRefreshRef.current.headStatus?.reset();
     const departingAccountId = sessionRef.current?.id || null;
     const request = authTransitions.signOut().then((result) => {
       if (result.kind === "pending") captureAppError(new AppError(undefined, { code: "PIT-AUTH-006", context: "Finishing sign-out", cause: result.cause }), { toast: true });
@@ -3259,6 +3375,7 @@ export function StoreProvider({ children }) {
     if (!confirmedDeleted) return { ok: false, unknown: true, error: "Pit could not confirm account deletion." };
     if (!accountMutationIsCurrent(deletionMutation, sessionRef.current?.id, accountMutationEpochRef.current)) return { ok: false, stale: true, error: "Your account changed. Reopen account settings." };
 
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     const devicePrivacy = accountPrivatePayloadsAfterLogout({
       accountId: deleted.id,
       drafts: draftsRef.current,
@@ -3357,24 +3474,32 @@ export function StoreProvider({ children }) {
     const mutation = renderedAccountMutation;
     const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
     if (!isCurrent() || (session?.id && !actor)) return { ok: false, stale: true };
+    if (!canAccessTheme(next, actor)) return localCommandError("PIT-AUTH-002");
     if (actor) {
+      if (sessionRef.themeWrite && accountMutationIsCurrent(sessionRef.themeWrite, actor.id, accountMutationEpochRef.current)) {
+        return localCommandError("PIT-REQ-003");
+      }
+      sessionRef.themeWrite = mutation;
       const extra = mergePatch || {};
-      const updated = { ...actor, ...extra, theme: next };
-      setUsers((all) => all.map((u) => (u.id === actor.id
-        ? (ENABLE_DEMO_DATA ? { ...u, ...extra, theme: next } : publicProfileCacheEntry({ ...u, ...extra, theme: next }))
-        : u)));
-      setSession(updated);
-      if (ENABLE_DEMO_DATA) save("pit.session", updated); // demo-only local identity
       try {
-        await api("/api/me", { method: "PATCH", body: { theme: next, ...extra }, expectedAccountId: actor.id });
-      } catch {
-        // API reports sync failures; local appearance remains usable offline.
-        // A departed account must never cause a reload of the replacement one.
+        const { user } = await api("/api/me", { method: "PATCH", body: { ...extra, theme: next }, expectedAccountId: actor.id });
         if (!isCurrent()) return { ok: false, stale: true };
+        if (user?.id !== actor.id || user.theme !== next || !canAccessTheme(next, user)
+          || !canAccessTheme(next, currentMutationActor())) return localCommandError("PIT-AUTH-002");
+        // Adopt only appearance here; a delayed preference response cannot
+        // resurrect an old role or overwrite newer profile fields.
+        const updated = { ...sessionRef.current, theme: next };
+        sessionRef.current = updated;
+        setSession(updated);
+        if (ENABLE_DEMO_DATA) save("pit.session", updated);
+      } catch (error) {
+        return commandError(error);
+      } finally {
+        if (sessionRef.themeWrite === mutation) sessionRef.themeWrite = null;
       }
     }
     if (!isCurrent()) return { ok: false, stale: true };
-    applyTheme(next, actor?.id || null);
+    applyTheme(next, actor?.id || null, actor ? sessionRef.current : null);
     return { ok: true };
   };
 
@@ -3410,8 +3535,16 @@ export function StoreProvider({ children }) {
     const accountMutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     // General profile edits cannot optimistically adopt permissions or replay a
     // whole privacy/consent snapshot. Those choices have dedicated mutations.
-    const editableFields = ["name", "bio", "handle", "avatarUri", "banner", "concertMapVisible", "home", "genres", "favoriteArtists", "nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows"];
+    const editableFields = ["name", "bio", "handle", "avatarUri", "banner", "concertMapVisible", "home", "genres", "favoriteArtists", "nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows", "profileBadges"];
     const safe = Object.fromEntries(editableFields.filter((key) => Object.hasOwn(patch || {}, key)).map((key) => [key, patch[key]]));
+    if (Object.hasOwn(safe, "profileBadges")) {
+      if (actor.profileBadgeSelectionSupported !== true) return Promise.resolve({ ok: false, error: "Profile badge choices are not available yet. Please try again later." });
+      const selection = canonicalProfileBadges(safe.profileBadges);
+      if (selection === undefined) return Promise.resolve({ ok: false, error: "Choose valid profile badges." });
+      safe.profileBadges = selection;
+      // Do not show a cosmetic change as saved before an explicit receipt.
+      optimistic = false;
+    }
     if (Object.prototype.hasOwnProperty.call(safe, "genres")) {
       const genreSelection = profileGenreSelection(safe.genres);
       if (!genreSelection.valid) return Promise.resolve({ ok: false, error: genreSelection.error });
@@ -3440,9 +3573,10 @@ export function StoreProvider({ children }) {
 
     // The server merges this bounded envelope. Send changed music fields only;
     // never replay older theme, consent, privacy, or unrelated music choices.
-    const changedExtras = ["nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows"].filter((key) => key in safe);
+    const changedExtras = ["nowPlaying", "treble", "bass", "playlists", "accent", "pronouns", "favoriteShows", "profileBadges"].filter((key) => key in safe);
     if (changedExtras.length) body.extras = Object.fromEntries(changedExtras.map((key) => [key, safe[key]]));
     if (!Object.keys(body).length) return Promise.resolve({ ok: true, patch: safe });
+    if (Platform.OS === "ios" && ("concertMapVisible" in safe)) invalidateIOSDetailPrivacy();
 
     if (optimistic) {
       sessionRef.current = { ...sessionRef.current, ...safe };
@@ -3458,6 +3592,10 @@ export function StoreProvider({ children }) {
           return { ok: false, stale: true };
         }
         if (user?.id !== actor.id) throw new Error("Mshpit could not confirm the profile save. Please try again.");
+        if (Object.hasOwn(safe, "profileBadges") && !profileBadgesSaveConfirmed(user, safe.profileBadges)) {
+          throw new Error("Mshpit could not confirm your badge choices. Keep your changes and try saving again later.");
+        }
+        if (Platform.OS === "ios" && ("concertMapVisible" in safe)) invalidateIOSDetailPrivacy();
         const confirmedFields = new Set(Object.keys(safe));
         if ("handle" in safe) { confirmedFields.add("handleChangeAvailableAt"); confirmedFields.add("pendingSignupHandle"); }
         const confirmed = Object.fromEntries([...confirmedFields].filter((key) => Object.hasOwn(user, key)).map((key) => [key, user[key]]));
@@ -3476,6 +3614,7 @@ export function StoreProvider({ children }) {
           : u)));
         sessionRef.current = mergeConfirmed(sessionRef.current);
         setSession((current) => current?.id === actor.id ? mergeConfirmed(current) : current);
+        reconcileAuthorBadges(user);
         return { ok: true, user: sessionRef.current, patch: safe };
       })
       .catch((error) => {
@@ -3571,7 +3710,7 @@ export function StoreProvider({ children }) {
       venue: clean(log.venue, { max: 80 }),
       city: clean(log.city, { max: LIMITS.city }),
       eventAddress: clean(log.eventAddress, { max: LIMITS.eventAddress }) || null,
-      review: clean(log.review, { max: LIMITS.review, newlines: true }),
+      review: clean(log.review, { max: kind === "review" ? Infinity : LIMITS.review, newlines: true }),
       overall: clampRating(log.overall),
       band: log.band == null ? log.band : clampRating(log.band),
       room: log.room == null ? log.room : clampRating(log.room),
@@ -3587,7 +3726,7 @@ export function StoreProvider({ children }) {
     // Ticket cards carry a server-owned event snapshot. Do not flash the client
     // preview in Feed/Profile before the server confirms the exact Show identity;
     // ordinary posts keep their existing optimistic publishing experience.
-    if (!safe.attendanceTicket) {
+    if (!safe.attendanceTicket && !safe.creatorUpdate?.calendar) {
       setFeed((f) => [safe, ...f]);
       if (postingActor?.id) upsertProfileHistoryPost(postingActor.id, postingActor.id, safe);
     }
@@ -3614,18 +3753,19 @@ export function StoreProvider({ children }) {
           }
           : buildStatusCreateBody(safe)
         : buildReviewCreateBody(safe);
-      return deliverPostCreate({
+      return import("./domain/postDelivery.mjs").then(({ deliverPostCreate }) => deliverPostCreate({
         apiCall: api,
         context: memorialMemory ? "Sharing your fan memory" : kind === "status" ? "Posting your update" : "Posting your concert review",
         body,
         expectedAccountId: postingActor.id,
-      })
-        .then(({ id, post }) => {
+      }))
+        .then(({ id, post, calendarReceipt }) => {
           if (!accountMutationIsCurrent(
             postingMutation,
             sessionRef.current?.id,
             accountMutationEpochRef.current,
           )) return { ok: true, id: id || localId, post: null, stale: true };
+          if (calendarReceipt && !post) return { ok: true, calendarReceipt, post: null };
           feedMutationRevisionRef.current += 1;
           let canonicalPost = null;
           if (post) {
@@ -3666,8 +3806,13 @@ export function StoreProvider({ children }) {
   // news panel, in the same shape as feed posts.
   const loadPostForView = async (id, { signal } = {}) => {
     if (typeof id !== "string" || !id || id.length > 200) return null;
+    const read = captureAccountMutation(sessionRef.current?.id, accountMutationEpochRef.current);
+    const authorityRevision = feedMutationRevisionRef.current;
     try {
-      const { post } = await fetchPostById(id, { signal });
+      const { post } = await fetchPostById(id, { signal, expectedAccountId: read.accountId });
+      if (signal?.aborted || !accountMutationIsCurrent(read, sessionRef.current?.id, accountMutationEpochRef.current)) return null;
+      if (authorityRevision !== feedMutationRevisionRef.current) return null;
+      if (blockedIdsRef.current.includes(post?.userId) || blockedIdsRef.mutedIds.includes(post?.userId)) return null;
       return post ? normalizeServerPost(post) : null;
     } catch {
       // architecture: allow-ambiguous-result -- opening a story is optional; the reader stays where they were
@@ -3779,9 +3924,9 @@ export function StoreProvider({ children }) {
       }
     }
 
-    const safe = buildReviewEditBody(changes);
+    const safe = buildReviewEditBody(changes, previous);
     const editingOnlineReview = safe.experienceType === "online";
-    if (!safe.artist || safe.overall <= 0
+    if (!safe.artist || Number(safe.overall ?? previous.overall) <= 0
       || (editingOnlineReview ? !safe.youtubeUrl : (!safe.venue && !safe.city) || (safe.eventAddress && !safe.city))) return { ok: false };
     const version = previous.version ?? previous.editedAt ?? previous.createdAt;
     feedMutationRevisionRef.current += 1;
@@ -3865,12 +4010,15 @@ export function StoreProvider({ children }) {
   };
   const moderateContent = async (type, id, removed) => {
     const scope = staffScopeFor(sessionRef.current);
+    if (Platform.OS === "ios") assertStaffMutation(scope);
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     const result = await staffApi(`/api/admin/content/${type}/${id}`, {
       method: "POST",
       body: { removed },
       context: removed ? "Removing community content" : "Restoring community content",
     });
     assertStaffMutation(scope);
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     if (staffMutationStillOwned(scope)) {
       staffReadsRef.current.invalidate("moderation", sessionRef.current);
       loadModerationConsole().catch(() => {});
@@ -3930,6 +4078,7 @@ export function StoreProvider({ children }) {
       }
       setRequests((current) => reconcileConfirmedArtistRequestDecision(current, { requestId: reqId, status: decision }));
       if (decision === "approved") {
+        if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
         setUsers((current) => current.map((account) => (account.id === request.userId
           ? { ...account, role: "artist", artistName: request.artistName, verified: true }
           : account)));
@@ -4042,81 +4191,17 @@ export function StoreProvider({ children }) {
   };
 
   // --- Notifications / activity ---------------------------------------------
-  // Address a notification to a recipient when someone acts on their stuff. Never
-  // notify yourself. (Client-side in this prototype, like the rest of the graph.)
-  const notify = (recipientId, type, payload = {}) => {
-    if (!session || !recipientId || recipientId === session.id) return;
-    const n = {
-      id: "n_" + Date.now() + Math.random().toString(36).slice(2, 6),
-      userId: recipientId, type,
-      actorId: session.id, actorName: session.name, actorInitials: session.initials,
-      actorColor: session.avatarColor, actorUri: session.avatarUri,
-      ts: Date.now(), read: false, ...payload,
-    };
-    setNotifications((all) => [n, ...all].slice(0, 300));
-  };
+  // Cross-account activity is created by the server, never the local cache.
   // A system "welcome" notification so a new account's Activity isn't empty and
   // the first thing they see guides them into the product.
   const pushWelcome = (uid) => setNotifications((all) => [
     { id: "nw_" + Date.now(), userId: uid, type: "welcome", actorName: "Pit", actorInitials: "PT", actorColor: "#FF8C42", ts: Date.now(), read: false },
     ...all,
   ]);
-  const myNotifications = () => (session ? notifications.filter((n) => n.userId === session.id).sort((a, b) => b.ts - a.ts) : []);
-  const unreadNotifications = () => myNotifications().filter((n) => !n.read).length;
-  const refreshNotifications = async ({ signal, accountId = sessionRef.current?.id || null } = {}) => {
-    // architecture: allow-ambiguous-result -- this optional activity read preserves the current account snapshot on stale, abort, or offline failure
-    if (!accountId || sessionRef.current?.id !== accountId) return null;
-    try {
-      const { notifications: rows } = await api("/api/me/notifications", {
-        context: "Refreshing activity",
-        silent: true,
-        signal,
-      });
-      if (signal?.aborted || sessionRef.current?.id !== accountId || !Array.isArray(rows)) return null;
-      const mine = rows.map((row) => ({ ...row, userId: accountId }));
-      setNotifications((all) => [
-        ...mine,
-        ...all.filter((notification) => notification.userId !== accountId || notification.type === "welcome"),
-      ]);
-      return mine;
-    } catch (error) {
-      // architecture: allow-ambiguous-result -- this optional activity read preserves the current account snapshot on stale, abort, or offline failure
-      if (signal?.aborted) return null;
-      return false;
-    }
-  };
-  const markNotificationsRead = async ({ signal } = {}) => {
-    const actor = sessionRef.current;
-    const context = "Marking activity as read";
-    if (!actor) return localCommandError("PIT-AUTH-001", context);
-    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
-    // Only rows present when this command began are eligible for the confirmed
-    // local projection. A notification arriving concurrently must stay unread.
-    const notificationIds = notifications
-      .filter((notification) => notification.userId === actor.id && !notification.read)
-      .map((notification) => notification.id);
-    try {
-      const response = await api("/api/me/notifications/read", {
-        method: "POST",
-        context,
-        silent: true,
-        signal,
-      });
-      if (response?.ok !== true) return localCommandError("PIT-API-001", context);
-      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
-        return localCommandError("PIT-AUTH-004", context);
-      }
-      setNotifications((current) => reconcileConfirmedNotificationReads(current, {
-        accountId: actor.id,
-        notificationIds,
-      }));
-      return commandSuccess({ accountId: actor.id, notificationIds });
-    } catch (error) {
-      if (isLoadCancellation(error, signal)) throw error;
-      return commandError(error, context);
-    }
-  };
-  const postOwner = (postId) => feed.find((l) => l.id === postId)?.userId;
+  const myNotifications = () => (session ? visibleNotificationActors(notifications.filter((n) => n.userId === session.id), blockedIdsRef).sort((a, b) => b.ts - a.ts) : []);
+  const unreadNotifications = () => session
+    ? notificationActivity.data.unread ?? myNotifications().filter((n) => !n.read).length
+    : 0;
 
   // Social graph. First slice of the SQLite migration (see MIGRATION.md): follow
   // state is still cached locally + persisted, but mutations now WRITE THROUGH to
@@ -4139,7 +4224,7 @@ export function StoreProvider({ children }) {
     return api(`/api/users/${id}/follow`, { method: "POST", body: { following: true }, context: "Following this fan", expectedAccountId: actor.id })
       .then(() => {
         if (!isCurrent()) return { ok: false, stale: true };
-        track("follow"); notify(id, "follow");
+        track("follow");
         notifySocialReactionChange(actor.id);
         return { ok: true };
       })
@@ -4216,11 +4301,13 @@ export function StoreProvider({ children }) {
     // Do not replace an optimistic block/unblock with a pre-mutation snapshot.
     // Leave an explicit retry state when a mutation supersedes this read.
     const stalePrivacyResult = () => {
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       blockedIdsRef.status = "error";
       setBlockedIds((current) => [...current]);
       return { ok: false, stale: true };
     };
     if (privacyChanged()) return stalePrivacyResult();
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     blockedIdsRef.accountId = accountId;
     blockedIdsRef.status = "loading";
     setBlockedIds((current) => [...current]);
@@ -4244,6 +4331,7 @@ export function StoreProvider({ children }) {
       return { ok: true, users: list };
     } catch (error) {
       if (!isCurrent()) return { ok: false, stale: true };
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       blockedIdsRef.accountId = accountId;
       blockedIdsRef.status = "error";
       setBlockedIds((current) => [...current]);
@@ -4289,7 +4377,7 @@ export function StoreProvider({ children }) {
         setFanClubMsgs((groups) => Object.fromEntries(Object.entries(groups).map(([key, rows]) => [key, rows.filter((row) => row.userId !== id)])));
         setLounge((groups) => Object.fromEntries(Object.entries(groups).map(([key, rows]) => [key, rows.filter((row) => row.userId !== id)])));
         setDms((threads) => { const next = { ...threads }; delete next[dmKey(accountId, id)]; return next; });
-        setNotifications((rows) => rows.filter((notification) => notification.actorId !== id));
+        setNotifications((rows) => rows.filter((notification) => notification.actorId !== id), { refreshSummary: true });
         return { ok: true };
       })
       .catch((error) => {
@@ -4347,6 +4435,10 @@ export function StoreProvider({ children }) {
     try {
       await saveAccountMute(id, true, { expectedAccountId: actor.id });
       if (!isCurrent()) return { ok: false, stale: true };
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
+      // Fence reads that overlapped the optimistic phase and reconcile the
+      // server total only after the privacy command has durably committed.
+      setNotifications((rows) => rows.filter((notification) => notification.actorId !== id), { refreshSummary: true });
       return { ok: true };
     } catch (error) {
       if (!isCurrent()) return { ok: false, stale: true };
@@ -4363,6 +4455,7 @@ export function StoreProvider({ children }) {
     try {
       await saveAccountMute(id, false, { expectedAccountId: actor.id });
       if (!isCurrent()) return { ok: false, stale: true };
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       return { ok: true };
     } catch (error) {
       if (!isCurrent()) return { ok: false, stale: true };
@@ -4442,6 +4535,7 @@ export function StoreProvider({ children }) {
   const adoptAccountPreference = (actor, mutation, user, field, cachePublic = false) => {
     if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
       || user?.id !== actor.id || !Object.prototype.hasOwnProperty.call(user, field)) return null;
+    if (Platform.OS === "ios" && (field === "profileAudience" || field === "ageBand")) invalidateIOSDetailPrivacy();
     const patch = { [field]: user[field] };
     const merged = { ...sessionRef.current, ...patch };
     if (cachePublic) setUsers((all) => all.map((entry) => entry.id === actor.id
@@ -4486,6 +4580,7 @@ export function StoreProvider({ children }) {
   const setAgeBandClassification = async (ageBand) => {
     const actor = currentMutationActor();
     if (!actor || (actor.ageBand || "unknown") !== "unknown" || !["13_17", "18_plus"].includes(ageBand)) return { ok: false };
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
       const { user } = await writeAccountPreference(actor, mutation, "ageBand", () => classifyAccountAgeBand(ageBand, { expectedAccountId: actor.id }));
@@ -4499,6 +4594,7 @@ export function StoreProvider({ children }) {
   const setProfileAudience = async (audience) => {
     const actor = currentMutationActor();
     if (!actor || !["everyone", "members", "only_me"].includes(audience)) return { ok: false };
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     try {
       const { user } = await writeAccountPreference(actor, mutation, "profileAudience", () => updateProfileAudience(audience, { expectedAccountId: actor.id }));
@@ -4545,6 +4641,7 @@ export function StoreProvider({ children }) {
       return Promise.resolve({ ok: true, cached: true });
     }
     const readRevision=accountMutationEpochRef.commentRevision || 0;
+    const privateRead = Platform.OS === "ios" ? claimIOSCommentRead(accountMutationEpochRef, id, () => commentClaimIsCurrent(claim) && readRevision === (accountMutationEpochRef.commentRevision || 0), signal) : null;
     const request = api(`/api/posts/${id}/comments?limit=${safeLimit}`, {
       silent: true,
       context: "Loading comments",
@@ -4555,6 +4652,7 @@ export function StoreProvider({ children }) {
         if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
         if (readRevision !== (accountMutationEpochRef.commentRevision || 0)) return { ok:false,stale:true };
         if (!Array.isArray(rows)) throw new Error("The comment response was invalid.");
+        if (Platform.OS === "ios" && !privateRead.accept(rows, commentsFor(id))) return { ok: false, stale: true };
         commentCache.markRequestFresh(requestKey);
         setComments((m) => {
           const existing = m[id] || [];
@@ -4563,7 +4661,13 @@ export function StoreProvider({ children }) {
         });
         return { ok: true };
       })
-      .catch((error) => commentClaimIsCurrent(claim) ? { ok: false, error } : { ok: false, stale: true })
+      .catch((error) => {
+        if (Platform.OS === "ios") {
+          const outcome = privateRead.reject(error, () => setComments(m => ({ ...m, [id]: [] })));
+          return outcome === "stale" ? { ok: false, stale: true } : { ok: false, error, denied: outcome === "denied" };
+        }
+        return commentClaimIsCurrent(claim) ? { ok: false, error } : { ok: false, stale: true };
+      })
       .finally(() => {
         commentCache.releaseRequest(requestKey, request);
       });
@@ -4611,10 +4715,8 @@ export function StoreProvider({ children }) {
               ? commentCount : (Number(post.comments) || 0) + (duplicate ? 0 : 1),
           };
         }));
-        const owner = postOwner(id);
         if (!duplicate) {
           track("interaction", { postId: id, action: "comment", surface: "afterparty" });
-          if (owner) notify(owner, "comment", { postId: id, artist: feed.find((l) => l.id === id)?.artist, text: t.slice(0, 60) });
         }
         return { ok: true, id: sid, duplicate: !!duplicate };
       })
@@ -4634,6 +4736,7 @@ export function StoreProvider({ children }) {
       expectedAccountId: claim.accountId,
     })).then(({ tombstone }) => {
       if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       accountMutationEpochRef.commentRevision=(accountMutationEpochRef.commentRevision || 0)+1;
       setComments((all) => {
         const current = all[postId] || [];
@@ -4680,6 +4783,7 @@ export function StoreProvider({ children }) {
     if (!actor || !postId) return Promise.resolve({ ok: false });
     const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
     const isCurrent = () => accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current);
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
     let removed = null;
     let removedIndex = -1;
     feedMutationRevisionRef.current += 1;
@@ -4692,12 +4796,14 @@ export function StoreProvider({ children }) {
     return api(`/api/posts/${postId}`, { method: "DELETE", context: "Deleting your post", expectedAccountId: actor.id })
       .then(() => {
         if (!isCurrent()) return { ok: false, stale: true };
+        if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
         track("delete_post", { postId });
         setRemovedIds((ids) => ids.includes(postId) ? ids : [...ids, postId]);
         return { ok: true };
       })
       .catch((error) => {
         if (!isCurrent()) return { ok: false, stale: true, error };
+        if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
         // Restore at the original position, not just at the top of the feed.
         if (removed) {
           feedMutationRevisionRef.current += 1;
@@ -4747,7 +4853,7 @@ export function StoreProvider({ children }) {
         feedMutationRevisionRef.current += 1;
         if (typeof result?.liked === "boolean") setMyLikes((m) => ({ ...m, [id]: result.liked }));
         track("interaction", { postId: id, action: liked ? "like" : "unlike", surface: "feed" });
-        if (liked) { track("like", { postId: id }); const o = postOwner(id); if (o) notify(o, "like", { postId: id, artist: feed.find((l) => l.id === id)?.artist }); }
+        if (liked) track("like", { postId: id });
         return { ok: true, liked: typeof result?.liked === "boolean" ? result.liked : liked };
       })
       .catch((error) => {
@@ -4875,7 +4981,6 @@ export function StoreProvider({ children }) {
   // Roll a single artist's live reputation up across every logged night +
   // community-aggregated show, with their upcoming dates. This is the answer to
   // "is this band worth seeing?" - the core question the app exists for.
-  const norm = (s) => (s || "").trim().toLowerCase();
 
   // A stable id for a concert (artist + venue + date) so the lounge, the going
   // list, and attendees all key off the same thing. The date is canonicalized
@@ -4904,19 +5009,7 @@ export function StoreProvider({ children }) {
       || goingMutationRevisionRef.current !== mutationRevision
       || goingRef.attendance.accountId !== accountId) return false;
     const canonicalAttendance = Array.isArray(attendanceRows) ? attendanceRows : [];
-    const exactGoingRows = canonicalAttendance.filter((entry) => entry?.state === "going"
-      && typeof entry?.tourDateId === "string" && entry.tourDateId.trim());
-    const exactDisplayKeys = new Set(exactGoingRows
-      .map((entry) => entry.key || concertKey(entry))
-      .filter(Boolean));
-    const hydratedGoingRows = rows.filter((entry) => goingTourDateId(entry)
-      || !exactDisplayKeys.has(entry?.key));
-    exactGoingRows.forEach((entry) => {
-      const identity = goingEntryIdentity(entry);
-      if (!hydratedGoingRows.some((candidate) => goingEntryIdentity(candidate) === identity)) {
-        hydratedGoingRows.push(entry);
-      }
-    });
+    const hydratedGoingRows = hydrateAttendanceGoingRows(rows, canonicalAttendance, goingRef.current[accountId]);
     goingRef.attendance = { accountId, rows: canonicalAttendance };
     const next = { ...goingRef.current, [accountId]: hydratedGoingRows };
     goingRef.current = next;
@@ -4971,13 +5064,8 @@ export function StoreProvider({ children }) {
   const commitGoingState = (accountId, entry, desired) => {
     const current = goingRef.current;
     const mine = current[accountId] || [];
-    const identity = goingEntryIdentity(entry);
-    const exactUpgrade = !!goingTourDateId(entry);
-    const nextMine = desired
-      ? [...mine.filter((item) => goingEntryIdentity(item) !== identity
-        && !(exactUpgrade && !goingTourDateId(item) && item.key === entry.key)), entry]
-      : mine.filter((item) => goingEntryIdentity(item) !== identity
-        && !(exactUpgrade && !goingTourDateId(item) && item.key === entry.key));
+    const context = [...mine, ...(goingRef.attendance.accountId === accountId ? goingRef.attendance.rows : [])];
+    const nextMine = replaceGoingPlan(mine, entry, desired, context);
     const next = { ...current, [accountId]: nextMine };
     goingRef.current = next;
     setGoing(next);
@@ -4987,7 +5075,11 @@ export function StoreProvider({ children }) {
     if (!actor || !log) return Promise.resolve({ ok: false });
     const key = concertKey(log);
     const tourDateId = goingTourDateId(log);
+    const previousEntry = (goingRef.current[actor.id] || [])
+      .find((item) => goingEntryMatches(item, key, tourDateId));
     const entry = {
+      ...attendancePlanDetails(previousEntry),
+      ...attendancePlanDetails(log),
       key,
       ...(tourDateId ? { tourDateId } : {}),
       artist: log.artist,
@@ -4998,22 +5090,35 @@ export function StoreProvider({ children }) {
       date: log.date,
       tour: log.tourName || log.tour || null,
     };
+    // Keep the network contract unchanged; richer timing and identity belong
+    // to the local display projection and are not attendance mutation inputs.
+    const requestEntry = {
+      key, ...(tourDateId ? { tourDateId } : {}), artist: entry.artist, artistKey: entry.artistKey,
+      venue: entry.venue, venueKey: entry.venueKey, city: entry.city, date: entry.date, tour: entry.tour,
+    };
     const scope = goingIntentKey(actor.id, goingEntryIdentity(entry));
+    // Opening an already-saved Lounge is a read, not another RSVP write.
+    if (desired && previousEntry && !Object.hasOwn(goingPendingRef.current, scope)) {
+      return Promise.resolve({ ok: true, going: true });
+    }
     const currentGoing = (goingRef.current[actor.id] || [])
       .some((item) => goingEntryMatches(item, key, tourDateId));
-    if (!goingConfirmedRef.current.has(scope)) goingConfirmedRef.current.set(scope, currentGoing);
+    if (!Object.prototype.hasOwnProperty.call(goingPendingRef.current, scope)) goingConfirmedRef.current.set(scope, currentGoing);
     goingMutationRevisionRef.current += 1;
     commitGoingState(actor.id, entry, desired);
     const operation = goingIntentRef.current.begin({
       accountId: actor.id,
-      showKey: key,
+      showKey: goingEntryIdentity(entry),
       desired,
-      send: () => api("/api/going", {
-        method: "POST",
-        body: { ...entry, going: desired },
-        context,
-        expectedAccountId: actor.id,
-      }),
+      send: () => {
+        if (desired) assertEventRsvpAvailable(entry);
+        return api("/api/going", {
+          method: "POST",
+          body: { ...requestEntry, going: desired },
+          context,
+          expectedAccountId: actor.id,
+        });
+      },
     });
     goingPendingRef.current = { ...goingPendingRef.current, [scope]: operation.revision };
     setGoingPending(goingPendingRef.current);
@@ -5027,7 +5132,10 @@ export function StoreProvider({ children }) {
         : goingConfirmedRef.current.get(scope);
       if (result.ok && typeof result.value?.going === "boolean") goingConfirmedRef.current.set(scope, confirmed);
       if (!coordinator.isLatest(operation, sessionRef.current?.id)) return { ok: false, stale: true };
-      commitGoingState(actor.id, entry, !!confirmed);
+      const confirmedEntry = result.ok
+        ? { ...entry, ...(result.value?.showId ? { showId: result.value.showId } : {}) }
+        : entry;
+      commitGoingState(actor.id, confirmedEntry, !!confirmed);
       if (goingPendingRef.current[scope] === operation.revision) {
         const { [scope]: _finished, ...rest } = goingPendingRef.current;
         goingPendingRef.current = rest;
@@ -5052,15 +5160,28 @@ export function StoreProvider({ children }) {
     }
     return candidate;
   };
-  const commitConfirmedChatMessage = (item, serverId) => {
-    const message = confirmedChatMessage(item, serverId);
+  const commitConfirmedChatMessage = (item, acknowledgement) => {
+    const message = confirmedChatMessage(item, acknowledgement);
     if (!message) return;
+    if (Number.isFinite(acknowledgement?.createdAt) && acknowledgement.createdAt >= 0) message.ts = ago(message.at);
+    // React may execute this updater after the acknowledgement's account check
+    // and a subsequent auth reset. Never repopulate the replacement account.
+    const mergeConfirmed = (all, limit) => item.ownerId === sessionRef.current?.id
+      && item.authEpoch === chatAuthEpochRef.current
+      ? { ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], limit) }
+      : all;
     if (item.kind === "dm") {
-      setDms((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 750) }));
+      // A confirmed reply supersedes any Inbox snapshot begun before the send.
+      chatReadsRef.current.invalidate("dm-inbox", sessionRef.current);
+      if (!ENABLE_DEMO_DATA) setDmRead((all) => item.ownerId === sessionRef.current?.id
+        && item.authEpoch === chatAuthEpochRef.current
+        ? { ...all, [item.channelKey]: mergeDirectMessageReadSummary(all[item.channelKey], { hasReplied: true }) }
+        : all);
+      setDms((all) => mergeConfirmed(all, 750));
     } else if (item.kind === "fan") {
-      setFanClubMsgs((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 600) }));
+      setFanClubMsgs((all) => mergeConfirmed(all, 600));
     } else if (item.kind === "lounge") {
-      setLounge((all) => ({ ...all, [item.channelKey]: mergeChatMessages(all[item.channelKey] || [], [message], [], 600) }));
+      setLounge((all) => mergeConfirmed(all, 600));
     }
   };
   const deliverChatMessage = async (localId) => {
@@ -5069,47 +5190,57 @@ export function StoreProvider({ children }) {
       return { ok: false, stale: true };
     }
     if (item.status === "sending") return { ok: false, pending: true, localId };
+    if (item.retryable === false || (Number.isFinite(item.retryAt) && item.retryAt > Date.now())) {
+      return { ok: false, localId, retryable: item.retryable, retryAt: item.retryAt,
+        deliveryState: item.deliveryState, deliveryMessage: item.deliveryMessage };
+    }
     commitChatOutbox((current) => updateChatOutboxItem(current, localId, {
       status: "sending",
       pending: true,
       failed: false,
+      deliveryState: "sending",
+      deliveryMessage: null,
+      retryAt: null,
     }));
     try {
-      const { id } = await api(item.endpoint, {
+      const acknowledgement = await api(item.endpoint, {
         method: "POST",
         body: { text: item.text, clientMutationId: item.clientMutationId },
         context: item.context,
         expectedAccountId: item.ownerId,
       });
-      if (!id) throw new Error("Message delivery was not confirmed");
+      const id = acknowledgement?.id;
+      if (typeof id !== "string" || !id.trim()) throw new Error("Message delivery was not confirmed");
       const live = chatOutboxRef.current.find((entry) => entry.id === localId);
       if (!live || live.ownerId !== sessionRef.current?.id || live.authEpoch !== chatAuthEpochRef.current) {
         return { ok: false, stale: true };
       }
       commitChatOutbox((current) => withoutChatOutboxItem(current, localId));
-      commitConfirmedChatMessage(live, id);
+      commitConfirmedChatMessage(live, acknowledgement);
       return { ok: true, id, localId };
-    } catch {
+    } catch (error) {
       const live = chatOutboxRef.current.find((entry) => entry.id === localId);
       if (live && live.ownerId === sessionRef.current?.id && live.authEpoch === chatAuthEpochRef.current) {
-        commitChatOutbox((current) => updateChatOutboxItem(current, localId, {
-          status: "failed",
-          pending: false,
-          failed: true,
-        }));
-        return { ok: false, retryable: true, localId };
+        const failure = chatDeliveryFailure(error, { previouslyUnconfirmed: live.deliveryUncertain === true });
+        commitChatOutbox((current) => updateChatOutboxItem(current, localId, failure));
+        return { ok: false, ...failure, localId };
       }
       return { ok: false, stale: true };
     }
   };
   const queueChatMessage = (item) => {
-    commitChatOutbox((current) => withChatOutboxItem(current, item));
+    const next = commitChatOutbox((current) => withChatOutboxItem(current, item));
+    if (!next.includes(item)) {
+      return Promise.resolve({ ok: false, queued: false, queueFull: true, retryable: false,
+        deliveryState: "queue_full",
+        deliveryMessage: "Too many messages are waiting. Resolve or dismiss a pending message, then try again." });
+    }
     return deliverChatMessage(item.id);
   };
   const retryChatMessage = (localId) => deliverChatMessage(localId);
   const cancelChatMessage = (localId) => {
     const item = chatOutboxRef.current.find((entry) => entry.id === localId);
-    if (!item || item.ownerId !== sessionRef.current?.id || item.status !== "failed") return false;
+    if (!item || item.ownerId !== sessionRef.current?.id || item.authEpoch !== chatAuthEpochRef.current || item.status !== "failed") return false;
     commitChatOutbox((current) => withoutChatOutboxItem(current, localId));
     return true;
   };
@@ -5238,7 +5369,7 @@ export function StoreProvider({ children }) {
   const claimRatingTicket = (key) => ratingTicketsRef.current.claim(key);
   const ratingTicketIsCurrent = (key, ticket) => ratingTicketsRef.current.isCurrent(key, ticket);
 
-  const loadRating = (kind, artist, title) => {
+  const loadRating = Platform.OS === "ios" ? createIOSArtistRatingLoader({ sessionRef, accountMutationEpochRef, ratingAggregateKey, claimRatingTicket, rKey, ratingTicketIsCurrent, setRatingAgg, captureAccountMutation, accountMutationIsCurrent, api }) : (kind, artist, title) => {
     const accountId = sessionRef.current?.id || null;
     const mutation = captureAccountMutation(accountId, accountMutationEpochRef.current);
     const aggregateKey = ratingAggregateKey(accountId, kind, artist, title);
@@ -5516,6 +5647,14 @@ export function StoreProvider({ children }) {
         ts: ago(post.createdAt),
         ...(post.contributor ? { contributor: post.contributor } : {}),
       }));
+      // Successful snapshots can also withdraw a previously cached post or
+      // owner overlay. Unchanged/enriched reads do not break retained pages.
+      if (Platform.OS === "ios") {
+        const previousProfile = artistProfiles[artistKey] || {};
+        if ((artistPosts[artistKey] || []).some((post) => !normalizedPosts.some((next) => next.id === post.id))
+          || (Object.keys(previousProfile).length > 0 && Object.keys(normalizedProfile).length === 0)
+          || (previousProfile.feedEnabled === true && normalizedProfile.feedEnabled === false)) invalidateIOSDetailPrivacy();
+      }
       // This is an authoritative moderation-aware snapshot. Replacing it also
       // removes a post that staff hid since this device last opened the page.
       const committed = artistPageCache.resolveRefresh(
@@ -5535,9 +5674,10 @@ export function StoreProvider({ children }) {
         loadedAt: Date.now(),
       });
     } catch (error) {
-      if (artistPageAccessDenied(error) && (sessionRef.current?.id || null) === accountId) {
+      if ((Platform.OS !== "ios" || !signal?.aborted) && artistPageAccessDenied(error) && (sessionRef.current?.id || null) === accountId) {
         // Transport failures may keep the same viewer's content, but an access
         // denial revokes that artist's owner overlay and policy proof.
+        if (Platform.OS === "ios" && (artistPageCache.isCurrent(claim, accountId))) invalidateIOSDetailPrivacy();
         artistPageCache.resolveRefresh(artistKey, { ok: true, profile: {}, posts: [] }, { claim });
       }
       return commandError(error, context);
@@ -5681,6 +5821,7 @@ export function StoreProvider({ children }) {
         || !stillOwnsTarget) {
         return localCommandError("PIT-AUTH-004", context);
       }
+      if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
       setArtistPosts((current) => reconcileConfirmedArtistPostRemoval(current, { artistKey, postId: id }));
       return commandSuccess({ artistKey, postId: id });
     } catch (error) {
@@ -5691,6 +5832,7 @@ export function StoreProvider({ children }) {
 
   // --- Ban / suspend (staff) ---
   const patchStaffMember = (id, patch, { publicPatch = null } = {}) => {
+    if (Platform.OS === "ios" && (["role", "isBanned", "suspendedUntil"].some((field) => Object.hasOwn(patch, field)))) invalidateIOSDetailPrivacy();
     const previous = adminMembersRef.current.find((member) => member.id === id);
     const reconciled = reconcileMemberMutationPage(
       adminMembersRef.current,
@@ -5952,6 +6094,10 @@ export function StoreProvider({ children }) {
     const claim = commentCache.capture();
     return commitStaffAction(() => moderateContent("comment", cId, true), () => {
         if (!commentClaimIsCurrent(claim)) return;
+        if (Platform.OS === "ios") {
+          accountMutationEpochRef.commentRevision = (accountMutationEpochRef.commentRevision || 0) + 1;
+          invalidateIOSDetailPrivacy();
+        }
         setComments((m) => ({ ...m, [logId]: (m[logId] || []).filter((c) => c.id !== cId) }));
       });
   };
@@ -6084,7 +6230,7 @@ export function StoreProvider({ children }) {
       context: "Refreshing venue reviews",
       expectedAccountId: accountId,
     })
-      .then(({ reviews }) => {
+      .then(({ reviews, stats }) => {
         if (!Array.isArray(reviews) || (sessionRef.current?.id || null) !== accountId
           || venuePhotoCacheRef.current.privacy.revision !== privacyRevision) return { ok: false, stale: true };
         const blocked = new Set(blockedIdsRef.current);
@@ -6101,7 +6247,7 @@ export function StoreProvider({ children }) {
             ts: ago(r.createdAt),
           }));
         setVenueReviews((m) => replaceVenueReviewSnapshot(m, venueKey, snapshot));
-        return { ok: true, reviews: snapshot };
+        return { ok: true, reviews: snapshot, stats };
       })
       .catch((error) => (isLoadCancellation(error, signal)
         ? { ok: false, aborted: true }
@@ -6291,10 +6437,11 @@ export function StoreProvider({ children }) {
     const read = chatReadsRef.current.claim("dm-inbox", sessionRef.current);
     if (!read) return Promise.resolve([]);
     const accountId = read.scope;
-    return api("/api/me/threads?summary=1", { signal, expectedAccountId: accountId, silent: true, context: "Refreshing your inbox" })
+    return api("/api/me/threads?summary=1", { signal, silent: true, context: "Refreshing your inbox" })
       .then(({ threads, removedIds = [] }) => {
         if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current) || !Array.isArray(threads)) return [];
-        absorbUsers(threads.map((thread) => thread.otherUser).filter(Boolean));
+        absorbUsers(threads.map((thread) => thread.otherUser).filter(Boolean),
+          () => !signal?.aborted && chatReadsRef.current.isCurrent(read, sessionRef.current));
         setDms((all) => {
           if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return all;
           const next = { ...reconcileRemovedDirectMessages(all, accountId, removedIds) };
@@ -6310,7 +6457,7 @@ export function StoreProvider({ children }) {
               server: true,
               relationshipContext,
             }));
-            next[key] = mergeChatMessages(next[key] || [], incoming, removedIds, 750);
+            next[key] = applyDMRequestState(mergeChatMessages(next[key] || [], incoming, removedIds, 750), accountId, thread.requestState, all[key]);
           }
           return next;
         });
@@ -6344,66 +6491,119 @@ export function StoreProvider({ children }) {
   };
   // Slice 4: pull a thread's messages from the server and merge them (dedupe by
   // id, keeping any optimistic local-only message not yet echoed back).
-  const loadThread = (otherId, { after, signal, strict = false, includeContext = true } = {}) => {
-    const read = otherId ? chatReadsRef.current.claim(`dm-thread:${otherId}`, sessionRef.current) : null;
+  const loadThread = (otherId, { before, after, signal, strict = false, includeContext = true } = {}) => {
+    if (before && after) return Promise.reject(new Error("Use either earlier history or live updates, not both."));
+    // Historical pages do not compete with the serialized live/head lane. They
+    // are retained by the mounted thread owner, never its 750-row recent cache.
+    const read = otherId ? chatReadsRef.current.claim(`${before ? "dm-history" : "dm-thread"}:${otherId}`, sessionRef.current) : null;
     if (!read) return Promise.resolve({ syncCursor: after || null, hasMore: false });
     const key = dmKey(read.scope, otherId);
     const queryParams = new URLSearchParams();
+    if (before) queryParams.set("before", before);
     if (after) queryParams.set("after", after);
     if (!includeContext) queryParams.set("context", "0");
     const queryString = queryParams.toString();
     const query = queryString ? `?${queryString}` : "";
     return api(`/api/dms/${encodeURIComponent(otherId)}${query}`, {
       signal,
-      expectedAccountId: read.scope,
       silent: true,
       context: "Refreshing direct messages",
     })
-      .then(({ messages, removedIds = [], syncCursor, hasMore, relationshipContext, ...readSummary }) => {
+      .then(({ messages, removedIds = [], nextCursor, syncCursor, hasMore, relationshipContext, requestState, ...readSummary }) => {
         if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) {
           return { syncCursor: after || null, hasMore: false, stale: true };
         }
-        if (!Array.isArray(messages)) return { syncCursor: after || null, hasMore: false };
+        if (!Array.isArray(messages)) throw new Error("Messages could not be loaded.");
         const hasRelationshipContext = relationshipContext !== undefined;
         const normalizedRelationshipContext = hasRelationshipContext
           ? normalizeMessageRelationshipContext(relationshipContext)
           : null;
-        setDms((d) => {
+        const incoming = messages.map((m) => ({
+          id: m.id,
+          from: m.from,
+          text: m.text,
+          at: m.createdAt,
+          ts: ago(m.createdAt),
+          server: true,
+          ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
+        }));
+        if (!before) setDms((d) => {
           if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return d;
           const existing = hasRelationshipContext
             ? (d[key] || []).map((message) => ({ ...message, relationshipContext: normalizedRelationshipContext }))
             : (d[key] || []);
-          const incoming = messages.map((m) => ({
-            id: m.id,
-            from: m.from,
-            text: m.text,
-            at: m.createdAt,
-            ts: ago(m.createdAt),
-            server: true,
-            ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
-          }));
-          const live = mergeChatMessages(existing, incoming, removedIds, 750);
+          const live = applyDMRequestState(mergeChatMessages(existing, incoming, removedIds, 750), read.scope, requestState, existing);
           const next = { ...d };
           if (live.length) next[key] = live;
           else delete next[key];
           return next;
         });
-        if (Number.isSafeInteger(readSummary.unread)) setDmRead((current) => {
+        if (!before && Number.isSafeInteger(readSummary.unread)) setDmRead((current) => {
           if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return current;
           const summary = mergeDirectMessageReadSummary(current[key], readSummary, { revision: read.ordinal });
           return summary == null ? current : { ...current, [key]: summary };
         });
         return {
+          messages: incoming,
+          removedIds,
+          nextCursor: nextCursor || null,
           syncCursor: syncCursor || after || null,
           hasMore: !!hasMore,
+          requestState: normalizeDMRequestState(requestState),
           ...(hasRelationshipContext ? { relationshipContext: normalizedRelationshipContext } : {}),
         };
       })
       .catch((error) => {
         if (signal?.aborted) throw error;
-        if (strict) throw error;
+        // A superseded denial cannot revoke a newer authorized history owner.
+        if (!chatReadsRef.current.isCurrent(read, sessionRef.current)) {
+          return { syncCursor: after || null, hasMore: false, stale: true };
+        }
+        const unavailable = [401, 403, 404].includes(Number(error?.status));
+        if (unavailable) {
+          setDms((current) => {
+            if (signal?.aborted || !chatReadsRef.current.isCurrent(read, sessionRef.current)) return current;
+            const next = { ...current }; delete next[key]; return next;
+          });
+        }
+        if (strict || unavailable) throw error;
         return { syncCursor: after || null, hasMore: false };
       });
+  };
+  const getDMRequestState = (otherId) => session?.id && otherId
+    ? dmRequestState(dms[dmKey(session.id, otherId)], session.id)
+    : null;
+  const acceptDMRequest = async (otherId) => {
+    const actor = currentMutationActor();
+    const context = "Accepting this message request";
+    if (!actor || !otherId) return localCommandError("PIT-AUTH-001", context);
+    if (blockedIdsRef.current.includes(otherId)) return localCommandError("PIT-AUTH-004", context);
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const key = dmKey(actor.id, otherId);
+    try {
+      const response = ENABLE_DEMO_DATA
+        ? { ok: true, requestState: "accepted" }
+        : await writeDMRequestAcceptance(otherId, { expectedAccountId: actor.id });
+      if (response?.ok !== true || response?.requestState !== "accepted") return localCommandError("PIT-API-001", context);
+      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
+        || blockedIdsRef.current.includes(otherId)) return localCommandError("PIT-AUTH-004", context);
+      // Retire every read begun before the server confirmed this choice, even
+      // when its state updater is queued or its eventual response is a denial.
+      for (const lane of ["dm-inbox", `dm-thread:${otherId}`, `dm-history:${otherId}`]) {
+        chatReadsRef.current.invalidate(lane, sessionRef.current);
+      }
+      setDms((current) => {
+        if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
+          || blockedIdsRef.current.includes(otherId)) return current;
+        return { ...current, [key]: applyDMRequestState(current[key], actor.id, response.requestState) };
+      });
+      // Accept changes the server's Inbox count without marking any message read.
+      // The existing activity facade retires older counts and fences this scope.
+      setNotifications(current => current, { refreshSummary: true });
+      return commandSuccess({ accountId: actor.id, otherId, requestState: response.requestState });
+    } catch (error) {
+      return commandError(error, context);
+    }
   };
   const sendDM = (otherId, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
@@ -6467,7 +6667,7 @@ export function StoreProvider({ children }) {
       setNotifications((current) => currentReceipt() ? reconcileConfirmedNotificationReads(current, {
         accountId: actor.id,
         notificationIds: response.notificationIds,
-      }) : current);
+      }) : current, { refreshSummary: true });
       return commandSuccess({ accountId: actor.id, otherId, readCursor: cursor });
     } catch (error) {
       // Keep the badge visible and let the active viewport owner retry its
@@ -6501,11 +6701,10 @@ export function StoreProvider({ children }) {
           cursor: marker,
           legacyReadCount: Number.isSafeInteger(marker) ? marker : undefined,
         });
-        // A thread is a "request" until you accept it: someone you don't follow
-        // messaged you and you haven't replied yet. Following them or sending a
-        // single reply promotes it to the main inbox (Instagram-style gating).
-        const iReplied = marker?.hasReplied === true || msgs.some((m) => m.from === session.id && !m.pending && !m.failed && (ENABLE_DEMO_DATA || m.server));
-        const bucket = (marker?.requestState === "accepted" || isFollowing(otherId) || iReplied) ? "main" : "requests";
+        // Durable consent is authoritative. Older servers may supply only the
+        // account-private reply summary when the sent row is outside the cache.
+        const bucket = dmInboxBucket({ messages: msgs, accountId: session.id,
+          following: isFollowing(otherId) || marker?.hasReplied === true, demo: ENABLE_DEMO_DATA });
         const lastAt = Number(last?.at || last?.createdAt) || 0;
         return { otherId, otherUser: userById(otherId), last, lastAt, unread, count: msgs.length, bucket, relationshipContext };
       })
@@ -6515,7 +6714,9 @@ export function StoreProvider({ children }) {
   const requestThreads = () => inboxThreads().filter((t) => t.bucket === "requests");
   // The tab/feed badge counts only accepted conversations, so strangers can't
   // light it up; pending requests are surfaced separately by requestCount().
-  const inboxUnread = () => mainThreads().reduce((s, t) => s + t.unread, 0);
+  const inboxUnread = () => !session ? 0 : ENABLE_DEMO_DATA
+    ? mainThreads().reduce((s, t) => s + t.unread, 0)
+    : notificationActivity.data.inboxUnread ?? 0;
   const requestCount = () => requestThreads().length;
 
   const artistSummary = (name) => {
@@ -7050,8 +7251,14 @@ export function StoreProvider({ children }) {
 
   // --- Per-image moderation (reactive, with backfill) ------------------------
   const isPhotoRemoved = (uri) => removedPhotos.includes(uri);
-  const removePhoto = (uri) => setRemovedPhotos((r) => (r.includes(uri) ? r : [...r, uri]));
-  const restorePhoto = (uri) => setRemovedPhotos((r) => r.filter((x) => x !== uri));
+  const removePhoto = (uri) => {
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
+    setRemovedPhotos((r) => (r.includes(uri) ? r : [...r, uri]));
+  };
+  const restorePhoto = (uri) => {
+    if (Platform.OS === "ios") invalidateIOSDetailPrivacy();
+    setRemovedPhotos((r) => r.filter((x) => x !== uri));
+  };
 
   // Top fan photos for an artist's page - only from reviewers who opted in,
   // ranked by the review's likes so the best shots rise (and unknown ones don't).
@@ -7060,7 +7267,10 @@ export function StoreProvider({ children }) {
   // so a just-posted photo appears instantly before the next server load.
   const [artistPhotosSrv, setArtistPhotosSrv] = useState({});
   const artistPhotoCacheKey = (name, artistKey = null) => artistGalleryIdentityKey(name, artistKey);
-  const loadArtistPhotos = async (name, artistKey = null, { signal } = {}) => {
+  const loadArtistPhotos = Platform.OS === "ios" ? createIOSArtistPhotoLoader({
+    sessionRef, accountMutationEpochRef, artistPhotoCacheKey, setArtistPhotosSrv,
+    captureAccountMutation, accountMutationIsCurrent, artistPageAccessDenied, isLoadCancellation, AppError, commandError, api,
+  }) : async (name, artistKey = null, { signal } = {}) => {
     const k = artistPhotoCacheKey(name, artistKey);
     if (!k) return { ok: false, missing: true };
     const accountId = sessionRef.current?.id || null;
@@ -7093,6 +7303,10 @@ export function StoreProvider({ children }) {
         && (l.photos?.length || l.media?.length))
       .flatMap((l) => mediaDisplayItems(l).map((item) => ({ ...item, uri: item.uri, by: l.user?.name, postId: l.id, ownerId: l.userId, source: "fan" })));
     const srv = artistPhotosSrv[k] || [];
+    if (Platform.OS === "ios") return projectIOSArtistPhotos({
+      owner: accountMutationEpochRef, key: k, local, server: srv, removedIds, blockedIds, removedPhotos,
+      isPhotoRemoved, mergeArtistGalleryMedia,
+    });
     return mergeArtistGalleryMedia(local, srv, { blockedIds, removedUris: removedPhotos });
   };
 
@@ -7123,6 +7337,7 @@ export function StoreProvider({ children }) {
 
   const value = {
     mutedIds, followedArtists: [...(session?.favoriteArtists || []), ...(fanClubs[session?.id] || [])],
+    sessionValidationStatus,
     users, adminMembers, adminMemberDirectory, session, authReady, feed, removedIds, blockedIds, requests, tourDates, reports, moderationConsole, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, switchLinkedAccount, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, completeSignupOnboarding, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setDirectMessagePolicy, setAgeBandClassification, setProfileAudience, setAnnouncementEmailsEnabled, chooseTheme, syncAccountTheme,
@@ -7144,6 +7359,7 @@ export function StoreProvider({ children }) {
     favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, searchSongsApi, myPlaylists: scopedMyPlaylists, myPlaylistsAccountId, myPlaylistsStatus: scopedMyPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
     drafts: draftsForAccount(drafts, session?.id), saveDraft, deleteDraft,
     loadDiscoverTourDateRange,
+    feedHeadStatus: feedRefreshRef.current.headStatus,
     visibleFeed, followingFeed, refreshFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, notInterested, undoNotInterested, refreshTourDates, refreshDiscoverySidebar, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord, locationCenter,
     searchVenues, venuesByCity, venueUpcomingCount, venueDirectoryIndex: venueSearchIndex,
@@ -7165,9 +7381,9 @@ export function StoreProvider({ children }) {
     venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, artistFanPhotos, loadArtistPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
     chatAuthEpoch, retryChatMessage, cancelChatMessage,
-    threadMessages, sendDM, loadThread, loadInboxThreads, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
+    threadMessages, sendDM, loadThread, loadInboxThreads, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount, getDMRequestState, acceptDMRequest,
     track,
-    myNotifications, unreadNotifications, refreshNotifications, markNotificationsRead,
+    myNotifications, unreadNotifications, notificationActivity, refreshNotifications, loadMoreNotifications, markNotificationsRead,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

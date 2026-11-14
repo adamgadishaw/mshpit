@@ -52,7 +52,7 @@ test("Edit Profile clearly owns the personal profile without duplicating appeara
 test("favorite artist tuning is an internal subflow that preserves the profile draft", () => {
   assert.match(editProfile, /const \[pickingArtists, setPickingArtists\] = useState\(false\)/);
   assert.match(editProfile, /<PickArtistsScreen[\s\S]*?showTheme=\{false\}/);
-  assert.match(editProfile, /onPress=\{\(\) => setPickingArtists\(true\)\}/);
+  assert.match(editProfile, /onPress=\{edit\(\(\) => setPickingArtists\(true\)\)\}/);
   assert.doesNotMatch(editProfile, /onPickArtists/);
 });
 

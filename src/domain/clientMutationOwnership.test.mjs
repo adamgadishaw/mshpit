@@ -1,8 +1,10 @@
+import { createIOSArtistSeenCount, createIOSArtistRatingLoader } from "../features/artistOverview/artistDetailReadsService.ios.js";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "@babel/parser";
 import { accountMutationIsCurrent, captureAccountMutation } from "./accountMutation.mjs";
+import { canAccessTheme } from "./themeAccess.mjs";
 import { clean, clampRating, LIMITS } from "./validation.mjs";
 import { createChatClientMutationId } from "./chatDelivery.mjs";
 import { createTicketRegistry } from "./latestWins.mjs";
@@ -42,7 +44,7 @@ const aggregateKey = (accountId) => `${accountId || "guest"}:album:${ratingKey}`
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 function fixture({ actor = owner, ready = true, demo = false } = {}) {
-  const calls = [], writes = [], effects = [];
+  const calls = [], writes = [], effects = [], badgeReconciliations = [];
   const sessionRef = { current: actor }, authReadyRef = { current: ready }, accountMutationEpochRef = { current: 1 };
   const state = { session: actor, users: actor ? [actor] : [], clubs: {}, directory: [{ artist: "Artist", members: 2 }], reviews: {} };
   state.comments = {};
@@ -53,6 +55,10 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
   const update = (key) => (value) => { writes.push(key); state[key] = typeof value === "function" ? value(state[key]) : value; };
   const request = (name) => (...args) => new Promise((resolve, reject) => calls.push({ name, args, resolve, reject }));
   const dependencies = {
+    createIOSArtistSeenCount, createIOSArtistRatingLoader,
+    Platform: { OS: "ios" },
+    invalidateIOSDetailPrivacy: () => 0,
+    canAccessTheme, commandError: error => ({ ok: false, error }),
     session: actor, sessionRef, authReadyRef, accountMutationEpochRef,
     captureAccountMutation, accountMutationIsCurrent, clean, clampRating, LIMITS, createChatClientMutationId, createAccountPreferenceWrites,
     ENABLE_DEMO_DATA: demo, MEDIA_POST_MAX_ATTACHMENTS: 20,
@@ -63,6 +69,7 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
     setComments: update("comments"), setFeed: update("feed"), feed: state.feed, feedMutationRevisionRef: { current: 0 },
     postOwner: () => "post-owner", notify: (...args) => effects.push(["notify", ...args]),
     setUsers: update("users"), setSession: update("session"), publicProfileCacheEntry: (user) => user,
+    reconcileAuthorBadges: user => { assert.equal(user.id, sessionRef.current.id); badgeReconciliations.push(structuredClone(user)); },
     api: request("api"), track: (...args) => effects.push(args),
     applyTheme: (...args) => effects.push(["theme", ...args]),
     setFanClubs: update("clubs"), setFanClubDirectorySnapshot: update("directory"),
@@ -79,7 +86,7 @@ function fixture({ actor = owner, ready = true, demo = false } = {}) {
   const adopt = (user, epoch = 1) => {
     sessionRef.current = user; state.session = user; accountMutationEpochRef.current += epoch;
   };
-  return { actions, state, calls, writes, effects, adopt, sessionRef, ratingRegistry, setAlbums: update("albums") };
+  return { actions, state, calls, writes, effects, badgeReconciliations, adopt, sessionRef, ratingRegistry, setAlbums: update("albums") };
 }
 
 const commands = {
@@ -93,7 +100,7 @@ const commands = {
   addFanClubMessage: (f) => f.actions.addFanClubMessage("Artist", "Hello"),
   sendDM: (f) => f.actions.sendDM(other.id, "Hello"),
   rate: (f) => f.actions.rate("album", () => assert.fail("no optimistic write"), "Artist", "Album", 4),
-  markThreadRead: (f) => f.actions.markThreadRead(other.id, { messageId: "observed-message" }),
+  markThreadRead: (f) => f.actions.markThreadRead(other.id, { messageId: "incoming" }),
   joinFanClub: (f) => f.actions.joinFanClub("Artist"),
   addVenueReview: (f) => f.actions.addVenueReview("Venue", { rating: 4, text: "Good room" }),
   applyMyAttendanceMutation: (f) => f.actions.applyMyAttendanceMutation({ id: "show" }, { showId: "show" }),
@@ -255,13 +262,14 @@ test("comment writes for different posts stay independent and queued writes stop
   assert.equal(f.calls.length, 2);
 });
 
-test("new comments adopt authoritative counts and notify once, while late comment results stay out of replacement accounts", async () => {
+test("new comments adopt authoritative counts without duplicating server notifications, while late results stay out of replacement accounts", async () => {
   const f = fixture();
   const first = f.actions.addComment("post", "My comment");
   f.calls[0].resolve({ id: "server-comment", parentId: null, commentCount: 4 });
   assert.equal((await first).ok, true);
   assert.equal(f.state.feed[0].comments, 4);
-  assert.equal(f.effects.filter(([name]) => name === "notify").length, 1);
+  assert.equal(f.effects.filter(([name]) => name === "notify").length, 0, "cross-account notifications are server-owned");
+  assert.equal(f.effects.filter(([name]) => name === "interaction").length, 1, "the confirmed comment still records one interaction");
   const second = f.actions.addComment("post", "Another comment");
   f.adopt(other); f.adopt(owner);
   const before = JSON.stringify(f.state);
@@ -326,6 +334,7 @@ test("concurrent different profile fields merge independently and profile timest
   assert.equal(f.state.session.avatarUri, "https://media.example.test/new-avatar.jpg");
   assert.equal(f.state.session.banner, "https://media.example.test/new-banner.jpg");
   assert.equal(f.state.session.profileUpdatedAt, 20);
+  assert.equal(f.badgeReconciliations.length, 2, "each confirmed response reaches the author reconciliation seam");
 });
 
 test("old profile rollback preserves a newer different field and a replaced same-field value", async () => {
@@ -450,16 +459,16 @@ test("the account-transition boundary clears both production optimistic rating m
 
 test("theme selection preserves deliberate guest use but rejects stale or unready account callbacks", async () => {
   const guest = fixture({ actor: null });
-  assert.equal((await guest.actions.chooseTheme("light")).ok, true);
+  assert.equal((await guest.actions.chooseTheme("daylight")).ok, true);
   assert.deepEqual(guest.calls, []);
-  assert.deepEqual(guest.effects, [["theme", "light", null]]);
+  assert.deepEqual(guest.effects, [["theme", "daylight", null, null]]);
   for (const mode of ["unready", "logout", "switch", "roundtrip", "guest-login"]) {
     const f = fixture({ actor: mode === "guest-login" ? null : owner, ready: mode !== "unready" });
     if (mode === "logout") f.adopt(null);
     if (mode === "switch") f.adopt(other);
     if (mode === "roundtrip") { f.adopt(other); f.adopt(owner); }
     if (mode === "guest-login") f.adopt(owner);
-    assert.equal((await f.actions.chooseTheme("light")).ok, false);
+    assert.equal((await f.actions.chooseTheme("daylight")).ok, false);
     assert.deepEqual(f.calls, []);
     assert.deepEqual(f.writes, []);
     assert.deepEqual(f.effects, []);
@@ -469,16 +478,37 @@ test("theme selection preserves deliberate guest use but rejects stale or unread
 test("theme persistence binds the owner and cannot reload another account after late success or failure", async () => {
   for (const failed of [false, true]) {
     for (const changed of [false, true]) {
-      const f = fixture(), pending = f.actions.chooseTheme("light");
+      const f = fixture(), pending = f.actions.chooseTheme("daylight");
       assert.equal(f.calls[0].args[1].expectedAccountId, owner.id);
       if (changed) { f.adopt(other); f.writes.length = 0; }
       if (failed) f.calls[0].reject(new Error("Offline"));
-      else f.calls[0].resolve({});
-      assert.equal((await pending).ok, !changed);
-      assert.deepEqual(f.effects, changed ? [] : [["theme", "light", owner.id]]);
+      else f.calls[0].resolve({ user: { ...owner, theme: "daylight" } });
+      assert.equal((await pending).ok, !changed && !failed);
+      assert.deepEqual(f.effects, changed || failed ? [] : [["theme", "daylight", owner.id, { ...owner, theme: "daylight" }]]);
       if (changed) assert.deepEqual(f.writes, []);
     }
   }
+});
+
+test("theme writes reject badge-only access, repeated submissions and role loss during an in-flight save", async () => {
+  for (const role of ["fan", "artist", "moderator", "editor"]) {
+    const f = fixture({ actor: { ...owner, role, badges: ["staff"] } });
+    assert.equal((await f.actions.chooseTheme("forest")).ok, false);
+    assert.deepEqual(f.calls, []);
+  }
+  const admin = { ...owner, role: "admin" };
+  const f = fixture({ actor: admin });
+  const pending = f.actions.chooseTheme("forest");
+  assert.equal((await f.actions.chooseTheme("neon")).ok, false);
+  assert.equal(f.calls.length, 1);
+  f.adopt({ ...owner, role: "fan" }, 0);
+  f.calls[0].resolve({ user: { ...admin, theme: "forest" } });
+  assert.equal((await pending).ok, false);
+  assert.deepEqual(f.effects, []);
+  assert.equal(f.state.session.role, "fan");
+  const retry = f.actions.chooseTheme("daylight");
+  f.calls[1].resolve({ user: { ...owner, role: "fan", theme: "daylight" } });
+  assert.equal((await retry).ok, true);
 });
 
 for (const name of ["joinFanClub", "addVenueReview"]) {
