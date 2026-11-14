@@ -2,17 +2,19 @@ import { activeAccountSql } from "../../accountVisibility.js";
 import { visibleTourDateRowsFrom } from "../../tourDateVisibilityQuery.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
 import { archiveShowKeyForPost } from "../artistArchive/postArchiveIdentity.js";
-import { ticketmasterEventSearchUrl, ticketmasterRows, ticketmasterRequestDelayMs } from "../../tourdates.js";
+import { ticketmasterEventSearchUrl, ticketmasterRequestDelayMs } from "../../tourdates.js";
 import { readBoundedJsonResponse } from "../../boundedJsonResponse.js";
 import { concertCityMatches, concertLookupDate, mergeConcertMatches } from "../../../src/domain/concertLookup.mjs";
 import { publicTourDateVenueName } from "../../publicTourDateVenueProjection.js";
 import { canonicalVenueKey } from "../../../src/domain/venueIdentity.mjs";
+import { createTicketmasterLookupIdentity } from "./ticketmasterLookupIdentity.js";
 
 // Read-only lookup: no scanner, calendar or review rows are written by search.
 // This cache contains only public provider facts, never member history.
 export function concertLookupRoutes({ database, ApiError, requireUser, rateLimit, clean,
   fetchImpl = (...args) => fetch(...args), apiKey = () => process.env.TICKETMASTER_KEY, now = Date.now }) {
   const providerCache = new Map();
+  const providerIdentity = createTicketmasterLookupIdentity(database);
   let activeProviderRequests = 0;
   const recentProviderCalls = [];
   let providerRetryAt = 0;
@@ -70,7 +72,16 @@ export function concertLookupRoutes({ database, ApiError, requireUser, rateLimit
     if (!apiKey()) return { matches: [], status: "unavailable", complete: false };
     const cacheKey = JSON.stringify([artist, artistKey, city, date]);
     const cached = providerCache.get(cacheKey);
-    if (cached && cached.expires > now()) return cached.result;
+    const projectProvider = (entries, complete) => {
+      const matches = mergeConcertMatches(entries.filter(entry => entry.proof
+        && providerIdentity.proof(entry.candidate, { artist, artistKey }) === entry.proof)
+        .map(entry => entry.match));
+      return { matches: matches.slice(0, 50), status: "ready", complete: complete && matches.length <= 50 };
+    };
+    // A cache hit saves provider traffic, never the current identity decision.
+    // In particular, removing a mapping cannot downgrade an old positive proof
+    // into a name-only fallback during the cache lifetime.
+    if (cached && cached.expires > now()) return projectProvider(cached.entries, cached.complete);
     while (recentProviderCalls.length && recentProviderCalls[0] <= now() - 60 * 60_000) recentProviderCalls.shift();
     // An additional conservative application budget, NOT an assertion about
     // the account's provider quota. Reuse configured scanner spacing and honor
@@ -98,13 +109,21 @@ export function concertLookupRoutes({ database, ApiError, requireUser, rateLimit
       }
       if (!response.ok) throw new Error("Provider unavailable");
       const data = await readBoundedJsonResponse(response, { signal: controller.signal, maxBytes: 2 * 1024 * 1024 });
-      const matches = mergeConcertMatches(ticketmasterRows(data, { requestedArtist: artist })
-        .filter(row => row.date === date && concertCityMatches(row.place, city)
+      const entries = providerIdentity.candidates(data, artist)
+        .filter(({ row }) => row.date === date && concertCityMatches(row.place, city)
           && !["cancelled", "canceled", "postponed"].includes(row.event_status))
-        .map(row => project(row, artist, artistKey, "ticketmaster")));
-      const result = { matches: matches.slice(0, 50), status: "ready", complete: Number(data?.page?.totalPages || 0) <= 1 && matches.length <= 50 };
+        .map(candidate => ({
+          // Retain only display fields and the evidence needed for rechecking,
+          // not images, sale payloads or the full provider response.
+          candidate: { ...candidate, row: { id: candidate.row.id, artist_identity_status: candidate.row.artist_identity_status } },
+          match: project(candidate.row, artist, artistKey, "ticketmaster"),
+          proof: providerIdentity.proof(candidate, { artist, artistKey }),
+        }))
+        .filter(entry => entry.proof);
+      const complete = Number(data?.page?.totalPages || 0) <= 1;
+      const result = projectProvider(entries, complete);
       if (providerCache.size >= 128) providerCache.delete(providerCache.keys().next().value);
-      providerCache.set(cacheKey, { expires: now() + 5 * 60_000, result });
+      providerCache.set(cacheKey, { expires: now() + 5 * 60_000, entries, complete });
       return result;
     } catch {
       return { matches: [], status: "unavailable", complete: false };
