@@ -287,23 +287,43 @@ test("actual iOS Feed aborts running refresh and ignores its completion and old 
   } finally { f.close(); }
 });
 
-test("actual iOS Following owner keeps multiple pages, count and cursor through cover and Back", async () => {
-  const f = fixture({ filter: "following" });
+for (const filter of ["following", "local"]) test(`actual iOS ${filter} owner keeps multiple pages, count and cursor through cover and Back`, async () => {
+  const f = fixture({ filter });
+  const reads = f.calls[filter];
   try {
-    await f.resolve(f.calls.following[0], { posts: Array.from({ length: 8 }, (_, i) => ({ id: "first" + i })), nextCursor: "page2" });
+    await f.resolve(reads[0], { posts: Array.from({ length: 8 }, (_, i) => ({ id: "first" + i })), nextCursor: "page2" });
     f.advance();
-    assert.equal(f.calls.following[1].args.cursor, "page2");
-    await f.resolve(f.calls.following[1], { posts: Array.from({ length: 8 }, (_, i) => ({ id: "second" + i })), nextCursor: "page3" });
-    assert.equal(f.calls.following.length, 2, JSON.stringify(f.calls.following.map(c => ({ cursor: c.args.cursor, aborted: c.args.signal.aborted }))));
+    assert.equal(reads[1].args.cursor, "page2");
+    await f.resolve(reads[1], { posts: Array.from({ length: 8 }, (_, i) => ({ id: "second" + i })), nextCursor: "page3" });
+    assert.equal(reads.length, 2, JSON.stringify(reads.map(c => ({ cursor: c.args.cursor, aborted: c.args.signal.aborted }))));
     const oldMore = f.endReached(), instance = f.list().props.instance;
     assert.equal(f.list().props.data.length, 16);
     f.cover(); assert.equal(f.list().props.data.length, 16); assert.equal(f.intervals.size, 0);
     f.uncover(); assert.equal(f.list().props.instance, instance); assert.equal(f.list().props.data.length, 16);
-    assert.equal(f.calls.following.length, 2, "No first-page revalidation on Back");
-    f.act(() => oldMore()); assert.equal(f.calls.following.length, 2);
-    f.advance(); assert.equal(f.calls.following[2].args.cursor, "page3");
-    f.cover(); assert.equal(f.calls.following[2].args.signal.aborted, true);
+    assert.equal(reads.length, 2, "No first-page revalidation on Back");
+    f.act(() => oldMore()); assert.equal(reads.length, 2);
+    f.advance(); assert.equal(reads[2].args.cursor, "page3");
+    f.cover(); assert.equal(reads[2].args.signal.aborted, true);
     f.privacy(); assert.deepEqual(f.list().props.data, []);
+  } finally { f.close(); }
+});
+
+test("actual iOS For You reaches the third page and stops at exhaustion", async () => {
+  const f = fixture();
+  const rows = Array.from({ length: 24 }, (_, i) => ({ id: `page-row-${i}` }));
+  try {
+    f.data(rows.slice(0, 8), true);
+    for (const [page, length] of [[0, 16], [1, 24]]) {
+      f.advance();
+      assert.equal(f.calls.loadMore.length, page + 1);
+      f.data(rows.slice(0, length), length < 24);
+      await f.resolve(f.calls.loadMore[page], true);
+      assert.equal(f.list().props.data.length, length);
+    }
+    f.act(() => f.endReached()());
+    assert.equal(f.pagingTimers.size, 0);
+    assert.equal(f.calls.loadMore.length, 2);
+    assert.deepEqual(f.list().props.data.map(row => row.id), rows.map(row => row.id));
   } finally { f.close(); }
 });
 
