@@ -118,6 +118,7 @@ import { notificationRoutes } from "./features/notifications/notificationRoutes.
 import { postTagRoutes } from "./postTagRoutes.js";
 import { artistReviewRoutes } from "./features/artistReviews/artistReviewRoutes.js";
 import { concertHistoryRoutes } from "./features/concertHistory/concertHistoryRoutes.js";
+import { concertLookupRoutes } from "./features/concertLookup/concertLookupRoutes.js";
 import { artistResolveRoutes } from "./features/artistSearch/artistResolveRoutes.js";
 import { artistArchiveRoutes } from "./features/artistArchive/artistArchiveRoutes.js";
 import { createArtistLiveSummaryService } from "./features/artistArchive/artistLiveSummaryService.js";
@@ -4977,6 +4978,7 @@ export const routes = {
     requireVerifiedUser,
   }),
   ...concertHistoryRoutes({ database: db, ApiError, requireUser, visibleProfileOrNull, blockedEitherWay, rateLimit: limit, now }),
+  ...concertLookupRoutes({ database: db, ApiError, requireUser, rateLimit: limit, clean, now }),
   ...artistReviewRoutes({
     database: db,
     ApiError,

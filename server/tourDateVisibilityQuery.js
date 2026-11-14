@@ -13,6 +13,7 @@ import { tourDateArtistBindingAllowedSql } from "./providerArtistBinding.js";
 // opening or seeding the application database as an import side effect.
 export function visibleTourDateRowsFrom(database, viewer, {
   id = null,
+  date = null,
   today = null,
   through = null,
   calendarThrough = null,
@@ -37,9 +38,15 @@ export function visibleTourDateRowsFrom(database, viewer, {
     prefix.push(id);
   }
   if (today) {
+    // Upcoming callers retain their existing eligibility semantics.
     filters.push(currentOrUpcomingTourDateSql("td"));
     filters.push(tourDateHasNoPublishedMemorialSql("td"));
     prefix.push(today);
+  }
+  if (date) {
+    // Literal event-local history, including retained inactive provider rows.
+    filters.push("td.date=?");
+    prefix.push(date);
   }
   if (through) {
     // The upper bound applies to event start dates. A currently active

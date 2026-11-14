@@ -32,6 +32,7 @@ import { fetchSeenCount } from "../lib/seenCountApi";
 import { adaptLineupToFormat, cleanShowFormat, festivalDays, lineupFromPost, SHOW_FORMAT_LABELS, SHOW_FORMATS } from "../domain/lineup.mjs";
 import { fetchLineupSuggestions } from "../lib/lineupApi";
 import ConcertLocationFields from "../components/ConcertLocationFields";
+import ConcertLookup from "../features/concertLookup/ConcertLookup";
 import { isDurableMediaUrl, reportMediaPickerError } from "../lib/mediaUpload";
 import { api } from "../lib/api";
 import { formatDate, initialComposerDate, todayIso } from "../domain/dates.mjs";
@@ -2108,6 +2109,35 @@ export default function LogScreen({
         ) : (
           <>
         <View style={stepStyle(2)}>
+        <ConcertLocationFields city={city} eventAddress={eventAddress} onCityChange={setCity} onEventAddressChange={setEventAddress} readCities={readCityDirectory} />
+        <Text style={[styles.fieldLabel, { marginTop: 18 }]}>{isFestival ? "FIRST DAY" : "WHEN?"} <Text style={styles.optional}>optional</Text></Text>
+        <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)} accessibilityRole="button" accessibilityLabel="Choose concert date" accessibilityState={{ expanded: showDate }}>
+          <Icon name="calendar" size={16} color={colors.amber} />
+          <Text style={styles.dateTxt}>{!date ? "Date not remembered" : date === todayStr ? "Today" : formatDate(date, date)}</Text>
+          <Icon name={showDate ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
+        </Pressable>
+        <View style={styles.dateActions}>
+          <Pressable style={styles.optionalAction} onPress={() => { setDate(""); setShowDate(false); }} accessibilityRole="button" accessibilityLabel="I don't remember the concert date" accessibilityState={{ selected: !date }}>
+            <Text style={[styles.optionalActionText, !date && { color: colors.amber }]}>I don't remember the date</Text>
+          </Pressable>
+          {date !== todayStr && <Pressable style={styles.optionalAction} onPress={() => { setDate(todayStr); setShowDate(false); }} accessibilityRole="button" accessibilityLabel="Use today as the concert date"><Text style={styles.optionalActionText}>Use today</Text></Pressable>}
+        </View>
+        {!date && <Text style={styles.detailHint}>No date will be guessed. Add it later to place this show in dated concert history.</Text>}
+        {showDate && (
+          <View style={styles.datePickerWrap}>
+            <DatePicker value={date} years={PAST_YEARS} defaultYear={today.getFullYear()} newestFirst onChange={setDate} />
+          </View>
+        )}
+
+        {!isFestival ? <ConcertLookup artist={artist} artistKey={artistPicked ? artistKey : null} city={city} date={date}
+          accountId={session?.id} venue={venue} disabled={submitBusy}
+          onSelect={(match) => {
+            // Explicit selection fills the location; authored text, media,
+            // ratings, lineup and submission/draft identity stay untouched.
+            setVenue(match.venue); setVenuePicked(true); setCity(match.city);
+            setTour(current => current || match.tour || "");
+            setPostError("");
+          }} /> : null}
         <View>
           <Text style={styles.fieldLabel}>VENUE <Text style={styles.optional}>optional with a city</Text></Text>
           <View>
@@ -2140,7 +2170,6 @@ export default function LogScreen({
             )}
           </View>
         </View>
-        <ConcertLocationFields city={city} eventAddress={eventAddress} onCityChange={setCity} onEventAddressChange={setEventAddress} readCities={readCityDirectory} />
 
         {officialEventName ? (
           <View style={styles.officialEventCard} accessible accessibilityRole="text" accessibilityLabel={`Event listing name: ${officialEventName}`}>
@@ -2167,25 +2196,6 @@ export default function LogScreen({
           })}
         </ScrollView>
         </> : null}
-        <Text style={[styles.fieldLabel, { marginTop: 18 }]}>{isFestival ? "FIRST DAY" : "WHEN?"} <Text style={styles.optional}>optional</Text></Text>
-        <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)} accessibilityRole="button" accessibilityLabel="Choose concert date" accessibilityState={{ expanded: showDate }}>
-          <Icon name="calendar" size={16} color={colors.amber} />
-          <Text style={styles.dateTxt}>{!date ? "Date not remembered" : date === todayStr ? "Today" : formatDate(date, date)}</Text>
-          <Icon name={showDate ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
-        </Pressable>
-        <View style={styles.dateActions}>
-          <Pressable style={styles.optionalAction} onPress={() => { setDate(""); setShowDate(false); }} accessibilityRole="button" accessibilityLabel="I don't remember the concert date" accessibilityState={{ selected: !date }}>
-            <Text style={[styles.optionalActionText, !date && { color: colors.amber }]}>I don't remember the date</Text>
-          </Pressable>
-          {date !== todayStr && <Pressable style={styles.optionalAction} onPress={() => { setDate(todayStr); setShowDate(false); }} accessibilityRole="button" accessibilityLabel="Use today as the concert date"><Text style={styles.optionalActionText}>Use today</Text></Pressable>}
-        </View>
-        {!date && <Text style={styles.detailHint}>No date will be guessed. Add it later to place this show in dated concert history.</Text>}
-        {showDate && (
-          <View style={styles.datePickerWrap}>
-            <DatePicker value={date} years={PAST_YEARS} defaultYear={today.getFullYear()} newestFirst onChange={setDate} />
-          </View>
-        )}
-
         {isFestival && date ? <>
           <Text style={[styles.fieldLabel, { marginTop: 14 }]}>LAST DAY <Text style={styles.optional}>for a multi-day festival</Text></Text>
           <Pressable style={styles.dateBtn} onPress={() => setShowEndDate((open) => !open)} accessibilityRole="button" accessibilityLabel="Choose the festival's last day" accessibilityState={{ expanded: showEndDate }}>
