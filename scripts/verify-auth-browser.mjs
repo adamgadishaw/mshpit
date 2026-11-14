@@ -417,7 +417,7 @@ async function runCase(browser, origin, item) {
     calls: [], pageErrors: [], consoleErrors: [], reports: [], routeErrors: [],
     releaseLogin: null, releaseSwitch: null, releaseDiscover: null, holdDiscover: item.kind === "login-canceled",
     loginCompleted: false, connected: item.kind !== "forms-connect", credentialUrlLeaks: [],
-    locationPost: null, locationWrites: [], releaseCitySearch: null,
+    locationPost: null, locationWrites: [], locationLookups: [], releaseCitySearch: null,
     documents: [],
   };
   page.on("request", request => {
@@ -462,6 +462,15 @@ async function runCase(browser, origin, item) {
         ] : [{ city: "London", region: "England", country: "United Kingdom", countryCode: "GB", citySlug: "london" }] });
       }
       if (locationCase && url.pathname === "/api/artists") return await json({ artists: [{ name: "Fixture Artist", key: "fixture-artist" }] });
+      if (locationCase && url.pathname === "/api/concerts/lookup" && request.method() === "GET") {
+        assert.equal(account, alice.id);
+        const query = Object.fromEntries(url.searchParams);
+        assert.equal(query.artist, "Fixture Artist");
+        assert.match(query.date, /^\d{4}-\d{2}-\d{2}$/);
+        assert.ok(["catalog", "ticketmaster"].includes(query.source));
+        state.locationLookups.push(query);
+        return await json({ matches: [], complete: true });
+      }
       if (locationCase && url.pathname === "/api/health") return await json({ ok: true, capabilities: { mediaPublishing: { photos: true, videos: false } } });
       if (locationCase && ((url.pathname === "/api/posts" && request.method() === "POST")
         || (url.pathname === "/api/posts/p_location_browser" && request.method() === "PATCH"))) {
@@ -815,6 +824,9 @@ async function runCase(browser, origin, item) {
       // exact selection, never a delay or a replacement click that hides failure.
       await page.waitForFunction(() => document.querySelector('input[aria-label="Concert city, region and country"]')?.value === "Toronto, Ontario, Canada", null, { timeout: timeoutMs });
       assert.equal(await cityInput.inputValue(), "Toronto, Ontario, Canada");
+      await page.getByText("No matching concerts found. Add the venue below, or adjust the artist, city or date.", { exact: true }).waitFor();
+      assert.deepEqual(state.locationLookups.filter(query => query.city === "Toronto, Ontario, Canada").map(query => query.source).sort(),
+        ["catalog", "ticketmaster"], "Both debounced lookup sources must finish before exercising manual fallback.");
       assert.equal(await page.getByLabel("Concert venue, optional with a city", { exact: true }).inputValue(), "");
       assert.equal(await addressInput.isVisible(), true, "Public event address must be visible without expanding a hidden field.");
       await addressInput.fill("123 Queen Street West");
