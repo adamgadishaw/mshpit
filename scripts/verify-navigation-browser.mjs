@@ -187,6 +187,7 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
     ...(discoverArtist ? { chart: { rows: [navigationArtistCard], source: "popularity" }, catalogTotal: 1 } : {}),
   };
   if (pathname === "/api/discover/chart") return { rows: [], source: "fixture" };
+  if (pathname === "/api/search/events") return { events: [], nextCursor: null };
   if (pathname === "/api/artists") return { artists: [] };
   if (pathname === "/api/artists/resolve") {
     assert.equal(discoverArtist, false, "A canonical Discover artist must open without the remote artist resolver.");
@@ -233,7 +234,7 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   throw new Error(`Missing navigation fixture: ${method} ${pathname}`);
 }
 
-function loadChromium() {
+export function loadChromium() {
   if (process.env.PIT_PLAYWRIGHT_MODULE) return require(process.env.PIT_PLAYWRIGHT_MODULE).chromium;
   for (const name of ["playwright", "playwright-core"]) {
     try { return require(name).chromium; } catch (error) { if (error.code !== "MODULE_NOT_FOUND") throw error; }
@@ -241,7 +242,7 @@ function loadChromium() {
   throw new Error("Set PIT_PLAYWRIGHT_MODULE to a separately installed Playwright module.");
 }
 
-async function localBuildServer() {
+export async function localBuildServer() {
   const directory = resolve(root, process.env.PIT_NAVIGATION_BROWSER_DIST || "dist");
   const files = new Map();
   function visit(folder) {

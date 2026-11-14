@@ -20,7 +20,7 @@ const TOUR_TOKEN = /\btour\b/i;
 const SPECIAL_EVENT_TOKEN = /\b(?:festival|fest|fair|fairs|rodeo|carnival|exhibition|expo)\b/i;
 const TITLE_SEPARATOR = /\s+(?:[-\u2013\u2014|])\s+|:\s+/;
 
-function evidencedBilledArtistNames(row) {
+export function publicTourDateBilledArtists(row) {
   if (!cleanLine(row?.music_evidence, 120)
     || typeof row?.billed_artists !== "string"
     || row.billed_artists.length > 16_000) return [];
@@ -43,7 +43,7 @@ export function publicTourDateArtistProjection(row) {
     row?.billed_artists,
     storedArtist,
   ));
-  const billedArtists = evidencedBilledArtistNames(row);
+  const billedArtists = publicTourDateBilledArtists(row);
   return {
     artist: bindingAllowed ? storedArtist : billedArtists[0] || storedArtist,
     bindingAllowed,

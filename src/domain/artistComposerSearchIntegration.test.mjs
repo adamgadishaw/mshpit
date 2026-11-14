@@ -33,7 +33,8 @@ test("unified search reuses local matches and production does not scan the demo 
   const database = source("../../server/db.js");
 
   assert.doesNotMatch(search, /const venueCount = searchVenues\(query, 24\)\.length/);
-  assert.match(search, /localResultCountRef\.current = venues\.length \+ events\.length \+ clubs\.length/);
+  assert.match(search, /localResultCountRef\.current = searchedVenues\.length/);
+  assert.match(search, /const localResultCount = localResultCountRef\.current \+ catalogResult\.rows\.length/);
   assert.match(search, /const localResultCount = localResultCountRef\.current/);
   assert.match(search, /\+ localResultCount/);
   assert.match(search, /if \(ENABLE_DEMO_DATA\) Object\.values\(ingestedArtists\)/);
