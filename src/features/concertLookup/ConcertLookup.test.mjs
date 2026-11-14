@@ -91,3 +91,9 @@ test("typing several query revisions before debounce sends only the final select
   await f.start(); assert.equal(f.calls.length, 2);
   assert.ok(f.calls.every(call => call.query.city === "Toronto")); f.unmount();
 });
+test("oversized provider locations remain readable and cannot dispatch a truncating selection", async () => {
+  const f = fixture(); await f.start(); f.calls[0].resolve({ matches: [{ ...row, venue: "x".repeat(81) }] });
+  await tick(); f.render(); const button = f.buttons()[0];
+  assert.equal(button.disabled, true); button.onPress(); assert.equal(f.selections.length, 0);
+  assert.match(f.text(), /nothing will be shortened automatically/); f.unmount();
+});

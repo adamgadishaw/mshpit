@@ -2135,7 +2135,7 @@ export default function LogScreen({
             // Explicit selection fills the location; authored text, media,
             // ratings, lineup and submission/draft identity stay untouched.
             setVenue(match.venue); setVenuePicked(true); setCity(match.city);
-            setTour(current => current || match.tour || "");
+            setTour(current => current || (match.tour?.length <= 80 ? match.tour : ""));
             setPostError("");
           }} /> : null}
         <View>

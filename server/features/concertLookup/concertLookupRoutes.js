@@ -6,6 +6,7 @@ import { ticketmasterEventSearchUrl, ticketmasterRows, ticketmasterRequestDelayM
 import { readBoundedJsonResponse } from "../../boundedJsonResponse.js";
 import { concertCityMatches, concertLookupDate, mergeConcertMatches } from "../../../src/domain/concertLookup.mjs";
 import { publicTourDateVenueName } from "../../publicTourDateVenueProjection.js";
+import { canonicalVenueKey } from "../../../src/domain/venueIdentity.mjs";
 
 // Read-only lookup: no scanner, calendar or review rows are written by search.
 // This cache contains only public provider facts, never member history.
@@ -26,7 +27,9 @@ export function concertLookupRoutes({ database, ApiError, requireUser, rateLimit
     ORDER BY p.venue,p.city,p.tour LIMIT 201`);
   const project = (row, artist, artistKey, source) => ({
     id: row.id || `${archiveShowKeyForPost(row)}|${row.city}`, eventId: row.id || null,
-    archiveShowKey: archiveShowKeyForPost({ ...row, artist_key: artistKey }),
+    archiveShowKey: archiveShowKeyForPost({ ...row, artist_key: artistKey,
+      venue_key: canonicalVenueKey(row.venue_key || publicTourDateVenueName(row) || row.venue) }),
+    venueKey: canonicalVenueKey(row.venue_key || publicTourDateVenueName(row) || row.venue),
     artist, artistKey, venue: publicTourDateVenueName(row) || row.venue || "",
     city: row.place || row.city || "", date: row.date, tour: row.tour_name || row.tour || "",
     officialEventName: row.event_name || "", startLocalTime: row.start_local_time || "",

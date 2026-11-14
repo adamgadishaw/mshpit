@@ -142,3 +142,12 @@ test("provider throttling is respected without an automatic retry or a burst on 
   assert.equal((await reader(ctx({ source: "ticketmaster", city: "London" }))).status, "busy");
   assert.equal(calls, 1);
 });
+test("reviewed venue renames retain the canonical archive identity and do not duplicate a concert", async () => {
+  event("tm_renamed_room", { venue: "RBC Amphitheatre" });
+  review("Budweiser Stage");
+  const matches = (await lookup()).matches.filter(row => row.venueKey === "budweiser stage");
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].eventId, "tm_renamed_room");
+  const created = review(matches[0].venue, member());
+  assert.equal(created.post.archiveShowKey, matches[0].archiveShowKey);
+});

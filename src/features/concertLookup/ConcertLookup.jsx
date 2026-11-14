@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { readConcertMatches } from "./concertLookupApi";
 import { colors, radius } from "../../theme";
-import { concertLookupDate, mergeConcertMatches } from "../../domain/concertLookup.mjs";
+import { concertLookupDate, concertMatchCanFill, mergeConcertMatches } from "../../domain/concertLookup.mjs";
 
 // Keep transport state here rather than in the authored draft. Choosing a row
 // writes the same canonical artist/venue/date fields as existing show prefills.
@@ -44,14 +44,15 @@ export default function ConcertLookup({ artist, artistKey, city, date, accountId
     <Text style={styles.title}>Find your concert</Text>
     <Text style={styles.note}>Choose an artist, city and date. Pick a match to fill the venue. You can also enter it below.</Text>
     {loading ? <Text style={styles.note} accessibilityLiveRegion="polite">Finding matching concerts…</Text> : null}
-    {rows.map(row => <Pressable key={row.id} style={styles.row} disabled={disabled}
+    {rows.map(row => <Pressable key={row.id} style={styles.row} disabled={disabled || !concertMatchCanFill(row)}
       accessibilityRole="button" accessibilityLabel={`Use concert: ${row.artist}, ${row.venue}, ${row.city}, ${row.date}${row.startLocalTime ? `, ${row.startLocalTime}` : ""}`}
-      accessibilityState={{ disabled, selected: row.venue === venue }}
-      onPress={() => { if (latest.current?.key === key && !latest.current.disabled) onSelect(row); }}>
+      accessibilityState={{ disabled: disabled || !concertMatchCanFill(row), selected: row.venue === venue }}
+      onPress={() => { if (latest.current?.key === key && !latest.current.disabled && concertMatchCanFill(row)) onSelect(row); }}>
       <Text style={styles.name}>{row.artist} · {row.venue}</Text>
       <Text style={styles.note}>{row.city} · {row.date}{row.startLocalTime?.includes("T") ? ` · ${row.startLocalTime.split("T")[1]}` : ""}</Text>
       {!!row.officialEventName && <Text style={styles.note}>{row.officialEventName}</Text>}
       <Text style={styles.source}>{row.source === "ticketmaster" ? "Ticketmaster" : row.source === "community" ? "Mshpit concert history" : "Mshpit concert catalog"}{row.venue === venue ? " · Selected" : ""}</Text>
+      {!concertMatchCanFill(row) ? <Text style={styles.note}>This listing exceeds the location field limits. Enter a shorter venue or city below; nothing will be shortened automatically.</Text> : null}
     </Pressable>)}
     {ready && !loading && !rows.length ? <Text style={styles.note} accessibilityLiveRegion="polite">No matching concerts found. Add the venue below, or adjust the artist, city or date.</Text> : null}
     {failed ? <Text style={styles.note} accessibilityLiveRegion="polite">Some sources could not refresh. Available matches and your post are safe.</Text> : null}

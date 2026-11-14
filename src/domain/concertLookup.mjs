@@ -1,3 +1,5 @@
+import { LIMITS } from "./validation.mjs";
+
 // Calendar dates remain strings: never shift a selected day through a timezone.
 export function concertLookupDate(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
@@ -10,12 +12,18 @@ export function concertCityMatches(place, city) {
   const parts = identity(place).split(",").map(part => part.trim()).filter(Boolean);
   return !!wanted.length && wanted[0] === parts[0] && wanted.slice(1).every(part => parts.includes(part));
 }
+export function concertMatchCanFill(row) {
+  // Keep the existing venue/city limits. A selected provider label must not
+  // be silently shortened by the normal post API.
+  return typeof row?.venue === "string" && !!row.venue && row.venue.length <= LIMITS.venue
+    && typeof row.city === "string" && !!row.city && row.city.length <= LIMITS.city;
+}
 export function mergeConcertMatches(...sets) {
   const byId = new Map();
   for (const row of sets.flat()) if (row?.id) byId.set(row.id, byId.has(row.id) ? { ...row, ...byId.get(row.id) } : row);
   const groups = new Map();
   for (const row of byId.values()) {
-    const key = [row.artistKey || row.artist, row.venue, row.city.split(",")[0], row.date].map(identity).join("\0");
+    const key = [row.artistKey || row.artist, row.venueKey || row.venue, row.city.split(",")[0], row.date].map(identity).join("\0");
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(row);
   }

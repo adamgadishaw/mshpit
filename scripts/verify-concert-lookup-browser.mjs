@@ -45,6 +45,7 @@ async function scenario(browser, origin, width) {
     const json = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
     if (url.origin !== origin) return route.abort();
     if (!url.pathname.startsWith("/api/")) return route.continue();
+    if (url.pathname === "/api/time") return json({ now: Date.now(), iso: new Date().toISOString(), tz: "UTC", offsetMinutes: 0 });
     if (url.pathname === "/api/artists") return json({ artists: [{ key: "fixture-artist", name: "Fixture Artist", genre: "Rock", country: "Canada" }] });
     if (url.pathname === "/api/concerts/lookup") {
       const query = Object.fromEntries(url.searchParams); calls.push(query);
@@ -118,6 +119,7 @@ async function scenario(browser, origin, width) {
     await page.getByRole("button", { name: "Post to feed", exact: true }).click();
     await review.waitFor({ state: "hidden" });
     assert.equal(writes.at(-1).clientMutationId, writes[0].clientMutationId);
+    await page.goto(origin + "/feed", { waitUntil: "domcontentloaded" });
     await page.getByRole("button", { name: "Log a show", exact: true }).last().click();
     await page.getByLabel("Artist", { exact: true }).fill("Fixture Artist");
     await page.getByText("Fixture Artist", { exact: true }).last().click();
@@ -127,12 +129,17 @@ async function scenario(browser, origin, width) {
     await venue.fill("Remembered Room");
     await page.getByRole("button", { name: "Next: The music", exact: true }).click();
     await page.getByLabel("Overall concert rating", { exact: true }).press("End");
+    const manualSave = page.waitForResponse(response => new URL(response.url()).pathname === "/api/posts"
+      && response.request().method() === "POST" && response.request().postDataJSON()?.venue === "Remembered Room");
     await page.getByRole("button", { name: "Post", exact: true }).click();
-    await venue.waitFor({ state: "hidden" });
+    assert.equal((await manualSave).status(), 200);
     assert.equal(writes.at(-1).venue, "Remembered Room");
     assert.equal(writes.at(-1).city, "No Match City");
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ name: `concert-lookup-${width}`, passed: true, checks: ["canonical artist", "local date", "two venues", "late response", "partial outage", "selected payload", "failed draft", "close/restore", "exact retry", "no-match manual post"] }));
+  } catch (error) {
+    await page.screenshot({ path: join(shots, `concert-lookup-${width}-failure.png`) }).catch(() => {});
+    throw error;
   } finally { slow?.(); await context.close(); }
 }
 const require = createRequire(import.meta.url);

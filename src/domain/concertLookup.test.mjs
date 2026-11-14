@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { concertLookupDate, concertCityMatches, mergeConcertMatches } from "./concertLookup.mjs";
+import { concertLookupDate, concertMatchCanFill, concertCityMatches, mergeConcertMatches } from "./concertLookup.mjs";
 test("calendar dates survive DST and opposite viewer timezones without conversion", () => {
   const previous = process.env.TZ;
   try {
@@ -10,6 +10,11 @@ test("calendar dates survive DST and opposite viewer timezones without conversio
     }
   } finally { if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous; }
   for (const date of ["2026-02-29", "2026-13-01", "2026-01-32", "11/01/2026", null]) assert.equal(concertLookupDate(date), null);
+});
+test("provider names exceeding existing location limits are never silently shortened", () => {
+  assert.equal(concertMatchCanFill({ venue: "Hall", city: "Toronto" }), true);
+  assert.equal(concertMatchCanFill({ venue: "x".repeat(81), city: "Toronto" }), false);
+  assert.equal(concertMatchCanFill({ venue: "Hall", city: "x".repeat(241) }), false);
 });
 test("city matching respects supplied region and country and does not treat input as wildcards", () => {
   assert.equal(concertCityMatches("Toronto, Ontario, Canada", "Toronto"), true);
