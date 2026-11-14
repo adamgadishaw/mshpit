@@ -9,10 +9,10 @@ import { getCallSites } from 'node:util';
 import timers from 'node:timers';
 
 export const PINNED_TIMER_SOURCES = Object.freeze({
-  'server/privacyJournal.js': '38e16c6eac2de0e4b667d5f021212ba26218d876cc1d8eeea70c4774b0d67d47',
+  'server/privacyJournal.js': '2ac3be393b190204e28c3bd69ac1eb2a55e8edc0c483bc9fbc03f514bbd435f8',
   'server/features/searchGrowth/searchGrowthService.js': '4ddc0d7bdaddfd841f91538ebf555f67cf207a3951187c1846386849e47826a1',
   'server/venuePhotoEnrichment.js': 'c5840d05fa33b9de802047c44ab12ec8836cd5a7dc5de932a7433e683c5946b7',
-  'server/periodicJobScheduler.js': '9b17240f4d91a4c970981d891ea6544b7a57856a54feafaf9ae6ff1d0ade2dd6',
+  'server/periodicJobScheduler.js': 'c88c258affd22f731caafffc1e21fb4ca3604f8ac47373b540d1aa1b235da372',
 });
 const SCHEDULERS = Object.freeze([
   { module: 'server/privacyJournal.js', name: 'startPrivacyJournalShipper', timeout: 60_000, interval: 300_000 },
@@ -64,7 +64,7 @@ export function classifyTimerRegistration({ kind, delayMs, frames, candidateRoot
     // Only the two registration calls in the pinned shared periodic helper are
     // suppressed. runOnce/request timeouts in either module remain native.
     assert.equal(record.caller, 'server/periodicJobScheduler.js', 'Unexpected fixture scheduler timer caller');
-    assert.equal(record.line, kind === 'timeout' ? 108 : 109, 'Unexpected fixture scheduler timer callsite');
+    assert.equal(record.line, kind === 'timeout' ? 123 : 119, 'Unexpected fixture scheduler timer callsite');
     assert.equal(delayMs, scheduler[kind], 'Unexpected fixture scheduler timer delay');
     return { suppressed: true, ...record, scheduler: { module: scheduler.module, name: scheduler.name } };
   }
