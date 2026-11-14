@@ -609,6 +609,12 @@ async function runCase(browser, origin, item) {
       if (url.pathname === "/api/discovery/sidebar") return await json({ upcomingEvents: [], suggestedUsers: [], topArtists: [], trendingVenues: [], popularLounges: [], landingMedia: [], catalogTotals: { artists: 40, venues: 80 } });
       if (["/api/me/blocked", "/api/me/muted"].includes(url.pathname)) return await json({ users: [] });
       if (url.pathname === "/api/me/notifications") return await json({ notifications: [] });
+      if (url.pathname === "/api/me/local-alerts/preferences" && request.method() === "GET") {
+        assert.ok(state.user?.id, "Notification preferences require a signed-in fixture account.");
+        assert.equal(account, state.user.id, "Notification preferences must use the current account boundary.");
+        return await json({ preferences: { datesInbox: true, salesInbox: true, datesPush: false, salesPush: false },
+          homeCity: null, deliveryEnabled: false, pushDeliveryEnabled: false });
+      }
       if (url.pathname === "/api/me/threads") return await json({ threads: [] });
       if (url.pathname === "/api/me/following") return await json({ following: [] });
       if (url.pathname === "/api/me/seen-count") return await json({ count: 1 });
@@ -668,7 +674,7 @@ async function runCase(browser, origin, item) {
     }));
     assert.deepEqual(privateVisible, { flashed: false, present: false }, "Private account UI reappeared after the guest boundary.");
     const privateReads = state.calls.slice(after).filter(call =>
-      /\/api\/me\/(following|blocked|muted|threads|fanclubs|going|notifications|artist-recommendations)$/.test(call.path)
+      /\/api\/me\/(following|blocked|muted|threads|fanclubs|going|notifications|artist-recommendations|local-alerts\/preferences)$/.test(call.path)
       || /^\/api\/users\/auth-fixture-[ab]\/posts$/.test(call.path));
     assert.deepEqual(privateReads, [], "Canceled/cleared identity caused private account reads.");
   };
