@@ -140,6 +140,7 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
   )`;
   const eventWhere = `FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE td.id IN (SELECT id FROM candidate_ids) AND COALESCE(td.music_qualified,1)=1
+      AND LOWER(TRIM(COALESCE(td.event_status,''))) NOT IN ('cancelled','canceled')
       AND ${tourDateArtistBindingAllowedSql("td")}
       AND ((((td.artist_key=@key) OR (td.artist_key IS NULL AND LOWER(td.artist)=LOWER(@name)
           AND @uniqueName=1))

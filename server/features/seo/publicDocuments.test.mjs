@@ -693,6 +693,119 @@ test("artist metadata identifies ambiguous names without advertising absent modu
   }
 });
 
+function addMetadataStop(database, id, overrides = {}) {
+  const row = {
+    id, artist: "Alpha", artist_key: "alpha", venue: "Tour Hall", place: "Las Vegas, Nevada, US",
+    date: "2026-11-20", start_local_time: "19:00:00", event_timezone: "America/Los_Angeles",
+    ...overrides,
+  };
+  const columns = Object.keys(row);
+  database.prepare(`INSERT INTO tour_dates (${columns.join(",")}) VALUES (${columns.map(() => "?").join(",")})`)
+    .run(...Object.values(row));
+}
+
+function assertNextStopConsistency(documents, document, { id, date, label }) {
+  assert.equal(document.events[0].id, id);
+  assert.equal(document.events[0].date, date);
+  assert.ok(document.description.includes(`next in ${label}`), document.description);
+  const html = documents.render(document);
+  const escapedDescription = document.description.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
+  for (const attribute of ['name="description"', 'property="og:description"', 'name="twitter:description"']) {
+    assert.ok(html.includes(`<meta ${attribute} content="${escapedDescription}"`));
+  }
+  assert.equal(document.jsonLd[0].description, document.description);
+  const nextCard = html.match(/class="artist-next"[\s\S]*?<\/div>/u)?.[0];
+  assert.ok(nextCard?.includes(`/event/${id}`));
+  assert.ok(nextCard?.includes(`datetime="${document.events[0].startDateTime || date}"`));
+  const schedule = html.slice(html.indexOf('<h2>Upcoming shows</h2>'));
+  assert.ok(schedule.includes(`/event/${id}`));
+}
+
+test("artist metadata keeps the first city visit in schedule order, including case variants and bounded previews", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database, { bio: "" });
+    // Reverse insertion order and IDs must not determine which date represents a city.
+    for (const [id, date, place] of [
+      ["a-last", "2026-11-25", "Paris, France"],
+      ["b-rome", "2026-11-24", "Rome, Italy"],
+      ["c-repeat", "2026-11-23", "LAS VEGAS, Nevada, US"],
+      ["d-oslo", "2026-11-22", "Oslo, Norway"],
+      ["e-repeat", "2026-11-21", "las vegas, Nevada, US"],
+      ["z-first", "2026-11-20", "Las Vegas, Nevada, US"],
+    ]) addMetadataStop(database, id, { date, place });
+    const documents = service(database);
+    for (const eventLimit of [3, 6]) {
+      const document = documents.artistDocument({ artistKey: "alpha", at: Date.parse("2026-11-14T12:00:00Z"), eventLimit });
+      assertNextStopConsistency(documents, document, { id: "z-first", date: "2026-11-20", label: "Las Vegas (Nov 20), Oslo (Nov 22)" });
+      assert.equal(document.description.includes("Rome (Nov 24)"), eventLimit === 6);
+      assert.doesNotMatch(document.description, /Nov 21|Nov 23|Paris|LAS VEGAS|las vegas/u);
+    }
+  } finally { database.close(); }
+});
+
+test("artist next-stop metadata follows venue-local final-day boundaries across the DST offset change", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database, { bio: "" });
+    addMetadataStop(database, "la-final-day", { date: "2026-11-01", start_date_time: "2026-11-02T03:00:00Z" });
+    addMetadataStop(database, "tokyo-expired", { date: "2026-11-01", place: "Tokyo, Japan", event_timezone: "Asia/Tokyo" });
+    addMetadataStop(database, "la-next-day", { date: "2026-11-02" });
+    const documents = service(database);
+    for (const [at, id, date, label] of [
+      ["2026-11-02T07:59:59.999Z", "la-final-day", "2026-11-01", "Las Vegas (Nov 1)"],
+      ["2026-11-02T08:00:00.000Z", "la-next-day", "2026-11-02", "Las Vegas (Nov 2)"],
+    ]) {
+      const document = documents.artistDocument({ artistKey: "alpha", at: Date.parse(at) });
+      assertNextStopConsistency(documents, document, { id, date, label });
+      assert.ok(!document.events.some((event) => event.id === "tokyo-expired"));
+    }
+  } finally { database.close(); }
+});
+
+test("artist next-stop metadata rolls over the year using UTC when the venue timezone is unknown", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database, { bio: "" });
+    addMetadataStop(database, "year-end", { date: "2026-12-31", event_timezone: null });
+    addMetadataStop(database, "new-year", { date: "2027-01-01", event_timezone: "Invalid/Zone" });
+    const documents = service(database);
+    for (const [at, id, date, label] of [
+      ["2026-12-31T23:59:59.999Z", "year-end", "2026-12-31", "Las Vegas (Dec 31)"],
+      ["2027-01-01T00:00:00.000Z", "new-year", "2027-01-01", "Las Vegas (Jan 1)"],
+    ]) {
+      const document = documents.artistDocument({ artistKey: "alpha", at: Date.parse(at) });
+      assertNextStopConsistency(documents, document, { id, date, label });
+    }
+  } finally { database.close(); }
+});
+
+test("artist metadata skips cancelled, expired, invalid and unreleased stops and removes next-stop claims when empty", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database, { bio: "" });
+    const at = Date.parse("2026-11-14T12:00:00Z");
+    addMetadataStop(database, "expired", { date: "2026-11-12" });
+    addMetadataStop(database, "invalid", { date: "2026-11-31" });
+    addMetadataStop(database, "cancelled", { date: "2026-11-15", event_status: "cancelled" });
+    addMetadataStop(database, "canceled", { date: "2026-11-16", event_status: "canceled" });
+    addMetadataStop(database, "unreleased", { date: "2026-11-17", release_at: at + 1 });
+    addMetadataStop(database, "inactive", { date: "2026-11-18", provider_active: 0 });
+    addMetadataStop(database, "visible");
+    const documents = service(database);
+    const document = documents.artistDocument({ artistKey: "alpha", at });
+    assert.deepEqual(document.events.map((event) => event.id), ["visible"]);
+    assert.equal(document.stats.upcomingTotal, 1);
+    assertNextStopConsistency(documents, document, { id: "visible", date: "2026-11-20", label: "Las Vegas (Nov 20)" });
+    database.prepare("UPDATE tour_dates SET event_status='cancelled' WHERE id='visible'").run();
+    const empty = documents.artistDocument({ artistKey: "alpha", at });
+    assert.deepEqual(empty.events, []);
+    assert.equal(empty.stats.upcomingTotal, 0);
+    assert.doesNotMatch(empty.description, /next in|upcoming|tour 2026/u);
+    assert.doesNotMatch(documents.render(empty), /class="artist-next"/u);
+  } finally { database.close(); }
+});
+
 test("artist document uses only active UGC and references Event leaf pages without duplicating MusicEvent", () => {
   const database = createDatabase();
   try {

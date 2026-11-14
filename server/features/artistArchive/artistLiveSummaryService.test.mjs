@@ -25,7 +25,7 @@ function fixture() {
       ticketmaster_coverage_limited INTEGER DEFAULT 0,last_error_code TEXT);
     CREATE TABLE tour_dates(id TEXT PRIMARY KEY,artist_key TEXT,artist TEXT DEFAULT 'Alpha',venue TEXT DEFAULT 'Hall',
       artist_identity_status TEXT,
-      date TEXT DEFAULT '2026-10-01',event_end_date TEXT,event_timezone TEXT,owner_id TEXT,release_at INTEGER DEFAULT 0,
+      date TEXT DEFAULT '2026-10-01',event_end_date TEXT,event_timezone TEXT,event_status TEXT,owner_id TEXT,release_at INTEGER DEFAULT 0,
       source TEXT DEFAULT 'ticketmaster',provider_active INTEGER DEFAULT 1,music_qualified INTEGER DEFAULT 1,
       event_kind TEXT DEFAULT 'concert',music_evidence TEXT,billed_artists TEXT,venue_city TEXT DEFAULT 'Toronto',venue_country_code TEXT DEFAULT 'CA');
     CREATE TABLE posts(id TEXT PRIMARY KEY,user_id TEXT DEFAULT 'fan',artist TEXT DEFAULT 'Alpha',artist_key TEXT DEFAULT 'alpha',
@@ -235,6 +235,8 @@ test("schedule preserves release, account, block, classification, local-day and 
     f.addDate("blocked", { owner_id: "blocked" });
     f.addDate("deleted-owner", { owner_id: "missing" });
     f.addDate("inactive", { provider_active: 0 });
+    f.addDate("cancelled", { event_status: " Cancelled " });
+    f.addDate("canceled", { event_status: "CANCELED" });
     f.addDate("sports", { music_qualified: 0 });
     f.addDate("expired", { date: "2026-01-01" });
     f.addDate("tokyo", { date: "2026-09-06", event_timezone: "Asia/Tokyo" });

@@ -1152,11 +1152,19 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const hasDiscography = !legacyMode && !memorial && artistDiscography(knowledgeData, source.mbid).length > 0;
       // "next in Perth (Sep 27), Sydney (Oct 3)": the cities people search
       // "<artist> <city>" for, straight from the upcoming dates.
-      const nextStops = [...new Map(events.slice(0, 6).map((event) => {
+      // The schedule is already ordered and visibility-filtered. Keep the
+      // first date for each city, matching the next-show card and date list;
+      // constructing a Map from every stop replaces it with the last visit.
+      const stopsByCity = new Map();
+      for (const event of events.slice(0, 6)) {
         const city = cleanLine(String(event.place || "").split(",")[0], 60);
         const day = validDate(event.date);
-        return city && day ? [city.toLocaleLowerCase("en"), `${city} (${SHORT_MONTHS[Number(day.slice(5, 7)) - 1]} ${Number(day.slice(8, 10))})`] : null;
-      }).filter(Boolean)).values()].slice(0, 3);
+        const key = city.toLocaleLowerCase("en");
+        if (city && day && !stopsByCity.has(key)) {
+          stopsByCity.set(key, `${city} (${SHORT_MONTHS[Number(day.slice(5, 7)) - 1]} ${Number(day.slice(8, 10))})`);
+        }
+      }
+      const nextStops = [...stopsByCity.values()].slice(0, 3);
       const nextLine = nextStops.length ? `, next in ${nextStops.join(", ")}` : "";
       const artistTitle = legacyMode
         ? `${name} legacy: biography and community memories | Mshpit`
