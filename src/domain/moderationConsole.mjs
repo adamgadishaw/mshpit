@@ -391,6 +391,7 @@ export function buildModerationReportRows(
       }
 
       const reason = safeText(report.reason) || "No reason provided";
+      const category = safeText(report.category);
       const row = {
         id: report.id,
         report,
@@ -398,6 +399,9 @@ export function buildModerationReportRows(
         typeLabel: moderationTargetLabel(type),
         targetId: report.targetId || "",
         reason,
+        category,
+        categoryLabel: category.replaceAll("_", " "),
+        details: safeText(report.details),
         createdAt: report.createdAt || null,
         reporter,
         target: embedded?.target || { title, excerpt, metadata, missing: !target, removed: false },
@@ -409,6 +413,9 @@ export function buildModerationReportRows(
         row.typeLabel,
         row.targetId,
         row.reason,
+        row.category,
+        row.categoryLabel,
+        row.details,
         row.target.title,
         row.target.excerpt,
         row.target.metadata,

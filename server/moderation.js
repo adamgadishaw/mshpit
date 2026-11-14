@@ -307,6 +307,8 @@ function normalizedReport(report, context) {
     targetType: report.target_type,
     targetId: report.target_id,
     reason: track ? (track.note || track.category) : boundedText(report.reason, LIMITS.note),
+    category: boundedText(track?.category || report.category, 64) || null,
+    details: boundedText(report.details, 500) || null,
     reporterId: report.reporter_id || null,
     reporter: publicPerson(report, "reporter"),
     status: report.status,

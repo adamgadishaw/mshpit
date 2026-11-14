@@ -240,6 +240,14 @@ function ReportCard({ row, selfId, canBan, busy, confirmation, onRequest, onConf
         <View style={styles.reasonCopy}>
           <Text style={styles.reasonLabel}>REPORT REASON</Text>
           <Text selectable style={styles.reasonText}>{row.reason}</Text>
+          {row.categoryLabel ? <>
+            <Text style={styles.reasonLabel}>CATEGORY</Text>
+            <Text selectable style={styles.reasonText}>{row.categoryLabel}</Text>
+          </> : null}
+          {row.details ? <>
+            <Text style={styles.reasonLabel}>REPORTER DETAILS</Text>
+            <Text selectable style={styles.reasonText}>{row.details}</Text>
+          </> : null}
         </View>
       </View>
       <View style={styles.targetBox}>
@@ -377,7 +385,7 @@ function ReportsWorkspace({ rows, queueSummary, nextCursor, loadingState, loadEr
         </View>
       ) : null}
       {undisplayedOpen ? <Text style={styles.guidance}>{undisplayedOpen.toLocaleString()} older open report{undisplayedOpen === 1 ? " is" : "s are"} outside this loaded window. Search covers loaded reports; {hasOlderPage ? "use Load older reports to reach the rest." : "the count changed while paging, so refresh before continuing."}</Text> : null}
-      <SearchField label="Search loaded reports" placeholder="Search loaded reason, author, reporter, or target ID" value={query} onChangeText={setQuery} resultCount={filtered.length} />
+      <SearchField label="Search loaded reports" placeholder="Search loaded reason, category, details, member, or target ID" value={query} onChangeText={setQuery} resultCount={filtered.length} />
       <ScrollView horizontal accessibilityRole="radiogroup" accessibilityLabel="Report type filter" keyboardShouldPersistTaps="handled" showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
         <FilterPill label="All" count={globalContentCount} selected={targetType === "all"} onPress={() => setTargetType("all")} />
         {types.map((type) => <FilterPill key={type} label={rows.find((row) => row.type === type)?.typeLabel || type} count={Number.isFinite(Number(queueSummary?.byType?.[type])) ? Number(queueSummary.byType[type]) : summary.byType[type]} selected={targetType === type} onPress={() => setTargetType(type)} />)}
