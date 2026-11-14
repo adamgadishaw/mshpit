@@ -1,5 +1,15 @@
 name: Disposable Newsroom acceptance
 on:
+  pull_request:
+    paths:
+      - .github/workflows/newsroom-acceptance.yml
+      - scripts/verify-newsroom-ci-browser.mjs
+      - scripts/newsroom-fixture-startup.test.mjs
+      - scripts/fixtures/newsroom-*.mjs
+      - server/privacyJournal.js
+      - server/periodicJobScheduler.js
+      - server/venuePhotoEnrichment.js
+      - server/features/searchGrowth/searchGrowthService.js
   push:
     branches: [master, codex/newsroom-browser-acceptance-20261021, codex/newsroom-code-only-release-20261021, codex/newsroom-gif-20261022]
 permissions:
