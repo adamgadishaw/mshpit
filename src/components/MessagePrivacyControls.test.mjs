@@ -5,6 +5,7 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const React = require("react"), reconciler = require("react-reconciler");
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 const { transformSync } = require("@babel/core");
 const noop = () => {};
 const code = transformSync(readFileSync(new URL("./MessagePrivacyControls.jsx", import.meta.url), "utf8"), {
@@ -69,7 +70,7 @@ function fixture({ strict = false } = {}) {
     text: () => f.all().filter(n => typeof n.text === "string").map(n => n.text).join(" "),
     button(label) { const n = f.all().find(n => n.type === "Pressable" && n.props.accessibilityLabel === label); assert.ok(n, `Missing button: ${label}`); return n; },
     press(label) { f.act(() => f.button(label).props.onPress()); },
-    act: callback => renderer.act(callback),
+    act: callback => React.act(() => renderer.act(callback)),
     render(changes = {}) {
       if (Object.hasOwn(changes, "account")) account = changes.account;
       if (Object.hasOwn(changes, "epoch")) epoch = changes.epoch;
@@ -88,21 +89,23 @@ function fixture({ strict = false } = {}) {
         isBlockMutationPending: () => externalBlockPending,
         blockUser: command("block"), unblockUser: command("unblock"), muteUser: command("mute"), unmuteUser: command("unmute"),
       };
-      renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null,
-        React.createElement(Component, { otherId: peer, admitAction: () => gate.active, controls: store })));
+      React.act(() => renderer.render(React.createElement(strict ? React.StrictMode : React.Fragment, null,
+        React.createElement(Component, { otherId: peer, admitAction: () => gate.active, controls: store }))));
     },
     async settle(call, result = { ok: true }, reject = false) {
-      if (!result?.ok || reject) Object.assign(stateFor(call.account, call.target), call.before);
-      if (reject) call.reject(new Error("Synthetic request failure")); else call.resolve(result);
-      for (let i = 0; i < 5; i++) await Promise.resolve();
-      await new Promise(setImmediate);
-      f.act(noop);
+      // A resolved Store promise does not imply React's default-priority commit
+      // has run. Drain the real renderer's async work, not an arbitrary tick.
+      await React.act(async () => {
+        if (!result?.ok || reject) Object.assign(stateFor(call.account, call.target), call.before);
+        if (reject) call.reject(new Error("Synthetic request failure")); else call.resolve(result);
+        await call.promise.catch(noop);
+      });
     },
     setThrowing(value) { throwing = value; },
     setExternalBlockPending(value) { externalBlockPending = value; f.render(); },
     leave() { route.active = false; },
     return() { route = { active: true }; f.render(); },
-    close: () => renderer.render(null),
+    close: () => React.act(() => renderer.render(null)),
   };
   f.render(); return f;
 }

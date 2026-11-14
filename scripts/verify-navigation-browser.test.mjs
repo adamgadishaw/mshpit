@@ -69,15 +69,19 @@ test("server collection fixture retains Expo scripts and only marks supported ex
 });
 
 test("navigation API fixtures reject unrecognized reads and every application mutation", () => {
-  for (const path of ["/api/feed", "/api/me/following", "/api/users/navigation-fixture-user/posts"]) {
+  for (const path of ["/api/feed", "/api/me/following", "/api/me/notifications", "/api/me/local-alerts/preferences", "/api/users/navigation-fixture-user/posts"]) {
     assert.throws(() => fixtureApiResponse(path), /Guest|Guests/);
     assert.doesNotThrow(() => fixtureApiResponse(path, { member: true }));
   }
   assert.throws(() => fixtureApiResponse("/api/unexpected"), /Missing navigation fixture/);
   for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
     assert.throws(() => fixtureApiResponse("/api/posts/p_navigation_fixture", { member: true, method }), /must not mutate/);
+    assert.throws(() => fixtureApiResponse("/api/me/local-alerts/preferences", { member: true, method }), /must not mutate/);
   }
   assert.deepEqual(fixtureApiResponse("/api/client-errors", { method: "POST" }), { ok: true });
+  assert.deepEqual(fixtureApiResponse("/api/me/notifications", { member: true }), {
+    notifications: [], unread: 0, nextCursor: null, readContract: "notification-ids-v1",
+  });
 });
 
 test("public resolver fixtures cannot silently substitute one entity for another", () => {

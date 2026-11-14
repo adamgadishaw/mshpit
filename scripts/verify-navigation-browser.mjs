@@ -237,7 +237,9 @@ export function fixtureApiResponse(pathname, { member = false, method = "GET", r
   if (pathname.startsWith("/api/lounges/") && pathname.endsWith("/meta")) return { status: "open", messages: 0 };
   if (pathname.startsWith("/api/feed")) { assert.ok(member, "Guests must never request the private feed."); return { posts: [], hasMore: false, hiddenPostIds: [] }; }
   const privateFixtures = {
-    "/api/me/blocked": { users: [] }, "/api/me/muted": { users: [] }, "/api/me/notifications": { notifications: [] },
+    "/api/me/local-alerts/preferences": { preferences: { datesInbox: true, salesInbox: true, datesPush: false, salesPush: false },
+      homeCity: null, deliveryEnabled: false, pushDeliveryEnabled: false },
+    "/api/me/blocked": { users: [] }, "/api/me/muted": { users: [] }, "/api/me/notifications": { notifications: [], unread: 0, nextCursor: null, readContract: "notification-ids-v1" },
     "/api/me/threads": { threads: [] }, "/api/me/following": { following: [] }, "/api/me/fanclubs": { fanClubs: [] },
     "/api/me/going": { going: [] }, "/api/me/artist-recommendations": { artists: [] },
     "/api/users/navigation-fixture-user/posts": { posts: [], hasMore: false },

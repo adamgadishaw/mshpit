@@ -35,6 +35,10 @@ async function scenario(browser, origin, width) {
       if (url.pathname === '/api/client-errors') { state.reports.push(body); return await json({ ok: true }); }
       if (url.pathname === '/api/me') return await json({ user });
       if (url.pathname === '/api/admin/artist-requests') return await json({ requests: state.requests });
+      if (['/api/admin/event-claims', '/api/admin/venue-claims'].includes(url.pathname)) {
+        assert.equal(method, 'GET'); assert.equal(req.headers()['x-pit-expected-account'], user.id);
+        return await json({ claims: [], nextCursor: null });
+      }
       if (url.pathname === '/api/admin/members') return await json({ users: [user, { id: request.userId, name: 'Artist fixture', handle: 'artistfixture', role: 'artist' }], total: 2, banned: 0, verified: 0, regions: [] });
       if (url.pathname === '/api/admin/moderation') return await json({ reports: [], recentActions: [], summary: { open: 0, actioned: 0, dismissed: 0, totalRecent: 0, byType: {} } });
       if (url.pathname === '/api/admin/health' || url.pathname === '/api/health') return await json({ ok: true });
