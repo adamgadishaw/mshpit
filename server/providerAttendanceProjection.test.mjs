@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-provider-attendance-projection-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -37,6 +38,46 @@ function messages(member, key) {
   return routes["GET /api/lounges/:key/messages"]({ user: member, params: { key: encodeURIComponent(key) } });
 }
 const denied = (member, key) => assert.throws(() => messages(member, key), { status: 403, code: "LOUNGE_ATTENDANCE_REQUIRED" });
+
+test("reviewed postponed event preserves existing plans and rejects new RSVP/check-in before and on its original date", (t) => {
+  let clock = Date.parse("2026-11-14T12:00:00Z");
+  t.mock.method(Date, "now", () => clock);
+  const member = user("projection_postponed");
+  const newMember = user("projection_new_postponed");
+  const id = "tm_Z698xZu0Z16vCdfAue";
+  const show = event(id, { artist: "Placebo", billed: ["Placebo"], venue: "Sportovní hala FORTUNA" });
+  show.key = "placebo|sportovní hala fortuna|2026-11-15";
+  db.prepare(`UPDATE tour_dates SET date='2026-11-15',provider_event_id='Z698xZu0Z16vCdfAue',
+    start_date_time='2026-11-15T19:00:00Z',event_timezone='Europe/Prague',event_status='onsale' WHERE id=?`).run(id);
+
+  for (const day of ["2026-11-14T12:00:00Z", "2026-11-15T12:00:00Z"]) {
+    clock = Date.parse(day);
+    assert.throws(() => going(newMember, show), { status: 409, code: "EVENT_RSVP_CLOSED" });
+    // Fixture an already-existing ticket holder's plan from before the notice.
+    createShowAttendanceRepository(db).writeExactAttendance({ userId: member.id, key: show.key,
+      state: "going", visibility: "private", at: clock - 86400000,
+      descriptor: { tourDateId: id, artist: "Placebo", venue: show.venue, city: "Prague",
+        date: "2026-11-15", localDate: "2026-11-15", lifecycle: "upcoming",
+        provider: "ticketmaster", providerEventId: "Z698xZu0Z16vCdfAue", timezone: "Europe/Prague",
+        startAt: Date.parse("2026-11-15T19:00:00Z") } });
+    const result = going(member, show);
+    assert.equal(result.attendance.state, "going");
+    const document = routes["GET /api/shows/:key"]({ user: member, params: { key: result.showId } }).show;
+    assert.equal(document.lifecycle, "postponed");
+    assert.equal(document.date, "2026-11-15");
+    assert.equal(document.provider.eventId, "Z698xZu0Z16vCdfAue");
+    assert.equal(routes["GET /api/tourdates"]({ user: member }).tourDates.some((row) => row.id === id), false);
+    assert.throws(() => going(member, show, { state: "here" }), { status: 409, code: "CHECK_IN_UNAVAILABLE" });
+    // A stable-ID client must not check in using an older stored happening
+    // snapshot after canonical GET has applied a read-only correction.
+    db.prepare("UPDATE shows SET lifecycle='happening',start_at=? WHERE id=?").run(clock, result.showId);
+    assert.throws(() => routes["POST /api/going"]({ user: member, ip: member.id,
+      body: { key: result.showId, state: "here", visibility: "private" } }), { status: 409, code: "CHECK_IN_UNAVAILABLE" });
+    going(member, show, { state: null });
+  }
+  db.prepare("UPDATE tour_dates SET provider_active=0 WHERE id=?").run(id);
+  assert.throws(() => going(member, show), { status: 404 }, "postponement must not bypass inactive-provider visibility");
+});
 
 test("projected provider Going uses the visible artist alias without accepting arbitrary client aliases", () => {
   const member = user("projection_owner");

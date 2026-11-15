@@ -12,6 +12,19 @@ const { db, q } = await import("./db.js");
 const { resolveEntity, seoHttpPlan } = await import("./seo.js");
 const { eventPath } = await import("../src/domain/urls.mjs");
 
+test("postponed Prague remains directly readable without advertising tickets", () => {
+  const id = "tm_Z698xZu0Z16vCdfAue";
+  try {
+    const path = addEvent(id, { name: "Placebo", artist: "Placebo", venue: "Sportovní hala FORTUNA", date: "2026-11-15", billedArtists: ["Placebo"] });
+    const event = resolveEntity(path);
+    assert.equal(event.eventStatus, "postponed");
+    assert.equal(event.ticketUrl, null);
+    assert.equal(event.date, "2026-11-15");
+    assert.equal(event.eventNoticeSource, "https://www.ticketportal.cz/Article/11104");
+    assert.equal(db.prepare("SELECT event_status FROM tour_dates WHERE id=?").get(id).event_status, "onsale", "read correction does not mutate storage");
+  } finally { db.prepare("DELETE FROM tour_dates WHERE id=?").run(id); }
+});
+
 after(() => {
   db.close();
   rmSync(directory, { recursive: true, force: true });

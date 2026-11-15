@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { normalizeShowDocument, showLifecycleView, showPresentationModel } from "../../../src/domain/showDocument.mjs";
 import { DatabaseSync } from "node:sqlite";
 
 import { ensureShowSchema } from "./showSchema.js";
@@ -75,6 +76,37 @@ function context(key, user = null) {
     headers,
   };
 }
+
+test("canonical GET overlays reviewed postponement on stale stored shows without a second snapshot or writes", () => {
+  const eventId = "Z698xZu0Z16vCdfAue";
+  const tourDateId = `tm_${eventId}`;
+  for (const linked of [false, true]) {
+    const { database, routes } = fixture();
+    try {
+      database.prepare("INSERT INTO tour_dates(id,source,provider_event_id) VALUES (?,?,?)").run(tourDateId, "ticketmaster", eventId);
+      database.prepare(`UPDATE shows SET artist='Placebo',provider_event_id=?,tour_date_id=?,
+        date='2027-01-01',local_date='2027-01-01',lifecycle='happening' WHERE id=?`).run(eventId, linked ? tourDateId : null, SHOW_ID);
+      database.exec("PRAGMA query_only=ON");
+      const show = routes["GET /api/shows/:key"](context(SHOW_ID)).show;
+      assert.equal(show.lifecycle, "postponed");
+      assert.equal(show.date, "2026-11-15");
+      assert.equal(show.localDate, "2026-11-15");
+      assert.equal(show.startsAt, null);
+      assert.equal(show.startLocalTime, null);
+      assert.equal(show.eventNoticeSource, "https://www.ticketportal.cz/Article/11104");
+      assert.equal(show.originalDate, "2026-11-15");
+      const clientShow = normalizeShowDocument({ show });
+      const presentation = showPresentationModel(showLifecycleView(clientShow, null, false));
+      assert.equal(presentation.screenKicker, "Postponed");
+      assert.equal(presentation.allowGoing, true);
+      assert.equal(presentation.allowTickets, false);
+      assert.equal(presentation.showCountdown, false);
+      assert.equal(clientShow.eventNoticeSource, show.eventNoticeSource);
+      assert.deepEqual({ ...database.prepare("SELECT date,lifecycle FROM shows WHERE id=?").get(SHOW_ID) },
+        { date: "2027-01-01", lifecycle: "happening" });
+    } finally { database.close(); }
+  }
+});
 
 test("stable shows recheck provider identity holds without exposing stale artist or performer keys", () => {
   const { database, repository } = fixture();

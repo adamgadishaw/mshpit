@@ -1,5 +1,6 @@
 import { publicProviderEventText } from "./providerEventText.js";
 import { storedBillingAllowsArtistBinding } from "./artistBillingIdentity.js";
+import { reviewedEventCorrection } from "./reviewedEventCorrections.js";
 import { tourDateArtistIdentityPending } from "./providerArtistBinding.js";
 
 const cleanLine = (value, maxLength = 160) => {
@@ -73,6 +74,7 @@ export function deriveTourNameFromEventTitle({ eventName, artist, eventKind } = 
 
 export function publicTourDateProviderFields(row) {
   const approximate = row?.access_start_approximate;
+  const correction = reviewedEventCorrection(row);
   return {
     // Explicit false lets a refreshed authoritative event clear a stale pending
     // marker; absent client-local metadata is not proof that identity is ready.
@@ -84,6 +86,7 @@ export function publicTourDateProviderFields(row) {
     startLocalTime: cleanLine(row?.start_local_time, 80),
     accessStartDateTime: cleanLine(row?.access_start_date_time, 80),
     accessStartApproximate: approximate == null ? null : !!approximate,
-    eventStatus: cleanLine(row?.event_status, 40),
+    eventStatus: correction?.status ?? cleanLine(row?.event_status, 40),
+    ...(correction ? { eventNotice: correction.notice, eventNoticeSource: correction.sourceUrl, originalDate: correction.originalDate } : {}),
   };
 }

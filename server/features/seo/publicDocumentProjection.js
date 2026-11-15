@@ -28,6 +28,7 @@ import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { venueCoordinates, venueGuideModel } from "../../../src/domain/venueGuide.mjs";
 import { publicVenueFacts } from "../../venueFacts.js";
 import { publicTourDateArtistProjection } from "../../tourDateMetadata.js";
+import { reviewedEventCorrection, reviewedEventRow } from "../../reviewedEventCorrections.js";
 import { tourYearsLabel } from "../../../src/domain/artistNews.mjs";
 import { publicEventMetadata, publicVenueMetadataName } from "./publicMetadataPresentation.js";
 import { createNewsDeskReader } from "../newsDesk/newsDeskService.js";
@@ -42,7 +43,7 @@ import {
 const SITE_NAME = "Mshpit";
 const DEFAULT_ORIGIN = "https://www.mshpit.com";
 const MUSICBRAINZ_ARTIST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const NON_PURCHASABLE_EVENT_STATUSES = new Set(["cancelled", "canceled", "offsale", "off-sale", "off_sale", "unavailable"]);
+const NON_PURCHASABLE_EVENT_STATUSES = new Set(["cancelled", "canceled", "postponed", "offsale", "off-sale", "off_sale", "unavailable"]);
 const PROFILE_IMAGE_PURPOSES = new Set(["avatar", "banner"]);
 const PROFILE_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
@@ -695,6 +696,8 @@ const SHORT_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "S
 
 function eventCard(row, paths) {
   if (!row?.id || !isIndexableMusicEventRecord(row)) return null;
+  const correction = reviewedEventCorrection(row);
+  row = reviewedEventRow(row);
   const projectedArtist = publicTourDateArtistProjection(row);
   const display = (value, length) => cleanLine(publicProviderEventText(value, row.owner_id ?? row.ownerId), length);
   const artist = display(projectedArtist.artist, 160);
@@ -742,8 +745,9 @@ function eventCard(row, paths) {
     startDateTime,
     localTime: cleanLine(row.start_local_time, 20) || null,
     timezone: cleanLine(row.event_timezone, 80) || null,
-    status: eventStatus(row.event_status),
-    statusLabel: cleanLine(row.event_status, 40) || "scheduled",
+    status: eventStatus(correction?.status ?? row.event_status),
+    statusLabel: correction?.status ?? (cleanLine(row.event_status, 40) || "scheduled"),
+    ...(correction ? { eventNotice: correction.notice, eventNoticeSource: correction.sourceUrl, originalDate: correction.originalDate } : {}),
     soldOut: !!row.sold_out,
     ticketUrl,
     source: cleanLine(row.source, 40) || null,

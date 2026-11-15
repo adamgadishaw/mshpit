@@ -1,5 +1,19 @@
 # Pit current status
 
+## 2026-11-15 Placebo Prague correction (isolated release candidate)
+
+Prepared from verified remote master `c8a8dd7c4bd068c9fde670d2d099359a21ed83a9`.
+Exact provider identity `tm_Z698xZu0Z16vCdfAue` has a reviewed postponed
+override, original date and official notice. Imports cannot silently clear it;
+upcoming selections exclude it, while direct event and canonical show reads
+remain accurate. Existing plans/removal are retained; current policy still blocks
+new RSVPs and live check-in for postponed shows.
+Current remote lifecycle, provider-text safety and iOS behavior are preserved.
+Unrelated dirty review/rating work is excluded. No push, deployment or production
+data write. Full suite passed (10,664 passed, 23 skipped, zero failures); syntax,
+architecture, dependency audit, Expo export and local mobile/desktop browser
+checks passed. See `EVENT_STATUS_CORRECTION_2026-11-15.md` for evidence.
+
 ## 2026-11-12 Discover artist images (Build 9 follow-up)
 
 - Isolated from installed source `646e482a`: Discover excluded Spotify imagery

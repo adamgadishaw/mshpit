@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { reviewedShowCorrection } from "../../reviewedEventCorrections.js";
 
 export const SHOW_ATTENDANCE_STATES = Object.freeze([
   "interested",
@@ -80,6 +81,7 @@ export function isAttendeeState(value) {
 }
 
 export function showCheckInAvailable(show, at = Date.now()) {
+  if (reviewedShowCorrection(show)) return false;
   const startAt = Number(show?.startAt);
   return !!show?.persisted
     && !!show.provider

@@ -34,6 +34,7 @@ export function normalizePublicEventSnapshot(entity, requestedId) {
   if (!name || !artist || !venue || !calendarDate(date)) return null;
   return Object.freeze({
     id, name, artist, venue, date,
+    publicEventSnapshot: true,
     path: eventPath(id),
     city: text(entity.city || entity.place),
     artistKey: text(entity.artistKey, 180) || null,
@@ -41,6 +42,11 @@ export function normalizePublicEventSnapshot(entity, requestedId) {
     source: text(entity.source, 40) || null,
     providerVenueId: text(entity.providerVenueId, 180) || null,
     eventStatus: text(entity.eventStatus, 40),
+    ...(text(entity.eventNotice) ? {
+      eventNotice: text(entity.eventNotice),
+      eventNoticeSource: /^https:\/\//.test(entity.eventNoticeSource || "") ? text(entity.eventNoticeSource, 2048) : null,
+      originalDate: calendarDate(entity.originalDate) ? entity.originalDate : null,
+    } : {}),
     ticketUrl: text(entity.ticketUrl, 2048) || null,
     soldOut: entity.soldOut === true,
   });

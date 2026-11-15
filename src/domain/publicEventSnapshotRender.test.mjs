@@ -14,25 +14,29 @@ const require = createRequire(import.meta.url);
 const source = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
 const panel = parse(source, { sourceType: "module", plugins: ["jsx"] }).program.body
   .find((node) => node.type === "FunctionDeclaration" && node.id.name === "PublicEventSnapshotPanel");
-const compiled = require("@babel/core").transformSync(`${source.slice(panel.start, panel.end)}\nmodule.exports = PublicEventSnapshotPanel;`, {
+const notice = parse(source, { sourceType: "module", plugins: ["jsx"] }).program.body
+  .find((node) => node.type === "FunctionDeclaration" && node.id.name === "EventNotice");
+const compiled = require("@babel/core").transformSync(`${source.slice(notice.start, notice.end)}\n${source.slice(panel.start, panel.end)}\nmodule.exports = PublicEventSnapshotPanel;`, {
   babelrc: false, configFile: false,
   plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
 }).code;
 
 function fixture() {
-  const module = { exports: {} }, tickets = [];
-  const jsx = (type, props) => ({ type, props });
+  const module = { exports: {} }, tickets = [], notices = [];
+  const jsx = (type, props) => typeof type === "function" ? type(props) : ({ type, props });
   new vm.Script(compiled).runInNewContext({
     module, exports: module.exports,
     require: () => ({ jsx, jsxs: jsx }),
     View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", Icon: "Icon",
     CatalogText: "CatalogText",
     styles: {}, colors: {}, formatDate, showLifecycleView,
+    PublicPressableLink: "PublicPressableLink",
+    Linking: { openURL: async (url) => notices.push(url) }, captureAppError: () => {},
     restrictedShowAvailabilityCopy: () => null, // This fixture uses the unchanged web fallback.
     Platform: { OS: "web" },
     useIOSTicketAction: () => ({ open: (url) => tickets.push(url), error: "" }),
   });
-  return { render: module.exports, tickets };
+  return { render: module.exports, tickets, notices };
 }
 
 function nodes(tree) {
@@ -218,6 +222,25 @@ test("real fallback renders Club 1BD date/venue without inventing an artist link
   assert.equal(f.tickets.length, 0);
   const context = nodes(tree).find(node => node.type === "CatalogText");
   assert.equal(context.props.type, "event"); assert.equal(context.props.entityKey, "tm_club");
+});
+
+test("real postponed fallback shows original date and working official notice without ticket purchase", async () => {
+  const f = fixture();
+  const id = "tm_Z698xZu0Z16vCdfAue";
+  const event = normalizePublicEventSnapshot({ id, kind: "event", path: `/event/${id}`, publicEventSnapshot: true,
+    artist: "Placebo", name: "Placebo", venue: "Sportovní hala FORTUNA", date: "2026-11-15",
+    eventStatus: "postponed", originalDate: "2026-11-15", ticketUrl: null,
+    eventNotice: "New date to be announced. Existing tickets remain valid.", eventNoticeSource: "https://www.ticketportal.cz/Article/11104" }, id);
+  const tree = f.render({ event, status: "ready" });
+  assert.match(text(tree), /THIS SHOW IS POSTPONED/);
+  assert.match(text(tree), /ORIGINAL DATE/);
+  assert.match(text(tree), /New date to be announced\. Existing tickets remain valid\./);
+  assert.doesNotMatch(text(tree), /Get tickets/);
+  const noticeLink = nodes(tree).find((node) => node.props?.accessibilityLabel === "Read the official event notice");
+  assert.equal(noticeLink.props.href, event.eventNoticeSource);
+  noticeLink.props.onNavigate();
+  await Promise.resolve();
+  assert.deepEqual(f.notices, [event.eventNoticeSource]);
 });
 
 test("real fallback distinguishes loading, network failure, unavailable listing and retained content", () => {
