@@ -48,7 +48,7 @@ export function publicEventMetadata(event, { today, posts = [] } = {}) {
   const heading = `${prefix}${identity}${dateLabel ? `, ${dateLabel}` : ""}`;
   const hasMemories = posts.some((post) => line(post?.text) || post?.media?.length);
   const hasPhotos = posts.some((post) => post?.media?.some((asset) => asset.kind === "image"));
-  const details = cancelled ? "This event is cancelled." : postponed ? "The listed date is postponed; check the organizer for updates."
+  const details = cancelled ? "This event is cancelled." : postponed ? line(event?.eventNotice) || "The listed date is postponed; check the organizer for updates."
     : past ? "Past event details." : event?.ticketUrl ? "Tickets, venue details and who's going." : "Venue details and who's going.";
   const community = hasMemories ? ` Read fan memories${hasPhotos ? " and view concert photos" : ""}.` : "";
   return {

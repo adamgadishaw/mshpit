@@ -854,7 +854,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
-          {ticketShow?.timing?.length ? (
+          {lifecycleView.lifecycle !== "postponed" && ticketShow?.timing?.length ? (
             <View style={styles.timingRow}>
               {ticketShow.timing.map((timing) => (
                 <View key={timing.kind} style={styles.timingItem}>

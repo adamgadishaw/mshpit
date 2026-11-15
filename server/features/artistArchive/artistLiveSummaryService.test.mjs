@@ -10,6 +10,17 @@ import { createArtistOverviewController } from "../../../src/features/artistOver
 import { artistOverviewFromResponse, artistOverviewRequest } from "../../../src/features/artistOverview/artistOverviewRequest.mjs";
 
 const NOW = Date.parse("2026-09-07T02:00:00Z");
+
+test("reviewed postponed Prague show cannot be the next scheduled artist show", () => {
+  const f = fixture();
+  try {
+    f.addDate("tm_Z698xZu0Z16vCdfAue", { artist_key: "alpha", date: "2026-11-15" });
+    f.addDate("tm_following", { artist_key: "alpha", date: "2026-11-16" });
+    const schedule = f.read().schedule;
+    assert.equal(schedule.total, 1);
+    assert.deepEqual(schedule.items.map((event) => event.id), ["tm_following"]);
+  } finally { f.database.close(); }
+});
 function fixture() {
   const database = registerPitSqliteFunctions(new DatabaseSync(":memory:"));
   database.exec(`

@@ -351,11 +351,12 @@ function eventDetails(event) {
   const venue = link(event.venuePath, event.venue);
   const address = postalAddress(event.address);
   return `<dl class="event-facts">
-    <div><dt>Date</dt><dd><time datetime="${esc(event.startDateTime || event.date)}">${esc(date || event.date)}${publicEventTimeLabel(event.localTime) ? ` at ${esc(publicEventTimeLabel(event.localTime))}` : ""}</time>${event.endDate ? ` through <time datetime="${esc(event.endDate)}">${esc(longDateLabel(event.endDate) || event.endDate)}</time>` : ""}</dd></div>
+    <div><dt>${event.originalDate ? "Original date" : "Date"}</dt><dd><time datetime="${esc(event.startDateTime || event.date)}">${esc(date || event.date)}${publicEventTimeLabel(event.localTime) ? ` at ${esc(publicEventTimeLabel(event.localTime))}` : ""}</time>${event.endDate ? ` through <time datetime="${esc(event.endDate)}">${esc(longDateLabel(event.endDate) || event.endDate)}</time>` : ""}</dd></div>
     <div><dt>Venue</dt><dd>${venue}</dd></div>
     ${event.place ? `<div><dt>Location</dt><dd>${esc(event.place)}</dd></div>` : ""}
     ${address ? `<div><dt>Venue address</dt><dd>${address}</dd></div>` : ""}
     ${event.statusLabel && event.statusLabel !== "scheduled" ? `<div><dt>Status</dt><dd>${esc(event.statusLabel)}</dd></div>` : ""}
+    ${event.eventNotice ? `<div><dt>Official update</dt><dd>${esc(event.eventNotice)}${publicHttpsUrl(event.eventNoticeSource) ? ` <a href="${esc(publicHttpsUrl(event.eventNoticeSource))}" rel="noopener noreferrer">Official notice</a>` : ""}</dd></div>` : ""}
     ${event.eventKind !== "concert" ? `<div><dt>Event type</dt><dd>${esc(event.eventKind.replace("_", " "))}</dd></div>` : ""}
   </dl>${ticket ? `<p class="ticket-action"><a class="button primary" href="${esc(ticket)}" rel="sponsored noopener noreferrer">View tickets</a><small>Tickets are handled by the linked provider.</small></p>` : ""}`;
 }

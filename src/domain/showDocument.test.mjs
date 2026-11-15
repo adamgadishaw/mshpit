@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
+test("fresh authoritative postponed snapshot overrides stale date and scheduled show document", () => {
+  const event = { id: "tm_Z698xZu0Z16vCdfAue", kind: "event" };
+  const snapshot = { id: event.id, publicEventSnapshot: true, eventStatus: "postponed" };
+  for (const document of [null, { provider: { backed: true }, lifecycle: "upcoming", startsAt: 1 }]) {
+    const view = showLifecycleView(document, Date.now() + 86400000, false, Date.now(), event, snapshot);
+    const presentation = showPresentationModel(view);
+    assert.equal(presentation.screenKicker, "Postponed");
+    assert.equal(presentation.showCountdown, false);
+    assert.equal(presentation.allowTickets, false);
+    assert.equal(presentation.showPostEvent, false);
+  }
+  assert.equal(showLifecycleView(null, null, false, Date.now(), { eventStatus: "postponed" }).trusted, false);
+});
+
 import {
   isNamedSpecialEvent, normalizeShowDocument, showDocumentIdentity, showLifecycleView, showPresentationModel,
 } from "./showDocument.mjs";
@@ -116,7 +130,7 @@ test("special-event identity uses the provider kind even when artist and event n
 test("ShowScreen supplies the full event range and kind to presentation helpers", () => {
   const source = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
   assert.match(source, /isNamedSpecialEvent\(norm\) \|\| eventTitle !== artist/);
-  assert.match(source, /showLifecycleView\(\s*trustedShow,\s*showDateMs\(norm\.startDateTime \|\| norm\.startLocalTime \|\| norm\.date\),\s*overall != null,\s*Date\.now\(\),\s*norm,/);
+  assert.match(source, /showLifecycleView\(\s*trustedShow,\s*showDateMs\(norm\.startDateTime \|\| norm\.startLocalTime \|\| norm\.date\),\s*overall != null,\s*Date\.now\(\),\s*norm,\s*eventIdentitySnapshot,/);
   assert.match(source, /norm\.doorsVerified === true \? Date\.parse\(norm\.doorsAt \|\| ""\) : NaN/);
   assert.match(source, /const providerAccessMs = Date\.parse\(norm\.accessStartDateTime \|\| ""\)/);
   assert.match(source, /const countdownNowMs = Date\.now\(\)/);

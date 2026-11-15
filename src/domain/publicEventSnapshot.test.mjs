@@ -18,6 +18,16 @@ test("eligible event snapshot does not require a canonical artist and excludes p
   assert.equal(Object.isFrozen(snapshot), true);
 });
 
+test("official event notice survives fresh snapshot normalization", () => {
+  const snapshot = normalizePublicEventSnapshot({ ...entity, eventStatus: "postponed",
+    eventNotice: "New date to be announced. Existing tickets remain valid.",
+    eventNoticeSource: "https://www.ticketportal.cz/Article/11104", originalDate: "2026-11-15" }, id);
+  assert.equal(snapshot.publicEventSnapshot, true);
+  assert.equal(snapshot.eventStatus, "postponed");
+  assert.equal(snapshot.originalDate, "2026-11-15");
+  assert.equal(snapshot.eventNoticeSource, "https://www.ticketportal.cz/Article/11104");
+});
+
 test("wrong identity, unsigned caller flags, non-events, malformed dates and incomplete snapshots fail closed", () => {
   for (const patch of [
     { id: "another-event" }, { path: "/event/another-event" }, { kind: "concert" },

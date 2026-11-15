@@ -18,6 +18,37 @@ const ARTIST_MBID = "12345678-1234-4234-8234-123456789abc";
 const OTHER_MBID = "22345678-1234-4234-8234-123456789abc";
 const NOW = Date.parse("2026-08-25T12:00:00.000Z");
 
+test("official postponed Prague document keeps history and EventPostponed without a ticket offer", () => {
+  const database = createDatabase();
+  try {
+    database.prepare(`INSERT INTO tour_dates (id,artist,venue,date,source,event_status,ticket_url,venue_city,venue_country_code)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run("tm_Z698xZu0Z16vCdfAue", "Placebo", "Sportovní hala FORTUNA", "2026-11-15",
+      "ticketmaster", "onsale", "https://www.ticketmaster.cz/event/fixture", "Prague", "CZ");
+    database.prepare("UPDATE tour_dates SET venue_address_line1=? WHERE id=?").run("Za Elektrárnou 419/1", "tm_Z698xZu0Z16vCdfAue");
+    addArtist(database, { key: "placebo", name: "Placebo" });
+    const documents = service(database);
+    database.exec("PRAGMA query_only=ON");
+    const document = documents.eventDocument({ id: "tm_Z698xZu0Z16vCdfAue", today: "2026-11-15", at: Date.parse("2026-11-15T12:00:00Z") });
+    assert.ok(document);
+    assert.equal(document.event.status, "https://schema.org/EventPostponed");
+    assert.equal(document.event.ticketUrl, null);
+    assert.equal(document.event.date, "2026-11-15");
+    const schema = document.jsonLd.find((node) => node["@type"] === "MusicEvent");
+    assert.ok(schema);
+    assert.equal(schema.eventStatus, "https://schema.org/EventPostponed");
+    assert.equal(Object.hasOwn(schema, "offers"), false);
+    const html = documents.render(document);
+    assert.match(html, /Original date/);
+    assert.match(html, /New date to be announced\. Existing tickets remain valid\./);
+    assert.match(html, /https:\/\/www.ticketportal.cz\/Article\/11104/);
+    assert.doesNotMatch(html, /View tickets/);
+    const artist = documents.artistDocument({ artistKey: "placebo", today: "2026-11-15", at: Date.parse("2026-11-15T12:00:00Z") });
+    assert.ok(artist);
+    assert.deepEqual(artist.events, []);
+    assert.doesNotMatch(documents.render(artist), /Next show/);
+  } finally { database.close(); }
+});
+
 function createDatabase() {
   const database = new DatabaseSync(":memory:");
   database.exec(`

@@ -1,4 +1,5 @@
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
+import { reviewedEventRow } from "./reviewedEventCorrections.js";
 import { artistAuthoredTourDateVisibleSql } from "./artistAuthoredTourDateVisibility.js";
 import {
   currentOrUpcomingTourDateSql,
@@ -93,7 +94,7 @@ export function visibleTourDateRowsFrom(database, viewer, {
   const filterSql = filters.length ? `${filters.join(" AND ")} AND ` : "";
   if (viewer?.role === "admin" && accountIsPublic(viewer, at)) {
     return database.prepare(`SELECT td.* FROM tour_dates td WHERE ${filterSql}1=1 ORDER BY td.date ASC,td.id ASC LIMIT ?`)
-      .all(...prefix, rowLimit);
+      .all(...prefix, rowLimit).map(reviewedEventRow);
   }
   const publicDate = new Date(Number.isFinite(Number(at)) ? Number(at) : Date.now()).toISOString().slice(0, 10);
   // Provider rows that disappear from a healthy upstream refresh stay in the
@@ -110,11 +111,11 @@ export function visibleTourDateRowsFrom(database, viewer, {
           (b.blocker_id=? AND b.blocked_id=td.owner_id) OR
           (b.blocker_id=td.owner_id AND b.blocked_id=?))))
       ORDER BY td.date ASC,td.id ASC LIMIT ?`)
-      .all(...prefix, publicDate, at, viewer.id, viewer.id, viewer.id, rowLimit);
+      .all(...prefix, publicDate, at, viewer.id, viewer.id, viewer.id, rowLimit).map(reviewedEventRow);
   }
   return database.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
     (${publicProviderSql} OR (${activeAccountSql("owner")} AND td.release_at<=?
       AND ${artistAuthoredTourDateVisibleSql("td")}))
     ORDER BY td.date ASC,td.id ASC LIMIT ?`)
-    .all(...prefix, publicDate, at, rowLimit);
+    .all(...prefix, publicDate, at, rowLimit).map(reviewedEventRow);
 }

@@ -12,7 +12,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import LineupDetails from "../components/LineupDetails";
 import { postHeadline } from "../domain/lineup.mjs";
 import { ordinalWord } from "../domain/supportingActs.mjs";
-import { Platform, View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, useWindowDimensions } from "react-native";
+import { Platform, View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Linking, useWindowDimensions } from "react-native";
 import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
 import RatingSplit from "../components/RatingSplit";
@@ -44,6 +44,8 @@ import { readShowCrowdAttendance, readShowDocument, readShowLoungeMeta } from ".
 import ShowAttendanceControls from "../features/showSocial/ShowAttendanceControls";
 import GoingTicketComposer from "../components/GoingTicketComposer";
 import LegacyArtistArchiveGate from "../components/artist/LegacyArtistArchiveGate";
+import { PublicPressableLink } from "../components/PublicWebLinks";
+import { captureAppError } from "../lib/diagnostics";
 import { ENABLE_CANONICAL_SHOW_READ } from "../config/runtime.mjs";
 import VinylRefreshBoundary from "../components/VinylRefreshBoundary";
 import useScopedRefresh from "../hooks/useScopedRefresh";
@@ -62,6 +64,18 @@ const CROWD_FILTER_LABELS = Object.freeze({
   following: "Following",
   friends: "Friends",
 });
+
+function EventNotice({ event }) {
+  if (!event?.eventNotice) return null;
+  return <View>
+    <Text selectable style={styles.reviewUnavailableText}>{event.eventNotice}</Text>
+    {event.eventNoticeSource ? <PublicPressableLink href={event.eventNoticeSource} onNavigate={() => {
+      void Linking.openURL(event.eventNoticeSource).catch((error) => captureAppError(error, { context: "show.official-notice", toast: true }));
+    }} accessibilityLabel="Read the official event notice">
+      <Text style={styles.artistLink}>Official notice</Text>
+    </PublicPressableLink> : null}
+  </View>;
+}
 
 // Public listings are useful even when a club-night/event name is not a
 // catalogue artist. This intentionally receives only the validated server
@@ -112,7 +126,8 @@ function PublicEventSnapshotPanel({
     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
       {refreshNotice}
       <View style={styles.ticket}>
-        <Text style={styles.ticketKicker}>{cancelled ? "THIS SHOW WAS CANCELLED" : canonicalRestriction?.ticketKicker || "EVENT DETAILS"}</Text>
+        <Text style={styles.ticketKicker}>{cancelled ? "THIS SHOW WAS CANCELLED" : event.eventStatus === "postponed" ? "THIS SHOW IS POSTPONED" : canonicalRestriction?.ticketKicker || "EVENT DETAILS"}</Text>
+        <EventNotice event={event} />
         <Text style={styles.artist} accessibilityRole={Platform.OS === "ios" ? "header" : undefined}>{event.name}</Text>
         <View style={styles.perfWrap}><View style={styles.dashed} /></View>
         <View style={styles.stubRow}>
@@ -123,7 +138,7 @@ function PublicEventSnapshotPanel({
           </Pressable>
           <View style={styles.stubDivider} />
           <View style={styles.stubDateColumn}>
-            <Text style={styles.stubLabel}>THE DATE</Text>
+            <Text style={styles.stubLabel}>{event.originalDate ? "ORIGINAL DATE" : "THE DATE"}</Text>
             <Text style={styles.date}>{formatDate(event.date, event.date)}</Text>
             {allowTickets && event.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
           </View>
@@ -296,6 +311,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const deceased = memorialAvailability === "deceased";
   const legacyMode = isLegacyArtistMemorial(memorialResource.data);
   const publicEventSnapshot = readablePublicEventSnapshot(publicEventResource, { eventId: publicEventId, accountId, legacyMode });
+  const officialEventNotice = publicEventSnapshot?.eventNotice ? publicEventSnapshot : trustedShow;
   // Only a scoped, resolver-validated tour-date identity is a page-access target.
   // This element mounts in one active branch; archive/review hints never qualify.
   const eventAccountSection = publicEventSnapshot && renderEventAccount ? <ShowSection
@@ -711,6 +727,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           <View style={styles.overviewInfo}>
         <View style={styles.ticket}>
           {!presentation.showPostEvent && <Text style={styles.ticketKicker}>{presentation.ticketKicker}</Text>}
+          <EventNotice event={officialEventNotice} />
           {festivalReview ? (
             <View>
               <Text style={styles.artist} accessibilityRole={Platform.OS === "ios" ? "header" : undefined}>{eventTitle}</Text>
@@ -753,12 +770,12 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             </Pressable>
             <View style={styles.stubDivider} />
             <View style={styles.stubDateColumn}>
-              <Text style={styles.stubLabel}>THE DATE</Text>
-              <Text style={styles.date} numberOfLines={2}>{formatDate(norm.date, norm.date || "TBA")}{eventEndDate ? ` – ${formatDate(eventEndDate, eventEndDate)}` : ""}</Text>
+              <Text style={styles.stubLabel}>{officialEventNotice?.originalDate ? "ORIGINAL DATE" : "THE DATE"}</Text>
+              <Text style={styles.date} numberOfLines={2}>{formatDate(officialEventNotice?.originalDate || norm.date, norm.date || "TBA")}{!officialEventNotice?.originalDate && eventEndDate ? ` – ${formatDate(eventEndDate, eventEndDate)}` : ""}</Text>
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
-          {ticketShow?.timing?.length ? (
+          {lifecycleView.lifecycle !== "postponed" && ticketShow?.timing?.length ? (
             <View style={styles.timingRow}>
               {ticketShow.timing.map((timing) => (
                 <View key={timing.kind} style={styles.timingItem}>

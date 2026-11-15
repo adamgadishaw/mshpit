@@ -60,6 +60,11 @@ export function normalizeShowDocument(payload) {
     startLocalTime: text(source.startLocalTime),
     timezone: text(source.timezone),
     lifecycle: SHOW_LIFECYCLES.has(lifecycle) ? lifecycle : "unknown",
+    ...(text(source.eventNotice) ? {
+      eventNotice: text(source.eventNotice),
+      eventNoticeSource: /^https:\/\//.test(source.eventNoticeSource || "") ? text(source.eventNoticeSource) : null,
+      originalDate: /^\d{4}-\d{2}-\d{2}$/.test(source.originalDate || "") ? source.originalDate : null,
+    } : {}),
     provider: source.provider?.backed === true && text(source.provider?.name) && text(source.provider?.eventId)
       ? { name: text(source.provider.name), eventId: text(source.provider.eventId), backed: true }
       : null,
@@ -76,6 +81,10 @@ export function showLifecycleView(document, legacyDate, hasScore, now = Date.now
   const parsed = typeof legacyDate === "number" ? legacyDate : null;
   // Only the validated, account-scoped resolver snapshot may override stale
   // lifecycle reads. Its event ID must match; navigation status is not evidence.
+  if (publicSnapshot?.id && publicSnapshot.id === publicEventCandidateId(event)
+    && text(publicSnapshot.eventStatus)?.toLowerCase() === "postponed") {
+    return { lifecycle: "postponed", targetMs: null, upcoming: true, trusted: true };
+  }
   if (publicSnapshot?.id && publicSnapshot.id === publicEventCandidateId(event)
     && ["cancelled", "canceled"].includes(text(publicSnapshot.eventStatus)?.toLowerCase())) {
     return { lifecycle: "cancelled", targetMs: trusted ? document.startsAt : parsed, upcoming: false, trusted };

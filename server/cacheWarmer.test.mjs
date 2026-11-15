@@ -4,6 +4,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+async function assertReviewedPostponement() {
+  const row = { id: "tm_Z698xZu0Z16vCdfAue", provider_event_id: "Z698xZu0Z16vCdfAue",
+    artist: "Placebo", source: "ticketmaster", venue: "Sportovní hala FORTUNA", place: "Prague, Czechia",
+    date: "2026-11-15", event_status: "onsale", event_kind: "concert", music_qualified: 1,
+    music_evidence: "ticketmaster:classification:music", billed_artists: ["Placebo"] };
+  try {
+    for (const status of ["onsale", "scheduled", null, "rescheduled"]) {
+      upsertProviderTourDateRows(db, [{ ...row, event_status: status }], { seenAt: 50_000 });
+      const stored = db.prepare("SELECT id,date,event_status FROM tour_dates WHERE id=?").get(row.id);
+      assert.deepEqual({ ...stored }, { id: row.id, date: row.date, event_status: "postponed" });
+    }
+    upsertProviderTourDateRows(db, [{ ...row, date: "2027-01-01", start_date_time: "2027-01-01T20:00:00Z", event_status: "rescheduled" }], { seenAt: 60_000 });
+    const held = db.prepare("SELECT date,start_date_time,event_status FROM tour_dates WHERE id=?").get(row.id);
+    assert.equal(held.date, "2026-11-15");
+    assert.equal(held.start_date_time, null);
+    assert.equal(held.event_status, "postponed");
+  } finally { db.prepare("DELETE FROM tour_dates WHERE id=?").run(row.id); }
+}
+
 process.env.PIT_DATA_DIR = mkdtempSync(join(tmpdir(), "pit-warm-"));
 
 const { db, q } = await import("./db.js");
@@ -54,6 +73,8 @@ const {
   persistSuccessfulCountryRotation,
   upsertProviderTourDateRows,
 } = await import("./tourdates.js");
+
+test("reviewed Placebo postponement survives fresh inserts and stale provider refreshes", assertReviewedPostponement);
 const { visibleTourDateRowsFrom } = await import("./tourDateVisibility.js");
 const { youtubeCacheKey } = await import("./musicProviders.js");
 

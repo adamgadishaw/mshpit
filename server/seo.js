@@ -15,6 +15,7 @@ import { artistCatalogVisibleTo } from "./artistCatalogVisibility.js";
 import { htmlRobotsDirective, isProduction } from "./environment.js";
 import { profileAllowsSearchIndexing } from "./profileSearchIndexing.js";
 import { projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
+import { reviewedEventCorrection, reviewedEventRow } from "./reviewedEventCorrections.js";
 import {
   artistConcertsPath,
   artistPath,
@@ -268,12 +269,13 @@ function postResolution(id) {
 function eventResolution(id, at = Date.now()) {
   const instant = Number.isFinite(Number(at)) ? Number(at) : Date.now();
   const today = new Date(instant).toISOString().slice(0, 10);
-  const event = publicEventIdentity.get(String(id || ""), instant, today);
+  const event = reviewedEventRow(publicEventIdentity.get(String(id || ""), instant, today));
   if (!event || !isStrictCalendarDate(event.date) || !isIndexableMusicEventRecord(event)) return null;
   // A public event snapshot is permission to read this one eligible event, not
   // to unlock its artist page or member actions. Apply the same protected legacy
   // identity boundary as the event service before adding the server-only marker.
-  const artistIdentityPending = publicTourDateProviderFields(event).artistIdentityPending;
+  const providerFields = publicTourDateProviderFields(event);
+  const artistIdentityPending = providerFields.artistIdentityPending;
   if (!artistIdentityPending && artistHasLegacyMemorial(db, { artistKey: event.artist_key, artist: event.artist })) return null;
   const artistProjection = publicTourDateArtistProjection(event);
   const artistKey = artistProjection.bindingAllowed ? event.canonical_artist_key || null : null;
@@ -293,12 +295,13 @@ function eventResolution(id, at = Date.now()) {
       venue: display(event.venue),
       place: event.place || "",
       city: event.place || "",
-      date: event.date,
+      date: reviewedEventCorrection(event)?.originalDate ?? event.date,
       startDateTime: event.start_date_time || null,
       startLocalTime: event.start_local_time || null,
       eventTimezone: event.event_timezone || null,
-      eventStatus: event.event_status || "scheduled",
-      ticketUrl: projectedTourDateTicketUrl(event) || null,
+      ...providerFields,
+      eventStatus: providerFields.eventStatus || "scheduled",
+      ticketUrl: reviewedEventCorrection(event) ? null : projectedTourDateTicketUrl(event) || null,
       soldOut: !!event.sold_out,
       source: event.source || null,
       providerVenueId: event.venue_provider_id || null,

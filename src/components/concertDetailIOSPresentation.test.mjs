@@ -88,6 +88,7 @@ function publicEventFixture(os, cancelled = false) {
     module, exports: module.exports, require: () => ({ jsx, jsxs: jsx }),
     Platform: { OS: os }, styles: {}, colors: {}, Date,
     ScrollView: "ScrollView", View: "View", Text: "Text", Pressable: "Pressable", Icon: "Icon", ActivityIndicator: "ActivityIndicator", CatalogText: "CatalogText",
+    EventNotice: "EventNotice",
     showLifecycleView: () => ({ lifecycle: cancelled ? "cancelled" : "upcoming" }),
     formatDate: (date, fallback) => date || fallback,
     restrictedShowAvailabilityCopy: () => null, // Unrestricted legacy panel; actual iOS restriction is covered by the screen fixture.

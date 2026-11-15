@@ -4,6 +4,7 @@
 // and upserts them into `tour_dates`. GET /api/tourdates serves them, the client
 // merges them into its catalog. No git push, no redeploy, live the moment we write.
 import { db } from "./db.js";
+import { reviewedEventCorrection, reviewedEventRow } from "./reviewedEventCorrections.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -1239,6 +1240,8 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
   WHERE tour_dates.owner_id IS NULL`;
 
 function providerTourDateWrite(row, seenAt, identity) {
+  const correction = reviewedEventCorrection(row);
+  row = reviewedEventRow(row);
   return {
     id: row.id,
     artist: row.artist,
@@ -1249,7 +1252,7 @@ function providerTourDateWrite(row, seenAt, identity) {
     place: row.place ?? null,
     lat: optionalCoordinate(row.lat),
     lng: optionalCoordinate(row.lng),
-    date: row.date ?? null,
+    date: correction?.originalDate ?? row.date ?? null,
     ticket_url: row.ticket_url ?? null,
     sold_out: row.sold_out ? 1 : 0,
     source: row.source ?? null,
@@ -1268,7 +1271,7 @@ function providerTourDateWrite(row, seenAt, identity) {
       ? null
       : (row.access_start_approximate ? 1 : 0),
     event_timezone: row.event_timezone ?? null,
-    event_status: row.event_status ?? null,
+    event_status: correction?.status ?? row.event_status ?? null,
     venue_provider_id: row.venue_provider_id ?? null,
     venue_address_line1: row.venue_address_line1 ?? null,
     venue_address_line2: row.venue_address_line2 ?? null,

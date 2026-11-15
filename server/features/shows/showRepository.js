@@ -2,6 +2,7 @@ import { normalizeShowAliasKey, normalizeStableShowId } from "./showIdentity.js"
 import { tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
 import { liveEventTimeZone } from "../../../src/domain/eventLifecycle.mjs";
 import { tourDateShowLifecycle } from "./showLifecycle.js";
+import { reviewedShowCorrection } from "../../reviewedEventCorrections.js";
 
 function attendanceView(row) {
   if (!row) return null;
@@ -102,6 +103,7 @@ export function createShowRepository(database, { now = () => Date.now() } = {}) 
       ? timingSourcesByProvider.all(row.provider, row.provider_event_id) : [];
     const timing = timingSources.length === 1 && providerSourceMatches(row, timingSources[0])
       ? sourceTiming(timingSources[0], now()) : null;
+    const correction = providerBacked(row) ? reviewedShowCorrection({ ...row, owner_id: exactSource?.owner_id }) : null;
     return {
       id: row.id,
       canonicalKey: row.canonical_key,
@@ -129,6 +131,12 @@ export function createShowRepository(database, { now = () => Date.now() } = {}) 
       timezone: row.timezone || null,
       lifecycle: row.lifecycle || "unknown",
       ...timing,
+      ...(correction ? {
+        date: correction.originalDate, localDate: correction.originalDate,
+        startsAt: null, startLocalTime: null, eventEndDate: null,
+        lifecycle: correction.status, eventNotice: correction.notice,
+        eventNoticeSource: correction.sourceUrl, originalDate: correction.originalDate,
+      } : {}),
       provider: providerBacked(row) ? {
         name: row.provider,
         eventId: row.provider_event_id,

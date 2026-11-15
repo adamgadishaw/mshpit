@@ -348,6 +348,7 @@ import {
   publicTourDateVenueName,
 } from "./publicTourDateVenueProjection.js";
 import { publicTourDateArtistProjection, publicTourDateProviderFields } from "./tourDateMetadata.js";
+import { reviewedEventCorrection } from "./reviewedEventCorrections.js";
 import { isOwnerId, ownerAccount, readOwnerIdentity } from "./ownerIdentity.js";
 import {
   createOwnerApprovalRequest,
@@ -2325,7 +2326,10 @@ function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
   const row = id ? visibleTourDateRows(user, { id, limit: 2, at })
     .find((entry) => entry.id === id) : null;
   if (!row) throw new ApiError(404, "That event is not available.", "NOT_FOUND");
-  if (isCurrentOrUpcomingLiveEvent({
+  // A reviewed postponed event remains an exact attendance identity. It has
+  // already passed visibility above, but intentionally fails upcoming browsing.
+  // Its postponed lifecycle still blocks live check-in in the attendance policy.
+  if (!reviewedEventCorrection(row) && isCurrentOrUpcomingLiveEvent({
     date: row.date,
     eventEndDate: row.event_end_date,
     eventTimezone: row.event_timezone,

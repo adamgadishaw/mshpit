@@ -65,12 +65,13 @@ const publicApi = require("./src/features/showSocial/publicEventSnapshotApi.mjs"
 // Real Show screen, attendance child, public/canonical normalizers, memorial
 // hook/API, refresh hook and AppError. Only transport, Store, native hosts and
 // unrelated resources are synthetic. No mutation or external opener may run.
-function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "active", providerBacked = true, fontScale = 1 } = {}) {
+function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "active", providerBacked = true, fontScale = 1, timed = false } = {}) {
   const renderer = createRenderer(), reads = [], memorialReads = [], publicReads = [], calls = [], empty = [];
   const rsvpTimers = new Map();
   let refreshHook, snapshotHook, memorialHook, memorialApi, attendanceControls, recovery;
   let log = { ...(publicState !== "none" ? { id: "tm_fixture" } : {}), artist: "Fixture artist", venue: "Fixture venue",
-    date: "2099-01-01", ticketUrl: "https://seller.example/ticket", source: "ticketmaster" };
+    date: "2099-01-01", ticketUrl: "https://seller.example/ticket", source: "ticketmaster",
+    ...(timed ? { startLocalTime: "20:00:00" } : {}) };
   const record = (kind, options) => { calls.push({ kind, options }); };
   const transport = async (url, options) => {
     if (url.startsWith("/api/shows/")) {
@@ -137,6 +138,7 @@ function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "act
       resource: { data: { reviews: [] }, status: "ready" }, reload: noop, loadMore: noop,
     }) };
     if (name === "../lib/useAppActive") return { __esModule: true, default: () => true };
+    if (name === "../lib/diagnostics") return { captureAppError: () => assert.fail("No official notice link opening in refresh fixture") };
     if (name === "../components/useIOSTicketAction") return { __esModule: true, default: () => ({
       open: () => assert.fail("No external ticket opening"), error: "",
     }) };
@@ -185,6 +187,19 @@ async function failRefresh(f, error = networkError(), { memorialError = false, r
   if (memorialError) f.memorialReads[memorialIndex].reject(networkError());
   else f.memorialReads[memorialIndex].resolve({ memorial: null });
   const outcome = await pending; await f.flush(); return outcome;
+}
+
+for (const platform of ["ios", "web"]) for (const lifecycle of ["upcoming", "postponed"]) {
+  test(platform + " shows start time only for a scheduled show, never for a postponed original date: " + lifecycle, async () => {
+    const f = fixture({ platform, lifecycle, timed: true });
+    await f.ready();
+    if (lifecycle === "upcoming") assert.match(f.text(), /SHOW START/);
+    else {
+      assert.equal(f.inspect().header, "Postponed");
+      assert.doesNotMatch(f.text(), /SHOW START|DOORS OPEN/);
+    }
+    f.close(); await f.flush();
+  });
 }
 
 for (const lifecycle of ["cancelled", "postponed"]) for (const failure of [

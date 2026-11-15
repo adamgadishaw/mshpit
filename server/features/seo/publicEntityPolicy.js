@@ -1,3 +1,4 @@
+import { reviewedEventCorrection, reviewedEventUpcomingSql } from "../../reviewedEventCorrections.js";
 import {
   MAX_PROVIDER_FESTIVAL_FAIR_SPAN_DAYS,
   MAX_PROVIDER_MULTI_DAY_SPAN_DAYS,
@@ -176,7 +177,7 @@ export function installPublicMusicEventPolicySql(database) {
 // every other record is current by start date.
 export function isCurrentOrUpcomingPublicMusicEvent(value = {}, today) {
   value = value && typeof value === "object" ? value : {};
-  if (!isIndexableMusicEventRecord(value) || !isStrictCalendarDate(today)) return false;
+  if (reviewedEventCorrection(value) || !isIndexableMusicEventRecord(value) || !isStrictCalendarDate(today)) return false;
   const start = value.date;
   if (!isStrictCalendarDate(start)) return false;
   if (start >= today) return true;
@@ -213,7 +214,7 @@ export function currentOrUpcomingPublicMusicEventSql(alias = "td", placeholder =
         WHEN ${kind}='multi_day' THEN ${MAX_PROVIDER_MULTI_DAY_SPAN_DAYS}
         ELSE ${MAX_PROVIDER_FESTIVAL_FAIR_SPAN_DAYS}
       END))`;
-  return `(date(${start})=${start} AND ${memberRangeBound} AND ${providerRangeBound} AND (${start}>=${parameter} OR (
+  return `(${reviewedEventUpcomingSql(identifier)} AND date(${start})=${start} AND ${memberRangeBound} AND ${providerRangeBound} AND (${start}>=${parameter} OR (
     date(${end})=${end}
     AND ${end}>${start}
     AND ${end}>=${parameter}

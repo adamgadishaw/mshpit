@@ -1,4 +1,5 @@
 import { calendarDateKey } from "../src/domain/dataPolicy.mjs";
+import { reviewedEventCorrection, reviewedEventUpcomingSql } from "./reviewedEventCorrections.js";
 
 export const MAX_PROVIDER_MULTI_DAY_SPAN_DAYS = 21;
 export const MAX_PROVIDER_FESTIVAL_FAIR_SPAN_DAYS = 45;
@@ -83,7 +84,7 @@ export function currentOrUpcomingTourDateSql(alias = "td", placeholder = "?") {
     WHEN ${providerRangeEndEvidenceSql(table)} THEN ${table}.event_end_date
     ELSE ${start}
   END`;
-  return `(date(${start})=${start} AND ${providerMultiDayConcertEvidenceSql(table)} AND ${lifecycleEnd}>=${parameter})`;
+  return `(${reviewedEventUpcomingSql(table)} AND date(${start})=${start} AND ${providerMultiDayConcertEvidenceSql(table)} AND ${lifecycleEnd}>=${parameter})`;
 }
 
 // A provider can classify a season ticket, course, or year-long venue pass as
@@ -120,6 +121,7 @@ export function providerMultiDayConcertEvidenceSql(alias = "td") {
 }
 
 export function currentOrUpcomingTourDateRow(row, today) {
+  if (reviewedEventCorrection(row)) return false;
   const start = calendarDateKey(row?.date);
   const current = calendarDateKey(today);
   if (start == null || current == null) return false;
