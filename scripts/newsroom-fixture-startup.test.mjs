@@ -9,10 +9,24 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PINNED_TIMER_SOURCES, assertPinnedTimerSource, classifyTimerRegistration } from './fixtures/newsroom-fixture-timer-isolation.mjs';
-import { fixtureStartupEnvironment, ORDINARY_WINDOWS_ENV_KEYS } from './fixtures/newsroom-fixture-startup-policy.mjs';
+import { assertFixtureStartupPolicy, fixtureStartupEnvironment, ORDINARY_WINDOWS_ENV_KEYS } from './fixtures/newsroom-fixture-startup-policy.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
 const scratchRoot=join(root,'scripts','fixtures');
+test('fixture policy admits only bounded native macOS encoding metadata without widening service access',()=>{
+  const env=fixtureStartupEnvironment({NODE_ENV:'production',PIT_ENV:'staging',PIT_SUPPORTED_HTTPS_FIXTURE:'1'});
+  for(const platform of ['linux','win32','darwin']) assert.equal(assertFixtureStartupPolicy(env,platform),true);
+  const native={...env,__CF_USER_TEXT_ENCODING:'0x1F5:0x0:0x52'};
+  assert.equal(assertFixtureStartupPolicy(native,'darwin'),true);
+  for(const platform of ['linux','win32']) assert.throws(()=>assertFixtureStartupPolicy(native,platform),/Unexpected fixture environment key/);
+  for(const value of ['', 'service-secret', '0x1:0x0', '0x1:0x0:0x0\n', '0x'+'f'.repeat(65)+':0x0:0x0', undefined]) {
+    assert.throws(()=>assertFixtureStartupPolicy({...env,__CF_USER_TEXT_ENCODING:value},'darwin'),/Invalid macOS fixture encoding metadata/);
+  }
+  assert.throws(()=>assertFixtureStartupPolicy({...native,RESEND_API_KEY:'synthetic-secret'},'darwin'),/Unexpected fixture environment key/);
+  assert.throws(()=>assertFixtureStartupPolicy({...native,RENDER:'true'},'darwin'),/non-Render/);
+  assert.throws(()=>assertFixtureStartupPolicy({...native,CACHE_WARM_ENABLED:'true'},'darwin'),/explicitly disabled/);
+});
+
 test('Newsroom fixture pins match current source and reject changed or unknown modules',()=>{
   for(const module of Object.keys(PINNED_TIMER_SOURCES)){
     const bytes=readFileSync(join(root,module));

@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 const directory = mkdtempSync(join(tmpdir(), "pit-catalog-seo-propagation-"));
 process.env.PIT_DATA_DIR = directory;
-const { db } = await import("../../db.js");
+const { db, q } = await import("../../db.js");
 const { createArtistKnowledgeRefresher } = await import("../../artistKnowledgeRefresh.js");
 const { upsertProviderTourDateRows } = await import("../../tourdates.js");
 const { createPublicDocumentService } = await import("./publicDocuments.js");
@@ -26,9 +26,9 @@ const knowledge = {
 };
 const documents = createPublicDocumentService({ database: db, origin: "https://www.example.com" });
 const candidates = { posts: [], upcomingEvents: [] };
-function insertArtist(key, name = key) {
+function insertArtist(key, name = key, slug = key) {
   db.prepare(`INSERT INTO artists(norm,name,public_slug,bio,country,mbid,data,created_at,updated_at,rank_score)
-    VALUES(?,?,?,NULL,NULL,?,'{}',?,?,1000000000000)`).run(key, name, key, MBID, AT - 86400000, AT - 86400000);
+    VALUES(?,?,?,NULL,NULL,?,'{}',?,?,1000000000000)`).run(key, name, slug, MBID, AT - 86400000, AT - 86400000);
 }
 function entry(key) {
   return artistSitemapEntries(db, { now: AT, candidates }).find(row => row.artistKey === key);
@@ -130,4 +130,40 @@ test("provider venue and event changes reach public documents and lastmod withou
     const venue = documents.venueDocument({ name: row.venue, source: row.source, providerVenueId: row.venue_provider_id, at: AT });
     assert.match(documents.render(venue), /200 Concert Street/);
   } finally { db.prepare("DELETE FROM tour_dates WHERE id=?").run(row.id); clearArtist(key); }
+});
+
+test("single-artist incident repair restores catalog attribution and preserves every other field", async () => {
+  const { repairSnapshot, repairAccidentalBioOverride, ARTIST_KEY: key } = await import("../../../scripts/repairs/broken-social-scene-bio.mjs");
+  q.insertUser.run("staff-photo-owner", "repair@example.com", "Repair Staff", "repair_staff", "test-hash", "admin", "Toronto", 43.65, -79.38, "RS", "#123456", AT);
+  clearArtist(key); // Replace the bundled seed only in this temporary test database.
+  insertArtist(key, "Broken Social Scene", "broken-social-scene");
+  try {
+    db.prepare("UPDATE artists SET bio=?,data=? WHERE norm=?")
+      .run(BIO, JSON.stringify({ artistKnowledge: knowledge }), key);
+    db.prepare(`INSERT INTO artist_profiles(artist_key,bio,bio_staff_curated,avatar_uri,avatar_owner_id,updated_at)
+      VALUES(?,NULL,1,'https://media.example/preserved.jpg','staff-photo-owner',?)`).run(key, AT);
+    const before = repairSnapshot(db);
+    assert.equal(documents.artistDocument({ artistKey: key, at: AT }).artist.bio, "");
+    assert.throws(() => repairAccidentalBioOverride(db, { expectedSha256: "0".repeat(64), audit() {} }), /Snapshot changed/);
+    assert.throws(() => repairAccidentalBioOverride(db, { expectedSha256: before.sha256, audit() { throw new Error("audit unavailable"); } }), /audit unavailable/);
+    assert.deepEqual(repairSnapshot(db), before);
+    assert.throws(() => repairAccidentalBioOverride(db, { expectedSha256: before.sha256, audit(event) {
+      if (event.event === "verified-before-commit") throw new Error("audit write failed");
+    } }), /audit write failed/);
+    assert.deepEqual(repairSnapshot(db), before, "audit failure after UPDATE rolls the transaction back");
+    const events = [];
+    const after = repairAccidentalBioOverride(db, { expectedSha256: before.sha256, audit: event => events.push(event), at: AT });
+    assert.deepEqual(after, { ...before.profile, bio_staff_curated: 0 });
+    assert.deepEqual({ ...db.prepare("SELECT * FROM artists WHERE norm=?").get(key) }, before.artist);
+    assert.deepEqual(events.map(event => event.event), ["prepared", "verified-before-commit"]);
+    const document = documents.artistDocument({ artistKey: key, at: AT });
+    assert.equal(document.artist.bio, BIO);
+    assert.deepEqual(document.artist.bioSource, knowledge.bioSource);
+    assert.match(documents.render(document), /Wikipedia contributors/);
+    assert.match(documents.render(document), /CC BY-SA 4\.0/);
+    assert.ok(entry(key));
+    assert.throws(() => repairAccidentalBioOverride(db, { expectedSha256: before.sha256, audit() {} }), /Incident state guard/);
+    db.prepare("UPDATE artist_profiles SET bio_staff_curated=1,bio='New intentional text' WHERE artist_key=?").run(key);
+    assert.throws(() => repairSnapshot(db), /Incident state guard/);
+  } finally { clearArtist(key); }
 });

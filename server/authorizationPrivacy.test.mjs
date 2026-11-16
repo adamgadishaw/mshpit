@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { artistProfileEditorPatch, confirmedArtistProfileMutation } from "../src/domain/artistPageEditor.mjs";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-authorization-privacy-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -468,8 +469,8 @@ test("admin photo-only artist save confirms the public photo when the existing b
     user: admin,
     ip: "steve-lacy-photo-only",
     params: { key: "steve lacy" },
-    // TextInput sends an empty string for the untouched, empty biography.
-    body: { bio: "", feedEnabled: false, avatarUri: avatar.url },
+    body: artistProfileEditorPatch({ bio: "", bioChanged: false,
+      feedEnabled: false, initialFeedEnabled: false, avatarUri: avatar.url, avatarChanged: true }),
   });
 
   assert.equal(result.ok, true);
@@ -477,7 +478,7 @@ test("admin photo-only artist save confirms the public photo when the existing b
     ownerId: null,
     verified: false,
     bio: null,
-    bioStaffCurated: true,
+    bioStaffCurated: false,
     banner: null,
     avatarUri: avatar.url,
     feedEnabled: false,
@@ -491,6 +492,17 @@ test("admin photo-only artist save confirms the public photo when the existing b
   assert.equal(stored.bio, null);
   assert.equal(stored.avatar_uri, avatar.url);
   assert.equal(stored.avatar_owner_id, admin.id);
+  // An ambiguous response can cause the same draft to be retried. Both writes
+  // must leave biography authority and concurrent feed changes alone.
+  db.prepare("UPDATE artist_profiles SET feed_enabled=1 WHERE artist_key='steve lacy'").run();
+  const patch = artistProfileEditorPatch({ bio: "", bioChanged: false,
+    feedEnabled: false, initialFeedEnabled: false, avatarUri: avatar.url, avatarChanged: true });
+  const retry = routes["PATCH /api/artists/:key/profile"]({
+    user: admin, ip: "steve-lacy-photo-retry", params: { key: "steve lacy" }, body: patch,
+  });
+  assert.equal(retry.profile.bioStaffCurated, false);
+  assert.equal(retry.profile.feedEnabled, true);
+  assert.equal(confirmedArtistProfileMutation(retry, patch).bioStaffCurated, false);
   assert.equal(routes["GET /api/artists/:key/profile"]({
     user: viewer, params: { key: "steve lacy" },
   }).profile.avatarUri, avatar.url);

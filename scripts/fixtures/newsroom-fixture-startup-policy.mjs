@@ -51,13 +51,24 @@ const ALLOWED_KEYS = new Set([
   ...DISABLED_STARTUP_FLAGS,
 ]);
 
-export function assertFixtureStartupPolicy(env) {
+export function assertFixtureStartupPolicy(env, platform = process.platform) {
   assert.equal(env.NODE_ENV, 'production');
   assert.equal(env.PIT_ENV, 'staging');
   assert.equal(env.PIT_SUPPORTED_HTTPS_FIXTURE, '1');
   assert.equal(env.RENDER, undefined, 'Fixture must preserve non-Render client-IP trust behavior');
   for (const key of DISABLED_STARTUP_FLAGS) assert.equal(env[key], 'false', 'Optional fixture startup job must be explicitly disabled: ' + key);
-  for (const key of Object.keys(env)) assert.ok(ALLOWED_KEYS.has(key.toUpperCase()), 'Unexpected fixture environment key: ' + key);
+  for (const key of Object.keys(env)) {
+    // CoreFoundation adds this metadata when a macOS child starts, even when
+    // the parent supplied an explicit environment. It is not a service setting.
+    // Admit only the native hexadecimal tuple on Darwin, not arbitrary values
+    // or additional inherited environment keys.
+    if (platform === 'darwin' && key === '__CF_USER_TEXT_ENCODING') {
+      assert.ok(typeof env[key] === 'string' && env[key].length <= 64 && env[key].trim() === env[key] && /^0x[0-9a-f]+:0x[0-9a-f]+:0x[0-9a-f]+$/i.test(env[key]),
+        'Invalid macOS fixture encoding metadata');
+      continue;
+    }
+    assert.ok(ALLOWED_KEYS.has(key.toUpperCase()), 'Unexpected fixture environment key: ' + key);
+  }
   return true;
 }
 
