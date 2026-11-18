@@ -63,6 +63,16 @@ try{
  const loggedOut=await request('/api/logout',{cookie:scoped,method:'POST',body:{}});assert.equal(loggedOut.status,200);assert.ok(loggedOut.cookies.some(c=>c.startsWith('pit_newsroom=;')&&c.includes('Max-Age=0')));assert.equal((await request('/api/newsroom-session/status',{cookie:scoped})).status,401);check('normal website logout revokes scoped cookie even with expired full session');
  await ipc('advance',{hours:0});
  const login=await request('/api/login',{method:'POST',body:{email:fixture.users.owner.email,password:fixture.password}});const full=cookie(login,'pit_session');assert.equal(login.status,200);
+ const beforeSignIn=cookie(await enable(full),'pit_newsroom');assert.ok(beforeSignIn);
+ const otherTabLogin=await request('/api/login',{cookie:full+'; '+beforeSignIn,method:'POST',body:{email:fixture.users.owner.email,password:fixture.password}});
+ assert.equal(otherTabLogin.status,200);const otherTabFull=cookie(otherTabLogin,'pit_session');assert.ok(otherTabFull);
+ assert.ok(otherTabLogin.cookies.some(c=>c.startsWith('pit_newsroom=;')&&c.includes('Max-Age=0')));
+ assert.equal((await request('/api/newsroom-session/status',{cookie:beforeSignIn})).status,401);check('full sign-in in another tab revokes the previous Newsroom credential');
+ assert.equal((await request('/api/me',{cookie:otherTabFull})).data.user.id,fixture.users.owner.id);
+ assert.equal((await request('/api/newsroom-session/status',{cookie:otherTabFull})).status,401);check('shared full sign-in is discoverable but cannot substitute for Newsroom enablement');
+ const reenabled=await enable(otherTabFull);assert.equal(reenabled.status,200);const resumed=cookie(reenabled,'pit_newsroom');assert.ok(resumed);
+ for(let i=0;i<3;i++)assert.equal((await request('/api/newsroom-session/status',{cookie:resumed})).status,200);
+ check('explicit fresh-password reenablement survives repeated confirmations');
  const roleScope=cookie(await enable(full),'pit_newsroom');await ipc('role-loss');assert.equal((await request('/api/newsroom-session/status',{cookie:roleScope})).status,401);await ipc('restore-role');assert.equal((await request('/api/newsroom-session/status',{cookie:roleScope})).status,401);check('role loss and restoration cannot resurrect scope');
  const peerA=cookie(await enable(fixture.users.peer.cookie),'pit_newsroom'),peerB=cookie(await enable(fixture.users.peer.cookie),'pit_newsroom');assert.ok(peerA&&peerB);
  const all=await request('/api/newsroom-session/logout-all',{cookie:peerA,method:'POST',body:{}});assert.equal(all.data.revoked,2);assert.equal((await request('/api/newsroom-session/status',{cookie:peerB})).status,401);assert.equal((await request('/api/me',{cookie:fixture.users.peer.cookie})).data.user.id,fixture.users.peer.id);check('own scope logout-all revokes all remembered browsers without extending or deleting full authority');

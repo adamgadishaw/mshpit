@@ -31,7 +31,7 @@ function surface({initiallyRemembered=false,backend=fixture({remembered:initiall
    else if(!backend.remembered||backend.revoked){status=401;data=errorEnvelope(new ApiError(401,'Sign in again.','AUTH_REQUIRED'),'synthetic-request');}
    else if(options.headers['X-Pit-Expected-Account'] && options.headers['X-Pit-Expected-Account']!==backend.account.id){status=409;data=errorEnvelope(new ApiError(409,'Your active account changed. Confirm the current account.','IDENTITY_CHANGED'),'synthetic-request');}
    else data={account:backend.account,expiresAt:Date.now()+7*86400000,absoluteExpiresAt:Date.now()+30*86400000};
-  }else if(path==='/api/me')data={user:{id:'owner-a',role:'admin'}};
+  }else if(path==='/api/me')data={user:backend.fullUser===undefined?{id:'owner-a',role:'admin'}:backend.fullUser};
   else if(path==='/api/me/newsroom-session'){backend.remembered=true;data={enabled:true};}
   else if(path==='/api/newsroom-session/media'){
    let asset=backend.assets.get(body.clientAssetId);
@@ -67,6 +67,33 @@ const file=()=>({name:'fixture.jpg',size:1000,type:'image/jpeg',lastModified:1})
 function fill(f){for(const [id,value] of Object.entries({headline:'Radiohead announce a new tour',summary:'Radiohead have announced a new tour with confirmed dates.',body:'A factual article.',category:'tour',sources:'Radiohead | https://radiohead.com/news/tour | Official announcement','photo-name':'Fixture photographer','photo-url':'https://example.test/photo-rights','photo-credit':'Synthetic attribution'}))f.node(id).value=value;f.node('photo').files=[file()];}
 async function submit(f){f.node('article').listeners.submit({preventDefault(){}});await settle();}
 const posts=(f,path)=>f.requests.filter(r=>r.path===path&&r.options.method==='POST');
+
+test('sign-in in another tab can be confirmed here, explicitly enabled, and reloaded repeatedly',async()=>{
+ const backend=fixture({remembered:false});backend.fullUser=null;
+ const f=surface({backend});await settle();assert.equal(f.node('enable').hidden,true);
+ backend.fullUser={id:'owner-a',role:'admin'}; // Ordinary sign-in shares cookies, not page state.
+ f.node('refresh').listeners.click();await settle();
+ assert.equal(f.node('error').textContent,'');assert.equal(f.node('enable').hidden,false);
+ assert.equal(posts(f,'/api/me/newsroom-session').length,0,'confirmation must not issue a credential');
+ f.node('password').value='synthetic-once-password';f.node('enable-form').listeners.submit({preventDefault(){}});await settle();
+ assert.equal(f.node('work').hidden,false);assert.equal(f.node('password').value,'');
+ for(let i=0;i<3;i++){
+  f.node('refresh').listeners.click();await settle();assert.equal(f.node('error').textContent,'');
+  const reloaded=surface({backend});await settle();assert.equal(reloaded.node('work').hidden,false);
+  assert.equal(reloaded.requests.some(r=>r.path==='/api/me'),false);
+ }
+ assert.equal(posts(f,'/api/me/newsroom-session').length,1);
+});
+
+test('refresh after full sign-in clears a missing scoped cookie into explicit password enablement',async()=>{
+ const f=surface({initiallyRemembered:true});await settle();fill(f);
+ f.backend.remembered=false; // Full sign-in intentionally retires the old scoped credential.
+ f.node('refresh').listeners.click();await settle();
+ assert.equal(f.node('work').hidden,true);assert.equal(f.node('enable').hidden,false);
+ assert.equal(f.node('error').textContent,'');assert.equal(f.node('body').value,'');
+ assert.equal(f.node('held-notice').hidden,false);assert.equal(f.requests.some(r=>r.options.method==='POST'),false);
+ assert.equal(f.node('held-notice').textContent,'Unsaved text is held only in this tab for its original account. Sign in to Mshpit in another tab, then return here and choose Confirm session and refresh drafts. If asked, confirm your password here to enable Newsroom-only remembering, then choose Restore unsaved text for this account. Closing or reloading this tab discards held text. Select the photo again before saving.');
+});
 function button(card,label){const found=card.children.find(item=>item.textContent===label);assert.ok(found,'missing '+label);return found;}
 async function reopen(f,index=0){const card=f.node('drafts').children[index];button(card,'Preview saved article').listeners.click();await settle();button(card,'Edit a copy').listeners.click();await settle();}
 
@@ -213,7 +240,7 @@ test('real 409 IDENTITY_CHANGED envelope clears old-account UI and restores held
 
 test('real 401 preserves text only in the original-account tab buffer, and explicit logout discards that buffer',async()=>{
  const f=surface({initiallyRemembered:true});await settle();fill(f);f.revoke();f.node('refresh').listeners.click();await settle();
- assert.equal(f.node('work').hidden,true);assert.equal(f.node('body').value,'');assert.equal(f.node('error').textContent,'Sign in again.');
+ assert.equal(f.node('work').hidden,true);assert.equal(f.node('body').value,'');assert.equal(f.node('error').textContent,'');assert.equal(f.node('enable').hidden,false);
  f.backend.revoked=false;f.node('refresh').listeners.click();await settle();assert.equal(f.node('restore-article').hidden,false);assert.equal(f.node('body').value,'');
  f.node('forget').listeners.click();await settle();assert.equal(f.node('held-notice').hidden,true);
  f.backend.revoked=false;f.node('refresh').listeners.click();await settle();assert.equal(f.node('restore-article').hidden,true);assert.equal(f.node('body').value,'');
@@ -221,7 +248,7 @@ test('real 401 preserves text only in the original-account tab buffer, and expli
 
 test('real feature-disabled 404 retires an open editor and preserves its text for its owner without automatic enable',async()=>{
  const f=surface({initiallyRemembered:true});await settle();fill(f);f.backend.disabled=true;f.node('refresh').listeners.click();await settle();
- assert.equal(f.node('work').hidden,true);assert.equal(f.node('body').value,'');assert.equal(f.node('error').textContent,'Remembered Newsroom is not enabled.');assert.equal(f.node('held-notice').hidden,false);assert.equal(f.requests.some(r=>r.options.method==='POST'),false);
+ assert.equal(f.node('work').hidden,true);assert.equal(f.node('body').value,'');assert.equal(f.node('status').textContent,'Remembered Newsroom is not enabled.');assert.equal(f.node('enable').hidden,true);assert.equal(f.node('held-notice').hidden,false);assert.equal(f.requests.some(r=>r.options.method==='POST'),false);
 });
 
 test('actionable real validation/provider error envelopes retain unsaved text for the still-confirmed account',async()=>{
@@ -264,6 +291,67 @@ const privateFields=['headline','summary','body','sources','photo-name','photo-u
 function injectHistory(f,value='Account A browser-restored writing'){for(const id of privateFields)f.node(id).value=value;f.node('photo').files=[file()];f.node('password').value='history-password';}
 function blankEditor(f){for(const id of privateFields)assert.equal(f.node(id).value,'',id+' must be cleared');assert.equal(f.node('photo').files.length,0);assert.equal(f.node('password').value,'');}
 function deferResponse(f,path,stage='json'){let release;const promise=new Promise(resolve=>{release=resolve;});f.backend.deferredResponse={path,stage,promise};return release;}
+
+test('confirmation failures never discover staff identity on transport, permission or identity rejection',async()=>{
+ for(const failure of [
+  {transport:true,message:'Offline.'},
+  {status:503,code:'MEDIA_STORAGE_UNAVAILABLE',message:'Try later.'},
+  {status:403,code:'FORBIDDEN',message:'Staff access denied.'},
+  {status:409,code:'IDENTITY_CHANGED',message:'Account changed.'}
+ ]){
+  const f=surface({autoPageShow:false});f.backend.nextFailure={path:'/api/newsroom-session/status',...failure};
+  f.dispatch('pageshow');f.runTasks();await settle();
+  assert.equal(f.node('error').textContent,failure.message);assert.equal(f.node('enable').hidden,true);
+  assert.equal(f.requests.some(r=>r.path==='/api/me'),false);assert.equal(f.requests.some(r=>r.options.method==='POST'),false);
+  f.node('refresh').listeners.click();await settle();assert.equal(f.node('enable').hidden,false);assert.equal(f.node('error').textContent,'');
+ }
+});
+
+test('signed-out and member confirmations stay locked without automatic login or enablement',async()=>{
+ for(const user of [null,{id:'member-a',role:'user'}]){
+  const backend=fixture({remembered:false});backend.fullUser=user;const f=surface({backend});await settle();
+  for(let i=0;i<3;i++){f.node('refresh').listeners.click();await settle();}
+  assert.equal(f.node('enable').hidden,true);assert.equal(f.node('work').hidden,true);
+  assert.equal(f.node('error').textContent,'');assert.match(f.node('status').textContent,/verified admin or editor/);
+  assert.equal(f.requests.some(r=>r.options.method==='POST'),false);
+ }
+});
+
+test('interrupted cross-tab staff discovery cannot reopen enablement or unlock a newer confirmation',async()=>{
+ for(const stage of ['fetch','json']){
+  const backend=fixture({remembered:false});backend.fullUser=null;const f=surface({backend});await settle();
+  backend.fullUser={id:'owner-a',role:'admin'};const releaseOld=deferResponse(f,'/api/me',stage);
+  f.node('refresh').listeners.click();f.node('refresh').listeners.click();await settle();
+  assert.equal(f.requests.filter(r=>r.path==='/api/me').length,2,'busy confirmation ignores repeated clicks');
+  f.dispatch('pagehide');backend.remembered=true;backend.account={id:'owner-b',name:'Peer B'};
+  const releaseNew=deferResponse(f,'/api/newsroom-session/status');f.dispatch('pageshow');f.runTasks();await settle();
+  releaseOld();await settle();assert.equal(f.node('enable').hidden,true);assert.equal(f.node('refresh').disabled,true);
+  releaseNew();await settle();assert.equal(f.node('work').hidden,false);assert.equal(f.node('enable').hidden,true);
+  assert.match(f.node('status').textContent,/Peer B/);assert.equal(f.node('error').textContent,'');
+  assert.equal(f.requests.some(r=>r.options.method==='POST'),false);
+ }
+});
+
+test('failed password proof is cleared and can be explicitly retried after confirmation',async()=>{
+ const f=surface();await settle();
+ f.backend.nextFailure={path:'/api/me/newsroom-session',status:401,code:'AUTH_INVALID',message:'Confirm your password to remember this Newsroom.'};
+ f.node('password').value='synthetic-wrong-password';f.node('enable-form').listeners.submit({preventDefault(){}});await settle();
+ assert.equal(f.node('password').value,'');assert.equal(f.node('work').hidden,true);assert.equal(f.backend.remembered,false);
+ assert.equal(posts(f,'/api/me/newsroom-session').length,1);
+ f.node('refresh').listeners.click();await settle();assert.equal(f.node('enable').hidden,false);
+ f.node('password').value='synthetic-correct-password';f.node('enable-form').listeners.submit({preventDefault(){}});await settle();
+ assert.equal(posts(f,'/api/me/newsroom-session').length,2);assert.equal(f.node('work').hidden,false);assert.equal(f.node('password').value,'');
+});
+
+test('interrupted enable response cannot unlock another page and does not trigger a duplicate issuance',async()=>{
+ const f=surface();await settle();const release=deferResponse(f,'/api/me/newsroom-session');
+ f.node('password').value='synthetic-once-password';f.node('enable-form').listeners.submit({preventDefault(){}});await settle();
+ assert.equal(f.backend.remembered,true,'server issued the cookie before the response was interrupted');
+ f.dispatch('pagehide');f.dispatch('pageshow');f.runTasks();await settle();
+ assert.equal(f.node('work').hidden,false);assert.equal(f.node('password').value,'');
+ release();await settle();assert.equal(f.node('error').textContent,'');assert.equal(f.node('enable').hidden,true);
+ assert.equal(posts(f,'/api/me/newsroom-session').length,1);
+});
 
 test('fresh history entry discards unowned form restoration after every pageshow before confirming the current server identity',async()=>{
  for(const persisted of [false,true]){
