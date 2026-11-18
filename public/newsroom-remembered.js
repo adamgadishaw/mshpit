@@ -9,7 +9,7 @@ const articleFields=['headline','summary','body','category','sources','photo-nam
 const heldArticles=new Map();
 function heldArticleNotice() {
   node('held-notice').hidden=heldArticles.size===0;
-  node('held-notice').textContent=heldArticles.size?'Unsaved text is held only in this tab for its original account. Sign in and enable Newsroom in another tab, then confirm here and choose Restore unsaved text. Closing or reloading this tab discards held text. Select the photo again before saving.':'';
+  node('held-notice').textContent=heldArticles.size?'Unsaved text is held only in this tab for its original account. Sign in to Mshpit in another tab, then return here and choose Confirm session and refresh drafts. If asked, confirm your password here to enable Newsroom-only remembering, then choose Restore unsaved text for this account. Closing or reloading this tab discards held text. Select the photo again before saving.':'';
   node('restore-article').hidden=!account || !heldArticles.has(account.id);
 }
 function retire({preserveArticle=false,preserveHeld=false}={}) {
@@ -87,7 +87,7 @@ async function refresh() {
     }));card.append(preview);node('drafts').append(card);
   }
 }
-node('refresh').addEventListener('click',()=>act(refresh));
+node('refresh').addEventListener('click',()=>act(enterPage));
 node('restore-article').addEventListener('click',()=>act(async()=>{
   await confirm();const held=heldArticles.get(account.id);if(!held)return;
   for(const id of articleFields)node(id).value=held[id];
@@ -138,8 +138,15 @@ node('article').addEventListener('submit',event=>{event.preventDefault();void ac
 });});
 async function enterPage() {
   const cycle=pageCycle;
-  try{await refresh();return;}catch(error){assertPage(cycle);if(error.status===404){node('status').textContent=error.message;return;}if(!node('work').hidden)throw error;}
-  const full=await request('/api/me',{identity:undefined});fullAccount=full.user;
+  try{await refresh();return;}catch(error){
+    assertPage(cycle);
+    if(error.status===404 && node('work').hidden){node('status').textContent=error.message;return;}
+    // Full sign-in deliberately retires the separate Newsroom cookie. Rediscover
+    // the ordinary account only on authoritative expiry, never on transport,
+    // permission or identity errors. Enabling still requires explicit password proof.
+    if(error.status!==401 || error.code!=='AUTH_REQUIRED' || !node('work').hidden)throw error;
+  }
+  const full=await request('/api/me',{identity:null});fullAccount=full.user;
   if(fullAccount && ['admin','editor'].includes(fullAccount.role)){node('enable').hidden=false;node('status').textContent='No remembered Newsroom session. Confirm your password to enable this browser.';}
   else node('status').textContent='Sign in with a verified admin or editor account to enable remembered Newsroom access.';
 }
