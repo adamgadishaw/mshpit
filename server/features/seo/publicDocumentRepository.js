@@ -20,6 +20,7 @@ import { inPersonReviewSql } from "../../onlineReviews.js";
 import { pitPublicSlug, pitVenuePublicSlug } from "../../sqliteFunctions.js";
 import { publicVenuePlace } from "../../venueFacts.js";
 import { tourDateArtistBindingAllowedSql, tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
+import { reviewedFestivalStoredArtistAllowedSql } from "../../reviewedFestivalEventCorrections.js";
 
 const bounded = (value, fallback, maximum) => {
   const parsed = Number(value);
@@ -224,6 +225,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         AND (SELECT COUNT(*) FROM artists event_artist_identity
           WHERE event_artist_identity.name=td.artist COLLATE NOCASE)=1))
       AND ${tourDateArtistBindingAllowedSql("td")}
+      AND ${reviewedFestivalStoredArtistAllowedSql("td")}
       AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?4")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
       AND ${publicMusicEventCandidateSql("td")}

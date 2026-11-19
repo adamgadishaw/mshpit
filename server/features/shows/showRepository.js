@@ -3,6 +3,7 @@ import { tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
 import { liveEventTimeZone } from "../../../src/domain/eventLifecycle.mjs";
 import { tourDateShowLifecycle } from "./showLifecycle.js";
 import { reviewedShowCorrection } from "../../reviewedEventCorrections.js";
+import { reviewedFestivalEventRow, reviewedFestivalSavedShowPatch } from "../../reviewedFestivalEventCorrections.js";
 
 function attendanceView(row) {
   if (!row) return null;
@@ -45,8 +46,7 @@ export function createShowRepository(database, { now = () => Date.now() } = {}) 
   // All identity lookups use primary/unique indexes. This read path never calls
   // the lazy attendance allocator, so an unknown URL cannot create catalogue data.
   const byId = database.prepare("SELECT * FROM shows WHERE id=?");
-  const sourceFields = `owner_id,artist_identity_status,source,provider_event_id,
-    date,start_date_time,start_local_time,event_timezone,event_status,event_end_date`;
+  const sourceFields = "*"; // Exact indexed source only; optional reviewed metadata can be absent.
   const sourceById = database.prepare(`SELECT ${sourceFields} FROM tour_dates WHERE id=?`);
   const sourceByProvider = database.prepare(`SELECT owner_id,artist_identity_status FROM tour_dates
     WHERE owner_id IS NULL AND source=? AND provider_event_id=?
@@ -101,8 +101,18 @@ export function createShowRepository(database, { now = () => Date.now() } = {}) 
     // an ambiguous match or a member-owned row cannot supply public facts.
     const timingSources = exactSource ? [exactSource] : providerBacked(row)
       ? timingSourcesByProvider.all(row.provider, row.provider_event_id) : [];
-    const timing = timingSources.length === 1 && providerSourceMatches(row, timingSources[0])
-      ? sourceTiming(timingSources[0], now()) : null;
+    const matchedSource = timingSources.length === 1 && providerSourceMatches(row, timingSources[0])
+      ? timingSources[0] : null;
+    const correctedSource = matchedSource ? reviewedFestivalEventRow(matchedSource) : null;
+    const timing = correctedSource ? sourceTiming(correctedSource, now()) : null;
+    const performers = performersByShow.all(row.id).map((performer) => ({
+      key: artistIdentityPending ? null : performer.performer_key,
+      name: performer.performer_name || "",
+      role: performer.role,
+      position: performer.position,
+    }));
+    const festivalPatch = matchedSource
+      ? reviewedFestivalSavedShowPatch(row, matchedSource, correctedSource, performers) : null;
     const correction = providerBacked(row) ? reviewedShowCorrection({ ...row, owner_id: exactSource?.owner_id }) : null;
     return {
       id: row.id,
@@ -114,12 +124,7 @@ export function createShowRepository(database, { now = () => Date.now() } = {}) 
       artist: row.artist || "",
       artistKey: artistIdentityPending ? null : row.artist_key || null,
       ...(artistIdentityPending ? { artistIdentityPending: true } : {}),
-      performers: performersByShow.all(row.id).map((performer) => ({
-        key: artistIdentityPending ? null : performer.performer_key,
-        name: performer.performer_name || "",
-        role: performer.role,
-        position: performer.position,
-      })),
+      performers,
       venue: row.venue || "",
       venueKey: row.venue_key || null,
       city: row.city || "",
@@ -131,6 +136,7 @@ export function createShowRepository(database, { now = () => Date.now() } = {}) 
       timezone: row.timezone || null,
       lifecycle: row.lifecycle || "unknown",
       ...timing,
+      ...festivalPatch,
       ...(correction ? {
         date: correction.originalDate, localDate: correction.originalDate,
         startsAt: null, startLocalTime: null, eventEndDate: null,

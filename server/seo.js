@@ -125,7 +125,8 @@ const publicPostIdentity = db.prepare(`SELECT p.id FROM posts p JOIN users u ON 
   WHERE p.id=? AND p.removed=0 AND ${activeAccountSql("u")} LIMIT 1`);
 const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.artist_key,td.venue,td.place,td.date,
     td.start_date_time,td.start_local_time,td.event_timezone,td.event_status,td.ticket_url,td.sold_out,
-    td.source,td.owner_id,td.venue_provider_id,td.event_kind,td.music_qualified,
+    td.source,td.owner_id,td.venue_provider_id,td.event_kind,td.music_qualified,td.provider_event_id,
+    td.venue_city,td.venue_region,td.venue_country_code,
     td.music_evidence,td.billed_artists,td.event_end_date,td.artist_identity_status,canonical_artist.norm AS canonical_artist_key
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   LEFT JOIN artists canonical_artist ON canonical_artist.norm=td.artist_key
