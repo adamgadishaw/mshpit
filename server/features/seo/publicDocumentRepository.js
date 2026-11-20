@@ -20,7 +20,7 @@ import { inPersonReviewSql } from "../../onlineReviews.js";
 import { pitPublicSlug, pitVenuePublicSlug } from "../../sqliteFunctions.js";
 import { publicVenuePlace } from "../../venueFacts.js";
 import { tourDateArtistBindingAllowedSql, tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
-import { reviewedFestivalStoredArtistAllowedSql } from "../../reviewedFestivalEventCorrections.js";
+import { reviewedFestivalEventRow, reviewedFestivalStoredArtistAllowedSql } from "../../reviewedFestivalEventCorrections.js";
 
 const bounded = (value, fallback, maximum) => {
   const parsed = Number(value);
@@ -872,6 +872,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
           return true;
         }).slice(0, showLimit);
       };
+      const displayOnlyVenue = reviewedFestivalEventRow(event).reviewedFestivalLocationDisplayOnly === true;
       const providerVenueId = typeof event.venue_provider_id === "string" ? event.venue_provider_id.trim() : "";
       const countryCode = String(event.venue_country_code || "").trim().toUpperCase();
       const city = String(event.venue_city || "").trim().toLowerCase();
@@ -880,10 +881,10 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         event,
         posts: identityPending ? [] : eventRelatedPosts.all(event.artist_key || "", event.artist, event.venue, event.date, showLimit),
         artistEvents: identityPending ? [] : others(artistEvents.all(event.artist_key || "", event.artist, instant, day, showLimit + 1)),
-        venueEvents: others(providerVenueId
+        venueEvents: displayOnlyVenue ? [] : others(providerVenueId
           ? venueEventsByProvider.all(event.source ?? null, providerVenueId, instant, day, null, "", showLimit + 1)
           : venueEventsByName.all(event.venue, instant, day, null, "", showLimit + 1)),
-        cityEvents: countryCode && city ? others(cityEvents.all(countryCode, city,
+        cityEvents: !displayOnlyVenue && countryCode && city ? others(cityEvents.all(countryCode, city,
           String(event.venue || "").trim().toLowerCase(), String(event.artist || "").trim().toLowerCase(),
           event.id, instant, day, cityWindowEnd, showLimit * 4), { onePerArtist: true }) : [],
       };

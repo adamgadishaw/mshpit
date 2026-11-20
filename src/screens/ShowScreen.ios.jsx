@@ -121,11 +121,15 @@ function PublicEventSnapshotPanel({
         <Text style={styles.artist} accessibilityRole={Platform.OS === "ios" ? "header" : undefined}>{event.name}</Text>
         <View style={styles.perfWrap}><View style={styles.dashed} /></View>
         <View style={styles.stubRow}>
-          <Pressable style={Platform.OS === "ios" ? { minHeight: 44, justifyContent: "center" } : { flex: 1 }} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
+          {event.venueGuideAvailable === false ? <View style={{ flex: 1 }}>
             <Text style={styles.stubLabel}>THE ROOM</Text>
             <Text style={styles.venueLink}>{event.venue}</Text>
             {!!event.city && <Text style={styles.stubCity}>{event.city}</Text>}
-          </Pressable>
+          </View> : <Pressable style={Platform.OS === "ios" ? { minHeight: 44, justifyContent: "center" } : { flex: 1 }} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
+            <Text style={styles.stubLabel}>THE ROOM</Text>
+            <Text style={styles.venueLink}>{event.venue}</Text>
+            {!!event.city && <Text style={styles.stubCity}>{event.city}</Text>}
+          </Pressable>}
           <View style={styles.stubDivider} />
           <View style={styles.stubDateColumn}>
             <Text style={styles.stubLabel}>THE DATE</Text>
@@ -161,11 +165,11 @@ function PublicEventSnapshotPanel({
           </Pressable>
         </View>
       </View>
-      <Pressable style={styles.seeBtn} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
+      {event.venueGuideAvailable !== false && <Pressable style={styles.seeBtn} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open ${event.venue}'s venue page`}>
         <Icon name="pin" size={16} color={colors.amber} />
         <Text style={styles.seeTxt}>See this venue</Text>
         <Icon name="chevron-right" size={16} color={colors.textDim} />
-      </Pressable>
+      </Pressable>}
     </ScrollView>
   );
 }

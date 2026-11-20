@@ -37,6 +37,13 @@ export function reviewedShowCorrection(show) {
 export function reviewedEventRow(row) {
   const correction = reviewedEventCorrection(row);
   if (!correction) return reviewedFestivalEventRow(row);
+  return reviewedEventWriteRow(row);
+}
+
+// Status reconciliation is independent of read-only festival geography.
+export function reviewedEventWriteRow(row) {
+  const correction = reviewedEventCorrection(row);
+  if (!correction) return row;
   return {
     ...row,
     date: correction.originalDate,

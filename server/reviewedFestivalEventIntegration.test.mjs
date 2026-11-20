@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { createCityGuideRepository } from "./features/cities/cityGuideRepository.js";
 import { createArtistLiveSummaryService } from "./features/artistArchive/artistLiveSummaryService.js";
 import { createPublicDocumentService } from "./features/seo/publicDocuments.js";
 import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
@@ -15,7 +16,7 @@ process.env.PIT_DATA_DIR = directory;
 globalThis.fetch = async () => { throw new Error("No network in this fixture"); };
 const { db, q } = await import("./db.js");
 const { resolveEntity } = await import("./seo.js");
-const { upsertProviderTourDateRows } = await import("./tourdates.js");
+const { persistTicketmasterMarketResult } = await import("./tourdates.js");
 after(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
 const at = Date.parse("2026-11-19T20:00:00Z");
 const id = "tm_G5vIZ_G2gu-Q7";
@@ -65,12 +66,17 @@ test("existing and reimported festival rows fix public event, artist, location a
   assert.equal(primary.venue, "Autódromo Hermanos Rodríguez");
   assert.equal(primary.ticketUrl, ticket);
   assert.equal(primary.artistKey, null);
+  assert.equal(primary.venueGuideAvailable, false);
   const documents = createPublicDocumentService({ database: db, origin: "https://www.example.test" });
   const document = documents.eventDocument({ id, today: "2026-11-19", at });
   assert.ok(document);
   assert.equal(document.event.place, "Mexico City, Ciudad de México, Mexico");
   assert.ok(document.event.billedArtists.includes("Jamie xx"));
   assert.ok(!document.event.billedArtists.includes(caesar));
+  assert.equal(document.event.venuePath, null);
+  assert.equal(document.event.address.addressCountry, "MX");
+  assert.ok(!document.jsonLd.some((node) => node["@type"] === "MusicEvent"), "no false venue markup without a valid street address");
+  assert.doesNotMatch(documents.render(document), /Temple City|href="\/venue\/autodromo-hermanos-rodriguez"/);
   const service = createArtistLiveSummaryService({ database: db, projectDate: (row) => row, clock: () => at });
   assert.equal(service.read({ artist: caesarIdentity }).schedule.total, 0);
 
@@ -95,22 +101,40 @@ test("existing and reimported festival rows fix public event, artist, location a
 
   const plan = reconcileReviewedFestivalEvents(db, { at });
   assert.deepEqual(plan.map(({ id }) => id).sort(), [id, "tm_1AfZk3_Gkdw1XuQ"].sort());
+  assert.ok(plan.every(({ fields }) => fields.every((field) => ["artist", "artist_key", "artist_identity_status", "provider_artist_id", "billed_artists"].includes(field))));
   assert.deepEqual(read(), initial, "default reconciliation is a dry run");
   assert.deepEqual(reconcileReviewedFestivalEvents(db, { apply: true, at }), plan);
   assert.deepEqual(reconcileReviewedFestivalEvents(db, { apply: true, at }), []);
   assert.equal(read("tm_edc_control").venue, venue);
   assert.equal(read("tm_1AfZk3_Gkdw1XuQ").venue_provider_id, "right-venue");
   assert.equal(read("tm_1AfZk3_Gkdw1XuQ").start_local_time, "14:00:00");
-  assert.equal(read().venue_country_code, "MX");
+  assert.equal(read().venue_country_code, "US");
+  assert.equal(read().venue_provider_id, "bad-venue");
+  assert.equal(read().venue, venue);
   assert.equal(read().ticket_url, ticket);
-  assert.ok(visibleTourDateRowsFrom(db, null, { countryCode: "MX", city: "Mexico City", at }).some((row) => row.id === id));
-  assert.ok(!visibleTourDateRowsFrom(db, null, { countryCode: "US", at }).some((row) => row.id === id));
+  assert.ok(!visibleTourDateRowsFrom(db, null, { countryCode: "MX", city: "Mexico City", at }).some((row) => row.id === id));
+  assert.ok(!createCityGuideRepository(db).getGuide({ countryCode: "MX", citySlug: "mexico-city", at })?.upcoming.some((row) => [id, "tm_flow_market_fixture"].includes(row.id)));
   assert.equal(service.read({ artist: caesarIdentity }).schedule.total, 0);
   assert.equal(service.read({ artist: artist("Jamie xx") }).schedule.total, 2);
 
-  upsertProviderTourDateRows(db, [stale], { seenAt: at + 1 });
-  assert.equal(read().venue_country_code, "MX");
-  assert.equal(read().start_local_time, null);
+  const flow = { ...stale, id: "tm_flow_market_fixture", provider_event_id: "flow_market_fixture",
+    event_name: "Coca-Cola Flow Fest", artist: "Ozuna", artist_key: null, date: "2026-11-29", billed_artists: ["Ozuna", "Kali Uchis"] };
+  persistTicketmasterMarketResult(db, { market: { countryCode: "US" }, result: { rows: [stale, flow] }, seenAt: at + 1 });
+  assert.equal(read(flow.id).venue_city, "Temple City");
+  assert.equal(read(flow.id).venue_provider_id, "bad-venue");
+  assert.equal(read(flow.id).venue, venue);
+  const flowPage = documents.eventDocument({ id: flow.id, at: at + 1 });
+  assert.equal(flowPage.event.address.addressCountry, "MX");
+  assert.equal(flowPage.event.venuePath, null);
+  assert.equal(flowPage.event.ticketUrl, ticket);
+  assert.doesNotMatch(documents.render(flowPage), /Temple City/);
+  assert.equal(read().venue_country_code, "US");
+  assert.equal(read().venue_city, "Temple City");
+  assert.equal(read().venue_provider_id, "bad-venue");
+  assert.equal(read().venue, venue);
+  assert.equal(read().start_local_time, "12:00:00");
+  assert.equal(documents.eventDocument({ id, at }).event.timezone, "America/Mexico_City");
+  assert.ok(!createCityGuideRepository(db).getGuide({ countryCode: "MX", citySlug: "mexico-city", at })?.upcoming.some((row) => [id, "tm_flow_market_fixture"].includes(row.id)));
   assert.equal(read().ticket_url, ticket);
   assert.deepEqual(JSON.parse(read().billed_artists), ["Jamie xx", "Gorillaz", "Chvrches"]);
   assert.equal(shows.read(beforeShow.id, member).viewerAttendance.state, "going");
@@ -121,13 +145,13 @@ test("existing and reimported festival rows fix public event, artist, location a
 });
 
 test("a reconciliation failure rolls back earlier rows and preserves admission data", () => {
-  const first = { ...stale, id: "tm_a_flow_fixture", provider_event_id: "a_flow_fixture", artist: "Flow Fest",
-    artist_key: null, event_name: "Coca-Cola Flow Fest", date: "2026-11-28", billed_artists: [] };
-  const second = { ...first, id: "tm_b_flow_fixture", provider_event_id: "b_flow_fixture" };
+  const first = { ...stale, id: "tm_a_friday_fixture", provider_event_id: "a_friday_fixture", artist: "Corona Capital",
+    artist_key: null, event_name: "Corona Capital", billed_artists: [caesar] };
+  const second = { ...first, id: "tm_b_friday_fixture", provider_event_id: "b_friday_fixture" };
   legacy(first, second);
   const before = [read(first.id), read(second.id)];
   db.exec(`CREATE TEMP TRIGGER fixture_repair_guard BEFORE UPDATE ON tour_dates
-    WHEN NEW.id='tm_b_flow_fixture' BEGIN SELECT RAISE(ABORT,'fixture rejects update'); END`);
+    WHEN NEW.id='tm_b_friday_fixture' BEGIN SELECT RAISE(ABORT,'fixture rejects update'); END`);
   try {
     assert.throws(() => reconcileReviewedFestivalEvents(db, { apply: true, at }), /fixture rejects update/);
     assert.deepEqual([read(first.id), read(second.id)], before);

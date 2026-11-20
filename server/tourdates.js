@@ -4,8 +4,8 @@
 // and upserts them into `tour_dates`. GET /api/tourdates serves them, the client
 // merges them into its catalog. No git push, no redeploy, live the moment we write.
 import { db } from "./db.js";
-import { reviewedEventCorrection, reviewedEventRow } from "./reviewedEventCorrections.js";
-import { reviewedFestivalEventRow } from "./reviewedFestivalEventCorrections.js";
+import { reviewedEventCorrection, reviewedEventWriteRow } from "./reviewedEventCorrections.js";
+import { reviewedFestivalBillingRow } from "./reviewedFestivalEventCorrections.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -1242,7 +1242,7 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
 
 function providerTourDateWrite(row, seenAt, identity) {
   const correction = reviewedEventCorrection(row);
-  row = reviewedEventRow(row);
+  row = reviewedEventWriteRow(row);
   return {
     id: row.id,
     artist: row.artist,
@@ -1340,7 +1340,7 @@ export function upsertProviderTourDateRows(database, rows, { seenAt = Date.now()
     // register its performer, even though the event upsert itself is guarded.
     const writable = (rows || [])
       .filter((row) => row?.owner_id == null && existingEvent.get(row?.id ?? null)?.owner_id == null)
-      .map(reviewedFestivalEventRow);
+      .map(reviewedFestivalBillingRow);
     const identities = registerProviderArtistRows(database, writable, { at: timestamp, limits: registrationLimits });
     writable.forEach((row, index) => {
       const previous = existingEvent.get(row?.id ?? null);
