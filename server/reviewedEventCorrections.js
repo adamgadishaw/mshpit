@@ -1,3 +1,5 @@
+import { reviewedFestivalEventRow } from "./reviewedFestivalEventCorrections.js";
+
 // Official corrections take precedence over provider snapshots until reviewed
 // again. Never infer a replacement date from an unchanged sales listing.
 const PLACEBO_PRAGUE = Object.freeze({
@@ -34,7 +36,7 @@ export function reviewedShowCorrection(show) {
 
 export function reviewedEventRow(row) {
   const correction = reviewedEventCorrection(row);
-  if (!correction) return row;
+  if (!correction) return reviewedFestivalEventRow(row);
   return {
     ...row,
     date: correction.originalDate,

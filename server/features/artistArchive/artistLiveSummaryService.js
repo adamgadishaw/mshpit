@@ -8,6 +8,7 @@ import {
 } from "../../artistBillingIdentity.js";
 import { currentOrUpcomingTourDateSql, normalizedTourDateStart, normalizedTourDateStartSql } from "../../tourDateLifecycle.js";
 import { tourDateArtistBindingAllowedSql } from "../../providerArtistBinding.js";
+import { reviewedFestivalArtistQueryAllowedSql } from "../../reviewedFestivalEventCorrections.js";
 import { ApiError } from "../../errors.js";
 import { inPersonReviewSql } from "../../onlineReviews.js";
 import { pitArtistIdentity } from "../../sqliteFunctions.js";
@@ -142,6 +143,7 @@ export function createArtistLiveSummaryService({ database, projectDate, clock = 
     WHERE td.id IN (SELECT id FROM candidate_ids) AND COALESCE(td.music_qualified,1)=1
       AND LOWER(TRIM(COALESCE(td.event_status,''))) NOT IN ('cancelled','canceled')
       AND ${tourDateArtistBindingAllowedSql("td")}
+      AND ${reviewedFestivalArtistQueryAllowedSql("td")}
       AND ((((td.artist_key=@key) OR (td.artist_key IS NULL AND LOWER(td.artist)=LOWER(@name)
           AND @uniqueName=1))
         AND (td.owner_id IS NOT NULL

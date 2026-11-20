@@ -1,5 +1,6 @@
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
 import { reviewedEventRow } from "./reviewedEventCorrections.js";
+import { reviewedFestivalStoredArtistAllowedSql } from "./reviewedFestivalEventCorrections.js";
 import { artistAuthoredTourDateVisibleSql } from "./artistAuthoredTourDateVisibility.js";
 import {
   currentOrUpcomingTourDateSql,
@@ -63,6 +64,7 @@ export function visibleTourDateRowsFrom(database, viewer, {
   }
   if (artist) {
     filters.push(tourDateArtistBindingAllowedSql("td"));
+    filters.push(reviewedFestivalStoredArtistAllowedSql("td"));
     filters.push("LOWER(td.artist)=LOWER(?)");
     prefix.push(artist);
   }

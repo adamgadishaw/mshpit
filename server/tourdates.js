@@ -5,6 +5,7 @@
 // merges them into its catalog. No git push, no redeploy, live the moment we write.
 import { db } from "./db.js";
 import { reviewedEventCorrection, reviewedEventRow } from "./reviewedEventCorrections.js";
+import { reviewedFestivalEventRow } from "./reviewedFestivalEventCorrections.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -1337,7 +1338,9 @@ export function upsertProviderTourDateRows(database, rows, { seenAt = Date.now()
   try {
     // A provider ID collision with an authored event is not permission to
     // register its performer, even though the event upsert itself is guarded.
-    const writable = (rows || []).filter((row) => row?.owner_id == null && existingEvent.get(row?.id ?? null)?.owner_id == null);
+    const writable = (rows || [])
+      .filter((row) => row?.owner_id == null && existingEvent.get(row?.id ?? null)?.owner_id == null)
+      .map(reviewedFestivalEventRow);
     const identities = registerProviderArtistRows(database, writable, { at: timestamp, limits: registrationLimits });
     writable.forEach((row, index) => {
       const previous = existingEvent.get(row?.id ?? null);
