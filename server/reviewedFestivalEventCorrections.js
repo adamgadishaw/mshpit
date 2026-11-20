@@ -74,7 +74,11 @@ export function reviewedFestivalEventRow(row) {
   }
   if (!reviewedCoronaFriday(row, festival, isMexico)) return result;
   const billed = lineup(row.billed_artists).filter((name) => normalized(name) !== "daniel caesar");
-  if (!billed.some((name) => normalized(name) === "jamie xx")) billed.unshift("Jamie xx");
+  // Keep an existing confirmed billing slot unless it would be hidden by the
+  // first 20 names shown on the event page and in structured performers.
+  const jamiePosition = billed.findIndex((name) => normalized(name) === "jamie xx");
+  if (jamiePosition < 0) billed.unshift("Jamie xx");
+  else if (jamiePosition >= 20) billed.unshift(...billed.splice(jamiePosition, 1));
   const changedPrimary = normalized(row.artist) === "daniel caesar" || normalized(row.artist_key) === "daniel caesar";
   return {
     ...result,

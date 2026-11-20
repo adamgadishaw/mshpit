@@ -33,13 +33,14 @@ const stale = {
   event_timezone: "America/Los_Angeles", start_local_time: "12:00:00", music_qualified: 1,
   music_evidence: "ticketmaster:classification:music", billed_artists: bill, ticket_url: ticket,
 };
-const legacy = (...events) => {
+const seed = (replace, ...events) => {
   for (const raw of events) {
     const row = { ...raw, billed_artists: JSON.stringify(raw.billed_artists), updated_at: 1 };
     const fields = Object.keys(row);
-    db.prepare(`INSERT INTO tour_dates (${fields.join(",")}) VALUES (${fields.map(() => "?").join(",")})`).run(...Object.values(row));
+    db.prepare(`INSERT ${replace ? "OR REPLACE " : ""}INTO tour_dates (${fields.join(",")}) VALUES (${fields.map(() => "?").join(",")})`).run(...Object.values(row));
   }
 };
+const legacy = (...events) => seed(false, ...events);
 const read = (eventId = id) => db.prepare("SELECT * FROM tour_dates WHERE id=?").get(eventId);
 const artist = (name) => db.prepare("SELECT norm,name FROM artists WHERE name=? COLLATE NOCASE LIMIT 1").get(name);
 function addArtist(name) {
@@ -133,4 +134,48 @@ test("a reconciliation failure rolls back earlier rows and preserves admission d
   } finally {
     db.exec("DROP TRIGGER fixture_repair_guard");
   }
+});
+
+
+test("actual Corona admission IDs render Jamie xx inside the capped bill and preserve individual offers", () => {
+  const friday = [
+    ["tm_1AfZk3_GkdB4TdH", "Individual General Corona Capital 2026", "14006499FA57F0FC"],
+    ["tm_1AfZk3_Gkdw1XuQ", "Individual Banamex Plus Corona Capital 2026", "14006499F22BE35A"],
+  ];
+  const sunday = ["tm_1AfZk3_GkdD5R18", "Individual General Corona Capital 2026"];
+  const mexico = { ...stale, artist: "Gorillaz", artist_key: null, venue: "Autodromo Hnos. Rodriguez",
+    place: "Mexico City, Ciudad de Mexico, Mexico", venue_city: "Mexico City", venue_country_code: "MX",
+    venue_country: "Mexico", venue_region: "Ciudad de Mexico", venue_provider_id: null,
+    venue_address_line1: "Avenida Viaducto Rio de la Piedad", event_timezone: "America/Mexico_City" };
+  const longBill = ["Gorillaz", caesar, ...Array.from({ length: 23 }, (_, i) => `Fixture performer ${i}`)];
+  // This disposable test DB may already contain the shorter Banamex fixture.
+  seed(true, ...friday.map(([id, event_name, seller], index) => ({ ...mexico, id, provider_event_id: id.slice(3),
+    event_name, ticket_url: `https://www.ticketmaster.com.mx/event/${seller}`,
+    billed_artists: index ? [...longBill, "Jamie xx"] : longBill })),
+    { ...mexico, id: sunday[0], provider_event_id: sunday[0].slice(3), event_name: sunday[1],
+      date: "2026-11-22", artist: "The xx", billed_artists: ["The xx", "Angine de Poitrine", "Good Kid", "Purity Ring"] });
+  const documents = createPublicDocumentService({ database: db, origin: "https://www.example.test" });
+  for (const [id, , seller] of friday) {
+    const page = documents.eventDocument({ id, at, today: "2026-11-19" });
+    const offer = `https://www.ticketmaster.com.mx/event/${seller}`;
+    assert.equal(page.event.billedArtists.length, 20);
+    assert.equal(page.event.billedArtists.filter((name) => name === "Jamie xx").length, 1, id);
+    assert.ok(!page.event.billedArtists.includes(caesar));
+    const html = documents.render(page);
+    const visibleLineup = html.match(/<strong>Lineup:<\/strong>([^<]+)/)?.[1];
+    assert.match(visibleLineup, /Jamie xx/);
+    assert.doesNotMatch(visibleLineup, /Daniel Caesar/);
+    assert.ok(html.includes(`href="${offer}"`));
+    const schema = page.jsonLd.find((node) => node["@type"] === "MusicEvent");
+    assert.ok(schema.performer.some(({ name, url }) => name === "Jamie xx" && !url));
+    assert.ok(!schema.performer.some(({ name }) => name === caesar));
+    assert.equal(schema.offers.url, offer);
+    assert.equal(read(id).ticket_url, offer);
+  }
+  const sundayPage = documents.eventDocument({ id: sunday[0], at, today: "2026-11-19" });
+  assert.deepEqual(sundayPage.event.billedArtists, ["The xx", "Angine de Poitrine", "Good Kid", "Purity Ring"]);
+  assert.ok(sundayPage.jsonLd.find((node) => node["@type"] === "MusicEvent").performer.some(({ name }) => name === "The xx"));
+  const sundayLineup = documents.render(sundayPage).match(/<strong>Lineup:<\/strong>([^<]+)/)?.[1];
+  assert.match(sundayLineup, /The xx/);
+  assert.doesNotMatch(sundayLineup, /Jamie xx/);
 });
