@@ -41,6 +41,7 @@ export function normalizePublicEventSnapshot(entity, requestedId) {
     ...(typeof entity.artistIdentityPending === "boolean" ? { artistIdentityPending: entity.artistIdentityPending } : {}),
     source: text(entity.source, 40) || null,
     providerVenueId: text(entity.providerVenueId, 180) || null,
+    ...(entity.venueGuideAvailable === false ? { venueGuideAvailable: false } : {}),
     eventStatus: text(entity.eventStatus, 40),
     ...(text(entity.eventNotice) ? {
       eventNotice: text(entity.eventNotice),

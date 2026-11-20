@@ -29,7 +29,7 @@ function lineup(value) {
   } catch { return []; }
 }
 function hasReviewedMexicoLocation(row) {
-  return text(row.venue_country_code) === "mx" || /(^| )mexico$/.test(normalized(row.place));
+  return text(row?.venue_country_code) === "mx" || /(^| )mexico$/.test(normalized(row?.place));
 }
 function reviewedCoronaFriday(row, festival = edition(row), isMexico = hasReviewedMexicoLocation(row)) {
   return festival === "corona" && row.date === "2026-11-20"
@@ -60,11 +60,10 @@ export function reviewedFestivalSavedShowPatch(show, source, corrected, performe
 export function reviewedFestivalEventRow(row) {
   const festival = edition(row);
   if (!festival) return row;
-  let result = row;
-  const isMexico = hasReviewedMexicoLocation(row);
+  const result = reviewedFestivalBillingRow(row);
   if (wrongVenue(row)) {
-    result = {
-      ...row, venue: "Autódromo Hermanos Rodríguez", place: "Mexico City, Ciudad de México, Mexico",
+    return {
+      ...result, reviewedFestivalLocationDisplayOnly: true, venue: "Autódromo Hermanos Rodríguez", place: "Mexico City, Ciudad de México, Mexico",
       venue_city: "Mexico City", venue_region: "Ciudad de México", venue_country_code: "MX",
       venue_country: "Mexico", venue_postal_code: "08400", venue_provider_id: null,
       venue_address_line1: null, venue_address_line2: null, lat: null, lng: null,
@@ -72,7 +71,12 @@ export function reviewedFestivalEventRow(row) {
       access_start_date_time: null, access_start_approximate: null,
     };
   }
-  if (!reviewedCoronaFriday(row, festival, isMexico)) return result;
+  return result;
+}
+
+// Writes retain provider geography until the canonical city and venue are reviewed.
+export function reviewedFestivalBillingRow(row) {
+  if (!reviewedCoronaFriday(row)) return row;
   const billed = lineup(row.billed_artists).filter((name) => normalized(name) !== "daniel caesar");
   // Keep an existing confirmed billing slot unless it would be hidden by the
   // first 20 names shown on the event page and in structured performers.
@@ -81,7 +85,7 @@ export function reviewedFestivalEventRow(row) {
   else if (jamiePosition >= 20) billed.unshift(...billed.splice(jamiePosition, 1));
   const changedPrimary = normalized(row.artist) === "daniel caesar" || normalized(row.artist_key) === "daniel caesar";
   return {
-    ...result,
+    ...row,
     billed_artists: typeof row.billed_artists === "string" ? JSON.stringify(billed) : billed,
     ...(changedPrimary ? {
       artist: "Corona Capital", artist_key: null, canonical_artist_key: null,

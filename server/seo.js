@@ -306,6 +306,7 @@ function eventResolution(id, at = Date.now()) {
       soldOut: !!event.sold_out,
       source: event.source || null,
       providerVenueId: event.venue_provider_id || null,
+      ...(event.reviewedFestivalLocationDisplayOnly ? { venueGuideAvailable: false } : {}),
       performanceEvent: true,
       path,
     },
