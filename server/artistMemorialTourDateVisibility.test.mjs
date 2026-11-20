@@ -24,7 +24,7 @@ function fixture() {
     );
     CREATE TABLE tour_dates (
       artist_identity_status TEXT,
-      id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,
+      id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,source TEXT,owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,
       date TEXT,event_end_date TEXT,event_kind TEXT,music_evidence TEXT,billed_artists TEXT,
       music_qualified INTEGER,provider_active INTEGER NOT NULL DEFAULT 1
     );
@@ -50,7 +50,7 @@ test("provider identity holds preserve events without inheriting a namesake memo
     addMemorial.run("remembered", "mbid-remembered", "published");
     addDate.run("held-key", "Remembered Artist", "remembered", "2026-09-10", null);
     addDate.run("held-name", "Remembered Artist", null, "2026-09-11", null);
-    database.exec("UPDATE tour_dates SET artist_identity_status='conflict' WHERE id='held-key'; UPDATE tour_dates SET artist_identity_status='pending' WHERE id='held-name'; PRAGMA query_only=ON");
+    database.exec("UPDATE tour_dates SET source='ticketmaster',artist_identity_status='conflict' WHERE id='held-key'; UPDATE tour_dates SET source='ticketmaster',artist_identity_status='pending' WHERE id='held-name'; PRAGMA query_only=ON");
     const options = { today: "2026-08-28", at: Date.UTC(2026, 7, 28) };
     assert.deepEqual(visibleTourDateRowsFrom(database, null, options).map(({ id }) => id), ["held-key", "held-name"]);
     assert.deepEqual(visibleTourDateRowsFrom(database, null, { ...options, artist: "Remembered Artist" }), []);
