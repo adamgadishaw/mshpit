@@ -22,6 +22,7 @@ test("past-show failures expose retry without claiming an empty archive", () => 
 // Parsing alone cannot catch a removed state setter still referenced by an
 // effect. Check bindings so that integration fails before a user opens a page.
 for (const relative of [
+  "../screens/EditArtistProfileScreen.jsx",
   "../screens/ArtistScreen.ios.jsx",
   "../components/artist/ArtistUpcomingShows.ios.jsx",
   "../features/artistOverview/useArtistOverview.ios.js",

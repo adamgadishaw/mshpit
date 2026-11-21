@@ -252,7 +252,7 @@ test("page-update deletion lives in Artist HQ with confirmation, account scoping
 test("page-update visibility is an accessible switch with explicit state", () => {
   assert.match(artistEditor, /title="Edit artist page"/);
   assert.match(artistEditor, /loadArtistPage\(artist\.name, \{ signal: controller\.signal \}\)/);
-  assert.match(artistEditor, /if \(!artistPageEditReady\(resource\) \|\| mediaBusy \|\| saving\) return;/);
+  assert.match(artistEditor, /if \(!artistPageEditReady\(resource\) \|\| mediaBusy \|\| saveInFlight\.current\) return;/);
   assert.match(artistEditor, /confirmedProfile=\{scopedResource\.data\.profile\}/);
   assert.doesNotMatch(artistEditor, /const prof = artistProfile\(/);
   assert.match(artistEditor, /accessibilityRole="switch"/);

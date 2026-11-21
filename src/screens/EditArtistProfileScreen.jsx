@@ -13,11 +13,10 @@ import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
 import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
 import {
-  changedProfileImageFields,
   profileImagePickerOptions,
   profileImageSelectionHint,
 } from "../domain/profileImagePolicy.mjs";
-import { artistPageEditReady } from "../domain/artistPageEditor.mjs";
+import { artistPageEditReady, artistProfileEditorPatch } from "../domain/artistPageEditor.mjs";
 import { fetchArtistBiography, saveArtistBiography } from "../features/artistBiography/artistBiographyService";
 import { validateStaffArtistBiography } from "../domain/artistBiography.mjs";
 import {
@@ -111,7 +110,12 @@ function ConfirmedArtistProfileEditor({
   staff = false,
   refreshMetadata,
 }) {
-  const [bio, setBio] = useState(confirmedProfile.bio ?? meta?.bio ?? "");
+  const [bio, setBio] = useState(confirmedProfile.bioStaffCurated
+    ? confirmedProfile.bio ?? ""
+    : confirmedProfile.bio ?? meta?.bio ?? "");
+  const [bioChanged, setBioChanged] = useState(false);
+  const initialFeedEnabled = useRef(!!confirmedProfile.feedEnabled).current;
+  const saveInFlight = useRef(false);
   const accountTasks = useAccountTaskScope(accountId);
   const { uploadProfileImage, imageCropDialog } = useProfileImageUpload();
   const uploadSelectedImage = (asset, purpose, task) => uploadProfileImage(asset, purpose, {
@@ -188,17 +192,17 @@ function ConfirmedArtistProfileEditor({
 
   const mediaBusy = uploadingAvatar || uploadingBanner;
   const save = async () => {
-    if (!artistPageEditReady(resource) || mediaBusy || saving) return;
+    if (!artistPageEditReady(resource) || mediaBusy || saveInFlight.current) return;
     const task = accountTasks.begin(accountId);
     if (!task) return;
+    saveInFlight.current = true;
     setSaveError("");
     setSaving(true);
     try {
-      const result = await updateArtistProfile(artist.name, {
-        bio: bio.trim(),
-        feedEnabled,
-        ...changedProfileImageFields({ avatarUri, banner, avatarChanged, bannerChanged }),
-      });
+      const result = await updateArtistProfile(artist.name, artistProfileEditorPatch({
+        bio, bioChanged, feedEnabled, initialFeedEnabled,
+        avatarUri, banner, avatarChanged, bannerChanged,
+      }));
       if (!task.isCurrent()) return;
       if (result?.ok === true) {
         onClose?.();
@@ -213,6 +217,7 @@ function ConfirmedArtistProfileEditor({
       if (task.isCurrent()) setSaveError(error?.message
         || "Mshpit could not save this artist page. Your changes are still here so you can try again.");
     } finally {
+      saveInFlight.current = false;
       if (task.isCurrent()) setSaving(false);
       task.finish();
     }
@@ -294,7 +299,7 @@ function ConfirmedArtistProfileEditor({
         <Text style={styles.avatarFormat}>{AVATAR_IMAGE_HINT}</Text>
 
         <Text style={styles.label}>BIO</Text>
-        <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Tell fans about the artist" placeholderTextColor={colors.textFaint} multiline />
+        <TextInput style={[styles.input, styles.multiline]} value={bio} editable={!saving} onChangeText={(value) => { setBio(value); setBioChanged(true); }} placeholder="Tell fans about the artist" placeholderTextColor={colors.textFaint} multiline />
         {staff ? <ArtistBiographyEditor artist={artist} accountId={accountId} refreshMetadata={refreshMetadata} /> : null}
 
         <Text style={styles.label}>ARTIST POSTS</Text>
