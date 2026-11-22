@@ -347,6 +347,11 @@ function postMain(document) {
 
 function eventDetails(event) {
   const ticket = publicHttpsUrl(event.ticketUrl);
+  const waitlist = event.soldOut === true ? publicHttpsUrl(event.ticketWaitlistUrl) : null;
+  const checkedInstant = new Date(Number(event.ticketAvailabilityCheckedAt));
+  const checkedDate = waitlist && Number.isSafeInteger(event.ticketAvailabilityCheckedAt) && Number.isFinite(checkedInstant.getTime())
+    ? dateLabel(checkedInstant.toISOString().slice(0, 10)) : null;
+
   const date = longDateLabel(event.date);
   const venue = link(event.venuePath, event.venue);
   const address = postalAddress(event.address);
@@ -358,7 +363,8 @@ function eventDetails(event) {
     ${event.statusLabel && event.statusLabel !== "scheduled" ? `<div><dt>Status</dt><dd>${esc(event.statusLabel)}</dd></div>` : ""}
     ${event.eventNotice ? `<div><dt>Official update</dt><dd>${esc(event.eventNotice)}${publicHttpsUrl(event.eventNoticeSource) ? ` <a href="${esc(publicHttpsUrl(event.eventNoticeSource))}" rel="noopener noreferrer">Official notice</a>` : ""}</dd></div>` : ""}
     ${event.eventKind !== "concert" ? `<div><dt>Event type</dt><dd>${esc(event.eventKind.replace("_", " "))}</dd></div>` : ""}
-  </dl>${ticket ? `<p class="ticket-action"><a class="button primary" href="${esc(ticket)}" rel="sponsored noopener noreferrer">View tickets</a><small>Tickets are handled by the linked provider.</small></p>` : ""}`;
+    ${waitlist ? `<div><dt>Availability</dt><dd>Sold out · artist's official waitlist${checkedDate ? ` (checked ${esc(checkedDate)})` : ""}</dd></div>` : ""}
+  </dl>${waitlist ? `<p class="ticket-action"><a class="button primary" href="${esc(waitlist)}" rel="noopener noreferrer">Join official waitlist</a></p>` : ticket ? `<p class="ticket-action"><a class="button primary" href="${esc(ticket)}" rel="sponsored noopener noreferrer">View tickets</a><small>Tickets are handled by the linked provider.</small></p>` : ""}`;
 }
 
 function relatedEventItems(events, { artist = true, venue = true, place = false } = {}) {

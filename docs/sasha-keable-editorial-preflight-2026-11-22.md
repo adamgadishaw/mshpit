@@ -1,7 +1,8 @@
 # Sasha Keable: exact Toronto editorial backfill preflight
 
-This package is read-only and has no production writer or startup hook. Its
-candidate is for a single performance: Sasha Keable, Act Right Tour, with EJ
+This package includes a read-only default preflight and an explicit local
+operator command, with no startup write, HTTP writer or permission change.
+It is for a single performance: Sasha Keable, Act Right Tour, with EJ
 Ross, March 30, 2027 at The Opera House, Toronto. [The seller's event
 details](https://www.ticketmaster.ca/sasha-keable-act-right-tour-toronto-03-30-2027/event/1000656CE4C7E82A)
 separate doors at 19:00 EDT (23:00Z) from the show at 20:30 EDT (00:30Z March
@@ -24,24 +25,33 @@ Discovery event lifecycle. Re-check the exact Toronto section before release.
    verified Discovery event IDs. Do not set provider_event_id or claim a
    Ticketmaster attraction link. Keep the existing venue independently bound
    to ticketmaster / KovZpZAFlvvA, Toronto, CA, 735 Queen St. E.
-3. The current owned admin event form forces sold_out to zero, has no dated
-   waitlist field, and deduplicates by author. The Catalog Editor can edit only
-   existing catalog text. Before publication, add a reviewed atomic workflow
-   that checks and inserts these exact artist/event identities without
-   pretending the event came through Ticketmaster. The venue calendar must
-   support the independently verified venue binding, and the event/clients
-   must link the expiry-gated waitlist as a waitlist rather than a ticket offer.
-   Do not insert the fixture directly into the live catalog.
-4. Require future same-admission provider data to fail closed for review of
-   this occurrence. A valid provider-ID bridge needs exact seller SKU,
-   attraction, venue/address, local date/showtime and lifecycle evidence.
-   Preserve stable editorial and provider routes, saved shows and posted
-   reviews. Do not merge from a shared street address, a similar name, or a
-   seller URL alone. Verify one discoverable event and one public artist.
-5. Rehearse on a throwaway database. Check artist, direct event, exact city
-   calendar, canonical Opera House venue, public waitlist/no purchase offer,
-   repeatability and rollback. Fixture tests cover current artist, event and
-   city reads and intentionally prove the current venue/waitlist gaps.
+3. The ordinary admin form still lacks this contract. After a separately
+   reviewed/deployed exact code release, use a current database backup and
+   first rehearse on a copy with the command below. It atomically creates
+   the exact identities and stores dated evidence; runtime projects the
+   current waitlist without a purchase link or Offer schema. It is not
+   invoked during startup or research. Do not apply to the live database
+   before backup verification and explicit exact-release approval.
+4. Exact future licensed matches for the same seller SKU, venue, artist,
+   local date and verified doors/show clock are held for review, not silently
+   merged. An existing provider record with these IDs is never overwritten.
+   A matching occurrence accompanied by a provider lifecycle disagreement or
+   uncertain clock suppresses stale editorial availability; ambiguous or
+   genuinely different provider records remain on their independent path.
+   Preserve saved IDs and reviews, review any ambiguity before reconciling.
+5. Verify one discoverable event and one artist; check the direct event, local
+   city/date, canonical Opera House venue and native/web official waitlist
+   with no purchase offer. Verify a repeated identical apply is a no-op; do
+   not delete or reassign the public editorial ID after anyone can save it.
+
+On a verified throwaway copy (or later on the authorized database only after
+the above gates), the exact commands are:
+
+```sh
+node scripts/backfill-reviewed-sasha-editorial.mjs --database "$ABSOLUTE_DB_PATH" --checked-at "$FRESH_UTC_CHECK_ISO"
+# Only if explicitly authorized for this database after a matching preview:
+node scripts/backfill-reviewed-sasha-editorial.mjs --database "$ABSOLUTE_DB_PATH" --checked-at "$FRESH_UTC_CHECK_ISO" --apply sasha-keable-toronto-2027-03-30
+```
 
 ## Separate Ticketmaster Discovery filter preflight
 

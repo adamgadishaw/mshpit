@@ -3,6 +3,7 @@
 // fetches upcoming dates from Ticketmaster and/or Bandsintown for the top artists
 // and upserts them into `tour_dates`. GET /api/tourdates serves them, the client
 // merges them into its catalog. No git push, no redeploy, live the moment we write.
+import { deferExactSashaProviderDuplicate } from "./reviewedSashaEditorialBackfill.js";
 import { db } from "./db.js";
 import { reviewedEventCorrection, reviewedEventWriteRow } from "./reviewedEventCorrections.js";
 import { reviewedFestivalBillingRow } from "./reviewedFestivalEventCorrections.js";
@@ -1340,7 +1341,8 @@ export function upsertProviderTourDateRows(database, rows, { seenAt = Date.now()
     // register its performer, even though the event upsert itself is guarded.
     const writable = (rows || [])
       .filter((row) => row?.owner_id == null && existingEvent.get(row?.id ?? null)?.owner_id == null)
-      .map(reviewedFestivalBillingRow);
+      .map(reviewedFestivalBillingRow)
+      .filter(row => !deferExactSashaProviderDuplicate(database, row, timestamp));
     const identities = registerProviderArtistRows(database, writable, { at: timestamp, limits: registrationLimits });
     writable.forEach((row, index) => {
       const previous = existingEvent.get(row?.id ?? null);

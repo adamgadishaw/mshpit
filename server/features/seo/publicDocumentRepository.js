@@ -1,3 +1,4 @@
+import { sashaEditorialVenue, sashaEditorialVenueSql } from "../../reviewedSashaEditorialBackfill.js";
 import { activeAccountSql } from "../../accountVisibility.js";
 import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
 import { publicArtistCatalogSql } from "../../artistCatalogVisibility.js";
@@ -415,7 +416,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
   const venueEventsByProvider = database.prepare(`SELECT td.*,a.norm AS artist_key,a.public_slug AS artist_public_slug FROM tour_dates td
     LEFT JOIN users owner ON owner.id=td.owner_id
     LEFT JOIN artists a ON ${tourDateArtistBindingAllowedSql("td")} AND a.norm=LOWER(TRIM(td.artist))
-    WHERE td.source IS ? AND td.venue_provider_id=?
+    WHERE ((td.source IS ?1 AND td.venue_provider_id=?2) OR ${sashaEditorialVenueSql()})
       AND LOWER(TRIM(COALESCE(td.event_status,''))) NOT IN ('cancelled','canceled')
       AND td.release_at<=? AND ${currentOrUpcomingPublicMusicEventSql("td", "?4")}
       AND ${tourDateHasNoPublishedMemorialSql("td")}
@@ -873,7 +874,8 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         }).slice(0, showLimit);
       };
       const displayOnlyVenue = reviewedFestivalEventRow(event).reviewedFestivalLocationDisplayOnly === true;
-      const providerVenueId = typeof event.venue_provider_id === "string" ? event.venue_provider_id.trim() : "";
+      const editorialVenue = sashaEditorialVenue(event);
+      const providerVenueId = editorialVenue?.catalogueId || (typeof event.venue_provider_id === "string" ? event.venue_provider_id.trim() : "");
       const countryCode = String(event.venue_country_code || "").trim().toUpperCase();
       const city = String(event.venue_city || "").trim().toLowerCase();
       const cityWindowEnd = new Date(Date.parse(`${day}T00:00:00Z`) + 90 * 86_400_000).toISOString().slice(0, 10);
@@ -882,7 +884,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null, 
         posts: identityPending ? [] : eventRelatedPosts.all(event.artist_key || "", event.artist, event.venue, event.date, showLimit),
         artistEvents: identityPending ? [] : others(artistEvents.all(event.artist_key || "", event.artist, instant, day, showLimit + 1)),
         venueEvents: displayOnlyVenue ? [] : others(providerVenueId
-          ? venueEventsByProvider.all(event.source ?? null, providerVenueId, instant, day, null, "", showLimit + 1)
+          ? venueEventsByProvider.all(editorialVenue?.catalogueSource || event.source || null, providerVenueId, instant, day, null, "", showLimit + 1)
           : venueEventsByName.all(event.venue, instant, day, null, "", showLimit + 1)),
         cityEvents: !displayOnlyVenue && countryCode && city ? others(cityEvents.all(countryCode, city,
           String(event.venue || "").trim().toLowerCase(), String(event.artist || "").trim().toLowerCase(),

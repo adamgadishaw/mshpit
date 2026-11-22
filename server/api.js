@@ -1,3 +1,4 @@
+import { projectSashaEditorialAvailability } from "./reviewedSashaEditorialBackfill.js";
 import { createPublicVenueReviewService } from "./features/seo/publicVenueReviews.js";
 import { venueReviewVisibilitySql } from "./features/seo/venueReviewVisibility.js";
 import { scheduledCalendarMediaReference } from "./creatorCalendarMedia.js";
@@ -1171,6 +1172,7 @@ function tourDateJson(row) {
     eventTimezone: liveEventTimeZone({ eventTimezone: row.event_timezone }),
     releaseAt: Number(row.release_at) || 0,
     createdBy: row.owner_id || "import",
+    ...(projectSashaEditorialAvailability(db, row) || {}),
     ...(row.music_evidence ? {
       eventKind: row.event_kind || "concert",
       eventEndDate: row.event_end_date || null,

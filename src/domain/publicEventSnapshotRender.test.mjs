@@ -5,7 +5,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { parse } from "@babel/parser";
 import { formatDate } from "./dates.mjs";
-import { normalizePublicEventSnapshot, publicEventArtistIdentityPending } from "./publicEventSnapshot.mjs";
+import { normalizePublicEventSnapshot, publicEventArtistIdentityPending, reviewedEventWaitlistUrl, reviewedVenueNavigation, REVIEWED_WAITLIST_EVENT_ID } from "./publicEventSnapshot.mjs";
 import { showLifecycleView, showPresentationModel } from "./showDocument.mjs";
 import { readShowDocument } from "../features/showSocial/showSocialApi.mjs";
 import { readPublicEventSnapshot } from "../features/showSocial/publicEventSnapshotApi.mjs";
@@ -21,7 +21,7 @@ const compiled = require("@babel/core").transformSync(`${source.slice(notice.sta
   plugins: [[require("@babel/plugin-transform-react-jsx"), { runtime: "automatic" }], require("@babel/plugin-transform-modules-commonjs")],
 }).code;
 
-function fixture() {
+function fixture({ now = Date.now } = {}) {
   const module = { exports: {} }, tickets = [], notices = [];
   const jsx = (type, props) => typeof type === "function" ? type(props) : ({ type, props });
   new vm.Script(compiled).runInNewContext({
@@ -29,7 +29,8 @@ function fixture() {
     require: () => ({ jsx, jsxs: jsx }),
     View: "View", Text: "Text", ScrollView: "ScrollView", Pressable: "Pressable", ActivityIndicator: "ActivityIndicator", Icon: "Icon",
     CatalogText: "CatalogText",
-    styles: {}, colors: {}, formatDate, showLifecycleView,
+    styles: {}, colors: {}, formatDate, showLifecycleView, reviewedVenueNavigation,
+    reviewedEventWaitlistUrl: event => reviewedEventWaitlistUrl(event, now()),
     PublicPressableLink: "PublicPressableLink",
     Linking: { openURL: async (url) => notices.push(url) }, captureAppError: () => {},
     restrictedShowAvailabilityCopy: () => null, // This fixture uses the unchanged web fallback.
@@ -307,4 +308,36 @@ test("a trusted pending Show restricts artist identity even without a public eve
     "only a fresh explicit event confirmation can clear the conservative navigation restriction");
   assert.equal(evaluate(pendingNode, { ...context, trustedShow: { artistIdentityPending: false }, log: { artistIdentityPending: true },
     publicEventResource: { status: "ready" }, eventIdentitySnapshot: { artistIdentityPending: false } }), false);
+});
+
+test("reviewed waitlist is a scoped, fresh click action, not a sale", () => {
+  let at = Date.parse("2027-03-30T15:00:00Z");
+  const f = fixture({ now: () => at });
+  const id = REVIEWED_WAITLIST_EVENT_ID;
+  const target = "https://sasha-keable.lnk.to/actrighttour";
+  const entity = { id, kind: "event", path: `/event/${id}`, publicEventSnapshot: true, eventName: "Sasha Keable - Act Right Tour",
+    artist: "Sasha Keable", venue: "The Opera House", city: "Toronto", date: "2027-03-30", source: "reviewed-editorial",
+    soldOut: true, eventStatus: "scheduled", ticketWaitlistUrl: target, ticketAvailabilityCheckedAt: at - 1,
+    venueCanonicalPath: "/venue/ticketmaster-kovzpzaflvva" };
+  const opened = [];
+  const render = overrides => f.render({ event: normalizePublicEventSnapshot({ ...entity, ...overrides }, id),
+    status: "ready", onOpenVenue: venue => opened.push(venue) });
+  const callToAction = tree => nodes(tree).find(n => n.props?.accessibilityLabel === "Join the official waitlist for Sasha Keable - Act Right Tour");
+  const tree = render();
+  assert.match(text(tree), /SOLD OUT.*Join official waitlist/);
+  assert.doesNotMatch(text(tree), /Get tickets|View tickets at seller/);
+  assert.deepEqual(f.tickets, []);
+  callToAction(tree).props.onPress();
+  assert.deepEqual(f.tickets, [target]);
+  nodes(tree).find(n => n.props?.accessibilityLabel === "Open The Opera House's venue page").props.onPress();
+  assert.deepEqual(opened, [{ name: "The Opera House", place: "Toronto", source: "ticketmaster", providerVenueId: "KovZpZAFlvvA" }]);
+  for (const overrides of [{ ticketWaitlistUrl: target + "?extra" }, { eventStatus: "cancelled" }, { eventStatus: "postponed" },
+    { ticketAvailabilityCheckedAt: at + 1 }, { ticketAvailabilityCheckedAt: at - 86_400_000 },
+    { ticketUrl: "https://www.ticketmaster.ca/event/example" }]) {
+    assert.equal(callToAction(render(overrides)), undefined);
+  }
+  at = Date.parse("2027-03-31T00:30:00Z");
+  assert.equal(callToAction(render()), undefined);
+  callToAction(tree).props.onPress();
+  assert.deepEqual(f.tickets, [target], "retained button must recheck at tap time");
 });

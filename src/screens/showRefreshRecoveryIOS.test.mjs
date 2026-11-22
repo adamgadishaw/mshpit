@@ -65,13 +65,13 @@ const publicApi = require("./src/features/showSocial/publicEventSnapshotApi.mjs"
 // Real Show screen, attendance child, public/canonical normalizers, memorial
 // hook/API, refresh hook and AppError. Only transport, Store, native hosts and
 // unrelated resources are synthetic. No mutation or external opener may run.
-function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "active", providerBacked = true, fontScale = 1, timed = false } = {}) {
-  const renderer = createRenderer(), reads = [], memorialReads = [], publicReads = [], calls = [], empty = [];
+function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "active", providerBacked = true, fontScale = 1, timed = false, reviewed = null } = {}) {
+  const renderer = createRenderer(), reads = [], memorialReads = [], publicReads = [], calls = [], empty = [], external = [];
   const rsvpTimers = new Map();
   let refreshHook, snapshotHook, memorialHook, memorialApi, attendanceControls, recovery;
   let log = { ...(publicState !== "none" ? { id: "tm_fixture" } : {}), artist: "Fixture artist", venue: "Fixture venue",
     date: "2099-01-01", ticketUrl: "https://seller.example/ticket", source: "ticketmaster",
-    ...(timed ? { startLocalTime: "20:00:00" } : {}) };
+    ...(timed ? { startLocalTime: "20:00:00" } : {}), ...(reviewed?.log || {}) };
   const record = (kind, options) => { calls.push({ kind, options }); };
   const transport = async (url, options) => {
     if (url.startsWith("/api/shows/")) {
@@ -83,7 +83,7 @@ function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "act
       const id = log.id;
       return { entity: { kind: "event", publicEventSnapshot: true, id, path: "/event/" + id,
         name: log.artist, artist: log.artist, venue: log.venue, date: log.date, ticketUrl: log.ticketUrl,
-        eventStatus: publicState === "cancelled" ? "cancelled" : "onsale" } };
+        eventStatus: publicState === "cancelled" ? "cancelled" : "onsale", ...(reviewed?.snapshot || {}) } };
     }
     if (url.endsWith("/memorial")) {
       const request = { ...deferred(), url, options }; memorialReads.push(request); record("memorial", options); return request.promise;
@@ -140,7 +140,7 @@ function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "act
     if (name === "../lib/useAppActive") return { __esModule: true, default: () => true };
     if (name === "../lib/diagnostics") return { captureAppError: () => assert.fail("No official notice link opening in refresh fixture") };
     if (name === "../components/useIOSTicketAction") return { __esModule: true, default: () => ({
-      open: () => assert.fail("No external ticket opening"), error: "",
+      open: url => reviewed ? external.push(url) : assert.fail("No external ticket opening"), error: "",
     }) };
     if (name === "../lib/showTime") return local(name + ".js");
     if ((name.startsWith("../components/") || name.startsWith("../../components/")) && !name.endsWith(".mjs")
@@ -169,7 +169,7 @@ function fixture({ platform = "ios", lifecycle = "cancelled", publicState = "act
     ...(providerBacked ? { provider: { name: "ticketmaster", eventId: "fixture", backed: true } } : {}) };
   const flush = async () => { for (let i = 0; i < 5; i++) { await new Promise(setImmediate); renderer.act(noop); } };
   return {
-    reads, memorialReads, publicReads, calls, doc, render, flush, all, retry, inspect, text: () => text(renderer.container),
+    reads, memorialReads, publicReads, calls, external, doc, render, flush, all, retry, inspect, text: () => text(renderer.container),
     async ready() { render(); await flush(); reads[0].resolve({ show: doc }); memorialReads[0].resolve({ memorial: null }); await flush(); },
     refresh() { let pending; renderer.act(() => { pending = all().find(node => node.type === "VinylRefreshBoundary").props.onRefresh(); }); return pending; },
     retryRefresh() { const control = retry(); assert.ok(control); assert.equal(control.props.disabled, false); let pending;
@@ -425,3 +425,30 @@ test("actual API retryable429 retains cancellation without an automatic retry", 
   const requests = f.reads.length; await f.flush(); assert.equal(f.reads.length, requests);
   f.close(); await f.flush();
 });
+
+for (const platform of ["ios", "web"]) {
+  test(`${platform} hydrates reviewed waitlist from scoped resolver, never navigation`, async t => {
+    const now = Date.parse("2027-03-30T16:00:00Z");
+    t.mock.method(Date, "now", () => now);
+    const url = "https://sasha-keable.lnk.to/actrighttour";
+    const f = fixture({ platform, lifecycle: "upcoming", reviewed: {
+      log: { id: "editorial_sasha-keable_toronto_2027-03-30", artist: "Sasha Keable", venue: "The Opera House",
+        date: "2027-03-30", ticketWaitlistUrl: "https://example.org/forged" },
+      snapshot: { source: "reviewed-editorial", ticketUrl: null, ticketWaitlistUrl: url, eventStatus: "scheduled",
+        soldOut: true, ticketAvailabilityCheckedAt: now - 1000 },
+    } });
+    const button = () => f.all().find(node => node.props?.accessibilityLabel === "Join the official waitlist for Sasha Keable");
+    f.render();
+    assert.equal(button(), undefined, "navigation data cannot supply a waitlist");
+    await f.flush();
+    assert.ok(button(), "resolver data displays the independent waitlist before artist and canonical document complete");
+    f.reads[0].resolve({ show: f.doc });
+    f.memorialReads[0].resolve({ memorial: null });
+    await f.flush();
+    assert.ok(button(), "hydrated main screen keeps the same waitlist");
+    assert.equal(f.inspect().tickets, 1);
+    assert.deepEqual(f.external, []);
+    button().props.onPress();
+    assert.deepEqual(f.external, [url]);
+  });
+}
