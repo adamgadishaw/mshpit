@@ -1,3 +1,4 @@
+import { projectSashaEditorialAvailability } from "./reviewedSashaEditorialBackfill.js";
 import { publicProviderEventText } from "./providerEventText.js";
 import { venueLookupKeys } from "../src/domain/venueIdentity.mjs";
 // Public discovery documents, canonical URL resolution, and crawler controls.
@@ -126,7 +127,7 @@ const publicPostIdentity = db.prepare(`SELECT p.id FROM posts p JOIN users u ON 
 const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.artist_key,td.venue,td.place,td.date,
     td.start_date_time,td.start_local_time,td.event_timezone,td.event_status,td.ticket_url,td.sold_out,
     td.source,td.owner_id,td.venue_provider_id,td.event_kind,td.music_qualified,td.provider_event_id,
-    td.venue_city,td.venue_region,td.venue_country_code,
+    td.venue_city,td.venue_region,td.venue_country_code,td.event_source_url,
     td.music_evidence,td.billed_artists,td.event_end_date,td.artist_identity_status,canonical_artist.norm AS canonical_artist_key
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   LEFT JOIN artists canonical_artist ON canonical_artist.norm=td.artist_key
@@ -304,6 +305,7 @@ function eventResolution(id, at = Date.now()) {
       eventStatus: providerFields.eventStatus || "scheduled",
       ticketUrl: reviewedEventCorrection(event) ? null : projectedTourDateTicketUrl(event) || null,
       soldOut: !!event.sold_out,
+      ...(projectSashaEditorialAvailability(db, event, instant) || {}),
       source: event.source || null,
       providerVenueId: event.venue_provider_id || null,
       ...(event.reviewedFestivalLocationDisplayOnly ? { venueGuideAvailable: false } : {}),

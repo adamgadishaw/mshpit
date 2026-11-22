@@ -56,7 +56,7 @@ import { normalizeVenuePhotoProviderIdentity } from "../domain/venuePhotos.mjs";
 import { isLegacyArtistMemorial } from "../domain/artistLegacy.mjs";
 import useCanonicalArtistIdentity from "../hooks/useCanonicalArtistIdentity";
 import usePublicEventSnapshot from "../hooks/usePublicEventSnapshot";
-import { publicEventArtistIdentityPending, publicEventCandidateId, readablePublicEventSnapshot } from "../domain/publicEventSnapshot.mjs";
+import { publicEventArtistIdentityPending, publicEventCandidateId, readablePublicEventSnapshot, reviewedEventWaitlistUrl, reviewedVenueNavigation, REVIEWED_WAITLIST_EVENT_ID } from "../domain/publicEventSnapshot.mjs";
 const AfterShowSection = lazyWithRetry(() => import("./VenueScreens").then(module => ({ default: module.AfterShowSection })), "AfterShowSection");
 
 const CROWD_FILTER_LABELS = Object.freeze({
@@ -116,11 +116,14 @@ function PublicEventSnapshotPanel({
       </View>
     </ScrollView>
   );
-  const venue = { name: event.venue, source: event.source, providerVenueId: event.providerVenueId };
-  const canonicalRestriction = Platform.OS === "ios" ? canonicalPresentation : null;
+  const reviewedEditorial = event.source === "reviewed-editorial";
+  const venue = (reviewedEditorial && reviewedVenueNavigation(event))
+    || { name: event.venue, source: event.source, providerVenueId: event.providerVenueId };
+  const canonicalRestriction = Platform.OS === "ios" || reviewedEditorial ? canonicalPresentation : null;
   const publicCancelled = showLifecycleView(null, null, false, Date.now(), event, event).lifecycle === "cancelled";
   const cancelled = publicCancelled || canonicalRestriction?.screenKicker === "Cancelled";
   const allowTickets = !cancelled && canonicalRestriction?.allowTickets !== false;
+  const showWaitlist = allowTickets && reviewedEditorial && reviewedEventWaitlistUrl(event);
   const unavailableCopy = restrictedShowAvailabilityCopy({ allowTickets, artistIdentityPending, artistChecking, artistUnavailable });
   return (
     <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
@@ -144,13 +147,19 @@ function PublicEventSnapshotPanel({
           <View style={styles.stubDateColumn}>
             <Text style={styles.stubLabel}>{event.originalDate ? "ORIGINAL DATE" : "THE DATE"}</Text>
             <Text style={styles.date}>{formatDate(event.date, event.date)}</Text>
-            {allowTickets && event.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
+            {allowTickets && (reviewedEditorial ? showWaitlist : event.soldOut) ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
           </View>
         </View>
       </View>
       <CatalogText type="event" entityKey={event.id} />
-      {allowTickets && event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void ticketAction.open(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`${Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"} for ${event.name} at ${event.venue}`}>
+      {allowTickets && !reviewedEditorial && event.ticketUrl ? <Pressable style={styles.ticketsBtn} onPress={() => { void ticketAction.open(event.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`${Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"} for ${event.name} at ${event.venue}`}>
         <Text style={styles.ticketsTxt}>{Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"}</Text>
+      </Pressable> : null}
+      {showWaitlist ? <Pressable style={styles.ticketsBtn} onPress={() => {
+        const currentUrl = reviewedEventWaitlistUrl(event);
+        if (currentUrl) void ticketAction.open(currentUrl);
+      }} accessibilityRole="link" accessibilityLabel={`Join the official waitlist for ${event.name}`}>
+        <Text style={styles.ticketsTxt}>Join official waitlist</Text>
       </Pressable> : null}
       {ticketAction.error ? <Text style={styles.ticketError} accessibilityRole="alert">{ticketAction.error}</Text> : null}
       {eventAccountSection}
@@ -345,7 +354,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     source: norm.source || trustedShow?.provider?.name,
     providerVenueId: norm.providerVenueId || norm.venue_provider_id,
   });
-  const venueNavigation = {
+  const reviewedEditorial = publicEventId === REVIEWED_WAITLIST_EVENT_ID;
+  const venueNavigation = (reviewedEditorial && reviewedVenueNavigation(publicEventSnapshot)) || {
     name: venue,
     place: city,
     ...(venuePhotoIdentity || {}),
@@ -583,6 +593,10 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     eventIdentitySnapshot,
   );
   const presentation = showPresentationModel(lifecycleView);
+  const ordinaryTicketUrl = reviewedEditorial ? null : log.ticketUrl;
+  const showWaitlist = liveActionsAvailable && presentation.allowTickets && reviewedEditorial
+    && !["cancelled", "postponed", "completed", "happening"].includes(lifecycleView.lifecycle)
+    && reviewedEventWaitlistUrl(publicEventSnapshot);
   const rsvpShow = { ...norm, ...(trustedShow || {}),
     eventTimezone: trustedShow?.timezone || norm.eventTimezone,
   };
@@ -694,7 +708,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           onRetry={reloadPublicEvent}
           onRetryArtist={retryProfileStatus}
           onOpenVenue={onOpenVenue}
-          canonicalPresentation={Platform.OS === "ios" && lifecycleView.trusted && !presentation.allowTickets ? presentation : null}
+          canonicalPresentation={(Platform.OS === "ios" || reviewedEditorial) && lifecycleView.trusted && !presentation.allowTickets ? presentation : null}
           refreshNotice={refreshNotice}
         /> : refreshNotice ? <ScrollView contentContainerStyle={styles.content}>{refreshNotice}{archiveGate}</ScrollView> : archiveGate
       ) : <VinylRefreshBoundary
@@ -776,7 +790,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             <View style={styles.stubDateColumn}>
               <Text style={styles.stubLabel}>{officialEventNotice?.originalDate ? "ORIGINAL DATE" : "THE DATE"}</Text>
               <Text style={styles.date} numberOfLines={2}>{formatDate(officialEventNotice?.originalDate || norm.date, norm.date || "TBA")}{!officialEventNotice?.originalDate && eventEndDate ? ` – ${formatDate(eventEndDate, eventEndDate)}` : ""}</Text>
-              {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
+              {(reviewedEditorial ? showWaitlist : log.soldOut) ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
           {lifecycleView.lifecycle !== "postponed" && ticketShow?.timing?.length ? (
@@ -828,12 +842,19 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           </View>
         ) : null}
 
-        {liveActionsAvailable && presentation.allowTickets && log.ticketUrl ? (
-          <Pressable style={styles.ticketsBtn} onPress={() => { void ticketAction.open(log.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`${Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"} for ${eventTitle} at ${venue}`}>
+        {liveActionsAvailable && presentation.allowTickets && ordinaryTicketUrl ? (
+          <Pressable style={styles.ticketsBtn} onPress={() => { void ticketAction.open(ordinaryTicketUrl); }} accessibilityRole="link" accessibilityLabel={`${Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"} for ${eventTitle} at ${venue}`}>
             <Icon name="star" size={15} color="#1A1206" />
             <Text style={styles.ticketsTxt}>{Platform.OS === "ios" ? "View tickets at seller" : "Get tickets"}</Text>
           </Pressable>
         ) : null}
+
+        {showWaitlist ? <Pressable style={styles.ticketsBtn} onPress={() => {
+          const currentUrl = reviewedEventWaitlistUrl(publicEventSnapshot);
+          if (currentUrl) void ticketAction.open(currentUrl);
+        }} accessibilityRole="link" accessibilityLabel={`Join the official waitlist for ${eventTitle}`}>
+          <Text style={styles.ticketsTxt}>Join official waitlist</Text>
+        </Pressable> : null}
 
         {ticketAction.error ? <Text style={styles.ticketError} accessibilityRole="alert">{ticketAction.error}</Text> : null}
 

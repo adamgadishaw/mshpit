@@ -1,3 +1,4 @@
+import { SASHA_EDITORIAL_OCCURRENCE, sashaEditorialVenue, sashaEditorialRowSql, projectSashaEditorialAvailability } from "../../reviewedSashaEditorialBackfill.js";
 import { randomUUID } from "node:crypto";
 import { artistAuthoredTourDateVisibleSql } from "../../artistAuthoredTourDateVisibility.js";
 import { artistPath, eventPath, postPath, slugify, venuePath } from "../../../src/domain/urls.mjs";
@@ -76,12 +77,16 @@ export function createCityGuideRepository(database) {
     LEFT JOIN upcoming_counts uc ON uc.country_code=cr.country_code AND uc.city_slug=cr.city_slug
     LEFT JOIN city_profiles cp ON cp.country_code=cr.country_code AND cp.city_slug=cr.city_slug
     GROUP BY cr.country_code,cr.city_slug ORDER BY upcoming_count DESC,venue_count DESC,city COLLATE NOCASE,cr.country_code`);
-  const venueQuery = database.prepare(`SELECT td.venue,td.source,td.venue_provider_id,td.venue_city,td.venue_country,
+  const editorialVenue = SASHA_EDITORIAL_OCCURRENCE.venue;
+  const venueQuery = database.prepare(`SELECT td.venue,
+    CASE WHEN ${sashaEditorialRowSql()} THEN '${editorialVenue.catalogueSource}' ELSE td.source END AS venue_source,
+    CASE WHEN ${sashaEditorialRowSql()} THEN '${editorialVenue.catalogueId}' ELSE td.venue_provider_id END AS canonical_venue_provider_id,
+    td.venue_city,td.venue_country,
     COUNT(DISTINCT CASE WHEN ${currentOrUpcomingTourDateSql("td","?2")} AND ${tourDateHasNoPublishedMemorialSql("td")}
       THEN lower(trim(td.artist))||char(31)||td.date END) AS upcoming_count,
     MIN(td.date) AS first_date FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE ${cityWhere("td")} AND ${publicTour("td","owner")} AND TRIM(COALESCE(td.venue,''))<>''
-    GROUP BY lower(trim(td.venue)),td.source,td.venue_provider_id
+    GROUP BY lower(trim(td.venue)),venue_source,canonical_venue_provider_id
     ORDER BY upcoming_count DESC,td.venue COLLATE NOCASE LIMIT 200`);
   const curatedVenues = database.prepare("SELECT * FROM city_catalog_venues WHERE country_code=? AND city_slug=? ORDER BY capacity DESC,name LIMIT 200");
   const eventQuery = database.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
@@ -172,9 +177,9 @@ export function createCityGuideRepository(database) {
     }
     for (const venue of venueQuery.all(at,cityLocalDay(at,editorial.timeZone || "UTC"),code,slug,viewerId,args[5])) {
       const key=canonicalVenueKey(venue.venue),prior=venueMap.get(key),photo=photoProjection(publicVenuePhotoPool(venue.venue,
-        {limit:1,source:venue.source,providerVenueId:venue.venue_provider_id})[0]);
-      venueMap.set(key,{...prior,name:venue.venue,key,path:venuePath({name:venue.venue,source:venue.source,providerVenueId:venue.venue_provider_id}),
-        source:venue.source,providerVenueId:venue.venue_provider_id,city:city.city,countryCode:city.countryCode,
+        {limit:1,source:venue.venue_source,providerVenueId:venue.canonical_venue_provider_id})[0]);
+      venueMap.set(key,{...prior,name:venue.venue,key,path:venuePath({name:venue.venue,source:venue.venue_source,providerVenueId:venue.canonical_venue_provider_id}),
+        source:venue.venue_source,providerVenueId:venue.canonical_venue_provider_id,city:city.city,countryCode:city.countryCode,
         place:[city.city,city.country].filter(Boolean).join(", "),photo:photo || prior?.photo || null,
         upcomingCount:Math.max(prior?.upcomingCount || 0,Number(venue.upcoming_count || 0))});
     }
@@ -192,8 +197,13 @@ export function createCityGuideRepository(database) {
       const item={id:event.id,artist:event.artist,artistKey:artistIdentityPending ? null : event.artist_key || null,
         ...(artistIdentityPending ? {artistIdentityPending:true} : {}),eventName:event.event_name || event.artist,
         date:event.date,endDate:event.event_end_date || null,startLocalTime:event.start_local_time || null,
-        timeZone:zone,venue:event.venue,venuePath:venuePath({name:event.venue,source:event.source,providerVenueId:event.venue_provider_id}),
+        timeZone:zone,venue:event.venue,venuePath:sashaEditorialVenue(event)?.canonicalPath || venuePath({name:event.venue,source:event.source,providerVenueId:event.venue_provider_id}),
         path:eventPath(event.id),image:image?.uri || null,url:cityHttpsUrl(event.ticket_url) || null};
+      const availability = projectSashaEditorialAvailability(database, event, at);
+      if (availability) {
+        item.soldOut = availability.soldOut;
+        item.url = null;
+      }
       if (event.date<=localDay && end>=localDay && today.length<48) today.push(item);
       if (upcoming.length<80) upcoming.push(item);
     }

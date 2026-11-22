@@ -1,3 +1,4 @@
+import { projectSashaEditorialAvailability, sashaEditorialVenue } from "../../reviewedSashaEditorialBackfill.js";
 import { publicProviderEventText } from "../../providerEventText.js";
 import { catalogVenueEditorKey, readPublicCatalogEditorText } from "../catalogEditor/catalogEditorRepository.js";
 import {
@@ -268,6 +269,8 @@ function canonicalEventPath(paths, row) {
 }
 
 function canonicalVenuePath(paths, row, { allowNameOnly = false } = {}) {
+  const editorialVenue = sashaEditorialVenue(row);
+  if (editorialVenue) return editorialVenue.canonicalPath;
   const providerVenueId = cleanLine(row?.providerVenueId || row?.venue_provider_id, 180);
   if (!providerVenueId && !allowNameOnly) return null;
   return internalPath(paths.venue(row), venuePath({
@@ -904,6 +907,11 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
   // Mshpit News posts carry a story record. Read-only here: a database
   // without the news tables simply has no stories.
   const newsStories = createNewsDeskReader(database, { ensureSchema: false });
+  const eventWithAvailability = (row, at = Date.now()) => {
+    const projected = eventCard(row, publicPaths);
+    const editorial = projected && projectSashaEditorialAvailability(database, row, at);
+    return editorial ? Object.freeze({ ...projected, soldOut: editorial.soldOut, ticketUrl: null }) : projected;
+  };
 
   return Object.freeze({
     home(raw = {}, { canonicalPath: requestedPath = "/" } = {}) {
@@ -954,7 +962,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       })).filter((artist) => artist.name && artist.path);
       const events = (raw.events || []).slice(0, 48)
         .filter((row) => isCurrentOrUpcomingPublicMusicEvent(row, currentDate))
-        .map((row) => eventCard(row, publicPaths))
+        .map((row) => eventWithAvailability(row))
         .filter(Boolean);
       // Public review text may appear in discovery. Media remains excluded here
       // because gallery/showcase consent is narrower than publishing a post.
@@ -1098,7 +1106,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const reviewCount = count(raw.stats?.review_count);
       const ratingCount = count(raw.stats?.rating_count ?? raw.stats?.review_count);
       const averageRating = memorial ? null : profileRating(raw.stats?.average_rating);
-      const events = memorial ? [] : (raw.events || []).map((event) => eventCard(event, publicPaths)).filter(Boolean);
+      const events = memorial ? [] : (raw.events || []).map((event) => eventWithAvailability(event)).filter(Boolean);
       const concerts = (legacyMode ? [] : raw.concerts || []).flatMap((concert) => {
         const date = validDate(concert.date);
         const venue = cleanLine(concert.venue, 180);
@@ -1500,7 +1508,10 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const path = canonicalPath(requestedPath, event.path);
       const instant = Number.isFinite(Number(at)) ? Number(at) : Date.now();
       const currentDate = validDate(today) || new Date(instant).toISOString().slice(0, 10);
-      const publicEvent = Object.freeze({ ...event, path, ticketUrl: eventAllowsTicketOffer(event, currentDate) ? event.ticketUrl : null });
+      const publicEvent = Object.freeze({ ...event, path,
+        ticketUrl: eventAllowsTicketOffer(event, currentDate) ? event.ticketUrl : null,
+        ...(projectSashaEditorialAvailability(database, raw.event, instant) || {}),
+      });
       const mediaByPost = publicMediaForRows(database, raw.posts || [], { galleryOnly: true, maxPerPost: 3 });
       const posts = (raw.posts || []).map((row) => postCard(row, mediaByPost.get(row.id), publicPaths));
       const primaryAsset = posts.flatMap((post) => post.media).find((asset) => asset.kind === "image" || asset.posterUrl) || null;
@@ -1710,7 +1721,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const path = canonicalPath(requestedPath, canonicalVenuePath(publicPaths, raw.venue, { allowNameOnly: true }));
       const mediaByPost = publicMediaForRows(database, raw.posts || [], { galleryOnly: true, maxPerPost: 3 });
       const posts = (raw.posts || []).map((row) => postCard(row, mediaByPost.get(row.id), publicPaths));
-      const events = (raw.events || []).map((row) => eventCard(row, publicPaths)).filter(Boolean);
+      const events = (raw.events || []).map((row) => eventWithAvailability(row)).filter(Boolean);
       const eventsHasMore = raw.eventsHasMore === true;
       const venueReviews = (raw.venueReviews?.reviews || []).slice(0, 8).flatMap((review) => {
         const id = cleanLine(review?.id, 120);
