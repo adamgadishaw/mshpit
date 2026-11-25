@@ -1,3 +1,4 @@
+import { reviewedPublicShowTiming } from "./reviewedPublicShowTiming.js";
 import { projectSashaEditorialAvailability, sashaEditorialVenue } from "../../reviewedSashaEditorialBackfill.js";
 import { publicProviderEventText } from "../../providerEventText.js";
 import { catalogVenueEditorKey, readPublicCatalogEditorText } from "../catalogEditor/catalogEditorRepository.js";
@@ -724,6 +725,7 @@ function eventCard(row, paths) {
   const date = validDate(row.date);
   if (!artist || !venue || !date) return null;
   const ticketUrl = projectedTourDateTicketUrl(row) || null;
+  const reviewedTiming = reviewedPublicShowTiming(row, ticketUrl);
   const startDateTime = (() => {
     const value = cleanLine(row.start_date_time, 80);
     if (!value) return null;
@@ -764,6 +766,7 @@ function eventCard(row, paths) {
     startDateTime,
     localTime: cleanLine(row.start_local_time, 20) || null,
     timezone: cleanLine(row.event_timezone, 80) || null,
+    ...(reviewedTiming || {}),
     status: eventStatus(correction?.status ?? row.event_status),
     statusLabel: correction?.status ?? (cleanLine(row.event_status, 40) || "scheduled"),
     ...(correction ? { eventNotice: correction.notice, eventNoticeSource: correction.sourceUrl, originalDate: correction.originalDate } : reviewedEventNoticeFields(row)),
@@ -817,6 +820,7 @@ function eventSchema(event, origin, { image = null, description = null, today = 
     name,
     url: absolute(origin, path),
     startDate,
+    ...(event.doorsDateTime ? { doorTime: event.doorsDateTime } : {}),
     ...(event.endDate ? { endDate: event.endDate } : {}),
     ...(event.status ? { eventStatus: event.status } : {}),
     eventAttendanceMode: "https://schema.org/OfflineEventAttendanceMode",

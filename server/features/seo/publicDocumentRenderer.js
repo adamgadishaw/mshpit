@@ -357,6 +357,7 @@ function eventDetails(event) {
   const address = postalAddress(event.address);
   return `<dl class="event-facts">
     <div><dt>${event.originalDate ? "Original date" : "Date"}</dt><dd><time datetime="${esc(event.startDateTime || event.date)}">${esc(date || event.date)}${publicEventTimeLabel(event.localTime) ? ` at ${esc(publicEventTimeLabel(event.localTime))}` : ""}</time>${event.endDate ? ` through <time datetime="${esc(event.endDate)}">${esc(longDateLabel(event.endDate) || event.endDate)}</time>` : ""}</dd></div>
+    ${event.doorsDateTime ? `<div><dt>Doors</dt><dd><time datetime="${esc(event.doorsDateTime)}">${esc(publicEventTimeLabel(event.doorsLocalTime))}</time> · <a href="${esc(event.timingSource)}" rel="noopener noreferrer">Official times</a></dd></div>` : ""}
     <div><dt>Venue</dt><dd>${venue}</dd></div>
     ${event.place ? `<div><dt>Location</dt><dd>${esc(event.place)}</dd></div>` : ""}
     ${address ? `<div><dt>Venue address</dt><dd>${address}</dd></div>` : ""}
