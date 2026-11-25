@@ -12,6 +12,33 @@ const PLACEBO_PRAGUE = Object.freeze({
   sourceUrl: "https://www.ticketportal.cz/Article/11104",
 });
 
+// Notice only: keep the original event ID and leave catalog and attendance
+// lifecycle rules untouched. The new date already has its own event entry.
+const DAX_OLD_TORONTO_ID = "177Zv0G61YPAJyV";
+const DAX_TORONTO_NOTICE = Object.freeze({
+  eventNotice: "Dax is not playing HISTORY on Nov. 25. The show moved to The Concert Hall (888 Yonge Street) on Dec. 1. Doors at 7 p.m.; show at 8 p.m. Original concert tickets are valid.",
+  eventNoticeSource: "https://www.ticketmaster.ca/event/100064AC25166E74",
+});
+
+export function reviewedEventNoticeFields(row) {
+  if (row?.owner_id != null || row?.ownerId != null) return {};
+  const source = String(row?.source || "").trim().toLowerCase();
+  const providerId = row?.provider_event_id ?? row?.providerEventId;
+  return row?.id === `tm_${DAX_OLD_TORONTO_ID}` && source === "ticketmaster"
+    && (providerId == null || providerId === DAX_OLD_TORONTO_ID)
+    ? DAX_TORONTO_NOTICE : {};
+}
+
+export function reviewedShowNoticeFields(show) {
+  const providerEventId = show?.provider_event_id ?? show?.providerEventId;
+  return reviewedEventNoticeFields({
+    id: show?.tour_date_id || show?.tourDateId || (show?.provider === "ticketmaster" ? `tm_${providerEventId}` : null),
+    source: show?.provider,
+    provider_event_id: providerEventId,
+    owner_id: show?.owner_id ?? show?.ownerId,
+  });
+}
+
 export function reviewedEventCorrection(row) {
   if (row?.owner_id != null || row?.ownerId != null) return null;
   const source = String(row?.source || "").trim().toLowerCase();

@@ -217,3 +217,16 @@ test("modern memorial history stays readable, while stale legacy identity cannot
   });
   assert.equal(resolveEntity(separateArtist).publicEventSnapshot, true);
 });
+
+test("the exact old Dax show projects its move notice and the new date does not inherit it", () => {
+  const old = "tm_177Zv0G61YPAJyV";
+  const moved = "tm_1A8ZkfUGkdRqpNX";
+  try {
+    const oldPath = addEvent(old, {name: "Dax", artist: "Dax", date: "2026-11-25", billedArtists: ["Dax"]});
+    const newPath = addEvent(moved, {name: "Dax", artist: "Dax", date: "2026-12-01", venue: "The Concert Hall", billedArtists: ["Dax"]});
+    assert.match(resolveEntity(oldPath).eventNotice, /not playing HISTORY/);
+    assert.equal(resolveEntity(newPath).eventNotice, undefined);
+    assert.equal(db.prepare("SELECT venue,date FROM tour_dates WHERE id=?").get(old).date, "2026-11-25");
+    assert.equal(seoHttpPlan(oldPath).status, 200);
+  } finally { db.prepare("DELETE FROM tour_dates WHERE id IN (?,?)").run(old, moved); }
+});

@@ -2,7 +2,7 @@ import { normalizeShowAliasKey, normalizeStableShowId } from "./showIdentity.js"
 import { tourDateArtistIdentityPending } from "../../providerArtistBinding.js";
 import { liveEventTimeZone } from "../../../src/domain/eventLifecycle.mjs";
 import { tourDateShowLifecycle } from "./showLifecycle.js";
-import { reviewedShowCorrection } from "../../reviewedEventCorrections.js";
+import { reviewedShowCorrection, reviewedShowNoticeFields } from "../../reviewedEventCorrections.js";
 import { reviewedFestivalEventRow, reviewedFestivalSavedShowPatch } from "../../reviewedFestivalEventCorrections.js";
 
 function attendanceView(row) {
@@ -137,6 +137,7 @@ export function createShowRepository(database, { now = () => Date.now() } = {}) 
       lifecycle: row.lifecycle || "unknown",
       ...timing,
       ...festivalPatch,
+      ...(providerBacked(row) ? reviewedShowNoticeFields({ ...row, owner_id: exactSource?.owner_id }) : {}),
       ...(correction ? {
         date: correction.originalDate, localDate: correction.originalDate,
         startsAt: null, startLocalTime: null, eventEndDate: null,
