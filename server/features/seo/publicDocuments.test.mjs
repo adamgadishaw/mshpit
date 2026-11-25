@@ -3159,3 +3159,42 @@ test("public Tyla enrichment replaces the verified cross-artist MusicBrainz bind
     assert.equal(documents.artistDocument({artistKey:"tyla",at:NOW}).discography.length,0);
   } finally { database.close(); }
 });
+
+test("three exact Ontario performances separate sourced doors from public showtime and preserve admission", () => {
+  const db = createDatabase();
+  try {
+    addArtist(db, { key: "default", name: "Default" });
+    const fixtures = [
+      ["tm_177Zv0G6G5g4C9b", "Default", "default", "The Danforth Music Hall", "Toronto", "2026-11-26", "19:00", "20:00", "100064C2F554E5D8"],
+      ["tm_177Zv0G6GCW_REF", "Default", "default", "LONDON MUSIC HALL", "London", "2026-11-28", "19:00", "20:00", "100064C3BD66F9C8"],
+      ["tm_1k7ZvPfZGACyvb9", "Riverdale Share Concert", null, "The Danforth Music Hall", "Toronto", "2026-12-06", "14:30", "15:00", "100065500EE41617"],
+    ];
+    const insert = db.prepare(`INSERT INTO tour_dates (id,artist,artist_key,venue,venue_city,venue_country_code,
+      venue_address_line1,date,start_date_time,start_local_time,event_timezone,source,event_status,
+      event_name,music_evidence,provider_event_id,ticket_url) VALUES (?,?,?,?,?,'CA','1 Ontario Way',?,?,?,
+      ?,'ticketmaster','onsale',?,'segment:music',?,?)`);
+    for (const [id, artist, key, venue, city, date, doors, , sku] of fixtures) {
+      insert.run(id,artist,key,venue,city,date,new Date(`${date}T${doors}:00-05:00`).toISOString(),`${date}T${doors}:00`,city==="London" ? "America/Toronto" : "America/New_York",artist,id.slice(3),`https://www.ticketmaster.ca/event/${sku}`);
+    }
+    const docs = service(db);
+    const today = "2026-11-25", at = Date.parse(today + "T22:00:00Z");
+    for (const [id,,,venue,,date,doors,start,sku] of fixtures) {
+      const doc = docs.eventDocument({ id,today,at });
+      const schema = doc.jsonLd.find(n => n["@type"] === "MusicEvent");
+      assert.equal(schema.startDate,`${date}T${start}:00-05:00`);
+      assert.equal(schema.doorTime,`${date}T${doors}:00-05:00`);
+      assert.equal(schema.location.name,venue);
+      assert.equal(schema.offers.url,`https://www.ticketmaster.ca/event/${sku}`);
+      const html = docs.render(doc);
+      assert.ok(html.includes(`<dt>Doors</dt><dd><time datetime="${schema.doorTime}">`));
+      assert.ok(html.includes("Official times"));
+      assert.equal(db.prepare("SELECT start_local_time FROM tour_dates WHERE id=?").get(id).start_local_time,`${date}T${doors}:00`);
+    }
+    assert.deepEqual(docs.artistDocument({ artistKey:"default",today,at }).events.map(e => e.localTime),["20:00","20:00"]);
+    const [id,,,,,date] = fixtures[0];
+    db.prepare("UPDATE tour_dates SET start_date_time=?, start_local_time=? WHERE id=?").run(date+"T20:30:00-05:00","20:30",id);
+    const fresh = docs.eventDocument({ id,today,at });
+    assert.equal(fresh.event.localTime,"20:30");
+    assert.equal(fresh.event.doorsDateTime,undefined);
+  } finally { db.close(); }
+});
