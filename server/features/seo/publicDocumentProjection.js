@@ -29,7 +29,7 @@ import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { venueCoordinates, venueGuideModel } from "../../../src/domain/venueGuide.mjs";
 import { publicVenueFacts } from "../../venueFacts.js";
 import { publicTourDateArtistProjection } from "../../tourDateMetadata.js";
-import { reviewedEventCorrection, reviewedEventRow } from "../../reviewedEventCorrections.js";
+import { reviewedEventNoticeFields, reviewedEventCorrection, reviewedEventRow } from "../../reviewedEventCorrections.js";
 import { tourYearsLabel } from "../../../src/domain/artistNews.mjs";
 import { publicEventMetadata, publicVenueMetadataName } from "./publicMetadataPresentation.js";
 import { createNewsDeskReader } from "../newsDesk/newsDeskService.js";
@@ -750,7 +750,7 @@ function eventCard(row, paths) {
     timezone: cleanLine(row.event_timezone, 80) || null,
     status: eventStatus(correction?.status ?? row.event_status),
     statusLabel: correction?.status ?? (cleanLine(row.event_status, 40) || "scheduled"),
-    ...(correction ? { eventNotice: correction.notice, eventNoticeSource: correction.sourceUrl, originalDate: correction.originalDate } : {}),
+    ...(correction ? { eventNotice: correction.notice, eventNoticeSource: correction.sourceUrl, originalDate: correction.originalDate } : reviewedEventNoticeFields(row)),
     soldOut: !!row.sold_out,
     ticketUrl,
     source: cleanLine(row.source, 40) || null,

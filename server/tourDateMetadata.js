@@ -1,6 +1,6 @@
 import { publicProviderEventText } from "./providerEventText.js";
 import { storedBillingAllowsArtistBinding } from "./artistBillingIdentity.js";
-import { reviewedEventCorrection } from "./reviewedEventCorrections.js";
+import { reviewedEventNoticeFields, reviewedEventCorrection } from "./reviewedEventCorrections.js";
 import { tourDateArtistIdentityPending } from "./providerArtistBinding.js";
 
 const cleanLine = (value, maxLength = 160) => {
@@ -87,6 +87,6 @@ export function publicTourDateProviderFields(row) {
     accessStartDateTime: cleanLine(row?.access_start_date_time, 80),
     accessStartApproximate: approximate == null ? null : !!approximate,
     eventStatus: correction?.status ?? cleanLine(row?.event_status, 40),
-    ...(correction ? { eventNotice: correction.notice, eventNoticeSource: correction.sourceUrl, originalDate: correction.originalDate } : {}),
+    ...(correction ? { eventNotice: correction.notice, eventNoticeSource: correction.sourceUrl, originalDate: correction.originalDate } : reviewedEventNoticeFields(row)),
   };
 }

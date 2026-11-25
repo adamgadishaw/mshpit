@@ -44,3 +44,23 @@ test("canonical provider tuples resolve the same correction with and without a s
     assert.equal(reviewedShowCorrection({ ...show, ...patch }), null);
   }
 });
+
+test("Dax warning is scoped to the original HISTORY date without mutating the row or lifecycle", async () => {
+  const { reviewedEventNoticeFields, reviewedShowNoticeFields, reviewedEventWriteRow } = await import("./reviewedEventCorrections.js");
+  const old = Object.freeze({ id: "tm_177Zv0G61YPAJyV", source: "ticketmaster",
+    provider_event_id: "177Zv0G61YPAJyV", owner_id: null, event_status: "onsale",
+    date: "2026-11-25", venue: "HISTORY" });
+  const notice = reviewedEventNoticeFields(old);
+  assert.match(notice.eventNotice, /not playing HISTORY.*The Concert Hall.*Dec\. 1.*7 p\.m\..*8 p\.m\..*tickets are valid/);
+  assert.equal(notice.eventNoticeSource, "https://www.ticketmaster.ca/event/100064AC25166E74");
+  assert.equal(publicTourDateProviderFields(old).eventNotice, notice.eventNotice);
+  assert.equal(publicTourDateProviderFields(old).eventStatus, "onsale");
+  assert.equal(reviewedEventWriteRow(old), old);
+  assert.equal(reviewedEventCorrection(old), null);
+  assert.deepEqual(reviewedShowNoticeFields({ provider: "ticketmaster", providerEventId: old.provider_event_id }), notice);
+  assert.deepEqual(reviewedShowNoticeFields({ provider: "ticketmaster", providerEventId: old.provider_event_id, tourDateId: old.id, ownerId: "member" }), {});
+  assert.deepEqual(reviewedShowNoticeFields({ provider: "ticketmaster", providerEventId: "1A8ZkfUGkdRqpNX" }), {});
+  for (const change of [{source: "bandsintown"}, {provider_event_id: "other"}, {owner_id: "member"}, {id: "tm_1A8ZkfUGkdRqpNX"}]) {
+    assert.deepEqual(reviewedEventNoticeFields({...old, ...change}), {});
+  }
+});
