@@ -245,6 +245,22 @@ function musicBrainzArtistUrl(value) {
   return MUSICBRAINZ_ARTIST_ID.test(mbid) ? `https://musicbrainz.org/artist/${mbid}` : null;
 }
 
+// This exact public artist row carries the English musician's MusicBrainz
+// identity in a mixed legacy record. Override only the verified enrichment;
+// keep the chosen biography, artwork, tour dates and stored identity intact.
+const ENGLISH_TYLA_MBID = "2bf761c6-4bcf-4cfc-a388-8fcb2eea8cc8";
+const SOUTH_AFRICAN_TYLA_MBID = "45425c84-9092-4e2c-b732-e1d0280b580a";
+const TYLA_REVIEWED_ALBUMS = Object.freeze([
+  Object.freeze({ title: "TYLA", type: "Album", year: "2024" }),
+  Object.freeze({ title: "A*POP", type: "Album", year: "2026" }),
+]);
+function tylaPublicEnrichment(row, canonicalPath) {
+  if (row.norm !== "tyla" || canonicalPath !== "/artist/tyla"
+    || row.name !== "Tyla" || String(row.mbid || "").toLowerCase() !== ENGLISH_TYLA_MBID) return null;
+  return { mbid: SOUTH_AFRICAN_TYLA_MBID, country: "South Africa",
+    discography: { mbid: SOUTH_AFRICAN_TYLA_MBID, albums: TYLA_REVIEWED_ALBUMS } };
+}
+
 // Studio albums, EPs and live albums from the artist's MusicBrainz release
 // groups, newest first. The list is only trusted when it was fetched for the
 // same MusicBrainz identity as the artist record.
@@ -1098,6 +1114,9 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const selectedBio = staffCuratedBio ? (legacyMode || profilePublic ? raw.profile?.bio : null)
         : legacyMode ? source.bio : profileBio || source.bio;
       const knowledgeData = parseObject(source.data);
+      const enrichment = tylaPublicEnrichment(source, artistCanonicalPath);
+      const displayedMbid = enrichment?.mbid || source.mbid;
+      const discographyData = enrichment?.discography || knowledgeData;
       const displayBio = artistKnowledgeDisplayBio(knowledgeData, { mbid: source.mbid, bio: selectedBio });
       const bio = cleanBody(displayBio, 2_000);
       // Validate the exact selected text before harmless display formatting or
@@ -1161,7 +1180,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           publishedAt: story.publishedAt,
           sources: Object.freeze((story.sources || []).map((source) => cleanLine(source?.name, 80)).filter(Boolean)),
         }));
-      const hasDiscography = !legacyMode && !memorial && artistDiscography(knowledgeData, source.mbid).length > 0;
+      const hasDiscography = !legacyMode && !memorial && artistDiscography(discographyData, displayedMbid).length > 0;
       // "next in Perth (Sep 27), Sydney (Oct 3)": the cities people search
       // "<artist> <city>" for, straight from the upcoming dates.
       // The schedule is already ordered and visibility-filtered. Keep the
@@ -1225,14 +1244,14 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         ...concerts.map((concert) => concert.modifiedAt || 0),
         memorial ? timestamp(raw.memorialUpdatedAt) || 0 : 0,
       );
-      const musicBrainzUrl = musicBrainzArtistUrl(source.mbid);
+      const musicBrainzUrl = musicBrainzArtistUrl(displayedMbid);
       const entityImage = profileImageSchema(avatarMedia, `${name} profile photo`)
         || profileImageSchema(bannerMedia, `${name} profile banner`)
         || fanImageCredit
         || fanImage;
       const socialProfileImage = bannerMedia || avatarMedia;
-      const biographyFacts = projectArtistBiography(parseObject(source.data), { artistMbid: source.mbid });
-      const discography = Object.freeze(artistDiscography(knowledgeData, source.mbid));
+      const biographyFacts = projectArtistBiography(knowledgeData, { artistMbid: displayedMbid });
+      const discography = Object.freeze(artistDiscography(discographyData, displayedMbid));
       const releaseAlbums = !memorial ? news.filter((item) => item.kind === "release").slice(0, 3).map((item) => ({
         "@type": "MusicAlbum",
         name: item.release.title,
@@ -1311,7 +1330,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageMimeType: socialProfileImage?.mimeType || null,
         artist: Object.freeze({ name, bio, bioSource, bioContributor: profileBio ? raw.profile?.bioContributor || null : null,
           artworkContributors: [avatarMedia ? raw.profile?.avatarContributor : null, bannerMedia ? raw.profile?.bannerContributor : null].filter(Boolean),
-          genres: publicArtistGenres(source), country: cleanLine(artistKnowledgeDisplayCountry(knowledgeData, { mbid: source.mbid, country: source.country }), 100) || null, biographyFacts }),
+          genres: publicArtistGenres(source), country: enrichment?.country || cleanLine(artistKnowledgeDisplayCountry(knowledgeData, { mbid: source.mbid, country: source.country }), 100) || null, biographyFacts }),
         memorial,
         stats: Object.freeze({ reviewCount, ratingCount, averageRating, upcomingTotal }),
         reviews,
