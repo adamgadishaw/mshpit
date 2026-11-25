@@ -3125,3 +3125,37 @@ test('artist public profile preserves a half-star performance headline', () => {
   assert.equal(document.stats.ratingCount,1);
  } finally {database.close();}
 });
+
+test("public Tyla enrichment replaces the verified cross-artist MusicBrainz binding only for her exact permalink", () => {
+  const database = createDatabase();
+  try {
+    const wrong = "2bf761c6-4bcf-4cfc-a388-8fcb2eea8cc8";
+    const correct = "45425c84-9092-4e2c-b732-e1d0280b580a";
+    const data = { mbid: wrong, albums: [{title:"Devils Supper", type:"Album", year:"2013"}] };
+    const bio = "Tyla Laura Seethal is a South African singer and songwriter.";
+    addArtist(database,{key:"tyla",name:"Tyla",mbid:wrong,bio,data});
+    addArtist(database,{key:"english-tyla",name:"Tyla",mbid:wrong,data});
+    database.prepare("UPDATE artists SET country='United Kingdom' WHERE norm='tyla'").run();
+    const showId = "tm_177Zv0G6294fSr8";
+    const ticket = "https://www.ticketmaster.ca/event/TEST-TYLA";
+    addMetadataStop(database,showId,{artist:"Tyla",artist_key:"tyla",venue:"Coca-Cola Coliseum",
+      place:"Toronto, Ontario, Canada",date:"2026-11-26",event_timezone:"America/Toronto",
+      start_local_time:"20:00:00",ticket_url:ticket});
+    const documents = service(database);
+    const doc = documents.artistDocument({artistKey:"tyla",at:NOW});
+    assert.equal(doc.canonicalPath,"/artist/tyla");
+    assert.equal(doc.artist.bio,bio);
+    assert.equal(doc.events[0].path,"/event/"+showId);
+    assert.equal(doc.events[0].date,"2026-11-26");
+    assert.equal(doc.artist.country,"South Africa");
+    assert.equal(doc.musicBrainzUrl,"https://musicbrainz.org/artist/"+correct);
+    assert.deepEqual(doc.discography.map(a=>a.title),["A*POP","TYLA"]);
+    const html=documents.render(doc);
+    assert.match(html,/South Africa/);
+    assert.doesNotMatch(html,/Devils Supper|2bf761c6|United Kingdom/);
+    assert.equal(documents.artistDocument({artistKey:"english-tyla",at:NOW}).discography[0].title,"Devils Supper");
+    assert.equal(database.prepare("SELECT mbid FROM artists WHERE norm='tyla'").get().mbid,wrong);
+    database.prepare("UPDATE artists SET mbid=?,data=? WHERE norm='tyla'").run(correct,JSON.stringify({mbid:correct,albums:[]}));
+    assert.equal(documents.artistDocument({artistKey:"tyla",at:NOW}).discography.length,0);
+  } finally { database.close(); }
+});
