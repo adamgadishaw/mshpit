@@ -1,3 +1,15 @@
+import { changedProfileImageFields } from "./profileImagePolicy.mjs";
+
+// Draft intent survives a failed/ambiguous save. Never infer a biography write
+// from a displayed catalog fallback (or an empty loading-time fallback).
+export function artistProfileEditorPatch({ bio, bioChanged, feedEnabled, initialFeedEnabled, ...images }) {
+  return {
+    ...(bioChanged ? { bio: bio.trim() } : {}),
+    ...(feedEnabled !== initialFeedEnabled ? { feedEnabled } : {}),
+    ...changedProfileImageFields(images),
+  };
+}
+
 export function artistPageEditReady(resource) {
   return resource?.updatedAt != null
     && !!resource?.data
@@ -30,6 +42,7 @@ export function confirmedArtistProfileMutation(response, expectedPatch = {}) {
   const normalized = {
     ownerId: profile.ownerId == null ? null : String(profile.ownerId),
     bio: nullableText(profile.bio),
+    ...(hasOwn(profile, "bioStaffCurated") ? { bioStaffCurated: profile.bioStaffCurated === true } : {}),
     banner: nullableHttpsUrl(profile.banner),
     avatarUri: nullableHttpsUrl(profile.avatarUri),
     feedEnabled: profile.feedEnabled === true,

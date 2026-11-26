@@ -8,6 +8,7 @@ import {
 } from "./loadState.mjs";
 import {
   artistPageEditReady,
+  artistProfileEditorPatch,
   confirmedArtistProfileMutation,
 } from "./artistPageEditor.mjs";
 
@@ -68,11 +69,38 @@ test("artist page save requires an authoritative profile matching the requested 
       avatarUri,
       feedEnabled: false,
     },
-  }, { avatarUri, bio: "", feedEnabled: false });
+  }, { avatarUri });
   assert.equal(confirmed.avatarUri, avatarUri);
   assert.equal(confirmed.bio, null,
-    "a photo-only update accepts the API's canonical null for the editor's empty bio");
+    "a photo-only update accepts an unchanged null biography");
   assert.equal(confirmed.ownerId, null, "staff can seed an unclaimed artist page");
+});
+
+test("photo drafts omit untouched biography fallbacks and feed settings on every retry", () => {
+  for (const bio of ["", "Catalog Wikipedia excerpt", "Saved staff biography"]) {
+    const draft = { bio, bioChanged: false, feedEnabled: false, initialFeedEnabled: false,
+      avatarUri: "https://media.example/new.jpg", avatarChanged: true, bannerChanged: false };
+    const expected = { avatarUri: draft.avatarUri };
+    assert.deepEqual(artistProfileEditorPatch(draft), expected);
+    assert.deepEqual(artistProfileEditorPatch(draft), expected);
+    assert.equal(confirmedArtistProfileMutation({ ok: true, profile: {
+      bio: "Changed concurrently", bioStaffCurated: true, feedEnabled: true,
+      avatarUri: draft.avatarUri, banner: null,
+    } }, expected).bioStaffCurated, true);
+  }
+});
+
+test("intentional biography edits and clears remain explicit across failed readbacks", () => {
+  for (const [bio, expected] of [[" New biography ", "New biography"], ["", ""], ["   ", ""]]) {
+    const draft = { bio, bioChanged: true, feedEnabled: true, initialFeedEnabled: false };
+    const patch = artistProfileEditorPatch(draft);
+    assert.deepEqual(patch, { bio: expected, feedEnabled: true });
+    assert.equal(confirmedArtistProfileMutation({ ok: true }, patch), null);
+    assert.deepEqual(artistProfileEditorPatch(draft), patch);
+    assert.equal(confirmedArtistProfileMutation({ ok: true, profile: {
+      bio: expected || null, bioStaffCurated: true, feedEnabled: true, avatarUri: null, banner: null,
+    } }, patch).bioStaffCurated, true);
+  }
 });
 
 test("artist page save rejects bare success, malformed URLs, and mismatched artwork", () => {
