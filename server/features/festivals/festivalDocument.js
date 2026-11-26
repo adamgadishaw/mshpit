@@ -1,4 +1,5 @@
 import { editionDays } from "./festivalEditions.js";
+import { reviewedFestivalLineup } from "./reviewedFestivalLineup.js";
 
 // The public pages search engines and link previews read: one per festival
 // (/festival/<slug>) and the festivals hub (/festivals). A festival page leads
@@ -66,6 +67,15 @@ function description(page) {
 
 export function projectFestivalDocument({ origin = "https://www.mshpit.com", page } = {}) {
   if (!page?.festival?.slug) return null;
+  if (page.festival.slug === "veld") {
+    page = { ...page, upcoming: page.upcoming.map(item => {
+      if (item.id !== "veld:2027-07-30:toronto") return item;
+      const reviewed = reviewedFestivalLineup({ ...item, festivalSlug: page.festival.slug });
+      if (!reviewed) return item;
+      return { ...item, ...reviewed, lineupCount: reviewed.lineup.length,
+        ticketUrl: null, officialWeekendPassesUrl: "https://veld.frontgatetickets.com/" };
+    }) };
+  }
   const canonicalPath = festivalPagePath(page.festival.slug);
   const canonicalUrl = new URL(canonicalPath, origin).href;
   const title = heading(page);
@@ -164,15 +174,15 @@ function lineupHtml(edition) {
   if (!edition.lineup?.length) return '<p class="muted">The lineup has not been announced yet.</p>';
   const days = editionDays(edition.startDate, edition.endDate);
   const byDay = days.length > 1 && edition.lineup.some((act) => act.days?.length);
-  if (!byDay) return `<p class="festival-lineup">${edition.lineup.map((act) => esc(act.name)).join(" · ")}</p>`;
+  if (!byDay) return `${edition.officialWeekendPassesUrl ? '<h3>Weekend lineup</h3><p class="muted">Performance days have not been announced.</p>' : ""}<p class="festival-lineup">${edition.lineup.map((act) => esc(act.billing || act.name)).join(" · ")}</p>`;
   const sections = days.map((day) => {
     const acts = edition.lineup.filter((act) => act.days?.includes(day));
     if (!acts.length) return "";
     const date = at(day);
-    return `<h3>${esc(`${WEEKDAYS[date.getUTCDay()]}, ${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`)}</h3><p class="festival-lineup">${acts.map((act) => esc(act.name)).join(" · ")}</p>`;
+    return `<h3>${esc(`${WEEKDAYS[date.getUTCDay()]}, ${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}`)}</h3><p class="festival-lineup">${acts.map((act) => esc(act.billing || act.name)).join(" · ")}</p>`;
   }).join("");
   const undated = edition.lineup.filter((act) => !act.days?.length);
-  return `${sections}${undated.length ? `<h3>Day to be announced</h3><p class="festival-lineup">${undated.map((act) => esc(act.name)).join(" · ")}</p>` : ""}`;
+  return `${sections}${undated.length ? `<h3>Day to be announced</h3><p class="festival-lineup">${undated.map((act) => esc(act.billing || act.name)).join(" · ")}</p>` : ""}`;
 }
 
 export function renderFestivalMain(document) {
@@ -219,7 +229,7 @@ export function renderFestivalMain(document) {
   const upcomingHtml = page.upcoming.map((item) => `<section class="section" aria-label="${esc(item.name)}">
       <h2>${esc(item.name)}</h2>
       <p><strong>${esc(festivalDateRange(item.startDate, item.endDate))}</strong>${place(item) ? ` · ${esc(place(item))}` : ""}</p>
-      ${safeHttps(item.ticketUrl) ? `<p><a href="${esc(item.ticketUrl)}" rel="nofollow noopener noreferrer">Tickets</a></p>` : ""}
+      ${safeHttps(item.officialWeekendPassesUrl) ? `<p><a href="${esc(item.officialWeekendPassesUrl)}" rel="noopener">Check official weekend passes</a></p><p><a href="${esc(item.source.url)}" rel="noopener">See the organizer’s lineup announcement</a></p>` : safeHttps(item.ticketUrl) ? `<p><a href="${esc(item.ticketUrl)}" rel="nofollow noopener noreferrer">Tickets</a></p>` : ""}
       ${lineupHtml(item)}
     </section>`).join("");
   const expectedHtml = !edition && page.expected ? `<section class="section"><h2>Next edition</h2><p>${esc(page.expected.label)}. Not announced yet; estimated from the last edition (${esc(festivalDateRange(page.expected.basis.startDate, page.expected.basis.endDate))}).</p></section>` : "";
